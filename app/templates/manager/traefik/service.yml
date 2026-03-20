@@ -1,0 +1,16 @@
+http:
+  routers:
+    ${SERVICE_NAME}:
+      rule: ${RULE}
+      entrypoints:
+        - websecure
+      middlewares:
+        - tailscale-only
+      service: ${SERVICE_NAME}
+      tls: {}
+
+  services:
+    ${SERVICE_NAME}:
+      loadBalancer:
+        servers:
+          - url: http://${SERVICE_NAME}:${PORT}

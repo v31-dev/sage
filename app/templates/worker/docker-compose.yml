@@ -1,0 +1,52 @@
+name: sage
+
+services:
+  traefik:
+    image: traefik:v3.6.7
+    container_name: traefik
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ${SAGE_HOME}/traefik:/etc/traefik
+      - ${SAGE_HOME}/vector/config/vector.yml:/etc/vector/vector.yaml
+    dns:
+      - 100.100.100.100
+      - 1.1.1.1
+      - 8.8.8.8
+    ports:
+      - ${TS_IP}:80:80
+      - ${TS_IP}:443:443
+    command:
+      - "--configFile=/etc/traefik/traefik.yml"
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: cloudflared
+    restart: unless-stopped
+    environment:
+      - TUNNEL_TOKEN=${TUNNEL_TOKEN}
+    command: tunnel --no-autoupdate run
+
+  vector:
+    image: timberio/vector:0.54.0-alpine
+    container_name: vector
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ${SAGE_HOME}/vector/config/vector.yml:/etc/vector/vector.yaml:ro
+      - ${SAGE_HOME}/vector/buffer:/var/lib/vector
+    dns:
+      - 100.100.100.100
+      - 1.1.1.1
+      - 8.8.8.8
+
+  glances:
+    image: nicolargo/glances:latest
+    container_name: glances
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      - GLANCES_OPT=-w --disable-webui
+    pid: host

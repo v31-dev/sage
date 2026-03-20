@@ -1,0 +1,24 @@
+services:
+  sage:
+    build:
+      context: app
+      dockerfile: Dockerfile
+    environment:
+      - ENV=development
+    healthcheck:
+      interval: 10s
+      retries: 6
+
+  ui:
+    build:
+      context: ui
+      dockerfile: Dockerfile
+    container_name: ui
+    develop:
+      watch:
+        - path: ./ui/src
+          target: /app/src
+          action: sync
+    depends_on:
+      sage:
+        condition: service_healthy

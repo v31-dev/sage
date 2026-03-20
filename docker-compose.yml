@@ -1,0 +1,73 @@
+name: sage
+
+services:
+  sage:
+    image: ghcr.io/v31-dev/sage:latest
+    container_name: sage
+    restart: unless-stopped
+    environment:
+      - CLOUDFLARE_API_TOKEN=${CLOUDFLARE_API_TOKEN}
+      - CLOUDFLARE_ACCOUNT_ID=${CLOUDFLARE_ACCOUNT_ID}
+      - ORG=${ORG}
+      - DOMAIN=${DOMAIN}
+      - ADMIN_EMAIL=${ADMIN_EMAIL}
+      - DISCORD_WEBHOOK=${DISCORD_WEBHOOK}
+      - WORKER_TAILSCALE_TAG=worker
+      - HOSTNAME=${HOSTNAME}
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
+    volumes:
+      - ${SAGE_HOME}/sage:/app/data
+      - /var/run/tailscale/tailscaled.sock:/var/run/tailscale/tailscaled.sock:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ${SAGE_HOME}/traefik:/etc/traefik
+      - ${SAGE_HOME}/vector/config:/etc/vector
+    ports:
+      - ${TS_IP}:9001:9001
+    dns:
+      - 100.100.100.100
+      - 8.8.8.8
+      - 1.1.1.1
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:9000/api\").getcode() == 200 or exit(1)'"]
+      start_period: 10s
+    depends_on:
+      - glances
+  traefik:
+    image: traefik:v3.6.7
+    container_name: traefik
+    restart: unless-stopped
+    environment:
+      - CLOUDFLARE_DNS_API_TOKEN=${CLOUDFLARE_API_TOKEN}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ${SAGE_HOME}/traefik:/etc/traefik
+    ports:
+      - ${TS_IP}:443:443
+    command:
+      - "--configFile=/etc/traefik/traefik.yml"
+    depends_on:
+      sage:
+        condition: service_healthy
+
+  vector:
+    image: timberio/vector:0.54.0-alpine
+    container_name: vector
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ${SAGE_HOME}/vector/config:/etc/vector:ro
+      - ${SAGE_HOME}/vector/buffer:/var/lib/vector
+    depends_on:
+      sage:
+        condition: service_healthy
+
+  glances:
+    image: nicolargo/glances:latest
+    container_name: glances
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      - GLANCES_OPT=-w --disable-webui
+    pid: host

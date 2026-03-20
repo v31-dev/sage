@@ -1,0 +1,31 @@
+http:
+  middlewares:
+    mark-as-hopped:
+      headers:
+        customRequestHeaders:
+          X-Mesh-Hops: "1"
+    tailscale-only:
+      ipAllowList:
+        sourceRange:
+          - "100.64.0.0/10"
+          - "172.16.0.0/12"
+    security-headers:
+      headers:
+        frameDeny: true
+        browserXssFilter: true
+        contentTypeNosniff: true
+        forceSTSHeader: true
+        stsSeconds: 63072000
+        referrerPolicy: "strict-origin-when-cross-origin"
+        permissionsPolicy: "camera=(), microphone=(), geolocation=(), payment=()"
+        # This is very strict
+        contentSecurityPolicy: >-
+          upgrade-insecure-requests;
+          default-src 'self'; 
+          script-src 'self' 'unsafe-inline';
+          connect-src 'self' *.${DOMAIN} api.iconify.design;
+          style-src 'self' 'unsafe-inline'; 
+          img-src 'self' data: *.openstreetmap.org; 
+          worker-src 'self' blob:;
+          frame-ancestors 'none'; 
+          form-action 'self' *.${DOMAIN};
