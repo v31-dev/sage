@@ -27,6 +27,17 @@ export interface Project {
   updated_at: Date
 }
 
+export interface Application {
+  name: string
+  project: string
+  description: string | null
+  repo: string | null
+  env: string | null
+  args: string | null
+  created_at: Date
+  updated_at: Date
+}
+
 export async function fetchAppInfo(): Promise<AppInfo> {
   try {
     const response = await fetch(`${API_ROOT}`)
@@ -54,6 +65,7 @@ export async function fetchWorkers(): Promise<Workers[]> {
 }
 
 export const project = new CRUDAPI({ name: 'Project', path: `${API_ROOT}/projects` })
+export const application = new CRUDAPI({ name: 'Application', path: `${API_ROOT}/applications` })
 
 export type MetricsPeriod = '1m' | '1h' | '24h' | '1w'
 
