@@ -8,25 +8,52 @@ from playhouse.shortcuts import model_to_dict
 logger = logging.getLogger(__name__)
 
 
-def get_crud_router(model, key, create_fields=None, update_fields=None):
+def get_crud_router(model, key: list[str], create_fields: list[str] = None, update_fields: list[str] = None):
   """
   Generic CRUD router factory.
     
     Args:
     model: Peewee model class
-    key: Primary key field name
+    key: Primary key field name(s)
     create_fields: List of fields allowed for creation
     update_fields: List of fields allowed for updates
   """
   router = APIRouter()
   model_name = model.__name__.lower().capitalize()
-  
-  if key not in create_fields and create_fields is not None:
-    create_fields.append(key)
+  model_fields = model.get_local_fields()
+
+  if isinstance(key, str):
+    key = [key]
+
+  # Ensure key field is included in creation
+  if create_fields is None:
+    create_fields = model_fields.copy()
+
+  for k in key:
+    if k not in create_fields:  
+      create_fields.append(k)
+
+  # Don't allow key field to be updated
+  if update_fields is None:
+    update_fields = model_fields.copy()
+
+  for k in key:
+    if k in update_fields:
+      update_fields.remove(k)
 
   def get_instance_by_pk(value):
     """Helper to fetch instance by primary key."""
-    return model.select().where(getattr(model, key) == value).first()
+    query = model.select()
+    for k in key:
+      query = query.where(getattr(model, k) == value[k])
+    return query.first()
+  
+  # Composite keys will be represented as CSV
+  def url_param_to_pk_value(param: str): 
+    values = param.split(",")
+    if len(values) != len(key):
+      raise HTTPException(status_code=400, detail=f"Invalid {model_name} key")
+    return {k: v for k, v in zip(key, values)}
 
   @router.get("")
   def list_all():
@@ -52,18 +79,30 @@ def get_crud_router(model, key, create_fields=None, update_fields=None):
       data = extract_data(payload)
       
       # Extract primary key value from payload
-      pk_value = data.get(key)
-      if not pk_value:
-        raise HTTPException(status_code=400, detail=f"{key} is required")
+      pk_value = {}
+      for k in key:
+        pk_value[k] = data.get(k)
+      if not all(pk_value.values()):
+        raise HTTPException(status_code=400, detail=f"{list(key)} is required")
       
       # Check for existing resource
       if get_instance_by_pk(pk_value):
         raise HTTPException(status_code=409, detail=f"{model_name} already exists")
       
       # Filter to allowed fields for creation
-      if create_fields:
-        data = {field: data[field] for field in create_fields if field in data}
-      instance = model.create(**data)
+      filtered_data = {}
+      for field in create_fields:
+        if field in data:
+          filtered_data[field] = data[field]
+      
+      logger.info(f"Filtered data for {model_name} create: {filtered_data}")
+      
+      # Ensure all key fields are present
+      for k in key:
+        if k not in filtered_data:
+          filtered_data[k] = data.get(k)
+      
+      instance = model.create(**filtered_data)
       return model_to_dict(instance)
     except HTTPException:
       raise
@@ -76,6 +115,7 @@ def get_crud_router(model, key, create_fields=None, update_fields=None):
   def get(pk_value: str):
     """Get a specific resource by primary key."""
     try:
+      pk_value = url_param_to_pk_value(pk_value)
       instance = get_instance_by_pk(pk_value)
       if not instance:
         raise HTTPException(status_code=404, detail=f"{model_name} not found")
@@ -91,6 +131,7 @@ def get_crud_router(model, key, create_fields=None, update_fields=None):
   def update(pk_value: str, payload: Any = Body(...)):
     """Update a resource."""
     try:
+      pk_value = url_param_to_pk_value(pk_value)
       instance = get_instance_by_pk(pk_value)
       if not instance:
         raise HTTPException(status_code=404, detail=f"{model_name} not found")
@@ -118,6 +159,7 @@ def get_crud_router(model, key, create_fields=None, update_fields=None):
   def delete(pk_value: str):
     """Delete a resource."""
     try:
+      pk_value = url_param_to_pk_value(pk_value)
       instance = get_instance_by_pk(pk_value)
       if not instance:
         raise HTTPException(status_code=404, detail=f"{model_name} not found")

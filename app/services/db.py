@@ -22,12 +22,22 @@ class BaseModel(Model):
   created_at = DateTimeField(default=datetime.now)
   updated_at = DateTimeField(default=datetime.now)
 
+  class Meta:
+    database = db
+
   def save(self, *args, **kwargs):
     self.updated_at = datetime.now()
     return super().save(*args, **kwargs)
 
-  class Meta:
-    database = db
+  @classmethod
+  def get_local_fields(cls):
+    """
+    Returns field names defined in the subclass, 
+    excluding inherited fields from BaseModel and the auto 'id'.
+    """
+    base_names = set(BaseModel._meta.fields.keys())
+    ignore = base_names | {'id'}
+    return [name for name in cls._meta.fields.keys() if name not in ignore]
 
 class Setting(BaseModel):
   key   = CharField(primary_key=True)
@@ -39,14 +49,17 @@ class Project(BaseModel):
   env         = EncryptedTextField(null=True)
 
 class Application(BaseModel):
-  name            = CharField(primary_key=True)
-  project         = ForeignKeyField(Project, backref='applications')
-  description     = CharField(null=True)
-  git_repo        = CharField(null=True)
-  env             = EncryptedTextField(null=True)
-  build_args      = EncryptedTextField(null=True)
-  public_domain   = CharField(null=True)
-  internal_domain = CharField(null=True)
+  project     = ForeignKeyField(Project, backref='applications')
+  name        = CharField()
+  description = CharField(null=True)
+  repo        = CharField(null=True)
+  env         = EncryptedTextField(null=True)
+  args        = EncryptedTextField(null=True)
+
+  class Meta:
+    indexes = (
+      (('project', 'name'), True),
+    )
 
 class Worker(BaseModel):
   hostname  = CharField(primary_key=True)
