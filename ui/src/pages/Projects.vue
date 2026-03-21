@@ -150,15 +150,8 @@ function goToProject(projectName: string) {
       </div>
 
       <!-- Loading State -->
-      <div v-if="isLoading" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        <Card v-for="i in 3" :key="i">
-          <CardContent class="pt-6 pb-6">
-            <div class="space-y-3">
-              <div class="h-4 bg-gray-300 rounded w-3/4"></div>
-              <div class="h-4 bg-gray-300 rounded w-1/2"></div>
-            </div>
-          </CardContent>
-        </Card>
+      <div v-if="isLoading" class="flex items-center justify-center py-16">
+        <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-primary"></div>
       </div>
 
       <!-- Empty State -->

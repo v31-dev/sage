@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { Plus } from 'lucide-vue-next'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import {
@@ -18,8 +19,9 @@ import {
   FieldLabel,
   FieldSet,
 } from '@/components/ui/field'
+import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
-import { project as projectService, type Project } from '@/services/api'
+import { project as projectService, application as applicationService, type Project, type Application } from '@/services/api'
 import CardFooter from '@/components/ui/card/CardFooter.vue'
 
 const route = useRoute()
@@ -27,8 +29,10 @@ const router = useRouter()
 const projectName = route.params.projectId as string
 
 const project = ref<Project | null>(null)
+const applications = ref<Application[]>([])
 const isLoading = ref(true)
-const isDialogOpen = ref(false)
+const isEditDialogOpen = ref(false)
+const isCreateAppDialogOpen = ref(false)
 const isSubmitting = ref(false)
 const errorMessage = ref('')
 const successMessage = ref('')
@@ -38,8 +42,21 @@ const editFormData = ref({
   env: '',
 })
 
+const createAppFormData = ref({
+  name: '',
+  description: '',
+  repo: '',
+  env: '',
+  args: '',
+})
+
+const projectApplications = computed(() => 
+  applications.value.filter(app => app.project === projectName)
+)
+
 onMounted(async () => {
   await loadProject()
+  await loadApplications()
 })
 
 async function loadProject() {
@@ -53,15 +70,29 @@ async function loadProject() {
   }
 }
 
+async function loadApplications() {
+  try {
+    applications.value = await applicationService.fetchAll() as Application[]
+  } catch (err) {
+    console.error('Failed to load applications:', err)
+  }
+}
+
 function openEditDialog() {
   editFormData.value.description = project.value?.description || ''
   editFormData.value.env = project.value?.env || ''
   errorMessage.value = ''
   successMessage.value = ''
-  isDialogOpen.value = true
+  isEditDialogOpen.value = true
 }
 
-async function handleUpdateEnv() {
+function openCreateAppDialog() {
+  createAppFormData.value = { name: '', description: '', repo: '', env: '', args: '' }
+  errorMessage.value = ''
+  isCreateAppDialogOpen.value = true
+}
+
+async function handleUpdateProject() {
   errorMessage.value = ''
   successMessage.value = ''
 
@@ -72,7 +103,7 @@ async function handleUpdateEnv() {
       env: editFormData.value.env || null 
     })
     await loadProject()
-    isDialogOpen.value = false
+    isEditDialogOpen.value = false
     successMessage.value = 'Project updated successfully'
     setTimeout(() => {
       successMessage.value = ''
@@ -84,6 +115,41 @@ async function handleUpdateEnv() {
   }
 }
 
+async function handleCreateApplication() {
+  errorMessage.value = ''
+  
+  if (!createAppFormData.value.name.trim()) {
+    errorMessage.value = 'Application name is required'
+    return
+  }
+
+  try {
+    isSubmitting.value = true
+    await applicationService.create({
+      name: createAppFormData.value.name,
+      project: projectName,
+      description: createAppFormData.value.description || null,
+      repo: createAppFormData.value.repo || null,
+      env: createAppFormData.value.env || null,
+      args: createAppFormData.value.args || null,
+    })
+    isCreateAppDialogOpen.value = false
+    await loadApplications()
+    successMessage.value = 'Application created successfully'
+    setTimeout(() => {
+      successMessage.value = ''
+    }, 3000)
+  } catch (err) {
+    errorMessage.value = err instanceof Error ? err.message : 'Failed to create application'
+  } finally {
+    isSubmitting.value = false
+  }
+}
+
+function goToApplication(app: Application) {
+  router.push(`/projects/${projectName}/${app.name}`)
+}
+
 function goBack() {
   router.push('/projects')
 }
@@ -93,15 +159,9 @@ function goBack() {
   <main class="flex-1 px-4 py-8">
     <div class="mx-auto space-y-6 max-w-7xl">
       <!-- Loading State -->
-      <Card v-if="isLoading">
-        <CardContent class="pt-6 pb-6">
-          <div class="space-y-4">
-            <div class="h-8 bg-gray-300 rounded w-1/3"></div>
-            <div class="h-4 bg-gray-300 rounded w-1/2"></div>
-            <div class="h-32 bg-gray-300 rounded"></div>
-          </div>
-        </CardContent>
-      </Card>
+      <div v-if="isLoading" class="flex items-center justify-center py-16">
+        <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-primary"></div>
+      </div>
 
       <!-- Content -->
       <div v-else-if="project" class="space-y-6">
@@ -115,13 +175,13 @@ function goBack() {
           <CardHeader>
             <div class="flex justify-between items-start">
               <CardTitle class="text-2xl">{{ project.name }}</CardTitle>
-              <Dialog v-model:open="isDialogOpen">
+              <Dialog v-model:open="isEditDialogOpen">
                 <DialogTrigger asChild>
                   <Button @click="openEditDialog">Edit</Button>
                 </DialogTrigger>
                 <DialogContent class="sm:max-w-[600px]">
                   <DialogHeader>
-                    <DialogTitle>Edit</DialogTitle>
+                    <DialogTitle>Edit Project</DialogTitle>
                   </DialogHeader>
                   <FieldSet>
                     <FieldGroup>
@@ -146,13 +206,13 @@ function goBack() {
                     <Button
                       type="button"
                       variant="outline"
-                      @click="isDialogOpen = false"
+                      @click="isEditDialogOpen = false"
                       :disabled="isSubmitting"
                     >
                       Cancel
                     </Button>
                     <Button
-                      @click="handleUpdateEnv"
+                      @click="handleUpdateProject"
                       :disabled="isSubmitting"
                     >
                       {{ isSubmitting ? 'Saving...' : 'Save Changes' }}
@@ -173,6 +233,111 @@ function goBack() {
             </div>
           </CardFooter>
         </Card>
+
+        <!-- Applications Section -->
+        <div class="space-y-4">
+          <div class="flex justify-between items-center">
+            <h2 class="text-xl font-semibold">Applications</h2>
+            <Dialog v-model:open="isCreateAppDialogOpen">
+              <DialogTrigger asChild>
+                <Button @click="openCreateAppDialog" class="gap-2">
+                  <Plus :size="20" />
+                  New Application
+                </Button>
+              </DialogTrigger>
+              <DialogContent class="sm:max-w-[600px]">
+                <DialogHeader>
+                  <DialogTitle>Create New Application</DialogTitle>
+                </DialogHeader>
+                <FieldSet>
+                  <FieldGroup>
+                    <Field>
+                      <FieldLabel for="app-name">
+                        Application Name
+                      </FieldLabel>
+                      <Input id="app-name" v-model="createAppFormData.name" placeholder="required" />
+                    </Field>
+                    <Field>
+                      <FieldLabel for="app-description">
+                        Description
+                      </FieldLabel>
+                      <Textarea id="app-description" v-model="createAppFormData.description" class="resize-none" placeholder="optional" />
+                    </Field>
+                    <Field>
+                      <FieldLabel for="app-repo">
+                        Repository URL
+                      </FieldLabel>
+                      <Input id="app-repo" v-model="createAppFormData.repo" placeholder="optional" />
+                    </Field>
+                    <Field>
+                      <FieldLabel for="app-env">
+                        Environment Variables
+                      </FieldLabel>
+                      <Textarea id="app-env" v-model="createAppFormData.env" class="resize-none" placeholder="optional" />
+                    </Field>
+                    <Field>
+                      <FieldLabel for="app-args">
+                        Arguments
+                      </FieldLabel>
+                      <Textarea id="app-args" v-model="createAppFormData.args" class="resize-none" placeholder="optional" />
+                    </Field>
+                    <Field>
+                      <FieldError v-if="errorMessage">{{errorMessage}}</FieldError>
+                    </Field>
+                  </FieldGroup>
+                </FieldSet>
+                <DialogFooter>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    @click="isCreateAppDialogOpen = false"
+                    :disabled="isSubmitting"
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    @click="handleCreateApplication"
+                    :disabled="isSubmitting"
+                  >
+                    {{ isSubmitting ? 'Creating...' : 'Create Application' }}
+                  </Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
+          </div>
+
+          <!-- Empty Applications State -->
+          <div v-if="projectApplications.length === 0" class="flex items-center justify-center py-8">
+            <Card class="w-full">
+              <CardContent class="flex flex-col items-center justify-center py-12">
+                <p class="text-muted-foreground text-lg">No applications yet</p>
+              </CardContent>
+            </Card>
+          </div>
+
+          <!-- Applications Grid -->
+          <div v-else class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            <Card
+              v-for="app in projectApplications"
+              :key="app.name"
+              class="cursor-pointer hover:shadow-lg transition-shadow flex flex-col"
+              @click="goToApplication(app)"
+            >
+              <CardHeader>
+                <CardTitle class="line-clamp-2">{{ app.name }}</CardTitle>
+              </CardHeader>
+              <CardContent class="flex-1 space-y-2">
+                <p v-if="app.description" class="text-sm text-muted-foreground">{{ app.description }}</p>
+                <p v-if="app.repo" class="text-xs text-muted-foreground truncate">{{ app.repo }}</p>
+              </CardContent>
+              <CardFooter class="border-t">
+                <div class="pt-4 text-xs text-muted-foreground">
+                  <p>Updated: {{ new Date(app.updated_at).toLocaleString() }}</p>
+                </div>
+              </CardFooter>
+            </Card>
+          </div>
+        </div>
       </div>
 
       <!-- Error/Not Found State -->
