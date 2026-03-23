@@ -1,24 +1,24 @@
-from fastapi import Request, APIRouter, Depends, Body
-from types import SimpleNamespace
+from fastapi import Request, APIRouter, Depends, Body, HTTPException
+from playhouse.shortcuts import model_to_dict
 
-from services.db import Application, Project, Worker, Container
+from services.db import Application, Worker, Container
 from utils.api import generic_get, generic_create, generic_update, generic_delete, generic_list
 from routes.containers import router as container_router
 
 
 def inject_application(request: Request):
-  if not hasattr(request.state, 'parents'):
-    request.state.parents = SimpleNamespace()
+  if not hasattr(request.state, 'models'):
+    request.state.models = {}
   
-  # Ensure project is already in parents (from previous dependency)
-  if not hasattr(request.state.parents, 'project'):
-    project_name = request.path_params.get('project')
-    request.state.parents.project = generic_get(Project, Project.name == project_name, return_model=True)
+  # Ensure project is already in models (from previous dependency)
+  if 'project' not in request.state.models:
+    raise HTTPException(status_code=400, detail="Project must be loaded before application.")
   
   # Fetch and store application
   application_name = request.path_params.get('application')
-  request.state.parents.application = generic_get(Application, 
-                                                  (Application.name == application_name) & (Application.project == request.state.parents.project), 
+  request.state.models['application'] = generic_get(Application, 
+                                                  (Application.name == application_name) & 
+                                                  (Application.project == request.state.models['project']), 
                                                   return_model=True)
   
   return None
@@ -26,38 +26,35 @@ def inject_application(request: Request):
 router = APIRouter()
 
 @router.get("/")
-def list_applications():
-  return generic_list(Application)
-
-@router.get("/{application}")
-def get_application(application: str, request: Request):
-  return generic_get(Application, (Application.name == application) & (Application.project == request.state.parents.project))
+def list_applications(request: Request):
+  return generic_list(Application, Application.project == request.state.models['project'])
 
 @router.post("/")
 def create_application(request: Request, application_data: dict = Body(...), ):
-  application_data['project'] = request.state.parents.project
+  application_data['project'] = request.state.models['project']
   return generic_create(Application, application_data)
 
-@router.put("/{application}")
-def update_application(application: str, request: Request, application_data: dict = Body(...)):
+@router.get("/{application}", dependencies=[Depends(inject_application)])
+def get_application(request: Request):
+  return model_to_dict(request.state.models['application'], backrefs=True)
+
+@router.put("/{application}", dependencies=[Depends(inject_application)])
+def update_application(request: Request, application_data: dict = Body(...)):
   return generic_update(
     Application, 
-    (Application.name == application) & (Application.project == request.state.parents.project),
+    request.state.models['application'],
     application_data
   ) 
 
-@router.delete("/{application}")
-def delete_application(application: str, request: Request):
-  return generic_delete(
-    Application,
-    (Application.name == application) & (Application.project == request.state.parents.project)
-  )
+@router.delete("/{application}", dependencies=[Depends(inject_application)])
+def delete_application(request: Request):
+  return generic_delete(Application, request.state.models['application'])
 
 @router.post("/{application}/get_available_workers", dependencies=[Depends(inject_application)])
 def get_available_workers(request: Request):
   """Get list of all workers excluding those already in this application."""
-  project = request.state.parents.project
-  application = request.state.parents.application
+  project = request.state.models['project']
+  application = request.state.models['application']
   
   # Get all workers
   all_workers = list(Worker.select().dicts())

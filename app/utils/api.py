@@ -7,22 +7,33 @@ from playhouse.shortcuts import model_to_dict
 logger = logging.getLogger(__name__)
 
 
-def generic_list(model):
+def generic_list(model, query_condition=None):
   """Generic LIST handler - returns all instances."""
   try:
-    rows = list(model.select().dicts())
+    if query_condition:
+      rows = list(model.select().where(query_condition).dicts())
+    else:
+      rows = list(model.select().dicts())
     return rows
   except Exception as e:
     logger.error(f"Error listing {model.__name__}: {e}")
     raise HTTPException(status_code=500, detail=f"Failed to list {model.__name__}")
 
+def generic_create(model, data: dict):
+  """Generic CREATE handler - insert new instance."""
+  try:
+    instance = model.create(**data)
+    return model_to_dict(instance, backrefs=True)
+  except Exception as e:
+    logger.error(f"Error creating {model.__name__}: {e}")
+    raise HTTPException(status_code=500, detail=f"Failed to create {model.__name__}")
 
 def generic_get(model, query_condition, return_model=False):
   """Generic GET handler - fetch single instance by query condition.
   
   Args:
     model: Peewee model class
-    query_condition: Peewee query expression (e.g., Project.name == 'lad')
+    query_condition: Peewee query expression
   """
   try:
     instance = model.get_or_none(query_condition)
@@ -38,27 +49,15 @@ def generic_get(model, query_condition, return_model=False):
     logger.error(f"Error fetching {model.__name__}: {e}")
     raise HTTPException(status_code=500, detail=f"Failed to fetch {model.__name__}")
 
-
-def generic_create(model, data: dict):
-  """Generic CREATE handler - insert new instance."""
-  try:
-    instance = model.create(**data)
-    return model_to_dict(instance, backrefs=True)
-  except Exception as e:
-    logger.error(f"Error creating {model.__name__}: {e}")
-    raise HTTPException(status_code=500, detail=f"Failed to create {model.__name__}")
-
-
-def generic_update(model, query_condition, data: dict):
+def generic_update(model, instance, data: dict):
   """Generic UPDATE handler - update instance by query condition.
   
   Args:
     model: Peewee model class
-    query_condition: Peewee query expression (e.g., Project.name == 'lad')
+    instance: Peewee model instance
     data: Dictionary of fields to update
   """
   try:
-    instance = model.get_or_none(query_condition)
     if not instance:
       raise HTTPException(status_code=404, detail=f"{model.__name__} not found")
     
@@ -75,15 +74,14 @@ def generic_update(model, query_condition, data: dict):
     raise HTTPException(status_code=500, detail=f"Failed to update {model.__name__}")
 
 
-def generic_delete(model, query_condition):
+def generic_delete(model, instance):
   """Generic DELETE handler - delete instance by query condition.
   
   Args:
     model: Peewee model class
-    query_condition: Peewee query expression (e.g., Project.name == 'lad')
+    instance: Peewee model instance
   """
   try:
-    instance = model.get_or_none(query_condition)
     if not instance:
       raise HTTPException(status_code=404, detail=f"{model.__name__} not found")
     

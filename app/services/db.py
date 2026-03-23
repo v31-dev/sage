@@ -78,10 +78,19 @@ class Container(BaseModel):
       (('project', 'application', 'worker'), True),
     )
 
+class Deployment(BaseModel):
+  container = ForeignKeyField(Container, backref='deployments')
+  task_id   = CharField()
+
+  class Meta:
+    indexes = (
+      (('container', 'task_id'), True),
+    )
+
 class Database(Base):
   def __init__(self):
     super().__init__()
 
     db.connect(reuse_if_open=True)
-    db.create_tables([Setting, Project, Application, Worker, Container], safe=True)
+    db.create_tables([Setting, Project, Application, Worker, Container, Deployment], safe=True)
     logger.info("Connected to database.")
