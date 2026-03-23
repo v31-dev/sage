@@ -17,7 +17,7 @@ def generic_list(model, query_condition=None):
     return rows
   except Exception as e:
     logger.error(f"Error listing {model.__name__}: {e}")
-    raise HTTPException(status_code=500, detail=f"Failed to list {model.__name__}")
+    raise HTTPException(status_code=500, detail=f"Failed to list {model.__name__} with error: {e}")
 
 def generic_create(model, data: dict):
   """Generic CREATE handler - insert new instance."""
@@ -26,7 +26,7 @@ def generic_create(model, data: dict):
     return model_to_dict(instance, backrefs=True)
   except Exception as e:
     logger.error(f"Error creating {model.__name__}: {e}")
-    raise HTTPException(status_code=500, detail=f"Failed to create {model.__name__}")
+    raise HTTPException(status_code=500, detail=f"Failed to create {model.__name__} with error: {e}")
 
 def generic_get(model, query_condition, return_model=False):
   """Generic GET handler - fetch single instance by query condition.
@@ -47,7 +47,7 @@ def generic_get(model, query_condition, return_model=False):
     raise
   except Exception as e:
     logger.error(f"Error fetching {model.__name__}: {e}")
-    raise HTTPException(status_code=500, detail=f"Failed to fetch {model.__name__}")
+    raise HTTPException(status_code=500, detail=f"Failed to fetch {model.__name__} with error: {e}")
 
 def generic_update(model, instance, data: dict):
   """Generic UPDATE handler - update instance by query condition.
@@ -71,7 +71,7 @@ def generic_update(model, instance, data: dict):
     raise
   except Exception as e:
     logger.error(f"Error updating {model.__name__}: {e}")
-    raise HTTPException(status_code=500, detail=f"Failed to update {model.__name__}")
+    raise HTTPException(status_code=500, detail=f"Failed to update {model.__name__} with error: {e}")
 
 
 def generic_delete(model, instance):
@@ -91,4 +91,4 @@ def generic_delete(model, instance):
     raise
   except Exception as e:
     logger.error(f"Error deleting {model.__name__}: {e}")
-    raise HTTPException(status_code=500, detail=f"Failed to delete {model.__name__}")
+    raise HTTPException(status_code=500, detail=f"Failed to delete {model.__name__} with error: {e}")

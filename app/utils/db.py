@@ -1,4 +1,5 @@
-from peewee import TextField
+import re
+from peewee import TextField, CharField
 from cryptography.fernet import Fernet
 
 from utils.common import get_env
@@ -18,3 +19,11 @@ class EncryptedTextField(TextField):
     if value is None:
       return None
     return cipher.encrypt(value.encode()).decode()
+
+class CleanCharField(CharField):
+  def db_value(self, value):
+    """Clean the value by lowercasing and removing special characters before saving to DB"""
+    if value:
+      value = value.lower()
+      return re.sub(r'[^a-z0-9]', '', value)
+    return value

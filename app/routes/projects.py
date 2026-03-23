@@ -23,7 +23,13 @@ def list_projects():
 
 @router.post("/")
 def create_project(project_data: dict = Body(...)):
-  return generic_create(Project, project_data)
+  data = {
+    'name': project_data.get('label'),
+    'label': project_data.get('label'),
+    'description': project_data.get('description'),
+  }
+
+  return generic_create(Project, data)
 
 @router.get("/{project}", dependencies=[Depends(inject_project)])
 def get_project(request: Request):

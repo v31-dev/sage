@@ -4,7 +4,7 @@ from datetime import datetime
 from peewee import CharField, FixedCharField, SqliteDatabase, Model, DateTimeField, BooleanField, ForeignKeyField 
 
 from services.base import Base
-from utils.db import EncryptedTextField
+from utils.db import EncryptedTextField, CleanCharField
 
 
 logger = logging.getLogger(__name__)
@@ -44,13 +44,15 @@ class Setting(BaseModel):
   value = EncryptedTextField(null=True)
   
 class Project(BaseModel):
-  name        = CharField(primary_key=True)
+  name        = CleanCharField(primary_key=True)
+  label       = CharField()
   description = CharField(null=True)
   env         = EncryptedTextField(null=True)
 
 class Application(BaseModel):
   project     = ForeignKeyField(Project, backref='applications')
-  name        = CharField()
+  name        = CleanCharField()
+  label       = CharField()
   description = CharField(null=True)
   repo        = CharField(null=True)
   path        = CharField(null=True)

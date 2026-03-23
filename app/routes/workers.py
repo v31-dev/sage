@@ -9,7 +9,7 @@ from services.tailscale import Tailscale
 
 router = APIRouter()
 
-@router.get("")
+@router.get("/")
 def get():
   return list(Worker.select().dicts())
 

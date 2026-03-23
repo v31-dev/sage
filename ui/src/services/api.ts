@@ -21,6 +21,7 @@ export interface Worker {
 
 export interface Project {
   name: string
+  label: string
   description: string | null
   env: string | null
   created_at: Date
