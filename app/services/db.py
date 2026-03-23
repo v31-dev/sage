@@ -53,6 +53,7 @@ class Application(BaseModel):
   name        = CharField()
   description = CharField(null=True)
   repo        = CharField(null=True)
+  path        = CharField(null=True)
   env         = EncryptedTextField(null=True)
   args        = EncryptedTextField(null=True)
 
@@ -67,13 +68,14 @@ class Worker(BaseModel):
   online    = BooleanField(default=False)
 
 class Container(BaseModel):
-  application = ForeignKeyField(Application, backref='instances')
+  project     = ForeignKeyField(Project, backref='containers')
+  application = ForeignKeyField(Application, backref='containers')
   worker      = ForeignKeyField(Worker, backref='containers')
-  status      = CharField()
+  status      = CharField(default='inactive')
 
   class Meta:
     indexes = (
-      (('application', 'worker'), True),
+      (('project', 'application', 'worker'), True),
     )
 
 class Database(Base):

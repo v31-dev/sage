@@ -1,4 +1,6 @@
-FROM python:3.14-slim
+FROM python:3.12.3-slim
+
+ARG ENV=production
 
 # Install dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -10,8 +12,10 @@ RUN curl -fsSL https://tailscale.com/install.sh | sh
 
 WORKDIR /app
 COPY ./requirements.txt /app/requirements.txt
+COPY ./requirements-dev.txt /app/requirements-dev.txt
 
-RUN pip install --no-cache-dir --upgrade -r /app/requirements.txt
+RUN pip install --no-cache-dir --upgrade -r /app/requirements.txt && \
+    if [ "$ENV" = "development" ]; then pip install --no-cache-dir --upgrade -r /app/requirements-dev.txt; fi
 
 COPY . /app
 

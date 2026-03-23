@@ -10,9 +10,16 @@ export class CRUDAPI<T> {
   name: string
   path: string
 
-  constructor({ name, path}: { name: string; path: string }) {
+  constructor({ name, path, params }: { name: string; path: string; params?: Record<string, string> }) {
     this.name = name
     this.path = path
+    
+    // Replace path parameters in constructor
+    if (params) {
+      Object.entries(params).forEach(([key, val]) => {
+        this.path = this.path.replace(`{${key}}`, val)
+      })
+    }
   }
 
   async fetchAll(): Promise<T[]> {
@@ -89,6 +96,24 @@ export class CRUDAPI<T> {
       return await response.json()
     } catch (error) {
       console.error(`Error deleting ${this.name}:`, error)
+      throw error
+    }
+  }
+
+  async action(action: string, data: Partial<T> = {}): Promise<T> {
+    try {
+      const response = await fetch(`${this.path}/${action}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data)
+      })
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}))
+        throw new Error(data.detail || `Failed to create ${this.name}`)
+      }
+      return await response.json()
+    } catch (error) {
+      console.error(`Error creating ${this.name}:`, error)
       throw error
     }
   }

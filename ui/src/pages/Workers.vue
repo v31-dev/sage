@@ -18,16 +18,16 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 
-import { fetchWorkers, fetchWorkerMetrics, type Workers } from '@/services/api'
+import { workersAPI, fetchWorkerMetrics, type Worker } from '@/services/api'
 
 const router = useRouter()
-const workers = ref<Workers[]>([])
+const workers = ref<Worker[]>([])
 const isLoading = ref(true)
 const workerMetrics = ref<Record<string, any>>({})
 
 onMounted(async () => {
   try {
-    workers.value = await fetchWorkers()
+    workers.value = await workersAPI.fetchAll() as Worker[]
     
     // Fetch latest metrics for each worker
     for (const worker of workers.value) {

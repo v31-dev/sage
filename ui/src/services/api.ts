@@ -11,7 +11,7 @@ export interface AppInfo {
   ip: string
 }
 
-export interface Workers {
+export interface Worker {
   hostname: string
   ip: string
   online: boolean
@@ -27,6 +27,11 @@ export interface Project {
   updated_at: Date
 }
 
+export interface Container {
+  worker: Worker
+  status: string
+}
+
 export interface Application {
   name: string
   project: string
@@ -34,6 +39,7 @@ export interface Application {
   repo: string | null
   env: string | null
   args: string | null
+  containers: Container[]
   created_at: Date
   updated_at: Date
 }
@@ -51,21 +57,24 @@ export async function fetchAppInfo(): Promise<AppInfo> {
   }
 }
 
-export async function fetchWorkers(): Promise<Workers[]> {
-  try {
-    const response = await fetch(`${API_ROOT}/workers`)
-    if (!response.ok) {
-      throw new Error('Failed to fetch workers')
-    }
-    return await response.json()
-  } catch (error) {
-    console.error('Error fetching workers:', error)
-    throw error
-  }
+export const workersAPI = new CRUDAPI({ name: 'Workers', path: `${API_ROOT}/workers/` })
+export const projectAPI = new CRUDAPI({ name: 'Project', path: `${API_ROOT}/projects/` })
+
+export function getApplicationAPI(projectName: string) {
+  return new CRUDAPI({ 
+    name: 'Application', 
+    path: `${API_ROOT}/projects/{project}/applications/`,
+    params: { project: projectName }
+  })
 }
 
-export const project = new CRUDAPI({ name: 'Project', path: `${API_ROOT}/projects` })
-export const application = new CRUDAPI({ name: 'Application', path: `${API_ROOT}/applications` })
+export function getContainerAPI(projectName: string, applicationName: string) {
+  return new CRUDAPI({
+    name: 'Container',
+    path: `${API_ROOT}/projects/{project}/applications/{application}/containers/`,
+    params: { project: projectName, application: applicationName }
+  })
+}
 
 export type MetricsPeriod = '1m' | '1h' | '24h' | '1w'
 

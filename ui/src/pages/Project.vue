@@ -21,13 +21,14 @@ import {
 } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
-import { project as projectService, application as applicationService, type Project, type Application } from '@/services/api'
+import { projectAPI, getApplicationAPI, type Project, type Application } from '@/services/api'
 import CardFooter from '@/components/ui/card/CardFooter.vue'
 
 const route = useRoute()
 const router = useRouter()
 const projectName = route.params.projectId as string
 
+const applicationAPI = getApplicationAPI(projectName)
 const project = ref<Project | null>(null)
 const applications = ref<Application[]>([])
 const isLoading = ref(true)
@@ -62,7 +63,7 @@ onMounted(async () => {
 async function loadProject() {
   try {
     isLoading.value = true
-    project.value = await projectService.fetchOne(projectName) as Project
+    project.value = await projectAPI.fetchOne(projectName) as Project
   } catch (err) {
     console.error('Failed to load project:', err)
   } finally {
@@ -72,7 +73,7 @@ async function loadProject() {
 
 async function loadApplications() {
   try {
-    applications.value = await applicationService.fetchAll() as Application[]
+    applications.value = await applicationAPI.fetchAll() as Application[]
   } catch (err) {
     console.error('Failed to load applications:', err)
   }
@@ -98,7 +99,7 @@ async function handleUpdateProject() {
 
   try {
     isSubmitting.value = true
-    await projectService.update(projectName, { 
+    await projectAPI.update(projectName, { 
       description: editFormData.value.description || null,
       env: editFormData.value.env || null 
     })
@@ -125,9 +126,8 @@ async function handleCreateApplication() {
 
   try {
     isSubmitting.value = true
-    await applicationService.create({
+    await applicationAPI.create({
       name: createAppFormData.value.name,
-      project: projectName,
       description: createAppFormData.value.description || null,
       repo: createAppFormData.value.repo || null,
       env: createAppFormData.value.env || null,

@@ -22,7 +22,7 @@ import {
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 
-import { project, type Project } from '@/services/api'
+import { projectAPI, type Project } from '@/services/api'
 
 const router = useRouter()
 const projects = ref<Project[]>([])
@@ -45,7 +45,7 @@ onMounted(async () => {
 async function loadProjects() {
   try {
     isLoading.value = true
-    projects.value = await project.fetchAll() as Project[]
+    projects.value = await projectAPI.fetchAll() as Project[]
   } catch (err) {
     console.error('Failed to load projects:', err)
   } finally {
@@ -69,7 +69,7 @@ async function handleCreateProject() {
 
   try {
     isSubmitting.value = true
-    await project.create({ 
+    await projectAPI.create({ 
       name: formData.value.name, 
       description: formData.value.description || null,
       env: formData.value.env || null 
