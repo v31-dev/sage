@@ -41,7 +41,7 @@ def create_application(request: Request, application_data: dict = Body(...), ):
 
 @router.get("/{application}", dependencies=[Depends(inject_application)])
 def get_application(request: Request):
-  return model_to_dict(request.state.models['application'], backrefs=True, max_depth=1)
+  return model_to_dict(request.state.models['application'], backrefs=True, max_depth=2)
 
 @router.put("/{application}", dependencies=[Depends(inject_application)])
 def update_application(request: Request, application_data: dict = Body(...)):

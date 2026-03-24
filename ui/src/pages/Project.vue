@@ -229,11 +229,11 @@ async function onClickDeleteProjectConfirm() {
                     </FieldSet>
                     <DialogFooter>
                       <Button type="button" variant="outline" @click="isEditDialogOpen = false"
-                        :disabled="isClickedEditConfirm ">
+                        :disabled="isClickedEditConfirm">
                         Cancel
                       </Button>
-                      <Button @click="handleUpdateProject" :disabled="isClickedEditConfirm ">
-                        <Spinner class="animate-spin" v-if="isClickedEditConfirm " />
+                      <Button @click="handleUpdateProject" :disabled="isClickedEditConfirm">
+                        <Spinner class="animate-spin" v-if="isClickedEditConfirm" />
                         Save
                       </Button>
                     </DialogFooter>
@@ -346,16 +346,16 @@ async function onClickDeleteProjectConfirm() {
             <Card v-for="app in project.applications" :key="app.name"
               class="cursor-pointer hover:shadow-lg transition-shadow flex flex-col" @click="goToApplication(app)">
               <CardHeader>
-                <CardTitle class="line-clamp-2">{{ app.name }}</CardTitle>
+                <CardTitle class="line-clamp-2">{{ app.label }}</CardTitle>
+                <CardDescription>{{ app.name }}</CardDescription>
                 <CardAction>
                   <Badge class="h-5 min-w-5 rounded-full px-1 font-mono tabular-nums">
-                    {{  app.container_count }}
+                    {{ app.container_count }}
                   </Badge>
-              </CardAction>
+                </CardAction>
               </CardHeader>
-              <CardContent class="flex-1 space-y-2">
-                <p v-if="app.description" class="text-sm text-muted-foreground">{{ app.description }}</p>
-                <p v-if="app.repo" class="text-xs text-muted-foreground truncate">{{ app.repo }}</p>
+              <CardContent class="overflow-hidden">
+                <h3 class="text-sm font-medium text-muted-foreground mb-2">{{ app.description }}</h3>
               </CardContent>
             </Card>
           </div>

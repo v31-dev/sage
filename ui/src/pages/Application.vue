@@ -334,9 +334,9 @@ async function onClickAddContainerConfirm() {
                       <FieldLabel for="worker-select">
                         Select Worker
                       </FieldLabel>
-                      <Select v-model="selectedWorker">
+                      <Select v-model="selectedWorker" :disabled="availableWorkers.length === 0">
                         <SelectTrigger id="worker-select">
-                          <SelectValue placeholder="Choose a worker..." />
+                          <SelectValue :placeholder="availableWorkers.length === 0 ? 'No workers available' : 'Choose a worker...'" />
                         </SelectTrigger>
                         <SelectContent>
                           <SelectItem
