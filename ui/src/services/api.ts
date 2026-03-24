@@ -2,6 +2,7 @@ import { CRUDAPI } from "@/lib/utils"
 
 
 const API_ROOT = '/api'
+const LOAD_DELAY = 300
 
 export interface AppInfo {
   org: string
@@ -50,6 +51,7 @@ export interface Container {
 
 export async function fetchAppInfo(): Promise<AppInfo> {
   try {
+    await new Promise(resolve => setTimeout(resolve, LOAD_DELAY))
     const response = await fetch(`${API_ROOT}`)
     if (!response.ok) {
       throw new Error('Failed to fetch app info')
@@ -61,14 +63,15 @@ export async function fetchAppInfo(): Promise<AppInfo> {
   }
 }
 
-export const workersAPI = new CRUDAPI({ name: 'Workers', path: `${API_ROOT}/workers/` })
-export const projectAPI = new CRUDAPI({ name: 'Project', path: `${API_ROOT}/projects/` })
+export const workersAPI = new CRUDAPI({ name: 'Workers', path: `${API_ROOT}/workers/`, load_delay: LOAD_DELAY })
+export const projectAPI = new CRUDAPI({ name: 'Project', path: `${API_ROOT}/projects/`, load_delay: LOAD_DELAY })
 
 export function getApplicationAPI(projectName: string) {
   return new CRUDAPI({ 
     name: 'Application', 
     path: `${API_ROOT}/projects/{project}/applications/`,
-    params: { project: projectName }
+    params: { project: projectName },
+    load_delay: LOAD_DELAY
   })
 }
 
@@ -76,7 +79,8 @@ export function getContainerAPI(projectName: string, applicationName: string) {
   return new CRUDAPI({
     name: 'Container',
     path: `${API_ROOT}/projects/{project}/applications/{application}/containers/`,
-    params: { project: projectName, application: applicationName }
+    params: { project: projectName, application: applicationName },
+    load_delay: LOAD_DELAY
   })
 }
 
@@ -120,6 +124,7 @@ export interface WorkerMetricsResponse {
 
 export async function fetchWorkerMetrics(hostname: string, period: MetricsPeriod = '1h'): Promise<WorkerMetricsResponse> {
   try {
+    await new Promise(resolve => setTimeout(resolve, LOAD_DELAY))
     const response = await fetch(`${API_ROOT}/workers/${hostname}/metrics?period=${period}`)
     if (!response.ok) {
       throw new Error('Failed to fetch worker metrics')
@@ -145,6 +150,8 @@ export async function fetchLogs(hostname: string, container: string, search: str
     if (search) params.set('search', search)
     if (from_ts) params.set('from_ts', from_ts)
     if (to_ts) params.set('to_ts', to_ts)
+
+    await new Promise(resolve => setTimeout(resolve, LOAD_DELAY))
     const response = await fetch(`${API_ROOT}/workers/${hostname}/logs/${container}?${params}`)
     if (!response.ok) {
       const data = await response.json().catch(() => ({}))

@@ -9,11 +9,12 @@ export function cn(...inputs: ClassValue[]) {
 export class CRUDAPI<T> {
   name: string
   path: string
-  _load_delay = 500
+  load_delay: number
 
-  constructor({ name, path, params }: { name: string; path: string; params?: Record<string, string> }) {
+  constructor({ name, path, load_delay = 500, params }: { name: string; path: string; load_delay?: number; params?: Record<string, string> }) {
     this.name = name
     this.path = path
+    this.load_delay = load_delay
     
     // Replace path parameters in constructor
     if (params) {
@@ -25,7 +26,7 @@ export class CRUDAPI<T> {
 
   async fetchAll(): Promise<T[]> {
     try {
-      await new Promise(resolve => setTimeout(resolve, this._load_delay))
+      await new Promise(resolve => setTimeout(resolve, this.load_delay))
       const response = await fetch(`${this.path}`)
       if (!response.ok) {
         throw new Error(`Failed to fetch ${this.name}`)
@@ -39,7 +40,7 @@ export class CRUDAPI<T> {
 
   async fetchOne(id: string): Promise<T> {
     try {
-      await new Promise(resolve => setTimeout(resolve, this._load_delay))
+      await new Promise(resolve => setTimeout(resolve, this.load_delay))
       const response = await fetch(`${this.path}/${id}`)
       if (!response.ok) {
         throw new Error(`Failed to fetch ${this.name} with id ${id}`)
@@ -53,7 +54,7 @@ export class CRUDAPI<T> {
 
   async create(data: Partial<T>): Promise<T> {
     try {
-      await new Promise(resolve => setTimeout(resolve, this._load_delay))
+      await new Promise(resolve => setTimeout(resolve, this.load_delay))
       const response = await fetch(`${this.path}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -72,7 +73,7 @@ export class CRUDAPI<T> {
 
   async update(id: string, data: Partial<T>): Promise<T> {
     try {
-      await new Promise(resolve => setTimeout(resolve, this._load_delay))
+      await new Promise(resolve => setTimeout(resolve, this.load_delay))
       const response = await fetch(`${this.path}/${id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -91,7 +92,7 @@ export class CRUDAPI<T> {
 
   async delete(id: string): Promise<{ status: string; id: string }> {
     try {
-      await new Promise(resolve => setTimeout(resolve, this._load_delay))
+      await new Promise(resolve => setTimeout(resolve, this.load_delay))
       const response = await fetch(`${this.path}/${id}`, {
         method: 'DELETE'
       })
@@ -108,7 +109,7 @@ export class CRUDAPI<T> {
 
   async action(action: string, data: Partial<T> = {}): Promise<T> {
     try {
-      await new Promise(resolve => setTimeout(resolve, this._load_delay))
+      await new Promise(resolve => setTimeout(resolve, this.load_delay))
       const response = await fetch(`${this.path}/${action}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
