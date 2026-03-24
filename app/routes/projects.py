@@ -33,11 +33,16 @@ def create_project(project_data: dict = Body(...)):
 
 @router.get("/{project}", dependencies=[Depends(inject_project)])
 def get_project(request: Request):
-  return model_to_dict(request.state.models['project'], backrefs=True)
+  return model_to_dict(request.state.models['project'], backrefs=True, max_depth=1)
 
 @router.put("/{project}", dependencies=[Depends(inject_project)])
 def update_project(request: Request, project_data: dict = Body(...)):
-  return generic_update(Project, request.state.models['project'], project_data) 
+  data = {
+    'label': project_data.get('label'),
+    'description': project_data.get('description'),
+    'env': project_data.get('env'),
+  }
+  return generic_update(Project, request.state.models['project'], data) 
 
 @router.delete("/{project}", dependencies=[Depends(inject_project)])
 def delete_project(request: Request):

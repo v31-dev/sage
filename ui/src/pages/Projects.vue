@@ -2,7 +2,7 @@
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { Plus } from 'lucide-vue-next'
-import { Card, CardContent, CardHeader, CardTitle, CardFooter, CardAction } from '@/components/ui/card'
+import { Card, CardContent, CardHeader, CardTitle, CardAction } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -22,6 +22,7 @@ import {
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Spinner } from '@/components/ui/spinner'
+import { Badge } from '@/components/ui/badge'
 
 import { projectAPI, type Project } from '@/services/api'
 import CardDescription from '@/components/ui/card/CardDescription.vue'
@@ -152,20 +153,20 @@ function goToProject(projectName: string) {
         <!-- Projects Grid -->
         <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           <Card v-for="project in projects" :key="project.name"
-            class="cursor-pointer hover:shadow-lg transition-shadow flex flex-col min-h-[250px]"
+            class="cursor-pointer hover:shadow-lg transition-shadow flex flex-col min-h-[150px] max-h-[150px]"
             @click="goToProject(project.name)">
             <CardHeader>
               <CardTitle class="line-clamp-2">{{ project.label }}</CardTitle>
               <CardDescription>{{ project.name }}</CardDescription>
+              <CardAction>
+                <Badge class="h-5 min-w-5 rounded-full px-1 font-mono tabular-nums">
+                  {{  project.application_count }}
+                </Badge>
+              </CardAction>
             </CardHeader>
-            <CardContent class="flex-1">
+            <CardContent class="overflow-hidden">
               <h3 class="text-sm font-medium text-muted-foreground mb-2">{{ project.description }}</h3>
             </CardContent>
-            <CardFooter class="border-t">
-              <div class="pt-4 text-xs text-muted-foreground">
-                <p>Updated: {{ new Date(project.updated_at).toLocaleString() }}</p>
-              </div>
-            </CardFooter>
           </Card>
         </div>
       </div>

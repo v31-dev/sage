@@ -2,7 +2,14 @@
 import { ref, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Plus } from 'lucide-vue-next'
-import { Card, CardAction, CardContent, CardHeader, CardTitle, CardFooter } from '@/components/ui/card'
+import { 
+  Card, 
+  CardAction, 
+  CardContent, 
+  CardDescription,
+  CardHeader, 
+  CardTitle
+} from '@/components/ui/card'
 import { ButtonGroup } from '@/components/ui/button-group'
 import { Button } from '@/components/ui/button'
 import {
@@ -42,10 +49,6 @@ const applicationAPI = getApplicationAPI(projectName)
 const containersAPI = getContainerAPI(projectName, appName)
 const application = ref<Application | null>(null)
 const isLoading = ref(true)
-
-onMounted(async () => {
-  await loadApplication()
-})
 
 onMounted(async () => {
   await loadApplication()
@@ -187,8 +190,6 @@ async function onClickAddContainerConfirm() {
   }
 }
 // ####################################################################################################
-
-// ####################################################################################################
 </script>
 
 <template>
@@ -207,7 +208,8 @@ async function onClickAddContainerConfirm() {
         <!-- Application Header -->
         <Card>
           <CardHeader>
-            <CardTitle class="text-2xl">{{ application.name }}</CardTitle>
+            <CardTitle class="text-2xl">{{ application.label }}</CardTitle>
+            <CardDescription>{{ application.name }}</CardDescription>
             <CardAction>
               <ButtonGroup class="space-x-1">
                 <!-- Edit Dialog -->
@@ -242,7 +244,7 @@ async function onClickAddContainerConfirm() {
                         </Field>
                         <Field>
                           <FieldLabel for="args">
-                            Arguments
+                            Build Arguments
                           </FieldLabel>
                           <Textarea id="args" v-model="editFormData.args" class="resize-none" placeholder="optional" />
                         </Field>
@@ -307,11 +309,6 @@ async function onClickAddContainerConfirm() {
               <p class="text-sm break-all">{{ application.repo }}</p>
             </div>
           </CardContent>
-          <CardFooter class="border-t">
-            <div class="pt-4 space-y-2 text-xs text-muted-foreground">
-              <p>Updated: {{ new Date(application.updated_at).toLocaleString() }}</p>
-            </div>
-          </CardFooter>
         </Card>
 
         <!-- Containers -->
@@ -402,11 +399,6 @@ async function onClickAddContainerConfirm() {
                 <p v-else class="text-sm text-red-600">
                   <span class="font-medium">Worker:</span> Offline</p>
               </CardContent>
-              <CardFooter class="border-t">
-                <div class="pt-4 text-xs text-muted-foreground">
-                  <p>Updated: {{ new Date(container.updated_at).toLocaleString() }}</p>
-                </div>
-              </CardFooter>
             </Card>
           </div>
         </div>

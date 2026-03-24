@@ -2,7 +2,7 @@
 import { ref, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Plus } from 'lucide-vue-next'
-import { Card, CardContent, CardHeader, CardTitle, CardAction, CardFooter } from '@/components/ui/card'
+import { Card, CardContent, CardHeader, CardTitle, CardAction } from '@/components/ui/card'
 import { ButtonGroup } from '@/components/ui/button-group'
 import { Button } from '@/components/ui/button'
 import {
@@ -24,8 +24,10 @@ import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { toast } from 'vue-sonner'
 import { Spinner } from '@/components/ui/spinner'
+import { Badge } from '@/components/ui/badge'
 
 import { projectAPI, getApplicationAPI, type Project, type Application } from '@/services/api'
+import CardDescription from '@/components/ui/card/CardDescription.vue'
 
 
 const route = useRoute()
@@ -103,6 +105,7 @@ async function onClickCreateAppConfirm() {
 // Edit Project
 const isEditDialogOpen = ref(false)
 const editFormData = ref({
+  label: '',
   description: '',
   env: '',
 })
@@ -110,6 +113,7 @@ const editDialogErrorMessage = ref('')
 const isClickedEditConfirm = ref(false)
 
 function openEditDialog() {
+  editFormData.value.label = project.value?.label || ''
   editFormData.value.description = project.value?.description || ''
   editFormData.value.env = project.value?.env || ''
   editDialogErrorMessage.value = ''
@@ -122,6 +126,7 @@ async function handleUpdateProject() {
   try {
     isClickedEditConfirm.value = true
     await projectAPI.update(projectName, {
+      label: editFormData.value.label || null,
       description: editFormData.value.description || null,
       env: editFormData.value.env || null
     })
@@ -183,7 +188,8 @@ async function onClickDeleteProjectConfirm() {
         <!-- Project Header -->
         <Card>
           <CardHeader>
-            <CardTitle class="text-2xl">{{ project.name }}</CardTitle>
+            <CardTitle class="text-2xl">{{ project.label }}</CardTitle>
+            <CardDescription>{{ project.name }}</CardDescription>
             <CardAction>
               <ButtonGroup class="space-x-1">
                 <!-- Edit Dialog -->
@@ -197,6 +203,12 @@ async function onClickDeleteProjectConfirm() {
                     </DialogHeader>
                     <FieldSet>
                       <FieldGroup>
+                        <Field>
+                          <FieldLabel for="label">
+                            Name
+                          </FieldLabel>
+                          <Input id="label" v-model="editFormData.label" placeholder="optional" />
+                        </Field>
                         <Field>
                           <FieldLabel for="description">
                             Description
@@ -262,16 +274,11 @@ async function onClickDeleteProjectConfirm() {
               </ButtonGroup>
             </CardAction>
           </CardHeader>
-          <CardContent class="space-y-4">
+          <CardContent class="border-t pt-4">
             <div>
               <h3 class="text-sm font-medium text-muted-foreground">{{ project.description }}</h3>
             </div>
           </CardContent>
-          <CardFooter class="border-t">
-            <div class="pt-4 space-y-2 text-xs text-muted-foreground">
-              <p>Updated: {{ new Date(project.updated_at).toLocaleString() }}</p>
-            </div>
-          </CardFooter>
         </Card>
 
         <!-- Applications -->
@@ -340,16 +347,16 @@ async function onClickDeleteProjectConfirm() {
               class="cursor-pointer hover:shadow-lg transition-shadow flex flex-col" @click="goToApplication(app)">
               <CardHeader>
                 <CardTitle class="line-clamp-2">{{ app.name }}</CardTitle>
+                <CardAction>
+                  <Badge class="h-5 min-w-5 rounded-full px-1 font-mono tabular-nums">
+                    {{  app.container_count }}
+                  </Badge>
+              </CardAction>
               </CardHeader>
               <CardContent class="flex-1 space-y-2">
                 <p v-if="app.description" class="text-sm text-muted-foreground">{{ app.description }}</p>
                 <p v-if="app.repo" class="text-xs text-muted-foreground truncate">{{ app.repo }}</p>
               </CardContent>
-              <CardFooter class="border-t">
-                <div class="pt-4 text-xs text-muted-foreground">
-                  <p>Updated: {{ new Date(app.updated_at).toLocaleString() }}</p>
-                </div>
-              </CardFooter>
             </Card>
           </div>
         </div>

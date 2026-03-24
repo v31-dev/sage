@@ -26,18 +26,21 @@ export interface Project {
   description: string | null
   env: string | null
   applications: Application[]
+  application_count: number
   created_at: Date
   updated_at: Date
 }
 
 export interface Application {
   name: string
+  label: string
   project: string
   description: string | null
   repo: string | null
   env: string | null
   args: string | null
   containers: Container[]
+  container_count: number
   created_at: Date
   updated_at: Date
 }
@@ -63,13 +66,13 @@ export async function fetchAppInfo(): Promise<AppInfo> {
   }
 }
 
-export const workersAPI = new CRUDAPI({ name: 'Workers', path: `${API_ROOT}/workers/`, load_delay: LOAD_DELAY })
-export const projectAPI = new CRUDAPI({ name: 'Project', path: `${API_ROOT}/projects/`, load_delay: LOAD_DELAY })
+export const workersAPI = new CRUDAPI({ name: 'Workers', path: `${API_ROOT}/workers`, load_delay: LOAD_DELAY })
+export const projectAPI = new CRUDAPI({ name: 'Project', path: `${API_ROOT}/projects`, load_delay: LOAD_DELAY })
 
 export function getApplicationAPI(projectName: string) {
   return new CRUDAPI({ 
     name: 'Application', 
-    path: `${API_ROOT}/projects/{project}/applications/`,
+    path: `${API_ROOT}/projects/{project}/applications`,
     params: { project: projectName },
     load_delay: LOAD_DELAY
   })
@@ -78,7 +81,7 @@ export function getApplicationAPI(projectName: string) {
 export function getContainerAPI(projectName: string, applicationName: string) {
   return new CRUDAPI({
     name: 'Container',
-    path: `${API_ROOT}/projects/{project}/applications/{application}/containers/`,
+    path: `${API_ROOT}/projects/{project}/applications/{application}/containers`,
     params: { project: projectName, application: applicationName },
     load_delay: LOAD_DELAY
   })

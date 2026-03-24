@@ -6,7 +6,6 @@ from playhouse.shortcuts import model_to_dict
 
 logger = logging.getLogger(__name__)
 
-
 def generic_list(model, query_condition=None):
   """Generic LIST handler - returns all instances."""
   try:
@@ -23,7 +22,7 @@ def generic_create(model, data: dict):
   """Generic CREATE handler - insert new instance."""
   try:
     instance = model.create(**data)
-    return model_to_dict(instance, backrefs=True)
+    return model_to_dict(instance)
   except Exception as e:
     logger.error(f"Error creating {model.__name__}: {e}")
     raise HTTPException(status_code=500, detail=f"Failed to create {model.__name__} with error: {e}")
@@ -42,7 +41,7 @@ def generic_get(model, query_condition, return_model=False):
     if return_model:
       return instance
     else:
-      return model_to_dict(instance, backrefs=True)
+      return model_to_dict(instance)
   except HTTPException:
     raise
   except Exception as e:
@@ -66,7 +65,7 @@ def generic_update(model, instance, data: dict):
         setattr(instance, field, value)
     
     instance.save()
-    return model_to_dict(instance, backrefs=True)
+    return model_to_dict(instance)
   except HTTPException:
     raise
   except Exception as e:

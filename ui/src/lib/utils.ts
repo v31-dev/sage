@@ -27,7 +27,7 @@ export class CRUDAPI<T> {
   async fetchAll(): Promise<T[]> {
     try {
       await new Promise(resolve => setTimeout(resolve, this.load_delay))
-      const response = await fetch(`${this.path}`)
+      const response = await fetch(`${this.path}/`)
       if (!response.ok) {
         throw new Error(`Failed to fetch ${this.name}`)
       }
@@ -55,7 +55,7 @@ export class CRUDAPI<T> {
   async create(data: Partial<T>): Promise<T> {
     try {
       await new Promise(resolve => setTimeout(resolve, this.load_delay))
-      const response = await fetch(`${this.path}`, {
+      const response = await fetch(`${this.path}/`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data)

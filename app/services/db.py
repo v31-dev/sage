@@ -1,7 +1,8 @@
 import os
 import logging
 from datetime import datetime
-from peewee import CharField, FixedCharField, SqliteDatabase, Model, DateTimeField, BooleanField, ForeignKeyField 
+from peewee import CharField, FixedCharField, SqliteDatabase, DateTimeField, BooleanField, ForeignKeyField, IntegerField
+from playhouse.signals import Model, post_save, post_delete
 
 from services.base import Base
 from utils.db import EncryptedTextField, CleanCharField
@@ -32,32 +33,43 @@ class BaseModel(Model):
 class Setting(BaseModel):
   key   = CharField(primary_key=True)
   value = EncryptedTextField(null=True)
-  
+
+class Worker(BaseModel):
+  hostname  = CharField(primary_key=True)
+  ip        = FixedCharField(15)
+  online    = BooleanField(default=False)
+
 class Project(BaseModel):
-  name        = CleanCharField(primary_key=True)
-  label       = CharField()
-  description = CharField(null=True)
-  env         = EncryptedTextField(null=True)
+  name              = CleanCharField(primary_key=True)
+  label             = CharField()
+  description       = CharField(null=True)
+  env               = EncryptedTextField(null=True)
+  application_count = IntegerField(default=0)
 
 class Application(BaseModel):
-  project     = ForeignKeyField(Project, backref='applications', on_delete='RESTRICT')
-  name        = CleanCharField()
-  label       = CharField()
-  description = CharField(null=True)
-  repo        = CharField(null=True)
-  path        = CharField(null=True)
-  env         = EncryptedTextField(null=True)
-  args        = EncryptedTextField(null=True)
+  project         = ForeignKeyField(Project, backref='applications', on_delete='RESTRICT')
+  name            = CleanCharField()
+  label           = CharField()
+  description     = CharField(null=True)
+  repo            = CharField(null=True)
+  path            = CharField(null=True)
+  env             = EncryptedTextField(null=True)
+  args            = EncryptedTextField(null=True)
+  container_count = IntegerField(default=0)
 
   class Meta:
     indexes = (
       (('project', 'name'), True),
     )
 
-class Worker(BaseModel):
-  hostname  = CharField(primary_key=True)
-  ip        = FixedCharField(15)
-  online    = BooleanField(default=False)
+@post_save(sender=Application)
+def update_application_count_on_save(model_class, instance, created):
+  if created:
+    Project.update(application_count=Project.application_count + 1).where(Project.name == instance.project_id).execute()
+
+@post_delete(sender=Application)
+def update_application_count_on_delete(model_class, instance):
+  Project.update(application_count=Project.application_count - 1).where(Project.name == instance.project_id).execute()
 
 class Container(BaseModel):
   application = ForeignKeyField(Application, backref='containers', on_delete='RESTRICT')
@@ -68,6 +80,15 @@ class Container(BaseModel):
     indexes = (
       (('application', 'worker'), True),
     )
+
+@post_save(sender=Container)
+def update_container_count_on_save(model_class, instance, created):
+  if created:
+    Application.update(container_count=Application.container_count + 1).where(Application.id == instance.application_id).execute()
+
+@post_delete(sender=Container)
+def update_container_count_on_delete(model_class, instance):
+  Application.update(container_count=Application.container_count - 1).where(Application.id == instance.application_id).execute()
 
 class Deployment(BaseModel):
   container = ForeignKeyField(Container, backref='deployments')
