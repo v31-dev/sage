@@ -84,5 +84,17 @@ def get_available_workers(request: Request):
   
   return available_workers
 
+@router.post("/{application}/deploy", dependencies=[Depends(inject_application)])
+async def deploy_application(request: Request):
+  """Trigger application deployment."""
+  application = request.state.models['application']
+
+  if application.container_count == 0:
+    raise HTTPException(status_code=400, detail="Application has no containers to deploy.")
+  
+  request.app.state.rocketry["deploy_application"].run(application=application)
+
+  return {"status": "OK"}
+
 # Container routes
 router.include_router(container_router, prefix="/{application}/containers", dependencies=[Depends(inject_application)])

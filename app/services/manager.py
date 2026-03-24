@@ -1,12 +1,14 @@
+import asyncio
 import logging
 from pathlib import Path
 
 from utils.common import get_env
+from utils.logging import task_id
 from services.base import Base
 from services.tailscale import Tailscale
 from services.cloudflare import Cloudflare
 from services.traefik import Traefik
-from services.db import Database, Worker
+from services.db import Database, Worker, Application, Deployment, Container
 from services.metrics import Metrics
 
 
@@ -165,3 +167,39 @@ class Manager(Base):
     Worker.update(ip=worker.ip).where(Worker.hostname == worker.hostname).execute()
     self.cloudflare.create_dns_record(name=f"*.int.{get_env('DOMAIN')}", content=worker.ip, comment=f"{get_env('ORG')}-sage-worker-{worker.hostname}", type="A")
     logger.info(f"Worker {worker.hostname} updated with new IP {worker.ip}.")
+
+  async def deploy_application(self, application: Application):
+    '''
+      Deploy an application -
+      - Get application's containers and target workers
+      - For each worker, generate a docker-compose.yml and .env file with only the relevant containers
+      - Sync files to worker and deploy with docker compose
+    '''
+    application.status = "deploying"
+    application.save()
+    logger.info(f"Deploying application {application.name}...")
+
+    await asyncio.gather(*[
+      self.deploy_application_container(container) 
+      for container in application.containers
+    ], return_exceptions=False)
+    
+    application.status = "active"
+    application.save()
+    logger.info(f"Application {application.name} deployed.")
+
+  async def deploy_application_container(self, container: Container):
+    logger.info(f"Deploying application {container.application.name} container to worker {container.worker.hostname}...")
+    
+    # Create a deployment for tracking
+    Deployment.create(container=container, task_id=task_id.get())
+    container.status = "deploying"
+    container.save()
+
+    for i in range(10):
+      logger.info(f"Running...")
+      await asyncio.sleep(10) # simulate deployment time
+
+    container.status = "active"
+    container.save()
+    logger.info(f"Application container {container.application.name} deployed to worker {container.worker.hostname}.")

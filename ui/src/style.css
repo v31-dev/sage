@@ -168,3 +168,39 @@ input[type="week"] {
   color-scheme: dark;
 }
 /* datetime-local, date, time, month, week theme styling */
+
+/* Button styling */
+button.success {
+  background-color: oklch(0.6 0.15 142);
+  color: white;
+}
+
+button.success:hover {
+  background-color: oklch(0.5 0.15 142);
+}
+
+.dark button.success {
+  background-color: oklch(0.65 0.15 142);
+}
+
+.dark button.success:hover {
+  background-color: oklch(0.55 0.15 142);
+}
+
+button.neutral {
+  background-color: oklch(0.6 0.15 260);
+  color: white;
+}
+
+button.neutral:hover {
+  background-color: oklch(0.5 0.15 260);
+}
+
+.dark button.neutral {
+  background-color: oklch(0.65 0.15 260);
+}
+
+.dark button.neutral:hover {
+  background-color: oklch(0.55 0.15 260);
+}
+/* Button styling */

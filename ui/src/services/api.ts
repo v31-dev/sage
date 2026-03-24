@@ -42,13 +42,14 @@ export interface Application {
   args: string | null
   containers: Container[]
   container_count: number
+  status: 'active' | 'inactive' | 'deploying' | 'stopping' | 'restarting' | 'error'
   created_at: Date
   updated_at: Date
 }
 
 export interface Container {
   worker: Worker
-  status: string
+  status: 'active' | 'inactive' | 'deploying' | 'stopping' | 'restarting' | 'error'
   created_at: Date
   updated_at: Date
 }

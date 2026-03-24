@@ -7,7 +7,7 @@ from utils.logging import LoggedRocketry, TaskFailed, run_in_executor_with_conte
 from services.traefik import Traefik
 from services.manager import Manager
 from services.metrics import Metrics
-from services.db import Worker
+from services.db import Worker, Application
 
 
 logger = logging.getLogger(__name__)
@@ -45,8 +45,13 @@ async def collect_metrics():
 async def metrics_cleanup():
   await run_in_executor_with_context(Metrics().cleanup)
 
-# Test task
-@app.task(name="test_task", multilaunch=True)
-async def test_task(name: str):
-  logger.info(f"Running test task, {name}...")
-  await asyncio.sleep(10)
+# Deploy Application
+@app.task(name="deploy_application", multilaunch=True)
+async def deploy_application(application: Application):
+  try:
+    await Manager().deploy_application(application)
+  except Exception as e:
+    application.status = "error"
+    application.save()
+    logger.error(f"Failed to deploy application {application.name}: {e}")
+    raise TaskFailed()

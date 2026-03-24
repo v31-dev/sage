@@ -55,6 +55,7 @@ class Application(BaseModel):
   path            = CharField(null=True)
   env             = EncryptedTextField(null=True)
   args            = EncryptedTextField(null=True)
+  status          = CharField(default='inactive')
   container_count = IntegerField(default=0)
 
   class Meta:
