@@ -44,6 +44,8 @@ export interface Application {
 export interface Container {
   worker: Worker
   status: string
+  created_at: Date
+  updated_at: Date
 }
 
 export async function fetchAppInfo(): Promise<AppInfo> {

@@ -1,14 +1,9 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { 
-  Card, 
-  CardAction, 
-  CardContent, 
-  CardHeader, 
-  CardTitle, 
-  CardFooter 
-} from '@/components/ui/card'
+import { Plus } from 'lucide-vue-next'
+import { Card, CardAction, CardContent, CardHeader, CardTitle, CardFooter } from '@/components/ui/card'
+import { ButtonGroup } from '@/components/ui/button-group'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -34,15 +29,9 @@ import {
 } from '@/components/ui/select'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
+import { toast } from 'vue-sonner'
+import { Spinner } from '@/components/ui/spinner'
 import { getApplicationAPI, getContainerAPI, type Application, type Worker, type Container } from '@/services/api'
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableRow,
-
-} from '@/components/ui/table'
 
 const route = useRoute()
 const router = useRouter()
@@ -53,19 +42,9 @@ const applicationAPI = getApplicationAPI(projectName)
 const containersAPI = getContainerAPI(projectName, appName)
 const application = ref<Application | null>(null)
 const isLoading = ref(true)
-const isDialogOpen = ref(false)
-const isContainerDialogOpen = ref(false)
-const isSubmitting = ref(false)
-const errorMessage = ref('')
-const successMessage = ref('')
-const availableWorkers = ref<Worker[]>([])
-const selectedWorker = ref('')
 
-const editFormData = ref({
-  description: '',
-  repo: '',
-  env: '',
-  args: '',
+onMounted(async () => {
+  await loadApplication()
 })
 
 onMounted(async () => {
@@ -83,242 +62,246 @@ async function loadApplication() {
   }
 }
 
-async function loadAvailableWorkers() {
-  try {
-    availableWorkers.value = await applicationAPI.action(`${appName}/get_available_workers`) as Worker[]
-    selectedWorker.value = availableWorkers.value[0]?.hostname || ''
-  } catch (err) {
-    console.error('Failed to load available workers:', err)
-    errorMessage.value = 'Failed to load available workers'
-  }
+function goBack() {
+  router.push(`/projects/${projectName}`)
 }
+
+// ####################################################################################################
+// Edit Application
+const isEditDialogOpen = ref(false)
+const editFormData = ref({
+  description: '',
+  repo: '',
+  env: '',
+  args: '',
+})
+const editDialogErrorMessage = ref('')
+const isClickedEditConfirm = ref(false)
 
 function openEditDialog() {
   editFormData.value.description = application.value?.description || ''
   editFormData.value.repo = application.value?.repo || ''
   editFormData.value.env = application.value?.env || ''
   editFormData.value.args = application.value?.args || ''
-  errorMessage.value = ''
-  successMessage.value = ''
-  isDialogOpen.value = true
-}
-
-function openAddContainerDialog() {
-  errorMessage.value = ''
-  successMessage.value = ''
-  selectedWorker.value = ''
-  loadAvailableWorkers()
-  isContainerDialogOpen.value = true
-}
-
-async function handleAddContainer() {
-  errorMessage.value = ''
-  successMessage.value = ''
-
-  if (!selectedWorker.value) {
-    errorMessage.value = 'Please select a worker'
-    return
-  }
-
-  try {
-    isSubmitting.value = true
-    await containersAPI.create({ worker: selectedWorker.value }) as Container
-    await loadApplication()
-    isContainerDialogOpen.value = false
-    successMessage.value = 'Container added successfully'
-    setTimeout(() => {
-      successMessage.value = ''
-    }, 3000)
-  } catch (err) {
-    errorMessage.value = err instanceof Error ? err.message : 'Failed to add container'
-  } finally {
-    isSubmitting.value = false
-  }
-}
-
-async function deployContainer(worker: string) {
-  try {
-    // Implementation for deploying a container
-    console.log('Deploying container on worker:', worker)
-    successMessage.value = 'Container deployed successfully'
-    setTimeout(() => {
-      successMessage.value = ''
-    }, 3000)
-  } catch (err) {
-    errorMessage.value = 'Failed to deploy container'
-  }
-}
-
-async function stopContainer(worker: string) {
-  try {
-    // Implementation for stopping a container
-    console.log('Stopping container on worker:', worker)
-    successMessage.value = 'Container stopped successfully'
-    setTimeout(() => {
-      successMessage.value = ''
-    }, 3000)
-  } catch (err) {
-    errorMessage.value = 'Failed to stop container'
-  }
-}
-
-async function backupContainer(worker: string) {
-  try {
-    // Implementation for backing up a container
-    console.log('Backing up container on worker:', worker)
-    successMessage.value = 'Container backup started'
-    setTimeout(() => {
-      successMessage.value = ''
-    }, 3000)
-  } catch (err) {
-    errorMessage.value = 'Failed to backup container'
-  }
-}
-
-async function migrateContainer(worker: string) {
-  try {
-    // Implementation for migrating a container
-    console.log('Migrating container from worker:', worker)
-    successMessage.value = 'Container migration started'
-    setTimeout(() => {
-      successMessage.value = ''
-    }, 3000)
-  } catch (err) {
-    errorMessage.value = 'Failed to migrate container'
-  }
-}
-
-async function deleteContainer(worker: string) {
-  if (!confirm(`Are you sure you want to delete the container on ${worker}?`)) {
-    return
-  }
-  
-  try {
-    // Implementation for deleting a container
-    console.log('Deleting container on worker:', worker)
-    await loadApplication()
-    successMessage.value = 'Container deleted successfully'
-    setTimeout(() => {
-      successMessage.value = ''
-    }, 3000)
-  } catch (err) {
-    errorMessage.value = 'Failed to delete container'
-  }
+  editDialogErrorMessage.value = ''
+  isEditDialogOpen.value = true
 }
 
 async function handleUpdateApplication() {
-  errorMessage.value = ''
-  successMessage.value = ''
+  editDialogErrorMessage.value = ''
 
   try {
-    isSubmitting.value = true
-    await getApplicationAPI(projectName).update(appName, {
+    isClickedEditConfirm.value = true
+    await applicationAPI.update(appName, {
       description: editFormData.value.description || null,
       repo: editFormData.value.repo || null,
       env: editFormData.value.env || null,
       args: editFormData.value.args || null,
     })
     await loadApplication()
-    isDialogOpen.value = false
-    successMessage.value = 'Application updated successfully'
-    setTimeout(() => {
-      successMessage.value = ''
-    }, 3000)
+    isEditDialogOpen.value = false
+    toast.success('Application updated successfully')
   } catch (err) {
-    errorMessage.value = err instanceof Error ? err.message : 'Failed to update application'
+    editDialogErrorMessage.value = err instanceof Error ? err.message : 'Failed to update application'
   } finally {
-    isSubmitting.value = false
+    isClickedEditConfirm.value = false
+  }
+}
+// ####################################################################################################
+
+// ####################################################################################################
+// Delete Application
+const isDeleteDialogOpen = ref(false)
+const isClickedDeleteConfirm = ref(false)
+const deleteDialogErrorMessage = ref('')
+
+function openDeleteApplicationDialog() {
+  isDeleteDialogOpen.value = true
+  isClickedDeleteConfirm.value = false
+  deleteDialogErrorMessage.value = ''
+}
+
+async function onClickDeleteApplicationConfirm() {
+  isClickedDeleteConfirm.value = true
+
+  await new Promise(resolve => setTimeout(resolve, 1000))
+
+  try {
+    await applicationAPI.delete(appName)
+    isDeleteDialogOpen.value = false
+    toast.success(`Application ${appName} deleted successfully`)
+    router.push(`/projects/${projectName}`)
+  } catch (err) {
+    deleteDialogErrorMessage.value = err instanceof Error ? err.message : 'Failed to delete application'
+  } finally {
+    isClickedDeleteConfirm.value = false
+  }
+}
+// ####################################################################################################
+
+// ####################################################################################################
+// Add Container
+const isAddContainerDialogOpen = ref(false)
+const availableWorkers = ref<Worker[]>([])
+const selectedWorker = ref('')
+const addContainerErrorMessage = ref('')
+const isClickedAddContainerConfirm = ref(false)
+
+function openAddContainerDialog() {
+  addContainerErrorMessage.value = ''
+  selectedWorker.value = ''
+  loadAvailableWorkers()
+  isAddContainerDialogOpen.value = true
+}
+
+async function loadAvailableWorkers() {
+  try {
+    availableWorkers.value = await applicationAPI.action(`${appName}/get_available_workers`) as Worker[]
+    if (availableWorkers.value.length > 0) {
+      selectedWorker.value = availableWorkers.value[0]?.hostname || ''
+    }
+  } catch (err) {
+    console.error('Failed to load available workers:', err)
+    addContainerErrorMessage.value = 'Failed to load available workers'
   }
 }
 
-function goBackToProject() {
-  router.push(`/projects/${projectName}`)
+async function onClickAddContainerConfirm() {
+  addContainerErrorMessage.value = ''
+
+  if (!selectedWorker.value) {
+    addContainerErrorMessage.value = 'Please select a worker'
+    return
+  }
+
+  try {
+    isClickedAddContainerConfirm.value = true
+    await containersAPI.create({ worker: selectedWorker.value }) as Container
+    isAddContainerDialogOpen.value = false
+    await loadApplication()
+    toast.success('Container added successfully')
+  } catch (err) {
+    addContainerErrorMessage.value = err instanceof Error ? err.message : 'Failed to add container'
+  } finally {
+    isClickedAddContainerConfirm.value = false
+  }
 }
+// ####################################################################################################
+
+// ####################################################################################################
 </script>
 
 <template>
-  <main class="flex-1 px-4 py-8">
+  <main class="flex-1 px-4 py-8 relative">
     <div class="mx-auto space-y-6 max-w-7xl">
       <!-- Loading State -->
-      <div v-if="isLoading" class="flex items-center justify-center py-16">
-        <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-primary"></div>
+      <div v-if="isLoading" class="absolute inset-0 z-50 flex items-center justify-center">
+        <div class="flex flex-col items-center gap-4">
+          <Spinner />
+          <p class="text-sm text-muted-foreground">Loading application...</p>
+        </div>
       </div>
 
       <!-- Content -->
       <div v-else-if="application" class="space-y-6">
-        <!-- Success Message -->
-        <div v-if="successMessage" class="p-4 bg-green-50 text-green-700 rounded-md">
-          {{ successMessage }}
-        </div>
-
-        <!-- Application Card -->
+        <!-- Application Header -->
         <Card>
           <CardHeader>
-            <div class="flex justify-between items-start">
-              <div class="flex-1">
-                <CardTitle class="text-2xl mb-2">{{ application.name }}</CardTitle>
-                <p class="text-sm text-muted-foreground">{{ application.description }}</p>
-              </div>
-              <Dialog v-model:open="isDialogOpen">
-                <DialogTrigger asChild>
-                  <Button @click="openEditDialog">Edit</Button>
-                </DialogTrigger>
-                <DialogContent class="sm:max-w-[600px]">
-                  <DialogHeader>
-                    <DialogTitle>Edit Application</DialogTitle>
-                  </DialogHeader>
-                  <FieldSet>
-                    <FieldGroup>
-                      <Field>
-                        <FieldLabel for="app-description">
-                          Description
-                        </FieldLabel>
-                        <Textarea id="app-description" v-model="editFormData.description" class="resize-none" placeholder="optional" />
-                      </Field>
-                      <Field>
-                        <FieldLabel for="app-repo">
-                          Repository URL
-                        </FieldLabel>
-                        <Input id="app-repo" v-model="editFormData.repo" placeholder="optional" />
-                      </Field>
-                      <Field>
-                        <FieldLabel for="app-env">
-                          Environment Variables
-                        </FieldLabel>
-                        <Textarea id="app-env" v-model="editFormData.env" class="resize-none" placeholder="optional" />
-                      </Field>
-                      <Field>
-                        <FieldLabel for="app-args">
-                          Arguments
-                        </FieldLabel>
-                        <Textarea id="app-args" v-model="editFormData.args" class="resize-none" placeholder="optional" />
-                      </Field>
-                      <Field>
-                        <FieldError v-if="errorMessage">{{errorMessage}}</FieldError>
-                      </Field>
-                    </FieldGroup>
-                  </FieldSet>
-                  <DialogFooter>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      @click="isDialogOpen = false"
-                      :disabled="isSubmitting"
-                    >
-                      Cancel
-                    </Button>
-                    <Button
-                      @click="handleUpdateApplication"
-                      :disabled="isSubmitting"
-                    >
-                      {{ isSubmitting ? 'Saving...' : 'Save Changes' }}
-                    </Button>
-                  </DialogFooter>
-                </DialogContent>
-              </Dialog>
-            </div>
+            <CardTitle class="text-2xl">{{ application.name }}</CardTitle>
+            <CardAction>
+              <ButtonGroup class="space-x-1">
+                <!-- Edit Dialog -->
+                <Dialog v-model:open="isEditDialogOpen">
+                  <DialogTrigger asChild>
+                    <Button @click="openEditDialog">Edit</Button>
+                  </DialogTrigger>
+                  <DialogContent class="sm:max-w-[600px]">
+                    <DialogHeader>
+                      <DialogTitle>Edit Application</DialogTitle>
+                    </DialogHeader>
+                    <FieldSet>
+                      <FieldGroup>
+                        <Field>
+                          <FieldLabel for="description">
+                            Description
+                          </FieldLabel>
+                          <Textarea id="description" v-model="editFormData.description" class="resize-none"
+                            placeholder="optional" />
+                        </Field>
+                        <Field>
+                          <FieldLabel for="repo">
+                            Repository URL
+                          </FieldLabel>
+                          <Input id="repo" v-model="editFormData.repo" placeholder="optional" />
+                        </Field>
+                        <Field>
+                          <FieldLabel for="env">
+                            Environment Variables
+                          </FieldLabel>
+                          <Textarea id="env" v-model="editFormData.env" class="resize-none" placeholder="optional" />
+                        </Field>
+                        <Field>
+                          <FieldLabel for="args">
+                            Arguments
+                          </FieldLabel>
+                          <Textarea id="args" v-model="editFormData.args" class="resize-none" placeholder="optional" />
+                        </Field>
+                        <Field>
+                          <FieldError v-if="editDialogErrorMessage">{{ editDialogErrorMessage }}</FieldError>
+                        </Field>
+                      </FieldGroup>
+                    </FieldSet>
+                    <DialogFooter>
+                      <Button type="button" variant="outline" @click="isEditDialogOpen = false"
+                        :disabled="isClickedEditConfirm">
+                        Cancel
+                      </Button>
+                      <Button @click="handleUpdateApplication" :disabled="isClickedEditConfirm">
+                        <Spinner class="animate-spin" v-if="isClickedEditConfirm" />
+                        Save
+                      </Button>
+                    </DialogFooter>
+                  </DialogContent>
+                </Dialog>
+                <!-- Delete Application Dialog -->
+                <Dialog v-model:open="isDeleteDialogOpen">
+                  <DialogTrigger asChild>
+                    <Button @click="openDeleteApplicationDialog" variant="destructive">Delete</Button>
+                  </DialogTrigger>
+                  <DialogContent class="sm:max-w-[600px]">
+                    <DialogHeader>
+                      <DialogTitle>Delete Application</DialogTitle>
+                    </DialogHeader>
+                    <FieldSet>
+                      <FieldGroup>
+                        <Field />
+                        <Field>
+                          <p class="text-sm text-muted-foreground">
+                            Are you sure you want to delete this application? This action cannot be undone.
+                          </p>
+                        </Field>
+                        <Field>
+                          <FieldError v-if="deleteDialogErrorMessage">{{ deleteDialogErrorMessage }}
+                          </FieldError>
+                        </Field>
+                      </FieldGroup>
+                    </FieldSet>
+                    <DialogFooter>
+                      <Button variant="destructive" @click="onClickDeleteApplicationConfirm"
+                        :disabled="isClickedDeleteConfirm">
+                        <Spinner class="animate-spin" v-if="isClickedDeleteConfirm" />
+                        Delete
+                      </Button>
+                    </DialogFooter>
+                  </DialogContent>
+                </Dialog>
+              </ButtonGroup>
+            </CardAction>
           </CardHeader>
           <CardContent class="space-y-4">
+            <div v-if="application.description">
+              <h3 class="text-sm font-medium text-muted-foreground">{{ application.description }}</h3>
+            </div>
             <div v-if="application.repo" class="pb-4 border-t pt-4">
               <h3 class="text-sm font-medium text-muted-foreground mb-1">Repository</h3>
               <p class="text-sm break-all">{{ application.repo }}</p>
@@ -331,129 +314,109 @@ function goBackToProject() {
           </CardFooter>
         </Card>
 
-        <!-- Containers-->
-         <Card>
-          <CardHeader>
-            <CardTitle class="text-lg">Containers</CardTitle>
-            <CardAction>
-              <Dialog v-model:open="isContainerDialogOpen">
-                <DialogTrigger asChild>
-                  <Button @click="openAddContainerDialog">
-                    Add Container
+        <!-- Containers -->
+        <div class="space-y-4">
+          <div class="flex justify-between items-center">
+            <h2 class="text-xl font-semibold">Containers</h2>
+            <!-- Add Container -->
+            <Dialog v-model:open="isAddContainerDialogOpen">
+              <DialogTrigger asChild>
+                <Button @click="openAddContainerDialog" class="gap-2">
+                  <Plus :size="20" />
+                  New Container
+                </Button>
+              </DialogTrigger>
+              <DialogContent class="sm:max-w-[400px]">
+                <DialogHeader>
+                  <DialogTitle>Add Container</DialogTitle>
+                </DialogHeader>
+                <FieldSet>
+                  <FieldGroup>
+                    <Field />
+                    <Field>
+                      <FieldLabel for="worker-select">
+                        Select Worker
+                      </FieldLabel>
+                      <Select v-model="selectedWorker">
+                        <SelectTrigger id="worker-select">
+                          <SelectValue placeholder="Choose a worker..." />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem
+                            v-for="worker in availableWorkers"
+                            :key="worker.hostname"
+                            :value="worker.hostname"
+                          >
+                            {{ worker.hostname }}
+                          </SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </Field>
+                    <Field>
+                      <FieldError v-if="addContainerErrorMessage">{{ addContainerErrorMessage }}</FieldError>
+                    </Field>
+                  </FieldGroup>
+                </FieldSet>
+                <DialogFooter>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    @click="isAddContainerDialogOpen = false"
+                    :disabled="isClickedAddContainerConfirm"
+                  >
+                    Cancel
                   </Button>
-                </DialogTrigger>
-                <DialogContent class="sm:max-w-[400px]">
-                  <DialogHeader>
-                    <DialogTitle>Add Container</DialogTitle>
-                  </DialogHeader>
-                  <FieldSet>
-                    <FieldGroup>
-                      <Field>
-                        <FieldLabel for="worker-select">
-                          Select Worker
-                        </FieldLabel>
-                        <Select v-model="selectedWorker">
-                          <SelectTrigger id="worker-select">
-                            <SelectValue placeholder="Choose a worker..." />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem 
-                              v-for="worker in availableWorkers" 
-                              :key="worker.hostname"
-                              :value="worker.hostname"
-                            >
-                              {{ worker.hostname }}
-                            </SelectItem>
-                          </SelectContent>
-                        </Select>
-                      </Field>
-                      <Field v-if="errorMessage">
-                        <FieldError>{{ errorMessage }}</FieldError>
-                      </Field>
-                    </FieldGroup>
-                  </FieldSet>
-                  <DialogFooter>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      @click="isContainerDialogOpen = false"
-                      :disabled="isSubmitting"
-                    >
-                      Cancel
-                    </Button>
-                    <Button
-                      @click="handleAddContainer"
-                      :disabled="isSubmitting || !selectedWorker"
-                    >
-                      {{ isSubmitting ? 'Adding...' : 'Add Container' }}
-                    </Button>
-                  </DialogFooter>
-                </DialogContent>
-              </Dialog>
-            </CardAction>
-          </CardHeader>
-          <CardContent>
-            <Table>
-              <TableHead>
-                <TableRow>
-                  <TableHead>Worker</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>Actions</TableHead>
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                <TableRow v-for="container in application.containers" :key="container.worker.hostname">
-                  <TableCell class="font-medium">{{ container.worker.hostname }}</TableCell>
-                  <TableCell>{{ container.status }}</TableCell>
-                  <TableCell class="space-x-2">
-                    <Button 
-                      size="sm" 
-                      variant="outline"
-                      @click="deployContainer(container.worker.hostname)"
-                    >
-                      Deploy
-                    </Button>
-                    <Button 
-                      size="sm" 
-                      variant="outline"
-                      @click="stopContainer(container.worker.hostname)"
-                    >
-                      Stop
-                    </Button>
-                    <Button 
-                      size="sm" 
-                      variant="outline"
-                      @click="backupContainer(container.worker.hostname)"
-                    >
-                      Backup
-                    </Button>
-                    <Button 
-                      size="sm" 
-                      variant="outline"
-                      @click="migrateContainer(container.worker.hostname)"
-                    >
-                      Migrate
-                    </Button>
-                    <Button 
-                      size="sm" 
-                      variant="destructive"
-                      @click="deleteContainer(container.worker.hostname)"
-                    >
-                      Delete
-                    </Button>
-                  </TableCell>
-                </TableRow>
-              </TableBody>
-            </Table>  
-          </CardContent>
-         </Card>
+                  <Button
+                    @click="onClickAddContainerConfirm"
+                    :disabled="isClickedAddContainerConfirm || !selectedWorker"
+                  >
+                    <Spinner class="animate-spin" v-if="isClickedAddContainerConfirm" />
+                    Add
+                  </Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
+          </div>
+
+          <!-- Empty Containers State -->
+          <div v-if="application.containers.length === 0" class="flex items-center justify-center py-8">
+            <Card class="w-full">
+              <CardContent class="flex flex-col items-center justify-center py-12">
+                <p class="text-muted-foreground text-lg">No containers</p>
+              </CardContent>
+            </Card>
+          </div>
+
+          <!-- Containers Grid -->
+          <div v-else class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            <Card v-for="container in application.containers" :key="container.worker.hostname"
+              class="flex flex-col">
+              <CardHeader>
+                <CardTitle class="line-clamp-2">{{ container.worker.hostname }}</CardTitle>
+              </CardHeader>
+              <CardContent class="flex-1 space-y-2">
+                <p class="text-sm text-muted-foreground">
+                  <span class="font-medium">Status:</span> {{ container.status }}</p>
+                <p v-if="container.worker.online" class="text-sm text-green-600">
+                  <span class="font-medium">Worker:</span> Online</p>
+                <p v-else class="text-sm text-red-600">
+                  <span class="font-medium">Worker:</span> Offline</p>
+              </CardContent>
+              <CardFooter class="border-t">
+                <div class="pt-4 text-xs text-muted-foreground">
+                  <p>Updated: {{ new Date(container.updated_at).toLocaleString() }}</p>
+                </div>
+              </CardFooter>
+            </Card>
+          </div>
+        </div>
       </div>
 
       <!-- Error/Not Found State -->
       <Card v-else>
         <CardContent class="flex flex-col items-center justify-center py-12">
-          <p class="text-muted-foreground text-lg mb-4">Application not found</p>
-          <Button @click="goBackToProject" variant="outline">
+          <p class="text-muted-foreground text-lg mb-4">Application {{ appName }} not found</p>
+          <Button @click="goBack" variant="outline">
             Back to Project
           </Button>
         </CardContent>
