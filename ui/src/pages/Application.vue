@@ -2,12 +2,12 @@
 import { ref, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Plus } from 'lucide-vue-next'
-import { 
-  Card, 
-  CardAction, 
-  CardContent, 
+import {
+  Card,
+  CardAction,
+  CardContent,
   CardDescription,
-  CardHeader, 
+  CardHeader,
   CardTitle
 } from '@/components/ui/card'
 import { ButtonGroup } from '@/components/ui/button-group'
@@ -38,6 +38,9 @@ import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { toast } from 'vue-sonner'
 import { Spinner } from '@/components/ui/spinner'
+import { Label } from '@/components/ui/label'
+import { Badge } from '@/components/ui/badge'
+
 import { getApplicationAPI, getContainerAPI, type Application, type Worker, type Container } from '@/services/api'
 
 const route = useRoute()
@@ -73,8 +76,10 @@ function goBack() {
 // Edit Application
 const isEditDialogOpen = ref(false)
 const editFormData = ref({
+  label: '',
   description: '',
   repo: '',
+  path: '',
   env: '',
   args: '',
 })
@@ -82,8 +87,10 @@ const editDialogErrorMessage = ref('')
 const isClickedEditConfirm = ref(false)
 
 function openEditDialog() {
+  editFormData.value.label = application.value?.label || ''
   editFormData.value.description = application.value?.description || ''
   editFormData.value.repo = application.value?.repo || ''
+  editFormData.value.path = application.value?.path || ''
   editFormData.value.env = application.value?.env || ''
   editFormData.value.args = application.value?.args || ''
   editDialogErrorMessage.value = ''
@@ -96,8 +103,10 @@ async function handleUpdateApplication() {
   try {
     isClickedEditConfirm.value = true
     await applicationAPI.update(appName, {
+      label: editFormData.value.label || null,
       description: editFormData.value.description || null,
       repo: editFormData.value.repo || null,
+      path: editFormData.value.path || null,
       env: editFormData.value.env || null,
       args: editFormData.value.args || null,
     })
@@ -207,7 +216,7 @@ async function onClickAddContainerConfirm() {
       <div v-else-if="application" class="space-y-6">
         <!-- Application Header -->
         <Card>
-          <CardHeader>
+          <CardHeader class="border-b">
             <CardTitle class="text-2xl">{{ application.label }}</CardTitle>
             <CardDescription>{{ application.name }}</CardDescription>
             <CardAction>
@@ -223,6 +232,13 @@ async function onClickAddContainerConfirm() {
                     </DialogHeader>
                     <FieldSet>
                       <FieldGroup>
+                        <Field />
+                        <Field>
+                          <FieldLabel for="label">
+                            Name
+                          </FieldLabel>
+                          <Input id="label" v-model="editFormData.label" placeholder="required" />
+                        </Field>
                         <Field>
                           <FieldLabel for="description">
                             Description
@@ -235,6 +251,12 @@ async function onClickAddContainerConfirm() {
                             Repository URL
                           </FieldLabel>
                           <Input id="repo" v-model="editFormData.repo" placeholder="optional" />
+                        </Field>
+                        <Field>
+                          <FieldLabel for="path">
+                            Repository Path
+                          </FieldLabel>
+                          <Input id="path" v-model="editFormData.path" placeholder="optional" />
                         </Field>
                         <Field>
                           <FieldLabel for="env">
@@ -301,12 +323,17 @@ async function onClickAddContainerConfirm() {
             </CardAction>
           </CardHeader>
           <CardContent class="space-y-4">
-            <div v-if="application.description">
-              <h3 class="text-sm font-medium text-muted-foreground">{{ application.description }}</h3>
+            <div>
+              <Label>Description</Label>
+              <p class="text-sm text-muted-foreground">{{ application.description ? application.description : '-' }}</p>
             </div>
-            <div v-if="application.repo" class="pb-4 border-t pt-4">
-              <h3 class="text-sm font-medium text-muted-foreground mb-1">Repository</h3>
-              <p class="text-sm break-all">{{ application.repo }}</p>
+            <div>
+              <Label>Repository URL</Label>
+              <p class="text-sm text-muted-foreground">{{ application.repo ? application.repo : '-' }}</p>
+            </div>
+            <div>
+              <Label>Repository Path</Label>
+              <p class="text-sm text-muted-foreground">{{ application.path ? application.path : '-' }}</p>
             </div>
           </CardContent>
         </Card>
@@ -336,14 +363,12 @@ async function onClickAddContainerConfirm() {
                       </FieldLabel>
                       <Select v-model="selectedWorker" :disabled="availableWorkers.length === 0">
                         <SelectTrigger id="worker-select">
-                          <SelectValue :placeholder="availableWorkers.length === 0 ? 'No workers available' : 'Choose a worker...'" />
+                          <SelectValue
+                            :placeholder="availableWorkers.length === 0 ? 'No workers available' : 'Choose a worker...'" />
                         </SelectTrigger>
                         <SelectContent>
-                          <SelectItem
-                            v-for="worker in availableWorkers"
-                            :key="worker.hostname"
-                            :value="worker.hostname"
-                          >
+                          <SelectItem v-for="worker in availableWorkers" :key="worker.hostname"
+                            :value="worker.hostname">
                             {{ worker.hostname }}
                           </SelectItem>
                         </SelectContent>
@@ -355,18 +380,12 @@ async function onClickAddContainerConfirm() {
                   </FieldGroup>
                 </FieldSet>
                 <DialogFooter>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    @click="isAddContainerDialogOpen = false"
-                    :disabled="isClickedAddContainerConfirm"
-                  >
+                  <Button type="button" variant="outline" @click="isAddContainerDialogOpen = false"
+                    :disabled="isClickedAddContainerConfirm">
                     Cancel
                   </Button>
-                  <Button
-                    @click="onClickAddContainerConfirm"
-                    :disabled="isClickedAddContainerConfirm || !selectedWorker"
-                  >
+                  <Button @click="onClickAddContainerConfirm"
+                    :disabled="isClickedAddContainerConfirm || !selectedWorker">
                     <Spinner class="animate-spin" v-if="isClickedAddContainerConfirm" />
                     Add
                   </Button>
@@ -386,18 +405,18 @@ async function onClickAddContainerConfirm() {
 
           <!-- Containers Grid -->
           <div v-else class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            <Card v-for="container in application.containers" :key="container.worker.hostname"
-              class="flex flex-col">
+            <Card v-for="container in application.containers" :key="container.worker.hostname" class="flex flex-col">
               <CardHeader>
-                <CardTitle class="line-clamp-2">{{ container.worker.hostname }}</CardTitle>
+                <CardTitle>
+                  <Badge as-child :variant="container.worker.online ? 'default' : 'destructive'">
+                    <a href="#">{{ container.worker.hostname }}</a>
+                  </Badge>
+                </CardTitle>
               </CardHeader>
               <CardContent class="flex-1 space-y-2">
                 <p class="text-sm text-muted-foreground">
-                  <span class="font-medium">Status:</span> {{ container.status }}</p>
-                <p v-if="container.worker.online" class="text-sm text-green-600">
-                  <span class="font-medium">Worker:</span> Online</p>
-                <p v-else class="text-sm text-red-600">
-                  <span class="font-medium">Worker:</span> Offline</p>
+                  <span class="font-medium">Status:</span> {{ container.status }}
+                </p>
               </CardContent>
             </Card>
           </div>

@@ -45,10 +45,18 @@ def get_application(request: Request):
 
 @router.put("/{application}", dependencies=[Depends(inject_application)])
 def update_application(request: Request, application_data: dict = Body(...)):
+  data = {
+    'label': application_data.get('label'),
+    'description': application_data.get('description'),
+    'repo': application_data.get('repo'),
+    'path': application_data.get('path'),
+    'env': application_data.get('env'),
+    'args': application_data.get('args'),
+  }
   return generic_update(
     Application, 
     request.state.models['application'],
-    application_data
+    data
   ) 
 
 @router.delete("/{application}", dependencies=[Depends(inject_application)])

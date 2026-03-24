@@ -2,7 +2,7 @@
 import { ref, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Plus } from 'lucide-vue-next'
-import { Card, CardContent, CardHeader, CardTitle, CardAction } from '@/components/ui/card'
+import { Card, CardContent, CardHeader, CardTitle, CardAction, CardDescription } from '@/components/ui/card'
 import { ButtonGroup } from '@/components/ui/button-group'
 import { Button } from '@/components/ui/button'
 import {
@@ -25,9 +25,9 @@ import { Textarea } from '@/components/ui/textarea'
 import { toast } from 'vue-sonner'
 import { Spinner } from '@/components/ui/spinner'
 import { Badge } from '@/components/ui/badge'
+import { Label } from '@/components/ui/label'
 
 import { projectAPI, getApplicationAPI, type Project, type Application } from '@/services/api'
-import CardDescription from '@/components/ui/card/CardDescription.vue'
 
 
 const route = useRoute()
@@ -187,7 +187,7 @@ async function onClickDeleteProjectConfirm() {
       <div v-else-if="project" class="space-y-6">
         <!-- Project Header -->
         <Card>
-          <CardHeader>
+          <CardHeader class="border-b">
             <CardTitle class="text-2xl">{{ project.label }}</CardTitle>
             <CardDescription>{{ project.name }}</CardDescription>
             <CardAction>
@@ -274,9 +274,10 @@ async function onClickDeleteProjectConfirm() {
               </ButtonGroup>
             </CardAction>
           </CardHeader>
-          <CardContent class="border-t pt-4">
+          <CardContent>
             <div>
-              <h3 class="text-sm font-medium text-muted-foreground">{{ project.description }}</h3>
+              <Label>Description</Label>
+              <p class="text-sm text-muted-foreground">{{ project.description ? project.description : '-' }}</p>
             </div>
           </CardContent>
         </Card>
