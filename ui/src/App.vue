@@ -17,6 +17,8 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 import { Spinner } from "@/components/ui/spinner"
+import 'vue-sonner/style.css'
+import { Toaster } from '@/components/ui/sonner'
 import { useAppStore } from "@/stores/app"
 
 // Initialize theme immediately on page load
@@ -80,5 +82,8 @@ onMounted(async () => {
         </SidebarInset>
       </SidebarProvider>
     </div>
+    
+    <!-- Toast Notifications -->
+    <Toaster/>
   </div>
 </template>

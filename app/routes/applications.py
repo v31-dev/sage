@@ -31,8 +31,13 @@ def list_applications(request: Request):
 
 @router.post("/")
 def create_application(request: Request, application_data: dict = Body(...), ):
-  application_data['project'] = request.state.models['project']
-  return generic_create(Application, application_data)
+  data = {
+    'project': request.state.models['project'],
+    'name': application_data.get('label'),
+    'label': application_data.get('label'),
+    'description': application_data.get('description'),
+  }
+  return generic_create(Application, data)
 
 @router.get("/{application}", dependencies=[Depends(inject_application)])
 def get_application(request: Request):
@@ -53,18 +58,16 @@ def delete_application(request: Request):
 @router.post("/{application}/get_available_workers", dependencies=[Depends(inject_application)])
 def get_available_workers(request: Request):
   """Get list of all workers excluding those already in this application."""
-  project = request.state.models['project']
   application = request.state.models['application']
   
   # Get all workers
   all_workers = list(Worker.select().dicts())
   
-  # Get workers already used in this project's application
+  # Get workers already used in this application's containers
   used_workers_query = (
     Container
       .select()
-      .where(Container.project == project, 
-             Container.application == application)
+      .where(Container.application == application)
   )
   used_worker_hostnames = {w.worker.hostname for w in used_workers_query}
   

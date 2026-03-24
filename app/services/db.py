@@ -29,16 +29,6 @@ class BaseModel(Model):
     self.updated_at = datetime.now()
     return super().save(*args, **kwargs)
 
-  @classmethod
-  def get_local_fields(cls):
-    """
-    Returns field names defined in the subclass, 
-    excluding inherited fields from BaseModel and the auto 'id'.
-    """
-    base_names = set(BaseModel._meta.fields.keys())
-    ignore = base_names | {'id'}
-    return [name for name in cls._meta.fields.keys() if name not in ignore]
-
 class Setting(BaseModel):
   key   = CharField(primary_key=True)
   value = EncryptedTextField(null=True)
@@ -50,7 +40,7 @@ class Project(BaseModel):
   env         = EncryptedTextField(null=True)
 
 class Application(BaseModel):
-  project     = ForeignKeyField(Project, backref='applications')
+  project     = ForeignKeyField(Project, backref='applications', on_delete='RESTRICT')
   name        = CleanCharField()
   label       = CharField()
   description = CharField(null=True)
@@ -70,14 +60,13 @@ class Worker(BaseModel):
   online    = BooleanField(default=False)
 
 class Container(BaseModel):
-  project     = ForeignKeyField(Project, backref='containers')
-  application = ForeignKeyField(Application, backref='containers')
+  application = ForeignKeyField(Application, backref='containers', on_delete='RESTRICT')
   worker      = ForeignKeyField(Worker, backref='containers')
   status      = CharField(default='inactive')
 
   class Meta:
     indexes = (
-      (('project', 'application', 'worker'), True),
+      (('application', 'worker'), True),
     )
 
 class Deployment(BaseModel):

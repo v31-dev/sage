@@ -21,7 +21,6 @@ def inject_container(request: Request):
     raise HTTPException(status_code=404, detail=f"Worker with hostname '{container_name}' not found")
   
   request.state.models['container'] = generic_get(Container, 
-                                                  (Container.project == request.state.models['project']) & 
                                                   (Container.application == request.state.models['application']) & 
                                                   (Container.worker == worker), 
                                                   return_model=True)
@@ -33,7 +32,6 @@ router = APIRouter()
 @router.get("/")
 def list_containers(request: Request):
   return generic_list(Container, 
-                      (Container.project == request.state.models['project']) & 
                       (Container.application == request.state.models['application']))
 
 @router.post("/")

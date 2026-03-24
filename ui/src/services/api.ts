@@ -24,13 +24,9 @@ export interface Project {
   label: string
   description: string | null
   env: string | null
+  applications: Application[]
   created_at: Date
   updated_at: Date
-}
-
-export interface Container {
-  worker: Worker
-  status: string
 }
 
 export interface Application {
@@ -43,6 +39,11 @@ export interface Application {
   containers: Container[]
   created_at: Date
   updated_at: Date
+}
+
+export interface Container {
+  worker: Worker
+  status: string
 }
 
 export async function fetchAppInfo(): Promise<AppInfo> {

@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Plus } from 'lucide-vue-next'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Card, CardContent, CardHeader, CardTitle, CardAction, CardFooter } from '@/components/ui/card'
+import { ButtonGroup } from '@/components/ui/button-group'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -21,43 +22,21 @@ import {
 } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
+import { toast } from 'vue-sonner'
+import { Spinner } from '@/components/ui/spinner'
+
 import { projectAPI, getApplicationAPI, type Project, type Application } from '@/services/api'
-import CardFooter from '@/components/ui/card/CardFooter.vue'
+
 
 const route = useRoute()
 const router = useRouter()
 const projectName = route.params.projectId as string
-
 const applicationAPI = getApplicationAPI(projectName)
 const project = ref<Project | null>(null)
-const applications = ref<Application[]>([])
 const isLoading = ref(true)
-const isEditDialogOpen = ref(false)
-const isCreateAppDialogOpen = ref(false)
-const isSubmitting = ref(false)
-const errorMessage = ref('')
-const successMessage = ref('')
-
-const editFormData = ref({
-  description: '',
-  env: '',
-})
-
-const createAppFormData = ref({
-  name: '',
-  description: '',
-  repo: '',
-  env: '',
-  args: '',
-})
-
-const projectApplications = computed(() => 
-  applications.value.filter(app => app.project === projectName)
-)
 
 onMounted(async () => {
   await loadProject()
-  await loadApplications()
 })
 
 async function loadProject() {
@@ -71,81 +50,6 @@ async function loadProject() {
   }
 }
 
-async function loadApplications() {
-  try {
-    applications.value = await applicationAPI.fetchAll() as Application[]
-  } catch (err) {
-    console.error('Failed to load applications:', err)
-  }
-}
-
-function openEditDialog() {
-  editFormData.value.description = project.value?.description || ''
-  editFormData.value.env = project.value?.env || ''
-  errorMessage.value = ''
-  successMessage.value = ''
-  isEditDialogOpen.value = true
-}
-
-function openCreateAppDialog() {
-  createAppFormData.value = { name: '', description: '', repo: '', env: '', args: '' }
-  errorMessage.value = ''
-  isCreateAppDialogOpen.value = true
-}
-
-async function handleUpdateProject() {
-  errorMessage.value = ''
-  successMessage.value = ''
-
-  try {
-    isSubmitting.value = true
-    await projectAPI.update(projectName, { 
-      description: editFormData.value.description || null,
-      env: editFormData.value.env || null 
-    })
-    await loadProject()
-    isEditDialogOpen.value = false
-    successMessage.value = 'Project updated successfully'
-    setTimeout(() => {
-      successMessage.value = ''
-    }, 3000)
-  } catch (err) {
-    errorMessage.value = err instanceof Error ? err.message : 'Failed to update project'
-  } finally {
-    isSubmitting.value = false
-  }
-}
-
-async function handleCreateApplication() {
-  errorMessage.value = ''
-  
-  if (!createAppFormData.value.name.trim()) {
-    errorMessage.value = 'Application name is required'
-    return
-  }
-
-  try {
-    isSubmitting.value = true
-    await applicationAPI.create({
-      name: createAppFormData.value.name,
-      description: createAppFormData.value.description || null,
-      repo: createAppFormData.value.repo || null,
-      env: createAppFormData.value.env || null,
-      args: createAppFormData.value.args || null,
-    })
-    isCreateAppDialogOpen.value = false
-    await loadApplications()
-    successMessage.value = 'Application created successfully'
-    setTimeout(() => {
-      successMessage.value = ''
-    }, 3000)
-  } catch (err) {
-    errorMessage.value = err instanceof Error ? err.message : 'Failed to create application'
-  } finally {
-    isSubmitting.value = false
-  }
-}
-
 function goToApplication(app: Application) {
   router.push(`/projects/${projectName}/${app.name}`)
 }
@@ -153,74 +57,210 @@ function goToApplication(app: Application) {
 function goBack() {
   router.push('/projects')
 }
+
+// ####################################################################################################
+// Create Application
+const isCreateAppDialogOpen = ref(false)
+const createAppFormData = ref({
+  label: '',
+  description: ''
+})
+const createAppDialogErrorMessage = ref('')
+const isClickedCreateAppConfirm = ref(false)
+
+function openCreateAppDialog() {
+  createAppFormData.value = { label: '', description: '' }
+  createAppDialogErrorMessage.value = ''
+  isCreateAppDialogOpen.value = true
+}
+
+async function onClickCreateAppConfirm() {
+  createAppDialogErrorMessage.value = ''
+
+  if (!createAppFormData.value.label.trim()) {
+    createAppDialogErrorMessage.value = 'Application name is required'
+    return
+  }
+
+  try {
+    isClickedCreateAppConfirm.value = true
+    await applicationAPI.create({
+      label: createAppFormData.value.label,
+      description: createAppFormData.value.description || null,
+    })
+    isCreateAppDialogOpen.value = false
+    toast.success(`Application ${createAppFormData.value.label} created successfully`)
+    loadProject()
+  } catch (err) {
+    createAppDialogErrorMessage.value = err instanceof Error ? err.message : 'Failed to create application'
+  } finally {
+    isClickedCreateAppConfirm.value = false
+  }
+}
+// ####################################################################################################
+
+// ####################################################################################################
+// Edit Project
+const isEditDialogOpen = ref(false)
+const editFormData = ref({
+  description: '',
+  env: '',
+})
+const editDialogErrorMessage = ref('')
+const isClickedEditConfirm = ref(false)
+
+function openEditDialog() {
+  editFormData.value.description = project.value?.description || ''
+  editFormData.value.env = project.value?.env || ''
+  editDialogErrorMessage.value = ''
+  isEditDialogOpen.value = true
+}
+
+async function handleUpdateProject() {
+  editDialogErrorMessage.value = ''
+
+  try {
+    isClickedEditConfirm.value = true
+    await projectAPI.update(projectName, {
+      description: editFormData.value.description || null,
+      env: editFormData.value.env || null
+    })
+    await loadProject()
+    isEditDialogOpen.value = false
+    toast.success('Project updated successfully')
+  } catch (err) {
+    editDialogErrorMessage.value = err instanceof Error ? err.message : 'Failed to update project'
+  } finally {
+    isClickedEditConfirm.value = false
+  }
+}
+// ####################################################################################################
+
+// ####################################################################################################
+// Delete Project
+const isDeleteDialogOpen = ref(false)
+const isClickedDeleteConfirm = ref(false)
+const deleteDialogErrorMessage = ref('')
+
+function openDeleteProjectDialog() {
+  isDeleteDialogOpen.value = true
+  isClickedDeleteConfirm.value = false
+  deleteDialogErrorMessage.value = ''
+}
+
+async function onClickDeleteProjectConfirm() {
+  isClickedDeleteConfirm.value = true
+
+  await new Promise(resolve => setTimeout(resolve, 1000))
+
+  try {
+    await projectAPI.delete(projectName)
+    isDeleteDialogOpen.value = false
+    toast.success(`Project ${projectName} deleted successfully`)
+    router.push('/projects')
+  } catch (err) {
+    deleteDialogErrorMessage.value = err instanceof Error ? err.message : 'Failed to delete project'
+  } finally {
+    isClickedDeleteConfirm.value = false
+  }
+}
+// ####################################################################################################
 </script>
 
 <template>
-  <main class="flex-1 px-4 py-8">
+  <main class="flex-1 px-4 py-8 relative">
     <div class="mx-auto space-y-6 max-w-7xl">
       <!-- Loading State -->
-      <div v-if="isLoading" class="flex items-center justify-center py-16">
-        <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-primary"></div>
+      <div v-if="isLoading" class="absolute inset-0 z-50 flex items-center justify-center">
+        <div class="flex flex-col items-center gap-4">
+          <Spinner />
+          <p class="text-sm text-muted-foreground">Loading project...</p>
+        </div>
       </div>
 
       <!-- Content -->
       <div v-else-if="project" class="space-y-6">
-        <!-- Success Message -->
-        <div v-if="successMessage" class="p-4 bg-green-50 text-green-700 rounded-md">
-          {{ successMessage }}
-        </div>
-
-        <!-- Project Card -->
+        <!-- Project Header -->
         <Card>
           <CardHeader>
-            <div class="flex justify-between items-start">
-              <CardTitle class="text-2xl">{{ project.name }}</CardTitle>
-              <Dialog v-model:open="isEditDialogOpen">
-                <DialogTrigger asChild>
-                  <Button @click="openEditDialog">Edit</Button>
-                </DialogTrigger>
-                <DialogContent class="sm:max-w-[600px]">
-                  <DialogHeader>
-                    <DialogTitle>Edit Project</DialogTitle>
-                  </DialogHeader>
-                  <FieldSet>
-                    <FieldGroup>
-                      <Field>
-                        <FieldLabel for="description">
-                          Description
-                        </FieldLabel>
-                        <Textarea id="description" v-model="editFormData.description" class="resize-none" placeholder="optional" />
-                      </Field>
-                      <Field>
-                        <FieldLabel for="env">
-                          Environment Variables
-                        </FieldLabel>
-                        <Textarea id="env" v-model="editFormData.env" class="resize-none" placeholder="optional" />
-                      </Field>
-                      <Field>
-                        <FieldError v-if="errorMessage">{{errorMessage}}</FieldError>
-                      </Field>
-                    </FieldGroup>
-                  </FieldSet>
-                  <DialogFooter>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      @click="isEditDialogOpen = false"
-                      :disabled="isSubmitting"
-                    >
-                      Cancel
-                    </Button>
-                    <Button
-                      @click="handleUpdateProject"
-                      :disabled="isSubmitting"
-                    >
-                      {{ isSubmitting ? 'Saving...' : 'Save Changes' }}
-                    </Button>
-                  </DialogFooter>
-                </DialogContent>
-              </Dialog>
-            </div>
+            <CardTitle class="text-2xl">{{ project.name }}</CardTitle>
+            <CardAction>
+              <ButtonGroup class="space-x-1">
+                <!-- Edit Dialog -->
+                <Dialog v-model:open="isEditDialogOpen">
+                  <DialogTrigger asChild>
+                    <Button @click="openEditDialog">Edit</Button>
+                  </DialogTrigger>
+                  <DialogContent class="sm:max-w-[600px]">
+                    <DialogHeader>
+                      <DialogTitle>Edit Project</DialogTitle>
+                    </DialogHeader>
+                    <FieldSet>
+                      <FieldGroup>
+                        <Field>
+                          <FieldLabel for="description">
+                            Description
+                          </FieldLabel>
+                          <Textarea id="description" v-model="editFormData.description" class="resize-none"
+                            placeholder="optional" />
+                        </Field>
+                        <Field>
+                          <FieldLabel for="env">
+                            Environment Variables
+                          </FieldLabel>
+                          <Textarea id="env" v-model="editFormData.env" class="resize-none" placeholder="optional" />
+                        </Field>
+                        <Field>
+                          <FieldError v-if="editDialogErrorMessage">{{ editDialogErrorMessage }}</FieldError>
+                        </Field>
+                      </FieldGroup>
+                    </FieldSet>
+                    <DialogFooter>
+                      <Button type="button" variant="outline" @click="isEditDialogOpen = false"
+                        :disabled="isClickedEditConfirm ">
+                        Cancel
+                      </Button>
+                      <Button @click="handleUpdateProject" :disabled="isClickedEditConfirm ">
+                        <Spinner class="animate-spin" v-if="isClickedEditConfirm " />
+                        Save
+                      </Button>
+                    </DialogFooter>
+                  </DialogContent>
+                </Dialog>
+                <!-- Delete Project Dialog -->
+                <Dialog v-model:open="isDeleteDialogOpen">
+                  <DialogTrigger asChild>
+                    <Button @click="openDeleteProjectDialog" variant="destructive">Delete</Button>
+                  </DialogTrigger>
+                  <DialogContent class="sm:max-w-[600px]">
+                    <DialogHeader>
+                      <DialogTitle>Delete Project</DialogTitle>
+                    </DialogHeader>
+                    <FieldSet>
+                      <FieldGroup>
+                        <Field />
+                        <Field>
+                          <p class="text-sm text-muted-foreground">
+                            Are you sure you want to delete this project? This action cannot be undone.
+                          </p>
+                        </Field>
+                        <Field>
+                          <FieldError v-if="deleteDialogErrorMessage">{{ deleteDialogErrorMessage }}
+                          </FieldError>
+                        </Field>
+                      </FieldGroup>
+                    </FieldSet>
+                    <DialogFooter>
+                      <Button variant="destructive" @click="onClickDeleteProjectConfirm"
+                        :disabled="isClickedDeleteConfirm">
+                        <Spinner class="animate-spin" v-if="isClickedDeleteConfirm" />
+                        Delete
+                      </Button>
+                    </DialogFooter>
+                  </DialogContent>
+                </Dialog>
+              </ButtonGroup>
+            </CardAction>
           </CardHeader>
           <CardContent class="space-y-4">
             <div>
@@ -234,10 +274,11 @@ function goBack() {
           </CardFooter>
         </Card>
 
-        <!-- Applications Section -->
+        <!-- Applications -->
         <div class="space-y-4">
           <div class="flex justify-between items-center">
             <h2 class="text-xl font-semibold">Applications</h2>
+            <!-- Create Application -->
             <Dialog v-model:open="isCreateAppDialogOpen">
               <DialogTrigger asChild>
                 <Button @click="openCreateAppDialog" class="gap-2">
@@ -251,55 +292,33 @@ function goBack() {
                 </DialogHeader>
                 <FieldSet>
                   <FieldGroup>
+                    <Field />
                     <Field>
                       <FieldLabel for="app-name">
-                        Application Name
+                        Name
                       </FieldLabel>
-                      <Input id="app-name" v-model="createAppFormData.name" placeholder="required" />
+                      <Input id="app-name" v-model="createAppFormData.label" placeholder="required" />
                     </Field>
                     <Field>
                       <FieldLabel for="app-description">
                         Description
                       </FieldLabel>
-                      <Textarea id="app-description" v-model="createAppFormData.description" class="resize-none" placeholder="optional" />
+                      <Textarea id="app-description" v-model="createAppFormData.description" class="resize-none"
+                        placeholder="optional" />
                     </Field>
                     <Field>
-                      <FieldLabel for="app-repo">
-                        Repository URL
-                      </FieldLabel>
-                      <Input id="app-repo" v-model="createAppFormData.repo" placeholder="optional" />
-                    </Field>
-                    <Field>
-                      <FieldLabel for="app-env">
-                        Environment Variables
-                      </FieldLabel>
-                      <Textarea id="app-env" v-model="createAppFormData.env" class="resize-none" placeholder="optional" />
-                    </Field>
-                    <Field>
-                      <FieldLabel for="app-args">
-                        Arguments
-                      </FieldLabel>
-                      <Textarea id="app-args" v-model="createAppFormData.args" class="resize-none" placeholder="optional" />
-                    </Field>
-                    <Field>
-                      <FieldError v-if="errorMessage">{{errorMessage}}</FieldError>
+                      <FieldError v-if="createAppDialogErrorMessage">{{ createAppDialogErrorMessage }}</FieldError>
                     </Field>
                   </FieldGroup>
                 </FieldSet>
                 <DialogFooter>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    @click="isCreateAppDialogOpen = false"
-                    :disabled="isSubmitting"
-                  >
+                  <Button type="button" variant="outline" @click="isCreateAppDialogOpen = false"
+                    :disabled="isClickedCreateAppConfirm">
                     Cancel
                   </Button>
-                  <Button
-                    @click="handleCreateApplication"
-                    :disabled="isSubmitting"
-                  >
-                    {{ isSubmitting ? 'Creating...' : 'Create Application' }}
+                  <Button @click="onClickCreateAppConfirm" :disabled="isClickedCreateAppConfirm">
+                    <Spinner class="animate-spin" v-if="isClickedCreateAppConfirm" />
+                    Create
                   </Button>
                 </DialogFooter>
               </DialogContent>
@@ -307,22 +326,18 @@ function goBack() {
           </div>
 
           <!-- Empty Applications State -->
-          <div v-if="projectApplications.length === 0" class="flex items-center justify-center py-8">
+          <div v-if="project.applications.length === 0" class="flex items-center justify-center py-8">
             <Card class="w-full">
               <CardContent class="flex flex-col items-center justify-center py-12">
-                <p class="text-muted-foreground text-lg">No applications yet</p>
+                <p class="text-muted-foreground text-lg">No applications</p>
               </CardContent>
             </Card>
           </div>
 
           <!-- Applications Grid -->
           <div v-else class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            <Card
-              v-for="app in projectApplications"
-              :key="app.name"
-              class="cursor-pointer hover:shadow-lg transition-shadow flex flex-col"
-              @click="goToApplication(app)"
-            >
+            <Card v-for="app in project.applications" :key="app.name"
+              class="cursor-pointer hover:shadow-lg transition-shadow flex flex-col" @click="goToApplication(app)">
               <CardHeader>
                 <CardTitle class="line-clamp-2">{{ app.name }}</CardTitle>
               </CardHeader>
@@ -343,7 +358,7 @@ function goBack() {
       <!-- Error/Not Found State -->
       <Card v-else>
         <CardContent class="flex flex-col items-center justify-center py-12">
-          <p class="text-muted-foreground text-lg mb-4">Project not found</p>
+          <p class="text-muted-foreground text-lg mb-4">Project {{ projectName }} not found</p>
           <Button @click="goBack" variant="outline">
             Back to Projects
           </Button>
