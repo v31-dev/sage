@@ -21,6 +21,7 @@ import {
 } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
+import { Spinner } from '@/components/ui/spinner'
 
 import { projectAPI, type Project } from '@/services/api'
 import CardDescription from '@/components/ui/card/CardDescription.vue'
@@ -61,7 +62,7 @@ function openDialog() {
 
 async function handleCreateProject() {
   errorMessage.value = ''
-  
+
   if (!formData.value.label.trim()) {
     errorMessage.value = 'Project name is required'
     return
@@ -69,8 +70,8 @@ async function handleCreateProject() {
 
   try {
     isSubmitting.value = true
-    await projectAPI.create({ 
-      label: formData.value.label, 
+    await projectAPI.create({
+      label: formData.value.label,
       description: formData.value.description || null
     })
     isDialogOpen.value = false
@@ -88,10 +89,18 @@ function goToProject(projectName: string) {
 </script>
 
 <template>
-  <main class="flex-1 px-4 py-6">
+  <main class="flex-1 px-4 py-6 relative">
     <div class="max-w-7xl mx-auto">
-      <!-- Header with New Project Button -->
-      <div class="pb-6">
+      <!-- Loading State -->
+      <div v-if="isLoading" class="absolute inset-0 z-50 flex items-center justify-center">
+        <div class="flex flex-col items-center gap-4">
+          <Spinner />
+          <p class="text-sm text-muted-foreground">Loading projects...</p>
+        </div>
+      </div>
+
+      <!-- Content -->
+      <div v-else class="space-y-6">
         <Card>
           <CardHeader>
             <CardAction>
@@ -118,26 +127,19 @@ function goToProject(projectName: string) {
                         <FieldLabel for="description">
                           Description
                         </FieldLabel>
-                        <Textarea id="description" v-model="formData.description" class="resize-none" placeholder="optional" />
+                        <Textarea id="description" v-model="formData.description" class="resize-none"
+                          placeholder="optional" />
                       </Field>
                       <Field>
-                        <FieldError v-if="errorMessage">{{errorMessage}}</FieldError>
+                        <FieldError v-if="errorMessage">{{ errorMessage }}</FieldError>
                       </Field>
                     </FieldGroup>
                   </FieldSet>
                   <DialogFooter>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      @click="isDialogOpen = false"
-                      :disabled="isSubmitting"
-                    >
+                    <Button type="button" variant="outline" @click="isDialogOpen = false" :disabled="isSubmitting">
                       Cancel
                     </Button>
-                    <Button
-                      @click="handleCreateProject"
-                      :disabled="isSubmitting"
-                    >
+                    <Button @click="handleCreateProject" :disabled="isSubmitting">
                       {{ isSubmitting ? 'Creating...' : 'Create Project' }}
                     </Button>
                   </DialogFooter>
@@ -146,29 +148,26 @@ function goToProject(projectName: string) {
             </CardAction>
           </CardHeader>
         </Card>
-      </div>
-      
-      <!-- Projects Grid -->
-      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        <Card
-          v-for="project in projects"
-          :key="project.name"
-          class="cursor-pointer hover:shadow-lg transition-shadow flex flex-col min-h-[250px]"
-          @click="goToProject(project.name)"
-        >
-          <CardHeader>
-            <CardTitle class="line-clamp-2">{{ project.label }}</CardTitle>
-            <CardDescription>{{ project.name }}</CardDescription>
-          </CardHeader>
-          <CardContent class="flex-1">
-            <h3 class="text-sm font-medium text-muted-foreground mb-2">{{ project.description }}</h3>
-          </CardContent>
-          <CardFooter class="border-t">
-            <div class="pt-4 text-xs text-muted-foreground">
-              <p>Updated: {{ new Date(project.updated_at).toLocaleString() }}</p>
-            </div>
-          </CardFooter>
-        </Card>
+
+        <!-- Projects Grid -->
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          <Card v-for="project in projects" :key="project.name"
+            class="cursor-pointer hover:shadow-lg transition-shadow flex flex-col min-h-[250px]"
+            @click="goToProject(project.name)">
+            <CardHeader>
+              <CardTitle class="line-clamp-2">{{ project.label }}</CardTitle>
+              <CardDescription>{{ project.name }}</CardDescription>
+            </CardHeader>
+            <CardContent class="flex-1">
+              <h3 class="text-sm font-medium text-muted-foreground mb-2">{{ project.description }}</h3>
+            </CardContent>
+            <CardFooter class="border-t">
+              <div class="pt-4 text-xs text-muted-foreground">
+                <p>Updated: {{ new Date(project.updated_at).toLocaleString() }}</p>
+              </div>
+            </CardFooter>
+          </Card>
+        </div>
       </div>
     </div>
   </main>

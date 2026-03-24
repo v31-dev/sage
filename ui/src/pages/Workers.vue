@@ -3,6 +3,7 @@ import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { Activity, ChevronRight, MoreVertical } from 'lucide-vue-next'
 import { Card, CardContent } from '@/components/ui/card'
+import { Spinner } from '@/components/ui/spinner'
 import {
   Table,
   TableBody,
@@ -77,29 +78,28 @@ function getStatusTextColor(percent: number) {
 </script>
 
 <template>
-  <main class="flex-1 px-0 sm:px-4 py-4 sm:py-4">
+  <main class="flex-1 px-0 sm:px-4 py-4 sm:py-4 relative">
     <div class="max-w-7xl mx-auto">
       <!-- Loading State -->
-      <Card v-if="isLoading">
-        <CardContent class="pt-6 pb-6">
-          <div class="space-y-3">
-            <div class="h-4 bg-gray-300 rounded"></div>
-            <div class="h-4 bg-gray-300 rounded"></div>
-            <div class="h-4 bg-gray-300 rounded"></div>
-          </div>
-        </CardContent>
-      </Card>
+      <div v-if="isLoading" class="absolute inset-0 z-50 flex items-center justify-center">
+        <div class="flex flex-col items-center gap-4">
+          <Spinner />
+          <p class="text-sm text-muted-foreground">Loading workers...</p>
+        </div>
+      </div>
 
-      <!-- Empty State -->
-      <Card v-else-if="workers.length === 0">
-        <CardContent class="flex flex-col items-center justify-center py-12">
-          <p class="text-muted-foreground text-lg">No workers found</p>
-        </CardContent>
-      </Card>
+      <!-- Content -->
+      <div v-else class="space-y-6">
+        <!-- Empty State -->
+        <Card v-if="workers.length === 0">
+          <CardContent class="flex flex-col items-center justify-center py-12">
+            <p class="text-muted-foreground text-lg">No workers found</p>
+          </CardContent>
+        </Card>
 
-      <!-- Workers Table -->
-      <Card v-else class="py-0">
-        <Table>
+        <!-- Workers Table -->
+        <Card v-else class="py-0">
+          <Table>
           <TableHeader class="bg-muted/50">
             <TableRow class="hover:bg-muted/50">
               <TableHead class="w-8 pl-4 py-2"></TableHead>
@@ -236,7 +236,8 @@ function getStatusTextColor(percent: number) {
             </TableRow>
           </TableBody>
         </Table>
-      </Card>
+        </Card>
+      </div>
     </div>
   </main>
 </template>

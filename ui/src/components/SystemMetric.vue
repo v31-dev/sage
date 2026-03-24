@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Card, CardHeader, CardTitle } from '@/components/ui/card'
+import { Spinner } from '@/components/ui/spinner'
 import { fetchWorkerMetrics, type WorkerMetricsResponse, type MetricsPeriod } from '@/services/api'
 import MetricChart from '@/components/MetricChart.vue'
 
@@ -151,41 +152,42 @@ const containerNetMax = computed(() => {
 </script>
 
 <template>
-  <main class="flex-1 px-2 sm:px-4 py-6">
+  <main class="flex-1 px-2 sm:px-4 py-6 relative">
     <div class="mx-auto space-y-6 max-w-7xl">
 
-      <!-- Header Card -->
-      <Card>
-        <CardHeader>
-          <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
-            <div>
-              <CardTitle class="text-2xl">{{ hostname }}</CardTitle>
-              <p class="text-sm text-muted-foreground mt-1">
-                {{ data?.meta?.ip }} • {{ data?.meta?.cpu_cores }} cores • {{ data?.meta?.mem_total_mb }} MB RAM • {{ data?.meta?.disk_total_gb }} GB Disk
-              </p>
-            </div>
-            <div class="flex gap-1 rounded-md border p-1 text-sm">
-              <button v-for="p in periods" :key="p" @click="period = p"
-                :class="['px-3 py-1 rounded transition-colors whitespace-nowrap', period === p ? 'bg-primary text-primary-foreground' : 'hover:bg-muted']">{{
-                p }}</button>
-            </div>
-          </div>
-        </CardHeader>
-      </Card>
-
       <!-- Loading State -->
-      <div v-if="isLoading" class="grid grid-cols-1 gap-4">
-        <Card v-for="i in 6" :key="i" class="animate-pulse">
-          <CardContent class="pt-6">
-            <div class="h-64 bg-muted rounded"></div>
-          </CardContent>
-        </Card>
+      <div v-if="isLoading" class="absolute inset-0 z-50 flex items-center justify-center">
+        <div class="flex flex-col items-center gap-4">
+          <Spinner />
+          <p class="text-sm text-muted-foreground">Loading metrics...</p>
+        </div>
       </div>
 
-      <!-- Charts Grid -->
-      <template v-else-if="data?.host.length">
-        <div class="grid grid-cols-1 gap-4">
-          <MetricChart title="CPU Usage" type="area"
+      <!-- Content -->
+      <div v-else class="space-y-6">
+        <!-- Header Card -->
+        <Card>
+          <CardHeader>
+            <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+              <div>
+                <CardTitle class="text-2xl">{{ hostname }}</CardTitle>
+                <p class="text-sm text-muted-foreground mt-1">
+                  {{ data?.meta?.ip }} • {{ data?.meta?.cpu_cores }} cores • {{ data?.meta?.mem_total_mb }} MB RAM • {{ data?.meta?.disk_total_gb }} GB Disk
+                </p>
+              </div>
+              <div class="flex gap-1 rounded-md border p-1 text-sm">
+                <button v-for="p in periods" :key="p" @click="period = p"
+                  :class="['px-3 py-1 rounded transition-colors whitespace-nowrap', period === p ? 'bg-primary text-primary-foreground' : 'hover:bg-muted']">{{
+                  p }}</button>
+              </div>
+            </div>
+          </CardHeader>
+        </Card>
+
+        <!-- Charts Grid -->
+        <template v-if="data?.host.length">
+          <div class="grid grid-cols-1 gap-4">
+            <MetricChart title="CPU Usage" type="area"
             :data="chartData.map(({ date, cpu_pct, cpu_pct_label }) => ({ date, cpu_pct, cpu_pct_label }))"
             :yMax="100" unit="%"
             :height="'300px'"
@@ -252,11 +254,12 @@ const containerNetMax = computed(() => {
             :yMax="containerNetMax" unit="Mbps"
             :height="'300px'"
             :series="[...containerMeta.map(({ name, color }) => ({ key: `${name}_net_rx`, tooltip_label: `${name}_net_rx_label`, name: `${name} Download`, color })), ...containerMeta.map(({ name, color }) => ({ key: `${name}_net_tx`, tooltip_label: `${name}_net_tx_label`, name: `${name} Upload`, color }))]" />
-        </div>
-      </template>
+          </div>
+        </template>
 
-      <!-- Empty State -->
-      <div v-else class="text-center text-muted-foreground py-16">No metrics collected yet</div>
+        <!-- Empty State -->
+        <div v-else class="text-center text-muted-foreground py-16">No metrics collected yet</div>
+      </div>
     </div>
   </main>
 </template>
