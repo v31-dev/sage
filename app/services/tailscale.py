@@ -84,7 +84,7 @@ class Tailscale(Base):
       if result.returncode != 0:
         raise Exception(f"Error syncing files to {hostname}: {result.stderr.strip()}")
       
-      logger.info(f"Successfully synced files to {hostname}.")
+      logger.info(f"Successfully synced files to {hostname}: {dst}.")
     finally:
       # Clean up temporary file if created
       if temp_file:

@@ -1,0 +1,8 @@
+services:
+  ${APPLICATION_NAME}:
+    build:
+      context: ${REPO}
+      dockerfile: ${DOCKERFILE}
+    container_name: ${CONTAINER_NAME}
+    restart: unless-stopped
+    env_file: .env

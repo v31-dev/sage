@@ -14,6 +14,7 @@ from services.metrics import Metrics
 
 app_dir = Path(__file__).parent.parent
 logger = logging.getLogger(__name__)
+worker_home_dir = "/opt/sage"
 
 class Manager(Base):
   def __init__(self):
@@ -89,20 +90,20 @@ class Manager(Base):
       tunnel = self.cloudflare.get_tunnel_token()
 
       # Sync files
-      self.tailscale.sync_file(worker.hostname, app_dir / "templates/worker/docker-compose.yml", "/opt/sage/docker-compose.yml")
-      self.tailscale.sync_file(worker.hostname, app_dir / "templates/worker/worker.env", "/opt/sage/.env", {
-        "SAGE_HOME": "/opt/sage",
+      self.tailscale.sync_file(worker.hostname, app_dir / "templates/worker/docker-compose.yml", f"{worker_home_dir}/docker-compose.yml")
+      self.tailscale.sync_file(worker.hostname, app_dir / "templates/worker/worker.env", f"{worker_home_dir}/.env", {
+        "SAGE_HOME": worker_home_dir,
         "TS_IP": worker.ip,
         "TS_HOSTNAME": worker.hostname,
         "TUNNEL_TOKEN": tunnel.token
       })
-      self.tailscale.sync_file(worker.hostname, app_dir / "templates/worker/traefik/traefik.yml", "/opt/sage/traefik/traefik.yml", {
+      self.tailscale.sync_file(worker.hostname, app_dir / "templates/worker/traefik/traefik.yml", f"{worker_home_dir}/traefik/traefik.yml", {
         "ADMIN_EMAIL": get_env("ADMIN_EMAIL")
       })
-      self.tailscale.sync_file(worker.hostname, app_dir / "templates/worker/traefik/config.yml", "/opt/sage/traefik/dynamic/config.yml", {
+      self.tailscale.sync_file(worker.hostname, app_dir / "templates/worker/traefik/config.yml", f"{worker_home_dir}/traefik/dynamic/config.yml", {
         "DOMAIN": get_env("DOMAIN")
       })
-      self.tailscale.sync_file(worker.hostname, app_dir / "templates/worker/vector/vector.yml", "/opt/sage/vector/config/vector.yml", {
+      self.tailscale.sync_file(worker.hostname, app_dir / "templates/worker/vector/vector.yml", f"{worker_home_dir}/vector/config/vector.yml", {
         "IP": self.tailscale.ip(),
         "HOSTNAME": worker.hostname
       })
@@ -110,7 +111,7 @@ class Manager(Base):
       # Start containers
       self.tailscale.exec_command(
         worker.hostname, 
-        "docker compose -f /opt/sage/docker-compose.yml up -d --wait --remove-orphans --quiet-pull --quiet-build",
+        f"docker compose -f {worker_home_dir}/docker-compose.yml up -d --wait --remove-orphans --quiet-pull --quiet-build",
         timeout=300
       )
 
@@ -184,9 +185,14 @@ class Manager(Base):
       for container in application.containers
     ], return_exceptions=False)
     
-    application.status = "active"
-    application.save()
-    logger.info(f"Application {application.name} deployed.")
+    if any(container.status == "error" for container in application.containers):
+      application.status = "error"
+      application.save()
+      raise Exception(f"Failed to deploy application {application.name}.")
+    else:
+      application.status = "active"
+      application.save()
+      logger.info(f"Application {application.name} deployed.")
 
   async def deploy_application_container(self, container: Container):
     container_task_id = generate_task_id_token()
@@ -197,15 +203,51 @@ class Manager(Base):
     container.status = "deploying"
     container.save()
 
+    exception_message = None
+
     try:
       task_id_token = task_id.set(container_task_id)
-      for _ in range(10):
-        await run_in_executor_with_context(
-          self.tailscale.exec_command, container.worker.hostname, "sleep 10"
-      )
+
+      container_name = f"{container.application.project.name}-{container.application.name}"
+      container_dir = f"{worker_home_dir}/applications/{container.application.name}"
+
+      app_env = container.application.env if container.application.env else ""
+      app_build_args = container.application.build if container.application.build else ""
+      
+      # Create the secrets file
+      await run_in_executor_with_context(self.tailscale.sync_file, container.worker.hostname, 
+                                         app_dir / "templates/worker/file", f"{container_dir}/.env", {
+                                           "CONTENT": app_env
+                                         })
+      
+      # Create the compose file based on application type
+      if container.application.type == "docker":
+        await run_in_executor_with_context(self.tailscale.sync_file, container.worker.hostname, 
+                                           app_dir / "templates/worker/application/dockerhub-compose.yml", f"{container_dir}/docker-compose.yml", {
+                                            "APPLICATION_NAME": container.application.name,
+                                            "CONTAINER_NAME": container_name,
+                                            "IMAGE": container.application.image
+                                          })
+      elif container.application.type == "git":
+        await run_in_executor_with_context(self.tailscale.sync_file, container.worker.hostname, 
+                                         app_dir / "templates/worker/application/gitrepo-compose.yml", f"{container_dir}/docker-compose.yml", {
+                                            "APPLICATION_NAME": container.application.name,
+                                            "CONTAINER_NAME": container_name,
+                                            "REPO": container.application.repo,
+                                            "DOCKERFILE": container.application.path,
+                                         })
+
+      deployment_status = "active"
+    except Exception as e:
+      deployment_status = "error"
+      exception_message = str(e)
     finally:
       task_id.reset(task_id_token)
 
-    container.status = "active"
+    container.status = deployment_status
     container.save()
-    logger.info(f"Application container {container.application.name} deployed to worker {container.worker.hostname} with task id {container_task_id}.")
+
+    if deployment_status == "active":
+      logger.info(f"Application {container.application.name} container deployed to worker {container.worker.hostname} with task id {container_task_id}.")
+    else: 
+      logger.error(f"Failed to deploy application {container.application.name} container to worker {container.worker.hostname} with task id {container_task_id}. Exception: {exception_message}")

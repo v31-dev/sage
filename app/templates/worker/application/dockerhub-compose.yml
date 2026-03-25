@@ -1,0 +1,6 @@
+services:
+  ${APPLICATION_NAME}:
+    image: ${IMAGE}
+    container_name: ${CONTAINER_NAME}
+    restart: unless-stopped
+    env_file: .env

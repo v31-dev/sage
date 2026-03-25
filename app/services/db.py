@@ -52,20 +52,28 @@ class Application(BaseModel):
   name            = CleanCharField()
   label           = CharField()
   description     = CharField(null=True)
+  type            = CharField(choices=["docker", "git"], default="docker")
   image           = CharField(null=True)
+  repo            = CharField(null=True)
+  path            = CharField(default="Dockerfile")
   env             = EncryptedTextField(null=True)
   args            = EncryptedTextField(null=True)
   status          = CharField(default='inactive')
   container_count = IntegerField(default=0)
 
   def save(self, *args, **kwargs):
-    if self.image:
-      # Docker image - image:tag
-      # Git repo - https://github.com/user/repo.git#<branch>:<sub-directory>/<Dockerfile>
-      pattern = r'^(?:[\w.-]+(?:[:/][\w.-]+)+|https?://.*\.git.*)$'
-      if not re.match(pattern, self.image):
-        raise ValueError(f"Invalid image format: {self.image}. Should be a Docker image (e.g. 'nginx:latest') or Git repo URL (e.g. 'https://github.com/user/repo.git#branch:subdir/Dockerfile')")
-        
+    if self.type == "docker":
+      self.repo = None
+      self.path = 'Dockerfile'
+    
+    if self.type == "git":
+      self.image = None
+      if self.repo:
+        # Validate Git repo URL (basic check)
+        pattern = r'^https?://[\w.-]+/[\w.-]+/[\w.-]+(?:\.git)?(?:#[\w.-]+)?(?::[\w./-]+)?$'
+        if not re.match(pattern, self.repo):
+          raise ValueError(f"Invalid Git repository URL: {self.repo}. Should be in format 'https://github.com/user/repo<?.git><?#branch><?:sub-directory>'")
+
     return super().save(*args, **kwargs)
 
   class Meta:

@@ -2,30 +2,37 @@
 import { ref } from 'vue'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
-import { 
-  Dialog, 
-  DialogContent, 
-  DialogDescription, 
-  DialogFooter, 
-  DialogHeader, 
-  DialogTitle, 
-  DialogTrigger 
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
-import { 
-  Field, 
-  FieldGroup, 
-  FieldLabel, 
-  FieldSet, 
-  FieldError 
+import {
+  Field,
+  FieldGroup,
+  FieldLabel,
+  FieldSet,
+  FieldError
 } from '@/components/ui/field'
 import { Spinner } from '@/components/ui/spinner'
 import { toast } from 'vue-sonner'
-
 import { 
-    type Application, 
-    getApplicationAPI
- } from '@/services/api'
+  Select, 
+  SelectItem,
+  SelectContent,
+  SelectTrigger,
+  SelectValue
+} from '@/components/ui/select'
+
+import {
+  type Application,
+  getApplicationAPI
+} from '@/services/api'
 
 
 interface Props {
@@ -40,7 +47,10 @@ const isEditDialogOpen = ref(false)
 const editFormData = ref({
   label: '',
   description: '',
+  type: 'docker',
   image: '',
+  repo: '',
+  path: 'Dockerfile',
   env: '',
   args: '',
 })
@@ -48,11 +58,14 @@ const editDialogErrorMessage = ref('')
 const isClickedEditConfirm = ref(false)
 
 function openEditDialog() {
-  editFormData.value.label = props.application.label || ''
-  editFormData.value.description = props.application.description || ''
-  editFormData.value.image = props.application.image || ''
-  editFormData.value.env = props.application.env || ''
-  editFormData.value.args = props.application.args || ''
+  editFormData.value.label = props.application.label || editFormData.value.label
+  editFormData.value.description = props.application.description || editFormData.value.description
+  editFormData.value.type = props.application.type || 'docker'
+  editFormData.value.image = props.application.image || editFormData.value.image
+  editFormData.value.repo = props.application.repo || editFormData.value.repo
+  editFormData.value.path = props.application.path || editFormData.value.path
+  editFormData.value.env = props.application.env || editFormData.value.env
+  editFormData.value.args = props.application.args || editFormData.value.args
   editDialogErrorMessage.value = ''
   isEditDialogOpen.value = true
 }
@@ -65,7 +78,10 @@ async function handleUpdateApplication() {
     await props.applicationAPI.update(props.application.name, {
       label: editFormData.value.label || null,
       description: editFormData.value.description || null,
+      type: editFormData.value.type || null,
       image: editFormData.value.image || null,
+      repo: editFormData.value.repo || null,
+      path: editFormData.value.path || null,
       env: editFormData.value.env || null,
       args: editFormData.value.args || null,
     })
@@ -106,10 +122,36 @@ async function handleUpdateApplication() {
             <Textarea id="description" v-model="editFormData.description" class="resize-none" placeholder="optional" />
           </Field>
           <Field>
+            <FieldLabel for="type">
+              Type
+            </FieldLabel>
+            <Select id="type" v-model="editFormData.type" placeholder="required">
+              <SelectTrigger>
+                <SelectValue/>
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="docker" key="docker">Docker</SelectItem>
+                <SelectItem value="git" key="git">Git</SelectItem>
+              </SelectContent>
+            </Select>
+          </Field>
+          <Field v-if="editFormData.type == 'docker'">
             <FieldLabel for="image">
               Image
             </FieldLabel>
-            <Input id="image" v-model="editFormData.image" placeholder="optional" />
+            <Input id="image" v-model="editFormData.image" placeholder="required" />
+          </Field>
+          <Field v-if="editFormData.type == 'git'">
+            <FieldLabel for="repo">
+              Repository
+            </FieldLabel>
+            <Input id="repo" v-model="editFormData.repo" placeholder="required" />
+          </Field>
+          <Field v-if="editFormData.type == 'git'">
+            <FieldLabel for="path">
+              Path
+            </FieldLabel>
+            <Input id="path" v-model="editFormData.path" placeholder="required" />
           </Field>
           <Field>
             <FieldLabel for="env">

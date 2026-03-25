@@ -51,6 +51,10 @@ def update_application(request: Request, application_data: dict = Body(...)):
     'image': application_data.get('image'),
     'env': application_data.get('env'),
     'args': application_data.get('args'),
+    'type': application_data.get('type'),
+    'repo': application_data.get('repo'),
+    'path': application_data.get('path')
+
   }
   return generic_update(
     Application, 

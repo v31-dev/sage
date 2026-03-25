@@ -71,8 +71,9 @@ Current tasks:
 ### Hardware Constraints
 
 Manager target: **well under 2c4g**. Every resource counts.
-- No thread pools. Executor only for necessary blocking I/O (Peewee, SSH).
-- Event loop (uvicorn) handles all I/O. Scheduler is async-first.
+- **Peewee/SQLite**: Synchronous calls OK — local, sharded by hostname/container, WAL mode. Call directly from async (FastAPI routes, tasks), no executor wrapping.
+- **Network I/O**: SSH (rsync/exec), Cloudflare, HTTP — wrap in `run_in_executor_with_context` to avoid event loop blocking.
+- No thread pools beyond executor. Event loop (uvicorn) handles all I/O. Scheduler is async-first.
 - Explicit, lightweight patterns only — no clever infrastructure.
 
 **Scaling**: horizontal (add workers), vertical (upgrade manager only if truly bottlenecked).
@@ -108,7 +109,7 @@ Vector on each worker sends Docker logs to manager port 9001 (`POST /logs`). Sto
 | Any async → blocking I/O | Explicit — `run_in_executor_with_context(func, *args)` |
 | API → Rocketry trigger | `LoggedSession._Proxy` injects `_task_id` kwarg |
 
-**`run_in_executor_with_context`**: captures `copy_context()` in async context (carries current `task_id`), submits `ctx.run(func, *args)` to the default thread pool. Use this for all blocking Peewee/SSH/HTTP calls.
+**`run_in_executor_with_context`**: captures `copy_context()` in async context (carries current `task_id`), submits `ctx.run(func, *args)` to the default thread pool. Use only for network I/O (SSH via Tailscale, Cloudflare, remote HTTP). Peewee/SQLite calls run synchronously inline.
 
 **Pitfalls**:
 - Never use `asyncio.to_thread()` — context not preserved. Always use `run_in_executor_with_context`.

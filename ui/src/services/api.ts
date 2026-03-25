@@ -36,6 +36,9 @@ export interface Application {
   label: string
   project: Project
   description: string | null
+  type: 'docker' | 'git'
+  repo: string | null
+  path: string | null
   image: string | null
   env: string | null
   args: string | null

@@ -21,6 +21,7 @@ import { ButtonGroup } from '@/components/ui/button-group'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
+import { Spinner } from '@/components/ui/spinner'
 
 import {
   getApplicationAPI,
@@ -119,8 +120,20 @@ async function onClickDeleteContainer() {
               <p class="text-sm text-muted-foreground">{{ application.description ? application.description : '-' }}</p>
             </div>
             <div>
+              <Label>Type</Label>
+              <p class="text-sm text-muted-foreground">{{ application.type ? application.type : '-' }}</p>
+            </div>
+            <div v-if="application.type === 'docker'">
               <Label>Image</Label>
               <p class="text-sm text-muted-foreground">{{ application.image ? application.image : '-' }}</p>
+            </div>
+            <div v-if="application.type === 'git'">
+              <Label>Repository</Label>
+              <p class="text-sm text-muted-foreground">{{ application.repo ? application.repo : '-' }}</p>
+            </div>
+            <div v-if="application.type === 'git'">
+              <Label>Path</Label>
+              <p class="text-sm text-muted-foreground">{{ application.path ? application.path : '-' }}</p>
             </div>
           </CardContent>
           <CardFooter class="border-t flex flex-col md:flex-row justify-between items-center gap-2 md:gap-0">
