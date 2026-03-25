@@ -47,9 +47,15 @@ export interface Application {
   updated_at: Date
 }
 
+export interface Deployment {
+  container_task_id: string
+  created_at: Date
+}
+
 export interface Container {
   worker: Worker
   status: 'active' | 'inactive' | 'deploying' | 'stopping' | 'restarting' | 'error'
+  deployments: Deployment[]
   created_at: Date
   updated_at: Date
 }

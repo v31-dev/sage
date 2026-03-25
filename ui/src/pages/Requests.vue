@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import LogViewer from '@/components/LogViewer.vue';
+import { formatDate } from '@/lib/utils';
 
 
 function parseMessage(raw: string, entry: any): { [key: string]: any; ts: string; message: string } {
@@ -17,28 +18,13 @@ function parseMessage(raw: string, entry: any): { [key: string]: any; ts: string
   }
 }
 
-const _tsFormatter = new Intl.DateTimeFormat(undefined, {
-  month: 'short', day: '2-digit',
-  hour: '2-digit', minute: '2-digit', second: '2-digit',
-  hour12: true,
-})
-
-// dateString like '2026-03-19T16:33:22.427659841Z'
-function formatTs(dateString: string): string {
-  try {
-    return _tsFormatter.format(new Date(dateString)).replace(',', '')
-  } catch {
-    return dateString
-  }
-}
-
 const columns = [
   {
     key: 'ts',
     label: 'Timestamp',
     headerClass: 'pl-4 py-2 text-xs w-40',
     rowClass: "pl-4 py-2 text-xs w-40 font-mono text-muted-foreground whitespace-nowrap",
-    formatter: formatTs
+    formatter: formatDate
   },
   {
     key: 'worker',

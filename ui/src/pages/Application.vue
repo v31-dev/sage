@@ -1,14 +1,23 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Plus } from 'lucide-vue-next'
+import {
+  Plus,
+  Trash,
+  Play,
+  StopCircle,
+  RefreshCw,
+  Logs,
+  Activity
+} from 'lucide-vue-next'
 import {
   Card,
   CardAction,
   CardContent,
   CardDescription,
   CardHeader,
-  CardTitle
+  CardTitle,
+  CardFooter
 } from '@/components/ui/card'
 import { ButtonGroup } from '@/components/ui/button-group'
 import { Button } from '@/components/ui/button'
@@ -41,8 +50,19 @@ import { Spinner } from '@/components/ui/spinner'
 import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
 
-import { getApplicationAPI, getContainerAPI, type Application, type Worker, type Container } from '@/services/api'
+import { 
+  getApplicationAPI, 
+  getContainerAPI, 
+  type Application, 
+  type Worker, 
+  type Container, 
+  fetchLogs 
+} from '@/services/api'
+import { useAppStore } from '@/stores/app'
+import LogViewer from '@/components/LogViewer.vue'
+import { formatDate, levelClass } from '@/lib/utils'
 
+const appStore = useAppStore()
 const route = useRoute()
 const router = useRouter()
 const projectName = route.params.projectId as string
@@ -52,9 +72,15 @@ const applicationAPI = getApplicationAPI(projectName)
 const containersAPI = getContainerAPI(projectName, appName)
 const application = ref<Application | null>(null)
 const isLoading = ref(true)
+let pollInterval: ReturnType<typeof setInterval> | null = null
 
 onMounted(async () => {
   await loadApplication()
+  pollInterval = setInterval(loadApplicationStatus, 5_000)
+})
+onUnmounted(() => {
+  if (pollInterval) clearInterval(pollInterval)
+  if (deploymentLogsPollInterval) clearInterval(deploymentLogsPollInterval)
 })
 
 async function loadApplication() {
@@ -65,6 +91,18 @@ async function loadApplication() {
     console.error('Failed to load application:', err)
   } finally {
     isLoading.value = false
+  }
+}
+
+async function loadApplicationStatus() {
+  try {
+    const updatedApplication = await applicationAPI.fetchOne(appName) as Application
+    if (application.value) {
+      application.value.status = updatedApplication.status
+      application.value.containers = updatedApplication.containers
+    }
+  } catch (err) {
+    console.error('Failed to load application status:', err)
   }
 }
 
@@ -197,6 +235,137 @@ async function onClickAddContainerConfirm() {
   } finally {
     isClickedAddContainerConfirm.value = false
   }
+}
+// ####################################################################################################
+
+// ####################################################################################################
+// Delete Container
+async function onClickDeleteContainer() {
+
+}
+// ####################################################################################################
+
+// ####################################################################################################
+// Deployment Logs
+const isDeploymentLogsDialogOpen = ref(false)
+const selectedContainer = ref<Container | null>(null)
+const selectedDeploymentId = ref('')
+const deploymentLogs = ref('')
+const isLoadingDeploymentLogs = ref(false)
+let deploymentLogsPollInterval: ReturnType<typeof setInterval> | null = null
+
+const LOG_RE = /^\[([^\]]+)\]\s+\[([^\]]+)\]\s+\[([^\]]+)\]\s+\[([^\]]*)\]\s*([\s\S]*)$/
+
+function parseMessage(raw: string): { [key: string]: any; ts: string; message: string } {
+  const m = raw.match(LOG_RE)
+  if (!m) return { ts: '', level: '', logger: '', taskId: '', message: raw }
+  return {
+    ts: m[1]?.split(',')[0]?.trim() ?? '',
+    level: m[2]?.trim() ?? '',
+    logger: m[3]?.trim() ?? '',
+    taskId: m[4]?.trim() ?? '',
+    message: m[5]?.trim() ?? '',
+  }
+}
+
+const columns = [
+  {
+    key: 'ts',
+    label: 'Timestamp',
+    headerClass: 'pl-4 py-2 text-xs w-40',
+    rowClass: "pl-4 py-2 text-xs w-40 font-mono text-muted-foreground whitespace-nowrap",
+    formatter: formatDate
+  },
+  {
+    key: 'level',
+    label: 'Level',
+    headerClass: 'py-2 text-xs w-16',
+    rowClass: "py-2 text-xs w-16 font-mono whitespace-nowrap",
+    cellClass: (level: string) => level ? levelClass(level) : 'text-muted-foreground'
+  },
+  {
+    key: 'logger',
+    label: 'Logger',
+    headerClass: 'py-2 text-xs w-36',
+    rowClass: "py-2 text-xs w-36 font-mono text-muted-foreground truncate"
+  },
+  {
+    key: 'taskId',
+    label: 'Task ID',
+    headerClass: 'py-2 text-xs w-24',
+    rowClass: "py-2 text-xs w-24 font-mono",
+    filter: true
+  },
+  {
+    key: 'message',
+    label: 'Message',
+    headerClass: 'py-2 text-xs',
+    rowClass: "py-2 text-xs font-mono break-all whitespace-pre-wrap"
+  },
+]
+
+function openDeploymentLogsDialog(container: Container) {
+  selectedContainer.value = container
+  selectedDeploymentId.value = ''
+  deploymentLogs.value = ''
+  if (container.deployments && container.deployments.length > 0) {
+    selectedDeploymentId.value = container.deployments[0].container_task_id
+    pollDeploymentLogs()
+  }
+  isDeploymentLogsDialogOpen.value = true
+}
+
+function closeDeploymentLogsDialog() {
+  if (deploymentLogsPollInterval) {
+    clearInterval(deploymentLogsPollInterval)
+    deploymentLogsPollInterval = null
+  }
+  isDeploymentLogsDialogOpen.value = false
+  selectedContainer.value = null
+}
+
+async function pollDeploymentLogs() {
+  if (!selectedDeploymentId.value) return
+
+  try {
+    isLoadingDeploymentLogs.value = true
+    const logs = await fetchLogs(appStore.info!.hostname, 'sage', selectedDeploymentId.value)
+    deploymentLogs.value = logs.map(({message}) => message).join('\n')
+  } catch (err) {
+    console.error('Failed to fetch deployment logs:', err)
+    deploymentLogs.value = 'Error fetching logs'
+  } finally {
+    isLoadingDeploymentLogs.value = false
+  }
+}
+
+function handleDeploymentChange() {
+  deploymentLogs.value = ''
+  if (deploymentLogsPollInterval) {
+    clearInterval(deploymentLogsPollInterval)
+  }
+  if (selectedDeploymentId.value) {
+    pollDeploymentLogs()
+    deploymentLogsPollInterval = setInterval(pollDeploymentLogs, 1_000)
+  }
+}
+
+watch(() => selectedDeploymentId.value, handleDeploymentChange)
+// ####################################################################################################
+
+// ####################################################################################################
+// Deploy Application
+const isClickedDeploy = ref(false)
+
+async function onClickDeployApplication() {
+  isClickedDeploy.value = true
+  try {
+    await applicationAPI.action(`${appName}/deploy`)
+  } catch (err) {
+    isClickedDeploy.value = false
+    toast.error('Failed to deploy application ' + (err instanceof Error ? err.message : ''))
+  }
+  // Deployment is a background process, polling will handle state updation
 }
 // ####################################################################################################
 </script>
@@ -336,6 +505,28 @@ async function onClickAddContainerConfirm() {
               <p class="text-sm text-muted-foreground">{{ application.path ? application.path : '-' }}</p>
             </div>
           </CardContent>
+          <CardFooter class="border-t flex flex-col md:flex-row justify-between items-center gap-2 md:gap-0">
+            <ButtonGroup class="space-x-1 w-full md:w-auto flex">
+              <Button class="flex-1 md:flex-initial success" @click="onClickDeployApplication">
+                <Spinner class="animate-spin" v-if="isClickedDeploy" />
+                <Play />Deploy
+              </Button>
+              <Button class="flex-1 md:flex-initial" variant="destructive" :disabled="application.status !== 'active'">
+                <StopCircle />Stop
+              </Button>
+              <Button class="flex-1 md:flex-initial neutral" :disabled="application.status !== 'active'">
+                <RefreshCw />Restart
+              </Button>
+            </ButtonGroup>
+            <ButtonGroup class="space-x-1 w-full md:w-auto flex">
+              <Button class="flex-1 md:flex-initial">
+                <Logs />Logs
+              </Button>
+              <Button class="flex-1 md:flex-initial">
+                <Activity />Metrics
+              </Button>
+            </ButtonGroup>
+          </CardFooter>
         </Card>
 
         <!-- Containers -->
@@ -409,15 +600,65 @@ async function onClickAddContainerConfirm() {
               <CardHeader>
                 <CardTitle>
                   <Badge as-child :variant="container.worker.online ? 'default' : 'destructive'">
-                    <a href="#">{{ container.worker.hostname }}</a>
+                    <RouterLink :to="`/workers/${container.worker.hostname}`">
+                      {{ container.worker.hostname }}
+                    </RouterLink>
                   </Badge>
                 </CardTitle>
+                <CardAction>
+                  <Button variant="destructive" size="icon-sm" @click="onClickDeleteContainer">
+                    <Trash />
+                  </Button>
+                </CardAction>
               </CardHeader>
               <CardContent class="flex-1 space-y-2">
                 <p class="text-sm text-muted-foreground">
                   <span class="font-medium">Status:</span> {{ container.status }}
                 </p>
               </CardContent>
+              <CardFooter class="border-t">
+                <Dialog v-model:open="isDeploymentLogsDialogOpen">
+                  <DialogTrigger asChild>
+                    <Button class="w-full" variant="outline" size="sm" @click="openDeploymentLogsDialog(container)">
+                      Deployment Logs
+                    </Button>
+                  </DialogTrigger>
+                  <DialogContent class="sm:max-w-[600px]">
+                    <DialogHeader>
+                      <DialogTitle>Deployment Logs - {{ selectedContainer?.worker.hostname }}</DialogTitle>
+                    </DialogHeader>
+                    <FieldSet>
+                      <FieldGroup>
+                        <Field>
+                          <FieldLabel for="deployment-select">
+                            Select Deployment
+                          </FieldLabel>
+                          <Select v-model="selectedDeploymentId"
+                            :disabled="!selectedContainer?.deployments || selectedContainer.deployments.length === 0">
+                            <SelectTrigger id="deployment-select">
+                              <SelectValue placeholder="No deployments available" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem v-for="deployment in selectedContainer?.deployments?.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())"
+                                :key="deployment.container_task_id"
+                                :value="deployment.container_task_id">
+                                {{ new Date(deployment.created_at).toLocaleString() }} - {{ deployment.container_task_id }}
+                              </SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </Field>
+                      </FieldGroup>
+                    </FieldSet>
+                    <LogViewer :hostname="appStore.info?.hostname ?? ''" container="sage" :search="false" 
+                      :parseMessage="parseMessage" :columns="columns" />
+                    <DialogFooter>
+                      <Button type="button" variant="outline" @click="closeDeploymentLogsDialog">
+                        Close
+                      </Button>
+                    </DialogFooter>
+                  </DialogContent>
+                </Dialog>
+              </CardFooter>
             </Card>
           </div>
         </div>

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import LogViewer from '@/components/LogViewer.vue';
 import { useAppStore } from '@/stores/app'
-
+import { formatDate, levelClass } from '@/lib/utils'
 
 const appStore = useAppStore()
 const LOG_RE = /^\[([^\]]+)\]\s+\[([^\]]+)\]\s+\[([^\]]+)\]\s+\[([^\]]*)\]\s*([\s\S]*)$/
@@ -18,36 +18,13 @@ function parseMessage(raw: string): { [key: string]: any; ts: string; message: s
   }
 }
 
-const _tsFormatter = new Intl.DateTimeFormat(undefined, {
-  month: 'short', day: '2-digit',
-  hour: '2-digit', minute: '2-digit', second: '2-digit',
-  hour12: true,
-})
-
-// dateString like '2026-03-19T16:12:42.759325367Z'
-function formatTs(dateString: string): string {
-  try {
-    return _tsFormatter.format(new Date(dateString)).replace(',', '')
-  } catch {
-    return dateString
-  }
-}
-
-function levelClass(level: string): string {
-  const l = level.toUpperCase()
-  if (l.startsWith('ERROR') || l.startsWith('CRIT')) return 'text-red-500 font-semibold'
-  if (l.startsWith('WARN')) return 'text-yellow-500 font-semibold'
-  if (l.startsWith('DEBUG')) return 'text-muted-foreground'
-  return 'text-sky-600 dark:text-sky-400'
-}
-
 const columns = [
   {
     key: 'ts',
     label: 'Timestamp',
     headerClass: 'pl-4 py-2 text-xs w-40',
     rowClass: "pl-4 py-2 text-xs w-40 font-mono text-muted-foreground whitespace-nowrap",
-    formatter: formatTs
+    formatter: formatDate
   },
   {
     key: 'level',

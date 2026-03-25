@@ -126,3 +126,27 @@ export class CRUDAPI<T> {
     }
   }
 }
+
+const _tsFormatter = new Intl.DateTimeFormat(undefined, {
+  month: 'short', day: '2-digit',
+  hour: '2-digit', minute: '2-digit', second: '2-digit',
+  hour12: true,
+})
+
+// dateObj like '2026-03-19T16:12:42.759325367Z' or Date object
+export function formatDate(dateObj: string | Date): string {
+  try {
+    const date = typeof dateObj === 'string' ? new Date(dateObj) : dateObj
+    return _tsFormatter.format(date).replace(',', '')
+  } catch {
+    return typeof dateObj === 'string' ? dateObj : dateObj.toISOString()
+  }
+}
+
+export function levelClass(level: string): string {
+  const l = level.toUpperCase()
+  if (l.startsWith('ERROR') || l.startsWith('CRIT')) return 'text-red-500 font-semibold'
+  if (l.startsWith('WARN')) return 'text-yellow-500 font-semibold'
+  if (l.startsWith('DEBUG')) return 'text-muted-foreground'
+  return 'text-sky-600 dark:text-sky-400'
+}

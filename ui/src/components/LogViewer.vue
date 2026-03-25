@@ -18,6 +18,7 @@ import { fetchLogs, type LogEntry } from '@/services/api'
 interface Props {
   container: string
   hostname: string
+  search?: boolean
   parseMessage: (raw: string, entry: LogEntry) => {
     ts: string,
     message: string,
@@ -34,7 +35,9 @@ interface Props {
   }[]
 }
 
-const props = withDefaults(defineProps<Props>(), {})
+const props = withDefaults(defineProps<Props>(), {
+  search: true
+})
 
 const MAX_LOGS_ON_UI = 1000
 
@@ -168,7 +171,7 @@ onUnmounted(() => {
 <template>
   <main class="flex flex-col flex-1 overflow-hidden">
     <!-- Controls -->
-    <div class="flex-shrink-0 px-0 sm:px-4 py-2 sm:py-4">
+    <div v-if="props.search" class="flex-shrink-0 px-0 sm:px-4 py-2 sm:py-4">
       <div class="max-w-7xl mx-auto space-y-3 bg-muted/30 p-2 rounded-lg">
         <div class="grid grid-cols-2 gap-2">
           <div>
