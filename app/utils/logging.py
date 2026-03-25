@@ -21,6 +21,9 @@ fastapi_exclude_log_paths = [
   '/api/workers/*/metrics', # Metrics query
 ]
 
+def generate_task_id_token():
+  return str(uuid.uuid4())[:8]
+
 class ContextVarFilter(logging.Filter):
   def filter(self, record):
     record.task_id = task_id.get() or ''
@@ -30,7 +33,7 @@ uvicorn_access_logger = logging.getLogger("uvicorn.access")
 
 class fastapi_middleware(BaseHTTPMiddleware):
   async def dispatch(self, request, call_next):
-    token = str(uuid.uuid4())[:8]
+    token = generate_task_id_token()
 
     task_id.set(token)
     request.state.task_id = token
@@ -54,7 +57,7 @@ def with_task_id(func):
     @wraps(func)
     async def wrapper(*args, **kwargs):
       # _task_id injected by LoggedSession for API-triggered runs; otherwise generate fresh.
-      var_token = task_id.set(kwargs.pop("_task_id", None) or str(uuid.uuid4())[:8])
+      var_token = task_id.set(kwargs.pop("_task_id", None) or generate_task_id_token())
       try:
         _logger.info(f"{func.__name__}: started")
         result = await func(*args, **kwargs)
@@ -69,7 +72,7 @@ def with_task_id(func):
   else:
     @wraps(func)
     def wrapper(*args, **kwargs):
-      var_token = task_id.set(kwargs.pop("_task_id", None) or str(uuid.uuid4())[:8])
+      var_token = task_id.set(kwargs.pop("_task_id", None) or generate_task_id_token())
       try:
         _logger.info(f"{func.__name__}: started")
         result = func(*args, **kwargs)

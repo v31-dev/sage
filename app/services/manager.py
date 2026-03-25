@@ -3,7 +3,7 @@ import logging
 from pathlib import Path
 
 from utils.common import get_env
-from utils.logging import task_id
+from utils.logging import task_id, run_in_executor_with_context, generate_task_id_token
 from services.base import Base
 from services.tailscale import Tailscale
 from services.cloudflare import Cloudflare
@@ -189,17 +189,23 @@ class Manager(Base):
     logger.info(f"Application {application.name} deployed.")
 
   async def deploy_application_container(self, container: Container):
-    logger.info(f"Deploying application {container.application.name} container to worker {container.worker.hostname}...")
+    container_task_id = generate_task_id_token()
+    logger.info(f"Deploying application {container.application.name} container to worker {container.worker.hostname} with task id {container_task_id}...")
     
-    # Create a deployment for tracking
-    Deployment.create(container=container, task_id=task_id.get())
+    # Create a deployment for tracking with a different task id
+    Deployment.create(container=container, application_task_id=task_id.get(), container_task_id=container_task_id)
     container.status = "deploying"
     container.save()
 
-    for i in range(10):
-      logger.info(f"Running...")
-      await asyncio.sleep(10) # simulate deployment time
+    try:
+      task_id_token = task_id.set(container_task_id)
+      for _ in range(10):
+        await run_in_executor_with_context(
+          self.tailscale.exec_command, container.worker.hostname, "sleep 10"
+      )
+    finally:
+      task_id.reset(task_id_token)
 
     container.status = "active"
     container.save()
-    logger.info(f"Application container {container.application.name} deployed to worker {container.worker.hostname}.")
+    logger.info(f"Application container {container.application.name} deployed to worker {container.worker.hostname} with task id {container_task_id}.")
