@@ -18,7 +18,8 @@ import { fetchLogs, type LogEntry } from '@/services/api'
 interface Props {
   container: string
   hostname: string
-  search?: boolean
+  // if provided then it will disable search controls and use this value as search query on initial load
+  search?: string
   parseMessage: (raw: string, entry: LogEntry) => {
     ts: string,
     message: string,
@@ -36,15 +37,15 @@ interface Props {
 }
 
 const props = withDefaults(defineProps<Props>(), {
-  search: true
+  search: ''
 })
 
 const MAX_LOGS_ON_UI = 1000
 
 const logs = ref<LogEntry[]>([])
 const isLoading = ref(true)
-const inputSearch = ref('')
-const activeSearch = ref('')
+const inputSearch = ref(props.search)
+const activeSearch = ref(props.search)
 const inputFromDate = ref<string>('')
 const activeFromDate = ref<string>('')
 const inputToDate = ref<string>('')
@@ -146,15 +147,17 @@ function filterBy(value: string) {
 }
 
 onMounted(async () => {
-  // Set inputFromDate to today (local timezone)
-  const now = new Date()
-  const year = now.getFullYear()
-  const month = String(now.getMonth() + 1).padStart(2, '0')
-  const day = String(now.getDate()).padStart(2, '0')
-  const hours = String(now.getHours()).padStart(2, '0')
-  const minutes = String(now.getMinutes()).padStart(2, '0')
-  inputFromDate.value = `${year}-${month}-${day}T${hours}:${minutes}`
-  activeFromDate.value = inputFromDate.value
+  if (props.search == '') {
+    // Set inputFromDate to today (local timezone)
+    const now = new Date()
+    const year = now.getFullYear()
+    const month = String(now.getMonth() + 1).padStart(2, '0')
+    const day = String(now.getDate()).padStart(2, '0')
+    const hours = String(now.getHours()).padStart(2, '0')
+    const minutes = String(now.getMinutes()).padStart(2, '0')
+    inputFromDate.value = `${year}-${month}-${day}T${hours}:${minutes}`
+    activeFromDate.value = inputFromDate.value
+  }
 
   // Load initial logs
   await load()
@@ -171,7 +174,7 @@ onUnmounted(() => {
 <template>
   <main class="flex flex-col flex-1 overflow-hidden">
     <!-- Controls -->
-    <div v-if="props.search" class="flex-shrink-0 px-0 sm:px-4 py-2 sm:py-4">
+    <div v-if="props.search == ''" class="flex-shrink-0 px-0 sm:px-4 py-2 sm:py-4">
       <div class="max-w-7xl mx-auto space-y-3 bg-muted/30 p-2 rounded-lg">
         <div class="grid grid-cols-2 gap-2">
           <div>
