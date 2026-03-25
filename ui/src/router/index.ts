@@ -4,7 +4,7 @@ import Projects from "@/pages/Projects.vue";
 import Project from "@/pages/Project.vue";
 import System from "@/pages/System.vue";
 import Logs from "@/pages/Logs.vue";
-import Application from "@/pages/Application.vue";
+import Application from "@/pages/Application";
 import Workers from "@/pages/Workers.vue";
 import WorkerMetrics from "@/pages/WorkerMetrics.vue";
 import Settings from "@/pages/Settings.vue";

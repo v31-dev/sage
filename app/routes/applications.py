@@ -48,8 +48,7 @@ def update_application(request: Request, application_data: dict = Body(...)):
   data = {
     'label': application_data.get('label'),
     'description': application_data.get('description'),
-    'repo': application_data.get('repo'),
-    'path': application_data.get('path'),
+    'image': application_data.get('image'),
     'env': application_data.get('env'),
     'args': application_data.get('args'),
   }

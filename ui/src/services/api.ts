@@ -36,8 +36,7 @@ export interface Application {
   label: string
   project: string
   description: string | null
-  repo: string | null
-  path: string | null
+  image: string | null
   env: string | null
   args: string | null
   containers: Container[]

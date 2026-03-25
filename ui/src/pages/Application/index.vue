@@ -1,10 +1,9 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   Plus,
   Trash,
-  Play,
   StopCircle,
   RefreshCw,
   Logs,
@@ -60,6 +59,7 @@ import {
 import { useAppStore } from '@/stores/app'
 import LogViewer from '@/components/LogViewer.vue'
 import { formatDate, levelClass } from '@/lib/utils'
+import DeployButton from './DeployButton.vue'
 
 const appStore = useAppStore()
 const route = useRoute()
@@ -114,8 +114,7 @@ const isEditDialogOpen = ref(false)
 const editFormData = ref({
   label: '',
   description: '',
-  repo: '',
-  path: '',
+  image: '',
   env: '',
   args: '',
 })
@@ -125,8 +124,7 @@ const isClickedEditConfirm = ref(false)
 function openEditDialog() {
   editFormData.value.label = application.value?.label || ''
   editFormData.value.description = application.value?.description || ''
-  editFormData.value.repo = application.value?.repo || ''
-  editFormData.value.path = application.value?.path || ''
+  editFormData.value.image = application.value?.image || ''
   editFormData.value.env = application.value?.env || ''
   editFormData.value.args = application.value?.args || ''
   editDialogErrorMessage.value = ''
@@ -141,8 +139,7 @@ async function handleUpdateApplication() {
     await applicationAPI.update(appName, {
       label: editFormData.value.label || null,
       description: editFormData.value.description || null,
-      repo: editFormData.value.repo || null,
-      path: editFormData.value.path || null,
+      image: editFormData.value.image || null,
       env: editFormData.value.env || null,
       args: editFormData.value.args || null,
     })
@@ -303,19 +300,13 @@ function closeDeploymentLogsDialog() {
 // ####################################################################################################
 
 // ####################################################################################################
-// Deploy Application
-const isClickedDeploy = ref(false)
-
-async function onClickDeployApplication() {
-  isClickedDeploy.value = true
-  try {
-    await applicationAPI.action(`${appName}/deploy`)
-  } catch (err) {
-    isClickedDeploy.value = false
-    toast.error('Failed to deploy application ' + (err instanceof Error ? err.message : ''))
-  }
-  // Deployment is a background process, polling will handle state updation
-}
+// Stop Application
+const stopButtonDisabled = computed(() => {
+  return [
+    application.value?.status === 'deploying',
+    application.value?.container_count === 0
+  ].includes(true)
+})
 // ####################################################################################################
 </script>
 
@@ -365,16 +356,10 @@ async function onClickDeployApplication() {
                             placeholder="optional" />
                         </Field>
                         <Field>
-                          <FieldLabel for="repo">
-                            Repository URL
+                          <FieldLabel for="image">
+                            Image
                           </FieldLabel>
-                          <Input id="repo" v-model="editFormData.repo" placeholder="optional" />
-                        </Field>
-                        <Field>
-                          <FieldLabel for="path">
-                            Repository Path
-                          </FieldLabel>
-                          <Input id="path" v-model="editFormData.path" placeholder="optional" />
+                          <Input id="image" v-model="editFormData.image" placeholder="optional" />
                         </Field>
                         <Field>
                           <FieldLabel for="env">
@@ -446,21 +431,13 @@ async function onClickDeployApplication() {
               <p class="text-sm text-muted-foreground">{{ application.description ? application.description : '-' }}</p>
             </div>
             <div>
-              <Label>Repository URL</Label>
-              <p class="text-sm text-muted-foreground">{{ application.repo ? application.repo : '-' }}</p>
-            </div>
-            <div>
-              <Label>Repository Path</Label>
-              <p class="text-sm text-muted-foreground">{{ application.path ? application.path : '-' }}</p>
+              <Label>Image</Label>
+              <p class="text-sm text-muted-foreground">{{ application.image ? application.image : '-' }}</p>
             </div>
           </CardContent>
           <CardFooter class="border-t flex flex-col md:flex-row justify-between items-center gap-2 md:gap-0">
             <ButtonGroup class="space-x-1 w-full md:w-auto flex">
-              <Button class="flex-1 md:flex-initial success" @click="onClickDeployApplication"
-                :disabled="isClickedDeploy || application.status === 'deploying'">
-                <Spinner class="animate-spin" v-if="isClickedDeploy || application.status === 'deploying'" />
-                <Play />Deploy
-              </Button>
+              <DeployButton :application="application" :applicationAPI="applicationAPI"/>
               <Button class="flex-1 md:flex-initial" variant="destructive" :disabled="application.status !== 'active'">
                 <StopCircle />Stop
               </Button>

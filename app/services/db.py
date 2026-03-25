@@ -1,4 +1,5 @@
 import os
+import re
 import logging
 from datetime import datetime
 from peewee import CharField, FixedCharField, SqliteDatabase, DateTimeField, BooleanField, ForeignKeyField, IntegerField
@@ -51,12 +52,21 @@ class Application(BaseModel):
   name            = CleanCharField()
   label           = CharField()
   description     = CharField(null=True)
-  repo            = CharField(null=True)
-  path            = CharField(null=True)
+  image           = CharField(null=True)
   env             = EncryptedTextField(null=True)
   args            = EncryptedTextField(null=True)
   status          = CharField(default='inactive')
   container_count = IntegerField(default=0)
+
+  def save(self, *args, **kwargs):
+    if self.image:
+      # Docker image - image:tag
+      # Git repo - https://github.com/user/repo.git#<branch>:<sub-directory>/<Dockerfile>
+      pattern = r'^(?:[\w.-]+(?:[:/][\w.-]+)+|https?://.*\.git.*)$'
+      if not re.match(pattern, self.image):
+        raise ValueError(f"Invalid image format: {self.image}. Should be a Docker image (e.g. 'nginx:latest') or Git repo URL (e.g. 'https://github.com/user/repo.git#branch:subdir/Dockerfile')")
+        
+    return super().save(*args, **kwargs)
 
   class Meta:
     indexes = (
