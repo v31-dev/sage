@@ -80,7 +80,6 @@ onMounted(async () => {
 })
 onUnmounted(() => {
   if (pollInterval) clearInterval(pollInterval)
-  if (deploymentLogsPollInterval) clearInterval(deploymentLogsPollInterval)
 })
 
 async function loadApplication() {
@@ -250,20 +249,15 @@ async function onClickDeleteContainer() {
 const isDeploymentLogsDialogOpen = ref(false)
 const selectedContainer = ref<Container | null>(null)
 const selectedDeploymentId = ref('')
-const deploymentLogs = ref('')
-const isLoadingDeploymentLogs = ref(false)
-let deploymentLogsPollInterval: ReturnType<typeof setInterval> | null = null
 
 const LOG_RE = /^\[([^\]]+)\]\s+\[([^\]]+)\]\s+\[([^\]]+)\]\s+\[([^\]]*)\]\s*([\s\S]*)$/
 
 function parseMessage(raw: string): { [key: string]: any; ts: string; message: string } {
   const m = raw.match(LOG_RE)
-  if (!m) return { ts: '', level: '', logger: '', taskId: '', message: raw }
+  if (!m) return { ts: '', level: '', message: raw }
   return {
     ts: m[1]?.split(',')[0]?.trim() ?? '',
     level: m[2]?.trim() ?? '',
-    logger: m[3]?.trim() ?? '',
-    taskId: m[4]?.trim() ?? '',
     message: m[5]?.trim() ?? '',
   }
 }
@@ -284,19 +278,6 @@ const columns = [
     cellClass: (level: string) => level ? levelClass(level) : 'text-muted-foreground'
   },
   {
-    key: 'logger',
-    label: 'Logger',
-    headerClass: 'py-2 text-xs w-36',
-    rowClass: "py-2 text-xs w-36 font-mono text-muted-foreground truncate"
-  },
-  {
-    key: 'taskId',
-    label: 'Task ID',
-    headerClass: 'py-2 text-xs w-24',
-    rowClass: "py-2 text-xs w-24 font-mono",
-    filter: true
-  },
-  {
     key: 'message',
     label: 'Message',
     headerClass: 'py-2 text-xs',
@@ -307,50 +288,16 @@ const columns = [
 function openDeploymentLogsDialog(container: Container) {
   selectedContainer.value = container
   selectedDeploymentId.value = ''
-  deploymentLogs.value = ''
   if (container.deployments && container.deployments.length > 0) {
-    selectedDeploymentId.value = container.deployments[0].container_task_id
-    pollDeploymentLogs()
+    selectedDeploymentId.value = container.deployments[0]!.container_task_id
   }
   isDeploymentLogsDialogOpen.value = true
 }
 
 function closeDeploymentLogsDialog() {
-  if (deploymentLogsPollInterval) {
-    clearInterval(deploymentLogsPollInterval)
-    deploymentLogsPollInterval = null
-  }
   isDeploymentLogsDialogOpen.value = false
   selectedContainer.value = null
 }
-
-async function pollDeploymentLogs() {
-  if (!selectedDeploymentId.value) return
-
-  try {
-    isLoadingDeploymentLogs.value = true
-    const logs = await fetchLogs(appStore.info!.hostname, 'sage', selectedDeploymentId.value)
-    deploymentLogs.value = logs.map(({message}) => message).join('\n')
-  } catch (err) {
-    console.error('Failed to fetch deployment logs:', err)
-    deploymentLogs.value = 'Error fetching logs'
-  } finally {
-    isLoadingDeploymentLogs.value = false
-  }
-}
-
-function handleDeploymentChange() {
-  deploymentLogs.value = ''
-  if (deploymentLogsPollInterval) {
-    clearInterval(deploymentLogsPollInterval)
-  }
-  if (selectedDeploymentId.value) {
-    pollDeploymentLogs()
-    deploymentLogsPollInterval = setInterval(pollDeploymentLogs, 1_000)
-  }
-}
-
-watch(() => selectedDeploymentId.value, handleDeploymentChange)
 // ####################################################################################################
 
 // ####################################################################################################
@@ -639,17 +586,17 @@ async function onClickDeployApplication() {
                               <SelectValue placeholder="No deployments available" />
                             </SelectTrigger>
                             <SelectContent>
-                              <SelectItem v-for="deployment in selectedContainer?.deployments?.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())"
+                              <SelectItem v-for="deployment in selectedContainer?.deployments?.reverse()"
                                 :key="deployment.container_task_id"
                                 :value="deployment.container_task_id">
-                                {{ new Date(deployment.created_at).toLocaleString() }} - {{ deployment.container_task_id }}
+                                {{ formatDate(deployment.created_at) }} - {{ deployment.container_task_id }}
                               </SelectItem>
                             </SelectContent>
                           </Select>
                         </Field>
                       </FieldGroup>
                     </FieldSet>
-                    <LogViewer :hostname="appStore.info?.hostname ?? ''" container="sage" :search="false" 
+                    <LogViewer :hostname="appStore.info?.hostname ?? ''" container="sage" :search="selectedDeploymentId" 
                       :parseMessage="parseMessage" :columns="columns" />
                     <DialogFooter>
                       <Button type="button" variant="outline" @click="closeDeploymentLogsDialog">
