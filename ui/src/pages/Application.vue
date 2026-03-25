@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, watch } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   Plus,
@@ -50,13 +50,12 @@ import { Spinner } from '@/components/ui/spinner'
 import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
 
-import { 
-  getApplicationAPI, 
-  getContainerAPI, 
-  type Application, 
-  type Worker, 
-  type Container, 
-  fetchLogs 
+import {
+  getApplicationAPI,
+  getContainerAPI,
+  type Application,
+  type Worker,
+  type Container
 } from '@/services/api'
 import { useAppStore } from '@/stores/app'
 import LogViewer from '@/components/LogViewer.vue'
@@ -247,7 +246,6 @@ async function onClickDeleteContainer() {
 // ####################################################################################################
 // Deployment Logs
 const isDeploymentLogsDialogOpen = ref(false)
-const selectedContainer = ref<Container | null>(null)
 const selectedDeploymentId = ref('')
 
 const LOG_RE = /^\[([^\]]+)\]\s+\[([^\]]+)\]\s+\[([^\]]+)\]\s+\[([^\]]*)\]\s*([\s\S]*)$/
@@ -260,6 +258,12 @@ function parseMessage(raw: string): { [key: string]: any; ts: string; message: s
     level: m[2]?.trim() ?? '',
     message: m[5]?.trim() ?? '',
   }
+}
+
+function filterMessage(raw: string): boolean {
+  // Filter Tailscale cli warning
+  if (raw.includes(' Warning: client version')) return false
+  return true
 }
 
 const columns = [
@@ -286,7 +290,6 @@ const columns = [
 ]
 
 function openDeploymentLogsDialog(container: Container) {
-  selectedContainer.value = container
   selectedDeploymentId.value = ''
   if (container.deployments && container.deployments.length > 0) {
     selectedDeploymentId.value = container.deployments[0]!.container_task_id
@@ -296,7 +299,6 @@ function openDeploymentLogsDialog(container: Container) {
 
 function closeDeploymentLogsDialog() {
   isDeploymentLogsDialogOpen.value = false
-  selectedContainer.value = null
 }
 // ####################################################################################################
 
@@ -454,8 +456,9 @@ async function onClickDeployApplication() {
           </CardContent>
           <CardFooter class="border-t flex flex-col md:flex-row justify-between items-center gap-2 md:gap-0">
             <ButtonGroup class="space-x-1 w-full md:w-auto flex">
-              <Button class="flex-1 md:flex-initial success" @click="onClickDeployApplication">
-                <Spinner class="animate-spin" v-if="isClickedDeploy" />
+              <Button class="flex-1 md:flex-initial success" @click="onClickDeployApplication"
+                :disabled="isClickedDeploy || application.status === 'deploying'">
+                <Spinner class="animate-spin" v-if="isClickedDeploy || application.status === 'deploying'" />
                 <Play />Deploy
               </Button>
               <Button class="flex-1 md:flex-initial" variant="destructive" :disabled="application.status !== 'active'">
@@ -466,10 +469,10 @@ async function onClickDeployApplication() {
               </Button>
             </ButtonGroup>
             <ButtonGroup class="space-x-1 w-full md:w-auto flex">
-              <Button class="flex-1 md:flex-initial">
+              <Button class="flex-1 md:flex-initial" variant="outline">
                 <Logs />Logs
               </Button>
-              <Button class="flex-1 md:flex-initial">
+              <Button class="flex-1 md:flex-initial" variant="outline">
                 <Activity />Metrics
               </Button>
             </ButtonGroup>
@@ -564,31 +567,31 @@ async function onClickDeployApplication() {
                 </p>
               </CardContent>
               <CardFooter class="border-t">
-                <Dialog v-model:open="isDeploymentLogsDialogOpen">
+                <!-- Deployment Logs -->
+                <Dialog v-model:open="isDeploymentLogsDialogOpen" :key="container.worker.hostname">
                   <DialogTrigger asChild>
                     <Button class="w-full" variant="outline" size="sm" @click="openDeploymentLogsDialog(container)">
                       Deployment Logs
                     </Button>
                   </DialogTrigger>
-                  <DialogContent class="sm:max-w-[600px]">
+                  <DialogContent class="sm:max-w-6xl">
                     <DialogHeader>
-                      <DialogTitle>Deployment Logs - {{ selectedContainer?.worker.hostname }}</DialogTitle>
+                      <DialogTitle>Deployment Logs - {{ container.worker.hostname }}</DialogTitle>
                     </DialogHeader>
                     <FieldSet>
                       <FieldGroup>
+                        <Field/>
                         <Field>
                           <FieldLabel for="deployment-select">
                             Select Deployment
                           </FieldLabel>
-                          <Select v-model="selectedDeploymentId"
-                            :disabled="!selectedContainer?.deployments || selectedContainer.deployments.length === 0">
+                          <Select v-model="selectedDeploymentId">
                             <SelectTrigger id="deployment-select">
                               <SelectValue placeholder="No deployments available" />
                             </SelectTrigger>
                             <SelectContent>
-                              <SelectItem v-for="deployment in selectedContainer?.deployments?.reverse()"
-                                :key="deployment.container_task_id"
-                                :value="deployment.container_task_id">
+                              <SelectItem v-for="deployment in container.deployments"
+                                :key="deployment.container_task_id" :value="deployment.container_task_id">
                                 {{ formatDate(deployment.created_at) }} - {{ deployment.container_task_id }}
                               </SelectItem>
                             </SelectContent>
@@ -596,8 +599,11 @@ async function onClickDeployApplication() {
                         </Field>
                       </FieldGroup>
                     </FieldSet>
-                    <LogViewer :hostname="appStore.info?.hostname ?? ''" container="sage" :search="selectedDeploymentId" 
-                      :parseMessage="parseMessage" :columns="columns" />
+                    <div class="flex flex-col max-h-[60vh]">
+                      <LogViewer :key="selectedDeploymentId" :hostname="appStore.info?.hostname ?? ''" container="sage"
+                        :search="selectedDeploymentId" :parseMessage="parseMessage" :filterMessage="filterMessage"
+                        :columns="columns" />
+                    </div>
                     <DialogFooter>
                       <Button type="button" variant="outline" @click="closeDeploymentLogsDialog">
                         Close

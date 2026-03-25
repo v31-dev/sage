@@ -25,6 +25,7 @@ interface Props {
     message: string,
     [key: string]: any
   },
+  filterMessage?: (raw: string, entry: LogEntry) => boolean,
   columns: {
     key: string,
     label: string,
@@ -56,7 +57,7 @@ const error = ref<string>('')
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
 const parsedLogs = computed(() =>
-  logs.value.map(e => ({ entry: e, parsed: props.parseMessage(e.message, e) }))
+  logs.value.filter(e => props.filterMessage ? props.filterMessage(e.message, e) : true).map(e => ({ entry: e, parsed: props.parseMessage(e.message, e) }))
 )
 
 async function scrollToBottom() {
