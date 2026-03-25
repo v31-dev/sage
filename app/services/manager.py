@@ -212,13 +212,19 @@ class Manager(Base):
       container_dir = f"{worker_home_dir}/applications/{container.application.name}"
 
       app_env = container.application.env if container.application.env else ""
-      app_build_args = container.application.build if container.application.build else ""
+      app_build_args = container.application.args if container.application.args else ""
       
       # Create the secrets file
       await run_in_executor_with_context(self.tailscale.sync_file, container.worker.hostname, 
-                                         app_dir / "templates/worker/file", f"{container_dir}/.env", {
-                                           "CONTENT": app_env
-                                         })
+                                        app_dir / "templates/worker/file", f"{container_dir}/.env", {
+                                          "CONTENT": app_env
+                                        })
+        
+      # Create the build arguments file
+      await run_in_executor_with_context(self.tailscale.sync_file, container.worker.hostname, 
+                                      app_dir / "templates/worker/file", f"{container_dir}/build.args", {
+                                        "CONTENT": app_build_args
+                                      })
       
       # Create the compose file based on application type
       if container.application.type == "docker":
@@ -236,6 +242,10 @@ class Manager(Base):
                                             "REPO": container.application.repo,
                                             "DOCKERFILE": container.application.path,
                                          })
+
+      # Deploy with docker compose
+      await run_in_executor_with_context(self.tailscale.exec_command, container.worker.hostname,
+                                         f"docker compose -f {container_dir}/docker-compose.yml up -d --wait --remove-orphans --quiet-pull --quiet-build")
 
       deployment_status = "active"
     except Exception as e:

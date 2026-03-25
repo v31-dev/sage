@@ -159,7 +159,7 @@ async function handleUpdateApplication() {
             </FieldLabel>
             <Textarea id="env" v-model="editFormData.env" class="resize-none" placeholder="optional" />
           </Field>
-          <Field>
+          <Field v-if="editFormData.type == 'git'">
             <FieldLabel for="args">
               Build Arguments
             </FieldLabel>

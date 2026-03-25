@@ -65,6 +65,7 @@ class Application(BaseModel):
     if self.type == "docker":
       self.repo = None
       self.path = 'Dockerfile'
+      self.args = None
     
     if self.type == "git":
       self.image = None
