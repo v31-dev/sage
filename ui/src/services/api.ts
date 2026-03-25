@@ -34,7 +34,7 @@ export interface Project {
 export interface Application {
   name: string
   label: string
-  project: string
+  project: Project
   description: string | null
   image: string | null
   env: string | null

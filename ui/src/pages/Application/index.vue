@@ -1,8 +1,7 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
-  Plus,
   Trash,
   StopCircle,
   RefreshCw,
@@ -20,32 +19,6 @@ import {
 } from '@/components/ui/card'
 import { ButtonGroup } from '@/components/ui/button-group'
 import { Button } from '@/components/ui/button'
-import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from '@/components/ui/dialog'
-import {
-  Field,
-  FieldError,
-  FieldGroup,
-  FieldLabel,
-  FieldSet,
-} from '@/components/ui/field'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
-import { Input } from '@/components/ui/input'
-import { Textarea } from '@/components/ui/textarea'
-import { toast } from 'vue-sonner'
-import { Spinner } from '@/components/ui/spinner'
 import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
 
@@ -53,15 +26,13 @@ import {
   getApplicationAPI,
   getContainerAPI,
   type Application,
-  type Worker,
-  type Container
 } from '@/services/api'
-import { useAppStore } from '@/stores/app'
-import LogViewer from '@/components/LogViewer.vue'
-import { formatDate, levelClass } from '@/lib/utils'
 import DeployButton from './DeployButton.vue'
+import DeploymentLogsButton from './DeploymentLogsButton.vue'
+import EditApplicationButton from './EditApplicationButton.vue'
+import DeleteApplicationButton from './DeleteApplicationButton.vue'
+import AddContainerButton from './AddContainerButton.vue'
 
-const appStore = useAppStore()
 const route = useRoute()
 const router = useRouter()
 const projectName = route.params.projectId as string
@@ -109,204 +80,10 @@ function goBack() {
 }
 
 // ####################################################################################################
-// Edit Application
-const isEditDialogOpen = ref(false)
-const editFormData = ref({
-  label: '',
-  description: '',
-  image: '',
-  env: '',
-  args: '',
-})
-const editDialogErrorMessage = ref('')
-const isClickedEditConfirm = ref(false)
-
-function openEditDialog() {
-  editFormData.value.label = application.value?.label || ''
-  editFormData.value.description = application.value?.description || ''
-  editFormData.value.image = application.value?.image || ''
-  editFormData.value.env = application.value?.env || ''
-  editFormData.value.args = application.value?.args || ''
-  editDialogErrorMessage.value = ''
-  isEditDialogOpen.value = true
-}
-
-async function handleUpdateApplication() {
-  editDialogErrorMessage.value = ''
-
-  try {
-    isClickedEditConfirm.value = true
-    await applicationAPI.update(appName, {
-      label: editFormData.value.label || null,
-      description: editFormData.value.description || null,
-      image: editFormData.value.image || null,
-      env: editFormData.value.env || null,
-      args: editFormData.value.args || null,
-    })
-    await loadApplication()
-    isEditDialogOpen.value = false
-    toast.success('Application updated successfully')
-  } catch (err) {
-    editDialogErrorMessage.value = err instanceof Error ? err.message : 'Failed to update application'
-  } finally {
-    isClickedEditConfirm.value = false
-  }
-}
-// ####################################################################################################
-
-// ####################################################################################################
-// Delete Application
-const isDeleteDialogOpen = ref(false)
-const isClickedDeleteConfirm = ref(false)
-const deleteDialogErrorMessage = ref('')
-
-function openDeleteApplicationDialog() {
-  isDeleteDialogOpen.value = true
-  isClickedDeleteConfirm.value = false
-  deleteDialogErrorMessage.value = ''
-}
-
-async function onClickDeleteApplicationConfirm() {
-  isClickedDeleteConfirm.value = true
-
-  await new Promise(resolve => setTimeout(resolve, 1000))
-
-  try {
-    await applicationAPI.delete(appName)
-    isDeleteDialogOpen.value = false
-    toast.success(`Application ${appName} deleted successfully`)
-    router.push(`/projects/${projectName}`)
-  } catch (err) {
-    deleteDialogErrorMessage.value = err instanceof Error ? err.message : 'Failed to delete application'
-  } finally {
-    isClickedDeleteConfirm.value = false
-  }
-}
-// ####################################################################################################
-
-// ####################################################################################################
-// Add Container
-const isAddContainerDialogOpen = ref(false)
-const availableWorkers = ref<Worker[]>([])
-const selectedWorker = ref('')
-const addContainerErrorMessage = ref('')
-const isClickedAddContainerConfirm = ref(false)
-
-function openAddContainerDialog() {
-  addContainerErrorMessage.value = ''
-  selectedWorker.value = ''
-  loadAvailableWorkers()
-  isAddContainerDialogOpen.value = true
-}
-
-async function loadAvailableWorkers() {
-  try {
-    availableWorkers.value = await applicationAPI.action(`${appName}/get_available_workers`) as Worker[]
-    if (availableWorkers.value.length > 0) {
-      selectedWorker.value = availableWorkers.value[0]?.hostname || ''
-    }
-  } catch (err) {
-    console.error('Failed to load available workers:', err)
-    addContainerErrorMessage.value = 'Failed to load available workers'
-  }
-}
-
-async function onClickAddContainerConfirm() {
-  addContainerErrorMessage.value = ''
-
-  if (!selectedWorker.value) {
-    addContainerErrorMessage.value = 'Please select a worker'
-    return
-  }
-
-  try {
-    isClickedAddContainerConfirm.value = true
-    await containersAPI.create({ worker: selectedWorker.value }) as Container
-    isAddContainerDialogOpen.value = false
-    await loadApplication()
-    toast.success('Container added successfully')
-  } catch (err) {
-    addContainerErrorMessage.value = err instanceof Error ? err.message : 'Failed to add container'
-  } finally {
-    isClickedAddContainerConfirm.value = false
-  }
-}
-// ####################################################################################################
-
-// ####################################################################################################
 // Delete Container
 async function onClickDeleteContainer() {
 
 }
-// ####################################################################################################
-
-// ####################################################################################################
-// Deployment Logs
-const isDeploymentLogsDialogOpen = ref(false)
-const selectedDeploymentId = ref('')
-
-const LOG_RE = /^\[([^\]]+)\]\s+\[([^\]]+)\]\s+\[([^\]]+)\]\s+\[([^\]]*)\]\s*([\s\S]*)$/
-
-function parseMessage(raw: string): { [key: string]: any; ts: string; message: string } {
-  const m = raw.match(LOG_RE)
-  if (!m) return { ts: '', level: '', message: raw }
-  return {
-    ts: m[1]?.split(',')[0]?.trim() ?? '',
-    level: m[2]?.trim() ?? '',
-    message: m[5]?.trim() ?? '',
-  }
-}
-
-function filterMessage(raw: string): boolean {
-  // Filter Tailscale cli warning
-  if (raw.includes(' Warning: client version')) return false
-  return true
-}
-
-const columns = [
-  {
-    key: 'ts',
-    label: 'Timestamp',
-    headerClass: 'pl-4 py-2 text-xs w-40',
-    rowClass: "pl-4 py-2 text-xs w-40 font-mono text-muted-foreground whitespace-nowrap",
-    formatter: formatDate
-  },
-  {
-    key: 'level',
-    label: 'Level',
-    headerClass: 'py-2 text-xs w-16',
-    rowClass: "py-2 text-xs w-16 font-mono whitespace-nowrap",
-    cellClass: (level: string) => level ? levelClass(level) : 'text-muted-foreground'
-  },
-  {
-    key: 'message',
-    label: 'Message',
-    headerClass: 'py-2 text-xs',
-    rowClass: "py-2 text-xs font-mono break-all whitespace-pre-wrap"
-  },
-]
-
-function openDeploymentLogsDialog(container: Container) {
-  selectedDeploymentId.value = ''
-  if (container.deployments && container.deployments.length > 0) {
-    selectedDeploymentId.value = container.deployments[0]!.container_task_id
-  }
-  isDeploymentLogsDialogOpen.value = true
-}
-
-function closeDeploymentLogsDialog() {
-  isDeploymentLogsDialogOpen.value = false
-}
-// ####################################################################################################
-
-// ####################################################################################################
-// Stop Application
-const stopButtonDisabled = computed(() => {
-  return [
-    application.value?.status === 'deploying',
-    application.value?.container_count === 0
-  ].includes(true)
-})
 // ####################################################################################################
 </script>
 
@@ -330,98 +107,9 @@ const stopButtonDisabled = computed(() => {
             <CardDescription>{{ application.name }}</CardDescription>
             <CardAction>
               <ButtonGroup class="space-x-1">
-                <!-- Edit Dialog -->
-                <Dialog v-model:open="isEditDialogOpen">
-                  <DialogTrigger asChild>
-                    <Button @click="openEditDialog">Edit</Button>
-                  </DialogTrigger>
-                  <DialogContent class="sm:max-w-[600px]">
-                    <DialogHeader>
-                      <DialogTitle>Edit Application</DialogTitle>
-                    </DialogHeader>
-                    <FieldSet>
-                      <FieldGroup>
-                        <Field />
-                        <Field>
-                          <FieldLabel for="label">
-                            Name
-                          </FieldLabel>
-                          <Input id="label" v-model="editFormData.label" placeholder="required" />
-                        </Field>
-                        <Field>
-                          <FieldLabel for="description">
-                            Description
-                          </FieldLabel>
-                          <Textarea id="description" v-model="editFormData.description" class="resize-none"
-                            placeholder="optional" />
-                        </Field>
-                        <Field>
-                          <FieldLabel for="image">
-                            Image
-                          </FieldLabel>
-                          <Input id="image" v-model="editFormData.image" placeholder="optional" />
-                        </Field>
-                        <Field>
-                          <FieldLabel for="env">
-                            Environment Variables
-                          </FieldLabel>
-                          <Textarea id="env" v-model="editFormData.env" class="resize-none" placeholder="optional" />
-                        </Field>
-                        <Field>
-                          <FieldLabel for="args">
-                            Build Arguments
-                          </FieldLabel>
-                          <Textarea id="args" v-model="editFormData.args" class="resize-none" placeholder="optional" />
-                        </Field>
-                        <Field>
-                          <FieldError v-if="editDialogErrorMessage">{{ editDialogErrorMessage }}</FieldError>
-                        </Field>
-                      </FieldGroup>
-                    </FieldSet>
-                    <DialogFooter>
-                      <Button type="button" variant="outline" @click="isEditDialogOpen = false"
-                        :disabled="isClickedEditConfirm">
-                        Cancel
-                      </Button>
-                      <Button @click="handleUpdateApplication" :disabled="isClickedEditConfirm">
-                        <Spinner class="animate-spin" v-if="isClickedEditConfirm" />
-                        Save
-                      </Button>
-                    </DialogFooter>
-                  </DialogContent>
-                </Dialog>
-                <!-- Delete Application Dialog -->
-                <Dialog v-model:open="isDeleteDialogOpen">
-                  <DialogTrigger asChild>
-                    <Button @click="openDeleteApplicationDialog" variant="destructive">Delete</Button>
-                  </DialogTrigger>
-                  <DialogContent class="sm:max-w-[600px]">
-                    <DialogHeader>
-                      <DialogTitle>Delete Application</DialogTitle>
-                    </DialogHeader>
-                    <FieldSet>
-                      <FieldGroup>
-                        <Field />
-                        <Field>
-                          <p class="text-sm text-muted-foreground">
-                            Are you sure you want to delete this application? This action cannot be undone.
-                          </p>
-                        </Field>
-                        <Field>
-                          <FieldError v-if="deleteDialogErrorMessage">{{ deleteDialogErrorMessage }}
-                          </FieldError>
-                        </Field>
-                      </FieldGroup>
-                    </FieldSet>
-                    <DialogFooter>
-                      <Button variant="destructive" @click="onClickDeleteApplicationConfirm"
-                        :disabled="isClickedDeleteConfirm">
-                        <Spinner class="animate-spin" v-if="isClickedDeleteConfirm" />
-                        Delete
-                      </Button>
-                    </DialogFooter>
-                  </DialogContent>
-                </Dialog>
+                <EditApplicationButton :application="application" :applicationAPI="applicationAPI"
+                  :loadApplication="loadApplication" />
+                <DeleteApplicationButton :application="application" :applicationAPI="applicationAPI" />
               </ButtonGroup>
             </CardAction>
           </CardHeader>
@@ -437,7 +125,7 @@ const stopButtonDisabled = computed(() => {
           </CardContent>
           <CardFooter class="border-t flex flex-col md:flex-row justify-between items-center gap-2 md:gap-0">
             <ButtonGroup class="space-x-1 w-full md:w-auto flex">
-              <DeployButton :application="application" :applicationAPI="applicationAPI"/>
+              <DeployButton :application="application" :applicationAPI="applicationAPI" />
               <Button class="flex-1 md:flex-initial" variant="destructive" :disabled="application.status !== 'active'">
                 <StopCircle />Stop
               </Button>
@@ -460,56 +148,9 @@ const stopButtonDisabled = computed(() => {
         <div class="space-y-4">
           <div class="flex justify-between items-center">
             <h2 class="text-xl font-semibold">Containers</h2>
-            <!-- Add Container -->
-            <Dialog v-model:open="isAddContainerDialogOpen">
-              <DialogTrigger asChild>
-                <Button @click="openAddContainerDialog" class="gap-2">
-                  <Plus :size="20" />
-                  New Container
-                </Button>
-              </DialogTrigger>
-              <DialogContent class="sm:max-w-[400px]">
-                <DialogHeader>
-                  <DialogTitle>Add Container</DialogTitle>
-                </DialogHeader>
-                <FieldSet>
-                  <FieldGroup>
-                    <Field />
-                    <Field>
-                      <FieldLabel for="worker-select">
-                        Select Worker
-                      </FieldLabel>
-                      <Select v-model="selectedWorker" :disabled="availableWorkers.length === 0">
-                        <SelectTrigger id="worker-select">
-                          <SelectValue
-                            :placeholder="availableWorkers.length === 0 ? 'No workers available' : 'Choose a worker...'" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem v-for="worker in availableWorkers" :key="worker.hostname"
-                            :value="worker.hostname">
-                            {{ worker.hostname }}
-                          </SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </Field>
-                    <Field>
-                      <FieldError v-if="addContainerErrorMessage">{{ addContainerErrorMessage }}</FieldError>
-                    </Field>
-                  </FieldGroup>
-                </FieldSet>
-                <DialogFooter>
-                  <Button type="button" variant="outline" @click="isAddContainerDialogOpen = false"
-                    :disabled="isClickedAddContainerConfirm">
-                    Cancel
-                  </Button>
-                  <Button @click="onClickAddContainerConfirm"
-                    :disabled="isClickedAddContainerConfirm || !selectedWorker">
-                    <Spinner class="animate-spin" v-if="isClickedAddContainerConfirm" />
-                    Add
-                  </Button>
-                </DialogFooter>
-              </DialogContent>
-            </Dialog>
+            <!-- Add Container Button -->
+            <AddContainerButton :application="application" :applicationAPI="applicationAPI"
+              :containersAPI="containersAPI" :projectName="projectName" :loadApplication="loadApplication" />
           </div>
 
           <!-- Empty Containers State -->
@@ -544,50 +185,7 @@ const stopButtonDisabled = computed(() => {
                 </p>
               </CardContent>
               <CardFooter class="border-t">
-                <!-- Deployment Logs -->
-                <Dialog v-model:open="isDeploymentLogsDialogOpen" :key="container.worker.hostname">
-                  <DialogTrigger asChild>
-                    <Button class="w-full" variant="outline" size="sm" @click="openDeploymentLogsDialog(container)">
-                      Deployment Logs
-                    </Button>
-                  </DialogTrigger>
-                  <DialogContent class="sm:max-w-6xl">
-                    <DialogHeader>
-                      <DialogTitle>Deployment Logs - {{ container.worker.hostname }}</DialogTitle>
-                    </DialogHeader>
-                    <FieldSet>
-                      <FieldGroup>
-                        <Field/>
-                        <Field>
-                          <FieldLabel for="deployment-select">
-                            Select Deployment
-                          </FieldLabel>
-                          <Select v-model="selectedDeploymentId">
-                            <SelectTrigger id="deployment-select">
-                              <SelectValue placeholder="No deployments available" />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem v-for="deployment in container.deployments"
-                                :key="deployment.container_task_id" :value="deployment.container_task_id">
-                                {{ formatDate(deployment.created_at) }} - {{ deployment.container_task_id }}
-                              </SelectItem>
-                            </SelectContent>
-                          </Select>
-                        </Field>
-                      </FieldGroup>
-                    </FieldSet>
-                    <div class="flex flex-col max-h-[60vh]">
-                      <LogViewer :key="selectedDeploymentId" :hostname="appStore.info?.hostname ?? ''" container="sage"
-                        :search="selectedDeploymentId" :parseMessage="parseMessage" :filterMessage="filterMessage"
-                        :columns="columns" />
-                    </div>
-                    <DialogFooter>
-                      <Button type="button" variant="outline" @click="closeDeploymentLogsDialog">
-                        Close
-                      </Button>
-                    </DialogFooter>
-                  </DialogContent>
-                </Dialog>
+                <DeploymentLogsButton :container="container" />
               </CardFooter>
             </Card>
           </div>
