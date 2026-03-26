@@ -51,4 +51,9 @@ def create_container(request: Request, container_data: dict = Body(...)):
 
 @router.delete("/{container}", dependencies=[Depends(inject_container)])
 def delete_container(request: Request):
-  return generic_delete(Container, request.state.models['container'])
+  """Trigger container deletion."""
+  container = request.state.models['container']
+  
+  request.app.state.rocketry["delete_container"].run(container=container)
+
+  return {"status": "OK"}

@@ -169,38 +169,55 @@ input[type="week"] {
 }
 /* datetime-local, date, time, month, week theme styling */
 
-/* Button styling */
-button.success {
+/* Button & Badge styling */
+.success {
   background-color: oklch(0.6 0.15 142);
   color: white;
 }
 
-button.success:hover {
+.success:hover {
   background-color: oklch(0.5 0.15 142);
 }
 
-.dark button.success {
+.dark .success {
   background-color: oklch(0.65 0.15 142);
 }
 
-.dark button.success:hover {
+.dark .success:hover {
   background-color: oklch(0.55 0.15 142);
 }
 
-button.neutral {
+.neutral {
   background-color: oklch(0.6 0.15 260);
   color: white;
 }
 
-button.neutral:hover {
+.neutral:hover {
   background-color: oklch(0.5 0.15 260);
 }
 
-.dark button.neutral {
+.dark .neutral {
   background-color: oklch(0.65 0.15 260);
 }
 
-.dark button.neutral:hover {
+.dark .neutral:hover {
   background-color: oklch(0.55 0.15 260);
 }
-/* Button styling */
+
+.warning {
+  background-color: oklch(0.6 0.15 100);
+  color: white;
+}
+
+.warning:hover {
+  background-color: oklch(0.5 0.15 100);
+}
+
+.dark .warning {
+  background-color: oklch(0.65 0.15 100);
+}
+
+.dark .warning:hover {
+  background-color: oklch(0.55 0.15 100);
+}
+/* Button & Badge styling */

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue';
+import { ref, computed } from 'vue';
 import {
   Dialog,
   DialogContent,
@@ -30,7 +30,7 @@ import { formatDate, levelClass } from '@/lib/utils'
 import {
    type Container
 } from '@/services/api'
-
+import { S } from 'vue-router/dist/options-D40y7AuF.mjs';
 
 interface Props {
   container: Container
@@ -41,6 +41,7 @@ const props = withDefaults(defineProps<Props>(), {})
 const appStore = useAppStore()
 const isDeploymentLogsDialogOpen = ref(false)
 const selectedDeploymentId = ref('')
+const deployments = computed(() => [...props.container.deployments].reverse())
 
 const LOG_RE = /^\[([^\]]+)\]\s+\[([^\]]+)\]\s+\[([^\]]+)\]\s+\[([^\]]*)\]\s*([\s\S]*)$/
 
@@ -86,7 +87,8 @@ const columns = [
 function openDeploymentLogsDialog(container: Container) {
   selectedDeploymentId.value = ''
   if (container.deployments && container.deployments.length > 0) {
-    selectedDeploymentId.value = container.deployments[0]!.container_task_id
+    const lastItemIndex = container.deployments.length - 1
+    selectedDeploymentId.value = container.deployments[lastItemIndex]!.container_task_id
   }
   isDeploymentLogsDialogOpen.value = true
 }
@@ -115,12 +117,12 @@ function closeDeploymentLogsDialog() {
             <FieldLabel for="deployment-select">
               Select Deployment
             </FieldLabel>
-            <Select v-model="selectedDeploymentId">
+            <Select v-model="selectedDeploymentId" :disabled="selectedDeploymentId === ''">
               <SelectTrigger id="deployment-select">
                 <SelectValue placeholder="No deployments available" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem v-for="deployment in props.container.deployments" :key="deployment.container_task_id"
+                <SelectItem v-for="deployment in deployments" :key="deployment.container_task_id"
                   :value="deployment.container_task_id">
                   {{ formatDate(deployment.created_at) }} - {{ deployment.container_task_id }}
                 </SelectItem>
@@ -130,7 +132,7 @@ function closeDeploymentLogsDialog() {
         </FieldGroup>
       </FieldSet>
       <div class="flex flex-col max-h-[60vh]">
-        <LogViewer :key="selectedDeploymentId" :hostname="appStore.info?.hostname ?? ''" container="sage"
+        <LogViewer v-if="selectedDeploymentId" :key="selectedDeploymentId" :hostname="appStore.info?.hostname ?? ''" container="sage"
           :search="selectedDeploymentId" :parseMessage="parseMessage" :filterMessage="filterMessage"
           :columns="columns" />
       </div>

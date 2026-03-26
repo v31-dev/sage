@@ -7,7 +7,7 @@ from utils.logging import LoggedRocketry, TaskFailed, run_in_executor_with_conte
 from services.traefik import Traefik
 from services.manager import Manager
 from services.metrics import Metrics
-from services.db import Worker, Application
+from services.db import Worker, Application, Container
 
 
 logger = logging.getLogger(__name__)
@@ -55,3 +55,8 @@ async def deploy_application(application: Application):
     application.save()
     logger.error(f"Failed to deploy application {application.name}: {e}")
     raise TaskFailed()
+  
+# Delete Container
+@app.task(name="delete_container", multilaunch=True)
+async def delete_container(container: Container):
+  await run_in_executor_with_context(Manager().delete_container, container)

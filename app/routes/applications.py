@@ -88,12 +88,18 @@ def get_available_workers(request: Request):
   return available_workers
 
 @router.post("/{application}/deploy", dependencies=[Depends(inject_application)])
-async def deploy_application(request: Request):
+def deploy_application(request: Request):
   """Trigger application deployment."""
   application = request.state.models['application']
 
   if application.container_count == 0:
     raise HTTPException(status_code=400, detail="Application has no containers to deploy.")
+
+  if application.type == "docker" and (application.image is None or application.image.strip() == ""):
+    raise HTTPException(status_code=400, detail="Docker applications must have an image specified.")
+  
+  if application.type == "git" and (application.repo is None or application.repo.strip() == "" or application.path is None or application.path.strip() == ""):
+    raise HTTPException(status_code=400, detail="Git applications must have a repo & path specified.")
   
   request.app.state.rocketry["deploy_application"].run(application=application)
 

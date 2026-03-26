@@ -136,7 +136,15 @@ const _tsFormatter = new Intl.DateTimeFormat(undefined, {
 // dateObj like '2026-03-19T16:12:42.759325367Z' or Date object
 export function formatDate(dateObj: string | Date): string {
   try {
-    const date = typeof dateObj === 'string' ? new Date(dateObj) : dateObj
+    let date
+    if (typeof dateObj === 'string') {
+      if (!dateObj.endsWith('Z')) {
+        dateObj += 'Z'
+      }
+      date = new Date(dateObj)
+    } else {
+      date = dateObj
+    }
     return _tsFormatter.format(date).replace(',', '')
   } catch {
     return typeof dateObj === 'string' ? dateObj : dateObj.toISOString()

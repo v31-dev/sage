@@ -171,10 +171,7 @@ class Manager(Base):
 
   async def deploy_application(self, application: Application):
     '''
-      Deploy an application -
-      - Get application's containers and target workers
-      - For each worker, generate a docker-compose.yml and .env file with only the relevant containers
-      - Sync files to worker and deploy with docker compose
+      Deploy an application.
     '''
     application.status = "deploying"
     application.save()
@@ -194,14 +191,48 @@ class Manager(Base):
       application.save()
       logger.info(f"Application {application.name} deployed.")
 
-  async def deploy_application_container(self, container: Container):
-    container_task_id = generate_task_id_token()
-    logger.info(f"Deploying application {container.application.name} container to worker {container.worker.hostname} with task id {container_task_id}...")
+  def delete_container(self, container: Container):
+    '''
+      Delete a container.
+    '''
+    # Create a deployment for tracking in case of error
+    Deployment.create(container=container, application_task_id=task_id.get(), container_task_id=task_id.get())
+    container.status = "stopping"
+    container.save()
+    logger.info(f"Deleting container of application {container.application.name} from worker {container.worker.hostname}")
+
+    container_dir = f"{worker_home_dir}/applications/{container.application.name}"
+
+    try:
+      # Stop container on worker
+      self.tailscale.exec_command(
+        container.worker.hostname, 
+        f"[ ! -d \"{container_dir}\" ] || docker compose -f \"{container_dir}/docker-compose.yml\" down --volumes --rmi all --remove-orphans", 
+        timeout=60
+      )
+
+      # Remove application folder
+      self.tailscale.exec_command(
+        container.worker.hostname, 
+        f"rm -rf {container_dir}", 
+        timeout=30
+      )
+
+      # Delete database record
+      container.delete_instance()
+    except Exception as e:
+      container.status = "error"
+      container.save()
+      logger.error(f"Failed to delete container {container.id} of application {container.application.name} from worker {container.worker.hostname}: {e}")
+      raise Exception(f"Failed to delete container {container.id} of application {container.application.name} from worker {container.worker.hostname}: {e}")
     
+  async def deploy_application_container(self, container: Container):
     # Create a deployment for tracking with a different task id
+    container_task_id = generate_task_id_token()
     Deployment.create(container=container, application_task_id=task_id.get(), container_task_id=container_task_id)
     container.status = "deploying"
     container.save()
+    logger.info(f"Deploying application {container.application.name} container to worker {container.worker.hostname} with task id {container_task_id}...")
 
     exception_message = None
 

@@ -111,7 +111,7 @@ def update_container_count_on_delete(model_class, instance):
   Application.update(container_count=Application.container_count - 1).where(Application.id == instance.application_id).execute()
 
 class Deployment(BaseModel):
-  container           = ForeignKeyField(Container, backref='deployments')
+  container           = ForeignKeyField(Container, backref='deployments', on_delete='CASCADE')
   application_task_id = CharField()
   container_task_id   = CharField()
 

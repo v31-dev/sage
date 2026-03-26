@@ -2,25 +2,10 @@
 import { ref, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
-  Trash,
-  StopCircle,
-  RefreshCw,
-  Logs,
-  Activity
-} from 'lucide-vue-next'
-import {
   Card,
-  CardAction,
   CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-  CardFooter
 } from '@/components/ui/card'
-import { ButtonGroup } from '@/components/ui/button-group'
 import { Button } from '@/components/ui/button'
-import { Label } from '@/components/ui/label'
-import { Badge } from '@/components/ui/badge'
 import { Spinner } from '@/components/ui/spinner'
 
 import {
@@ -28,16 +13,16 @@ import {
   getContainerAPI,
   type Application,
 } from '@/services/api'
-import DeployButton from './DeployButton.vue'
-import DeploymentLogsButton from './DeploymentLogsButton.vue'
-import EditApplicationButton from './EditApplicationButton.vue'
-import DeleteApplicationButton from './DeleteApplicationButton.vue'
+import { useAppStore } from '@/stores/app'
+import ApplicationHeader from './ApplicationHeader.vue'
 import AddContainerButton from './AddContainerButton.vue'
+import ContainerCard from './ContainerCard.vue'
 
 const route = useRoute()
 const router = useRouter()
 const projectName = route.params.projectId as string
 const appName = route.params.appId as string
+const appStore = useAppStore()
 
 const applicationAPI = getApplicationAPI(projectName)
 const containersAPI = getContainerAPI(projectName, appName)
@@ -57,6 +42,7 @@ async function loadApplication() {
   try {
     isLoading.value = true
     application.value = await applicationAPI.fetchOne(appName) as Application
+    appStore.updateApplicationDeployStatus(application.value.status)
   } catch (err) {
     console.error('Failed to load application:', err)
   } finally {
@@ -70,6 +56,7 @@ async function loadApplicationStatus() {
     if (application.value) {
       application.value.status = updatedApplication.status
       application.value.containers = updatedApplication.containers
+      appStore.updateApplicationDeployStatus(updatedApplication.status)
     }
   } catch (err) {
     console.error('Failed to load application status:', err)
@@ -79,13 +66,6 @@ async function loadApplicationStatus() {
 function goBack() {
   router.push(`/projects/${projectName}`)
 }
-
-// ####################################################################################################
-// Delete Container
-async function onClickDeleteContainer() {
-
-}
-// ####################################################################################################
 </script>
 
 <template>
@@ -102,60 +82,7 @@ async function onClickDeleteContainer() {
       <!-- Content -->
       <div v-else-if="application" class="space-y-6">
         <!-- Application Header -->
-        <Card>
-          <CardHeader class="border-b">
-            <CardTitle class="text-2xl">{{ application.label }}</CardTitle>
-            <CardDescription>{{ application.name }}</CardDescription>
-            <CardAction>
-              <ButtonGroup class="space-x-1">
-                <EditApplicationButton :application="application" :applicationAPI="applicationAPI"
-                  :loadApplication="loadApplication" />
-                <DeleteApplicationButton :application="application" :applicationAPI="applicationAPI" />
-              </ButtonGroup>
-            </CardAction>
-          </CardHeader>
-          <CardContent class="space-y-4">
-            <div>
-              <Label>Description</Label>
-              <p class="text-sm text-muted-foreground">{{ application.description ? application.description : '-' }}</p>
-            </div>
-            <div>
-              <Label>Type</Label>
-              <p class="text-sm text-muted-foreground">{{ application.type ? application.type : '-' }}</p>
-            </div>
-            <div v-if="application.type === 'docker'">
-              <Label>Image</Label>
-              <p class="text-sm text-muted-foreground">{{ application.image ? application.image : '-' }}</p>
-            </div>
-            <div v-if="application.type === 'git'">
-              <Label>Repository</Label>
-              <p class="text-sm text-muted-foreground">{{ application.repo ? application.repo : '-' }}</p>
-            </div>
-            <div v-if="application.type === 'git'">
-              <Label>Path</Label>
-              <p class="text-sm text-muted-foreground">{{ application.path ? application.path : '-' }}</p>
-            </div>
-          </CardContent>
-          <CardFooter class="border-t flex flex-col md:flex-row justify-between items-center gap-2 md:gap-0">
-            <ButtonGroup class="space-x-1 w-full md:w-auto flex">
-              <DeployButton :application="application" :applicationAPI="applicationAPI" />
-              <Button class="flex-1 md:flex-initial" variant="destructive" :disabled="application.status !== 'active'">
-                <StopCircle />Stop
-              </Button>
-              <Button class="flex-1 md:flex-initial neutral" :disabled="application.status !== 'active'">
-                <RefreshCw />Restart
-              </Button>
-            </ButtonGroup>
-            <ButtonGroup class="space-x-1 w-full md:w-auto flex">
-              <Button class="flex-1 md:flex-initial" variant="outline">
-                <Logs />Logs
-              </Button>
-              <Button class="flex-1 md:flex-initial" variant="outline">
-                <Activity />Metrics
-              </Button>
-            </ButtonGroup>
-          </CardFooter>
-        </Card>
+        <ApplicationHeader :application="application" :applicationAPI="applicationAPI" :loadApplication="loadApplication" />
 
         <!-- Containers -->
         <div class="space-y-4">
@@ -177,30 +104,8 @@ async function onClickDeleteContainer() {
 
           <!-- Containers Grid -->
           <div v-else class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            <Card v-for="container in application.containers" :key="container.worker.hostname" class="flex flex-col">
-              <CardHeader>
-                <CardTitle>
-                  <Badge as-child :variant="container.worker.online ? 'default' : 'destructive'">
-                    <RouterLink :to="`/workers/${container.worker.hostname}`">
-                      {{ container.worker.hostname }}
-                    </RouterLink>
-                  </Badge>
-                </CardTitle>
-                <CardAction>
-                  <Button variant="destructive" size="icon-sm" @click="onClickDeleteContainer">
-                    <Trash />
-                  </Button>
-                </CardAction>
-              </CardHeader>
-              <CardContent class="flex-1 space-y-2">
-                <p class="text-sm text-muted-foreground">
-                  <span class="font-medium">Status:</span> {{ container.status }}
-                </p>
-              </CardContent>
-              <CardFooter class="border-t">
-                <DeploymentLogsButton :container="container" />
-              </CardFooter>
-            </Card>
+            <ContainerCard v-for="container in application.containers" :key="container.worker.hostname"
+              :container="container" :containersAPI="containersAPI" :loadApplication="loadApplication" class="flex flex-col" />
           </div>
         </div>
       </div>
