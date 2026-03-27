@@ -105,7 +105,7 @@ function tooltipColor(_: any, i: number) {
               :interpolateMissingData="false" />
 
             <VisLine v-if="props.type == 'line'" :x="(d: ChartDataPoint) => d.date"
-              :y="(d: ChartDataPoint) => d[s.key]"
+              :y="(d: ChartDataPoint) => d[s.key] ?? undefined"
               :color="s.color"
               :fallbackValue="undefined"
               :interpolateMissingData="false" />

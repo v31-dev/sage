@@ -1,4 +1,4 @@
-import { CRUDAPI } from "@/lib/utils"
+import { CRUDAPI } from "@/lib/api"
 
 
 const API_ROOT = '/api'

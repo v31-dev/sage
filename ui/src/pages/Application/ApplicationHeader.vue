@@ -24,6 +24,7 @@ import {
   type Application,
   getApplicationAPI
 } from '@/services/api'
+import router from '@/router'
 
 
 interface Props {
@@ -33,6 +34,14 @@ interface Props {
 }
 
 const props = withDefaults(defineProps<Props>(), {})
+
+function onClickLogs() {
+  router.push(`/projects/${props.application.project.name}/${props.application.name}/logs`)
+}
+
+function onClickMetrics() {
+  router.push(`/projects/${props.application.project.name}/${props.application.name}/metrics`)
+}
 </script>
 
 <template>
@@ -76,10 +85,10 @@ const props = withDefaults(defineProps<Props>(), {})
         <StopApplicationButton :application="props.application" :applicationAPI="props.applicationAPI" />
       </ButtonGroup>
       <ButtonGroup class="space-x-1 w-full md:w-auto flex">
-        <Button class="flex-1 md:flex-initial" variant="outline">
+        <Button class="flex-1 md:flex-initial" variant="outline" @click="onClickLogs">
           <Logs />Logs
         </Button>
-        <Button class="flex-1 md:flex-initial" variant="outline">
+        <Button class="flex-1 md:flex-initial" variant="outline" @click="onClickMetrics">
           <Activity />Metrics
         </Button>
       </ButtonGroup>

@@ -1,7 +1,9 @@
 from fastapi import Request, APIRouter, Depends, Body, HTTPException
 from playhouse.shortcuts import model_to_dict
+from typing import Literal
 
 from services.db import Application, Worker, Container
+from services.metrics import Metrics
 from utils.api import generic_get, generic_create, generic_update, generic_delete, generic_list, parse_api_data
 from routes.containers import router as container_router
 
@@ -99,6 +101,21 @@ def stop_application(request: Request):
   request.app.state.rocketry["stop_application"].run(application=application)
 
   return {"status": "OK"}
+
+@router.post("/{application}/metrics", dependencies=[Depends(inject_application)])
+def get_metrics(request: Request, period: Literal['1h', '24h', '1w', '1m'] = '1h'):
+  application = request.state.models['application']
+  container_name = f"{application.project.name}-{application.name}"
+  
+  data = []
+  for container in application.containers:
+    container_metrics = Metrics().query_container_period(container.worker.hostname, container_name, period)
+    data.append({
+      "hostname": container.worker.hostname,
+      "metrics": container_metrics
+    })
+  
+  return data
 
 # Container routes
 router.include_router(container_router, prefix="/{application}/containers", dependencies=[Depends(inject_application)])
