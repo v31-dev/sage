@@ -44,19 +44,20 @@ export interface Application {
   args: string | null
   containers: Container[]
   container_count: number
-  status: 'active' | 'inactive' | 'deploying' | 'stopping' | 'restarting' | 'error'
+  status: 'active' | 'inactive' | 'deploying' | 'stopping' | 'error'
   created_at: Date
   updated_at: Date
 }
 
 export interface Deployment {
   container_task_id: string
+  type: 'deploy' | 'stop' | 'delete'
   created_at: Date
 }
 
 export interface Container {
   worker: Worker
-  status: 'active' | 'inactive' | 'deploying' | 'stopping' | 'restarting' | 'error'
+  status: 'active' | 'inactive' | 'deploying' | 'stopping' | 'error'
   deployments: Deployment[]
   created_at: Date
   updated_at: Date

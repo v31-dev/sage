@@ -56,6 +56,7 @@ async function loadApplicationStatus() {
     if (application.value) {
       application.value.status = updatedApplication.status
       application.value.containers = updatedApplication.containers
+      application.value.updated_at = updatedApplication.updated_at
       appStore.updateApplicationDeployStatus(updatedApplication.status)
     }
   } catch (err) {
@@ -82,7 +83,8 @@ function goBack() {
       <!-- Content -->
       <div v-else-if="application" class="space-y-6">
         <!-- Application Header -->
-        <ApplicationHeader :application="application" :applicationAPI="applicationAPI" :loadApplication="loadApplication" />
+        <ApplicationHeader :application="application" :applicationAPI="applicationAPI"
+          :loadApplication="loadApplication" />
 
         <!-- Containers -->
         <div class="space-y-4">
@@ -105,7 +107,8 @@ function goBack() {
           <!-- Containers Grid -->
           <div v-else class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             <ContainerCard v-for="container in application.containers" :key="container.worker.hostname"
-              :container="container" :containersAPI="containersAPI" :loadApplication="loadApplication" class="flex flex-col" />
+              :container="container" :containersAPI="containersAPI"
+              :loadApplication="loadApplication" class="flex flex-col" />
           </div>
         </div>
       </div>

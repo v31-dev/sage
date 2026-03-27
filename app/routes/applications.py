@@ -2,7 +2,7 @@ from fastapi import Request, APIRouter, Depends, Body, HTTPException
 from playhouse.shortcuts import model_to_dict
 
 from services.db import Application, Worker, Container
-from utils.api import generic_get, generic_create, generic_update, generic_delete, generic_list
+from utils.api import generic_get, generic_create, generic_update, generic_delete, generic_list, parse_api_data
 from routes.containers import router as container_router
 
 
@@ -31,12 +31,9 @@ def list_applications(request: Request):
 
 @router.post("/")
 def create_application(request: Request, application_data: dict = Body(...), ):
-  data = {
-    'project': request.state.models['project'],
-    'name': application_data.get('label'),
-    'label': application_data.get('label'),
-    'description': application_data.get('description'),
-  }
+  data = parse_api_data(application_data, ['label', 'description'])
+  data['project'] = request.state.models['project']
+  data['name'] = data['label']
   return generic_create(Application, data)
 
 @router.get("/{application}", dependencies=[Depends(inject_application)])
@@ -45,22 +42,8 @@ def get_application(request: Request):
 
 @router.put("/{application}", dependencies=[Depends(inject_application)])
 def update_application(request: Request, application_data: dict = Body(...)):
-  data = {
-    'label': application_data.get('label'),
-    'description': application_data.get('description'),
-    'image': application_data.get('image'),
-    'env': application_data.get('env'),
-    'args': application_data.get('args'),
-    'type': application_data.get('type'),
-    'repo': application_data.get('repo'),
-    'path': application_data.get('path')
-
-  }
-  return generic_update(
-    Application, 
-    request.state.models['application'],
-    data
-  ) 
+  data = parse_api_data(application_data, ['label', 'description', 'image', 'env', 'args', 'type', 'repo', 'path'])
+  return generic_update(Application, request.state.models['application'], data) 
 
 @router.delete("/{application}", dependencies=[Depends(inject_application)])
 def delete_application(request: Request):
@@ -102,6 +85,18 @@ def deploy_application(request: Request):
     raise HTTPException(status_code=400, detail="Git applications must have a repo & path specified.")
   
   request.app.state.rocketry["deploy_application"].run(application=application)
+
+  return {"status": "OK"}
+
+@router.post("/{application}/stop", dependencies=[Depends(inject_application)])
+def stop_application(request: Request):
+  """Trigger application stop."""
+  application = request.state.models['application']
+
+  if application.container_count == 0:
+    raise HTTPException(status_code=400, detail="Application has no containers to stop.")
+  
+  request.app.state.rocketry["stop_application"].run(application=application)
 
   return {"status": "OK"}
 

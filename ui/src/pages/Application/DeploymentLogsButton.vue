@@ -28,9 +28,9 @@ import { useAppStore } from '@/stores/app';
 import LogViewer from '@/components/LogViewer.vue'
 import { formatDate, levelClass } from '@/lib/utils'
 import {
-   type Container
+  type Container
 } from '@/services/api'
-import { S } from 'vue-router/dist/options-D40y7AuF.mjs';
+
 
 interface Props {
   container: Container
@@ -96,6 +96,12 @@ function openDeploymentLogsDialog(container: Container) {
 function closeDeploymentLogsDialog() {
   isDeploymentLogsDialogOpen.value = false
 }
+
+// Stop polling when not deploying or stopping
+const deploymentLogsPollCondiiton = computed(() => [ 
+  'deploying', 
+  'stopping' 
+].includes(appStore.applicationDeployStatus))
 </script>
 
 <template>
@@ -124,7 +130,7 @@ function closeDeploymentLogsDialog() {
               <SelectContent>
                 <SelectItem v-for="deployment in deployments" :key="deployment.container_task_id"
                   :value="deployment.container_task_id">
-                  {{ formatDate(deployment.created_at) }} - {{ deployment.container_task_id }}
+                  {{ formatDate(deployment.created_at) }} - {{ deployment.type }} - {{ deployment.container_task_id }}
                 </SelectItem>
               </SelectContent>
             </Select>
@@ -134,7 +140,7 @@ function closeDeploymentLogsDialog() {
       <div class="flex flex-col max-h-[60vh]">
         <LogViewer v-if="selectedDeploymentId" :key="selectedDeploymentId" :hostname="appStore.info?.hostname ?? ''" container="sage"
           :search="selectedDeploymentId" :parseMessage="parseMessage" :filterMessage="filterMessage"
-          :columns="columns" />
+          :columns="columns" :pollInterval="2_000" :poll="deploymentLogsPollCondiiton" :pollIntervalDelayStop="5_000"/>
       </div>
       <DialogFooter>
         <Button type="button" variant="outline" @click="closeDeploymentLogsDialog">

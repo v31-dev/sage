@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed } from 'vue'
 import { Badge } from '@/components/ui/badge'
 import {
   Card,
@@ -36,7 +36,7 @@ const containerBadgeVariant = computed(() => {
 const containerBadgeClass = computed(() => {
   if (props.container.status === 'active') 
     return 'success'
-  else if (['deploying', 'stopping', 'restarting'].includes(props.container.status)) 
+  else if (['deploying', 'stopping'].includes(props.container.status)) 
     return 'warning'
   else
     return ''

@@ -34,11 +34,17 @@ interface Props {
     cellClass?: (entry: any) => string,
     filter?: boolean,
     formatter?: (value: any) => string
-  }[]
+  }[],
+  pollInterval?: number,
+  poll?: boolean,
+  pollIntervalDelayStop?: number
 }
 
 const props = withDefaults(defineProps<Props>(), {
-  search: ''
+  search: '',
+  pollInterval: 5_000,
+  poll: true,
+  pollIntervalDelayStop: 0
 })
 
 const MAX_LOGS_ON_UI = 1000
@@ -60,6 +66,18 @@ const parsedLogs = computed(() =>
   logs.value.filter(e => props.filterMessage ? props.filterMessage(e.message, e) : true).map(e => ({ entry: e, parsed: props.parseMessage(e.message, e) }))
 )
 
+function isNearBottom(threshold: number = 50): boolean {
+  if (desktopViewport.value) {
+    const { scrollTop, scrollHeight, clientHeight } = desktopViewport.value
+    return scrollHeight - (scrollTop + clientHeight) <= threshold
+  }
+  if (mobileScroll.value) {
+    const { scrollTop, scrollHeight, clientHeight } = mobileScroll.value
+    return scrollHeight - (scrollTop + clientHeight) <= threshold
+  }
+  return true
+}
+
 async function scrollToBottom() {
   await nextTick()
 
@@ -77,9 +95,31 @@ async function scrollToBottom() {
   }
 }
 
-// Watch logs array and scroll when it changes
+// Watch logs array and scroll when it changes (if near bottom)
 watch(() => logs.value.length, async () => {
-  await scrollToBottom()
+  if (isNearBottom()) {
+    await scrollToBottom()
+  }
+})
+
+// Watch poll prop and start/stop polling accordingly
+watch(() => props.poll, (newVal) => {
+  // Delay stopping the poll to catch any late logs after deployment/stopping
+  if (pollTimer !== null) {
+    if (props.pollIntervalDelayStop > 0) {
+      setTimeout(() => {
+        if (pollTimer !== null) clearInterval(pollTimer)
+        pollTimer = null
+      }, props.pollIntervalDelayStop)
+    } else {
+      clearInterval(pollTimer)
+      pollTimer = null
+    }
+  }
+
+  if (newVal) {
+    pollTimer = setInterval(load, props.pollInterval)
+  }
 })
 
 async function load() {
@@ -163,8 +203,10 @@ onMounted(async () => {
   // Load initial logs
   await load()
 
-  // Start polling every 5 seconds
-  pollTimer = setInterval(load, 5_000)
+  // Start polling every X seconds
+  if (props.poll) {
+    pollTimer = setInterval(load, props.pollInterval)
+  }
 })
 
 onUnmounted(() => {

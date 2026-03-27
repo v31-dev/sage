@@ -72,7 +72,6 @@ def generic_update(model, instance, data: dict):
     logger.error(f"Error updating {model.__name__}: {e}")
     raise HTTPException(status_code=500, detail=f"Failed to update {model.__name__} with error: {e}")
 
-
 def generic_delete(model, instance):
   """Generic DELETE handler - delete instance by query condition.
   
@@ -91,3 +90,7 @@ def generic_delete(model, instance):
   except Exception as e:
     logger.error(f"Error deleting {model.__name__}: {e}")
     raise HTTPException(status_code=500, detail=f"Failed to delete {model.__name__} with error: {e}")
+  
+def parse_api_data(data, keys: list[str]):
+  """Helper to parse API data with optional keys."""
+  return {key: data.get(key).strip() if data.get(key) is not None else None for key in keys if key in data}

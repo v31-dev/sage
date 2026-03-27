@@ -56,6 +56,17 @@ async def deploy_application(application: Application):
     logger.error(f"Failed to deploy application {application.name}: {e}")
     raise TaskFailed()
   
+# Stop Application
+@app.task(name="stop_application", multilaunch=True)
+async def stop_application(application: Application):
+  try:
+    await Manager().stop_application(application)
+  except Exception as e:
+    application.status = "error"
+    application.save()
+    logger.error(f"Failed to stop application {application.name}: {e}")
+    raise TaskFailed()
+  
 # Delete Container
 @app.task(name="delete_container", multilaunch=True)
 async def delete_container(container: Container):

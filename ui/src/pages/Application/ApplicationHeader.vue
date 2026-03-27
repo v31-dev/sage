@@ -1,7 +1,5 @@
 <script setup lang="ts">
 import {
-  StopCircle,
-  RefreshCw,
   Logs,
   Activity
 } from 'lucide-vue-next'
@@ -18,7 +16,8 @@ import { Button } from '@/components/ui/button'
 import { ButtonGroup } from '@/components/ui/button-group'
 import { Label } from '@/components/ui/label'
 
-import DeployButton from './DeployButton.vue'
+import DeployApplicationButton from './DeployApplicationButton.vue'
+import StopApplicationButton from './StopApplicationButton.vue'
 import EditApplicationButton from './EditApplicationButton.vue'
 import DeleteApplicationButton from './DeleteApplicationButton.vue'
 import { 
@@ -73,13 +72,8 @@ const props = withDefaults(defineProps<Props>(), {})
     </CardContent>
     <CardFooter class="border-t flex flex-col md:flex-row justify-between items-center gap-2 md:gap-0">
       <ButtonGroup class="space-x-1 w-full md:w-auto flex">
-        <DeployButton :application="props.application" :applicationAPI="props.applicationAPI" />
-        <Button class="flex-1 md:flex-initial" variant="destructive" :disabled="props.application.status !== 'active'">
-          <StopCircle />Stop
-        </Button>
-        <Button class="flex-1 md:flex-initial neutral" :disabled="props.application.status !== 'active'">
-          <RefreshCw />Restart
-        </Button>
+        <DeployApplicationButton :application="props.application" :applicationAPI="props.applicationAPI" />
+        <StopApplicationButton :application="props.application" :applicationAPI="props.applicationAPI" />
       </ButtonGroup>
       <ButtonGroup class="space-x-1 w-full md:w-auto flex">
         <Button class="flex-1 md:flex-initial" variant="outline">

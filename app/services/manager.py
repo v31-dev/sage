@@ -196,7 +196,7 @@ class Manager(Base):
       Delete a container.
     '''
     # Create a deployment for tracking in case of error
-    Deployment.create(container=container, application_task_id=task_id.get(), container_task_id=task_id.get())
+    Deployment.create(container=container, type='delete', application_task_id=task_id.get(), container_task_id=task_id.get())
     container.status = "stopping"
     container.save()
     logger.info(f"Deleting container of application {container.application.name} from worker {container.worker.hostname}")
@@ -226,10 +226,70 @@ class Manager(Base):
       logger.error(f"Failed to delete container {container.id} of application {container.application.name} from worker {container.worker.hostname}: {e}")
       raise Exception(f"Failed to delete container {container.id} of application {container.application.name} from worker {container.worker.hostname}: {e}")
     
+  async def stop_application(self, application: Application):
+    '''
+      Stop an application.
+    '''
+    application.status = "stopping"
+    application.save()
+    logger.info(f"Stopping application {application.name}...")
+
+    await asyncio.gather(*[
+      self.stop_application_container(container) 
+      for container in application.containers
+    ], return_exceptions=False)
+    
+    if any(container.status == "error" for container in application.containers):
+      application.status = "error"
+      application.save()
+      raise Exception(f"Failed to stop application {application.name}.")
+    else:
+      application.status = "inactive"
+      application.save()
+      logger.info(f"Application {application.name} stopped.")
+
+  async def stop_application_container(self, container: Container):
+    # Create a deployment for tracking with a different task id
+    container_task_id = generate_task_id_token()
+    Deployment.create(container=container, type='stop', application_task_id=task_id.get(), container_task_id=container_task_id)
+    container.status = "stopping"
+    container.save()
+    logger.info(f"Stopping application {container.application.name} container on worker {container.worker.hostname} with task id {container_task_id}...")
+
+    exception_message = None
+
+    try:
+      task_id_token = task_id.set(container_task_id)
+
+      container_name = f"{container.application.project.name}-{container.application.name}"
+      container_dir = f"{worker_home_dir}/applications/{container.application.name}"
+
+      app_env = container.application.env if container.application.env else ""
+      app_build_args = container.application.args if container.application.args else ""
+
+      # Stop with docker compose
+      await run_in_executor_with_context(self.tailscale.exec_command, container.worker.hostname,
+                                         f"docker compose -f {container_dir}/docker-compose.yml down")
+
+      deployment_status = "inactive"
+    except Exception as e:
+      deployment_status = "error"
+      exception_message = str(e)
+    finally:
+      task_id.reset(task_id_token)
+
+    container.status = deployment_status
+    container.save()
+
+    if deployment_status == "inactive":
+      logger.info(f"Application {container.application.name} container stopped on worker {container.worker.hostname} with task id {container_task_id}.")
+    else: 
+      logger.error(f"Failed to stop application {container.application.name} container on worker {container.worker.hostname} with task id {container_task_id}. Exception: {exception_message}")
+
   async def deploy_application_container(self, container: Container):
     # Create a deployment for tracking with a different task id
     container_task_id = generate_task_id_token()
-    Deployment.create(container=container, application_task_id=task_id.get(), container_task_id=container_task_id)
+    Deployment.create(container=container, type='deploy', application_task_id=task_id.get(), container_task_id=container_task_id)
     container.status = "deploying"
     container.save()
     logger.info(f"Deploying application {container.application.name} container to worker {container.worker.hostname} with task id {container_task_id}...")

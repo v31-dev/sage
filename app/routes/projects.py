@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, Request, Body
 from playhouse.shortcuts import model_to_dict
 
 from services.db import Project
-from utils.api import generic_get, generic_create, generic_update, generic_delete, generic_list
+from utils.api import generic_get, generic_create, generic_update, generic_delete, generic_list, parse_api_data
 from routes.applications import router as app_router
 
 
@@ -23,12 +23,8 @@ def list_projects():
 
 @router.post("/")
 def create_project(project_data: dict = Body(...)):
-  data = {
-    'name': project_data.get('label'),
-    'label': project_data.get('label'),
-    'description': project_data.get('description'),
-  }
-
+  data = parse_api_data(project_data, ['label', 'description'])
+  data['name'] = data['label']
   return generic_create(Project, data)
 
 @router.get("/{project}", dependencies=[Depends(inject_project)])
@@ -37,11 +33,7 @@ def get_project(request: Request):
 
 @router.put("/{project}", dependencies=[Depends(inject_project)])
 def update_project(request: Request, project_data: dict = Body(...)):
-  data = {
-    'label': project_data.get('label'),
-    'description': project_data.get('description'),
-    'env': project_data.get('env'),
-  }
+  data = parse_api_data(project_data, ['label', 'description', 'env'])
   return generic_update(Project, request.state.models['project'], data) 
 
 @router.delete("/{project}", dependencies=[Depends(inject_project)])

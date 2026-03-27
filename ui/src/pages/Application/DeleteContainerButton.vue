@@ -22,8 +22,8 @@ const appStore = useAppStore()
 
 const deleteButtonDisabled = computed(() => {
   return [
-    ['stopping', 'deploying', 'restarting'].includes(appStore.applicationDeployStatus),
-    ['stopping', 'deploying', 'restarting'].includes(props.container?.status)
+    ['stopping', 'deploying'].includes(appStore.applicationDeployStatus),
+    ['stopping', 'deploying'].includes(props.container?.status)
   ].includes(true)
 })
 

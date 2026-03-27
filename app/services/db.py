@@ -20,6 +20,8 @@ db = SqliteDatabase(DB_PATH, pragmas={
   'busy_timeout': 5000,  # Wait up to 5s before returning SQLITE_BUSY.
 })
 
+STATUS_CHOICES = ['active', 'inactive', 'deploying', 'stopping', 'error']
+
 class BaseModel(Model):
   created_at = DateTimeField(default=datetime.now)
   updated_at = DateTimeField(default=datetime.now)
@@ -58,7 +60,7 @@ class Application(BaseModel):
   path            = CharField(default="Dockerfile")
   env             = EncryptedTextField(null=True)
   args            = EncryptedTextField(null=True)
-  status          = CharField(default='inactive')
+  status          = CharField(choices=STATUS_CHOICES, default='inactive')
   container_count = IntegerField(default=0)
 
   def save(self, *args, **kwargs):
@@ -94,7 +96,7 @@ def update_application_count_on_delete(model_class, instance):
 class Container(BaseModel):
   application = ForeignKeyField(Application, backref='containers', on_delete='RESTRICT')
   worker      = ForeignKeyField(Worker, backref='containers')
-  status      = CharField(default='inactive')
+  status      = CharField(choices=STATUS_CHOICES, default='inactive')
 
   class Meta:
     indexes = (
@@ -112,6 +114,7 @@ def update_container_count_on_delete(model_class, instance):
 
 class Deployment(BaseModel):
   container           = ForeignKeyField(Container, backref='deployments', on_delete='CASCADE')
+  type                = CharField(choices=['deploy', 'stop', 'delete'])
   application_task_id = CharField()
   container_task_id   = CharField()
 
