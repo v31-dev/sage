@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
-import { Search, Filter } from 'lucide-vue-next'
+import { Search, Filter, CircleMinus } from 'lucide-vue-next'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupInput } from '@/components/ui/input-group'
 import {
   Table,
   TableBody,
@@ -12,6 +13,8 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
+import { Spinner } from '@/components/ui/spinner'
+
 import { fetchLogs, type LogEntry } from '@/services/api'
 
 
@@ -33,7 +36,8 @@ interface Props {
     rowClass: string,
     cellClass?: (entry: any) => string,
     filter?: boolean,
-    formatter?: (value: any) => string
+    formatter?: (value: any) => string,
+    hostnameFilter?: boolean
   }[],
   pollInterval?: number,
   poll?: boolean,
@@ -61,6 +65,7 @@ const desktopViewport = ref<HTMLElement | null>(null)
 const mobileScroll = ref<HTMLElement | null>(null)
 const error = ref<string>('')
 let pollTimer: ReturnType<typeof setInterval> | null = null
+const hostnameFilter = ref('')
 
 const parsedLogs = computed(() =>
   logs.value.filter(e => props.filterMessage ? props.filterMessage(e.message, e) : true).map(e => ({ entry: e, parsed: props.parseMessage(e.message, e) }))
@@ -138,7 +143,8 @@ async function load() {
       // toDate is in the past - no new logs
     } else {
       // fetch logs
-      logs.value.push(...await fetchLogs(props.hostname, props.container, activeSearch.value, fromDateUTC, toDateUTC))
+      const hostname = hostnameFilter.value || props.hostname
+      logs.value.push(...await fetchLogs(hostname, props.container, activeSearch.value, fromDateUTC, toDateUTC))
       // Keep only last 1000 logs on UI
       if (logs.value.length > MAX_LOGS_ON_UI) {
         logs.value = logs.value.slice(-MAX_LOGS_ON_UI)
@@ -181,9 +187,18 @@ function clearSearch() {
   applySearch()
 }
 
-function filterBy(value: string) {
+function clearHostnameFilter() {
+  hostnameFilter.value = ''
+  applySearch()
+}
+
+function filterBy(column: typeof props.columns[number], value: string) {
   if (!value) return
-  inputSearch.value = value
+  if (column.hostnameFilter) {
+    hostnameFilter.value = value
+  } else {
+    inputSearch.value = value
+  }
   applySearch()
 }
 
@@ -233,10 +248,21 @@ onUnmounted(() => {
           <div class="relative flex-1">
             <Search
               class="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />
-            <Input v-model="inputSearch" placeholder="Search logs…" class="pl-8" @keyup="onSearchKeypress" />
+            <InputGroup>
+              <InputGroupInput v-model="inputSearch" placeholder="Search logs…" class="pl-8"
+                @keyup="onSearchKeypress" />
+              <InputGroupAddon v-if="hostnameFilter" align="inline-end">
+                <InputGroupButton variant="destructive" @click="clearHostnameFilter">
+                  <CircleMinus />
+                  {{ hostnameFilter }}
+                </InputGroupButton>
+              </InputGroupAddon>
+            </InputGroup>
           </div>
-          <Button variant="secondary" size="sm" @click="applySearch" class="whitespace-nowrap"
-            :disabled="isLoading">Search</Button>
+          <Button variant="secondary" size="sm" @click="applySearch" class="whitespace-nowrap" :disabled="isLoading">
+            <Spinner class="animate-spin" v-if="isLoading" />
+            Search
+          </Button>
           <Button v-if="activeSearch" variant="ghost" size="sm" @click="clearSearch" :disabled="isLoading"
             class="whitespace-nowrap">Clear</Button>
         </div>
@@ -273,7 +299,7 @@ onUnmounted(() => {
                         <button v-if="parsed[column.key]"
                           class="flex items-center gap-0.5 text-violet-600 dark:text-violet-400 hover:underline underline-offset-2"
                           :title="`Filter by ${column.label} ${parsed[column.key]}`"
-                          @click="filterBy(parsed[column.key])">
+                          @click="filterBy(column, parsed[column.key])">
                           <Filter class="w-3 h-3 shrink-0" />
                           {{ column.formatter ? column.formatter(parsed[column.key]) : (parsed[column.key] || '-') }}
                         </button>
@@ -312,7 +338,7 @@ onUnmounted(() => {
                           <button v-if="parsed[column.key]"
                             class="flex items-center gap-0.5 text-violet-600 dark:text-violet-400 hover:underline underline-offset-2"
                             :title="`Filter by ${column.label} ${parsed[column.key]}`"
-                            @click="filterBy(parsed[column.key])">
+                            @click="filterBy(column, parsed[column.key])">
                             <Filter class="w-3 h-3 shrink-0" />{{ column.formatter ?
                               column.formatter(parsed[column.key]) : (parsed[column.key] || '-') }}
                           </button>

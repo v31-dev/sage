@@ -5,6 +5,8 @@ import Project from "@/pages/Project.vue";
 import System from "@/pages/System.vue";
 import Logs from "@/pages/Logs.vue";
 import Application from "@/pages/Application";
+import ApplicationLogs from "@/pages/ApplicationLogs.vue";
+import ApplicationMetrics from "@/pages/ApplicationMetrics.vue";
 import Workers from "@/pages/Workers.vue";
 import WorkerMetrics from "@/pages/WorkerMetrics.vue";
 import Settings from "@/pages/Settings.vue";
@@ -15,6 +17,8 @@ const routes = [
   { path: "/projects", name: "Projects", component: Projects },
   { path: "/projects/:projectId", name: "Project", component: Project },
   { path: "/projects/:projectId/:appId", name: "Application", component: Application },
+  { path: "/projects/:projectId/:appId/logs", name: "ApplicationLogs", component: ApplicationLogs },
+  { path: "/projects/:projectId/:appId/metrics", name: "ApplicationMetrics", component: ApplicationMetrics },
   { path: "/requests", name: "Requests", component: Requests },
   { path: "/system", name: "System", component: System },
   { path: "/logs", name: "Logs", component: Logs },
