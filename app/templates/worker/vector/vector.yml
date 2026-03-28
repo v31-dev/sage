@@ -15,8 +15,8 @@ sinks:
     framing:
       method: newline_delimited
     batch:
-      max_events: 3000
-      timeout_secs: 45
+      max_events: 1000
+      timeout_secs: 30
     buffer:
       type: disk
       max_size: 536870912

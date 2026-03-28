@@ -20,6 +20,11 @@ app = LoggedRocketry(execution="async")
 async def manager_sync_workers(): 
   await run_in_executor_with_context(Manager().sync_workers)
 
+# Sync Application staus
+@app.task(minutely)
+async def manager_sync_application_status():
+  await run_in_executor_with_context(Manager().sync_application_status)
+
 # Sync Traefik wildcard certificates to workers
 @app.task(every("20 days"))
 async def traefik_sync_certs():

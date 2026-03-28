@@ -230,10 +230,10 @@ class Metrics(Base):
     except Exception as e:
       raise Exception(f"Failed to collect metrics for {hostname}: {e}")
     
-  def cleanup(self):
-    cutoff = datetime.now() - timedelta(days=7)
+  def cleanup(self, days: int = 7):
+    cutoff = datetime.now() - timedelta(days=days)
 
-    # Cleanup metrics from all shards
+    # Cleanup metrics
     deleted_w = 0
     deleted_c = 0
     for hostname, db_info in self._dbs['metrics'].items():
@@ -241,14 +241,14 @@ class Metrics(Base):
       ContainerMetrics = db_info['models']['ContainerMetrics']
       deleted_w += WorkerMetrics.delete().where(WorkerMetrics.ts < cutoff).execute()
       deleted_c += ContainerMetrics.delete().where(ContainerMetrics.ts < cutoff).execute()
-    logger.info(f"Metrics cleanup: removed {deleted_w} worker rows, {deleted_c} container rows older than 7 days.")
+    logger.info(f"Metrics cleanup: removed {deleted_w} worker rows, {deleted_c} container rows older than {days} days.")
 
-    # Cleanup logs from all open shards
+    # Cleanup logs
     deleted_l = 0
     for container, db_info in self._dbs['logs'].items():
       ContainerLogs = db_info['models']['ContainerLogs']
       deleted_l += ContainerLogs.delete().where(ContainerLogs.ts < cutoff.isoformat()).execute()
-    logger.info(f"Logs cleanup: removed {deleted_l} log rows older than 7 days.")
+    logger.info(f"Logs cleanup: removed {deleted_l} log rows older than {days} days.")
 
   def query_period(self, hostname: str, period: str = '1h'):
     period_config = _PERIODS.get(period, _PERIODS['1h'])

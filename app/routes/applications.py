@@ -77,6 +77,9 @@ def deploy_application(request: Request):
   """Trigger application deployment."""
   application = request.state.models['application']
 
+  if application.status in ['deploying', 'stopping']:
+    raise HTTPException(status_code=409, detail=f"Application is already {application.status}.")
+
   if application.container_count == 0:
     raise HTTPException(status_code=400, detail="Application has no containers to deploy.")
 
@@ -94,6 +97,9 @@ def deploy_application(request: Request):
 def stop_application(request: Request):
   """Trigger application stop."""
   application = request.state.models['application']
+
+  if application.status in ['deploying', 'stopping']:
+    raise HTTPException(status_code=409, detail=f"Application is already {application.status}.")
 
   if application.container_count == 0:
     raise HTTPException(status_code=400, detail="Application has no containers to stop.")

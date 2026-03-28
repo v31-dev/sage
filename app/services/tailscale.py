@@ -94,7 +94,7 @@ class Tailscale(Base):
     '''
       Execute a command on a remote host via Tailscale SSH.
       Streams output in real-time to logger.
-      Returns exit code and raises an exception if the command fails.
+      Returns (exit code, command stdout) and raises an exception if the command fails.
       
       Args:
         hostname: Target host to execute command on
@@ -110,10 +110,15 @@ class Tailscale(Base):
         text=True
       )
 
-      # Stream output line-by-line
+      # Capture output and stream line-by-line
+      output_lines = []
       for line in iter(process.stdout.readline, ''):
         if line:
+          # Ignore Tailscale client warning
+          if 'Warning: client version' in line:
+            continue
           logger.info(f"[{hostname}] {line.rstrip()}")
+          output_lines.append(line.rstrip())
       
       process.wait(timeout=timeout)
       
@@ -121,7 +126,7 @@ class Tailscale(Base):
         raise Exception(f"Error executing command on {hostname}: exit code {process.returncode}")
       
       logger.info(f"Successfully executed command on {hostname}.")
-      return process.returncode
+      return (process.returncode, output_lines)
     
     except subprocess.TimeoutExpired:
       process.kill()

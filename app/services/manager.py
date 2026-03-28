@@ -169,6 +169,51 @@ class Manager(Base):
     self.cloudflare.create_dns_record(name=f"*.int.{get_env('DOMAIN')}", content=worker.ip, comment=f"{get_env('ORG')}-sage-worker-{worker.hostname}", type="A")
     logger.info(f"Worker {worker.hostname} updated with new IP {worker.ip}.")
 
+  def sync_application_status(self):
+    '''
+      Sync Application & Container status from the workers.
+      Ideally status is managed explicitly so this is to catch unexpected changes 
+      like a container being stopped from the worker side or a worker going offline without Manager knowing yet.
+    '''
+    # Get all application containers
+    containers = Container.select()
+
+    # Get the container status from each worker
+    container_status = {}
+    workers = Worker.select()
+    for worker in workers:
+      if worker.online:
+        _, docker_ps_output = self.tailscale.exec_command(worker.hostname, "docker ps --format '{{.Names}}|{{.State}}'")
+        for line in docker_ps_output:
+          try:
+            container_name, container_state = line.split("|")
+          except Exception:
+            continue
+          container_status[f"{worker.hostname}-{container_name}"] = container_state
+
+    for container in containers:
+      # Skip state update during explicit actions
+      if container.status in ['stopping', 'deploying']:
+        continue
+
+      worker_container_name = f"{container.worker.hostname}-{container.application.project.name}-{container.application.name}"
+      status = container_status.get(worker_container_name)
+      if status:
+        if status == "running" and container.status != "active":
+          container.status = "active"
+          container.save()
+          logger.error(f"Marking application container {worker_container_name} as active as container is running.")
+        elif status in ["paused", "restarting"] and container.status != "error":
+          container.status = "error"
+          container.save()
+          logger.error(f"Marking application container {worker_container_name} as error as container is in state {status}.")
+      else:
+        # if no status is found and container is supposed to be active, mark as error (could be offline or stopped container)
+        if container.status == 'active':
+          container.status = "error"
+          container.save()
+          logger.error(f"Marking application container {worker_container_name} as error as status not found (worker may be offline or container stopped).")
+  
   async def deploy_application(self, application: Application):
     '''
       Deploy an application.

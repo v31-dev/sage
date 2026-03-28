@@ -10,7 +10,7 @@ import {
   DialogTrigger,
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button';
-import { 
+import {
   Field,
   FieldGroup,
   FieldLabel,
@@ -55,12 +55,6 @@ function parseMessage(raw: string): { [key: string]: any; ts: string; message: s
   }
 }
 
-function filterMessage(raw: string): boolean {
-  // Filter Tailscale cli warning
-  if (raw.includes(' Warning: client version')) return false
-  return true
-}
-
 const columns = [
   {
     key: 'ts',
@@ -98,9 +92,9 @@ function closeDeploymentLogsDialog() {
 }
 
 // Stop polling when not deploying or stopping
-const deploymentLogsPollCondiiton = computed(() => [ 
-  'deploying', 
-  'stopping' 
+const deploymentLogsPollCondiiton = computed(() => [
+  'deploying',
+  'stopping'
 ].includes(appStore.applicationDeployStatus))
 </script>
 
@@ -138,9 +132,9 @@ const deploymentLogsPollCondiiton = computed(() => [
         </FieldGroup>
       </FieldSet>
       <div class="flex flex-col max-h-[60vh]">
-        <LogViewer v-if="selectedDeploymentId" :key="selectedDeploymentId" :hostname="appStore.info?.hostname ?? ''" container="sage"
-          :search="selectedDeploymentId" :parseMessage="parseMessage" :filterMessage="filterMessage"
-          :columns="columns" :pollInterval="2_000" :poll="deploymentLogsPollCondiiton" :pollIntervalDelayStop="5_000"/>
+        <LogViewer v-if="selectedDeploymentId" :key="selectedDeploymentId" :hostname="appStore.info?.hostname ?? ''"
+          container="sage" :search="selectedDeploymentId" :parseMessage="parseMessage" :columns="columns"
+          :pollInterval="2_000" :poll="deploymentLogsPollCondiiton" :pollIntervalDelayStop="5_000" />
       </div>
       <DialogFooter>
         <Button type="button" variant="outline" @click="closeDeploymentLogsDialog">
