@@ -58,7 +58,6 @@ const editedDomainName = ref('')
 const editedDomainType = ref<'internal' | 'public'>('internal')
 const editDomainErrorMessage = ref('')
 const isClickedEditDomainConfirm = ref(false)
-const isClickedDeleteDomainConfirm = ref(false)
 const link = computed(() => {
   if (props.domain.type === 'public') {
     return `https://${props.domain.name}.${appStore.info!.domain}`

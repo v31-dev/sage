@@ -110,7 +110,7 @@ function goBack() {
           <!-- Domains Grid -->
           <div v-else class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             <DomainCard v-for="domain in application.domains" :key="domain.name" :domain="domain" :domainAPI="domainAPI"
-              :loadApplication="loadApplication" class="flex flex-col" />
+              :loadApplication="loadApplication" />
           </div>
         </div>
 
