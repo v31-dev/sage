@@ -1,6 +1,7 @@
 from fastapi import Request, APIRouter, Body, Depends, HTTPException
+
 from services.db import Container, Worker
-from utils.api import generic_get, generic_create, generic_delete, generic_list
+from utils.api import generic_get, generic_create, generic_list
 
 
 def inject_container(request: Request):

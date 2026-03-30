@@ -46,7 +46,7 @@ async function onClickDeployApplication() {
 </script>
 
 <template>
-  <Button class="flex-1 md:flex-initial success" @click="onClickDeployApplication" :disabled="deployButtonDisabled">
+  <Button size="sm" class="flex-1 md:flex-initial success" @click="onClickDeployApplication" :disabled="deployButtonDisabled">
     <Spinner class="animate-spin" v-if="deployButtonSpinner" />
     <Play />Deploy
   </Button>

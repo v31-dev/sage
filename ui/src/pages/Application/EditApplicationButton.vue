@@ -21,8 +21,8 @@ import {
 } from '@/components/ui/field'
 import { Spinner } from '@/components/ui/spinner'
 import { toast } from 'vue-sonner'
-import { 
-  Select, 
+import {
+  Select,
   SelectItem,
   SelectContent,
   SelectTrigger,
@@ -33,6 +33,7 @@ import {
   type Application,
   getApplicationAPI
 } from '@/services/api'
+import { Edit } from 'lucide-vue-next'
 
 
 interface Props {
@@ -99,7 +100,9 @@ async function handleUpdateApplication() {
 <template>
   <Dialog v-model:open="isEditDialogOpen">
     <DialogTrigger asChild>
-      <Button @click="openEditDialog">Edit</Button>
+      <Button @click="openEditDialog" variant="outline" size="sm">
+        <Edit />Edit
+      </Button>
     </DialogTrigger>
     <DialogContent class="sm:max-w-[600px]">
       <DialogHeader>
@@ -127,7 +130,7 @@ async function handleUpdateApplication() {
             </FieldLabel>
             <Select id="type" v-model="editFormData.type" placeholder="required">
               <SelectTrigger>
-                <SelectValue/>
+                <SelectValue />
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="docker" key="docker">Docker</SelectItem>
@@ -171,10 +174,10 @@ async function handleUpdateApplication() {
         </FieldGroup>
       </FieldSet>
       <DialogFooter>
-        <Button type="button" variant="outline" @click="isEditDialogOpen = false" :disabled="isClickedEditConfirm">
+        <Button size="sm" type="button" variant="outline" @click="isEditDialogOpen = false" :disabled="isClickedEditConfirm">
           Cancel
         </Button>
-        <Button @click="handleUpdateApplication" :disabled="isClickedEditConfirm">
+        <Button size="sm" @click="handleUpdateApplication" :disabled="isClickedEditConfirm">
           <Spinner class="animate-spin" v-if="isClickedEditConfirm" />
           Save
         </Button>

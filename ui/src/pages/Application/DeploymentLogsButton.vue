@@ -30,6 +30,7 @@ import { formatDate, levelClass } from '@/lib/utils'
 import {
   type Container
 } from '@/services/api'
+import { Logs } from 'lucide-vue-next';
 
 
 interface Props {
@@ -102,6 +103,7 @@ const deploymentLogsPollCondiiton = computed(() => [
   <Dialog v-model:open="isDeploymentLogsDialogOpen" :key="props.container.worker.hostname">
     <DialogTrigger asChild>
       <Button class="w-full" variant="outline" size="sm" @click="openDeploymentLogsDialog(props.container)">
+        <Logs />
         Deployment Logs
       </Button>
     </DialogTrigger>
@@ -137,7 +139,7 @@ const deploymentLogsPollCondiiton = computed(() => [
           :pollInterval="2_000" :poll="deploymentLogsPollCondiiton" :pollIntervalDelayStop="5_000" />
       </div>
       <DialogFooter>
-        <Button type="button" variant="outline" @click="closeDeploymentLogsDialog">
+        <Button size="sm" type="button" variant="outline" @click="closeDeploymentLogsDialog">
           Close
         </Button>
       </DialogFooter>

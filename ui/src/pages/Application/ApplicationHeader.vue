@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import router from '@/router'
+import { toast } from 'vue-sonner'
 import {
   Logs,
   Activity
@@ -19,12 +21,11 @@ import { Label } from '@/components/ui/label'
 import DeployApplicationButton from './DeployApplicationButton.vue'
 import StopApplicationButton from './StopApplicationButton.vue'
 import EditApplicationButton from './EditApplicationButton.vue'
-import DeleteApplicationButton from './DeleteApplicationButton.vue'
+import DeleteConfirmationButton from '@/components/DeleteConfirmationButton.vue'
 import { 
   type Application,
   getApplicationAPI
 } from '@/services/api'
-import router from '@/router'
 
 
 interface Props {
@@ -42,6 +43,12 @@ function onClickLogs() {
 function onClickMetrics() {
   router.push(`/projects/${props.application.project.name}/${props.application.name}/metrics`)
 }
+
+async function onConfirmDelete() {
+  await props.applicationAPI.delete(props.application.name)
+  toast.success(`Application ${props.application.name} deleted successfully`)
+  router.push(`/projects/${props.application.project.name}`)
+}
 </script>
 
 <template>
@@ -53,7 +60,7 @@ function onClickMetrics() {
         <ButtonGroup class="space-x-1">
           <EditApplicationButton :application="props.application" :applicationAPI="props.applicationAPI"
             :loadApplication="props.loadApplication" />
-          <DeleteApplicationButton :application="props.application" :applicationAPI="props.applicationAPI" />
+          <DeleteConfirmationButton title="Application" :description="props.application.name" :onConfirm="onConfirmDelete" />
         </ButtonGroup>
       </CardAction>
     </CardHeader>
@@ -85,10 +92,10 @@ function onClickMetrics() {
         <StopApplicationButton :application="props.application" :applicationAPI="props.applicationAPI" />
       </ButtonGroup>
       <ButtonGroup class="space-x-1 w-full md:w-auto flex">
-        <Button class="flex-1 md:flex-initial" variant="outline" @click="onClickLogs">
+        <Button size="sm" class="flex-1 md:flex-initial" variant="outline" @click="onClickLogs">
           <Logs />Logs
         </Button>
-        <Button class="flex-1 md:flex-initial" variant="outline" @click="onClickMetrics">
+        <Button size="sm" class="flex-1 md:flex-initial" variant="outline" @click="onClickMetrics">
           <Activity />Metrics
         </Button>
       </ButtonGroup>

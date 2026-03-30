@@ -107,7 +107,7 @@ function goToProject(projectName: string) {
             <CardAction>
               <Dialog v-model:open="isDialogOpen">
                 <DialogTrigger asChild>
-                  <Button @click="openDialog" class="gap-2">
+                  <Button size="sm" @click="openDialog" class="gap-2">
                     <Plus :size="20" />
                     New Project
                   </Button>
@@ -137,10 +137,10 @@ function goToProject(projectName: string) {
                     </FieldGroup>
                   </FieldSet>
                   <DialogFooter>
-                    <Button type="button" variant="outline" @click="isDialogOpen = false" :disabled="isSubmitting">
+                    <Button size="sm" type="button" variant="outline" @click="isDialogOpen = false" :disabled="isSubmitting">
                       Cancel
                     </Button>
-                    <Button @click="handleCreateProject" :disabled="isSubmitting">
+                    <Button size="sm" @click="handleCreateProject" :disabled="isSubmitting">
                       {{ isSubmitting ? 'Creating...' : 'Create Project' }}
                     </Button>
                   </DialogFooter>

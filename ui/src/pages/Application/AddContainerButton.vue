@@ -96,7 +96,7 @@ async function onClickAddContainerConfirm() {
 <template>
   <Dialog v-model:open="isAddContainerDialogOpen">
     <DialogTrigger asChild>
-      <Button @click="openAddContainerDialog" class="gap-2">
+      <Button size="sm" @click="openAddContainerDialog" class="gap-2">
         <Plus :size="20" />
         New Container
       </Button>
@@ -134,11 +134,11 @@ async function onClickAddContainerConfirm() {
         </FieldGroup>
       </FieldSet>
       <DialogFooter>
-        <Button type="button" variant="outline" @click="isAddContainerDialogOpen = false"
+        <Button size="sm" type="button" variant="outline" @click="isAddContainerDialogOpen = false"
           :disabled="isClickedAddContainerConfirm">
           Cancel
         </Button>
-        <Button @click="onClickAddContainerConfirm"
+        <Button size="sm" @click="onClickAddContainerConfirm"
           :disabled="isClickedAddContainerConfirm || !selectedWorker">
           <Spinner class="animate-spin" v-if="isClickedAddContainerConfirm" />
           Add

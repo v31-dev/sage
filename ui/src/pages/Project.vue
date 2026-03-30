@@ -195,7 +195,7 @@ async function onClickDeleteProjectConfirm() {
                 <!-- Edit Dialog -->
                 <Dialog v-model:open="isEditDialogOpen">
                   <DialogTrigger asChild>
-                    <Button @click="openEditDialog">Edit</Button>
+                    <Button size="sm" @click="openEditDialog">Edit</Button>
                   </DialogTrigger>
                   <DialogContent class="sm:max-w-[600px]">
                     <DialogHeader>
@@ -228,11 +228,11 @@ async function onClickDeleteProjectConfirm() {
                       </FieldGroup>
                     </FieldSet>
                     <DialogFooter>
-                      <Button type="button" variant="outline" @click="isEditDialogOpen = false"
+                      <Button size="sm" type="button" variant="outline" @click="isEditDialogOpen = false"
                         :disabled="isClickedEditConfirm">
                         Cancel
                       </Button>
-                      <Button @click="handleUpdateProject" :disabled="isClickedEditConfirm">
+                      <Button size="sm" @click="handleUpdateProject" :disabled="isClickedEditConfirm">
                         <Spinner class="animate-spin" v-if="isClickedEditConfirm" />
                         Save
                       </Button>
@@ -242,7 +242,7 @@ async function onClickDeleteProjectConfirm() {
                 <!-- Delete Project Dialog -->
                 <Dialog v-model:open="isDeleteDialogOpen">
                   <DialogTrigger asChild>
-                    <Button @click="openDeleteProjectDialog" variant="destructive">Delete</Button>
+                    <Button size="sm" @click="openDeleteProjectDialog" variant="destructive">Delete</Button>
                   </DialogTrigger>
                   <DialogContent class="sm:max-w-[600px]">
                     <DialogHeader>
@@ -263,7 +263,7 @@ async function onClickDeleteProjectConfirm() {
                       </FieldGroup>
                     </FieldSet>
                     <DialogFooter>
-                      <Button variant="destructive" @click="onClickDeleteProjectConfirm"
+                      <Button size="sm" variant="destructive" @click="onClickDeleteProjectConfirm"
                         :disabled="isClickedDeleteConfirm">
                         <Spinner class="animate-spin" v-if="isClickedDeleteConfirm" />
                         Delete
@@ -289,7 +289,7 @@ async function onClickDeleteProjectConfirm() {
             <!-- Create Application -->
             <Dialog v-model:open="isCreateAppDialogOpen">
               <DialogTrigger asChild>
-                <Button @click="openCreateAppDialog" class="gap-2">
+                <Button size="sm" @click="openCreateAppDialog" class="gap-2">
                   <Plus :size="20" />
                   New Application
                 </Button>
@@ -320,11 +320,11 @@ async function onClickDeleteProjectConfirm() {
                   </FieldGroup>
                 </FieldSet>
                 <DialogFooter>
-                  <Button type="button" variant="outline" @click="isCreateAppDialogOpen = false"
+                  <Button size="sm" type="button" variant="outline" @click="isCreateAppDialogOpen = false"
                     :disabled="isClickedCreateAppConfirm">
                     Cancel
                   </Button>
-                  <Button @click="onClickCreateAppConfirm" :disabled="isClickedCreateAppConfirm">
+                  <Button size="sm" @click="onClickCreateAppConfirm" :disabled="isClickedCreateAppConfirm">
                     <Spinner class="animate-spin" v-if="isClickedCreateAppConfirm" />
                     Create
                   </Button>
@@ -367,7 +367,7 @@ async function onClickDeleteProjectConfirm() {
       <Card v-else>
         <CardContent class="flex flex-col items-center justify-center py-12">
           <p class="text-muted-foreground text-lg mb-4">Project {{ projectName }} not found</p>
-          <Button @click="goBack" variant="outline">
+          <Button size="sm" @click="goBack" variant="outline">
             Back to Projects
           </Button>
         </CardContent>

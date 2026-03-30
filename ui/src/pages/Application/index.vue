@@ -11,12 +11,15 @@ import { Spinner } from '@/components/ui/spinner'
 import {
   getApplicationAPI,
   getContainerAPI,
+  getDomainAPI,
   type Application,
 } from '@/services/api'
 import { useAppStore } from '@/stores/app'
 import ApplicationHeader from './ApplicationHeader.vue'
 import AddContainerButton from './AddContainerButton.vue'
 import ContainerCard from './ContainerCard.vue'
+import AddDomainButton from './AddDomainButton.vue'
+import DomainCard from './DomainCard.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -26,6 +29,7 @@ const appStore = useAppStore()
 
 const applicationAPI = getApplicationAPI(projectName)
 const containersAPI = getContainerAPI(projectName, appName)
+const domainAPI = getDomainAPI(projectName, appName)
 const application = ref<Application | null>(null)
 const isLoading = ref(true)
 let pollInterval: ReturnType<typeof setInterval> | null = null
@@ -86,13 +90,37 @@ function goBack() {
         <ApplicationHeader :application="application" :applicationAPI="applicationAPI"
           :loadApplication="loadApplication" />
 
+        <!-- Domains -->
+        <div class="space-y-4">
+          <div class="flex justify-between items-center">
+            <h2 class="text-xl font-semibold">Domains</h2>
+            <!-- Add Domain Button -->
+            <AddDomainButton :application="application" :domainAPI="domainAPI" :loadApplication="loadApplication" />
+          </div>
+
+          <!-- Empty Domains State -->
+          <div v-if="application.domains.length === 0" class="flex items-center justify-center py-8">
+            <Card class="w-full">
+              <CardContent class="flex flex-col items-center justify-center py-12">
+                <p class="text-muted-foreground text-lg">No domains</p>
+              </CardContent>
+            </Card>
+          </div>
+
+          <!-- Domains Grid -->
+          <div v-else class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            <DomainCard v-for="domain in application.domains" :key="domain.name" :domain="domain" :domainAPI="domainAPI"
+              :loadApplication="loadApplication" class="flex flex-col" />
+          </div>
+        </div>
+
         <!-- Containers -->
         <div class="space-y-4">
           <div class="flex justify-between items-center">
             <h2 class="text-xl font-semibold">Containers</h2>
             <!-- Add Container Button -->
             <AddContainerButton :application="application" :applicationAPI="applicationAPI"
-              :containersAPI="containersAPI" :projectName="projectName" :loadApplication="loadApplication" />
+              :containersAPI="containersAPI" :loadApplication="loadApplication" />
           </div>
 
           <!-- Empty Containers State -->
@@ -107,8 +135,8 @@ function goBack() {
           <!-- Containers Grid -->
           <div v-else class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             <ContainerCard v-for="container in application.containers" :key="container.worker.hostname"
-              :container="container" :containersAPI="containersAPI"
-              :loadApplication="loadApplication" class="flex flex-col" />
+              :container="container" :containersAPI="containersAPI" :loadApplication="loadApplication"
+              class="flex flex-col" />
           </div>
         </div>
       </div>
@@ -117,7 +145,7 @@ function goBack() {
       <Card v-else>
         <CardContent class="flex flex-col items-center justify-center py-12">
           <p class="text-muted-foreground text-lg mb-4">Application {{ appName }} not found</p>
-          <Button @click="goBack" variant="outline">
+          <Button size="sm" @click="goBack" variant="outline">
             Back to Project
           </Button>
         </CardContent>

@@ -42,9 +42,18 @@ export interface Application {
   image: string | null
   env: string | null
   args: string | null
+  domains: Domain[]
   containers: Container[]
   container_count: number
   status: 'active' | 'inactive' | 'deploying' | 'stopping' | 'error'
+  created_at: Date
+  updated_at: Date
+}
+
+export interface Domain {
+  name: string
+  type: 'internal' | 'public'
+  application: Application
   created_at: Date
   updated_at: Date
 }
@@ -93,6 +102,15 @@ export function getContainerAPI(projectName: string, applicationName: string) {
   return new CRUDAPI({
     name: 'Container',
     path: `${API_ROOT}/projects/{project}/applications/{application}/containers`,
+    params: { project: projectName, application: applicationName },
+    load_delay: LOAD_DELAY
+  })
+}
+
+export function getDomainAPI(projectName: string, applicationName: string) {
+  return new CRUDAPI({
+    name: 'Domain',
+    path: `${API_ROOT}/projects/{project}/applications/{application}/domains`,
     params: { project: projectName, application: applicationName },
     load_delay: LOAD_DELAY
   })

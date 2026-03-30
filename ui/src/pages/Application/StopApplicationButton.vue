@@ -46,7 +46,7 @@ async function onClickStopApplication() {
 </script>
 
 <template>
-  <Button class="flex-1 md:flex-initial" variant="destructive" @click="onClickStopApplication" :disabled="stopButtonDisabled">
+  <Button size="sm" class="flex-1 md:flex-initial" variant="destructive" @click="onClickStopApplication" :disabled="stopButtonDisabled">
     <Spinner class="animate-spin" v-if="stopButtonSpinner" />
     <StopCircle />Stop
   </Button>

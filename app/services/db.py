@@ -93,6 +93,16 @@ def update_application_count_on_save(model_class, instance, created):
 def update_application_count_on_delete(model_class, instance):
   Project.update(application_count=Project.application_count - 1).where(Project.name == instance.project_id).execute()
 
+class Domain(BaseModel):
+  application = ForeignKeyField(Application, backref='domains', on_delete='CASCADE')
+  name        = CharField()
+  type        = CharField(choices=['internal', 'public'], default='internal')
+
+  class Meta:
+    indexes = (
+      (('application', 'name', 'type'), True),
+    )
+
 class Container(BaseModel):
   application = ForeignKeyField(Application, backref='containers', on_delete='RESTRICT')
   worker      = ForeignKeyField(Worker, backref='containers')
@@ -128,5 +138,5 @@ class Database(Base):
     super().__init__()
 
     db.connect(reuse_if_open=True)
-    db.create_tables([Setting, Project, Application, Worker, Container, Deployment], safe=True)
+    db.create_tables([Setting, Project, Application, Domain, Worker, Container, Deployment], safe=True)
     logger.info("Connected to database.")

@@ -6,6 +6,7 @@ from services.db import Application, Worker, Container
 from services.metrics import Metrics
 from utils.api import generic_get, generic_create, generic_update, generic_delete, generic_list, parse_api_data
 from routes.containers import router as container_router
+from routes.domains import router as domain_router
 
 
 def inject_application(request: Request):
@@ -125,3 +126,5 @@ def get_metrics(request: Request, period: Literal['1h', '24h', '1w', '1m'] = '1h
 
 # Container routes
 router.include_router(container_router, prefix="/{application}/containers", dependencies=[Depends(inject_application)])
+# Domain routes
+router.include_router(domain_router, prefix="/{application}/domains", dependencies=[Depends(inject_application)])

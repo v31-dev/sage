@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { Badge } from '@/components/ui/badge'
 import {
   Card,
   CardHeader,
@@ -9,6 +8,7 @@ import {
   CardFooter
 } from '@/components/ui/card'
 import { RouterLink } from 'vue-router'
+import { Button } from '@/components/ui/button'
 
 import DeploymentLogsButton from './DeploymentLogsButton.vue'
 import DeleteContainerButton from './DeleteContainerButton.vue'
@@ -26,17 +26,17 @@ interface Props {
 
 const props = withDefaults(defineProps<Props>(), {})
 
-const containerBadgeVariant = computed(() => {
-  if (props.container.status === 'error') 
+const containerStatusVariant = computed(() => {
+  if (props.container.status === 'error')
     return 'destructive'
   else
-    return 'outline'
+    return 'ghost'
 })
 
-const containerBadgeClass = computed(() => {
-  if (props.container.status === 'active') 
+const containerStatusClass = computed(() => {
+  if (props.container.status === 'active')
     return 'success'
-  else if (['deploying', 'stopping'].includes(props.container.status)) 
+  else if (['deploying', 'stopping'].includes(props.container.status))
     return 'warning'
   else
     return ''
@@ -48,14 +48,9 @@ const containerBadgeClass = computed(() => {
     <CardHeader>
       <CardTitle>
         <div class="flex w-full flex-wrap gap-2">
-          <Badge :class="containerBadgeClass" :variant="containerBadgeVariant">
+          <Button :class="containerStatusClass" :variant="containerStatusVariant" size="sm" disabled>
             Status: {{ props.container.status }}
-          </Badge>
-          <Badge as-child variant="outline">
-            <RouterLink :to="`/workers/${props.container.worker.hostname}`">
-              Worker: {{ props.container.worker.hostname }}
-            </RouterLink>
-          </Badge>
+          </Button>
         </div>
       </CardTitle>
       <CardAction>
@@ -64,7 +59,14 @@ const containerBadgeClass = computed(() => {
       </CardAction>
     </CardHeader>
     <CardFooter class="border-t">
-      <DeploymentLogsButton :container="props.container" />
+      <div class="flex flex-wrap gap-4 w-full">
+        <DeploymentLogsButton :container="props.container" />
+        <Button as-child variant="outline" size="sm" class="w-full">
+          <RouterLink :to="`/workers/${props.container.worker.hostname}`">
+            Worker: {{ props.container.worker.hostname }}
+          </RouterLink>
+        </Button>
+      </div>
     </CardFooter>
   </Card>
 </template>
