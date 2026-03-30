@@ -34,11 +34,11 @@ class BaseModel(Model):
     return super().save(*args, **kwargs)
 
 class Setting(BaseModel):
-  key   = CharField(primary_key=True)
+  key   = CleanCharField(primary_key=True)
   value = EncryptedTextField(null=True)
 
 class Worker(BaseModel):
-  hostname  = CharField(primary_key=True)
+  hostname  = CleanCharField(primary_key=True)
   ip        = FixedCharField(15)
   online    = BooleanField(default=False)
 
@@ -61,6 +61,7 @@ class Application(BaseModel):
   env             = EncryptedTextField(null=True)
   args            = EncryptedTextField(null=True)
   status          = CharField(choices=STATUS_CHOICES, default='inactive')
+  domains_synced  = BooleanField(default=False)
   container_count = IntegerField(default=0)
 
   def save(self, *args, **kwargs):
@@ -84,6 +85,13 @@ class Application(BaseModel):
       (('project', 'name'), True),
     )
 
+@pre_save(sender=Application)
+def set_domains_synced_false_on_update(model_class, instance, created):
+  if not created:
+    dirty = instance.dirty_fields
+    if 'domains_synced' not in [f.name for f in dirty]:
+      instance.domains_synced = False
+
 @post_save(sender=Application)
 def update_application_count_on_save(model_class, instance, created):
   if created:
@@ -95,13 +103,20 @@ def update_application_count_on_delete(model_class, instance):
 
 class Domain(BaseModel):
   application = ForeignKeyField(Application, backref='domains', on_delete='CASCADE')
-  name        = CharField()
+  name        = CleanCharField(null=False)
   type        = CharField(choices=['internal', 'public'], default='internal')
+  port        = IntegerField(null=False)
 
   class Meta:
     indexes = (
       (('application', 'name', 'type'), True),
     )
+
+@post_save(sender=Domain)
+def set_domains_synced_false_on_update_on_domain(model_class, instance, created):
+  if instance.application:
+    instance.application.domains_synced = False
+    instance.application.save()
 
 class Container(BaseModel):
   application = ForeignKeyField(Application, backref='containers', on_delete='RESTRICT')
@@ -121,6 +136,12 @@ def update_container_count_on_save(model_class, instance, created):
 @post_delete(sender=Container)
 def update_container_count_on_delete(model_class, instance):
   Application.update(container_count=Application.container_count - 1).where(Application.id == instance.application_id).execute()
+
+@post_save(sender=Container)
+def set_domains_synced_false_on_update_on_container(model_class, instance, created):
+  if instance.application:
+    instance.application.domains_synced = False
+    instance.application.save()
 
 class Deployment(BaseModel):
   container           = ForeignKeyField(Container, backref='deployments', on_delete='CASCADE')

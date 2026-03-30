@@ -45,32 +45,35 @@ interface Props {
 const props = withDefaults(defineProps<Props>(), {})
 
 const isAddDomainDialogOpen = ref(false)
-const domainName = ref('')
-const domainType = ref<'internal' | 'public'>('internal')
+const domain = ref({
+  name: '',
+  type: 'internal' as 'internal' | 'public',
+  port: 80
+})
 const addDomainErrorMessage = ref('')
 const isClickedAddDomainConfirm = ref(false)
 
 function openAddDomainDialog() {
   addDomainErrorMessage.value = ''
-  domainName.value = ''
-  domainType.value = 'internal'
+  domain.value = {
+    name: '',
+    type: 'internal',
+    port: 80
+  }
   isAddDomainDialogOpen.value = true
 }
 
 async function onClickAddDomainConfirm() {
   addDomainErrorMessage.value = ''
 
-  if (!domainName.value.trim()) {
+  if (!domain.value.name.trim()) {
     addDomainErrorMessage.value = 'Please enter a domain name'
     return
   }
 
   try {
     isClickedAddDomainConfirm.value = true
-    await props.domainAPI.create({ 
-      name: domainName.value.trim(),
-      type: domainType.value 
-    }) as Domain
+    await props.domainAPI.create(domain.value) as Domain
     isAddDomainDialogOpen.value = false
     await props.loadApplication()
     toast.success('Domain added successfully')
@@ -105,16 +108,15 @@ async function onClickAddDomainConfirm() {
             </FieldLabel>
             <Input 
               id="domain-name"
-              v-model="domainName"
+              v-model="domain.name"
               placeholder="subdomain"
-              @keyup.enter="onClickAddDomainConfirm"
             />
           </Field>
           <Field>
             <FieldLabel for="domain-type">
               Type
             </FieldLabel>
-            <Select v-model="domainType">
+            <Select v-model="domain.type">
               <SelectTrigger id="domain-type">
                 <SelectValue />
               </SelectTrigger>
@@ -129,6 +131,16 @@ async function onClickAddDomainConfirm() {
             </Select>
           </Field>
           <Field>
+            <FieldLabel for="domain-port">
+              Port
+            </FieldLabel>
+            <Input 
+              id="domain-port"
+              v-model="domain.port"
+              type="number"
+            />
+          </Field>
+          <Field>
             <FieldError v-if="addDomainErrorMessage">{{ addDomainErrorMessage }}</FieldError>
           </Field>
         </FieldGroup>
@@ -139,7 +151,7 @@ async function onClickAddDomainConfirm() {
           Cancel
         </Button>
         <Button size="sm" @click="onClickAddDomainConfirm"
-          :disabled="isClickedAddDomainConfirm || !domainName.trim()">
+          :disabled="isClickedAddDomainConfirm || !domain.name.trim()">
           <Spinner class="animate-spin" v-if="isClickedAddDomainConfirm" />
           Add
         </Button>

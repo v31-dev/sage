@@ -50,3 +50,7 @@ services:
     environment:
       - GLANCES_OPT=-w --disable-webui
     pid: host
+
+networks:
+  default:
+    name: sage_default

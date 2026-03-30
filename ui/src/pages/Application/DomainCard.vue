@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import { toast } from 'vue-sonner'
-import { Edit, Trash, ExternalLink } from 'lucide-vue-next'
+import { Edit, ExternalLink } from 'lucide-vue-next'
 import {
   Card,
   CardHeader,
@@ -54,8 +54,11 @@ const props = withDefaults(defineProps<Props>(), {})
 const appStore = useAppStore()
 
 const isEditDomainDialogOpen = ref(false)
-const editedDomainName = ref('')
-const editedDomainType = ref<'internal' | 'public'>('internal')
+const domain = ref({
+  name: '',
+  type: 'internal' as 'internal' | 'public',
+  port: 80
+})
 const editDomainErrorMessage = ref('')
 const isClickedEditDomainConfirm = ref(false)
 const link = computed(() => {
@@ -68,25 +71,23 @@ const link = computed(() => {
 
 function openEditDomainDialog() {
   editDomainErrorMessage.value = ''
-  editedDomainName.value = props.domain.name
-  editedDomainType.value = props.domain.type
+  domain.value.name = props.domain.name
+  domain.value.type = props.domain.type
+  domain.value.port = props.domain.port
   isEditDomainDialogOpen.value = true
 }
 
 async function onClickEditDomainConfirm() {
   editDomainErrorMessage.value = ''
 
-  if (!editedDomainName.value.trim()) {
+  if (!domain.value.name.trim()) {
     editDomainErrorMessage.value = 'Please enter a domain name'
     return
   }
 
   try {
     isClickedEditDomainConfirm.value = true
-    await props.domainAPI.update(props.domain.name, {
-      name: editedDomainName.value.trim(),
-      type: editedDomainType.value,
-    })
+    await props.domainAPI.update(`${props.domain.type}:${props.domain.name}`, domain.value)
     isEditDomainDialogOpen.value = false
     await props.loadApplication()
     toast.success('Domain updated successfully')
@@ -98,7 +99,7 @@ async function onClickEditDomainConfirm() {
 }
 
 async function onClickConfirmDelete() {
-  await props.domainAPI.delete(props.domain.name)
+  await props.domainAPI.delete(`${props.domain.type}:${props.domain.name}`)
   await props.loadApplication()
   toast.success('Domain deleted successfully')
 }
@@ -147,14 +148,13 @@ async function onClickConfirmDelete() {
             <FieldLabel for="edit-domain-name">
               Domain Name
             </FieldLabel>
-            <Input id="edit-domain-name" v-model="editedDomainName" placeholder="e.g., example.com"
-              @keyup.enter="onClickEditDomainConfirm" />
+            <Input id="edit-domain-name" v-model="domain.name" placeholder="subdomain" />
           </Field>
           <Field>
             <FieldLabel for="edit-domain-type">
               Type
             </FieldLabel>
-            <Select v-model="editedDomainType">
+            <Select v-model="domain.type">
               <SelectTrigger id="edit-domain-type">
                 <SelectValue />
               </SelectTrigger>
@@ -169,6 +169,12 @@ async function onClickConfirmDelete() {
             </Select>
           </Field>
           <Field>
+            <FieldLabel for="edit-domain-port">
+              Port
+            </FieldLabel>
+            <Input id="edit-domain-port" v-model="domain.port" type="number" placeholder="80" />
+          </Field>
+          <Field>
             <FieldError v-if="editDomainErrorMessage">{{ editDomainErrorMessage }}</FieldError>
           </Field>
         </FieldGroup>
@@ -178,7 +184,8 @@ async function onClickConfirmDelete() {
           :disabled="isClickedEditDomainConfirm">
           Cancel
         </Button>
-        <Button size="sm" @click="onClickEditDomainConfirm" :disabled="isClickedEditDomainConfirm || !editedDomainName.trim()">
+        <Button size="sm" @click="onClickEditDomainConfirm"
+          :disabled="isClickedEditDomainConfirm || !domain.name.trim()">
           <Spinner class="animate-spin" v-if="isClickedEditDomainConfirm" />
           Save
         </Button>

@@ -53,6 +53,7 @@ export interface Application {
 export interface Domain {
   name: string
   type: 'internal' | 'public'
+  port: number
   application: Application
   created_at: Date
   updated_at: Date

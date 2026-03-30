@@ -7,3 +7,9 @@ services:
     container_name: ${CONTAINER_NAME}
     restart: unless-stopped
     env_file: .env
+    networks:
+      - sage_default
+
+networks:
+  sage_default:
+    external: true

@@ -214,6 +214,53 @@ class Manager(Base):
           container.save()
           logger.error(f"Marking application container {worker_container_name} as error as status not found (worker may be offline or container stopped).")
   
+  def sync_application_traefik_domains_config(self, application: Application):
+    '''
+      Sync Traefik domains config for an application.
+    '''
+    # Determine the online load-balanced servers
+    container_name = f"{application.project.name}-{application.name}"
+    active_containers = [container for container in application.containers if container.worker.online and container.status == "active"]
+    logger.info(f"Syncing Traefik config for application {container_name} to these workers {[container.worker.hostname for container in active_containers]}.")
+
+    # Run per worker
+    for container in application.containers:
+      # Worker if offline so can't do anything anyway
+      if not container.worker.online:
+        logger.error(f"Worker {container.worker.hostname} is offline, skipping Traefik config sync for application {container_name} on this worker.")
+
+      # Clear any config on this worker
+      elif container.status != "active":
+        self.tailscale.exec_command(container.worker.hostname, f"rm -f {worker_home_dir}/traefik/dynamic/{container_name}-*.yml")
+        logger.error(f"Worker {container.worker.hostname} container is not active, skipping Traefik config sync for application {container_name} on this worker.")
+
+    # Application is not active (maybe during deploying/stopping)
+    if application.status != "active":
+      logger.error(f"Worker {container.worker.hostname} container is active but application status is {application.status}, skipping Traefik config sync for application {container_name} on this worker.")
+      return
+
+    # Application is active -> sync Traefik config based on active containers
+    for container in active_containers:
+      self.tailscale.exec_command(container.worker.hostname, f"rm -f {worker_home_dir}/traefik/dynamic/{container_name}-*.yml")
+
+      for domain in application.domains:
+        traefik_config_template = "service_internal.yml" if domain.type == "internal" else "service_public.yml"
+        # Mesh communication between Traefiks always uses port 80 (HTTP)
+        load_balanced_servers = [f"{{ url: \"http://{c.worker.ip}:80\" }}" for c in active_containers]
+        self.tailscale.sync_file(container.worker.hostname, 
+                                  app_dir / f"templates/worker/traefik/{traefik_config_template}", 
+                                  f"{worker_home_dir}/traefik/dynamic/{container_name}-{domain.type}-{domain.name}.yml", 
+                                  {
+                                    "SERVICE": container_name,
+                                    "DOMAIN": get_env("DOMAIN"),
+                                    "PORT": domain.port,
+                                    "LOAD_BALANCED_SERVERS": ", ".join(load_balanced_servers)
+                                  })
+  
+    application.domains_synced = True
+    application.save()
+    logger.info(f"Traefik config synced for application {container_name}.")
+
   async def deploy_application(self, application: Application):
     '''
       Deploy an application.

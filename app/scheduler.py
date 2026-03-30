@@ -25,6 +25,18 @@ async def manager_sync_workers():
 async def manager_sync_application_status():
   await run_in_executor_with_context(Manager().sync_application_status)
 
+# Sync Traefik config for domains
+@app.task(minutely)
+async def sync_application_traefik_domains_config():
+  applications = Application.select().where(Application.domains_synced == False)
+
+  errors = await asyncio.gather(*[
+    run_in_executor_with_context(Manager().sync_application_traefik_domains_config, application) for application in applications
+  ], return_exceptions=True)
+
+  if any(isinstance(e, Exception) for e in errors):
+    raise TaskFailed()
+
 # Sync Traefik wildcard certificates to workers
 @app.task(every("20 days"))
 async def traefik_sync_certs():
@@ -33,9 +45,8 @@ async def traefik_sync_certs():
 # Collect metrics from all online workers & self manager
 @app.task(minutely)
 async def collect_metrics():
-  worker_targets = await run_in_executor_with_context(
-    lambda: [(w.ip, w.hostname) for w in Worker.select().where(Worker.online == True)]
-  )
+  worker_targets = [(w.ip, w.hostname) 
+                    for w in Worker.select().where(Worker.online == True)]
   targets = [("172.17.0.1", get_env("HOSTNAME"))] + worker_targets
 
   errors = await asyncio.gather(*[
