@@ -89,8 +89,7 @@ class Application(BaseModel):
 def pre_save_application(model_class, instance, created):
   # If updating an existing application, set domains_synced to False if not explicitly updated to trigger domain sync
   if not created:
-    dirty = instance.dirty_fields
-    if 'domains_synced' not in [f.name for f in dirty]:
+    if 'domains_synced' not in [f.name for f in instance.dirty_fields]:
       instance.domains_synced = False
 
 @post_save(sender=Application)

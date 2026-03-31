@@ -48,8 +48,8 @@ const containerStatusClass = computed(() => {
     <CardHeader>
       <CardTitle>
         <div class="flex w-full flex-wrap gap-2">
-          <Button :class="containerStatusClass" :variant="containerStatusVariant" size="sm" disabled>
-            Status: {{ props.container.status }}
+          <Button :class="containerStatusClass" :variant="containerStatusVariant" size="sm" disabled class="uppercase">
+            {{ props.container.status }}
           </Button>
         </div>
       </CardTitle>
