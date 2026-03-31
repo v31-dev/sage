@@ -3,7 +3,7 @@ import re
 import logging
 from datetime import datetime
 from peewee import CharField, FixedCharField, SqliteDatabase, DateTimeField, BooleanField, ForeignKeyField, IntegerField
-from playhouse.signals import Model, post_save, post_delete
+from playhouse.signals import Model, post_save, post_delete, pre_save
 
 from services.base import Base
 from utils.db import EncryptedTextField, CleanCharField
