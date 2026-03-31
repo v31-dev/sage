@@ -86,19 +86,22 @@ class Application(BaseModel):
     )
 
 @pre_save(sender=Application)
-def set_domains_synced_false_on_update(model_class, instance, created):
+def pre_save_application(model_class, instance, created):
+  # If updating an existing application, set domains_synced to False if not explicitly updated to trigger domain sync
   if not created:
     dirty = instance.dirty_fields
     if 'domains_synced' not in [f.name for f in dirty]:
       instance.domains_synced = False
 
 @post_save(sender=Application)
-def update_application_count_on_save(model_class, instance, created):
+def post_save_application(model_class, instance, created):
+  # Update application count on creation
   if created:
     Project.update(application_count=Project.application_count + 1).where(Project.name == instance.project_id).execute()
 
 @post_delete(sender=Application)
-def update_application_count_on_delete(model_class, instance):
+def post_delete_application(model_class, instance):
+  # Update application count on deletion
   Project.update(application_count=Project.application_count - 1).where(Project.name == instance.project_id).execute()
 
 class Domain(BaseModel):
@@ -114,9 +117,8 @@ class Domain(BaseModel):
 
 @post_save(sender=Domain)
 def set_domains_synced_false_on_update_on_domain(model_class, instance, created):
-  if instance.application:
-    instance.application.domains_synced = False
-    instance.application.save()
+  # Set domains_synced to False on any update to trigger domain sync
+  Application.update(domains_synced=False).where(Application.id == instance.application_id).execute()
 
 class Container(BaseModel):
   application = ForeignKeyField(Application, backref='containers', on_delete='RESTRICT')
@@ -129,19 +131,18 @@ class Container(BaseModel):
     )
 
 @post_save(sender=Container)
-def update_container_count_on_save(model_class, instance, created):
+def post_save_container(model_class, instance, created):
+  # Update container count on creation
   if created:
     Application.update(container_count=Application.container_count + 1).where(Application.id == instance.application_id).execute()
 
-@post_delete(sender=Container)
-def update_container_count_on_delete(model_class, instance):
-  Application.update(container_count=Application.container_count - 1).where(Application.id == instance.application_id).execute()
+  # Set domains_synced to False on any update to trigger domain sync
+  Application.update(domains_synced=False).where(Application.id == instance.application_id).execute()
 
-@post_save(sender=Container)
-def set_domains_synced_false_on_update_on_container(model_class, instance, created):
-  if instance.application:
-    instance.application.domains_synced = False
-    instance.application.save()
+@post_delete(sender=Container)
+def post_delete_container(model_class, instance):
+  # Update container count on deletion
+  Application.update(container_count=Application.container_count - 1).where(Application.id == instance.application_id).execute()
 
 class Deployment(BaseModel):
   container           = ForeignKeyField(Container, backref='deployments', on_delete='CASCADE')
