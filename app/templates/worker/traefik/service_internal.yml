@@ -2,7 +2,7 @@ http:
   routers:
     # Entrypoint via Tailscale
     ${SERVICE}_internal:
-      rule: Host(`${SERVICE}.int.${DOMAIN}`) && Path(`/`)
+      rule: Host(`${SUBDOMAIN}.int.${DOMAIN}`) && Path(`/`)
       entrypoints:
         - websecure
       middlewares:
@@ -14,7 +14,7 @@ http:
 
     # Final Mesh Entrypoint (for load balancing)
     ${SERVICE}_mesh_internal:
-      rule: "Host(`${SERVICE}.int.${DOMAIN}`) && Path(`/`) && Header(`X-Mesh-Hops`, `1`)"
+      rule: "Host(`${SUBDOMAIN}.int.${DOMAIN}`) && Path(`/`) && Header(`X-Mesh-Hops`, `1`)"
       entrypoints:
         - web
       priority: 200

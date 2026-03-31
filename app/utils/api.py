@@ -93,4 +93,4 @@ def generic_delete(model, instance):
   
 def parse_api_data(data, keys: list[str]):
   """Helper to parse API data with optional keys."""
-  return {key: data.get(key).strip() if data.get(key) is not None else None for key in keys if key in data}
+  return {key: data.get(key).strip() if isinstance(data.get(key), str) else data.get(key) for key in keys if key in data}

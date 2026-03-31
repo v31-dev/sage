@@ -3,7 +3,7 @@ services:
     build:
       context: ${REPO}
       dockerfile: ${DOCKERFILE}
-      env_file: build.args
+      args: [ ${BUILD_ARGS} ]
     container_name: ${CONTAINER_NAME}
     restart: unless-stopped
     env_file: .env

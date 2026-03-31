@@ -246,12 +246,16 @@ class Manager(Base):
       for domain in application.domains:
         traefik_config_template = "service_internal.yml" if domain.type == "internal" else "service_public.yml"
         # Mesh communication between Traefiks always uses port 80 (HTTP)
-        load_balanced_servers = [f"{{ url: \"http://{c.worker.ip}:80\" }}" for c in active_containers]
+        # For the same container use traefik instead of tailscale IP to avoid hairpinning and let Docker DNS resolve
+        load_balanced_servers = [f"{{ url: \"http://traefik:80\" }}" if container.worker.hostname == c.worker.hostname 
+                                  else f"{{ url: \"http://{c.worker.ip}:80\" }}" 
+                                  for c in active_containers]
         self.tailscale.sync_file(container.worker.hostname, 
                                   app_dir / f"templates/worker/traefik/{traefik_config_template}", 
                                   f"{worker_home_dir}/traefik/dynamic/{container_name}-{domain.type}-{domain.name}.yml", 
                                   {
                                     "SERVICE": container_name,
+                                    "SUBDOMAIN": domain.name,
                                     "DOMAIN": get_env("DOMAIN"),
                                     "PORT": domain.port,
                                     "LOAD_BALANCED_SERVERS": ", ".join(load_balanced_servers)
@@ -396,18 +400,14 @@ class Manager(Base):
 
       app_env = container.application.env if container.application.env else ""
       app_build_args = container.application.args if container.application.args else ""
-      
+      app_build_args = [f"{{ {build_arg.split('=')[0]}: \"{build_arg.split('=')[1]}\" }}" 
+                          for build_arg in app_build_args.split("\n")] if app_build_args else []
+
       # Create the secrets file
       await run_in_executor_with_context(self.tailscale.sync_file, container.worker.hostname, 
                                         app_dir / "templates/worker/file", f"{container_dir}/.env", {
                                           "CONTENT": app_env
                                         })
-        
-      # Create the build arguments file
-      await run_in_executor_with_context(self.tailscale.sync_file, container.worker.hostname, 
-                                      app_dir / "templates/worker/file", f"{container_dir}/build.args", {
-                                        "CONTENT": app_build_args
-                                      })
       
       # Create the compose file based on application type
       if container.application.type == "docker":
@@ -424,6 +424,7 @@ class Manager(Base):
                                             "CONTAINER_NAME": container_name,
                                             "REPO": container.application.repo,
                                             "DOCKERFILE": container.application.path,
+                                            "BUILD_ARGS": " ,".join(app_build_args),
                                          })
 
       # Deploy with docker compose

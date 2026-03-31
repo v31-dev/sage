@@ -2,7 +2,7 @@ http:
   routers:
     # Entrypoint via Cloudflare Tunnel
     ${SERVICE}_public:
-      rule: Host(`${SERVICE}.${DOMAIN}`) && Path(`/`)
+      rule: Host(`${SUBDOMAIN}.${DOMAIN}`) && Path(`/`)
       entrypoints:
         - web
       middlewares:
@@ -12,7 +12,7 @@ http:
 
     # Final Mesh Entrypoint (for load balancing)
     ${SERVICE}_mesh_public:
-      rule: "Host(`${SERVICE}.${DOMAIN}`) && Path(`/`) && Header(`X-Mesh-Hops`, `1`)"
+      rule: "Host(`${SUBDOMAIN}.${DOMAIN}`) && Path(`/`) && Header(`X-Mesh-Hops`, `1`)"
       entrypoints:
         - web
       priority: 200
