@@ -9,6 +9,10 @@ http:
         sourceRange:
           - "100.64.0.0/10"
           - "172.16.0.0/12"
+    server-header:
+      headers:
+        customResponseHeaders:
+          X-Server: "${HOSTNAME}"
     security-headers:
       headers:
         frameDeny: true

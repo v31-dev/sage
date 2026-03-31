@@ -101,7 +101,8 @@ class Manager(Base):
         "ADMIN_EMAIL": get_env("ADMIN_EMAIL")
       })
       self.tailscale.sync_file(worker.hostname, app_dir / "templates/worker/traefik/config.yml", f"{worker_home_dir}/traefik/dynamic/config.yml", {
-        "DOMAIN": get_env("DOMAIN")
+        "DOMAIN": get_env("DOMAIN"),
+        "HOSTNAME": worker.hostname
       })
       self.tailscale.sync_file(worker.hostname, app_dir / "templates/worker/vector/vector.yml", f"{worker_home_dir}/vector/config/vector.yml", {
         "IP": self.tailscale.ip(),
@@ -245,10 +246,10 @@ class Manager(Base):
 
       for domain in application.domains:
         traefik_config_template = "service_internal.yml" if domain.type == "internal" else "service_public.yml"
-        # Mesh communication between Traefiks always uses port 80 (HTTP)
-        # For the same container use traefik instead of tailscale IP to avoid hairpinning and let Docker DNS resolve
-        load_balanced_servers = [f"{{ url: \"http://traefik:80\" }}" if container.worker.hostname == c.worker.hostname 
-                                  else f"{{ url: \"http://{c.worker.ip}:80\" }}" 
+        # Mesh communication between Traefik uses port 9002 (HTTP)
+        # For the same worker use traefik instead of tailscale IP to avoid hairpinning and let Docker DNS resolve locally
+        load_balanced_servers = [f"{{ url: \"http://traefik:9002\" }}" if container.worker.hostname == c.worker.hostname 
+                                  else f"{{ url: \"http://{c.worker.ip}:9002\" }}" 
                                   for c in active_containers]
         self.tailscale.sync_file(container.worker.hostname, 
                                   app_dir / f"templates/worker/traefik/{traefik_config_template}", 

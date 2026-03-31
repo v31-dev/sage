@@ -6,15 +6,17 @@ http:
       entrypoints:
         - web
       middlewares:
-        - mark-as-hopped
         - security-headers
+        - mark-as-hopped
       service: ${SERVICE}_public
 
     # Final Mesh Entrypoint (for load balancing)
     ${SERVICE}_mesh_public:
       rule: "Host(`${SUBDOMAIN}.${DOMAIN}`) && Path(`/`) && Header(`X-Mesh-Hops`, `1`)"
       entrypoints:
-        - web
+        - mesh
+      middlewares:
+        - server-header
       priority: 200
       service: ${SERVICE}_local_public
 

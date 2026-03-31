@@ -23,6 +23,8 @@ entryPoints:
         - "100.64.0.0/10" # Trust Tailscale range if you're hitting via TS
   websecure:
     address: :443
+  mesh:
+    address: :9002
 
 certificatesResolvers:
   cloudflare:

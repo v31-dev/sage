@@ -6,8 +6,9 @@ http:
       entrypoints:
         - websecure
       middlewares:
-        - mark-as-hopped
+        - security-headers
         - tailscale-only
+        - mark-as-hopped
       service: ${SERVICE}_internal
       tls:
         certResolver: cloudflare
@@ -16,7 +17,9 @@ http:
     ${SERVICE}_mesh_internal:
       rule: "Host(`${SUBDOMAIN}.int.${DOMAIN}`) && Path(`/`) && Header(`X-Mesh-Hops`, `1`)"
       entrypoints:
-        - web
+        - mesh
+      middlewares:
+        - server-header
       priority: 200
       service: ${SERVICE}_local_internal
 
