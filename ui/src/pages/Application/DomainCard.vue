@@ -1,14 +1,8 @@
 <script setup lang="ts">
-import { ref, computed } from "vue";
-import { toast } from "vue-sonner";
-import { Edit, ExternalLink, CircleCheck } from "lucide-vue-next";
-import {
-  Card,
-  CardHeader,
-  CardTitle,
-  CardAction,
-  CardFooter,
-} from "@/components/ui/card";
+import { ref, computed } from 'vue';
+import { toast } from 'vue-sonner';
+import { Edit, ExternalLink, CircleCheck } from 'lucide-vue-next';
+import { Card, CardHeader, CardTitle, CardAction, CardFooter } from '@/components/ui/card';
 import {
   Dialog,
   DialogContent,
@@ -16,36 +10,30 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from "@/components/ui/dialog";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+} from '@/components/ui/dialog';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import {
   InputGroup,
   InputGroupAddon,
   InputGroupInput,
   InputGroupText,
-} from "@/components/ui/input-group";
-import {
-  Field,
-  FieldGroup,
-  FieldLabel,
-  FieldSet,
-  FieldError,
-} from "@/components/ui/field";
+} from '@/components/ui/input-group';
+import { Field, FieldGroup, FieldLabel, FieldSet, FieldError } from '@/components/ui/field';
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@/components/ui/select";
-import { Spinner } from "@/components/ui/spinner";
-import { ButtonGroup } from "@/components/ui/button-group";
-import { useAppStore } from "@/stores/app";
+} from '@/components/ui/select';
+import { Spinner } from '@/components/ui/spinner';
+import { ButtonGroup } from '@/components/ui/button-group';
+import { useAppStore } from '@/stores/app';
 
-import { type Domain, getDomainAPI, type Application } from "@/services/api";
-import TitleStatus from "@/components/TitleStatus.vue";
-import DeleteConfirmationButton from "@/components/DeleteConfirmationButton.vue";
+import { type Domain, getDomainAPI, type Application } from '@/services/api';
+import TitleStatus from '@/components/TitleStatus.vue';
+import DeleteConfirmationButton from '@/components/DeleteConfirmationButton.vue';
 
 interface Props {
   application: Application;
@@ -59,14 +47,14 @@ const appStore = useAppStore();
 
 const isEditDomainDialogOpen = ref(false);
 const domain = ref({
-  name: "",
-  type: "internal" as "internal" | "public",
+  name: '',
+  type: 'internal' as 'internal' | 'public',
   port: 80,
 });
-const editDomainErrorMessage = ref("");
+const editDomainErrorMessage = ref('');
 const isClickedEditDomainConfirm = ref(false);
 const link = computed(() => {
-  if (props.domain.type === "public") {
+  if (props.domain.type === 'public') {
     return `https://${props.domain.name}.${appStore.info!.domain}`;
   } else {
     return `https://${props.domain.name}.int.${appStore.info!.domain}`;
@@ -74,7 +62,7 @@ const link = computed(() => {
 });
 
 function openEditDomainDialog() {
-  editDomainErrorMessage.value = "";
+  editDomainErrorMessage.value = '';
   domain.value.name = props.domain.name;
   domain.value.type = props.domain.type;
   domain.value.port = props.domain.port;
@@ -82,25 +70,21 @@ function openEditDomainDialog() {
 }
 
 async function onClickEditDomainConfirm() {
-  editDomainErrorMessage.value = "";
+  editDomainErrorMessage.value = '';
 
   if (!domain.value.name.trim()) {
-    editDomainErrorMessage.value = "Please enter a domain name";
+    editDomainErrorMessage.value = 'Please enter a domain name';
     return;
   }
 
   try {
     isClickedEditDomainConfirm.value = true;
-    await props.domainAPI.update(
-      `${props.domain.type}:${props.domain.name}`,
-      domain.value,
-    );
+    await props.domainAPI.update(`${props.domain.type}:${props.domain.name}`, domain.value);
     isEditDomainDialogOpen.value = false;
     await props.loadApplication();
-    toast.success("Domain updated successfully");
+    toast.success('Domain updated successfully');
   } catch (err) {
-    editDomainErrorMessage.value =
-      err instanceof Error ? err.message : "Failed to update domain";
+    editDomainErrorMessage.value = err instanceof Error ? err.message : 'Failed to update domain';
   } finally {
     isClickedEditDomainConfirm.value = false;
   }
@@ -109,7 +93,7 @@ async function onClickEditDomainConfirm() {
 async function onClickConfirmDelete() {
   await props.domainAPI.delete(`${props.domain.type}:${props.domain.name}`);
   await props.loadApplication();
-  toast.success("Domain deleted successfully");
+  toast.success('Domain deleted successfully');
 }
 </script>
 
@@ -125,12 +109,7 @@ async function onClickConfirmDelete() {
       </CardTitle>
       <CardAction>
         <ButtonGroup class="space-x-1">
-          <Button
-            size="sm"
-            variant="outline"
-            @click="openEditDomainDialog"
-            class="gap-2"
-          >
+          <Button size="sm" variant="outline" @click="openEditDomainDialog" class="gap-2">
             <Edit />
             Edit
           </Button>
@@ -177,7 +156,7 @@ async function onClickConfirmDelete() {
               />
               <InputGroupAddon align="inline-end">
                 <InputGroupText
-                  >.{{ domain.type == "internal" ? "int." : ""
+                  >.{{ domain.type == 'internal' ? 'int.' : ''
                   }}{{ appStore.info!.domain }}</InputGroupText
                 >
               </InputGroupAddon>
@@ -197,17 +176,10 @@ async function onClickConfirmDelete() {
           </Field>
           <Field>
             <FieldLabel for="edit-domain-port"> Port </FieldLabel>
-            <Input
-              id="edit-domain-port"
-              v-model="domain.port"
-              type="number"
-              placeholder="80"
-            />
+            <Input id="edit-domain-port" v-model="domain.port" type="number" placeholder="80" />
           </Field>
           <Field>
-            <FieldError v-if="editDomainErrorMessage">{{
-              editDomainErrorMessage
-            }}</FieldError>
+            <FieldError v-if="editDomainErrorMessage">{{ editDomainErrorMessage }}</FieldError>
           </Field>
         </FieldGroup>
       </FieldSet>

@@ -1,5 +1,5 @@
-@import "tailwindcss";
-@import "tw-animate-css";
+@import 'tailwindcss';
+@import 'tw-animate-css';
 
 @custom-variant dark (&:is(.dark *));
 
@@ -151,20 +151,20 @@ html {
 /* Scrollbar styling */
 
 /* datetime-local, date, time, month, week theme styling */
-input[type="datetime-local"],
-input[type="date"],
-input[type="time"],
-input[type="month"],
-input[type="week"] {
+input[type='datetime-local'],
+input[type='date'],
+input[type='time'],
+input[type='month'],
+input[type='week'] {
   appearance: none;
   color-scheme: light;
 }
 
-.dark input[type="datetime-local"],
-.dark input[type="date"],
-.dark input[type="time"],
-.dark input[type="month"],
-.dark input[type="week"] {
+.dark input[type='datetime-local'],
+.dark input[type='date'],
+.dark input[type='time'],
+.dark input[type='month'],
+.dark input[type='week'] {
   color-scheme: dark;
 }
 /* datetime-local, date, time, month, week theme styling */

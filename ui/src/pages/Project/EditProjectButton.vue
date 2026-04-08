@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { ref } from "vue";
-import { Edit } from "lucide-vue-next";
-import { Button } from "@/components/ui/button";
+import { ref } from 'vue';
+import { Edit } from 'lucide-vue-next';
+import { Button } from '@/components/ui/button';
 import {
   Dialog,
   DialogContent,
@@ -9,20 +9,14 @@ import {
   DialogHeader,
   DialogTitle,
   DialogTrigger,
-} from "@/components/ui/dialog";
-import {
-  Field,
-  FieldError,
-  FieldGroup,
-  FieldLabel,
-  FieldSet,
-} from "@/components/ui/field";
-import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
-import { toast } from "vue-sonner";
-import { Spinner } from "@/components/ui/spinner";
+} from '@/components/ui/dialog';
+import { Field, FieldError, FieldGroup, FieldLabel, FieldSet } from '@/components/ui/field';
+import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
+import { toast } from 'vue-sonner';
+import { Spinner } from '@/components/ui/spinner';
 
-import { type Project } from "@/services/api";
+import { type Project } from '@/services/api';
 
 interface Props {
   project: Project;
@@ -34,23 +28,23 @@ const props = withDefaults(defineProps<Props>(), {});
 
 const isEditDialogOpen = ref(false);
 const editFormData = ref({
-  label: "",
-  description: "",
-  env: "",
+  label: '',
+  description: '',
+  env: '',
 });
-const editDialogErrorMessage = ref("");
+const editDialogErrorMessage = ref('');
 const isClickedEditConfirm = ref(false);
 
 function openEditDialog() {
-  editFormData.value.label = props.project.label || "";
-  editFormData.value.description = props.project.description || "";
-  editFormData.value.env = props.project.env || "";
-  editDialogErrorMessage.value = "";
+  editFormData.value.label = props.project.label || '';
+  editFormData.value.description = props.project.description || '';
+  editFormData.value.env = props.project.env || '';
+  editDialogErrorMessage.value = '';
   isEditDialogOpen.value = true;
 }
 
 async function handleUpdateProject() {
-  editDialogErrorMessage.value = "";
+  editDialogErrorMessage.value = '';
 
   try {
     isClickedEditConfirm.value = true;
@@ -60,11 +54,10 @@ async function handleUpdateProject() {
       env: editFormData.value.env || null,
     });
     isEditDialogOpen.value = false;
-    toast.success("Project updated successfully");
+    toast.success('Project updated successfully');
     await props.loadProject();
   } catch (err) {
-    editDialogErrorMessage.value =
-      err instanceof Error ? err.message : "Failed to update project";
+    editDialogErrorMessage.value = err instanceof Error ? err.message : 'Failed to update project';
   } finally {
     isClickedEditConfirm.value = false;
   }
@@ -87,11 +80,7 @@ async function handleUpdateProject() {
         <FieldGroup>
           <Field>
             <FieldLabel for="label"> Name </FieldLabel>
-            <Input
-              id="label"
-              v-model="editFormData.label"
-              placeholder="optional"
-            />
+            <Input id="label" v-model="editFormData.label" placeholder="optional" />
           </Field>
           <Field>
             <FieldLabel for="description"> Description </FieldLabel>
@@ -128,11 +117,7 @@ async function handleUpdateProject() {
         >
           Cancel
         </Button>
-        <Button
-          size="sm"
-          @click="handleUpdateProject"
-          :disabled="isClickedEditConfirm"
-        >
+        <Button size="sm" @click="handleUpdateProject" :disabled="isClickedEditConfirm">
           <Spinner class="animate-spin" v-if="isClickedEditConfirm" />
           Save
         </Button>

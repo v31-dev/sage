@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { computed } from "vue";
-import router from "@/router";
-import { toast } from "vue-sonner";
-import { Logs, Activity } from "lucide-vue-next";
+import { computed } from 'vue';
+import router from '@/router';
+import { toast } from 'vue-sonner';
+import { Logs, Activity } from 'lucide-vue-next';
 import {
   Card,
   CardAction,
@@ -10,17 +10,17 @@ import {
   CardHeader,
   CardTitle,
   CardFooter,
-} from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { ButtonGroup } from "@/components/ui/button-group";
-import { Label } from "@/components/ui/label";
+} from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { ButtonGroup } from '@/components/ui/button-group';
+import { Label } from '@/components/ui/label';
 
-import DeployApplicationButton from "./DeployApplicationButton.vue";
-import StopApplicationButton from "./StopApplicationButton.vue";
-import EditApplicationButton from "./EditApplicationButton.vue";
-import DeleteConfirmationButton from "@/components/DeleteConfirmationButton.vue";
-import { type Application, getApplicationAPI } from "@/services/api";
-import TitleStatus from "@/components/TitleStatus.vue";
+import DeployApplicationButton from './DeployApplicationButton.vue';
+import StopApplicationButton from './StopApplicationButton.vue';
+import EditApplicationButton from './EditApplicationButton.vue';
+import DeleteConfirmationButton from '@/components/DeleteConfirmationButton.vue';
+import { type Application, getApplicationAPI } from '@/services/api';
+import TitleStatus from '@/components/TitleStatus.vue';
 
 interface Props {
   application: Application;
@@ -31,15 +31,11 @@ interface Props {
 const props = withDefaults(defineProps<Props>(), {});
 
 function onClickLogs() {
-  router.push(
-    `/projects/${props.application.project.name}/${props.application.name}/logs`,
-  );
+  router.push(`/projects/${props.application.project.name}/${props.application.name}/logs`);
 }
 
 function onClickMetrics() {
-  router.push(
-    `/projects/${props.application.project.name}/${props.application.name}/metrics`,
-  );
+  router.push(`/projects/${props.application.project.name}/${props.application.name}/metrics`);
 }
 
 async function onConfirmDelete() {
@@ -49,10 +45,9 @@ async function onConfirmDelete() {
 }
 
 const applicationStatusClass = computed(() => {
-  if (props.application.status === "active") return "success";
-  else if (["deploying", "stopping"].includes(props.application.status))
-    return "warning";
-  else return "default";
+  if (props.application.status === 'active') return 'success';
+  else if (['deploying', 'stopping'].includes(props.application.status)) return 'warning';
+  else return 'default';
 });
 </script>
 
@@ -63,9 +58,7 @@ const applicationStatusClass = computed(() => {
         <TitleStatus
           :title="props.application.label"
           :status="applicationStatusClass"
-          :loading="
-            ['deploying', 'stopping'].includes(props.application.status)
-          "
+          :loading="['deploying', 'stopping'].includes(props.application.status)"
           :statusText="props.application.status"
         />
       </CardTitle>
@@ -88,33 +81,31 @@ const applicationStatusClass = computed(() => {
       <div>
         <Label>Description</Label>
         <p class="text-sm text-muted-foreground">
-          {{
-            props.application.description ? props.application.description : "-"
-          }}
+          {{ props.application.description ? props.application.description : '-' }}
         </p>
       </div>
       <div>
         <Label>Type</Label>
         <p class="text-sm text-muted-foreground">
-          {{ props.application.type ? props.application.type : "-" }}
+          {{ props.application.type ? props.application.type : '-' }}
         </p>
       </div>
       <div v-if="props.application.type === 'docker'">
         <Label>Image</Label>
         <p class="text-sm text-muted-foreground">
-          {{ props.application.image ? props.application.image : "-" }}
+          {{ props.application.image ? props.application.image : '-' }}
         </p>
       </div>
       <div v-if="props.application.type === 'git'">
         <Label>Repository</Label>
         <p class="text-sm text-muted-foreground">
-          {{ props.application.repo ? props.application.repo : "-" }}
+          {{ props.application.repo ? props.application.repo : '-' }}
         </p>
       </div>
       <div v-if="props.application.type === 'git'">
         <Label>Path</Label>
         <p class="text-sm text-muted-foreground">
-          {{ props.application.path ? props.application.path : "-" }}
+          {{ props.application.path ? props.application.path : '-' }}
         </p>
       </div>
     </CardContent>
@@ -132,20 +123,10 @@ const applicationStatusClass = computed(() => {
         />
       </ButtonGroup>
       <ButtonGroup class="space-x-1 w-full md:w-auto flex">
-        <Button
-          size="sm"
-          class="flex-1 md:flex-initial"
-          variant="outline"
-          @click="onClickLogs"
-        >
+        <Button size="sm" class="flex-1 md:flex-initial" variant="outline" @click="onClickLogs">
           <Logs />Logs
         </Button>
-        <Button
-          size="sm"
-          class="flex-1 md:flex-initial"
-          variant="outline"
-          @click="onClickMetrics"
-        >
+        <Button size="sm" class="flex-1 md:flex-initial" variant="outline" @click="onClickMetrics">
           <Activity />Metrics
         </Button>
       </ButtonGroup>

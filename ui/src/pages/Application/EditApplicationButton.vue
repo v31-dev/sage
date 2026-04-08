@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { ref } from 'vue'
-import { Input } from '@/components/ui/input'
-import { Textarea } from '@/components/ui/textarea'
+import { ref } from 'vue';
+import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
 import {
   Dialog,
   DialogContent,
@@ -9,42 +9,32 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-  DialogTrigger
-} from '@/components/ui/dialog'
-import { Button } from '@/components/ui/button'
-import {
-  Field,
-  FieldGroup,
-  FieldLabel,
-  FieldSet,
-  FieldError
-} from '@/components/ui/field'
-import { Spinner } from '@/components/ui/spinner'
-import { toast } from 'vue-sonner'
+  DialogTrigger,
+} from '@/components/ui/dialog';
+import { Button } from '@/components/ui/button';
+import { Field, FieldGroup, FieldLabel, FieldSet, FieldError } from '@/components/ui/field';
+import { Spinner } from '@/components/ui/spinner';
+import { toast } from 'vue-sonner';
 import {
   Select,
   SelectItem,
   SelectContent,
   SelectTrigger,
-  SelectValue
-} from '@/components/ui/select'
+  SelectValue,
+} from '@/components/ui/select';
 
-import {
-  type Application,
-  getApplicationAPI
-} from '@/services/api'
-import { Edit } from 'lucide-vue-next'
-
+import { type Application, getApplicationAPI } from '@/services/api';
+import { Edit } from 'lucide-vue-next';
 
 interface Props {
-  application: Application,
-  applicationAPI: ReturnType<typeof getApplicationAPI>,
-  loadApplication: () => Promise<void>
+  application: Application;
+  applicationAPI: ReturnType<typeof getApplicationAPI>;
+  loadApplication: () => Promise<void>;
 }
 
-const props = withDefaults(defineProps<Props>(), {})
+const props = withDefaults(defineProps<Props>(), {});
 
-const isEditDialogOpen = ref(false)
+const isEditDialogOpen = ref(false);
 const editFormData = ref({
   label: '',
   description: '',
@@ -54,28 +44,28 @@ const editFormData = ref({
   path: 'Dockerfile',
   env: '',
   args: '',
-})
-const editDialogErrorMessage = ref('')
-const isClickedEditConfirm = ref(false)
+});
+const editDialogErrorMessage = ref('');
+const isClickedEditConfirm = ref(false);
 
 function openEditDialog() {
-  editFormData.value.label = props.application.label || editFormData.value.label
-  editFormData.value.description = props.application.description || editFormData.value.description
-  editFormData.value.type = props.application.type || 'docker'
-  editFormData.value.image = props.application.image || editFormData.value.image
-  editFormData.value.repo = props.application.repo || editFormData.value.repo
-  editFormData.value.path = props.application.path || editFormData.value.path
-  editFormData.value.env = props.application.env || editFormData.value.env
-  editFormData.value.args = props.application.args || editFormData.value.args
-  editDialogErrorMessage.value = ''
-  isEditDialogOpen.value = true
+  editFormData.value.label = props.application.label || editFormData.value.label;
+  editFormData.value.description = props.application.description || editFormData.value.description;
+  editFormData.value.type = props.application.type || 'docker';
+  editFormData.value.image = props.application.image || editFormData.value.image;
+  editFormData.value.repo = props.application.repo || editFormData.value.repo;
+  editFormData.value.path = props.application.path || editFormData.value.path;
+  editFormData.value.env = props.application.env || editFormData.value.env;
+  editFormData.value.args = props.application.args || editFormData.value.args;
+  editDialogErrorMessage.value = '';
+  isEditDialogOpen.value = true;
 }
 
 async function handleUpdateApplication() {
-  editDialogErrorMessage.value = ''
+  editDialogErrorMessage.value = '';
 
   try {
-    isClickedEditConfirm.value = true
+    isClickedEditConfirm.value = true;
     await props.applicationAPI.update(props.application.name, {
       label: editFormData.value.label || null,
       description: editFormData.value.description || null,
@@ -85,14 +75,15 @@ async function handleUpdateApplication() {
       path: editFormData.value.path || null,
       env: editFormData.value.env || null,
       args: editFormData.value.args || null,
-    })
-    await props.loadApplication()
-    isEditDialogOpen.value = false
-    toast.success('Application updated successfully')
+    });
+    await props.loadApplication();
+    isEditDialogOpen.value = false;
+    toast.success('Application updated successfully');
   } catch (err) {
-    editDialogErrorMessage.value = err instanceof Error ? err.message : 'Failed to update application'
+    editDialogErrorMessage.value =
+      err instanceof Error ? err.message : 'Failed to update application';
   } finally {
-    isClickedEditConfirm.value = false
+    isClickedEditConfirm.value = false;
   }
 }
 </script>
@@ -100,9 +91,7 @@ async function handleUpdateApplication() {
 <template>
   <Dialog v-model:open="isEditDialogOpen">
     <DialogTrigger asChild>
-      <Button @click="openEditDialog" variant="outline" size="sm">
-        <Edit />Edit
-      </Button>
+      <Button @click="openEditDialog" variant="outline" size="sm"> <Edit />Edit </Button>
     </DialogTrigger>
     <DialogContent class="sm:max-w-[600px]">
       <DialogHeader>
@@ -113,21 +102,20 @@ async function handleUpdateApplication() {
         <FieldGroup>
           <Field />
           <Field>
-            <FieldLabel for="label">
-              Name
-            </FieldLabel>
+            <FieldLabel for="label"> Name </FieldLabel>
             <Input id="label" v-model="editFormData.label" placeholder="required" />
           </Field>
           <Field>
-            <FieldLabel for="description">
-              Description
-            </FieldLabel>
-            <Textarea id="description" v-model="editFormData.description" class="resize-none" placeholder="optional" />
+            <FieldLabel for="description"> Description </FieldLabel>
+            <Textarea
+              id="description"
+              v-model="editFormData.description"
+              class="resize-none"
+              placeholder="optional"
+            />
           </Field>
           <Field>
-            <FieldLabel for="type">
-              Type
-            </FieldLabel>
+            <FieldLabel for="type"> Type </FieldLabel>
             <Select id="type" v-model="editFormData.type" placeholder="required">
               <SelectTrigger>
                 <SelectValue />
@@ -139,34 +127,34 @@ async function handleUpdateApplication() {
             </Select>
           </Field>
           <Field v-if="editFormData.type == 'docker'">
-            <FieldLabel for="image">
-              Image
-            </FieldLabel>
+            <FieldLabel for="image"> Image </FieldLabel>
             <Input id="image" v-model="editFormData.image" placeholder="required" />
           </Field>
           <Field v-if="editFormData.type == 'git'">
-            <FieldLabel for="repo">
-              Repository
-            </FieldLabel>
+            <FieldLabel for="repo"> Repository </FieldLabel>
             <Input id="repo" v-model="editFormData.repo" placeholder="required" />
           </Field>
           <Field v-if="editFormData.type == 'git'">
-            <FieldLabel for="path">
-              Path
-            </FieldLabel>
+            <FieldLabel for="path"> Path </FieldLabel>
             <Input id="path" v-model="editFormData.path" placeholder="required" />
           </Field>
           <Field>
-            <FieldLabel for="env">
-              Environment Variables
-            </FieldLabel>
-            <Textarea id="env" v-model="editFormData.env" class="resize-none" placeholder="optional" />
+            <FieldLabel for="env"> Environment Variables </FieldLabel>
+            <Textarea
+              id="env"
+              v-model="editFormData.env"
+              class="resize-none"
+              placeholder="optional"
+            />
           </Field>
           <Field v-if="editFormData.type == 'git'">
-            <FieldLabel for="args">
-              Build Arguments
-            </FieldLabel>
-            <Textarea id="args" v-model="editFormData.args" class="resize-none" placeholder="optional" />
+            <FieldLabel for="args"> Build Arguments </FieldLabel>
+            <Textarea
+              id="args"
+              v-model="editFormData.args"
+              class="resize-none"
+              placeholder="optional"
+            />
           </Field>
           <Field>
             <FieldError v-if="editDialogErrorMessage">{{ editDialogErrorMessage }}</FieldError>
@@ -174,7 +162,13 @@ async function handleUpdateApplication() {
         </FieldGroup>
       </FieldSet>
       <DialogFooter>
-        <Button size="sm" type="button" variant="outline" @click="isEditDialogOpen = false" :disabled="isClickedEditConfirm">
+        <Button
+          size="sm"
+          type="button"
+          variant="outline"
+          @click="isEditDialogOpen = false"
+          :disabled="isClickedEditConfirm"
+        >
           Cancel
         </Button>
         <Button size="sm" @click="handleUpdateApplication" :disabled="isClickedEditConfirm">

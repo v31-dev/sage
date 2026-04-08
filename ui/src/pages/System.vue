@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { useAppStore } from '@/stores/app'
-import SystemMetric from '@/components/SystemMetric.vue'
+import { useAppStore } from '@/stores/app';
+import SystemMetric from '@/components/SystemMetric.vue';
 
-const store = useAppStore()
+const store = useAppStore();
 </script>
 
 <template>

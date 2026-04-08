@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
-import { Plus } from 'lucide-vue-next'
-import { Card, CardContent, CardHeader, CardTitle, CardAction } from '@/components/ui/card'
-import { Button } from '@/components/ui/button'
+import { ref, onMounted } from 'vue';
+import { useRouter } from 'vue-router';
+import { Plus } from 'lucide-vue-next';
+import { Card, CardContent, CardHeader, CardTitle, CardAction } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
 import {
   Dialog,
   DialogContent,
@@ -11,81 +11,75 @@ import {
   DialogHeader,
   DialogTitle,
   DialogTrigger,
-} from '@/components/ui/dialog'
-import {
-  Field,
-  FieldError,
-  FieldGroup,
-  FieldLabel,
-  FieldSet,
-} from '@/components/ui/field'
-import { Input } from '@/components/ui/input'
-import { Textarea } from '@/components/ui/textarea'
-import { Spinner } from '@/components/ui/spinner'
-import { Badge } from '@/components/ui/badge'
+} from '@/components/ui/dialog';
+import { Field, FieldError, FieldGroup, FieldLabel, FieldSet } from '@/components/ui/field';
+import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
+import { Spinner } from '@/components/ui/spinner';
+import { Badge } from '@/components/ui/badge';
 
-import { projectAPI, type Project } from '@/services/api'
-import CardDescription from '@/components/ui/card/CardDescription.vue'
+import { projectAPI, type Project } from '@/services/api';
+import CardDescription from '@/components/ui/card/CardDescription.vue';
 
-const router = useRouter()
-const projects = ref<Project[]>([])
-const isLoading = ref(true)
-const isDialogOpen = ref(false)
-const isSubmitting = ref(false)
+const router = useRouter();
+const projects = ref<Project[]>([]);
+const isLoading = ref(true);
+const isDialogOpen = ref(false);
+const isSubmitting = ref(false);
 
 const formData = ref({
   label: '',
-  description: ''
-})
+  description: '',
+});
 
-const errorMessage = ref('')
+const errorMessage = ref('');
 
 onMounted(async () => {
-  await loadProjects()
-})
+  await loadProjects();
+});
 
 async function loadProjects() {
   try {
-    isLoading.value = true
-    projects.value = await projectAPI.fetchAll() as Project[]
+    isLoading.value = true;
+    projects.value = (await projectAPI.fetchAll()) as Project[];
   } catch (err) {
-    console.error('Failed to load projects:', err)
+    console.error('Failed to load projects:', err);
   } finally {
-    isLoading.value = false
+    isLoading.value = false;
   }
 }
 
 function openDialog() {
-  formData.value = { label: '', description: '' }
-  errorMessage.value = ''
-  isDialogOpen.value = true
+  formData.value = { label: '', description: '' };
+  errorMessage.value = '';
+  isDialogOpen.value = true;
 }
 
 async function handleCreateProject() {
-  errorMessage.value = ''
+  errorMessage.value = '';
 
   if (!formData.value.label.trim()) {
-    errorMessage.value = 'Project name is required'
-    return
+    errorMessage.value = 'Project name is required';
+    return;
   }
 
   try {
-    isSubmitting.value = true
+    isSubmitting.value = true;
     await projectAPI.create({
       label: formData.value.label,
-      description: formData.value.description || null
-    })
-    isDialogOpen.value = false
-    await loadProjects()
+      description: formData.value.description || null,
+    });
+    isDialogOpen.value = false;
+    await loadProjects();
   } catch (err) {
-    errorMessage.value = err instanceof Error ? err.message : 'Failed to create project'
+    errorMessage.value = err instanceof Error ? err.message : 'Failed to create project';
   } finally {
-    isSubmitting.value = false
+    isSubmitting.value = false;
   }
 }
 
 function goToProject(projectName: string) {
-  router.push(`/projects/${projectName}`)
+  router.push(`/projects/${projectName}`);
 }
 </script>
 
@@ -119,17 +113,17 @@ function goToProject(projectName: string) {
                   <FieldSet>
                     <FieldGroup>
                       <Field>
-                        <FieldLabel for="label">
-                          Project Label
-                        </FieldLabel>
+                        <FieldLabel for="label"> Project Label </FieldLabel>
                         <Input id="label" v-model="formData.label" placeholder="required" />
                       </Field>
                       <Field>
-                        <FieldLabel for="description">
-                          Description
-                        </FieldLabel>
-                        <Textarea id="description" v-model="formData.description" class="resize-none"
-                          placeholder="optional" />
+                        <FieldLabel for="description"> Description </FieldLabel>
+                        <Textarea
+                          id="description"
+                          v-model="formData.description"
+                          class="resize-none"
+                          placeholder="optional"
+                        />
                       </Field>
                       <Field>
                         <FieldError v-if="errorMessage">{{ errorMessage }}</FieldError>
@@ -137,7 +131,13 @@ function goToProject(projectName: string) {
                     </FieldGroup>
                   </FieldSet>
                   <DialogFooter>
-                    <Button size="sm" type="button" variant="outline" @click="isDialogOpen = false" :disabled="isSubmitting">
+                    <Button
+                      size="sm"
+                      type="button"
+                      variant="outline"
+                      @click="isDialogOpen = false"
+                      :disabled="isSubmitting"
+                    >
                       Cancel
                     </Button>
                     <Button size="sm" @click="handleCreateProject" :disabled="isSubmitting">
@@ -152,20 +152,25 @@ function goToProject(projectName: string) {
 
         <!-- Projects Grid -->
         <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          <Card v-for="project in projects" :key="project.name"
+          <Card
+            v-for="project in projects"
+            :key="project.name"
             class="cursor-pointer hover:shadow-lg transition-shadow flex flex-col min-h-[150px] max-h-[150px]"
-            @click="goToProject(project.name)">
+            @click="goToProject(project.name)"
+          >
             <CardHeader>
               <CardTitle class="line-clamp-2">{{ project.label }}</CardTitle>
               <CardDescription>{{ project.name }}</CardDescription>
               <CardAction>
                 <Badge class="h-5 min-w-5 rounded-full px-1 font-mono tabular-nums">
-                  {{  project.application_count }}
+                  {{ project.application_count }}
                 </Badge>
               </CardAction>
             </CardHeader>
             <CardContent class="overflow-hidden">
-              <h3 class="text-sm font-medium text-muted-foreground mb-2">{{ project.description }}</h3>
+              <h3 class="text-sm font-medium text-muted-foreground mb-2">
+                {{ project.description }}
+              </h3>
             </CardContent>
           </Card>
         </div>

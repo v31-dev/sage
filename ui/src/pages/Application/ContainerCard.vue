@@ -1,40 +1,27 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import {
-  Card,
-  CardHeader,
-  CardTitle,
-  CardAction,
-  CardFooter
-} from '@/components/ui/card'
-import { RouterLink } from 'vue-router'
-import { Button } from '@/components/ui/button'
+import { computed } from 'vue';
+import { Card, CardHeader, CardTitle, CardAction, CardFooter } from '@/components/ui/card';
+import { RouterLink } from 'vue-router';
+import { Button } from '@/components/ui/button';
 
-import TitleStatus from '@/components/TitleStatus.vue'
-import DeploymentLogsButton from './DeploymentLogsButton.vue'
-import DeleteContainerButton from './DeleteContainerButton.vue'
-import {
-  type Container,
-  getContainerAPI
-} from '@/services/api'
-
+import TitleStatus from '@/components/TitleStatus.vue';
+import DeploymentLogsButton from './DeploymentLogsButton.vue';
+import DeleteContainerButton from './DeleteContainerButton.vue';
+import { type Container, getContainerAPI } from '@/services/api';
 
 interface Props {
-  container: Container,
-  containersAPI: ReturnType<typeof getContainerAPI>
-  loadApplication: () => Promise<void>
+  container: Container;
+  containersAPI: ReturnType<typeof getContainerAPI>;
+  loadApplication: () => Promise<void>;
 }
 
-const props = withDefaults(defineProps<Props>(), {})
+const props = withDefaults(defineProps<Props>(), {});
 
 const containerStatusClass = computed(() => {
-  if (props.container.status === 'active')
-    return 'success'
-  else if (['deploying', 'stopping'].includes(props.container.status))
-    return 'warning'
-  else
-    return 'default'
-})
+  if (props.container.status === 'active') return 'success';
+  else if (['deploying', 'stopping'].includes(props.container.status)) return 'warning';
+  else return 'default';
+});
 </script>
 
 <template>
@@ -50,8 +37,11 @@ const containerStatusClass = computed(() => {
         </div>
       </CardTitle>
       <CardAction>
-        <DeleteContainerButton :container="props.container" :containersAPI="props.containersAPI"
-          :loadApplication="props.loadApplication" />
+        <DeleteContainerButton
+          :container="props.container"
+          :containersAPI="props.containersAPI"
+          :loadApplication="props.loadApplication"
+        />
       </CardAction>
     </CardHeader>
     <CardFooter class="border-t">

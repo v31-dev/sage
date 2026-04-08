@@ -1,17 +1,11 @@
 <script setup lang="ts">
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-  CardAction,
-} from "@/components/ui/card";
-import { ButtonGroup } from "@/components/ui/button-group";
-import { Label } from "@/components/ui/label";
+import { Card, CardContent, CardHeader, CardTitle, CardAction } from '@/components/ui/card';
+import { ButtonGroup } from '@/components/ui/button-group';
+import { Label } from '@/components/ui/label';
 
-import { type Project } from "@/services/api";
-import EditProjectButton from "./EditProjectButton.vue";
-import DeleteProjectButton from "./DeleteProjectButton.vue";
+import { type Project } from '@/services/api';
+import EditProjectButton from './EditProjectButton.vue';
+import DeleteProjectButton from './DeleteProjectButton.vue';
 
 interface Props {
   project: Project;
@@ -42,7 +36,7 @@ const props = withDefaults(defineProps<Props>(), {});
       <div>
         <Label>Description</Label>
         <p class="text-sm text-muted-foreground">
-          {{ project.description ? project.description : "-" }}
+          {{ project.description ? project.description : '-' }}
         </p>
       </div>
     </CardContent>
