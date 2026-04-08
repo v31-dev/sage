@@ -24,6 +24,8 @@ const deployButtonDisabled = computed(() => {
   return [
     appStore.applicationDeployStatus === 'deploying',
     props.application?.status === 'deploying',
+    appStore.applicationDeployStatus === 'stopping',
+    props.application?.status === 'stopping',
     props.application?.container_count === 0
   ].includes(true)
 })

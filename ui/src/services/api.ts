@@ -46,6 +46,7 @@ export interface Application {
   containers: Container[]
   container_count: number
   status: 'active' | 'inactive' | 'deploying' | 'stopping' | 'error'
+  domains_synced: boolean
   created_at: Date
   updated_at: Date
 }

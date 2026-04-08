@@ -41,7 +41,7 @@ class Manager(Base):
       - Recently online workers (previously offline but now back online)
       - Offline workers (in db but not in tailscale)
     '''
-    existing_workers = Worker.select()
+    existing_workers = list(Worker.select())
     tailscale_workers = self.tailscale.get_by_tag(get_env("WORKER_TAILSCALE_TAG"))
 
     logger.info(f"Existing workers: {[(w.hostname, w.ip, 'online' if w.online else 'offline') for w in existing_workers]}")
@@ -60,9 +60,9 @@ class Manager(Base):
           self.set_worker_online(worker)
 
         if existing_worker.ip != worker.ip:
-          # worker IP changed
+          # worker IP changed (worker was re-created)
           logger.info(f"Worker {worker.hostname} IP changed from {existing_worker.ip} to {worker.ip}.")
-          self.update_worker(worker)
+          self.setup_worker(worker)
       else:
         # new worker
         logger.info(f"New worker {worker.hostname} detected.")
@@ -85,7 +85,8 @@ class Manager(Base):
     '''
     logger.info(f"Adding worker {worker.hostname} to manager.")
     try:
-      Worker.create(hostname=worker.hostname, ip=worker.ip)
+      Worker.insert(hostname=worker.hostname, ip=worker.ip).on_conflict(
+        conflict_target=[Worker.hostname], preserve=[Worker.ip]).execute()
       self.cloudflare.create_dns_record(name=f"*.int.{get_env('DOMAIN')}", content=worker.ip, comment=f"{get_env('ORG')}-sage-worker-{worker.hostname}", type="A")
       tunnel = self.cloudflare.get_tunnel_token()
 
@@ -159,17 +160,6 @@ class Manager(Base):
     self.cloudflare.create_dns_record(name=f"*.int.{get_env('DOMAIN')}", content=worker.ip, comment=f"{get_env('ORG')}-sage-worker-{worker.hostname}", type="A")
     logger.info(f"Worker {worker.hostname} set to online.")
 
-  def update_worker(self, worker):
-    '''
-      Update a worker's IP address -
-      - Update in Manager database
-      - Update Cloudflare DNS entry (*.int) for Tailscale routing
-    '''
-    logger.info(f"Updating worker {worker.hostname} with ip {worker.ip}.")
-    Worker.update(ip=worker.ip).where(Worker.hostname == worker.hostname).execute()
-    self.cloudflare.create_dns_record(name=f"*.int.{get_env('DOMAIN')}", content=worker.ip, comment=f"{get_env('ORG')}-sage-worker-{worker.hostname}", type="A")
-    logger.info(f"Worker {worker.hostname} updated with new IP {worker.ip}.")
-
   def sync_application_status(self):
     '''
       Sync Application & Container status from the workers.
@@ -214,6 +204,32 @@ class Manager(Base):
           container.status = "error"
           container.save()
           logger.error(f"Marking application container {worker_container_name} as error as status not found (worker may be offline or container stopped).")
+
+    # Sync the overall application status
+    applications = Application.select()
+    for application in applications:
+      if application.status in ['deploying', 'stopping']:
+        continue  
+
+      containers = list(application.containers)
+
+      if any(c.status == "error" for c in containers):
+        if application.status != "error":
+          application.status = "error"
+          application.save()
+          logger.error(f"Marking application {application.name} as error as at least one container is in error state.")
+
+      if all(c.status == "active" for c in containers):
+        if application.status != "active":
+          application.status = "active"
+          application.save()
+          logger.info(f"Marking application {application.name} as active as all containers are active.")
+
+      if all(c.status == "inactive" for c in containers):
+        if application.status != "inactive":
+          application.status = "inactive"
+          application.save()
+          logger.info(f"Marking application {application.name} as inactive as all containers are inactive.")
   
   def sync_application_traefik_domains_config(self, application: Application):
     '''
@@ -221,11 +237,12 @@ class Manager(Base):
     '''
     # Determine the online load-balanced servers
     container_name = f"{application.project.name}-{application.name}"
-    active_containers = [container for container in application.containers if container.worker.online and container.status == "active"]
+    containers = list(application.containers)
+    active_containers = [container for container in containers if container.worker.online and container.status == "active"]
     logger.info(f"Syncing Traefik config for application {container_name} to these workers {[container.worker.hostname for container in active_containers]}.")
 
     # Run per worker
-    for container in application.containers:
+    for container in containers:
       # Worker if offline so can't do anything anyway
       if not container.worker.online:
         logger.error(f"Worker {container.worker.hostname} is offline, skipping Traefik config sync for application {container_name} on this worker.")
@@ -299,6 +316,7 @@ class Manager(Base):
     logger.info(f"Deleting container of application {container.application.name} from worker {container.worker.hostname}")
 
     container_dir = f"{worker_home_dir}/applications/{container.application.name}"
+    container_name = f"{container.application.project.name}-{container.application.name}"
 
     try:
       # Stop container on worker
@@ -312,6 +330,13 @@ class Manager(Base):
       self.tailscale.exec_command(
         container.worker.hostname, 
         f"rm -rf {container_dir}", 
+        timeout=30
+      )
+
+      # Remove traefik config
+      self.tailscale.exec_command(
+        container.worker.hostname, 
+        f"rm -rf {worker_home_dir}/traefik/dynamic/{container_name}-*.yml", 
         timeout=30
       )
 
@@ -357,16 +382,14 @@ class Manager(Base):
 
     try:
       task_id_token = task_id.set(container_task_id)
-
-      container_name = f"{container.application.project.name}-{container.application.name}"
       container_dir = f"{worker_home_dir}/applications/{container.application.name}"
 
-      app_env = container.application.env if container.application.env else ""
-      app_build_args = container.application.args if container.application.args else ""
-
-      # Stop with docker compose
-      await run_in_executor_with_context(self.tailscale.exec_command, container.worker.hostname,
-                                         f"docker compose -f {container_dir}/docker-compose.yml down")
+      if container.status == "inactive":
+        logger.info(f"Container {container.id} of application {container.application.name} on worker {container.worker.hostname} is already inactive. Skipping compose down.")
+      else:
+        # Stop with docker compose
+        await run_in_executor_with_context(self.tailscale.exec_command, container.worker.hostname,
+                                          f"docker compose -f {container_dir}/docker-compose.yml down")
 
       deployment_status = "inactive"
     except Exception as e:

@@ -95,7 +95,7 @@ const containerChartData = computed(() => processContainerData((data.value?.cont
           <CardHeader>
             <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
               <div>
-                <CardTitle class="text-2xl">{{ hostname }}</CardTitle>
+                <CardTitle class="text-lg">{{ hostname }}</CardTitle>
                 <p class="text-sm text-muted-foreground mt-1">
                   {{ data?.meta?.ip }} • {{ data?.meta?.cpu_cores }} cores • {{ data?.meta?.mem_total_mb }} MB RAM • {{
                     data?.meta?.disk_total_gb }} GB Disk

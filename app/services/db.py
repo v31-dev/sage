@@ -87,7 +87,7 @@ class Application(BaseModel):
 
 @pre_save(sender=Application)
 def pre_save_application(model_class, instance, created):
-  # If updating an existing application, set domains_synced to False if not explicitly updated to trigger domain sync
+  # Trigger domain sync on any update except when explicitly set as True
   if not created:
     if 'domains_synced' not in [f.name for f in instance.dirty_fields]:
       instance.domains_synced = False
@@ -116,7 +116,7 @@ class Domain(BaseModel):
 
 @post_save(sender=Domain)
 def set_domains_synced_false_on_update_on_domain(model_class, instance, created):
-  # Set domains_synced to False on any update to trigger domain sync
+  # Trigger domain sync on any domain change
   Application.update(domains_synced=False).where(Application.id == instance.application_id).execute()
 
 class Container(BaseModel):
@@ -135,7 +135,11 @@ def post_save_container(model_class, instance, created):
   if created:
     Application.update(container_count=Application.container_count + 1).where(Application.id == instance.application_id).execute()
 
-  # Set domains_synced to False on any update to trigger domain sync
+  # If containers are 0 than set status to inactive
+  if instance.application.container_count == 0:
+    Application.update(status='inactive').where(Application.id == instance.application_id).execute()
+
+  # Trigger domain sync on any container change
   Application.update(domains_synced=False).where(Application.id == instance.application_id).execute()
 
 @post_delete(sender=Container)

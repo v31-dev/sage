@@ -10,6 +10,7 @@ import {
 import { RouterLink } from 'vue-router'
 import { Button } from '@/components/ui/button'
 
+import TitleStatus from '@/components/TitleStatus.vue'
 import DeploymentLogsButton from './DeploymentLogsButton.vue'
 import DeleteContainerButton from './DeleteContainerButton.vue'
 import {
@@ -26,20 +27,13 @@ interface Props {
 
 const props = withDefaults(defineProps<Props>(), {})
 
-const containerStatusVariant = computed(() => {
-  if (props.container.status === 'error')
-    return 'destructive'
-  else
-    return 'ghost'
-})
-
 const containerStatusClass = computed(() => {
   if (props.container.status === 'active')
     return 'success'
   else if (['deploying', 'stopping'].includes(props.container.status))
     return 'warning'
   else
-    return ''
+    return 'default'
 })
 </script>
 
@@ -48,9 +42,11 @@ const containerStatusClass = computed(() => {
     <CardHeader>
       <CardTitle>
         <div class="flex w-full flex-wrap gap-2">
-          <Button :class="containerStatusClass" :variant="containerStatusVariant" size="sm" disabled class="uppercase">
-            {{ props.container.status }}
-          </Button>
+          <TitleStatus
+            :status="containerStatusClass"
+            :loading="['deploying', 'stopping'].includes(props.container.status)"
+            :statusText="props.container.status"
+          />
         </div>
       </CardTitle>
       <CardAction>

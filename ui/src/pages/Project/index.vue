@@ -24,10 +24,10 @@ import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { toast } from 'vue-sonner'
 import { Spinner } from '@/components/ui/spinner'
-import { Badge } from '@/components/ui/badge'
 import { Label } from '@/components/ui/label'
 
-import { projectAPI, getApplicationAPI, type Project, type Application } from '@/services/api'
+import { projectAPI, getApplicationAPI, type Project } from '@/services/api'
+import ApplicationCard from './ApplicationCard.vue'
 
 
 const route = useRoute()
@@ -50,10 +50,6 @@ async function loadProject() {
   } finally {
     isLoading.value = false
   }
-}
-
-function goToApplication(app: Application) {
-  router.push(`/projects/${projectName}/${app.name}`)
 }
 
 function goBack() {
@@ -344,21 +340,7 @@ async function onClickDeleteProjectConfirm() {
 
           <!-- Applications Grid -->
           <div v-else class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            <Card v-for="app in project.applications" :key="app.name"
-              class="cursor-pointer hover:shadow-lg transition-shadow flex flex-col" @click="goToApplication(app)">
-              <CardHeader>
-                <CardTitle class="line-clamp-2">{{ app.label }}</CardTitle>
-                <CardDescription>{{ app.name }}</CardDescription>
-                <CardAction>
-                  <Badge class="h-5 min-w-5 rounded-full px-1 font-mono tabular-nums">
-                    {{ app.container_count }}
-                  </Badge>
-                </CardAction>
-              </CardHeader>
-              <CardContent class="overflow-hidden">
-                <h3 class="text-sm font-medium text-muted-foreground mb-2">{{ app.description }}</h3>
-              </CardContent>
-            </Card>
+            <ApplicationCard v-for="app in project.applications" :key="app.name" :application="app" :project="project" />
           </div>
         </div>
       </div>

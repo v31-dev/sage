@@ -65,7 +65,7 @@ const containerChartData = computed(() => processContainerData((data.value ?? []
           <CardHeader>
             <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
               <div>
-                <CardTitle class="text-2xl">{{ appName }}</CardTitle>
+                <CardTitle class="text-lg">{{ appName }}</CardTitle>
               </div>
               <div class="flex gap-1 rounded-md border p-1 text-sm">
                 <button v-for="p in periods" :key="p" @click="period = p"
