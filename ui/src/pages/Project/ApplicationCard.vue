@@ -3,7 +3,6 @@ import { computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardHeader, CardTitle, CardContent, CardAction } from '@/components/ui/card'
-import { Button } from '@/components/ui/button';
 
 import { type Application, type Project } from '@/services/api';
 import TitleStatus from '@/components/TitleStatus.vue'
