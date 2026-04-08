@@ -1,0 +1,30 @@
+services:
+  sage:
+    build:
+      context: app
+      dockerfile: Dockerfile
+      args:
+        ENV: development
+    environment:
+      - ENV=development
+      - DEBUGPY_LISTEN=0.0.0.0:5678
+    ports:
+      - "5678:5678"  # debugpy port
+    healthcheck:
+      interval: 10s
+      retries: 6
+    command: python -m debugpy --listen 0.0.0.0:5678 main.py
+
+  ui:
+    build:
+      context: ui
+      dockerfile: Dockerfile
+    container_name: ui
+    develop:
+      watch:
+        - path: ./ui/src
+          target: /app/src
+          action: sync
+    depends_on:
+      sage:
+        condition: service_healthy

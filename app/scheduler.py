@@ -1,0 +1,104 @@
+import asyncio
+import logging
+
+from rocketry.conds import every, minutely
+
+from services.db import Application, Container, Worker
+from services.manager import Manager
+from services.metrics import Metrics
+from services.traefik import Traefik
+from utils.common import get_env
+from utils.logging import LoggedRocketry, TaskFailed, run_in_executor_with_context
+
+logger = logging.getLogger(__name__)
+
+# Schedule tasks
+app = LoggedRocketry(execution="async")
+
+
+# Sync workers for setup
+@app.task(minutely)
+async def manager_sync_workers():
+    await run_in_executor_with_context(Manager().sync_workers)
+
+
+# Sync Application staus
+@app.task(minutely)
+async def manager_sync_application_status():
+    await run_in_executor_with_context(Manager().sync_application_status)
+
+
+# Sync Traefik config for domains
+@app.task(minutely)
+async def sync_application_traefik_domains_config():
+    applications = Application.select().where(Application.domains_synced == False)
+
+    errors = await asyncio.gather(
+        *[
+            run_in_executor_with_context(
+                Manager().sync_application_traefik_domains_config, application
+            )
+            for application in applications
+        ],
+        return_exceptions=True,
+    )
+
+    if any(isinstance(e, Exception) for e in errors):
+        raise TaskFailed()
+
+
+# Sync Traefik wildcard certificates to workers
+@app.task(every("20 days"))
+async def traefik_sync_certs():
+    await run_in_executor_with_context(Traefik().sync_certificates_to_workers)
+
+
+# Collect metrics from all online workers & self manager
+@app.task(minutely)
+async def collect_metrics():
+    worker_targets = [(w.ip, w.hostname) for w in Worker.select().where(Worker.online == True)]
+    targets = [("172.17.0.1", get_env("HOSTNAME"))] + worker_targets
+
+    errors = await asyncio.gather(
+        *[run_in_executor_with_context(Metrics().collect, ip, host) for ip, host in targets],
+        return_exceptions=True,
+    )
+
+    if any(isinstance(e, Exception) for e in errors):
+        raise TaskFailed()
+
+
+# Clean up metrics & logs older than X days
+@app.task(every("1 day"))
+async def metrics_cleanup():
+    await run_in_executor_with_context(Metrics().cleanup)
+
+
+# Deploy Application
+@app.task(name="deploy_application", multilaunch=True)
+async def deploy_application(application: Application):
+    try:
+        await Manager().deploy_application(application)
+    except Exception as e:
+        application.status = "error"
+        application.save()
+        logger.error(f"Failed to deploy application {application.name}: {e}")
+        raise TaskFailed()
+
+
+# Stop Application
+@app.task(name="stop_application", multilaunch=True)
+async def stop_application(application: Application):
+    try:
+        await Manager().stop_application(application)
+    except Exception as e:
+        application.status = "error"
+        application.save()
+        logger.error(f"Failed to stop application {application.name}: {e}")
+        raise TaskFailed()
+
+
+# Delete Container
+@app.task(name="delete_container", multilaunch=True)
+async def delete_container(container: Container):
+    await run_in_executor_with_context(Manager().delete_container, container)

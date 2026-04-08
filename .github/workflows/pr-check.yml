@@ -1,0 +1,77 @@
+name: PR Check - Build & Validate Version
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'app/**'
+      - 'ui/**'
+      - 'VERSION'
+      - 'Dockerfile'
+      - '.github/workflows/pr-check.yml'
+
+jobs:
+  validate-version:
+    runs-on: ubuntu-latest
+    name: Validate Version Bump
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get base and head versions
+        id: versions
+        run: |
+          git fetch origin main --depth=1
+          BASE_VERSION=$(git show origin/main:VERSION)
+          HEAD_VERSION=$(cat VERSION)
+          echo "base_version=$BASE_VERSION" >> $GITHUB_OUTPUT
+          echo "head_version=$HEAD_VERSION" >> $GITHUB_OUTPUT
+          echo "Base version: $BASE_VERSION"
+          echo "Head version: $HEAD_VERSION"
+
+      - name: Check version was bumped
+        run: |
+          BASE_VERSION=${{ steps.versions.outputs.base_version }}
+          HEAD_VERSION=${{ steps.versions.outputs.head_version }}
+          if [ "$BASE_VERSION" = "$HEAD_VERSION" ]; then
+            echo "❌ VERSION file must be bumped in this PR"
+            echo "Base version: $BASE_VERSION"
+            echo "PR version: $HEAD_VERSION"
+            exit 1
+          fi
+          echo "✅ Version bumped from $BASE_VERSION to $HEAD_VERSION"
+
+  build-image:
+    runs-on: ubuntu-latest
+    name: Build Docker Image
+    needs: validate-version
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: false
+          tags: sage:pr-check
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  success:
+    runs-on: ubuntu-latest
+    name: PR Check Complete
+    needs:
+      - validate-version
+      - build-image
+    if: success()
+    steps:
+      - name: ✅ All checks passed
+        run: echo "PR is ready for review and merge"

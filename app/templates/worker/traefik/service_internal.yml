@@ -1,0 +1,35 @@
+http:
+  routers:
+    # Entrypoint via Tailscale
+    ${SERVICE}_internal:
+      rule: Host(`${SUBDOMAIN}.int.${DOMAIN}`) && Path(`/`)
+      entrypoints:
+        - websecure
+      middlewares:
+        - security-headers
+        - tailscale-only
+        - mark-as-hopped
+      service: ${SERVICE}_internal
+      tls:
+        certResolver: cloudflare
+
+    # Final Mesh Entrypoint (for load balancing)
+    ${SERVICE}_mesh_internal:
+      rule: "Host(`${SUBDOMAIN}.int.${DOMAIN}`) && Path(`/`) && Header(`X-Mesh-Hops`, `1`)"
+      entrypoints:
+        - mesh
+      middlewares:
+        - server-header
+      priority: 200
+      service: ${SERVICE}_local_internal
+
+  services:
+    # Final Mesh service
+    ${SERVICE}_local_internal:
+      loadBalancer:
+        servers:
+          - url: http://${SERVICE}:${PORT}
+    # Loadbalanced services
+    ${SERVICE}_internal:
+      loadBalancer:
+        servers: [ ${LOAD_BALANCED_SERVERS} ]

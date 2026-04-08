@@ -1,0 +1,12 @@
+gunicorn==23.0.0
+fastapi[standard]==0.115.10
+uvicorn[standard]==0.34.0
+pydantic<2.0.0
+rocketry==2.5.1
+redbird==0.7.1
+cloudflare==4.3.1
+requests== 2.32.5
+httpx==0.28.1
+docker==7.1.0
+peewee==4.0.1
+cryptography==46.0.5

@@ -1,0 +1,22 @@
+http:
+  middlewares:
+    tailscale-only:
+      ipAllowList:
+        sourceRange:
+          - "100.64.0.0/10"
+          - "172.16.0.0/12"
+
+  routers:
+    # This is the dummy router that forces certificate generation
+    wildcard-cert-provisioner:
+      rule: "Host(`cert-provisioner.core.${DOMAIN}`)"
+      entryPoints:
+        - websecure
+      service: noop@internal 
+      tls:
+        certResolver: cloudflare
+        domains:
+          - main: "${DOMAIN}"
+            sans:
+              - "*.core.${DOMAIN}"
+              - "*.int.${DOMAIN}"

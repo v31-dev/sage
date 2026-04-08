@@ -1,0 +1,11 @@
+.env
+
+# Node
+node_modules
+
+# Python
+__pycache__
+*-venv
+
+# Ignore marked files
+*-gitignore
