@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { ref } from 'vue';
-import { toast } from 'vue-sonner';
-import { Plus } from 'lucide-vue-next';
+import { ref } from 'vue'
+import { toast } from 'vue-sonner'
+import { Plus } from 'lucide-vue-next'
 import {
   Dialog,
   DialogContent,
@@ -10,66 +10,66 @@ import {
   DialogHeader,
   DialogTitle,
   DialogTrigger,
-} from '@/components/ui/dialog';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Field, FieldGroup, FieldLabel, FieldSet, FieldError } from '@/components/ui/field';
+} from '@/components/ui/dialog'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Field, FieldGroup, FieldLabel, FieldSet, FieldError } from '@/components/ui/field'
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from '@/components/ui/select';
-import { Spinner } from '@/components/ui/spinner';
+} from '@/components/ui/select'
+import { Spinner } from '@/components/ui/spinner'
 
-import { type Application, type Domain, getDomainAPI } from '@/services/api';
+import { type Application, type Domain, getDomainAPI } from '@/services/api'
 
 interface Props {
-  application: Application;
-  domainAPI: ReturnType<typeof getDomainAPI>;
-  loadApplication: () => Promise<void>;
+  application: Application
+  domainAPI: ReturnType<typeof getDomainAPI>
+  loadApplication: () => Promise<void>
 }
 
-const props = withDefaults(defineProps<Props>(), {});
+const props = withDefaults(defineProps<Props>(), {})
 
-const isAddDomainDialogOpen = ref(false);
+const isAddDomainDialogOpen = ref(false)
 const domain = ref({
   name: '',
   type: 'internal' as 'internal' | 'public',
   port: 80,
-});
-const addDomainErrorMessage = ref('');
-const isClickedAddDomainConfirm = ref(false);
+})
+const addDomainErrorMessage = ref('')
+const isClickedAddDomainConfirm = ref(false)
 
 function openAddDomainDialog() {
-  addDomainErrorMessage.value = '';
+  addDomainErrorMessage.value = ''
   domain.value = {
     name: '',
     type: 'internal',
     port: 80,
-  };
-  isAddDomainDialogOpen.value = true;
+  }
+  isAddDomainDialogOpen.value = true
 }
 
 async function onClickAddDomainConfirm() {
-  addDomainErrorMessage.value = '';
+  addDomainErrorMessage.value = ''
 
   if (!domain.value.name.trim()) {
-    addDomainErrorMessage.value = 'Please enter a domain name';
-    return;
+    addDomainErrorMessage.value = 'Please enter a domain name'
+    return
   }
 
   try {
-    isClickedAddDomainConfirm.value = true;
-    (await props.domainAPI.create(domain.value)) as Domain;
-    isAddDomainDialogOpen.value = false;
-    await props.loadApplication();
-    toast.success('Domain added successfully');
+    isClickedAddDomainConfirm.value = true
+    ;(await props.domainAPI.create(domain.value)) as Domain
+    isAddDomainDialogOpen.value = false
+    await props.loadApplication()
+    toast.success('Domain added successfully')
   } catch (err) {
-    addDomainErrorMessage.value = err instanceof Error ? err.message : 'Failed to add domain';
+    addDomainErrorMessage.value = err instanceof Error ? err.message : 'Failed to add domain'
   } finally {
-    isClickedAddDomainConfirm.value = false;
+    isClickedAddDomainConfirm.value = false
   }
 }
 </script>

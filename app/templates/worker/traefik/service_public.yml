@@ -1,5 +1,16 @@
 http:
   routers:
+    # Discovery endpoint exposing all configured domain tags for this service.
+    ${SERVICE}_${SUBDOMAIN}_public_x_tag:
+      rule: Host(`${SUBDOMAIN}.${DOMAIN}`) && Path(`/x-tag`) && Method(`GET`)
+      entrypoints:
+        - web
+      middlewares:
+        - security-headers
+        - ${SERVICE}_${SUBDOMAIN}_public_x_tag_header
+      priority: 400
+      service: ping@internal
+
     # Entrypoint via Cloudflare Tunnel
     ${SERVICE}_public:
       rule: Host(`${SUBDOMAIN}.${DOMAIN}`) && Path(`/`)
@@ -19,6 +30,12 @@ http:
         - server-header
       priority: 200
       service: ${SERVICE}_local_public
+
+  middlewares:
+    ${SERVICE}_${SUBDOMAIN}_public_x_tag_header:
+      headers:
+        customResponseHeaders:
+          X-Tag: '${DOMAIN_TAGS_HEADER}'
 
   services:
     # Final Mesh service

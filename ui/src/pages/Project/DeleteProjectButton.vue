@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { ref } from 'vue';
-import { useRouter } from 'vue-router';
-import { Trash } from 'lucide-vue-next';
-import { Button } from '@/components/ui/button';
+import { ref } from 'vue'
+import { useRouter } from 'vue-router'
+import { Trash } from 'lucide-vue-next'
+import { Button } from '@/components/ui/button'
 import {
   Dialog,
   DialogContent,
@@ -10,47 +10,46 @@ import {
   DialogHeader,
   DialogTitle,
   DialogTrigger,
-} from '@/components/ui/dialog';
-import { Field, FieldError, FieldGroup, FieldSet } from '@/components/ui/field';
-import { toast } from 'vue-sonner';
-import { Spinner } from '@/components/ui/spinner';
+} from '@/components/ui/dialog'
+import { Field, FieldError, FieldGroup, FieldSet } from '@/components/ui/field'
+import { toast } from 'vue-sonner'
+import { Spinner } from '@/components/ui/spinner'
 
-import { type Project } from '@/services/api';
+import { type Project } from '@/services/api'
 
 interface Props {
-  project: Project;
-  projectAPI: any;
+  project: Project
+  projectAPI: any
 }
 
-const props = withDefaults(defineProps<Props>(), {});
+const props = withDefaults(defineProps<Props>(), {})
 
-const router = useRouter();
+const router = useRouter()
 
-const isDeleteDialogOpen = ref(false);
-const isClickedDeleteConfirm = ref(false);
-const deleteDialogErrorMessage = ref('');
+const isDeleteDialogOpen = ref(false)
+const isClickedDeleteConfirm = ref(false)
+const deleteDialogErrorMessage = ref('')
 
 function openDeleteProjectDialog() {
-  isDeleteDialogOpen.value = true;
-  isClickedDeleteConfirm.value = false;
-  deleteDialogErrorMessage.value = '';
+  isDeleteDialogOpen.value = true
+  isClickedDeleteConfirm.value = false
+  deleteDialogErrorMessage.value = ''
 }
 
 async function onClickDeleteProjectConfirm() {
-  isClickedDeleteConfirm.value = true;
+  isClickedDeleteConfirm.value = true
 
-  await new Promise(resolve => setTimeout(resolve, 1000));
+  await new Promise(resolve => setTimeout(resolve, 1000))
 
   try {
-    await props.projectAPI.delete(props.project.name);
-    isDeleteDialogOpen.value = false;
-    toast.success(`Project ${props.project.name} deleted successfully`);
-    router.push('/projects');
+    await props.projectAPI.delete(props.project.name)
+    isDeleteDialogOpen.value = false
+    toast.success(`Project ${props.project.name} deleted successfully`)
+    router.push('/projects')
   } catch (err) {
-    deleteDialogErrorMessage.value =
-      err instanceof Error ? err.message : 'Failed to delete project';
+    deleteDialogErrorMessage.value = err instanceof Error ? err.message : 'Failed to delete project'
   } finally {
-    isClickedDeleteConfirm.value = false;
+    isClickedDeleteConfirm.value = false
   }
 }
 </script>

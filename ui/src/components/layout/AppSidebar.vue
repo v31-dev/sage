@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import type { SidebarProps } from '@/components/ui/sidebar';
-import { useRoute } from 'vue-router';
-import { watch } from 'vue';
+import type { SidebarProps } from '@/components/ui/sidebar'
+import { useRoute } from 'vue-router'
+import { watch } from 'vue'
 import {
   Activity,
   Briefcase,
@@ -11,7 +11,8 @@ import {
   Logs,
   Server,
   Settings2,
-} from 'lucide-vue-next';
+  CloudBackup,
+} from 'lucide-vue-next'
 import {
   Sidebar,
   SidebarContent,
@@ -22,23 +23,23 @@ import {
   SidebarGroup,
   SidebarGroupLabel,
   useSidebar,
-} from '@/components/ui/sidebar';
-import { useAppStore } from '@/stores/app';
+} from '@/components/ui/sidebar'
+import { useAppStore } from '@/stores/app'
 
-const route = useRoute();
-const appStore = useAppStore();
-const { isMobile, setOpenMobile } = useSidebar();
+const route = useRoute()
+const appStore = useAppStore()
+const { isMobile, setOpenMobile } = useSidebar()
 
 const props = withDefaults(defineProps<SidebarProps>(), {
   collapsible: 'icon',
-});
+})
 
 interface MenuInterface {
-  name: string;
-  path?: string;
-  url?: string;
-  icon?: any;
-  children?: MenuInterface[];
+  name: string
+  path?: string
+  url?: string
+  icon?: any
+  children?: MenuInterface[]
 }
 
 const menu: MenuInterface[] = [
@@ -81,23 +82,28 @@ const menu: MenuInterface[] = [
         icon: Logs,
       },
       {
+        name: 'Backups',
+        path: '/backups',
+        icon: CloudBackup,
+      },
+      {
         name: 'Settings',
         path: '/settings',
         icon: Settings2,
       },
     ],
   },
-];
+]
 
 // Close sidebar on mobile when route changes
 watch(
   () => route.path,
   () => {
     if (isMobile.value) {
-      setOpenMobile(false);
+      setOpenMobile(false)
     }
   }
-);
+)
 </script>
 
 <template>
@@ -107,9 +113,6 @@ watch(
         <Building class="size-5 shrink-0" />
         <div class="grid flex-1 text-left text-sm leading-tight">
           <span class="truncate font-semibold">
-            {{ appStore.info?.org }}
-          </span>
-          <span class="truncate text-xs text-muted-foreground">
             {{ appStore.info?.domain }}
           </span>
         </div>

@@ -1,15 +1,15 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue';
-import { Search, Filter, CircleMinus } from 'lucide-vue-next';
-import { Card, CardContent } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
+import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
+import { Search, Filter, CircleMinus } from 'lucide-vue-next'
+import { Card, CardContent } from '@/components/ui/card'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import {
   InputGroup,
   InputGroupAddon,
   InputGroupButton,
   InputGroupInput,
-} from '@/components/ui/input-group';
+} from '@/components/ui/input-group'
 import {
   Table,
   TableBody,
@@ -17,38 +17,38 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from '@/components/ui/table';
-import { Spinner } from '@/components/ui/spinner';
+} from '@/components/ui/table'
+import { Spinner } from '@/components/ui/spinner'
 
-import { fetchLogs, type LogEntry } from '@/services/api';
+import { fetchLogs, type LogEntry } from '@/services/api'
 
 interface Props {
-  container: string;
-  hostname: string;
+  container: string
+  hostname: string
   // if provided then it will disable search controls and use this value as search query on initial load
-  search?: string;
+  search?: string
   parseMessage: (
     raw: string,
     entry: LogEntry
   ) => {
-    ts: string;
-    message: string;
-    [key: string]: any;
-  };
-  filterMessage?: (raw: string, entry: LogEntry) => boolean;
+    ts: string
+    message: string
+    [key: string]: any
+  }
+  filterMessage?: (raw: string, entry: LogEntry) => boolean
   columns: {
-    key: string;
-    label: string;
-    headerClass: string;
-    rowClass: string;
-    cellClass?: (entry: any) => string;
-    filter?: boolean;
-    formatter?: (value: any) => string;
-    hostnameFilter?: boolean;
-  }[];
-  pollInterval?: number;
-  poll?: boolean;
-  pollIntervalDelayStop?: number;
+    key: string
+    label: string
+    headerClass: string
+    rowClass: string
+    cellClass?: (entry: any) => string
+    filter?: boolean
+    formatter?: (value: any) => string
+    hostnameFilter?: boolean
+  }[]
+  pollInterval?: number
+  poll?: boolean
+  pollIntervalDelayStop?: number
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -56,56 +56,57 @@ const props = withDefaults(defineProps<Props>(), {
   pollInterval: 5_000,
   poll: true,
   pollIntervalDelayStop: 0,
-});
+})
 
-const MAX_LOGS_ON_UI = 1000;
+const MAX_LOGS_ON_UI = 1000
 
-const logs = ref<LogEntry[]>([]);
-const isLoading = ref(true);
-const inputSearch = ref(props.search);
-const activeSearch = ref(props.search);
-const inputFromDate = ref<string>('');
-const activeFromDate = ref<string>('');
-const inputToDate = ref<string>('');
-const activeToDate = ref<string>('');
-const desktopViewport = ref<HTMLElement | null>(null);
-const mobileScroll = ref<HTMLElement | null>(null);
-const error = ref<string>('');
-let pollTimer: ReturnType<typeof setInterval> | null = null;
-const hostnameFilter = ref('');
+const logs = ref<LogEntry[]>([])
+const isLoading = ref(true)
+const inputSearch = ref(props.search)
+const activeSearch = ref(props.search)
+const inputFromDate = ref<string>('')
+const activeFromDate = ref<string>('')
+const inputToDate = ref<string>('')
+const activeToDate = ref<string>('')
+const desktopViewport = ref<HTMLElement | null>(null)
+const mobileScroll = ref<HTMLElement | null>(null)
+const error = ref<string>('')
+let pollTimer: ReturnType<typeof setInterval> | null = null
+let stopPollTimeout: ReturnType<typeof setTimeout> | null = null
+const hostnameFilter = ref('')
 
 const parsedLogs = computed(() =>
   logs.value
     .filter(e => (props.filterMessage ? props.filterMessage(e.message, e) : true))
     .map(e => ({ entry: e, parsed: props.parseMessage(e.message, e) }))
-);
+)
 
 function isNearBottom(threshold: number = 50): boolean {
   if (desktopViewport.value) {
-    const { scrollTop, scrollHeight, clientHeight } = desktopViewport.value;
-    return scrollHeight - (scrollTop + clientHeight) <= threshold;
+    const { scrollTop, scrollHeight, clientHeight } = desktopViewport.value
+    return scrollHeight - (scrollTop + clientHeight) <= threshold
   }
   if (mobileScroll.value) {
-    const { scrollTop, scrollHeight, clientHeight } = mobileScroll.value;
-    return scrollHeight - (scrollTop + clientHeight) <= threshold;
+    const { scrollTop, scrollHeight, clientHeight } = mobileScroll.value
+    return scrollHeight - (scrollTop + clientHeight) <= threshold
   }
-  return true;
+  return true
 }
 
 async function scrollToBottom() {
-  await nextTick();
+  await nextTick()
 
   // Use requestAnimationFrame to ensure DOM is painted
-  await new Promise(resolve => requestAnimationFrame(resolve));
+  await new Promise(resolve => requestAnimationFrame(resolve))
 
   // Scroll desktop view
   if (desktopViewport.value) {
-    desktopViewport.value.scrollTop = desktopViewport.value.scrollHeight;
+    desktopViewport.value.scrollTop = desktopViewport.value.scrollHeight
   }
 
   // Scroll mobile view
   if (mobileScroll.value) {
-    mobileScroll.value.scrollTop = mobileScroll.value.scrollHeight;
+    mobileScroll.value.scrollTop = mobileScroll.value.scrollHeight
   }
 }
 
@@ -114,136 +115,153 @@ watch(
   () => logs.value.length,
   async () => {
     if (isNearBottom()) {
-      await scrollToBottom();
+      await scrollToBottom()
     }
   }
-);
+)
 
 // Watch poll prop and start/stop polling accordingly
 watch(
   () => props.poll,
   newVal => {
-    // Delay stopping the poll to catch any late logs after deployment/stopping
-    if (pollTimer !== null) {
-      if (props.pollIntervalDelayStop > 0) {
-        setTimeout(() => {
-          if (pollTimer !== null) clearInterval(pollTimer);
-          pollTimer = null;
-        }, props.pollIntervalDelayStop);
-      } else {
-        clearInterval(pollTimer);
-        pollTimer = null;
-      }
+    // Cancel an existing stop poll timeout if poll is toggled again before it executes
+    if (stopPollTimeout !== null) {
+      clearTimeout(stopPollTimeout)
+      stopPollTimeout = null
     }
 
     if (newVal) {
-      pollTimer = setInterval(load, props.pollInterval);
+      if (pollTimer === null) {
+        pollTimer = setInterval(load, props.pollInterval)
+      }
+      return
     }
+
+    if (pollTimer === null) {
+      return
+    }
+
+    if (props.pollIntervalDelayStop > 0) {
+      const timerToStop = pollTimer
+      stopPollTimeout = setTimeout(() => {
+        if (!props.poll && pollTimer === timerToStop) {
+          clearInterval(timerToStop)
+          pollTimer = null
+        }
+        stopPollTimeout = null
+      }, props.pollIntervalDelayStop)
+      return
+    }
+
+    clearInterval(pollTimer)
+    pollTimer = null
   }
-);
+)
 
 async function load() {
   // Don't load if the current query gives an error
   if (error.value != '') {
-    return;
+    return
   }
 
-  isLoading.value = true;
+  isLoading.value = true
 
-  const fromDateUTC = activeFromDate.value ? new Date(activeFromDate.value).toISOString() : '';
-  const toDateUTC = activeToDate.value ? new Date(activeToDate.value).toISOString() : '';
+  const fromDateUTC = activeFromDate.value ? new Date(activeFromDate.value).toISOString() : ''
+  const toDateUTC = activeToDate.value ? new Date(activeToDate.value).toISOString() : ''
 
   try {
     if (toDateUTC != '' && toDateUTC < new Date().toISOString()) {
       // toDate is in the past - no new logs
     } else {
       // fetch logs
-      const hostname = hostnameFilter.value || props.hostname;
+      const hostname = hostnameFilter.value || props.hostname
       logs.value.push(
         ...(await fetchLogs(hostname, props.container, activeSearch.value, fromDateUTC, toDateUTC))
-      );
+      )
       // Keep only last 1000 logs on UI
       if (logs.value.length > MAX_LOGS_ON_UI) {
-        logs.value = logs.value.slice(-MAX_LOGS_ON_UI);
+        logs.value = logs.value.slice(-MAX_LOGS_ON_UI)
       }
     }
 
     // Update for polling
     if (logs.value.length > 0) {
-      const lastLog = logs.value[logs.value.length - 1];
+      const lastLog = logs.value[logs.value.length - 1]
       if (lastLog) {
-        activeFromDate.value = lastLog.ts;
+        activeFromDate.value = lastLog.ts
       }
     }
   } catch (err) {
     if (err instanceof Error) {
-      error.value = err.message;
+      error.value = err.message
     } else {
-      error.value = 'Failed to fetch logs';
+      error.value = 'Failed to fetch logs'
     }
   } finally {
-    isLoading.value = false;
+    isLoading.value = false
   }
 }
 
 function applySearch() {
-  activeSearch.value = inputSearch.value.trim();
-  activeFromDate.value = inputFromDate.value;
-  activeToDate.value = inputToDate.value;
-  logs.value = [];
-  error.value = '';
-  load();
+  activeSearch.value = inputSearch.value.trim()
+  activeFromDate.value = inputFromDate.value
+  activeToDate.value = inputToDate.value
+  logs.value = []
+  error.value = ''
+  load()
 }
 
 function onSearchKeypress(e: KeyboardEvent) {
-  if (e.key === 'Enter') applySearch();
+  if (e.key === 'Enter') applySearch()
 }
 
 function clearSearch() {
-  inputSearch.value = '';
-  applySearch();
+  inputSearch.value = ''
+  applySearch()
 }
 
 function clearHostnameFilter() {
-  hostnameFilter.value = '';
-  applySearch();
+  hostnameFilter.value = ''
+  applySearch()
 }
 
 function filterBy(column: (typeof props.columns)[number], value: string) {
-  if (!value) return;
+  if (!value) return
   if (column.hostnameFilter) {
-    hostnameFilter.value = value;
+    hostnameFilter.value = value
   } else {
-    inputSearch.value = value;
+    inputSearch.value = value
   }
-  applySearch();
+  applySearch()
 }
 
 onMounted(async () => {
   if (props.search == '') {
-    // Set inputFromDate to today (local timezone)
-    const now = new Date();
-    const year = now.getFullYear();
-    const month = String(now.getMonth() + 1).padStart(2, '0');
-    const day = String(now.getDate()).padStart(2, '0');
-    const hours = String(now.getHours()).padStart(2, '0');
-    const minutes = String(now.getMinutes()).padStart(2, '0');
-    inputFromDate.value = `${year}-${month}-${day}T${hours}:${minutes}`;
-    activeFromDate.value = inputFromDate.value;
+    // Set inputFromDate to today - 5 min (local timezone)
+    const now = new Date()
+    now.setMinutes(now.getMinutes() - 5)
+    const year = now.getFullYear()
+    const month = String(now.getMonth() + 1).padStart(2, '0')
+    const day = String(now.getDate()).padStart(2, '0')
+    const hours = String(now.getHours()).padStart(2, '0')
+    const minutes = String(now.getMinutes()).padStart(2, '0')
+    inputFromDate.value = `${year}-${month}-${day}T${hours}:${minutes}`
+    activeFromDate.value = inputFromDate.value
   }
 
   // Load initial logs
-  await load();
+  await load()
 
   // Start polling every X seconds
   if (props.poll) {
-    pollTimer = setInterval(load, props.pollInterval);
+    pollTimer = setInterval(load, props.pollInterval)
   }
-});
+})
 
 onUnmounted(() => {
-  if (pollTimer !== null) clearInterval(pollTimer);
-});
+  if (pollTimer !== null) clearInterval(pollTimer)
+  if (stopPollTimeout !== null) clearTimeout(stopPollTimeout)
+})
 </script>
 
 <template>

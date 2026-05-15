@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
-import { useRouter } from 'vue-router';
-import { Plus } from 'lucide-vue-next';
-import { Card, CardContent, CardHeader, CardTitle, CardAction } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
+import { ref, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
+import { Plus } from 'lucide-vue-next'
+import { Card, CardContent, CardHeader, CardTitle, CardAction } from '@/components/ui/card'
+import { Button } from '@/components/ui/button'
 import {
   Dialog,
   DialogContent,
@@ -11,75 +11,75 @@ import {
   DialogHeader,
   DialogTitle,
   DialogTrigger,
-} from '@/components/ui/dialog';
-import { Field, FieldError, FieldGroup, FieldLabel, FieldSet } from '@/components/ui/field';
-import { Input } from '@/components/ui/input';
-import { Textarea } from '@/components/ui/textarea';
-import { Spinner } from '@/components/ui/spinner';
-import { Badge } from '@/components/ui/badge';
+} from '@/components/ui/dialog'
+import { Field, FieldError, FieldGroup, FieldLabel, FieldSet } from '@/components/ui/field'
+import { Input } from '@/components/ui/input'
+import { Textarea } from '@/components/ui/textarea'
+import { Spinner } from '@/components/ui/spinner'
+import { Badge } from '@/components/ui/badge'
 
-import { projectAPI, type Project } from '@/services/api';
-import CardDescription from '@/components/ui/card/CardDescription.vue';
+import { projectAPI, type Project } from '@/services/api'
+import CardDescription from '@/components/ui/card/CardDescription.vue'
 
-const router = useRouter();
-const projects = ref<Project[]>([]);
-const isLoading = ref(true);
-const isDialogOpen = ref(false);
-const isSubmitting = ref(false);
+const router = useRouter()
+const projects = ref<Project[]>([])
+const isLoading = ref(true)
+const isDialogOpen = ref(false)
+const isSubmitting = ref(false)
 
 const formData = ref({
   label: '',
   description: '',
-});
+})
 
-const errorMessage = ref('');
+const errorMessage = ref('')
 
 onMounted(async () => {
-  await loadProjects();
-});
+  await loadProjects()
+})
 
 async function loadProjects() {
   try {
-    isLoading.value = true;
-    projects.value = (await projectAPI.fetchAll()) as Project[];
+    isLoading.value = true
+    projects.value = (await projectAPI.fetchAll()) as Project[]
   } catch (err) {
-    console.error('Failed to load projects:', err);
+    console.error('Failed to load projects:', err)
   } finally {
-    isLoading.value = false;
+    isLoading.value = false
   }
 }
 
 function openDialog() {
-  formData.value = { label: '', description: '' };
-  errorMessage.value = '';
-  isDialogOpen.value = true;
+  formData.value = { label: '', description: '' }
+  errorMessage.value = ''
+  isDialogOpen.value = true
 }
 
 async function handleCreateProject() {
-  errorMessage.value = '';
+  errorMessage.value = ''
 
   if (!formData.value.label.trim()) {
-    errorMessage.value = 'Project name is required';
-    return;
+    errorMessage.value = 'Project name is required'
+    return
   }
 
   try {
-    isSubmitting.value = true;
+    isSubmitting.value = true
     await projectAPI.create({
       label: formData.value.label,
       description: formData.value.description || null,
-    });
-    isDialogOpen.value = false;
-    await loadProjects();
+    })
+    isDialogOpen.value = false
+    await loadProjects()
   } catch (err) {
-    errorMessage.value = err instanceof Error ? err.message : 'Failed to create project';
+    errorMessage.value = err instanceof Error ? err.message : 'Failed to create project'
   } finally {
-    isSubmitting.value = false;
+    isSubmitting.value = false
   }
 }
 
 function goToProject(projectName: string) {
-  router.push(`/projects/${projectName}`);
+  router.push(`/projects/${projectName}`)
 }
 </script>
 

@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
-import { useColorMode } from '@vueuse/core';
-import Header from './components/layout/Header.vue';
-import Footer from '@/components/layout/Footer.vue';
-import AppSidebar from '@/components/layout/AppSidebar.vue';
-import { SidebarInset, SidebarProvider } from '@/components/ui/sidebar';
+import { ref, onMounted } from 'vue'
+import { useColorMode } from '@vueuse/core'
+import Header from './components/layout/Header.vue'
+import Footer from '@/components/layout/Footer.vue'
+import AppSidebar from '@/components/layout/AppSidebar.vue'
+import { SidebarInset, SidebarProvider } from '@/components/ui/sidebar'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -12,35 +12,35 @@ import {
   AlertDialogDescription,
   AlertDialogHeader,
   AlertDialogTitle,
-} from '@/components/ui/alert-dialog';
-import { Spinner } from '@/components/ui/spinner';
-import 'vue-sonner/style.css';
-import { Toaster } from '@/components/ui/sonner';
-import { useAppStore } from '@/stores/app';
+} from '@/components/ui/alert-dialog'
+import { Spinner } from '@/components/ui/spinner'
+import 'vue-sonner/style.css'
+import { Toaster } from '@/components/ui/sonner'
+import { useAppStore } from '@/stores/app'
 
 // Initialize theme immediately on page load
-useColorMode();
+useColorMode()
 
-const appStore = useAppStore();
-const isLoading = ref(true);
-const showError = ref(false);
-const error = ref<string | null>(null);
+const appStore = useAppStore()
+const isLoading = ref(true)
+const showError = ref(false)
+const error = ref<string | null>(null)
 
 const handleReload = () => {
-  location.reload();
-};
+  location.reload()
+}
 
 onMounted(async () => {
   try {
-    await appStore.init();
-    await new Promise(resolve => setTimeout(resolve, 500));
-    isLoading.value = false;
+    await appStore.init()
+    await new Promise(resolve => setTimeout(resolve, 500))
+    isLoading.value = false
   } catch (err) {
-    error.value = err instanceof Error ? err.message : 'Failed to load application';
-    showError.value = true;
-    isLoading.value = false;
+    error.value = err instanceof Error ? err.message : 'Failed to load application'
+    showError.value = true
+    isLoading.value = false
   }
-});
+})
 </script>
 
 <template>

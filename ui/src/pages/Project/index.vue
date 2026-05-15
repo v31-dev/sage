@@ -1,39 +1,52 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
-import { useRoute, useRouter } from 'vue-router';
-import { Card, CardContent } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
-import { Spinner } from '@/components/ui/spinner';
+import { ref, onMounted } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { Card, CardContent } from '@/components/ui/card'
+import { Button } from '@/components/ui/button'
+import { Spinner } from '@/components/ui/spinner'
+import type { APIError } from '@/lib/api'
 
-import { projectAPI, getApplicationAPI, type Project } from '@/services/api';
-import ApplicationCard from './ApplicationCard.vue';
-import ProjectHeader from './ProjectHeader.vue';
-import AddApplicationButton from './AddApplicationButton.vue';
+import { projectAPI, getApplicationAPI, type Project } from '@/services/api'
+import ApplicationCard from './ApplicationCard.vue'
+import ProjectHeader from './ProjectHeader.vue'
+import AddApplicationButton from './AddApplicationButton.vue'
+import TitleStatus from '@/components/TitleStatus.vue'
 
-const route = useRoute();
-const router = useRouter();
-const projectName = route.params.projectId as string;
-const applicationAPI = getApplicationAPI(projectName);
-const project = ref<Project | null>(null);
-const isLoading = ref(true);
+const route = useRoute()
+const router = useRouter()
+const projectName = route.params.projectId as string
+const applicationAPI = getApplicationAPI(projectName)
+const project = ref<Project | null>(null)
+const isLoading = ref(true)
+const loadError = ref('')
+const isNotFound = ref(false)
 
 onMounted(async () => {
-  await loadProject();
-});
+  await loadProject()
+})
 
 async function loadProject() {
   try {
-    isLoading.value = true;
-    project.value = (await projectAPI.fetchOne(projectName)) as Project;
+    isLoading.value = true
+    loadError.value = ''
+    isNotFound.value = false
+    project.value = (await projectAPI.fetchOne(projectName)) as Project
   } catch (err) {
-    console.error('Failed to load project:', err);
+    console.error('Failed to load project:', err)
+    project.value = null
+    const status = (err as APIError).status
+    if (status === 404) {
+      isNotFound.value = true
+    } else {
+      loadError.value = err instanceof Error ? err.message : 'Failed to load project'
+    }
   } finally {
-    isLoading.value = false;
+    isLoading.value = false
   }
 }
 
 function goBack() {
-  router.push('/projects');
+  router.push('/projects')
 }
 </script>
 
@@ -49,6 +62,13 @@ function goBack() {
       </div>
 
       <!-- Content -->
+      <Card v-else-if="loadError">
+        <CardContent class="flex flex-col items-center justify-center py-12">
+          <p class="text-muted-foreground text-lg mb-4">Failed to load project</p>
+          <p class="text-sm text-muted-foreground">{{ loadError }}</p>
+        </CardContent>
+      </Card>
+
       <div v-else-if="project" class="space-y-6">
         <!-- Project Header -->
         <ProjectHeader
@@ -61,7 +81,7 @@ function goBack() {
         <!-- Applications -->
         <div class="space-y-4">
           <div class="flex justify-between items-center">
-            <h2 class="text-xl font-semibold">Applications</h2>
+            <TitleStatus title="Applications" :size="4" />
             <AddApplicationButton :applicationAPI="applicationAPI" :loadProject="loadProject" />
           </div>
 
@@ -90,7 +110,7 @@ function goBack() {
       </div>
 
       <!-- Error/Not Found State -->
-      <Card v-else>
+      <Card v-else-if="isNotFound">
         <CardContent class="flex flex-col items-center justify-center py-12">
           <p class="text-muted-foreground text-lg mb-4">Project {{ projectName }} not found</p>
           <Button size="sm" @click="goBack" variant="outline"> Back to Projects </Button>

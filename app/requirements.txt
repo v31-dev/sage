@@ -10,3 +10,5 @@ httpx==0.28.1
 docker==7.1.0
 peewee==4.0.1
 cryptography==46.0.5
+boto3==1.40.61
+aioboto3==15.5.0

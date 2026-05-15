@@ -1,45 +1,43 @@
 <script setup lang="ts">
-import { computed } from 'vue';
-import { toast } from 'vue-sonner';
-import { Button } from '@/components/ui/button';
-import { Spinner } from '@/components/ui/spinner';
-import { Play } from 'lucide-vue-next';
+import { computed } from 'vue'
+import { toast } from 'vue-sonner'
+import { Button } from '@/components/ui/button'
+import { Spinner } from '@/components/ui/spinner'
+import { Play } from 'lucide-vue-next'
 
-import { type Application, getApplicationAPI } from '@/services/api';
-import { useAppStore } from '@/stores/app';
+import { APPLICATION_BUSY_STATUSES, type Application, getApplicationAPI } from '@/services/api'
+import { useAppStore } from '@/stores/app'
 
 interface Props {
-  application: Application;
-  applicationAPI: ReturnType<typeof getApplicationAPI>;
+  application: Application
+  applicationAPI: ReturnType<typeof getApplicationAPI>
 }
 
-const props = withDefaults(defineProps<Props>(), {});
+const props = withDefaults(defineProps<Props>(), {})
 
-const appStore = useAppStore();
+const appStore = useAppStore()
 
 const deployButtonDisabled = computed(() => {
   return [
-    appStore.applicationDeployStatus === 'deploying',
-    props.application?.status === 'deploying',
-    appStore.applicationDeployStatus === 'stopping',
-    props.application?.status === 'stopping',
+    APPLICATION_BUSY_STATUSES.includes(appStore.applicationDeployStatus),
+    APPLICATION_BUSY_STATUSES.includes(props.application.status),
     props.application?.container_count === 0,
-  ].includes(true);
-});
+  ].includes(true)
+})
 const deployButtonSpinner = computed(() => {
   return [
     appStore.applicationDeployStatus === 'deploying',
     props.application?.status === 'deploying',
-  ].includes(true);
-});
+  ].includes(true)
+})
 
 async function onClickDeployApplication() {
-  appStore.updateApplicationDeployStatus('deploying');
+  appStore.updateApplicationDeployStatus('deploying')
   try {
-    await props.applicationAPI.action(`${props.application.name}/deploy`);
+    await props.applicationAPI.action(`${props.application.name}/deploy`)
   } catch (err) {
-    appStore.updateApplicationDeployStatus('error');
-    toast.error('Failed to deploy application ' + (err instanceof Error ? err.message : ''));
+    appStore.updateApplicationDeployStatus('error')
+    toast.error('Failed to deploy application ' + (err instanceof Error ? err.message : ''))
   }
 }
 </script>

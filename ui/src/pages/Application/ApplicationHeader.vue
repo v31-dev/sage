@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { computed } from 'vue';
-import router from '@/router';
-import { toast } from 'vue-sonner';
-import { Logs, Activity } from 'lucide-vue-next';
+import { computed } from 'vue'
+import router from '@/router'
+import { toast } from 'vue-sonner'
+import { Logs, Activity } from 'lucide-vue-next'
 import {
   Card,
   CardAction,
@@ -10,56 +10,62 @@ import {
   CardHeader,
   CardTitle,
   CardFooter,
-} from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
-import { ButtonGroup } from '@/components/ui/button-group';
-import { Label } from '@/components/ui/label';
+} from '@/components/ui/card'
+import { Button } from '@/components/ui/button'
+import { ButtonGroup } from '@/components/ui/button-group'
+import { Label } from '@/components/ui/label'
 
-import DeployApplicationButton from './DeployApplicationButton.vue';
-import StopApplicationButton from './StopApplicationButton.vue';
-import EditApplicationButton from './EditApplicationButton.vue';
-import DeleteConfirmationButton from '@/components/DeleteConfirmationButton.vue';
-import { type Application, getApplicationAPI } from '@/services/api';
-import TitleStatus from '@/components/TitleStatus.vue';
+import DeployApplicationButton from './DeployApplicationButton.vue'
+import StopApplicationButton from './StopApplicationButton.vue'
+import EditApplicationButton from './EditApplicationButton.vue'
+import ConfirmationButton from '@/components/ConfirmationButton.vue'
+import { APPLICATION_BUSY_STATUSES, type Application, getApplicationAPI } from '@/services/api'
+import TitleStatus from '@/components/TitleStatus.vue'
 
 interface Props {
-  application: Application;
-  applicationAPI: ReturnType<typeof getApplicationAPI>;
-  loadApplication: () => Promise<void>;
+  application: Application
+  applicationAPI: ReturnType<typeof getApplicationAPI>
+  loadApplication: () => Promise<void>
 }
 
-const props = withDefaults(defineProps<Props>(), {});
+const props = withDefaults(defineProps<Props>(), {})
+
+const isApplicationBusy = computed(() =>
+  APPLICATION_BUSY_STATUSES.includes(props.application.status)
+)
 
 function onClickLogs() {
-  router.push(`/projects/${props.application.project.name}/${props.application.name}/logs`);
+  router.push(`/projects/${props.application.project.name}/${props.application.name}/logs`)
 }
 
 function onClickMetrics() {
-  router.push(`/projects/${props.application.project.name}/${props.application.name}/metrics`);
+  router.push(`/projects/${props.application.project.name}/${props.application.name}/metrics`)
 }
 
 async function onConfirmDelete() {
-  await props.applicationAPI.delete(props.application.name);
-  toast.success(`Application ${props.application.name} deleted successfully`);
-  router.push(`/projects/${props.application.project.name}`);
+  await props.applicationAPI.delete(props.application.name)
+  toast.success(`Application ${props.application.name} deleted successfully`)
+  router.push(`/projects/${props.application.project.name}`)
 }
 
 const applicationStatusClass = computed(() => {
-  if (props.application.status === 'active') return 'success';
-  else if (['deploying', 'stopping'].includes(props.application.status)) return 'warning';
-  else return 'default';
-});
+  if (props.application.status === 'active') return 'success'
+  else if (isApplicationBusy.value) return 'warning'
+  else if (props.application.status === 'error') return 'error'
+  else return 'default'
+})
 </script>
 
 <template>
   <Card>
     <CardHeader class="border-b">
-      <CardTitle class="uppercase gap-2 flex items-center">
+      <CardTitle>
         <TitleStatus
           :title="props.application.label"
           :status="applicationStatusClass"
-          :loading="['deploying', 'stopping'].includes(props.application.status)"
+          :loading="isApplicationBusy"
           :statusText="props.application.status"
+          :size="3"
         />
       </CardTitle>
       <CardAction>
@@ -69,8 +75,9 @@ const applicationStatusClass = computed(() => {
             :applicationAPI="props.applicationAPI"
             :loadApplication="props.loadApplication"
           />
-          <DeleteConfirmationButton
+          <ConfirmationButton
             title="Application"
+            mode="delete"
             :description="props.application.name"
             :onConfirm="onConfirmDelete"
           />

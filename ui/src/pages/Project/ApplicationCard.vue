@@ -1,30 +1,31 @@
 <script setup lang="ts">
-import { computed } from 'vue';
-import { useRouter } from 'vue-router';
-import { Badge } from '@/components/ui/badge';
-import { Card, CardHeader, CardTitle, CardContent, CardAction } from '@/components/ui/card';
+import { computed } from 'vue'
+import { useRouter } from 'vue-router'
+import { Badge } from '@/components/ui/badge'
+import { Card, CardHeader, CardTitle, CardContent, CardAction } from '@/components/ui/card'
 
-import { type Application, type Project } from '@/services/api';
-import TitleStatus from '@/components/TitleStatus.vue';
+import { type Application, type Project } from '@/services/api'
+import TitleStatus from '@/components/TitleStatus.vue'
 
-const router = useRouter();
+const router = useRouter()
 
 interface Props {
-  project: Project;
-  application: Application;
+  project: Project
+  application: Application
 }
 
-const props = withDefaults(defineProps<Props>(), {});
+const props = withDefaults(defineProps<Props>(), {})
 
 function goToApplication(application: Application) {
-  router.push(`/projects/${props.project.name}/${application.name}`);
+  router.push(`/projects/${props.project.name}/${application.name}`)
 }
 
 const applicationStatusClass = computed(() => {
-  if (props.application.status === 'active') return 'success';
-  else if (['deploying', 'stopping'].includes(props.application.status)) return 'warning';
-  else return 'default';
-});
+  if (props.application.status === 'active') return 'success'
+  else if (['deploying', 'stopping'].includes(props.application.status)) return 'warning'
+  else if (props.application.status === 'error') return 'error'
+  else return 'default'
+})
 </script>
 
 <template>

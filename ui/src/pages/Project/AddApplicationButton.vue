@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { ref } from 'vue';
-import { Plus } from 'lucide-vue-next';
-import { Button } from '@/components/ui/button';
+import { ref } from 'vue'
+import { Plus } from 'lucide-vue-next'
+import { Button } from '@/components/ui/button'
 import {
   Dialog,
   DialogContent,
@@ -9,56 +9,56 @@ import {
   DialogHeader,
   DialogTitle,
   DialogTrigger,
-} from '@/components/ui/dialog';
-import { Field, FieldError, FieldGroup, FieldLabel, FieldSet } from '@/components/ui/field';
-import { Input } from '@/components/ui/input';
-import { Textarea } from '@/components/ui/textarea';
-import { toast } from 'vue-sonner';
-import { Spinner } from '@/components/ui/spinner';
+} from '@/components/ui/dialog'
+import { Field, FieldError, FieldGroup, FieldLabel, FieldSet } from '@/components/ui/field'
+import { Input } from '@/components/ui/input'
+import { Textarea } from '@/components/ui/textarea'
+import { toast } from 'vue-sonner'
+import { Spinner } from '@/components/ui/spinner'
 
 interface Props {
-  applicationAPI: any;
-  loadProject: () => Promise<void>;
+  applicationAPI: any
+  loadProject: () => Promise<void>
 }
 
-const props = withDefaults(defineProps<Props>(), {});
+const props = withDefaults(defineProps<Props>(), {})
 
-const isCreateAppDialogOpen = ref(false);
+const isCreateAppDialogOpen = ref(false)
 const createAppFormData = ref({
   label: '',
   description: '',
-});
-const createAppDialogErrorMessage = ref('');
-const isClickedCreateAppConfirm = ref(false);
+})
+const createAppDialogErrorMessage = ref('')
+const isClickedCreateAppConfirm = ref(false)
 
 function openCreateAppDialog() {
-  createAppFormData.value = { label: '', description: '' };
-  createAppDialogErrorMessage.value = '';
-  isCreateAppDialogOpen.value = true;
+  createAppFormData.value = { label: '', description: '' }
+  createAppDialogErrorMessage.value = ''
+  isCreateAppDialogOpen.value = true
 }
 
 async function onClickCreateAppConfirm() {
-  createAppDialogErrorMessage.value = '';
+  createAppDialogErrorMessage.value = ''
 
   if (!createAppFormData.value.label.trim()) {
-    createAppDialogErrorMessage.value = 'Application name is required';
-    return;
+    createAppDialogErrorMessage.value = 'Application name is required'
+    return
   }
 
   try {
-    isClickedCreateAppConfirm.value = true;
+    isClickedCreateAppConfirm.value = true
     await props.applicationAPI.create({
       label: createAppFormData.value.label,
       description: createAppFormData.value.description || null,
-    });
-    isCreateAppDialogOpen.value = false;
-    toast.success(`Application ${createAppFormData.value.label} created successfully`);
-    await props.loadProject();
+    })
+    isCreateAppDialogOpen.value = false
+    toast.success(`Application ${createAppFormData.value.label} created successfully`)
+    await props.loadProject()
   } catch (err) {
     createAppDialogErrorMessage.value =
-      err instanceof Error ? err.message : 'Failed to create application';
+      err instanceof Error ? err.message : 'Failed to create application'
   } finally {
-    isClickedCreateAppConfirm.value = false;
+    isClickedCreateAppConfirm.value = false
   }
 }
 </script>

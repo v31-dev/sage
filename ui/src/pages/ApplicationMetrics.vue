@@ -1,59 +1,63 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
-import { useRoute } from 'vue-router';
-import { Card, CardHeader, CardTitle } from '@/components/ui/card';
-import { Spinner } from '@/components/ui/spinner';
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { useRoute } from 'vue-router'
+import { Card, CardHeader, CardTitle } from '@/components/ui/card'
+import { Spinner } from '@/components/ui/spinner'
 
-import { type ContainerMetricsPoint, type MetricsPeriod } from '@/services/api';
-import MetricChart from '@/components/MetricChart.vue';
-import { processContainerData } from '@/lib/metrics';
-import { getApplicationAPI } from '@/services/api';
+import { type ContainerMetricsPoint, type MetricsPeriod } from '@/services/api'
+import MetricChart from '@/components/MetricChart.vue'
+import { processContainerData } from '@/lib/metrics'
+import { getApplicationAPI } from '@/services/api'
 
-const route = useRoute();
-const projectName = route.params.projectId as string;
-const appName = route.params.appId as string;
-const applicationAPI = getApplicationAPI(projectName);
+const route = useRoute()
+const projectName = route.params.projectId as string
+const appName = route.params.appId as string
+const applicationAPI = getApplicationAPI(projectName)
 
-const period = ref<MetricsPeriod>('1h');
-const periods: MetricsPeriod[] = ['1h', '24h', '1w'];
-const data = ref<Array<Array<ContainerMetricsPoint>>>([]);
-const isLoading = ref(true);
-let pollInterval: ReturnType<typeof setInterval> | null = null;
+const period = ref<MetricsPeriod>('1h')
+const periods: MetricsPeriod[] = ['1h', '24h', '1w']
+const data = ref<Array<Array<ContainerMetricsPoint>>>([])
+const isLoading = ref(true)
+const loadError = ref('')
+let pollInterval: ReturnType<typeof setInterval> | null = null
 
 async function load() {
   try {
-    data.value = [];
+    loadError.value = ''
+    const nextData: Array<Array<ContainerMetricsPoint>> = []
     const containersData = (await applicationAPI.action(
       `${appName}/metrics?period=${period.value}`
-    )) as Array<{ hostname: string; metrics: Array<ContainerMetricsPoint> }>;
+    )) as Array<{ hostname: string; metrics: Array<ContainerMetricsPoint> }>
     for (const containerData of containersData) {
       for (const point of containerData.metrics) {
-        point.name = `${point.name} ${containerData.hostname}`;
+        point.name = `${point.name} ${containerData.hostname}`
       }
-      data.value.push(containerData.metrics);
+      nextData.push(containerData.metrics)
     }
-  } catch {
+    data.value = nextData
+  } catch (err) {
+    loadError.value = err instanceof Error ? err.message : 'Failed to load metrics'
   } finally {
-    isLoading.value = false;
+    isLoading.value = false
   }
 }
 
 watch(period, () => {
-  isLoading.value = true;
-  load();
-});
+  isLoading.value = true
+  load()
+})
 
 onMounted(async () => {
-  await load();
-  pollInterval = setInterval(load, 60_000);
-});
+  await load()
+  pollInterval = setInterval(load, 60_000)
+})
 onUnmounted(() => {
-  if (pollInterval) clearInterval(pollInterval);
-});
+  if (pollInterval) clearInterval(pollInterval)
+})
 
 const containerChartData = computed(() =>
   processContainerData((data.value ?? []) as Array<Array<ContainerMetricsPoint>>)
-);
+)
 </script>
 
 <template>
@@ -66,6 +70,13 @@ const containerChartData = computed(() =>
           <p class="text-sm text-muted-foreground">Loading metrics...</p>
         </div>
       </div>
+
+      <Card v-else-if="loadError && data.length === 0">
+        <CardHeader>
+          <CardTitle class="text-lg">Failed to load metrics</CardTitle>
+          <p class="text-sm text-muted-foreground">{{ loadError }}</p>
+        </CardHeader>
+      </Card>
 
       <!-- Content -->
       <div v-else class="space-y-6">
@@ -100,7 +111,7 @@ const containerChartData = computed(() =>
             type="line"
             :data="
               containerChartData.data.map(d => {
-                const { date, ...rest } = d;
+                const { date, ...rest } = d
                 return {
                   date,
                   ...Object.fromEntries(
@@ -108,7 +119,7 @@ const containerChartData = computed(() =>
                       ([k]) => k.endsWith('_cpu_pct') || k.endsWith('_cpu_pct_label')
                     )
                   ),
-                };
+                }
               })
             "
             :yMax="100"
@@ -129,7 +140,7 @@ const containerChartData = computed(() =>
             type="line"
             :data="
               containerChartData.data.map(d => {
-                const { date, ...rest } = d;
+                const { date, ...rest } = d
                 return {
                   date,
                   ...Object.fromEntries(
@@ -137,7 +148,7 @@ const containerChartData = computed(() =>
                       ([k]) => k.endsWith('_mem_used_mb') || k.endsWith('_mem_used_mb_label')
                     )
                   ),
-                };
+                }
               })
             "
             :yMax="containerChartData.memMax"
@@ -158,7 +169,7 @@ const containerChartData = computed(() =>
             type="line"
             :data="
               containerChartData.data.map(d => {
-                const { date, ...rest } = d;
+                const { date, ...rest } = d
                 return {
                   date,
                   ...Object.fromEntries(
@@ -170,7 +181,7 @@ const containerChartData = computed(() =>
                         k.endsWith('_net_tx_label')
                     )
                   ),
-                };
+                }
               })
             "
             :yMax="containerChartData.netMax"

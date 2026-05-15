@@ -1,4 +1,6 @@
 {
-  "recommendations": [],
+  "recommendations": [
+    "ms-python.autopep8"
+  ],
   "unwantedRecommendations": ["ms-python.vscode-pylance"]
 }

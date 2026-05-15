@@ -1,0 +1,18 @@
+http:
+  routers:
+    # Entrypoint via Cloudflare Tunnel
+    ${SERVICE}_public_${POOL_TAG}:
+      rule: Host(`${SUBDOMAIN}.${DOMAIN}`) && Path(`/`) && Query(`x-tag`, `${POOL_TAG}`)
+      entrypoints:
+        - web
+      middlewares:
+        - security-headers
+        - mark-as-hopped
+      priority: 300
+      service: ${SERVICE}_public_${POOL_TAG}
+
+  services:
+    # Loadbalanced pool services
+    ${SERVICE}_public_${POOL_TAG}:
+      loadBalancer:
+        servers: [ ${LOAD_BALANCED_SERVERS} ]
