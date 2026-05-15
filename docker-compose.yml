@@ -2,7 +2,7 @@ name: sage
 
 services:
   sage:
-    image: ghcr.io/v31-dev/sage:latest
+    image: ghcr.io/v31-dev/sage:${SAGE_IMAGE_TAG:?Set SAGE_IMAGE_TAG to a full version such as 0.0.2}
     container_name: sage
     restart: unless-stopped
     environment:

@@ -2,13 +2,30 @@ name: PR Check
 
 on:
   pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - edited
+      - ready_for_review
+      - converted_to_draft
     branches:
       - main
     paths:
+      - 'app/**'
+      - 'ui/**'
+      - 'Dockerfile'
       - 'VERSION'
+      - '.github/workflows/pr-check.yml'
+      - '.github/release.yml'
+
+permissions:
+  contents: read
+  pull-requests: read
 
 jobs:
   validate-version:
+    if: github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     name: Validate Version Bump
     steps:
@@ -20,7 +37,7 @@ jobs:
       - name: Get base and head versions
         id: versions
         run: |
-          git fetch origin main --depth=1
+          git fetch origin main --depth=1 --tags
           BASE_VERSION=$(git show origin/main:VERSION)
           HEAD_VERSION=$(cat VERSION)
           echo "base_version=$BASE_VERSION" >> $GITHUB_OUTPUT
@@ -28,24 +45,86 @@ jobs:
           echo "Base version: $BASE_VERSION"
           echo "Head version: $HEAD_VERSION"
 
-      - name: Check version was bumped
+      - name: Validate release version
+        env:
+          BASE_VERSION: ${{ steps.versions.outputs.base_version }}
+          HEAD_VERSION: ${{ steps.versions.outputs.head_version }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
-          BASE_VERSION=${{ steps.versions.outputs.base_version }}
-          HEAD_VERSION=${{ steps.versions.outputs.head_version }}
+          semver_re='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+          if [[ ! "$BASE_VERSION" =~ $semver_re ]]; then
+            echo "❌ Base VERSION must use full semantic version format: MAJOR.MINOR.PATCH"
+            echo "Base version: $BASE_VERSION"
+            exit 1
+          fi
+          if [[ ! "$HEAD_VERSION" =~ $semver_re ]]; then
+            echo "❌ VERSION must use full semantic version format: MAJOR.MINOR.PATCH"
+            echo "PR version: $HEAD_VERSION"
+            exit 1
+          fi
           if [ "$BASE_VERSION" = "$HEAD_VERSION" ]; then
             echo "❌ VERSION file must be bumped in this PR"
             echo "Base version: $BASE_VERSION"
             echo "PR version: $HEAD_VERSION"
             exit 1
           fi
+
+          sample_image_tag=$(sed -n "s/^SAGE_IMAGE_TAG=['\"]\\?\\([^'\"]*\\)['\"]\\?$/\\1/p" sample.env)
+          if [ "$sample_image_tag" != "$HEAD_VERSION" ]; then
+            echo "❌ sample.env SAGE_IMAGE_TAG must match VERSION"
+            echo "SAGE_IMAGE_TAG: ${sample_image_tag:-<missing>}"
+            echo "VERSION: $HEAD_VERSION"
+            exit 1
+          fi
+
+          IFS=. read -r base_major base_minor base_patch <<< "$BASE_VERSION"
+          IFS=. read -r head_major head_minor head_patch <<< "$HEAD_VERSION"
+          base_major=$((10#$base_major))
+          base_minor=$((10#$base_minor))
+          base_patch=$((10#$base_patch))
+          head_major=$((10#$head_major))
+          head_minor=$((10#$head_minor))
+          head_patch=$((10#$head_patch))
+          if (( head_major < base_major )) ||
+             (( head_major == base_major && head_minor < base_minor )) ||
+             (( head_major == base_major && head_minor == base_minor && head_patch <= base_patch )); then
+            echo "❌ VERSION must be greater than the version on main"
+            echo "Base version: $BASE_VERSION"
+            echo "PR version: $HEAD_VERSION"
+            exit 1
+          fi
+
+          expected_title="v$HEAD_VERSION"
+          title_prefix="${PR_TITLE:0:${#expected_title}}"
+          title_separator="${PR_TITLE:${#expected_title}:1}"
+          if [[ "$title_prefix" != "$expected_title" ]]; then
+            echo "❌ PR title must start with $expected_title"
+            echo "Accepted examples: '$expected_title', '$expected_title Release title', '$expected_title: Release title', '$expected_title - Release title'"
+            echo "PR title: $PR_TITLE"
+            exit 1
+          fi
+          if [[ "$title_separator" != "" && "$title_separator" != " " && "$title_separator" != ":" && "$title_separator" != "-" ]]; then
+            echo "❌ PR title must start with $expected_title"
+            echo "Accepted examples: '$expected_title', '$expected_title Release title', '$expected_title: Release title', '$expected_title - Release title'"
+            echo "PR title: $PR_TITLE"
+            exit 1
+          fi
+
+          if git ls-remote --exit-code --tags origin "refs/tags/v$HEAD_VERSION" >/dev/null 2>&1; then
+            echo "❌ Release tag already exists: v$HEAD_VERSION"
+            exit 1
+          fi
+
           echo "✅ Version bumped from $BASE_VERSION to $HEAD_VERSION"
+          echo "✅ PR title starts with $expected_title"
+          echo "✅ Release tag v$HEAD_VERSION does not exist"
 
   success:
+    if: github.event.pull_request.draft == false && always()
     runs-on: ubuntu-latest
     name: PR Check Complete
     needs:
       - validate-version
-    if: always() 
     steps:
       - name: Check dependency status
         run: |
