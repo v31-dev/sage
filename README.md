@@ -79,6 +79,7 @@ Environment variables are documented in [`sample.env`](sample.env). Key inputs i
 - `ENCRYPTION_KEY` for encrypted database fields and backup-related secrets
 - `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `DOMAIN`, `ADMIN_EMAIL`
 - `HOSTNAME`, `TS_IP`, `SAGE_HOME`
+- `SAGE_IMAGE_TAG` to choose the published Docker image tag; it must be an exact version
 - Optional S3 settings for backups
 - Optional Discord webhook for notifications
 
@@ -91,6 +92,8 @@ Production-style stack:
 ```bash
 docker compose up -d
 ```
+
+The compose file requires `SAGE_IMAGE_TAG`; `sample.env` should match the current `VERSION`.
 
 Development stack:
 
@@ -142,37 +145,42 @@ The GitHub workflow in `.github/workflows/publish.yml` publishes the Docker imag
 - `VERSION`
 - `Dockerfile`
 - `.github/workflows/publish.yml`
+- `.github/release.yml`
 
-The workflow reads the root `VERSION` file, builds the top-level Dockerfile, pushes `ghcr.io/v31-dev/sage`, and creates a GitHub release named from that version.
+The workflow reads the root `VERSION` file, validates that it uses full semantic version format (`MAJOR.MINOR.PATCH`), builds the top-level Dockerfile, pushes `ghcr.io/v31-dev/sage`, and creates a GitHub release named from that version.
 
 Published image tags:
 
-- `latest`
-- the exact `VERSION` value, such as `0.1.1` or `0.2`
-- the major/minor tag, such as `0.1`
-- the major tag, such as `0`
+- the exact `VERSION` value, such as `0.0.2` or `1.2.3`
 
-Release tags are created with a leading `v`, such as `v0.1.1` or `v0.2`.
+Release tags are created with a leading `v`, such as `v0.0.2` or `v1.2.3`.
 
 To deploy a release:
 
 1. Update `VERSION`.
 2. Merge the change to `main`.
 3. Wait for the publish workflow to complete.
-4. Pull the desired image tag from GHCR.
+4. Pull the exact image tag from GHCR for stable deployments.
 
 ```bash
-docker pull ghcr.io/v31-dev/sage:latest
-docker pull ghcr.io/v31-dev/sage:0.1
+docker pull ghcr.io/v31-dev/sage:0.0.2
 ```
 
-The PR check in `.github/workflows/pr-check.yml` only runs when `VERSION` changes and verifies that the pull request version differs from `main`.
+The PR check in `.github/workflows/pr-check.yml` runs for non-draft release-affecting pull requests and verifies that:
+
+- `VERSION` uses full semantic version format
+- `VERSION` is greater than the version on `main`
+- `sample.env` sets `SAGE_IMAGE_TAG` to the same value as `VERSION`
+- the PR title starts with `v<VERSION>`
+- the matching release tag does not already exist
+
+GitHub-generated release notes are configured by `.github/release.yml`. The publish workflow finds the highest existing `vMAJOR.MINOR.PATCH` tag lower than the current release and passes it as the previous tag for release-note generation, then prepends Docker pull instructions to the generated notes. If no previous release tag exists, GitHub generates notes from the available release history.
 
 ### Versioning Notes
 
-Strict Semantic Versioning uses `MAJOR.MINOR.PATCH`, for example `1.2.3`. If this project uses only `MAJOR.MINOR`, treat that as project release versioning rather than strict SemVer.
+Sage release versions use full Semantic Versioning format: `MAJOR.MINOR.PATCH`, for example `1.2.3`.
 
-GitHub and Git do not automatically resolve partial version tags. A tag like `v1` only points to the latest `v1.x` release if a workflow explicitly creates or moves the `v1` tag. This repo's publish workflow already publishes Docker tags for the exact version, major/minor, major, and `latest`; the GitHub release tag itself is only the exact `v<VERSION>` value.
+GitHub and Git do not automatically resolve partial version tags. A tag like `v1` only points to the latest `v1.x` release if a workflow explicitly creates or moves the `v1` tag. This repo publishes only exact Docker version tags; it does not publish `latest` or moving major/minor tags. The GitHub release tag itself is only the exact `v<VERSION>` value.
 
 ## More Docs
 

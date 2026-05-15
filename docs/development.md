@@ -24,6 +24,7 @@ These scripts assume a fairly direct machine setup and should be reviewed before
 - local runtime paths and host identity
 - Cloudflare credentials and domain metadata
 - encryption key
+- published Docker image tag selection through `SAGE_IMAGE_TAG`
 - optional notification settings
 - optional S3 backup settings
 
@@ -34,6 +35,8 @@ Production-style compose:
 ```bash
 docker compose up -d
 ```
+
+The production compose image requires `SAGE_IMAGE_TAG`. Keep `sample.env` aligned with `VERSION` for release PRs.
 
 Development compose:
 
@@ -84,10 +87,18 @@ The top-level `Dockerfile` builds:
 Current GitHub workflows:
 
 - `pr-check.yml`
+  - skips draft pull requests
   - validates that `VERSION` changed in a pull request targeting `main`
+  - requires full semantic version format: `MAJOR.MINOR.PATCH`
+  - requires `sample.env` `SAGE_IMAGE_TAG` to match `VERSION`
+  - requires the PR title to start with `v<VERSION>`
+  - requires the new version to be greater than the version on `main`
+  - rejects versions whose release tag already exists
 - `publish.yml`
   - builds and publishes a GHCR image on pushes to `main`
-  - tags releases based on `VERSION`
+  - publishes only the exact `VERSION` image tag
+  - creates a GitHub release with generated release notes configured by `.github/release.yml`
+  - uses the highest existing `vMAJOR.MINOR.PATCH` tag lower than the current release as the previous release-note boundary when available
 
 ## Documentation Notes
 
