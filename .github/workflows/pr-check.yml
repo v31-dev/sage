@@ -16,8 +16,7 @@ on:
       - 'ui/**'
       - 'Dockerfile'
       - 'VERSION'
-      - '.github/workflows/pr-check.yml'
-      - '.github/release.yml'
+      - '.github/**'
 
 permissions:
   contents: read
