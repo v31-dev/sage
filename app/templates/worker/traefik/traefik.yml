@@ -2,8 +2,8 @@ accessLog:
   format: json
   filePath: /dev/stdout
 
-api:
-  insecure: true
+ping:
+  manualRouting: true
 
 providers:
   docker:

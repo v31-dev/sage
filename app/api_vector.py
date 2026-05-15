@@ -9,7 +9,7 @@ app.add_middleware(fastapi_middleware)
 
 @app.get("/")
 def health():
-    return {"status": "ok"}
+  return {"status": "ok"}
 
 
 # Mount routes

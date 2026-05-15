@@ -1,22 +1,10 @@
 <script setup lang="ts">
-import LogViewer from '@/components/LogViewer.vue';
-import { useAppStore } from '@/stores/app';
-import { formatDate, levelClass } from '@/lib/utils';
+import LogViewer from '@/components/LogViewer.vue'
+import { parseManagerLog } from '@/lib/logs'
+import { useAppStore } from '@/stores/app'
+import { formatDate, levelClass } from '@/lib/utils'
 
-const appStore = useAppStore();
-const LOG_RE = /^\[([^\]]+)\]\s+\[([^\]]+)\]\s+\[([^\]]+)\]\s+\[([^\]]*)\]\s*([\s\S]*)$/;
-
-function parseMessage(raw: string): { [key: string]: any; ts: string; message: string } {
-  const m = raw.match(LOG_RE);
-  if (!m) return { ts: '', level: '', logger: '', taskId: '', message: raw };
-  return {
-    ts: m[1]?.split(',')[0]?.trim() ?? '',
-    level: m[2]?.trim() ?? '',
-    logger: m[3]?.trim() ?? '',
-    taskId: m[4]?.trim() ?? '',
-    message: m[5]?.trim() ?? '',
-  };
-}
+const appStore = useAppStore()
 
 const columns = [
   {
@@ -52,14 +40,14 @@ const columns = [
     headerClass: 'py-2 text-xs',
     rowClass: 'py-2 text-xs font-mono break-all whitespace-pre-wrap',
   },
-];
+]
 </script>
 
 <template>
   <LogViewer
     :hostname="appStore.info?.hostname ?? ''"
     container="sage"
-    :parseMessage="parseMessage"
+    :parseMessage="parseManagerLog"
     :columns="columns"
   />
 </template>

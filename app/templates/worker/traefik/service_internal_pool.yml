@@ -1,0 +1,21 @@
+http:
+  routers:
+    # Entrypoint via Tailscale
+    ${SERVICE}_internal_${POOL_TAG}:
+      rule: Host(`${SUBDOMAIN}.int.${DOMAIN}`) && Path(`/`) && Query(`x-tag`, `${POOL_TAG}`)
+      entrypoints:
+        - websecure
+      middlewares:
+        - security-headers
+        - tailscale-only
+        - mark-as-hopped
+      priority: 300
+      service: ${SERVICE}_internal_${POOL_TAG}
+      tls:
+        certResolver: cloudflare
+
+  services:
+    # Loadbalanced pool services
+    ${SERVICE}_internal_${POOL_TAG}:
+      loadBalancer:
+        servers: [ ${LOAD_BALANCED_SERVERS} ]

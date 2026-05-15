@@ -1,9 +1,9 @@
-import type { ClassValue } from 'clsx';
-import { clsx } from 'clsx';
-import { twMerge } from 'tailwind-merge';
+import type { ClassValue } from 'clsx'
+import { clsx } from 'clsx'
+import { twMerge } from 'tailwind-merge'
 
 export function cn(...inputs: ClassValue[]) {
-  return twMerge(clsx(inputs));
+  return twMerge(clsx(inputs))
 }
 
 export const colors = [
@@ -27,7 +27,7 @@ export const colors = [
   '#ea580c',
   '#7c3aed',
   '#db2777',
-];
+]
 
 const _tsFormatter = new Intl.DateTimeFormat(undefined, {
   month: 'short',
@@ -36,30 +36,56 @@ const _tsFormatter = new Intl.DateTimeFormat(undefined, {
   minute: '2-digit',
   second: '2-digit',
   hour12: true,
-});
+})
 
 // dateObj like '2026-03-19T16:12:42.759325367Z' or Date object
 export function formatDate(dateObj: string | Date): string {
   try {
-    let date;
+    let date
     if (typeof dateObj === 'string') {
       if (!dateObj.endsWith('Z')) {
-        dateObj += 'Z';
+        dateObj += 'Z'
       }
-      date = new Date(dateObj);
+      date = new Date(dateObj)
     } else {
-      date = dateObj;
+      date = dateObj
     }
-    return _tsFormatter.format(date).replace(',', '');
+    return _tsFormatter.format(date).replace(',', '')
   } catch {
-    return typeof dateObj === 'string' ? dateObj : dateObj.toISOString();
+    return typeof dateObj === 'string' ? dateObj : dateObj.toISOString()
   }
 }
 
 export function levelClass(level: string): string {
-  const l = level.toUpperCase();
-  if (l.startsWith('ERROR') || l.startsWith('CRIT')) return 'text-red-500 font-semibold';
-  if (l.startsWith('WARN')) return 'text-yellow-500 font-semibold';
-  if (l.startsWith('DEBUG')) return 'text-muted-foreground';
-  return 'text-sky-600 dark:text-sky-400';
+  const l = level.toUpperCase()
+  if (l.startsWith('ERROR') || l.startsWith('CRIT')) return 'text-red-500 font-semibold'
+  if (l.startsWith('WARN')) return 'text-yellow-500 font-semibold'
+  if (l.startsWith('DEBUG')) return 'text-muted-foreground'
+  return 'text-sky-600 dark:text-sky-400'
+}
+
+export function formatDateStringAgo(dateObj: string | Date): string {
+  const now = new Date()
+  let date
+    if (typeof dateObj === 'string') {
+      if (!dateObj.endsWith('Z')) {
+        dateObj += 'Z'
+      }
+      date = new Date(dateObj)
+    } else {
+      date = dateObj
+    }
+  const diffMs = now.getTime() - date.getTime()
+  const diffMins = Math.floor(diffMs / 60000)
+  const diffHours = Math.floor(diffMs / 3600000)
+  const diffDays = Math.floor(diffMs / 86400000)
+
+  const dateStr = formatDate(date)
+
+  if (diffMins < 1) return `just now (${dateStr})`
+  if (diffMins < 60) return `${diffMins}m ago (${dateStr})`
+  if (diffHours < 24) return `${diffHours}h ago (${dateStr})`
+  if (diffDays < 7) return `${diffDays}d ago (${dateStr})`
+
+  return dateStr
 }

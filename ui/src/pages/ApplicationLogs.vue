@@ -1,12 +1,12 @@
 <script setup lang="ts">
-import { useRoute } from 'vue-router';
-import LogViewer from '@/components/LogViewer.vue';
-import { formatDate } from '@/lib/utils';
+import { useRoute } from 'vue-router'
+import LogViewer from '@/components/LogViewer.vue'
+import { formatDate } from '@/lib/utils'
 
-const route = useRoute();
-const projectName = route.params.projectId as string;
-const appName = route.params.appId as string;
-const containerName = `${projectName}-${appName}`;
+const route = useRoute()
+const projectName = route.params.projectId as string
+const appName = route.params.appId as string
+const containerName = `${projectName}-${appName}`
 
 function parseMessage(
   raw: string,
@@ -17,9 +17,9 @@ function parseMessage(
       ts: entry['ts'] ?? '',
       worker: entry['hostname'] ?? '',
       message: raw,
-    };
+    }
   } catch {
-    return { ts: '', message: raw };
+    return { ts: '', message: raw }
   }
 }
 
@@ -45,7 +45,7 @@ const columns = [
     headerClass: 'py-2 text-xs',
     rowClass: 'py-2 text-xs font-mono break-all whitespace-pre-wrap',
   },
-];
+]
 </script>
 
 <template>

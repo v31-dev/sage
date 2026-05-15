@@ -1,20 +1,21 @@
-[tool.black]
-line-length = 100
-target-version = ['py312']
-exclude = '''
-/(
-    \.git
-  | \.venv
-  | app-venv
-  | __pycache__
-  | \.pytest_cache
-  | build
-  | dist
-)/
-'''
+[tool.autopep8]
+max_line_length = 150
+indent_size = 2
+aggressive = 2
+exclude = "app-venv,.venv,__pycache__,build,dist"
 
 [tool.isort]
-profile = "black"
-line_length = 100
+line_length = 150
 skip = ["app-venv", ".venv"]
 skip_glob = ["**/app-venv/**", "**/.venv/**"]
+
+[tool.ruff]
+line-length = 150
+target-version = "py312"
+exclude = ["app-venv", ".venv", "__pycache__", "build", "dist"]
+
+[tool.ruff.lint]
+# Start with correctness-focused rules only so Ruff can be introduced without
+# forcing broad code cleanup. Formatting stays with autopep8, and import
+# ordering stays with isort.
+select = ["E9", "F63", "F7", "F82"]

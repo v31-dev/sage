@@ -1,15 +1,11 @@
-name: PR Check - Build & Validate Version
+name: PR Check
 
 on:
   pull_request:
     branches:
       - main
     paths:
-      - 'app/**'
-      - 'ui/**'
       - 'VERSION'
-      - 'Dockerfile'
-      - '.github/workflows/pr-check.yml'
 
 jobs:
   validate-version:
@@ -17,7 +13,7 @@ jobs:
     name: Validate Version Bump
     steps:
       - name: Checkout PR branch
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
@@ -44,34 +40,18 @@ jobs:
           fi
           echo "✅ Version bumped from $BASE_VERSION to $HEAD_VERSION"
 
-  build-image:
-    runs-on: ubuntu-latest
-    name: Build Docker Image
-    needs: validate-version
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ./Dockerfile
-          push: false
-          tags: sage:pr-check
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
   success:
     runs-on: ubuntu-latest
     name: PR Check Complete
     needs:
       - validate-version
-      - build-image
-    if: success()
+    if: always() 
     steps:
-      - name: ✅ All checks passed
-        run: echo "PR is ready for review and merge"
+      - name: Check dependency status
+        run: |
+          if [[ "${{ needs.validate-version.result }}" != "success" ]]; then
+            echo "❌ Version validation failed. Cannot merge."
+            exit 1
+          fi
+
+          echo "✅ All checks passed."

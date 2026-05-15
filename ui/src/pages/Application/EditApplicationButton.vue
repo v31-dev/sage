@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { ref } from 'vue';
-import { Input } from '@/components/ui/input';
-import { Textarea } from '@/components/ui/textarea';
+import { ref } from 'vue'
+import { Input } from '@/components/ui/input'
+import { Textarea } from '@/components/ui/textarea'
 import {
   Dialog,
   DialogContent,
@@ -10,31 +10,31 @@ import {
   DialogHeader,
   DialogTitle,
   DialogTrigger,
-} from '@/components/ui/dialog';
-import { Button } from '@/components/ui/button';
-import { Field, FieldGroup, FieldLabel, FieldSet, FieldError } from '@/components/ui/field';
-import { Spinner } from '@/components/ui/spinner';
-import { toast } from 'vue-sonner';
+} from '@/components/ui/dialog'
+import { Button } from '@/components/ui/button'
+import { Field, FieldGroup, FieldLabel, FieldSet, FieldError } from '@/components/ui/field'
+import { Spinner } from '@/components/ui/spinner'
+import { toast } from 'vue-sonner'
 import {
   Select,
   SelectItem,
   SelectContent,
   SelectTrigger,
   SelectValue,
-} from '@/components/ui/select';
+} from '@/components/ui/select'
 
-import { type Application, getApplicationAPI } from '@/services/api';
-import { Edit } from 'lucide-vue-next';
+import { type Application, getApplicationAPI } from '@/services/api'
+import { Edit } from 'lucide-vue-next'
 
 interface Props {
-  application: Application;
-  applicationAPI: ReturnType<typeof getApplicationAPI>;
-  loadApplication: () => Promise<void>;
+  application: Application
+  applicationAPI: ReturnType<typeof getApplicationAPI>
+  loadApplication: () => Promise<void>
 }
 
-const props = withDefaults(defineProps<Props>(), {});
+const props = withDefaults(defineProps<Props>(), {})
 
-const isEditDialogOpen = ref(false);
+const isEditDialogOpen = ref(false)
 const editFormData = ref({
   label: '',
   description: '',
@@ -44,28 +44,28 @@ const editFormData = ref({
   path: 'Dockerfile',
   env: '',
   args: '',
-});
-const editDialogErrorMessage = ref('');
-const isClickedEditConfirm = ref(false);
+})
+const editDialogErrorMessage = ref('')
+const isClickedEditConfirm = ref(false)
 
 function openEditDialog() {
-  editFormData.value.label = props.application.label || editFormData.value.label;
-  editFormData.value.description = props.application.description || editFormData.value.description;
-  editFormData.value.type = props.application.type || 'docker';
-  editFormData.value.image = props.application.image || editFormData.value.image;
-  editFormData.value.repo = props.application.repo || editFormData.value.repo;
-  editFormData.value.path = props.application.path || editFormData.value.path;
-  editFormData.value.env = props.application.env || editFormData.value.env;
-  editFormData.value.args = props.application.args || editFormData.value.args;
-  editDialogErrorMessage.value = '';
-  isEditDialogOpen.value = true;
+  editFormData.value.label = props.application.label || ''
+  editFormData.value.description = props.application.description || ''
+  editFormData.value.type = props.application.type || 'docker'
+  editFormData.value.image = props.application.image || ''
+  editFormData.value.repo = props.application.repo || ''
+  editFormData.value.path = props.application.path || 'Dockerfile'
+  editFormData.value.env = props.application.env || ''
+  editFormData.value.args = props.application.args || ''
+  editDialogErrorMessage.value = ''
+  isEditDialogOpen.value = true
 }
 
 async function handleUpdateApplication() {
-  editDialogErrorMessage.value = '';
+  editDialogErrorMessage.value = ''
 
   try {
-    isClickedEditConfirm.value = true;
+    isClickedEditConfirm.value = true
     await props.applicationAPI.update(props.application.name, {
       label: editFormData.value.label || null,
       description: editFormData.value.description || null,
@@ -75,15 +75,15 @@ async function handleUpdateApplication() {
       path: editFormData.value.path || null,
       env: editFormData.value.env || null,
       args: editFormData.value.args || null,
-    });
-    await props.loadApplication();
-    isEditDialogOpen.value = false;
-    toast.success('Application updated successfully');
+    })
+    await props.loadApplication()
+    isEditDialogOpen.value = false
+    toast.success('Application updated successfully')
   } catch (err) {
     editDialogErrorMessage.value =
-      err instanceof Error ? err.message : 'Failed to update application';
+      err instanceof Error ? err.message : 'Failed to update application'
   } finally {
-    isClickedEditConfirm.value = false;
+    isClickedEditConfirm.value = false
   }
 }
 </script>

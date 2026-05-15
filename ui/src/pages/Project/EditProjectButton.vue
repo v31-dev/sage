@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { ref } from 'vue';
-import { Edit } from 'lucide-vue-next';
-import { Button } from '@/components/ui/button';
+import { ref } from 'vue'
+import { Edit } from 'lucide-vue-next'
+import { Button } from '@/components/ui/button'
 import {
   Dialog,
   DialogContent,
@@ -9,57 +9,57 @@ import {
   DialogHeader,
   DialogTitle,
   DialogTrigger,
-} from '@/components/ui/dialog';
-import { Field, FieldError, FieldGroup, FieldLabel, FieldSet } from '@/components/ui/field';
-import { Input } from '@/components/ui/input';
-import { Textarea } from '@/components/ui/textarea';
-import { toast } from 'vue-sonner';
-import { Spinner } from '@/components/ui/spinner';
+} from '@/components/ui/dialog'
+import { Field, FieldError, FieldGroup, FieldLabel, FieldSet } from '@/components/ui/field'
+import { Input } from '@/components/ui/input'
+import { Textarea } from '@/components/ui/textarea'
+import { toast } from 'vue-sonner'
+import { Spinner } from '@/components/ui/spinner'
 
-import { type Project } from '@/services/api';
+import { type Project } from '@/services/api'
 
 interface Props {
-  project: Project;
-  projectAPI: any;
-  loadProject: () => Promise<void>;
+  project: Project
+  projectAPI: any
+  loadProject: () => Promise<void>
 }
 
-const props = withDefaults(defineProps<Props>(), {});
+const props = withDefaults(defineProps<Props>(), {})
 
-const isEditDialogOpen = ref(false);
+const isEditDialogOpen = ref(false)
 const editFormData = ref({
   label: '',
   description: '',
   env: '',
-});
-const editDialogErrorMessage = ref('');
-const isClickedEditConfirm = ref(false);
+})
+const editDialogErrorMessage = ref('')
+const isClickedEditConfirm = ref(false)
 
 function openEditDialog() {
-  editFormData.value.label = props.project.label || '';
-  editFormData.value.description = props.project.description || '';
-  editFormData.value.env = props.project.env || '';
-  editDialogErrorMessage.value = '';
-  isEditDialogOpen.value = true;
+  editFormData.value.label = props.project.label || ''
+  editFormData.value.description = props.project.description || ''
+  editFormData.value.env = props.project.env || ''
+  editDialogErrorMessage.value = ''
+  isEditDialogOpen.value = true
 }
 
 async function handleUpdateProject() {
-  editDialogErrorMessage.value = '';
+  editDialogErrorMessage.value = ''
 
   try {
-    isClickedEditConfirm.value = true;
+    isClickedEditConfirm.value = true
     await props.projectAPI.update(props.project.name, {
       label: editFormData.value.label || null,
       description: editFormData.value.description || null,
       env: editFormData.value.env || null,
-    });
-    isEditDialogOpen.value = false;
-    toast.success('Project updated successfully');
-    await props.loadProject();
+    })
+    isEditDialogOpen.value = false
+    toast.success('Project updated successfully')
+    await props.loadProject()
   } catch (err) {
-    editDialogErrorMessage.value = err instanceof Error ? err.message : 'Failed to update project';
+    editDialogErrorMessage.value = err instanceof Error ? err.message : 'Failed to update project'
   } finally {
-    isClickedEditConfirm.value = false;
+    isClickedEditConfirm.value = false
   }
 }
 </script>

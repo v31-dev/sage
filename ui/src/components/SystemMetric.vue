@@ -1,61 +1,64 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
-import { Card, CardHeader, CardTitle } from '@/components/ui/card';
-import { Spinner } from '@/components/ui/spinner';
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { Card, CardHeader, CardTitle } from '@/components/ui/card'
+import { Spinner } from '@/components/ui/spinner'
 
 import {
   fetchWorkerMetrics,
   type WorkerMetricsResponse,
   type MetricsPeriod,
   type ContainerMetricsPoint,
-} from '@/services/api';
-import MetricChart from '@/components/MetricChart.vue';
-import { processContainerData } from '@/lib/metrics';
+} from '@/services/api'
+import MetricChart from '@/components/MetricChart.vue'
+import { processContainerData } from '@/lib/metrics'
 
-const props = defineProps<{ hostname: string }>();
+const props = defineProps<{ hostname: string }>()
 
-const period = ref<MetricsPeriod>('1h');
-const periods: MetricsPeriod[] = ['1h', '24h', '1w'];
-const data = ref<WorkerMetricsResponse | null>(null);
-const isLoading = ref(true);
-let pollInterval: ReturnType<typeof setInterval> | null = null;
+const period = ref<MetricsPeriod>('1h')
+const periods: MetricsPeriod[] = ['1h', '24h', '1w']
+const data = ref<WorkerMetricsResponse | null>(null)
+const isLoading = ref(true)
+const loadError = ref('')
+let pollInterval: ReturnType<typeof setInterval> | null = null
 
 async function load() {
   try {
-    data.value = await fetchWorkerMetrics(props.hostname, period.value);
-  } catch {
+    loadError.value = ''
+    data.value = await fetchWorkerMetrics(props.hostname, period.value)
+  } catch (err) {
+    loadError.value = err instanceof Error ? err.message : 'Failed to load metrics'
   } finally {
-    isLoading.value = false;
+    isLoading.value = false
   }
 }
 
 watch(period, () => {
-  isLoading.value = true;
-  load();
-});
+  isLoading.value = true
+  load()
+})
 
 onMounted(async () => {
-  await load();
-  pollInterval = setInterval(load, 60_000);
-});
+  await load()
+  pollInterval = setInterval(load, 60_000)
+})
 onUnmounted(() => {
-  if (pollInterval) clearInterval(pollInterval);
-});
+  if (pollInterval) clearInterval(pollInterval)
+})
 
 const chartData = computed(() => {
   return (data.value?.host ?? []).map(point => {
-    const date = new Date(point.ts);
-    const cpu = point.cpu_pct;
-    const mem = point.mem_used_mb;
-    const cached = point.mem_cached_mb;
-    const disk = point.disk_used_gb;
+    const date = new Date(point.ts)
+    const cpu = point.cpu_pct
+    const mem = point.mem_used_mb
+    const cached = point.mem_cached_mb
+    const disk = point.disk_used_gb
     const net_rx_mbps =
-      point.net_rx_kbps !== null ? Math.round((point.net_rx_kbps / 1000) * 10) / 10 : null;
+      point.net_rx_kbps !== null ? Math.round((point.net_rx_kbps / 1000) * 10) / 10 : null
     const net_tx_mbps =
-      point.net_tx_kbps !== null ? Math.round((point.net_tx_kbps / 1000) * 10) / 10 : null;
-    const load_1 = point.load_avg_1m !== null ? Math.round(point.load_avg_1m * 100) / 100 : null;
-    const load_5 = point.load_avg_5m !== null ? Math.round(point.load_avg_5m * 100) / 100 : null;
-    const load_15 = point.load_avg_15m !== null ? Math.round(point.load_avg_15m * 100) / 100 : null;
+      point.net_tx_kbps !== null ? Math.round((point.net_tx_kbps / 1000) * 10) / 10 : null
+    const load_1 = point.load_avg_1m !== null ? Math.round(point.load_avg_1m * 100) / 100 : null
+    const load_5 = point.load_avg_5m !== null ? Math.round(point.load_avg_5m * 100) / 100 : null
+    const load_15 = point.load_avg_15m !== null ? Math.round(point.load_avg_15m * 100) / 100 : null
 
     return {
       date,
@@ -77,13 +80,13 @@ const chartData = computed(() => {
       load_5_label: load_5 !== null ? `${load_5}` : 'N/A',
       load_15,
       load_15_label: load_15 !== null ? `${load_15}` : 'N/A',
-    };
-  });
-});
+    }
+  })
+})
 
 const containerChartData = computed(() =>
   processContainerData((data.value?.containers ?? []) as Array<Array<ContainerMetricsPoint>>)
-);
+)
 </script>
 
 <template>
@@ -96,6 +99,13 @@ const containerChartData = computed(() =>
           <p class="text-sm text-muted-foreground">Loading metrics...</p>
         </div>
       </div>
+
+      <Card v-else-if="loadError && !data?.host.length">
+        <CardHeader>
+          <CardTitle class="text-lg">Failed to load metrics</CardTitle>
+          <p class="text-sm text-muted-foreground">{{ loadError }}</p>
+        </CardHeader>
+      </Card>
 
       <!-- Content -->
       <div v-else class="space-y-6">
@@ -264,7 +274,7 @@ const containerChartData = computed(() =>
               type="line"
               :data="
                 containerChartData.data.map(d => {
-                  const { date, ...rest } = d;
+                  const { date, ...rest } = d
                   return {
                     date,
                     ...Object.fromEntries(
@@ -272,7 +282,7 @@ const containerChartData = computed(() =>
                         ([k]) => k.endsWith('_cpu_pct') || k.endsWith('_cpu_pct_label')
                       )
                     ),
-                  };
+                  }
                 })
               "
               :yMax="100"
@@ -293,7 +303,7 @@ const containerChartData = computed(() =>
               type="line"
               :data="
                 containerChartData.data.map(d => {
-                  const { date, ...rest } = d;
+                  const { date, ...rest } = d
                   return {
                     date,
                     ...Object.fromEntries(
@@ -301,7 +311,7 @@ const containerChartData = computed(() =>
                         ([k]) => k.endsWith('_mem_used_mb') || k.endsWith('_mem_used_mb_label')
                       )
                     ),
-                  };
+                  }
                 })
               "
               :yMax="containerChartData.memMax"
@@ -322,7 +332,7 @@ const containerChartData = computed(() =>
               type="line"
               :data="
                 containerChartData.data.map(d => {
-                  const { date, ...rest } = d;
+                  const { date, ...rest } = d
                   return {
                     date,
                     ...Object.fromEntries(
@@ -334,7 +344,7 @@ const containerChartData = computed(() =>
                           k.endsWith('_net_tx_label')
                       )
                     ),
-                  };
+                  }
                 })
               "
               :yMax="containerChartData.netMax"

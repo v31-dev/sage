@@ -1,67 +1,139 @@
+import asyncio
 import logging
+import json
 import os
 from pathlib import Path
 
 from services.base import Base
-from services.tailscale import Tailscale
+from services.settings import Settings
+from services.db import Worker
 from utils.common import get_env
+from utils.logging import run_in_executor_with_context
 
 app_dir = Path(__file__).parent.parent
 logger = logging.getLogger(__name__)
 
 
 class Traefik(Base):
-    def __init__(self):
-        super().__init__()
+  def __init__(self, manager):
+    super().__init__()
 
-        self.config_path = "/etc/traefik"
-        self.admin_email = get_env("ADMIN_EMAIL")
-        self.domain = get_env("DOMAIN")
+    self.manager = manager
+    self.config_path = "/etc/traefik"
 
-        # Static Traefik config
-        os.makedirs(self.config_path, exist_ok=True)
-        with open(app_dir / "templates/manager/traefik/traefik.yml", "r") as f:
-            traefik_config = f.read()
-            traefik_config = traefik_config.replace("${ADMIN_EMAIL}", self.admin_email)
-            with open(f"{self.config_path}/traefik.yml", "w") as f:
-                f.write(traefik_config)
+    self.load()
 
-        # Dynamic Traefik config
-        os.makedirs(f"{self.config_path}/dynamic", exist_ok=True)
-        with open(app_dir / "templates/manager/traefik/config.yml", "r") as f:
-            traefik_config = f.read()
-            traefik_config = traefik_config.replace("${DOMAIN}", self.domain)
-            with open(f"{self.config_path}/dynamic/config.yml", "w") as f:
-                f.write(traefik_config)
+  def load(self, clear_certificates=False):
+    self.admin_email = Settings().get("cloudflare", "admin_email")
+    self.domain = Settings().get("cloudflare", "domain")
 
-        # Traefik config for core services
-        core_services = []
+    if not self.admin_email or not self.domain:
+      raise ValueError("Platform settings require non-empty domain and admin_email values.")
 
-        if get_env("ENV") == "development":
-            core_services.append(("ui", 5173, f"Host(`sage.core.{self.domain}`)"))
-            core_services.append(
-                ("sage", 9000, f"Host(`sage.core.{self.domain}`) && PathPrefix(`/api`)")
-            )
-        else:
-            core_services.append(("sage", 9000, f"Host(`sage.core.{self.domain}`)"))
+    if clear_certificates:
+      self.clear_certificates()
 
-        for service, port, rule in core_services:
-            with open(app_dir / "templates/manager/traefik/service.yml", "r") as f:
-                traefik_config = f.read()
-                traefik_config = traefik_config.replace("${DOMAIN}", self.domain)
-                traefik_config = traefik_config.replace("${SERVICE_NAME}", service)
-                traefik_config = traefik_config.replace("${PORT}", str(port))
-                traefik_config = traefik_config.replace("${RULE}", rule)
-                with open(f"{self.config_path}/dynamic/{service}.yml", "w") as f:
-                    f.write(traefik_config)
+    # Static Traefik config
+    os.makedirs(self.config_path, exist_ok=True)
+    with open(app_dir / "templates/manager/traefik/traefik.yml", "r") as f:
+      traefik_config = f.read()
+      traefik_config = traefik_config.replace("${ADMIN_EMAIL}", self.admin_email)
+      with open(f"{self.config_path}/traefik.yml", "w") as f:
+        f.write(traefik_config)
 
-    def sync_certificates_to_workers(self):
-        workers = Tailscale().get_by_tag(get_env("WORKER_TAILSCALE_TAG"))
-        for worker in workers:
-            logger.info(f"Syncing Traefik certificates to worker {worker.hostname}.")
-            Tailscale().sync_file(
-                worker.hostname,
-                f"{self.config_path}/acme.json",
-                "/opt/sage/traefik/acme.json",
-            )
-            logger.info(f"Finished syncing Traefik certificates to worker {worker.hostname}.")
+    # Dynamic Traefik config
+    os.makedirs(f"{self.config_path}/dynamic", exist_ok=True)
+    with open(app_dir / "templates/manager/traefik/config.yml", "r") as f:
+      traefik_config = f.read()
+      traefik_config = traefik_config.replace("${DOMAIN}", self.domain)
+      with open(f"{self.config_path}/dynamic/config.yml", "w") as f:
+        f.write(traefik_config)
+
+    # Traefik config for core services
+    core_services = []
+
+    if get_env("ENV") == "development":
+      core_services.append(("ui", 5173, f"Host(`sage.core.{self.domain}`)"))
+      core_services.append(
+          ("sage", 9000, f"Host(`sage.core.{self.domain}`) && PathPrefix(`/api`)")
+      )
+    else:
+      core_services.append(("sage", 9000, f"Host(`sage.core.{self.domain}`)"))
+
+    for service, port, rule in core_services:
+      with open(app_dir / "templates/manager/traefik/service.yml", "r") as f:
+        traefik_config = f.read()
+        traefik_config = traefik_config.replace("${DOMAIN}", self.domain)
+        traefik_config = traefik_config.replace("${SERVICE_NAME}", service)
+        traefik_config = traefik_config.replace("${PORT}", str(port))
+        traefik_config = traefik_config.replace("${RULE}", rule)
+        with open(f"{self.config_path}/dynamic/{service}.yml", "w") as f:
+          f.write(traefik_config)
+
+  def clear_certificates(self):
+    acme_path = Path(self.config_path) / "acme.json"
+    if acme_path.exists():
+      acme_path.unlink()
+
+  def has_valid_certificates(self):
+    acme_path = Path(self.config_path) / "acme.json"
+
+    if not acme_path.exists():
+      return False
+
+    try:
+      raw = acme_path.read_text().strip()
+      if not raw:
+        return False
+
+      acme_data = json.loads(raw)
+
+      # Check certificates exist
+      certificates = acme_data.get("cloudflare", {}).get("Certificates")
+      if not (isinstance(certificates, list) and len(certificates) > 0):
+        return False
+
+      # Check if domain is covered by the certs
+      for cert in certificates:
+        domain = cert.get("domain", {}).get("main")
+        if self.domain == domain:
+          return True
+
+      return False
+    except Exception:
+      return False
+
+  async def sync_certificates_to_workers(self):
+    # Check for certs as they can take time to be provisioned
+    acme_path = Path(self.config_path) / "acme.json"
+    acme_valid = False
+
+    for _ in range(20):
+      if self.has_valid_certificates():
+        acme_valid = True
+        break
+      await asyncio.sleep(30)
+
+    if not acme_valid:
+      self.manager.notify(
+          "Valid Traefik acme.json file not found after waiting. Skipping certificate sync to workers.",
+          type="error"
+      )
+
+    online_workers = list(Worker.select().where(Worker.online))
+    for worker in online_workers:
+      if acme_valid:
+        await run_in_executor_with_context(
+            self.manager.tailscale.sync_file,
+            worker.hostname,
+            f"{self.config_path}/acme.json",
+            "/opt/sage/traefik/acme.json",
+        )
+      await run_in_executor_with_context(
+          self.manager.tailscale.sync_file,
+          worker.hostname,
+          app_dir / "templates/worker/traefik/traefik.yml",
+          f"{self.manager.worker_home_dir}/traefik/traefik.yml",
+          {"ADMIN_EMAIL": self.admin_email},
+      )
+      logger.info(f"Finished syncing Traefik certificates to worker {worker.hostname}.")

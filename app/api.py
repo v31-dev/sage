@@ -1,8 +1,11 @@
 from fastapi import FastAPI
 
 from routes.info import router as info_router
+from routes.backups import router as backup_router
+from routes.settings import router as settings_router
 from routes.projects import router as projects_router
 from routes.workers import router as workers_router
+from routes.notifications import router as notifications_router
 from scheduler import app as app_rocketry
 from utils.logging import LoggedSession, fastapi_middleware
 
@@ -13,10 +16,13 @@ app.state.rocketry = LoggedSession(app_rocketry.session)
 
 @app.get("/")
 def health():
-    return {"status": "ok"}
+  return {"status": "ok"}
 
 
 # Mount routes
 app.include_router(info_router, prefix="/api")
+app.include_router(backup_router, prefix="/api/backups")
+app.include_router(settings_router, prefix="/api/settings")
 app.include_router(workers_router, prefix="/api/workers")
 app.include_router(projects_router, prefix="/api/projects")
+app.include_router(notifications_router, prefix="/api/notifications")

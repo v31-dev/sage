@@ -3,6 +3,7 @@ services:
     image: ${IMAGE}
     container_name: ${CONTAINER_NAME}
     restart: unless-stopped
+    volumes: [ ${VOLUMES} ]
     env_file: .env
     networks:
       - sage_default

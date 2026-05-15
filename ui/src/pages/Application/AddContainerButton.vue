@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { ref } from 'vue';
-import { toast } from 'vue-sonner';
-import { Plus } from 'lucide-vue-next';
+import { ref } from 'vue'
+import { toast } from 'vue-sonner'
+import { Plus } from 'lucide-vue-next'
 import {
   Dialog,
   DialogContent,
@@ -10,17 +10,18 @@ import {
   DialogHeader,
   DialogTitle,
   DialogTrigger,
-} from '@/components/ui/dialog';
-import { Button } from '@/components/ui/button';
-import { Field, FieldGroup, FieldLabel, FieldSet, FieldError } from '@/components/ui/field';
+} from '@/components/ui/dialog'
+import { Button } from '@/components/ui/button'
+import { Field, FieldGroup, FieldLabel, FieldSet, FieldError } from '@/components/ui/field'
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from '@/components/ui/select';
-import { Spinner } from '@/components/ui/spinner';
+} from '@/components/ui/select'
+import { Input } from '@/components/ui/input'
+import { Spinner } from '@/components/ui/spinner'
 
 import {
   type Application,
@@ -28,62 +29,68 @@ import {
   type Container,
   getApplicationAPI,
   getContainerAPI,
-} from '@/services/api';
+} from '@/services/api'
 
 interface Props {
-  application: Application;
-  applicationAPI: ReturnType<typeof getApplicationAPI>;
-  containersAPI: ReturnType<typeof getContainerAPI>;
-  loadApplication: () => Promise<void>;
+  application: Application
+  applicationAPI: ReturnType<typeof getApplicationAPI>
+  containersAPI: ReturnType<typeof getContainerAPI>
+  loadApplication: () => Promise<void>
 }
 
-const props = withDefaults(defineProps<Props>(), {});
+const props = withDefaults(defineProps<Props>(), {})
 
-const isAddContainerDialogOpen = ref(false);
-const availableWorkers = ref<Worker[]>([]);
-const selectedWorker = ref('');
-const addContainerErrorMessage = ref('');
-const isClickedAddContainerConfirm = ref(false);
+const isAddContainerDialogOpen = ref(false)
+const availableWorkers = ref<Worker[]>([])
+const selectedWorker = ref('')
+const domainTag = ref('')
+const addContainerErrorMessage = ref('')
+const isClickedAddContainerConfirm = ref(false)
 
 function openAddContainerDialog() {
-  addContainerErrorMessage.value = '';
-  selectedWorker.value = '';
-  loadAvailableWorkers();
-  isAddContainerDialogOpen.value = true;
+  addContainerErrorMessage.value = ''
+  selectedWorker.value = ''
+  domainTag.value = ''
+  loadAvailableWorkers()
+  isAddContainerDialogOpen.value = true
 }
 
 async function loadAvailableWorkers() {
   try {
     availableWorkers.value = (await props.applicationAPI.action(
       `${props.application.name}/get_available_workers`
-    )) as Worker[];
+    )) as Worker[]
     if (availableWorkers.value.length > 0) {
-      selectedWorker.value = availableWorkers.value[0]?.hostname || '';
+      selectedWorker.value = availableWorkers.value[0]?.hostname || ''
     }
   } catch (err) {
-    console.error('Failed to load available workers:', err);
-    addContainerErrorMessage.value = 'Failed to load available workers';
+    console.error('Failed to load available workers:', err)
+    addContainerErrorMessage.value = 'Failed to load available workers'
   }
 }
 
 async function onClickAddContainerConfirm() {
-  addContainerErrorMessage.value = '';
+  addContainerErrorMessage.value = ''
 
   if (!selectedWorker.value) {
-    addContainerErrorMessage.value = 'Please select a worker';
-    return;
+    addContainerErrorMessage.value = 'Please select a worker'
+    return
   }
 
   try {
-    isClickedAddContainerConfirm.value = true;
-    (await props.containersAPI.create({ worker: selectedWorker.value })) as Container;
-    isAddContainerDialogOpen.value = false;
-    await props.loadApplication();
-    toast.success('Container added successfully');
+    isClickedAddContainerConfirm.value = true
+    const containerData: Record<string, string> = { worker: selectedWorker.value }
+    if (domainTag.value) {
+      containerData.domain_tag = domainTag.value
+    }
+    ;(await props.containersAPI.create(containerData)) as Container
+    isAddContainerDialogOpen.value = false
+    await props.loadApplication()
+    toast.success('Container added successfully')
   } catch (err) {
-    addContainerErrorMessage.value = err instanceof Error ? err.message : 'Failed to add container';
+    addContainerErrorMessage.value = err instanceof Error ? err.message : 'Failed to add container'
   } finally {
-    isClickedAddContainerConfirm.value = false;
+    isClickedAddContainerConfirm.value = false
   }
 }
 </script>
@@ -126,6 +133,15 @@ async function onClickAddContainerConfirm() {
                 </SelectItem>
               </SelectContent>
             </Select>
+          </Field>
+          <Field>
+            <FieldLabel for="domain-tag"> Domain Tag (Optional) </FieldLabel>
+            <Input
+              id="domain-tag"
+              v-model="domainTag"
+              type="text"
+              placeholder="e.g. api, web, worker"
+            />
           </Field>
           <Field>
             <FieldError v-if="addContainerErrorMessage">{{ addContainerErrorMessage }}</FieldError>

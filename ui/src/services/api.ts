@@ -1,89 +1,114 @@
-import { CRUDAPI } from '@/lib/api';
+import { CRUDAPI } from '@/lib/api'
 
-const API_ROOT = '/api';
-const LOAD_DELAY = 300;
+const API_ROOT = '/api'
+const LOAD_DELAY = 300
 
 export interface AppInfo {
-  org: string;
-  version: number;
-  domain: string;
-  hostname: string;
-  ip: string;
+  version: number
+  domain: string
+  hostname: string
+  ip: string
 }
 
 export interface Worker {
-  hostname: string;
-  ip: string;
-  online: boolean;
-  created_at: Date;
-  updated_at: Date;
+  hostname: string
+  ip: string
+  online: boolean
+  created_at: Date
+  updated_at: Date
+  containers: Container[]
 }
 
 export interface Project {
-  name: string;
-  label: string;
-  description: string | null;
-  env: string | null;
-  applications: Application[];
-  application_count: number;
-  created_at: Date;
-  updated_at: Date;
+  name: string
+  label: string
+  description: string | null
+  env: string | null
+  applications: Application[]
+  application_count: number
+  created_at: Date
+  updated_at: Date
 }
 
 export interface Application {
-  name: string;
-  label: string;
-  project: Project;
-  description: string | null;
-  type: 'docker' | 'git';
-  repo: string | null;
-  path: string | null;
-  image: string | null;
-  env: string | null;
-  args: string | null;
-  domains: Domain[];
-  containers: Container[];
-  container_count: number;
-  status: 'active' | 'inactive' | 'deploying' | 'stopping' | 'error';
-  domains_synced: boolean;
-  created_at: Date;
-  updated_at: Date;
+  name: string
+  label: string
+  project: Project
+  description: string | null
+  type: 'docker' | 'git'
+  repo: string | null
+  path: string | null
+  image: string | null
+  env: string | null
+  args: string | null
+  domains: Domain[]
+  containers: Container[]
+  volumes: Volume[]
+  container_count: number
+  status: 'active' | 'inactive' | 'deploying' | 'stopping' | 'backup' | 'restoring' | 'error'
+  domains_synced: boolean
+  created_at: Date
+  updated_at: Date
 }
+
+export const APPLICATION_BUSY_STATUSES: Application['status'][] = [
+  'deploying',
+  'stopping',
+  'backup',
+  'restoring',
+]
+
+export const APPLICATION_STOP_ELIGIBLE_STATUSES: Application['status'][] = [
+  'active',
+  'error',
+]
 
 export interface Domain {
-  name: string;
-  type: 'internal' | 'public';
-  port: number;
-  application: Application;
-  created_at: Date;
-  updated_at: Date;
+  name: string
+  type: 'internal' | 'public'
+  port: number
+  application: Application
+  created_at: Date
+  updated_at: Date
 }
 
-export interface Deployment {
-  container_task_id: string;
-  type: 'deploy' | 'stop' | 'delete';
-  created_at: Date;
+export interface Event {
+  container_task_id: string
+  type: 'deploy' | 'stop' | 'delete' | 'backup' | 'restore'
+  created_at: Date
 }
 
 export interface Container {
-  worker: Worker;
-  status: 'active' | 'inactive' | 'deploying' | 'stopping' | 'error';
-  deployments: Deployment[];
-  created_at: Date;
-  updated_at: Date;
+  worker: Worker
+  status: 'active' | 'inactive' | 'deploying' | 'stopping' | 'backup' | 'restoring' | 'error'
+  domain_tag: string | null
+  events: Event[]
+  created_at: Date
+  updated_at: Date
+  application: Application
+}
+
+export interface Volume {
+  name: string
+  path: string
+  backup_cron: string | null
+  project: Project
+  application: Application
+  created_at: Date
+  updated_at: Date
 }
 
 export async function fetchAppInfo(): Promise<AppInfo> {
   try {
-    await new Promise(resolve => setTimeout(resolve, LOAD_DELAY));
-    const response = await fetch(`${API_ROOT}`);
+    await new Promise(resolve => setTimeout(resolve, LOAD_DELAY))
+    const response = await fetch(`${API_ROOT}`)
     if (!response.ok) {
-      throw new Error('Failed to fetch app info');
+      throw new Error('Failed to fetch app info')
     }
-    return await response.json();
+    return await response.json()
   } catch (error) {
-    console.error('Error fetching app info:', error);
-    throw error;
+    console.error('Error fetching app info:', error)
+    throw error
   }
 }
 
@@ -91,12 +116,13 @@ export const workersAPI = new CRUDAPI({
   name: 'Workers',
   path: `${API_ROOT}/workers`,
   load_delay: LOAD_DELAY,
-});
+})
+
 export const projectAPI = new CRUDAPI({
   name: 'Project',
   path: `${API_ROOT}/projects`,
   load_delay: LOAD_DELAY,
-});
+})
 
 export function getApplicationAPI(projectName: string) {
   return new CRUDAPI({
@@ -104,7 +130,7 @@ export function getApplicationAPI(projectName: string) {
     path: `${API_ROOT}/projects/{project}/applications`,
     params: { project: projectName },
     load_delay: LOAD_DELAY,
-  });
+  })
 }
 
 export function getContainerAPI(projectName: string, applicationName: string) {
@@ -113,7 +139,16 @@ export function getContainerAPI(projectName: string, applicationName: string) {
     path: `${API_ROOT}/projects/{project}/applications/{application}/containers`,
     params: { project: projectName, application: applicationName },
     load_delay: LOAD_DELAY,
-  });
+  })
+}
+
+export function getVolumeAPI(projectName: string, applicationName: string) {
+  return new CRUDAPI({
+    name: 'Volume',
+    path: `${API_ROOT}/projects/{project}/applications/{application}/volumes`,
+    params: { project: projectName, application: applicationName },
+    load_delay: LOAD_DELAY,
+  })
 }
 
 export function getDomainAPI(projectName: string, applicationName: string) {
@@ -122,45 +157,70 @@ export function getDomainAPI(projectName: string, applicationName: string) {
     path: `${API_ROOT}/projects/{project}/applications/{application}/domains`,
     params: { project: projectName, application: applicationName },
     load_delay: LOAD_DELAY,
-  });
+  })
 }
 
-export type MetricsPeriod = '1m' | '1h' | '24h' | '1w';
+export interface Setting {
+  key: string
+  value: Record<string, unknown> | null
+  created_at: Date
+  updated_at: Date
+}
+
+export const settingsAPI = new CRUDAPI({
+  name: 'Settings',
+  path: `${API_ROOT}/settings`,
+  load_delay: LOAD_DELAY,
+})
+
+export type MetricsPeriod = '1m' | '1h' | '24h' | '1w'
 
 export interface MetricsPoint {
-  ts: string;
-  cpu_pct: number | null;
-  mem_used_mb: number | null;
-  mem_cached_mb: number | null;
-  disk_used_gb: number | null;
-  load_avg_1m: number | null;
-  load_avg_5m: number | null;
-  load_avg_15m: number | null;
-  net_rx_kbps: number | null;
-  net_tx_kbps: number | null;
+  ts: string
+  cpu_pct: number | null
+  mem_used_mb: number | null
+  mem_cached_mb: number | null
+  disk_used_gb: number | null
+  load_avg_1m: number | null
+  load_avg_5m: number | null
+  load_avg_15m: number | null
+  net_rx_kbps: number | null
+  net_tx_kbps: number | null
 }
 
 export interface ContainerMetricsPoint {
-  ts: string;
-  name?: string;
-  cpu_pct: number | null;
-  mem_used_mb: number | null;
-  net_rx_kbps: number | null;
-  net_tx_kbps: number | null;
+  ts: string
+  name?: string
+  cpu_pct: number | null
+  mem_used_mb: number | null
+  net_rx_kbps: number | null
+  net_tx_kbps: number | null
 }
 
 export interface WorkerMeta {
-  hostname: string;
-  cpu_cores: number;
-  mem_total_mb: number;
-  disk_total_gb: number;
-  ip: string;
+  hostname: string
+  cpu_cores: number
+  mem_total_mb: number
+  disk_total_gb: number
+  ip: string
 }
 
 export interface WorkerMetricsResponse {
-  host: MetricsPoint[];
-  containers: Record<string, ContainerMetricsPoint[]>;
-  meta: WorkerMeta;
+  host: MetricsPoint[]
+  containers: Record<string, ContainerMetricsPoint[]>
+  meta: WorkerMeta
+}
+
+export interface WorkerMetricSummary {
+  cpu: number | null
+  mem: number | null
+  memTotal: number | null
+  disk: number | null
+  diskTotal: number | null
+  netRx: number | null
+  netTx: number | null
+  containers: number | null
+  cores: number | null
 }
 
 export async function fetchWorkerMetrics(
@@ -168,24 +228,24 @@ export async function fetchWorkerMetrics(
   period: MetricsPeriod = '1h'
 ): Promise<WorkerMetricsResponse> {
   try {
-    await new Promise(resolve => setTimeout(resolve, LOAD_DELAY));
-    const response = await fetch(`${API_ROOT}/workers/${hostname}/metrics?period=${period}`);
+    await new Promise(resolve => setTimeout(resolve, LOAD_DELAY))
+    const response = await fetch(`${API_ROOT}/workers/${hostname}/metrics?period=${period}`)
     if (!response.ok) {
-      throw new Error('Failed to fetch worker metrics');
+      throw new Error('Failed to fetch worker metrics')
     }
-    return await response.json();
+    return await response.json()
   } catch (error) {
-    console.error('Error fetching worker metrics:', error);
-    throw error;
+    console.error('Error fetching worker metrics:', error)
+    throw error
   }
 }
 
 export interface LogEntry {
-  id: number;
-  hostname: string;
-  ts: string;
-  stream: string;
-  message: string;
+  id: number
+  hostname: string
+  ts: string
+  stream: string
+  message: string
 }
 
 export async function fetchLogs(
@@ -196,21 +256,82 @@ export async function fetchLogs(
   to_ts: string = ''
 ): Promise<LogEntry[]> {
   try {
-    const params = new URLSearchParams();
-    if (search) params.set('search', search);
-    if (from_ts) params.set('from_ts', from_ts);
-    if (to_ts) params.set('to_ts', to_ts);
+    const params = new URLSearchParams()
+    if (search) params.set('search', search)
+    if (from_ts) params.set('from_ts', from_ts)
+    if (to_ts) params.set('to_ts', to_ts)
 
-    await new Promise(resolve => setTimeout(resolve, LOAD_DELAY));
-    const response = await fetch(`${API_ROOT}/workers/${hostname}/logs/${container}?${params}`);
+    await new Promise(resolve => setTimeout(resolve, LOAD_DELAY))
+    const response = await fetch(`${API_ROOT}/workers/${hostname}/logs/${container}?${params}`)
     if (!response.ok) {
-      const data = await response.json().catch(() => ({}));
-      const detail = data.detail || 'Failed to fetch logs';
-      throw new Error(detail);
+      const data = await response.json().catch(() => ({}))
+      const detail = data.detail || 'Failed to fetch logs'
+      throw new Error(detail)
     }
-    return await response.json();
+    return await response.json()
   } catch (error) {
-    console.error('Error fetching logs:', error);
-    throw error;
+    console.error('Error fetching logs:', error)
+    throw error
   }
+}
+
+export interface Notification {
+  id: number
+  type: 'info' | 'success' | 'warning' | 'error'
+  content: string
+  link: string | null
+  created_at: string
+  updated_at: string
+}
+
+export async function fetchNotifications({
+  limit = null,
+  from_ts = null,
+  to_ts = null,
+}: {
+  limit?: number | null
+  from_ts?: string | null
+  to_ts?: string | null
+} = {}): Promise<Notification[]> {
+  try {
+    const params = new URLSearchParams()
+    if (limit) params.set('limit', limit.toString())
+    if (from_ts) params.set('from_ts', from_ts)
+    if (to_ts) params.set('to_ts', to_ts)
+
+    await new Promise(resolve => setTimeout(resolve, LOAD_DELAY))
+    const response = await fetch(`${API_ROOT}/notifications/?${params}`)
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}))
+      const detail = data.detail || 'Failed to fetch notifications'
+      throw new Error(detail)
+    }
+    return await response.json()
+  } catch (error) {
+    console.error('Error fetching notifications:', error)
+    throw error
+  }
+}
+
+export interface Backup {
+  id: number
+  s3_path: string
+  source_volume_name: string | null
+  type: string
+  created_at: string
+}
+
+export const backupAPI = new CRUDAPI({
+  name: 'Backup',
+  path: `${API_ROOT}/backups`,
+  load_delay: LOAD_DELAY,
+})
+
+export function getVolumeBackupAPI(projectName: string, applicationName: string, volumeName: string) {
+  return new CRUDAPI({
+    name: 'Volume Backup',
+    path: `${API_ROOT}/projects/{project}/applications/{application}/volumes/{volume}/backups`,
+    params: { project: projectName, application: applicationName, volume: volumeName },
+    load_delay: LOAD_DELAY,
+  })
 }

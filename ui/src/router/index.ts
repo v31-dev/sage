@@ -1,16 +1,18 @@
-import { createRouter, createWebHistory } from 'vue-router';
-import Home from '@/pages/Home.vue';
-import Projects from '@/pages/Projects.vue';
-import Project from '@/pages/Project';
-import System from '@/pages/System.vue';
-import Logs from '@/pages/Logs.vue';
-import Application from '@/pages/Application';
-import ApplicationLogs from '@/pages/ApplicationLogs.vue';
-import ApplicationMetrics from '@/pages/ApplicationMetrics.vue';
-import Workers from '@/pages/Workers.vue';
-import WorkerMetrics from '@/pages/WorkerMetrics.vue';
-import Settings from '@/pages/Settings.vue';
-import Requests from '@/pages/Requests.vue';
+import { createRouter, createWebHistory } from 'vue-router'
+import Home from '@/pages/Home.vue'
+import Projects from '@/pages/Projects.vue'
+import Project from '@/pages/Project'
+import System from '@/pages/System.vue'
+import Logs from '@/pages/Logs.vue'
+import Application from '@/pages/Application'
+import ApplicationLogs from '@/pages/ApplicationLogs.vue'
+import ApplicationMetrics from '@/pages/ApplicationMetrics.vue'
+import Settings from '@/pages/Settings'
+import Worker from '@/pages/Worker'
+import Workers from '@/pages/Workers'
+import WorkerMetrics from '@/pages/WorkerMetrics.vue'
+import Requests from '@/pages/Requests.vue'
+import Backup from '@/pages/Backup'
 
 const routes = [
   { path: '/', name: 'Home', component: Home },
@@ -27,13 +29,15 @@ const routes = [
   { path: '/system', name: 'System', component: System },
   { path: '/logs', name: 'Logs', component: Logs },
   { path: '/workers', name: 'Workers', component: Workers },
+  { path: '/workers/:hostname', name: 'Worker', component: Worker },
   { path: '/workers/:hostname/metrics', name: 'WorkerMetrics', component: WorkerMetrics },
+  { path: '/backups', name: 'Backups', component: Backup },
   { path: '/settings', name: 'Settings', component: Settings },
-];
+]
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
   routes,
-});
+})
 
-export default router;
+export default router
