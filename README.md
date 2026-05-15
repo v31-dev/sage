@@ -171,6 +171,7 @@ The PR check in `.github/workflows/pr-check.yml` runs for non-draft release-affe
 - `VERSION` uses full semantic version format
 - `VERSION` is greater than the version on `main`
 - `sample.env` sets `SAGE_IMAGE_TAG` to the same value as `VERSION`
+- the PR has at least one label
 - the PR title starts with `v<VERSION>`
 - the matching release tag does not already exist
 

@@ -3,12 +3,8 @@ name: PR Check
 on:
   pull_request:
     types:
-      - opened
       - synchronize
-      - reopened
-      - edited
       - ready_for_review
-      - converted_to_draft
     branches:
       - main
     paths:
@@ -49,7 +45,14 @@ jobs:
           BASE_VERSION: ${{ steps.versions.outputs.base_version }}
           HEAD_VERSION: ${{ steps.versions.outputs.head_version }}
           PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_LABELS: ${{ toJson(github.event.pull_request.labels) }}
         run: |
+          if ! python3 -c 'import json, os, sys; labels=json.loads(os.environ.get("PR_LABELS", "[]")); sys.exit(0 if len(labels) > 0 else 1)'; then
+            echo "❌ PR must have at least one label"
+            echo "PR labels: ${PR_LABELS:-<none>}"
+            exit 1
+          fi
+
           semver_re='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
           if [[ ! "$BASE_VERSION" =~ $semver_re ]]; then
             echo "❌ Base VERSION must use full semantic version format: MAJOR.MINOR.PATCH"

@@ -91,6 +91,7 @@ Current GitHub workflows:
   - validates that `VERSION` changed in a pull request targeting `main`
   - requires full semantic version format: `MAJOR.MINOR.PATCH`
   - requires `sample.env` `SAGE_IMAGE_TAG` to match `VERSION`
+  - requires the PR to have at least one label
   - requires the PR title to start with `v<VERSION>`
   - requires the new version to be greater than the version on `main`
   - rejects versions whose release tag already exists
