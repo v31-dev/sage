@@ -52,11 +52,9 @@ class Traefik(Base):
     # Traefik config for core services
     core_services = []
 
-    if get_env("ENV") == "development":
+    if get_env("ENV", fallback="") == "development":
       core_services.append(("ui", 5173, f"Host(`sage.core.{self.domain}`)"))
-      core_services.append(
-          ("sage", 9000, f"Host(`sage.core.{self.domain}`) && PathPrefix(`/api`)")
-      )
+      core_services.append(("sage", 9000, f"Host(`sage.core.{self.domain}`) && PathPrefix(`/api`)"))
     else:
       core_services.append(("sage", 9000, f"Host(`sage.core.{self.domain}`)"))
 
