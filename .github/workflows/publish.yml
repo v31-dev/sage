@@ -134,14 +134,9 @@ jobs:
 
             const body = [
               '## Docker Image',
-              '',
-              `Published to: \`${image}\``,
-              '',
-              'Pull with:',
               '```bash',
               `docker pull ${image}`,
               '```',
-              '',
               notes.data.body,
             ].join('\n');
 

@@ -24,19 +24,18 @@ RUN curl -fsSL https://tailscale.com/install.sh | sh
 
 WORKDIR /app
 
-# Copy and verify VERSION file
-COPY VERSION /app/VERSION
-RUN test -f /app/VERSION || (echo "ERROR: VERSION file is required" && exit 1)
-
 # Copy Python requirements
 COPY app/requirements.txt /app/requirements.txt
-COPY app/requirements-dev.txt /app/requirements-dev.txt
 
 # Install Python dependencies
 RUN pip install --no-cache-dir --upgrade -r /app/requirements.txt
 
 # Copy Python app
 COPY app/ /app/
+
+# Copy VERSION last so the root release version overwrites the app placeholder
+COPY VERSION /app/VERSION
+RUN test -f /app/VERSION || (echo "ERROR: VERSION file is required" && exit 1)
 
 # Copy built UI static files to app for serving
 COPY --from=ui-builder /ui/dist /app/static
