@@ -1,4 +1,8 @@
+from pathlib import Path
+
 from fastapi import FastAPI
+from starlette.exceptions import HTTPException
+from starlette.staticfiles import StaticFiles
 
 from routes.info import router as info_router
 from routes.backups import router as backup_router
@@ -13,10 +17,20 @@ app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, redirect_slashes=
 app.add_middleware(fastapi_middleware)
 app.state.rocketry = LoggedSession(app_rocketry.session)
 
+static_dir = Path("/app/static")
 
-@app.get("/")
-def health():
-  return {"status": "ok"}
+
+class SpaStaticFiles(StaticFiles):
+  async def get_response(self, path: str, scope):
+    if path == "api" or path.startswith("api/"):
+      raise HTTPException(status_code=404)
+
+    try:
+      return await super().get_response(path, scope)
+    except HTTPException as exc:
+      if exc.status_code != 404:
+        raise
+      return await super().get_response("index.html", scope)
 
 
 # Mount routes
@@ -26,3 +40,10 @@ app.include_router(settings_router, prefix="/api/settings")
 app.include_router(workers_router, prefix="/api/workers")
 app.include_router(projects_router, prefix="/api/projects")
 app.include_router(notifications_router, prefix="/api/notifications")
+
+if (static_dir / "index.html").is_file():
+  app.mount("/", SpaStaticFiles(directory=static_dir, html=False, check_dir=False), name="ui")
+else:
+  @app.get("/")
+  def health():
+    return {"status": "ok"}
