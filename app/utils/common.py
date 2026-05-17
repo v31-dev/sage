@@ -20,13 +20,15 @@ def dict_to_obj(data):
   return SimpleNamespace(**data)
 
 
-def get_env(name: str) -> str:
+def get_env(name: str, fallback: str = None) -> str:
   """
-  Helper function to get a required environment variable.
+  Helper function to get a required environment variable with an optional fallback.
   """
   value = os.getenv(name)
 
   if value is None or value == "":
+    if fallback is not None:
+      return fallback
     raise ValueError(f"Environment variable '{name}' is required but not set.")
 
   return value
