@@ -11,10 +11,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN curl -fsSL https://tailscale.com/install.sh | sh
 
 WORKDIR /app
-COPY ../VERSION /app/VERSION
-
-# Verify VERSION file exists (fail build if missing)
-RUN test -f /app/VERSION || (echo "ERROR: VERSION file is required" && exit 1)
 
 COPY ./requirements.txt /app/requirements.txt
 COPY ./requirements-dev.txt /app/requirements-dev.txt
