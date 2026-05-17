@@ -80,7 +80,7 @@ npm run dev
 The top-level `Dockerfile` builds:
 
 1. the UI bundle
-2. the Python app image that serves the built frontend from `/app/static`
+2. the Python app image that serves the built frontend from `/app/static` and exposes it at `/` while leaving `/api` on the backend
 
 ## CI And Release Notes
 

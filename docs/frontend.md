@@ -14,6 +14,7 @@
 ## App Shape
 
 The frontend is a SPA under `ui/` that talks to the backend under `/api`.
+In the production image, the backend serves the built SPA at `/` and keeps API traffic under `/api`.
 
 The shell is assembled in `ui/src/App.vue`:
 
