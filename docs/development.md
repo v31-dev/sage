@@ -36,7 +36,7 @@ Production-style compose:
 docker compose up -d
 ```
 
-The production compose image requires `SAGE_IMAGE_TAG`. Keep `sample.env` aligned with `VERSION` for release PRs.
+The production compose image requires `SAGE_IMAGE_TAG`. Keep `sample.env` aligned with `VERSION`; the publish workflow updates both together during a release.
 
 Development compose:
 
@@ -87,19 +87,27 @@ The top-level `Dockerfile` builds:
 Current GitHub workflows:
 
 - `pr-check.yml`
+  - runs when a pull request targeting `main` is marked ready for review
   - skips draft pull requests
-  - validates that `VERSION` changed in a pull request targeting `main`
-  - requires full semantic version format: `MAJOR.MINOR.PATCH`
-  - requires `sample.env` `SAGE_IMAGE_TAG` to match `VERSION`
+  - requires the pull request description to be present
   - requires the PR to have at least one label
-  - requires the PR title to start with `v<VERSION>`
-  - requires the new version to be greater than the version on `main`
-  - rejects versions whose release tag already exists
+- `release-pr.yml`
+  - runs manually through `workflow_dispatch`
+  - requires the workflow to be started from `main`
+  - bumps the root `VERSION` file by `patch`, `minor`, or `major`
+  - updates `sample.env` so `SAGE_IMAGE_TAG` matches the release version
+  - creates a `release/v<VERSION>` branch with those file changes
+  - opens a draft release PR titled with the exact version
+  - fills the PR body with merged PR descriptions plus a generated changelog
+  - applies the combined labels from the merged PRs since the previous release
 - `publish.yml`
-  - builds and publishes a GHCR image on pushes to `main`
+  - runs on pushes to `main` that change `VERSION` or `sample.env`
+  - validates that the merged pull request associated with the pushed commit has the exact version as its title
+  - builds and publishes a GHCR image from that exact version
   - publishes only the exact `VERSION` image tag
   - creates a GitHub release with generated release notes configured by `.github/release.yml`
   - uses the highest existing `vMAJOR.MINOR.PATCH` tag lower than the current release as the previous release-note boundary when available
+  - generates release notes from the changes on `main` before the release PR merge commit so the release PR itself is not included as a changelog entry
 
 ## Documentation Notes
 
