@@ -179,44 +179,11 @@ jobs:
             const targetSha = process.env.TARGET_SHA;
             const branchName = process.env.BRANCH_NAME;
             const { owner, repo } = context.repo;
-
-            const normalizeBody = (value) => {
-              const trimmed = (value || '').trim();
-              if (!trimmed) {
-                return '_No description provided._';
-              }
-              if (trimmed.length <= 3000) {
-                return trimmed;
-              }
-              return `${trimmed.slice(0, 3000)}\n\n_Description truncated for release PR size._`;
-            };
-
-            const pullRequests = new Map();
             const labelSet = new Set();
-
-            const addPullRequest = (pr) => {
-              if (!pr || !pr.merged_at || pr.base?.ref !== 'main') {
-                return;
-              }
-
-              if (pullRequests.has(pr.number)) {
-                return;
-              }
-
-              const labels = (pr.labels || []).map((label) => label.name).filter(Boolean);
-              pullRequests.set(pr.number, {
-                number: pr.number,
-                title: pr.title,
-                url: pr.html_url,
-                body: normalizeBody(pr.body),
-                labels,
-                merged_at: pr.merged_at,
-              });
-
-              for (const label of labels) {
-                labelSet.add(label);
-              }
-            };
+            const compareRef = previousTagName
+              ? `${previousTagName}...${branchName}`
+              : branchName;
+            const draftChangelogUrl = `https://github.com/${owner}/${repo}/compare/${compareRef}`;
 
             if (previousTagName) {
               const compare = await github.rest.repos.compareCommitsWithBasehead({
@@ -236,7 +203,13 @@ jobs:
                 );
 
                 for (const pr of prs) {
-                  addPullRequest(pr);
+                  if (!pr || !pr.merged_at || pr.base?.ref !== 'main') {
+                    continue;
+                  }
+
+                  for (const label of (pr.labels || []).map((label) => label.name).filter(Boolean)) {
+                    labelSet.add(label);
+                  }
                 }
               }
             } else {
@@ -251,13 +224,15 @@ jobs:
               });
 
               for (const pr of prs) {
-                addPullRequest(pr);
+                if (!pr || !pr.merged_at || pr.base?.ref !== 'main') {
+                  continue;
+                }
+
+                for (const label of (pr.labels || []).map((label) => label.name).filter(Boolean)) {
+                  labelSet.add(label);
+                }
               }
             }
-
-            const sortedPullRequests = Array.from(pullRequests.values()).sort(
-              (a, b) => new Date(a.merged_at) - new Date(b.merged_at),
-            );
 
             const notesParams = {
               owner,
@@ -271,29 +246,7 @@ jobs:
 
             const notes = await github.rest.repos.generateReleaseNotes(notesParams);
 
-            const formatLabelSummary = (labels) => (
-              labels.length ? ` (${labels.join(', ')})` : ''
-            );
-
-            const pullRequestSection = sortedPullRequests.length
-              ? sortedPullRequests
-                  .map(
-                    (pr) => [
-                      `### #${pr.number} ${pr.title}${formatLabelSummary(pr.labels)}`,
-                      pr.url,
-                      '',
-                      pr.body,
-                    ].join('\n'),
-                  )
-                  .join('\n\n')
-              : '_No merged pull requests found since the previous release tag._';
-
-            const body = [
-              '## Included Pull Requests',
-              pullRequestSection,
-              '',
-              notes.data.body,
-            ].join('\n');
+            const body = notes.data.body;
 
             const labels = Array.from(labelSet).sort();
 
@@ -315,6 +268,13 @@ jobs:
                 labels,
               });
             }
+
+            await github.rest.issues.createComment({
+              owner,
+              repo,
+              issue_number: pullRequest.number,
+              body: `**Full Draft Changelog**: ${draftChangelogUrl}`,
+            });
 
             core.info(`Created draft release PR #${pullRequest.number}: ${pullRequest.html_url}`);
             core.setOutput('url', pullRequest.html_url);
