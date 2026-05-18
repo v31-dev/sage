@@ -52,6 +52,7 @@ jobs:
           PY
 
       - name: Validate merged release PR
+        id: release_pr
         uses: actions/github-script@v9
         env:
           VERSION: ${{ steps.version.outputs.version }}
@@ -59,17 +60,47 @@ jobs:
           script: |
             const version = process.env.VERSION;
             const { owner, repo } = context.repo;
-            const prs = await github.paginate(
-              github.rest.repos.listPullRequestsAssociatedWithCommit,
-              {
-                owner,
-                repo,
-                commit_sha: context.sha,
-              },
-            );
-
             const expectedTitle = `v${version}`;
-            const matchingPr = prs.find((pr) => pr.base.ref === 'main' && pr.merged_at && pr.title === expectedTitle);
+            const isMatchingReleasePr = (pr) =>
+              pr &&
+              pr.base?.ref === 'main' &&
+              pr.merged_at &&
+              pr.title === expectedTitle;
+
+            let prs = [];
+            try {
+              prs = await github.paginate(
+                github.rest.repos.listPullRequestsAssociatedWithCommit,
+                {
+                  owner,
+                  repo,
+                  commit_sha: context.sha,
+                },
+              );
+            } catch (error) {
+              core.warning(`Associated PR lookup failed for ${context.sha}: ${error.message}`);
+            }
+
+            let matchingPr = prs.find(isMatchingReleasePr);
+
+            if (!matchingPr) {
+              const commitMessage = context.payload.head_commit?.message || '';
+              const prNumberMatch = commitMessage.match(/\(#(\d+)\)/);
+              if (prNumberMatch) {
+                const prNumber = Number(prNumberMatch[1]);
+                core.info(`Falling back to PR #${prNumber} parsed from commit message.`);
+                const { data: pullRequest } = await github.rest.pulls.get({
+                  owner,
+                  repo,
+                  pull_number: prNumber,
+                });
+
+                if (isMatchingReleasePr(pullRequest)) {
+                  matchingPr = pullRequest;
+                }
+              }
+            }
+
             if (!matchingPr) {
               core.setFailed(
                 `No merged release PR with title "${expectedTitle}" is associated with commit ${context.sha}.`,
@@ -78,6 +109,8 @@ jobs:
             }
 
             core.info(`Publishing merged release PR #${matchingPr.number}: ${matchingPr.title}`);
+            core.setOutput('number', String(matchingPr.number));
+            core.setOutput('body', matchingPr.body || '');
 
       - name: Check release tag does not exist
         env:
@@ -86,42 +119,6 @@ jobs:
           if git ls-remote --exit-code --tags origin "refs/tags/v$VERSION" >/dev/null 2>&1; then
             echo "Release tag already exists: v$VERSION"
             exit 1
-          fi
-
-      - name: Find previous release tag
-        id: previous_tag
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          PREVIOUS_TAG=$(python3 - <<'PY'
-          import os
-          import re
-          import subprocess
-
-          current = tuple(int(part) for part in os.environ["VERSION"].split("."))
-          tags = subprocess.check_output(
-              ["git", "tag", "--list", "v[0-9]*.[0-9]*.[0-9]*"],
-              text=True,
-          ).splitlines()
-
-          candidates = []
-          for tag in tags:
-              match = re.fullmatch(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", tag)
-              if not match:
-                  continue
-              version = tuple(int(part) for part in match.groups())
-              if version < current:
-                  candidates.append((version, tag))
-
-          if candidates:
-              print(max(candidates)[1])
-          PY
-          )
-          echo "previous_tag=$PREVIOUS_TAG" >> $GITHUB_OUTPUT
-          if [ -n "$PREVIOUS_TAG" ]; then
-            echo "Previous release tag: $PREVIOUS_TAG"
-          else
-            echo "No previous release tag found"
           fi
 
       - name: Set up Docker Buildx
@@ -150,34 +147,22 @@ jobs:
 
       - name: Create GitHub release
         uses: actions/github-script@v9
+        env:
+          RELEASE_PR_BODY: ${{ steps.release_pr.outputs.body }}
         with:
           script: |
             const version = '${{ steps.version.outputs.version }}';
             const tagName = `v${version}`;
-            const previousTagName = '${{ steps.previous_tag.outputs.previous_tag }}';
             const image = `ghcr.io/v31-dev/sage:${version}`;
             const { owner, repo } = context.repo;
-            const beforeSha = '${{ github.event.before }}';
-            const notesTargetCommitish = beforeSha && !/^0+$/.test(beforeSha) ? beforeSha : context.sha;
-
-            const noteParams = {
-              owner,
-              repo,
-              tag_name: tagName,
-              target_commitish: notesTargetCommitish,
-            };
-            if (previousTagName) {
-              noteParams.previous_tag_name = previousTagName;
-            }
-
-            const notes = await github.rest.repos.generateReleaseNotes(noteParams);
+            const prBody = process.env.RELEASE_PR_BODY || '';
 
             const body = [
               '## Docker Image',
               '```bash',
               `docker pull ${image}`,
               '```',
-              notes.data.body,
+              prBody,
             ].join('\n');
 
             await github.rest.repos.createRelease({
