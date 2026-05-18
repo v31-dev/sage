@@ -4,7 +4,7 @@ const API_ROOT = '/api'
 const LOAD_DELAY = 300
 
 export interface AppInfo {
-  version: number
+  version: string
   domain: string
   hostname: string
   ip: string
