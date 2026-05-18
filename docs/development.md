@@ -97,12 +97,12 @@ Current GitHub workflows:
   - bumps the root `VERSION` file by `patch`, `minor`, or `major`
   - updates `sample.env` so `SAGE_IMAGE_TAG` matches the release version
   - creates a `release/v<VERSION>` branch with those file changes
-  - opens a draft release PR titled with the exact version
-  - fills the PR body with merged PR descriptions plus a generated changelog
+  - opens a draft release PR titled `v<VERSION>`
+  - fills the PR body with merged PR descriptions and inline label summaries plus the generated GitHub release notes
   - applies the combined labels from the merged PRs since the previous release
 - `publish.yml`
   - runs on pushes to `main` that change `VERSION` or `sample.env`
-  - validates that the merged pull request associated with the pushed commit has the exact version as its title
+  - validates that the merged pull request associated with the pushed commit is titled `v<VERSION>`
   - builds and publishes a GHCR image from that exact version
   - publishes only the exact `VERSION` image tag
   - creates a GitHub release with generated release notes configured by `.github/release.yml`
