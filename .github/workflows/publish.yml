@@ -68,10 +68,11 @@ jobs:
               },
             );
 
-            const matchingPr = prs.find((pr) => pr.base.ref === 'main' && pr.merged_at && pr.title === version);
+            const expectedTitle = `v${version}`;
+            const matchingPr = prs.find((pr) => pr.base.ref === 'main' && pr.merged_at && pr.title === expectedTitle);
             if (!matchingPr) {
               core.setFailed(
-                `No merged release PR with title "${version}" is associated with commit ${context.sha}.`,
+                `No merged release PR with title "${expectedTitle}" is associated with commit ${context.sha}.`,
               );
               return;
             }

@@ -271,13 +271,16 @@ jobs:
 
             const notes = await github.rest.repos.generateReleaseNotes(notesParams);
 
+            const formatLabelSummary = (labels) => (
+              labels.length ? ` (${labels.join(', ')})` : ''
+            );
+
             const pullRequestSection = sortedPullRequests.length
               ? sortedPullRequests
                   .map(
                     (pr) => [
-                      `### #${pr.number} ${pr.title}`,
+                      `### #${pr.number} ${pr.title}${formatLabelSummary(pr.labels)}`,
                       pr.url,
-                      pr.labels.length ? `Labels: ${pr.labels.join(', ')}` : 'Labels: none',
                       '',
                       pr.body,
                     ].join('\n'),
@@ -286,13 +289,9 @@ jobs:
               : '_No merged pull requests found since the previous release tag._';
 
             const body = [
-              '## Release Version',
-              `\`${version}\``,
-              '',
               '## Included Pull Requests',
               pullRequestSection,
               '',
-              '## Generated Changelog',
               notes.data.body,
             ].join('\n');
 
@@ -301,7 +300,7 @@ jobs:
             const { data: pullRequest } = await github.rest.pulls.create({
               owner,
               repo,
-              title: version,
+              title: `v${version}`,
               head: branchName,
               base: 'main',
               body,
