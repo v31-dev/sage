@@ -1,0 +1,321 @@
+name: Prepare Release PR
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Semantic version bump to prepare from main
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: release-pr-main
+  cancel-in-progress: false
+
+jobs:
+  prepare-release-pr:
+    runs-on: ubuntu-latest
+    name: Prepare Release PR
+    steps:
+      - name: Ensure workflow runs on main
+        run: |
+          if [[ "${GITHUB_REF_NAME}" != "main" ]]; then
+            echo "This workflow may only run from the main branch."
+            echo "Triggered ref: ${GITHUB_REF_NAME}"
+            exit 1
+          fi
+
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Bump release version files
+        id: version
+        env:
+          BUMP: ${{ inputs.bump }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+          import sys
+          from pathlib import Path
+
+          version_path = Path("VERSION")
+          current_version = version_path.read_text().strip()
+          match = re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", current_version)
+          if not match:
+              print("VERSION must use full semantic version format: MAJOR.MINOR.PATCH")
+              print(f"Found: {current_version}")
+              sys.exit(1)
+
+          major, minor, patch = (int(part) for part in match.groups())
+          bump = os.environ["BUMP"]
+          if bump == "major":
+              major += 1
+              minor = 0
+              patch = 0
+          elif bump == "minor":
+              minor += 1
+              patch = 0
+          elif bump == "patch":
+              patch += 1
+          else:
+              print(f"Unsupported bump type: {bump}")
+              sys.exit(1)
+
+          next_version = f"{major}.{minor}.{patch}"
+          version_path.write_text(f"{next_version}\n")
+
+          sample_env_path = Path("sample.env")
+          sample_env = sample_env_path.read_text()
+          updated_sample_env, replacements = re.subn(
+              r"^SAGE_IMAGE_TAG=['\"]?[^'\"]*['\"]?$",
+              f"SAGE_IMAGE_TAG='{next_version}'",
+              sample_env,
+              count=1,
+              flags=re.MULTILINE,
+          )
+          if replacements != 1:
+              print("Could not update SAGE_IMAGE_TAG in sample.env")
+              sys.exit(1)
+          sample_env_path.write_text(updated_sample_env)
+
+          github_output = Path(os.environ["GITHUB_OUTPUT"])
+          with github_output.open("a", encoding="utf-8") as fh:
+              fh.write(f"current_version={current_version}\n")
+              fh.write(f"version={next_version}\n")
+
+          print(f"Current version: {current_version}")
+          print(f"Next version: {next_version}")
+          PY
+
+      - name: Check release tag and branch do not exist
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if git ls-remote --exit-code --tags origin "refs/tags/v$VERSION" >/dev/null 2>&1; then
+            echo "Release tag already exists: v$VERSION"
+            exit 1
+          fi
+
+          if git ls-remote --exit-code --heads origin "refs/heads/release/v$VERSION" >/dev/null 2>&1; then
+            echo "Release branch already exists: release/v$VERSION"
+            exit 1
+          fi
+
+      - name: Find previous release tag
+        id: previous_tag
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          PREVIOUS_TAG=$(python3 - <<'PY'
+          import os
+          import re
+          import subprocess
+
+          current = tuple(int(part) for part in os.environ["VERSION"].split("."))
+          tags = subprocess.check_output(
+              ["git", "tag", "--list", "v[0-9]*.[0-9]*.[0-9]*"],
+              text=True,
+          ).splitlines()
+
+          candidates = []
+          for tag in tags:
+              match = re.fullmatch(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", tag)
+              if not match:
+                  continue
+              version = tuple(int(part) for part in match.groups())
+              if version < current:
+                  candidates.append((version, tag))
+
+          if candidates:
+              print(max(candidates)[1])
+          PY
+          )
+          echo "previous_tag=$PREVIOUS_TAG" >> $GITHUB_OUTPUT
+          if [ -n "$PREVIOUS_TAG" ]; then
+            echo "Previous release tag: $PREVIOUS_TAG"
+          else
+            echo "No previous release tag found"
+          fi
+
+      - name: Create release branch commit
+        id: release_branch
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          BRANCH_NAME="release/v$VERSION"
+          git switch -c "$BRANCH_NAME"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add VERSION sample.env
+          git commit -m "$VERSION"
+          git push origin "$BRANCH_NAME"
+          echo "branch_name=$BRANCH_NAME" >> $GITHUB_OUTPUT
+          echo "sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Create draft release PR
+        id: create_release_pr
+        uses: actions/github-script@v9
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          PREVIOUS_TAG: ${{ steps.previous_tag.outputs.previous_tag }}
+          TARGET_SHA: ${{ steps.release_branch.outputs.sha }}
+          BRANCH_NAME: ${{ steps.release_branch.outputs.branch_name }}
+        with:
+          script: |
+            const version = process.env.VERSION;
+            const previousTagName = process.env.PREVIOUS_TAG;
+            const targetSha = process.env.TARGET_SHA;
+            const branchName = process.env.BRANCH_NAME;
+            const { owner, repo } = context.repo;
+
+            const normalizeBody = (value) => {
+              const trimmed = (value || '').trim();
+              if (!trimmed) {
+                return '_No description provided._';
+              }
+              if (trimmed.length <= 3000) {
+                return trimmed;
+              }
+              return `${trimmed.slice(0, 3000)}\n\n_Description truncated for release PR size._`;
+            };
+
+            const pullRequests = new Map();
+            const labelSet = new Set();
+
+            const addPullRequest = (pr) => {
+              if (!pr || !pr.merged_at || pr.base?.ref !== 'main') {
+                return;
+              }
+
+              if (pullRequests.has(pr.number)) {
+                return;
+              }
+
+              const labels = (pr.labels || []).map((label) => label.name).filter(Boolean);
+              pullRequests.set(pr.number, {
+                number: pr.number,
+                title: pr.title,
+                url: pr.html_url,
+                body: normalizeBody(pr.body),
+                labels,
+                merged_at: pr.merged_at,
+              });
+
+              for (const label of labels) {
+                labelSet.add(label);
+              }
+            };
+
+            if (previousTagName) {
+              const compare = await github.rest.repos.compareCommitsWithBasehead({
+                owner,
+                repo,
+                basehead: `${previousTagName}...${targetSha}`,
+              });
+
+              for (const commit of compare.data.commits) {
+                const prs = await github.paginate(
+                  github.rest.repos.listPullRequestsAssociatedWithCommit,
+                  {
+                    owner,
+                    repo,
+                    commit_sha: commit.sha,
+                  },
+                );
+
+                for (const pr of prs) {
+                  addPullRequest(pr);
+                }
+              }
+            } else {
+              const prs = await github.paginate(github.rest.pulls.list, {
+                owner,
+                repo,
+                state: 'closed',
+                base: 'main',
+                sort: 'updated',
+                direction: 'desc',
+                per_page: 100,
+              });
+
+              for (const pr of prs) {
+                addPullRequest(pr);
+              }
+            }
+
+            const sortedPullRequests = Array.from(pullRequests.values()).sort(
+              (a, b) => new Date(a.merged_at) - new Date(b.merged_at),
+            );
+
+            const notesParams = {
+              owner,
+              repo,
+              tag_name: `v${version}`,
+              target_commitish: targetSha,
+            };
+            if (previousTagName) {
+              notesParams.previous_tag_name = previousTagName;
+            }
+
+            const notes = await github.rest.repos.generateReleaseNotes(notesParams);
+
+            const pullRequestSection = sortedPullRequests.length
+              ? sortedPullRequests
+                  .map(
+                    (pr) => [
+                      `### #${pr.number} ${pr.title}`,
+                      pr.url,
+                      pr.labels.length ? `Labels: ${pr.labels.join(', ')}` : 'Labels: none',
+                      '',
+                      pr.body,
+                    ].join('\n'),
+                  )
+                  .join('\n\n')
+              : '_No merged pull requests found since the previous release tag._';
+
+            const body = [
+              '## Release Version',
+              `\`${version}\``,
+              '',
+              '## Included Pull Requests',
+              pullRequestSection,
+              '',
+              '## Generated Changelog',
+              notes.data.body,
+            ].join('\n');
+
+            const labels = Array.from(labelSet).sort();
+
+            const { data: pullRequest } = await github.rest.pulls.create({
+              owner,
+              repo,
+              title: version,
+              head: branchName,
+              base: 'main',
+              body,
+              draft: true,
+            });
+
+            if (labels.length > 0) {
+              await github.rest.issues.addLabels({
+                owner,
+                repo,
+                issue_number: pullRequest.number,
+                labels,
+              });
+            }
+
+            core.info(`Created draft release PR #${pullRequest.number}: ${pullRequest.html_url}`);
+            core.setOutput('url', pullRequest.html_url);

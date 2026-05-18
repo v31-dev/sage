@@ -5,15 +5,13 @@ on:
     branches:
       - main
     paths:
-      - 'app/**'
-      - 'ui/**'
       - 'VERSION'
-      - 'Dockerfile'
-      - '.github/workflows/publish.yml'
+      - 'sample.env'
 
 permissions:
   contents: write
   packages: write
+  pull-requests: read
 
 concurrency:
   group: publish-${{ github.ref }}
@@ -32,14 +30,53 @@ jobs:
       - name: Read version
         id: version
         run: |
-          VERSION=$(cat VERSION)
-          if [[ ! "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
-            echo "VERSION must use full semantic version format: MAJOR.MINOR.PATCH"
-            echo "Found: $VERSION"
-            exit 1
-          fi
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Version: $VERSION"
+          python3 - <<'PY'
+          import os
+          import re
+          import sys
+          from pathlib import Path
+
+          version_path = Path("VERSION")
+          version = version_path.read_text().strip()
+          match = re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", version)
+          if not match:
+              print("VERSION must use full semantic version format: MAJOR.MINOR.PATCH")
+              print(f"Found: {version}")
+              sys.exit(1)
+
+          github_output = Path(os.environ["GITHUB_OUTPUT"])
+          with github_output.open("a", encoding="utf-8") as fh:
+              fh.write(f"version={version}\n")
+
+          print(f"Version: {version}")
+          PY
+
+      - name: Validate merged release PR
+        uses: actions/github-script@v9
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        with:
+          script: |
+            const version = process.env.VERSION;
+            const { owner, repo } = context.repo;
+            const prs = await github.paginate(
+              github.rest.repos.listPullRequestsAssociatedWithCommit,
+              {
+                owner,
+                repo,
+                commit_sha: context.sha,
+              },
+            );
+
+            const matchingPr = prs.find((pr) => pr.base.ref === 'main' && pr.merged_at && pr.title === version);
+            if (!matchingPr) {
+              core.setFailed(
+                `No merged release PR with title "${version}" is associated with commit ${context.sha}.`,
+              );
+              return;
+            }
+
+            core.info(`Publishing merged release PR #${matchingPr.number}: ${matchingPr.title}`);
 
       - name: Check release tag does not exist
         env:
@@ -119,12 +156,14 @@ jobs:
             const previousTagName = '${{ steps.previous_tag.outputs.previous_tag }}';
             const image = `ghcr.io/v31-dev/sage:${version}`;
             const { owner, repo } = context.repo;
+            const beforeSha = '${{ github.event.before }}';
+            const notesTargetCommitish = beforeSha && !/^0+$/.test(beforeSha) ? beforeSha : context.sha;
 
             const noteParams = {
               owner,
               repo,
               tag_name: tagName,
-              target_commitish: context.sha,
+              target_commitish: notesTargetCommitish,
             };
             if (previousTagName) {
               noteParams.previous_tag_name = previousTagName;
