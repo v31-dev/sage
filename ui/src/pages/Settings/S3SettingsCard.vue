@@ -20,6 +20,7 @@ import {
 import { Input } from '@/components/ui/input'
 import { Spinner } from '@/components/ui/spinner'
 import { coerceSettingFields, loadSetting, saveSetting, type SettingFields } from './common'
+import SecretInput from '@/components/SecretInput.vue'
 
 const S3_FIELD_KEYS = ['access_key', 'secret_key', 'bucket', 'endpoint', 'path'] as const
 
@@ -94,7 +95,7 @@ onMounted(() => {
 
             <Field>
               <FieldLabel for="s3-secret-key">Secret Key</FieldLabel>
-              <Input
+              <SecretInput
                 id="s3-secret-key"
                 :model-value="fields.secret_key ?? ''"
                 @update:model-value="value => updateField('secret_key', value)"

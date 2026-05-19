@@ -17,9 +17,9 @@ import {
   FieldLabel,
   FieldSet,
 } from '@/components/ui/field'
-import { Input } from '@/components/ui/input'
 import { Spinner } from '@/components/ui/spinner'
 import { coerceSettingFields, loadSetting, saveSetting, type SettingFields } from './common'
+import SecretInput from '@/components/SecretInput.vue'
 
 const NOTIFICATION_FIELD_KEYS = ['discord_webhook'] as const
 
@@ -82,7 +82,7 @@ onMounted(() => {
           <FieldGroup>
             <Field>
               <FieldLabel for="notifications-discord-webhook">Discord Webhook</FieldLabel>
-              <Input
+              <SecretInput
                 id="notifications-discord-webhook"
                 :model-value="fields.discord_webhook ?? ''"
                 @update:model-value="value => updateField('discord_webhook', value)"
