@@ -4,15 +4,7 @@ import { Eye, EyeOff } from 'lucide-vue-next'
 import { InputGroup, InputGroupAddon, InputGroupButton } from '@/components/ui/input-group'
 import InputGroupInput from './ui/input-group/InputGroupInput.vue'
 
-const props = defineProps<{
-  defaultValue?: string | number
-  modelValue?: string | number
-}>()
-
-const emits = defineEmits<{
-  (e: 'update:modelValue', payload: string | number): void
-}>()
-
+const modelValue = defineModel<string | number>()
 const revealed = ref<boolean>(false)
 </script>
 
@@ -20,10 +12,9 @@ const revealed = ref<boolean>(false)
   <InputGroup>
     <InputGroupInput
       v-bind="$attrs"
-      :model-value="props.modelValue"
+      v-model="modelValue"
       :type="revealed ? 'text' : 'password'"
-      autocomplete="new-password"
-      @update:model-value="value => $emit('update:modelValue', value)"
+      autocomplete="off"
     />
     <InputGroupAddon align="inline-end">
       <InputGroupButton size="icon-xs" @click="revealed = !revealed">
