@@ -20,7 +20,7 @@ import {
 import { Input } from '@/components/ui/input'
 import { Spinner } from '@/components/ui/spinner'
 import { coerceSettingFields, loadSetting, saveSetting, type SettingFields } from './common'
-import SecretInput from '@/components/SecretInput.vue'
+import CustomInput from '@/components/CustomInput.vue'
 
 const CLOUDFLARE_FIELD_KEYS = ['domain', 'admin_email', 'api_token', 'account_id'] as const
 
@@ -123,8 +123,9 @@ onMounted(() => {
 
             <Field>
               <FieldLabel for="cloudflare-api-token">API Token</FieldLabel>
-              <SecretInput
+              <CustomInput
                 id="cloudflare-api-token"
+                secret
                 :model-value="settings.api_token ?? ''"
                 @update:model-value="value => updateField('api_token', value)"
                 placeholder="Cloudflare API token"

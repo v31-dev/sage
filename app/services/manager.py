@@ -1051,7 +1051,7 @@ class Manager(Base):
           f"\"{container_dir}/volumes/{v.name}:{v.path}\""
           for v in volumes
       ]
-      volume_mkdir_cmd = ';'.join([f"mkdir -p {container_dir}/volumes/{v.name}" for v in volumes])
+      volume_mkdir_cmd = ';'.join([f"mkdir -p {container_dir}/volumes"] + [f"mkdir -p {container_dir}/volumes/{v.name}" for v in volumes])
       await run_in_executor_with_context(
           self.tailscale.exec_command,
           container.worker.hostname,

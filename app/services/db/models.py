@@ -87,11 +87,11 @@ class Application(BaseModel):
     if self.type == "git":
       self.image = None
       if self.repo:
-        pattern = r"^https?://[\w.-]+/[\w.-]+/[\w.-]+(?:\.git)?(?:#[\w.-]+)?(?::[\w./-]+)?$"
+        pattern = r"^https?://[\w.-]+/[\w.-]+/[\w.-]+\.git(?:#[\w.-]+)?(?::[\w./-]+)?$"
         if not re.match(pattern, self.repo):
           raise ValueError(
               f"Invalid Git repository URL: {
-                  self.repo}. Should be in format 'https://github.com/user/repo<?.git><?#branch><?:sub-directory>'")
+                  self.repo}. Should be in format 'https://github.com/user/repo.git<?#branch><?:sub-directory>'")
 
     return super().save(*args, **kwargs)
 

@@ -14,6 +14,7 @@ import {
 import { Button } from '@/components/ui/button'
 import { ButtonGroup } from '@/components/ui/button-group'
 import { Label } from '@/components/ui/label'
+import { Icon } from '@iconify/vue'
 
 import DeployApplicationButton from './DeployApplicationButton.vue'
 import StopApplicationButton from './StopApplicationButton.vue'
@@ -53,6 +54,25 @@ const applicationStatusClass = computed(() => {
   else if (isApplicationBusy.value) return 'warning'
   else if (props.application.status === 'error') return 'error'
   else return 'default'
+})
+
+const repoURL = computed(() => {
+  const repo = props.application.repo
+  if (!repo) return ''
+
+  let [base, gitref] = repo.split('#')
+  base = base?.replace(/\.git$/, '') // Remove .git suffix if present
+
+  // No branch/path specified
+  if (!gitref) return base
+
+  const [branch, path] = gitref.split(':')
+
+  // Branch only
+  if (!path) return `${base}/tree/${branch}`
+
+  // Branch + path
+  return `${base}/tree/${branch}/${path}`
 })
 </script>
 
@@ -104,7 +124,17 @@ const applicationStatusClass = computed(() => {
         </p>
       </div>
       <div v-if="props.application.type === 'git'">
-        <Label>Repository</Label>
+        <div class="flex items-center gap-2">
+          <Label>Repository</Label>
+          <a
+            v-if="props.application.repo"
+            :href="repoURL"
+            target="_blank"
+            class="text-muted-foreground hover:text-foreground transition-colors"
+          >
+            <Icon icon="mdi:github" class="w-4 h-4" />
+          </a>
+        </div>
         <p class="text-sm text-muted-foreground">
           {{ props.application.repo ? props.application.repo : '-' }}
         </p>

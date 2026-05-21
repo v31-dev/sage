@@ -22,6 +22,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import CustomInput from '@/components/CustomInput.vue'
 
 import { type Application, getApplicationAPI } from '@/services/api'
 import { Edit } from 'lucide-vue-next'
@@ -132,11 +133,21 @@ async function handleUpdateApplication() {
           </Field>
           <Field v-if="editFormData.type == 'git'">
             <FieldLabel for="repo"> Repository </FieldLabel>
-            <Input id="repo" v-model="editFormData.repo" placeholder="required" />
+            <CustomInput
+              id="repo"
+              v-model="editFormData.repo"
+              placeholder="required"
+              tooltip="https://github.com/user/repo.git<?#branch><?:sub-directory>"
+            />
           </Field>
           <Field v-if="editFormData.type == 'git'">
             <FieldLabel for="path"> Path </FieldLabel>
-            <Input id="path" v-model="editFormData.path" placeholder="required" />
+            <CustomInput
+              id="path"
+              v-model="editFormData.path"
+              placeholder="required"
+              tooltip="Dockerfile"
+            />
           </Field>
           <Field>
             <FieldLabel for="env"> Environment Variables </FieldLabel>
