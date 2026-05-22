@@ -78,6 +78,13 @@ class Application(BaseModel):
   domains_synced = BooleanField(default=False)
   container_count = IntegerField(default=0)
 
+  @property
+  def qualified_name(self) -> str:
+    '''
+      This is the name of the application used on the worker to prevent name space collisions.
+    '''
+    return f"{self.project.name}-{self.name}"
+
   def save(self, *args, **kwargs):
     if self.type == "docker":
       self.repo = None

@@ -160,12 +160,11 @@ def stop_application(request: Request):
 @router.post("/{application}/metrics", dependencies=[Depends(inject_application)])
 def get_metrics(request: Request, period: Literal["1h", "24h", "1w", "1m"] = "1h"):
   application = request.state.models["application"]
-  container_name = f"{application.project.name}-{application.name}"
 
   data = []
   for container in application.containers:
     container_metrics = Metrics().query_container_period(
-        container.worker.hostname, container_name, period
+        container.worker.hostname, application.qualified_name, period
     )
     data.append({"hostname": container.worker.hostname, "metrics": container_metrics})
 
