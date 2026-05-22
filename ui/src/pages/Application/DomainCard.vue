@@ -123,7 +123,7 @@ async function onClickConfirmDelete() {
       </CardAction>
     </CardHeader>
     <CardFooter class="border-t">
-      <Button size="sm" variant="outline" class="w-full flex-1" as-child>
+      <Button size="sm" variant="outline" class="w-full" as-child>
         <a :href="link" target="_blank">
           <ExternalLink />
           {{ link }}

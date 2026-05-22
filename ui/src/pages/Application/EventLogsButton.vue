@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, useAttrs } from 'vue'
 import {
   Dialog,
   DialogContent,
@@ -10,6 +10,8 @@ import {
   DialogTrigger,
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
+
+defineOptions({ inheritAttrs: false })
 import { Field, FieldGroup, FieldLabel, FieldSet } from '@/components/ui/field'
 import {
   Select,
@@ -31,6 +33,7 @@ interface Props {
 }
 
 const props = withDefaults(defineProps<Props>(), {})
+const attrs = useAttrs()
 
 const appStore = useAppStore()
 const isEventLogsDialogOpen = ref(false)
@@ -83,9 +86,9 @@ const eventLogsPollCondition = computed(() =>
   <Dialog v-model:open="isEventLogsDialogOpen" :key="props.container.worker.hostname">
     <DialogTrigger asChild>
       <Button
+        v-bind="attrs"
         variant="outline"
         size="sm"
-        class="flex-1 min-w-0"
         @click="openEventLogsDialog(props.container)"
       >
         <Logs />
