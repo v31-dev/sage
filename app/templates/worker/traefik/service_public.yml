@@ -12,24 +12,24 @@ http:
       service: ping@internal
 
     # Entrypoint via Cloudflare Tunnel
-    ${SERVICE}_public:
+    ${SERVICE}_${SUBDOMAIN}_public:
       rule: Host(`${SUBDOMAIN}.${DOMAIN}`) && PathPrefix(`/`)
       entrypoints:
         - web
       middlewares:
         - security-headers
         - mark-as-hopped
-      service: ${SERVICE}_public
+      service: ${SERVICE}_${SUBDOMAIN}_public
 
     # Final Mesh Entrypoint (for load balancing)
-    ${SERVICE}_mesh_public:
+    ${SERVICE}_${SUBDOMAIN}_mesh_public:
       rule: "Host(`${SUBDOMAIN}.${DOMAIN}`) && PathPrefix(`/`) && Header(`X-Mesh-Hops`, `1`)"
       entrypoints:
         - mesh
       middlewares:
         - server-header
       priority: 200
-      service: ${SERVICE}_local_public
+      service: ${SERVICE}_${SUBDOMAIN}_local_public
 
   middlewares:
     ${SERVICE}_${SUBDOMAIN}_public_x_tag_header:
@@ -39,11 +39,11 @@ http:
 
   services:
     # Final Mesh service
-    ${SERVICE}_local_public:
+    ${SERVICE}_${SUBDOMAIN}_local_public:
       loadBalancer:
         servers:
           - url: http://${SERVICE}:${PORT}
     # Loadbalanced services
-    ${SERVICE}_public:
+    ${SERVICE}_${SUBDOMAIN}_public:
       loadBalancer:
         servers: [ ${LOAD_BALANCED_SERVERS} ]

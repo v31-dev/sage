@@ -122,6 +122,12 @@ class Container(BaseModel):
   status = CharField(choices=STATUS_CHOICES, default="inactive")
   domain_tag = CleanCharField(null=True)
 
+  def save(self, *args, **kwargs):
+    if self.domain_tag and self.domain_tag == "x_tag":
+      raise ValueError("Domain tag cannot be 'x_tag' as it is reserved for internal use.")
+
+    return super().save(*args, **kwargs)
+
   class Meta:
     indexes = ((("application", "worker"), True),)
 
