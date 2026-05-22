@@ -107,7 +107,7 @@ const repoURL = computed(() => {
     <CardContent class="space-y-4">
       <div>
         <Label>Description</Label>
-        <p class="text-sm text-muted-foreground">
+        <p class="text-sm text-muted-foreground whitespace-pre-wrap">
           {{ props.application.description ? props.application.description : '-' }}
         </p>
       </div>
