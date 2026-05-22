@@ -17,6 +17,7 @@ import { toast } from 'vue-sonner'
 import { Spinner } from '@/components/ui/spinner'
 
 import { type Project } from '@/services/api'
+import CustomInput from '@/components/CustomInput.vue'
 
 interface Props {
   project: Project
@@ -93,8 +94,11 @@ async function handleUpdateProject() {
           </Field>
           <Field>
             <FieldLabel for="env"> Environment Variables </FieldLabel>
-            <Textarea
+            <CustomInput
               id="env"
+              type="textarea"
+              tooltip="KEY=VALUE pairs, one per line\nComments with # are allowed\nVALUE can be string quoted"
+              secret
               v-model="editFormData.env"
               class="resize-none"
               placeholder="optional"

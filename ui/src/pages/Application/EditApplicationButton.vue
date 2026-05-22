@@ -35,6 +35,9 @@ interface Props {
 
 const props = withDefaults(defineProps<Props>(), {})
 
+const envTooltip =
+  'KEY=VALUE pairs, one per line\nComments with # are allowed\nVALUE can be string quoted\n' +
+  '${SAGE_WORKER_HOSTNAME} can be used for worker hostname'
 const isEditDialogOpen = ref(false)
 const editFormData = ref({
   label: '',
@@ -151,8 +154,11 @@ async function handleUpdateApplication() {
           </Field>
           <Field>
             <FieldLabel for="env"> Environment Variables </FieldLabel>
-            <Textarea
+            <CustomInput
               id="env"
+              type="textarea"
+              :tooltip="envTooltip"
+              secret
               v-model="editFormData.env"
               class="resize-none"
               placeholder="optional"
@@ -160,8 +166,11 @@ async function handleUpdateApplication() {
           </Field>
           <Field v-if="editFormData.type == 'git'">
             <FieldLabel for="args"> Build Arguments </FieldLabel>
-            <Textarea
+            <CustomInput
               id="args"
+              type="textarea"
+              :tooltip="envTooltip"
+              secret
               v-model="editFormData.args"
               class="resize-none"
               placeholder="optional"

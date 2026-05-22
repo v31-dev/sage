@@ -32,7 +32,7 @@ from services.tailscale import Tailscale
 from services.traefik import Traefik
 from services.notification import Notifications
 from services.s3 import S3
-from utils.common import get_env
+from utils.common import get_env, parse_multiline_kv
 from utils.logging import generate_task_id_token, run_in_executor_with_context, task_id
 
 
@@ -490,7 +490,10 @@ class Manager(Base):
         if container.worker.online and container.status == "active"
     ]
     logger.info(
-        f"Syncing Traefik config for application {application.qualified_name} for these workers {[container.worker.hostname for container in active_containers]}."
+        f"Syncing Traefik config for application {
+            application.qualified_name} for these workers {
+            [
+                container.worker.hostname for container in active_containers]}."
     )
 
     # Preserve the full declared tag list for discovery, even when a tag has no
@@ -505,7 +508,10 @@ class Manager(Base):
     # writing the new routing view for this application.
     for worker in workers:
       if not worker.online:
-        logger.error(f"Worker {worker.hostname} is offline, skipping Traefik config sync for application {application.qualified_name} on this worker.")
+        logger.error(
+            f"Worker {
+                worker.hostname} is offline, skipping Traefik config sync for application {
+                application.qualified_name} on this worker.")
         continue
 
       self.tailscale.exec_command(
@@ -1015,16 +1021,21 @@ class Manager(Base):
     try:
       task_id_token = task_id.set(container_task_id)
 
+      project_env = container.application.project.env if container.application.project.env else ""
+      project_env = parse_multiline_kv(project_env, lambda key, value: (key, value))
+
+      # Special SAGE specific variables
+      project_env.append(("SAGE_WORKER_HOSTNAME", container.worker.hostname))
+
       app_env = container.application.env if container.application.env else ""
       app_build_args = container.application.args if container.application.args else ""
-      app_build_args = (
-          [
-              f"{{ {build_arg.split('=')[0]}: \"{build_arg.split('=')[1]}\" }}"
-              for build_arg in app_build_args.split("\n")
-          ]
-          if app_build_args
-          else []
-      )
+
+      # Resolve Application env and build args with project env values if they reference them with ${KEY}
+      for key, value in project_env:
+        app_env = app_env.replace("${" + key + "}", str(value))
+        app_build_args = app_build_args.replace("${" + key + "}", str(value))
+
+      app_build_args = parse_multiline_kv(app_build_args, lambda key, value: f"{{ {key}: \"{value}\" }}")
 
       # Create the secrets file
       await run_in_executor_with_context(
@@ -1114,7 +1125,9 @@ class Manager(Base):
       self.notify(f"Application {container.application.qualified_name} container deployed to worker {container.worker.hostname}.")
     else:
       self.notify(
-          f"Failed to deploy application {container.application.qualified_name} container to worker {container.worker.hostname}: {exception_message}", "error")
+          f"Failed to deploy application {
+              container.application.qualified_name} container to worker {
+              container.worker.hostname}: {exception_message}", "error")
 
   def delete_container(self, container: Container, force: bool = False):
     """
@@ -1259,7 +1272,10 @@ class Manager(Base):
           f"Application {container.application.qualified_name} container stopped on worker {container.worker.hostname}.")
     else:
       self.notify(
-          f"Failed to stop application {container.application.qualified_name} container on worker {container.worker.hostname}: {exception_message}", "error")
+          f"Failed to stop application {
+              container.application.qualified_name} container on worker {
+              container.worker.hostname}: {exception_message}",
+          "error")
 
   async def discover_s3_platform_backups(self):
     """
