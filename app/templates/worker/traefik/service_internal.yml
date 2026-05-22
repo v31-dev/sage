@@ -16,7 +16,7 @@ http:
 
     # Entrypoint via Tailscale
     ${SERVICE}_internal:
-      rule: Host(`${SUBDOMAIN}.int.${DOMAIN}`) && Path(`/`)
+      rule: Host(`${SUBDOMAIN}.int.${DOMAIN}`) && PathPrefix(`/`)
       entrypoints:
         - websecure
       middlewares:
@@ -29,7 +29,7 @@ http:
 
     # Final Mesh Entrypoint (for load balancing)
     ${SERVICE}_mesh_internal:
-      rule: "Host(`${SUBDOMAIN}.int.${DOMAIN}`) && Path(`/`) && Header(`X-Mesh-Hops`, `1`)"
+      rule: "Host(`${SUBDOMAIN}.int.${DOMAIN}`) && PathPrefix(`/`) && Header(`X-Mesh-Hops`, `1`)"
       entrypoints:
         - mesh
       middlewares:

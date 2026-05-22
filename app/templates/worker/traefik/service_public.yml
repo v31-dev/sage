@@ -13,7 +13,7 @@ http:
 
     # Entrypoint via Cloudflare Tunnel
     ${SERVICE}_public:
-      rule: Host(`${SUBDOMAIN}.${DOMAIN}`) && Path(`/`)
+      rule: Host(`${SUBDOMAIN}.${DOMAIN}`) && PathPrefix(`/`)
       entrypoints:
         - web
       middlewares:
@@ -23,7 +23,7 @@ http:
 
     # Final Mesh Entrypoint (for load balancing)
     ${SERVICE}_mesh_public:
-      rule: "Host(`${SUBDOMAIN}.${DOMAIN}`) && Path(`/`) && Header(`X-Mesh-Hops`, `1`)"
+      rule: "Host(`${SUBDOMAIN}.${DOMAIN}`) && PathPrefix(`/`) && Header(`X-Mesh-Hops`, `1`)"
       entrypoints:
         - mesh
       middlewares:

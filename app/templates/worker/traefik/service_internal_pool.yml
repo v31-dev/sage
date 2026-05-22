@@ -2,7 +2,7 @@ http:
   routers:
     # Entrypoint via Tailscale
     ${SERVICE}_internal_${POOL_TAG}:
-      rule: Host(`${SUBDOMAIN}.int.${DOMAIN}`) && Path(`/`) && Query(`x-tag`, `${POOL_TAG}`)
+      rule: Host(`${SUBDOMAIN}.int.${DOMAIN}`) && PathPrefix(`/`) && Query(`x-tag`, `${POOL_TAG}`)
       entrypoints:
         - websecure
       middlewares:
