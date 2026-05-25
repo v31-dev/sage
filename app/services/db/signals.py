@@ -3,10 +3,16 @@ from playhouse.signals import post_delete, post_save, pre_save
 from .models import Application, Container, Domain, Notification, Project
 
 
+def _trigger_application_domain_sync(application_id):
+  Application.update(domains_synced=False).where(
+      Application.id == application_id).execute()
+
+
 @pre_save(sender=Application)
 def pre_save_application(model_class, instance, created):
   if not created:
-    if "domains_synced" not in [f.name for f in instance.dirty_fields]:
+    dirty_field_names = {field.name for field in instance.dirty_fields}
+    if "status" in dirty_field_names and "domains_synced" not in dirty_field_names:
       instance.domains_synced = False
 
 
@@ -26,10 +32,13 @@ def post_delete_application(model_class, instance):
 
 
 @post_save(sender=Domain)
-def set_domains_synced_false_on_update_on_domain(model_class, instance, created):
-  Application.update(domains_synced=False).where(
-      Application.id == instance.application_id
-  ).execute()
+def post_save_domain(model_class, instance, created):
+  _trigger_application_domain_sync(instance.application_id)
+
+
+@post_delete(sender=Domain)
+def post_delete_domain(model_class, instance):
+  _trigger_application_domain_sync(instance.application_id)
 
 
 @post_save(sender=Container)
@@ -44,9 +53,7 @@ def post_save_container(model_class, instance, created):
         Application.id == instance.application_id
     ).execute()
 
-  Application.update(domains_synced=False).where(
-      Application.id == instance.application_id
-  ).execute()
+  _trigger_application_domain_sync(instance.application_id)
 
 
 @post_delete(sender=Container)
