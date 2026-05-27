@@ -1259,7 +1259,7 @@ class Manager(Base):
       await run_in_executor_with_context(
           self.tailscale.exec_command,
           container.worker.hostname,
-          f"docker compose -f {container_dir}/docker-compose.yml up -d --wait --remove-orphans --quiet-pull --quiet-build",
+          f"docker compose -f {container_dir}/docker-compose.yml up -d --wait --remove-orphans --quiet-pull --build",
       )
 
       deployment_status = "active"
