@@ -114,6 +114,7 @@ Recurring tasks currently cover:
 
 - worker sync
 - application status sync
+- daily system digest
 - volume backup scheduling
 - Traefik domain config sync
 - metrics collection

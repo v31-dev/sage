@@ -3,6 +3,7 @@ import os
 
 from fastapi import APIRouter
 
+from services.manager import Manager
 from services.settings import Settings
 from services.tailscale import Tailscale
 from utils.common import get_env
@@ -23,3 +24,8 @@ async def get():
       "hostname": get_env("HOSTNAME"),
       "ip": Tailscale().ip(),
   }
+
+
+@router.get("/summary")
+async def get_summary():
+  return Manager().get_system_summary()

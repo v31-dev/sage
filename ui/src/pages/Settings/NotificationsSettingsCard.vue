@@ -38,8 +38,8 @@ const load = () =>
     fallbackMessage: 'Failed to load notification settings',
   })
 
-function updateField(fieldKey: string, value: string | number) {
-  fields.value[fieldKey] = String(value)
+function updateField(fieldKey: string, value: string | number | undefined) {
+  fields.value[fieldKey] = value == null ? '' : String(value)
   error.value = ''
 }
 
@@ -87,7 +87,6 @@ onMounted(() => {
                 secret
                 :model-value="fields.discord_webhook ?? ''"
                 @update:model-value="value => updateField('discord_webhook', value)"
-                type="url"
                 placeholder="https://discord.com/api/webhooks/..."
                 :disabled="saving || isLoading"
               />
@@ -95,7 +94,6 @@ onMounted(() => {
                 Webhook endpoint used for async notification delivery.
               </FieldDescription>
             </Field>
-
             <Field v-if="error">
               <FieldError>{{ error }}</FieldError>
             </Field>

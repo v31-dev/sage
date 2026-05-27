@@ -82,6 +82,11 @@ async def collect_metrics():
     raise TaskFailed()
 
 
+@app.task(every("1 day"))
+async def send_summary_notification():
+  Manager().send_summary_notification()
+
+
 # Backup the main database
 @app.task((every("6 hours") & ~SchedulerStarted(period=TimeDelta("10 minute"))), name="backup_database")
 async def backup_database():

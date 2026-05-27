@@ -39,8 +39,8 @@ const load = () =>
     fallbackMessage: 'Failed to load Cloudflare settings',
   })
 
-function updateField(fieldKey: string, value: string | number) {
-  settings.value[fieldKey] = String(value)
+function updateField(fieldKey: string, value: string | number | undefined) {
+  settings.value[fieldKey] = value == null ? '' : String(value)
   error.value = ''
 }
 

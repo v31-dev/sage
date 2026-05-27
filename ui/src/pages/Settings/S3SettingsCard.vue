@@ -39,8 +39,8 @@ const load = () =>
     fallbackMessage: 'Failed to load S3 settings',
   })
 
-function updateField(fieldKey: string, value: string | number) {
-  fields.value[fieldKey] = String(value)
+function updateField(fieldKey: string, value: string | number | undefined) {
+  fields.value[fieldKey] = value == null ? '' : String(value)
   error.value = ''
 }
 

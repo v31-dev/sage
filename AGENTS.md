@@ -134,6 +134,7 @@ docker compose -f docker-compose.yml -f docker-compose.override.yml up -d
 ## Don't
 
 - Don't write code when the user only asked for diagnosis or discussion.
+- Don't make unnecessary modifications beyond the requested change.
 - Don't break `task_id` propagation.
 - Don't change scheduler behavior casually.
 - Don't replace the SQLite/WAL model with heavier infrastructure without a clear requirement.
