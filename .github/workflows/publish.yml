@@ -12,6 +12,8 @@ permissions:
   contents: write
   packages: write
   pull-requests: read
+  id-token: write
+  attestations: write
 
 concurrency:
   group: publish-${{ github.ref }}
@@ -132,18 +134,27 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push image
+        id: build
         uses: docker/build-push-action@v7
         with:
           context: .
           file: ./Dockerfile
           push: true
+          provenance: false
           tags: |
-            ghcr.io/v31-dev/sage:${{ steps.version.outputs.version }}
+            ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           labels: |
-            org.opencontainers.image.source=https://github.com/v31-dev/sage
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.version=${{ steps.version.outputs.version }}
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ghcr.io/${{ github.repository }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: false
 
       - name: Create GitHub release
         uses: actions/github-script@v9
@@ -153,14 +164,14 @@ jobs:
           script: |
             const version = '${{ steps.version.outputs.version }}';
             const tagName = `v${version}`;
-            const image = `ghcr.io/v31-dev/sage:${version}`;
+            const image = `ghcr.io/${{ github.repository }}:${version}`;
             const { owner, repo } = context.repo;
             const prBody = process.env.RELEASE_PR_BODY || '';
 
             const body = [
               '## Docker Image',
               '```bash',
-              `docker pull ${image}`,
+              `${image}`,
               '```',
               prBody,
             ].join('\n');
@@ -170,7 +181,7 @@ jobs:
               repo,
               tag_name: tagName,
               target_commitish: context.sha,
-              name: `Release ${version}`,
+              name: `Release v${version}`,
               body,
               draft: false,
               prerelease: false,
