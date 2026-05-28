@@ -13,6 +13,7 @@ const LOAD_DELAY = getLoadDelay()
 
 export interface AppInfo {
   version: string
+  latest_version: string | null
   domain: string
   hostname: string
   ip: string
@@ -397,4 +398,3 @@ export function getVolumeBackupAPI(
     load_delay: LOAD_DELAY,
   })
 }
-

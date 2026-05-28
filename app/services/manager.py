@@ -1,5 +1,6 @@
 import asyncio
 import docker
+import httpx
 import json
 import logging
 import re
@@ -45,6 +46,8 @@ logger = logging.getLogger(__name__)
 
 BACKUP_ELIGIBLE_STATUSES = {"active", "inactive"}
 
+LATEST_RELEASE_URL = "https://api.github.com/repos/v31-dev/sage/releases/latest"
+
 
 class Manager(Base):
   worker_home_dir = "/opt/sage"
@@ -59,6 +62,10 @@ class Manager(Base):
     try:
       logger.info("Running Manager setup...")
 
+      with open(app_dir / "VERSION") as f:
+        self.version = f.read().strip()
+      self.latest_version = self.version
+
       # Initialize all services
       Database()
       Settings()
@@ -72,6 +79,21 @@ class Manager(Base):
       self.notify("Manager started.")
     except Exception as e:
       raise Exception(f"Manager setup failed : {e}.")
+
+  def get_latest_version(self):
+    try:
+      with httpx.Client(timeout=10) as client:
+        response = client.get(
+            LATEST_RELEASE_URL,
+            headers={"Accept": "application/vnd.github+json"},
+        )
+        response.raise_for_status()
+        tag = (response.json().get("tag_name") or "").lstrip("v")
+      if tag:
+        self.latest_version = tag
+    except Exception as e:
+      logger.warning(f"Failed to fetch latest sage release: {e}")
+    return self.latest_version
 
   async def async_init(self):
     """

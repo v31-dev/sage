@@ -9,9 +9,6 @@ from utils.common import get_env
 
 logger = logging.getLogger(__name__)
 
-with open("/app/VERSION") as f:
-  version = f.read().strip()
-
 router = APIRouter()
 start_time = datetime.now()
 
@@ -19,7 +16,8 @@ start_time = datetime.now()
 @router.get("")
 async def get():
   return {
-      "version": version,
+      "version": Manager().version,
+      "latest_version": Manager().latest_version,
       "domain": Settings().get("cloudflare", "domain"),
       "hostname": get_env("HOSTNAME"),
       "ip": Tailscale().ip(),

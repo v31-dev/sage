@@ -87,6 +87,12 @@ async def send_summary_notification():
   Manager().send_summary_notification()
 
 
+# Refresh the latest sage release version from GitHub
+@app.task(every("6 hours"))
+async def refresh_latest_version():
+  await run_in_executor_with_context(Manager().get_latest_version)
+
+
 # Backup the main database
 @app.task((every("6 hours") & ~SchedulerStarted(period=TimeDelta("10 minute"))), name="backup_database")
 async def backup_database():
