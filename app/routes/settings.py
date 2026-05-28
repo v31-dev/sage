@@ -3,6 +3,7 @@ from playhouse.shortcuts import model_to_dict
 
 from services.cloudflare import Cloudflare
 from services.db import Setting
+from services.manager import Manager
 from services.notification import Notifications
 from services.settings import Settings
 from services.s3 import S3
@@ -13,6 +14,7 @@ from utils.api import (
     parse_api_data,
 )
 from utils.common import DOMAIN_RE, EMAIL_RE
+from utils.logging import run_in_executor_with_context
 
 router = APIRouter()
 
@@ -74,7 +76,7 @@ def update_setting(request: Request, setting_data: dict = Body(...)):
     account_id_changed = "account_id" in new_setting_value and new_setting_value["account_id"] != old_setting_value.get("account_id")
     cloudflare_config_changed = api_token_changed or account_id_changed or domain_changed
     cloudflare_setting_changed = cloudflare_config_changed or admin_email_changed
-    worker_traefik_changed = admin_email_changed or domain_changed
+    traefik_refresh_needed = admin_email_changed or domain_changed or api_token_changed
 
     if domain_changed and not DOMAIN_RE.fullmatch(merged_setting_value["domain"]):
       raise HTTPException(status_code=400, detail="Invalid domain format in Cloudflare settings.")
@@ -86,10 +88,10 @@ def update_setting(request: Request, setting_data: dict = Body(...)):
     if cloudflare_config_changed and not Cloudflare().check_config(merged_setting_value):
       raise HTTPException(status_code=400, detail="Invalid Cloudflare configuration. Please verify the API token, account ID, and domain.")
 
-    if worker_traefik_changed and request.app.state.rocketry.is_task_pending("update_workers_config"):
+    if traefik_refresh_needed and request.app.state.rocketry.is_task_pending("refresh_traefik"):
       raise HTTPException(
           status_code=409,
-          detail="A worker Traefik refresh is already in progress. Wait for it to finish before changing the Cloudflare domain or admin email again.",
+          detail="A Traefik refresh is already in progress. Wait for it to finish before changing the Cloudflare domain, admin email, or API token again.",
       )
 
     if cloudflare_setting_changed:
@@ -98,11 +100,43 @@ def update_setting(request: Request, setting_data: dict = Body(...)):
     if cloudflare_config_changed:
       Cloudflare().load()
 
-    if worker_traefik_changed:
-      # Traefik certs need to be refreshed and worker config resynced
-      request.app.state.rocketry["update_workers_config"].run(
+    if traefik_refresh_needed:
+      # Manager Traefik static config / token file rewritten and container restarted;
+      # worker Traefik config resynced when email or domain change.
+      request.app.state.rocketry["refresh_traefik"].run(
           admin_email_changed=admin_email_changed,
           domain_changed=domain_changed,
+          api_token_changed=api_token_changed,
       )
 
   return generic_get(Setting, (Setting.key == setting_key))
+
+
+@router.post("/restart")
+async def restart():
+  """
+  Trigger a restart of the full compose stack via the Docker API socket.
+  Progress is not tracked — if the restart fails the operator must intervene.
+  """
+  run_in_executor_with_context(Manager().restart, all=True)
+  return {"message": "Restart initiated."}
+
+
+@router.post("/resync_traefik")
+async def resync_traefik(request: Request):
+  """
+  Force a full Traefik state resync to manager and workers. Reuses the
+  refresh_traefik task with all change flags set; cert re-issuance is expected.
+  """
+  if request.app.state.rocketry.is_task_pending("refresh_traefik"):
+    raise HTTPException(
+        status_code=409,
+        detail="A Traefik refresh is already in progress. Wait for it to finish before resyncing.",
+    )
+
+  request.app.state.rocketry["refresh_traefik"].run(
+      admin_email_changed=True,
+      domain_changed=True,
+      api_token_changed=True,
+  )
+  return {"message": "Traefik resync initiated."}

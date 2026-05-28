@@ -106,11 +106,12 @@ async def traefik_sync_certs():
   await Manager().sync_traefik_certificates()
 
 
-# Refresh worker Traefik state after Cloudflare domain/email changes.
-@app.task(name="update_workers_config")
-async def update_workers_config(admin_email_changed=False, domain_changed=False):
-  await Manager().update_workers_config(admin_email_changed=admin_email_changed,
-                                        domain_changed=domain_changed)
+# Refresh Manager + worker Traefik state after Cloudflare domain/email/token changes.
+@app.task(name="refresh_traefik")
+async def refresh_traefik(admin_email_changed=False, domain_changed=False, api_token_changed=False):
+  await Manager().refresh_traefik(admin_email_changed=admin_email_changed,
+                                  domain_changed=domain_changed,
+                                  api_token_changed=api_token_changed)
 
 
 # Deploy Application

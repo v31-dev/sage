@@ -425,16 +425,25 @@ class Manager(Base):
     )
     self.notify(f"Worker {worker.hostname} is back online.", "success")
 
-  async def update_workers_config(self, admin_email_changed=False, domain_changed=False):
+  async def refresh_traefik(self, admin_email_changed=False, domain_changed=False, api_token_changed=False):
     # No updates
+    if not admin_email_changed and not domain_changed and not api_token_changed:
+      return
+
+    # Refresh Manager Traefik static config (ADMIN_EMAIL), dynamic config (DOMAIN),
+    # and the Cloudflare DNS API token file, then restart the container so the
+    # static config and token are re-read by lego at provider init.
+    self.traefik.load(clear_certificates=domain_changed)
+    await run_in_executor_with_context(self.restart, traefik=True)
+
+    # Token-only rotations don't need worker churn — workers don't run ACME,
+    # they only receive synced acme.json from the manager.
     if not admin_email_changed and not domain_changed:
       return
 
     domain = Settings().get("cloudflare", "domain")
     admin_email = Settings().get("cloudflare", "admin_email")
 
-    # Update Manager Traefik
-    self.traefik.load(clear_certificates=domain_changed)
     await self.traefik.sync_certificates_to_workers()
 
     # Update Worker Traefik config

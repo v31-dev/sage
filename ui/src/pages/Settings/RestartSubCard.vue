@@ -14,7 +14,7 @@ import {
 import { Field, FieldDescription, FieldGroup, FieldLabel, FieldSet } from '@/components/ui/field'
 import { Spinner } from '@/components/ui/spinner'
 import { RotateCw, TriangleAlert } from 'lucide-vue-next'
-import { fetchAppInfo, restartManager } from '@/services/api'
+import { fetchAppInfo, settingsAPI } from '@/services/api'
 
 type RestartPhase = 'idle' | 'restarting' | 'waiting'
 
@@ -34,7 +34,7 @@ async function onConfirmRestart() {
 
   try {
     startTimeBefore = (await fetchAppInfo()).start_time
-    await restartManager()
+    await settingsAPI.action('restart')
   } catch (err) {
     if (!(err instanceof TypeError)) {
       errorMessage.value = err instanceof Error ? err.message : 'Failed to initiate restart'
