@@ -114,13 +114,14 @@ Recurring tasks currently cover:
 
 - worker sync
 - application status sync
+- daily system digest
 - volume backup scheduling
 - Traefik domain config sync
 - metrics collection
 - platform backup
 - cleanup
 - certificate sync
-- worker config refresh after settings changes
+- Traefik refresh after Cloudflare setting changes
 
 On-demand tasks currently cover:
 
@@ -129,6 +130,20 @@ On-demand tasks currently cover:
 - delete container
 - backup application
 - delete backup from S3
+
+## Settings And Traefik Refresh
+
+Platform settings (`s3`, `notifications`, `cloudflare`) live in the `Setting` table. Env vars only seed empty fields on first boot.
+
+UI updates in `routes/settings.py` follow the same pattern: validate the merged value, persist via `Settings().set(...)`, then reload the consuming service (`S3().load()`, `Notifications().load_notifications_config()`, `Cloudflare().load()`).
+
+Cloudflare changes additionally schedule the `refresh_traefik` Rocketry task (in `services/manager.py`):
+
+- `admin_email` change — Manager Traefik static config rewritten; Manager Traefik restarted; worker Traefik configs resynced and restarted.
+- `domain` change — additionally clears `acme.json` so Manager Traefik re-issues certs, then syncs the bundle to workers and updates worker DNS records.
+- `api_token` change — token file at `/etc/traefik/cloudflare_dns_api_token` is rewritten; Manager Traefik restarted (workers untouched).
+
+The token reaches Traefik via `CLOUDFLARE_DNS_API_TOKEN_FILE`, so rotation only needs a container restart instead of a compose recreate.
 
 ## Templates
 

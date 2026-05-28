@@ -1,4 +1,6 @@
 import asyncio
+import docker
+import httpx
 import json
 import logging
 import re
@@ -8,6 +10,7 @@ from functools import partial
 from datetime import datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from peewee import fn
 from rocketry.time import Cron
 
 from services.base import Base
@@ -15,14 +18,16 @@ from services.cloudflare import Cloudflare
 from services.db import (
     APPLICATION_BUSY_STATUSES,
     Application,
+    Backup,
     Container,
     Database,
+    Domain,
     Event,
+    Notification,
+    Project,
+    Setting,
     Volume,
     Worker,
-    Notification,
-    Setting,
-    Backup,
     DB_PATH,
     db,
 )
@@ -32,7 +37,7 @@ from services.tailscale import Tailscale
 from services.traefik import Traefik
 from services.notification import Notifications
 from services.s3 import S3
-from utils.common import get_env
+from utils.common import get_env, parse_multiline_kv
 from utils.logging import generate_task_id_token, run_in_executor_with_context, task_id
 
 
@@ -40,6 +45,8 @@ app_dir = Path(__file__).parent.parent
 logger = logging.getLogger(__name__)
 
 BACKUP_ELIGIBLE_STATUSES = {"active", "inactive"}
+
+LATEST_RELEASE_URL = "https://api.github.com/repos/v31-dev/sage/releases/latest"
 
 
 class Manager(Base):
@@ -55,6 +62,10 @@ class Manager(Base):
     try:
       logger.info("Running Manager setup...")
 
+      with open(app_dir / "VERSION") as f:
+        self.version = f.read().strip()
+      self.latest_version = self.version
+
       # Initialize all services
       Database()
       Settings()
@@ -68,6 +79,21 @@ class Manager(Base):
       self.notify("Manager started.")
     except Exception as e:
       raise Exception(f"Manager setup failed : {e}.")
+
+  def get_latest_version(self):
+    try:
+      with httpx.Client(timeout=10) as client:
+        response = client.get(
+            LATEST_RELEASE_URL,
+            headers={"Accept": "application/vnd.github+json"},
+        )
+        response.raise_for_status()
+        tag = (response.json().get("tag_name") or "").lstrip("v")
+      if tag:
+        self.latest_version = tag
+    except Exception as e:
+      logger.warning(f"Failed to fetch latest sage release: {e}")
+    return self.latest_version
 
   async def async_init(self):
     """
@@ -88,6 +114,154 @@ class Manager(Base):
     log_method(message)
     notification = Notification.create(content=message, type=type, link=link)
     Notifications().dispatch(notification)
+
+  def _summary_notification_dicts(self, query, limit: int):
+    return list(query.order_by(Notification.created_at.desc()).limit(limit).dicts())
+
+  def _status_counts(self, model):
+    rows = (
+        model.select(model.status, fn.COUNT(model.id).alias("count"))
+        .group_by(model.status)
+        .dicts()
+    )
+    return {row["status"]: row["count"] for row in rows}
+
+  def get_system_summary(self, lookback_hours: int = 24):
+    now = datetime.now()
+    since = now - timedelta(hours=lookback_hours)
+
+    worker_total = Worker.select().count()
+    worker_online = Worker.select().where(Worker.online).count()
+    application_total = Application.select().count()
+    application_counts = self._status_counts(Application)
+    application_active = application_counts.get("active", 0)
+    application_inactive = application_counts.get("inactive", 0)
+    application_error = application_counts.get("error", 0)
+    application_deploying = application_counts.get("deploying", 0)
+    application_stopping = application_counts.get("stopping", 0)
+    application_backup = application_counts.get("backup", 0)
+    application_restoring = application_counts.get("restoring", 0)
+    container_total = Container.select().count()
+    container_counts = self._status_counts(Container)
+    container_active = container_counts.get("active", 0)
+    container_inactive = container_counts.get("inactive", 0)
+    container_error = container_counts.get("error", 0)
+    container_deploying = container_counts.get("deploying", 0)
+    container_stopping = container_counts.get("stopping", 0)
+    container_backup = container_counts.get("backup", 0)
+    container_restoring = container_counts.get("restoring", 0)
+    domain_active = Domain.select().join(Application).where(Application.domains_synced).count()
+    domain_inactive = Domain.select().join(Application).where(Application.domains_synced == False).count()
+    backup_system = Backup.select().where(Backup.type == "platform").count()
+    backup_application = Backup.select().where(Backup.type == "application").count()
+    deployments_last_24h = Event.select().where(
+        (Event.type == "deploy") & (Event.created_at >= since)
+    ).count()
+    critical_events = list(Notification.select().where(
+        (Notification.created_at >= since)
+        & (Notification.type.in_(["error", "warning"]))
+    ).order_by(Notification.created_at.desc()).dicts())
+    critical_error_count = sum(1 for e in critical_events if e["type"] == "error")
+    critical_warning_count = sum(1 for e in critical_events if e["type"] == "warning")
+    latest_backup = Backup.select().order_by(Backup.created_at.desc()).first()
+
+    if worker_total == 0:
+      worker_offline = 0
+    else:
+      worker_offline = max(worker_total - worker_online, 0)
+
+    return {
+        "generated_at": now,
+        "workers_total": worker_total,
+        "workers_online": worker_online,
+        "workers_offline": worker_offline,
+        "projects_total": Project.select().count(),
+        "applications_total": application_total,
+        "applications_active": application_active,
+        "applications_inactive": application_inactive,
+        "applications_error": application_error,
+        "applications_deploying": application_deploying,
+        "applications_stopping": application_stopping,
+        "applications_backup": application_backup,
+        "applications_restoring": application_restoring,
+        "deployments_last_24h": deployments_last_24h,
+        "containers_total": container_total,
+        "containers_active": container_active,
+        "containers_inactive": container_inactive,
+        "containers_error": container_error,
+        "containers_deploying": container_deploying,
+        "containers_stopping": container_stopping,
+        "containers_backup": container_backup,
+        "containers_restoring": container_restoring,
+        "domains_total": domain_active + domain_inactive,
+        "domains_active": domain_active,
+        "domains_inactive": domain_inactive,
+        "backups_total": backup_system + backup_application,
+        "backups_system": backup_system,
+        "backups_application": backup_application,
+        "backups_last_24h": Backup.select().where(Backup.created_at >= since).count(),
+        "latest_backup_at": latest_backup.created_at if latest_backup else None,
+        "critical_error_count_last_24h": critical_error_count,
+        "critical_warning_count_last_24h": critical_warning_count,
+        "critical_events_last_24h": critical_events,
+    }
+
+  def send_summary_notification(self):
+    summary = self.get_system_summary(lookback_hours=24)
+
+    error_count = summary["critical_error_count_last_24h"]
+    warning_count = summary["critical_warning_count_last_24h"]
+    critical_events = summary["critical_events_last_24h"]
+
+    lines = [
+        f"Daily system summary ({summary['generated_at'].strftime('%Y-%m-%d %H:%M UTC')})",
+        "",
+        f"Workers: {summary['workers_online']}/{summary['workers_total']} online, {summary['workers_offline']} offline",
+        f"Projects: {summary['projects_total']} total",
+        (
+            "Apps: "
+            f"{summary['applications_total']} total, "
+            f"{summary['applications_active']} active, "
+            f"{summary['applications_inactive']} inactive, "
+            f"{summary['applications_error']} error, "
+            f"{summary['applications_deploying']} deploying, "
+            f"{summary['applications_stopping']} stopping, "
+            f"{summary['applications_backup']} backup, "
+            f"{summary['applications_restoring']} restoring"
+        ),
+        (
+            "Containers: "
+            f"{summary['containers_total']} total, "
+            f"{summary['containers_active']} active, "
+            f"{summary['containers_inactive']} inactive, "
+            f"{summary['containers_error']} error, "
+            f"{summary['containers_deploying']} deploying, "
+            f"{summary['containers_stopping']} stopping, "
+            f"{summary['containers_backup']} backup, "
+            f"{summary['containers_restoring']} restoring"
+        ),
+        (
+            "Domains: "
+            f"{summary['domains_total']} total, "
+            f"{summary['domains_active']} synced, "
+            f"{summary['domains_inactive']} unsynced"
+        ),
+        (
+            "Backups: "
+            f"{summary['backups_total']} total, "
+            f"{summary['backups_system']} system, "
+            f"{summary['backups_application']} application"
+        ),
+        f"Events in last 24h: {error_count} errors, {warning_count} warnings",
+    ]
+
+    notification_type = "info"
+    if error_count > 0:
+      notification_type = "error"
+    elif warning_count > 0:
+      notification_type = "warning"
+
+    Notifications().dispatch({"content": "\n".join(lines), "type": notification_type})
 
   def sync_workers(self):
     """
@@ -273,16 +447,25 @@ class Manager(Base):
     )
     self.notify(f"Worker {worker.hostname} is back online.", "success")
 
-  async def update_workers_config(self, admin_email_changed=False, domain_changed=False):
+  async def refresh_traefik(self, admin_email_changed=False, domain_changed=False, api_token_changed=False):
     # No updates
+    if not admin_email_changed and not domain_changed and not api_token_changed:
+      return
+
+    # Refresh Manager Traefik static config (ADMIN_EMAIL), dynamic config (DOMAIN),
+    # and the Cloudflare DNS API token file, then restart the container so the
+    # static config and token are re-read by lego at provider init.
+    self.traefik.load(clear_certificates=domain_changed)
+    await run_in_executor_with_context(self.restart, traefik=True)
+
+    # Token-only rotations don't need worker churn — workers don't run ACME,
+    # they only receive synced acme.json from the manager.
     if not admin_email_changed and not domain_changed:
       return
 
     domain = Settings().get("cloudflare", "domain")
     admin_email = Settings().get("cloudflare", "admin_email")
 
-    # Update Manager Traefik
-    self.traefik.load(clear_certificates=domain_changed)
     await self.traefik.sync_certificates_to_workers()
 
     # Update Worker Traefik config
@@ -333,7 +516,7 @@ class Manager(Base):
     try:
       period = Cron(*volume.backup_cron.split())
     except Exception as exc:
-      logger.error(f"Invalid backup cron for application {volume.application.project.name}-{volume.application.name} volume {volume.name}: {exc}")
+      logger.error(f"Invalid backup cron for application {volume.application.qualified_name} volume {volume.name}: {exc}")
       return False
 
     if now not in period:
@@ -353,16 +536,14 @@ class Manager(Base):
       application: Application,
       volumes: list[Volume],
   ) -> str | None:
-    project_application_name = f"{application.project.name}-{application.name}"
-
     if application.container_count == 0:
-      return f"Application {project_application_name} has no containers to back up."
+      return f"Application {application.qualified_name} has no containers to back up."
 
     if not volumes:
-      return f"Application {project_application_name} has no volumes to back up."
+      return f"Application {application.qualified_name} has no volumes to back up."
 
     if any(volume.application_id != application.id for volume in volumes):
-      return f"One or more selected volumes do not belong to application {project_application_name}."
+      return f"One or more selected volumes do not belong to application {application.qualified_name}."
 
     return None
 
@@ -426,7 +607,7 @@ class Manager(Base):
       if container.status in APPLICATION_BUSY_STATUSES:
         continue
 
-      worker_container_name = f"{container.worker.hostname}-{container.application.project.name}-{container.application.name}"
+      worker_container_name = f"{container.worker.hostname}-{container.application.qualified_name}"
       status = container_status.get(worker_container_name)
       if status:
         if status == "running" and container.status != "active":
@@ -452,14 +633,13 @@ class Manager(Base):
         continue
 
       containers = list(application.containers)
-      project_application_name = f"{application.project.name}-{application.name}"
 
       if any(c.status == "error" for c in containers):
         if application.status != "error":
           application.status = "error"
           application.save()
           self.notify(
-              f"Application {project_application_name} is in error state as at least one container is in error state.",
+              f"Application {application.qualified_name} is in error state as at least one container is in error state.",
               "error")
 
       elif all(c.status == "active" for c in containers):
@@ -467,7 +647,7 @@ class Manager(Base):
           application.status = "active"
           application.save()
           self.notify(
-              f"Application {project_application_name} is active as all containers are active.",
+              f"Application {application.qualified_name} is active as all containers are active.",
               "success")
 
       elif all(c.status == "inactive" for c in containers):
@@ -475,14 +655,13 @@ class Manager(Base):
           application.status = "inactive"
           application.save()
           self.notify(
-              f"Application {project_application_name} is inactive as all containers are inactive.",
+              f"Application {application.qualified_name} is inactive as all containers are inactive.",
               "warning")
 
   def sync_application_traefik_domains_config(self, application: Application):
     """
     Sync Traefik domains config for an application.
     """
-    container_name = f"{application.project.name}-{application.name}"
     domain_name = Settings().get("cloudflare", "domain")
     containers = list(application.containers)
     application_domains = list(application.domains)
@@ -494,7 +673,10 @@ class Manager(Base):
         if container.worker.online and container.status == "active"
     ]
     logger.info(
-        f"Syncing Traefik config for application {container_name} for these workers {[container.worker.hostname for container in active_containers]}."
+        f"Syncing Traefik config for application {
+            application.qualified_name} for these workers {
+            [
+                container.worker.hostname for container in active_containers]}."
     )
 
     # Preserve the full declared tag list for discovery, even when a tag has no
@@ -509,17 +691,20 @@ class Manager(Base):
     # writing the new routing view for this application.
     for worker in workers:
       if not worker.online:
-        logger.error(f"Worker {worker.hostname} is offline, skipping Traefik config sync for application {container_name} on this worker.")
+        logger.error(
+            f"Worker {
+                worker.hostname} is offline, skipping Traefik config sync for application {
+                application.qualified_name} on this worker.")
         continue
 
       self.tailscale.exec_command(
           worker.hostname,
-          f"rm -f {self.worker_home_dir}/traefik/dynamic/{container_name}-*.yml",
+          f"rm -f {self.worker_home_dir}/traefik/dynamic/{application.qualified_name}-*.yml",
       )
 
     # Application is deploying or stopping.
     if application.status in APPLICATION_BUSY_STATUSES:
-      logger.error(f"Application {container_name} is not active, skipping Traefik config sync.")
+      logger.error(f"Application {application.qualified_name} is not active, skipping Traefik config sync.")
       return
 
     template_names = {
@@ -565,9 +750,9 @@ class Manager(Base):
         self.tailscale.sync_file(
             worker.hostname,
             app_dir / f"templates/worker/traefik/{traefik_config_template}",
-            f"{self.worker_home_dir}/traefik/dynamic/{container_name}-{domain.type}-{domain.name}.yml",
+            f"{self.worker_home_dir}/traefik/dynamic/{application.qualified_name}-{domain.type}-{domain.name}.yml",
             {
-                "SERVICE": container_name,
+                "SERVICE": application.qualified_name,
                 "SUBDOMAIN": domain.name,
                 "DOMAIN": domain_name,
                 "DOMAIN_TAGS_HEADER": json.dumps(domain_tags),
@@ -581,9 +766,9 @@ class Manager(Base):
           self.tailscale.sync_file(
               worker.hostname,
               app_dir / f"templates/worker/traefik/{traefik_config_template_domain_pool}",
-              f"{self.worker_home_dir}/traefik/dynamic/{container_name}-{domain.type}-{domain.name}-{domain_tag}.yml",
+              f"{self.worker_home_dir}/traefik/dynamic/{application.qualified_name}-{domain.type}-{domain.name}-{domain_tag}.yml",
               {
-                  "SERVICE": container_name,
+                  "SERVICE": application.qualified_name,
                   "SUBDOMAIN": domain.name,
                   "DOMAIN": domain_name,
                   "POOL_TAG": domain_tag,
@@ -598,13 +783,13 @@ class Manager(Base):
           else f"https://{domain.name}.{domain_name}"
       )
       self.notify(
-          f"Traefik config synced for application {container_name} with domain {domain.type}:{domain.name}.",
+          f"Traefik config synced for application {application.qualified_name} with domain {domain.type}:{domain.name}.",
           link=domain_url,
       )
 
     application.domains_synced = True
     application.save()
-    logger.info(f"Traefik config synced for application {container_name}.")
+    logger.info(f"Traefik config synced for application {application.qualified_name}.")
 
   def _get_application_backup_snapshot(self, application: Application):
     return {
@@ -670,7 +855,7 @@ class Manager(Base):
       volume: Volume,
   ) -> str:
     return (
-        f"{application.project.name}-{application.name} "
+        f"{application.qualified_name} "
         f"on worker {container.worker.hostname} volume {volume.name}"
     )
 
@@ -697,10 +882,9 @@ class Manager(Base):
     if container.status != "active":
       return
 
-    container_name = f"{container.application.project.name}-{container.application.name}"
-    container_dir = f"{self.worker_home_dir}/applications/{container.application.name}"
+    container_dir = f"{self.worker_home_dir}/applications/{container.application.qualified_name}"
     logger.info(
-        f"Stopping application {container_name} container on worker {container.worker.hostname} for backup."
+        f"Stopping application {container.application.qualified_name} container on worker {container.worker.hostname} for backup."
     )
     await run_in_executor_with_context(
         self.tailscale.exec_command,
@@ -709,10 +893,9 @@ class Manager(Base):
     )
 
   async def _start_container_after_backup(self, container: Container):
-    container_name = f"{container.application.project.name}-{container.application.name}"
-    container_dir = f"{self.worker_home_dir}/applications/{container.application.name}"
+    container_dir = f"{self.worker_home_dir}/applications/{container.application.qualified_name}"
     logger.info(
-        f"Starting application {container_name} container on worker {container.worker.hostname} after backup."
+        f"Starting application {container.application.qualified_name} container on worker {container.worker.hostname} after backup."
     )
 
     try:
@@ -779,7 +962,7 @@ class Manager(Base):
           remote_script_path,
           {
               "WORKER_HOME_DIR": self.worker_home_dir,
-              "APP_NAME": application.name,
+              "APP_NAME": application.qualified_name,
               "VOLUME_NAME": volume.name,
               "ARCHIVE_NAME": archive_name,
               "ENCRYPTION_KEY": get_env("ENCRYPTION_KEY"),
@@ -807,11 +990,10 @@ class Manager(Base):
 
   async def backup_application_s3(self, application: Application, volume_ids: list[int] | None = None):
     application = Application.get_by_id(application.id)
-    project_application_name = f"{application.project.name}-{application.name}"
 
     if application.status not in BACKUP_ELIGIBLE_STATUSES:
       raise Exception(
-          f"Application {project_application_name} must be active or inactive before backup."
+          f"Application {application.qualified_name} must be active or inactive before backup."
       )
 
     snapshot = self._get_application_backup_snapshot(application)
@@ -860,7 +1042,7 @@ class Manager(Base):
 
       if failed_backup_units:
         raise Exception(
-            f"Failed backup units for {project_application_name}: {'; '.join(failed_backup_units)}"
+            f"Failed backup units for {application.qualified_name}: {'; '.join(failed_backup_units)}"
         )
 
       await self._restore_application_runtime_after_backup(application, snapshot)
@@ -869,7 +1051,7 @@ class Manager(Base):
         await self._restore_application_runtime_after_backup(application, snapshot)
       except Exception as restore_exc:
         logger.error(
-            f"Failed to restore application {project_application_name} to its previous state after backup failure: {restore_exc}")
+            f"Failed to restore application {application.qualified_name} to its previous state after backup failure: {restore_exc}")
         application.status = "error"
         application.save()
         for entry in snapshot["containers"]:
@@ -889,11 +1071,10 @@ class Manager(Base):
     application = Application.get_by_id(application.id)
     volume = Volume.get_by_id(volume.id)
     backup = Backup.get_by_id(backup.id)
-    project_application_name = f"{application.project.name}-{application.name}"
 
     if application.status != "inactive":
       raise ValueError(
-          f"Application {project_application_name} must be inactive before restore."
+          f"Application {application.qualified_name} must be inactive before restore."
       )
 
     resource_error = self.get_volume_backup_resource_error(application, [volume])
@@ -912,7 +1093,7 @@ class Manager(Base):
     )
     if not target_container:
       raise ValueError(
-          f"Target worker {target_worker_hostname} is not attached to application {project_application_name}."
+          f"Target worker {target_worker_hostname} is not attached to application {application.qualified_name}."
       )
 
     if not target_container.worker.online:
@@ -949,7 +1130,7 @@ class Manager(Base):
           remote_script_path,
           {
               "WORKER_HOME_DIR": self.worker_home_dir,
-              "APP_NAME": application.name,
+              "APP_NAME": application.qualified_name,
               "VOLUME_NAME": volume.name,
               "ENCRYPTION_KEY": get_env("ENCRYPTION_KEY"),
               "DOWNLOAD_URL": download_url,
@@ -982,8 +1163,7 @@ class Manager(Base):
     """
     application.status = "deploying"
     application.save()
-    project_application_name = f"{application.project.name}-{application.name}"
-    logger.info(f"Deploying application {project_application_name}...")
+    logger.info(f"Deploying application {application.qualified_name}...")
 
     await asyncio.gather(
         *[self.deploy_application_container(container)
@@ -995,13 +1175,13 @@ class Manager(Base):
       application.status = "error"
       application.save()
       self.notify(
-          f"Failed to deploy application {project_application_name}.",
+          f"Failed to deploy application {application.qualified_name}.",
           "error")
-      raise Exception(f"Failed to deploy application {project_application_name}.")
+      raise Exception(f"Failed to deploy application {application.qualified_name}.")
     else:
       application.status = "active"
       application.save()
-      self.notify(f"Application {project_application_name} deployed.", "success")
+      self.notify(f"Application {application.qualified_name} deployed.", "success")
 
   async def deploy_application_container(self, container: Container):
     # Create an event for tracking with a different task id.
@@ -1014,10 +1194,9 @@ class Manager(Base):
     )
     container.status = "deploying"
     container.save()
-    container_name = f"{container.application.project.name}-{container.application.name}"
-    container_dir = f"{self.worker_home_dir}/applications/{container.application.name}"
+    container_dir = f"{self.worker_home_dir}/applications/{container.application.qualified_name}"
     logger.info(
-        f"Deploying application {container_name} container to worker {
+        f"Deploying application {container.application.qualified_name} container to worker {
             container.worker.hostname} with task id {container_task_id}...")
 
     exception_message = None
@@ -1025,16 +1204,21 @@ class Manager(Base):
     try:
       task_id_token = task_id.set(container_task_id)
 
+      project_env = container.application.project.env if container.application.project.env else ""
+      project_env = parse_multiline_kv(project_env, lambda key, value: (key, value))
+
+      # Special SAGE specific variables
+      project_env.append(("SAGE_WORKER_HOSTNAME", container.worker.hostname))
+
       app_env = container.application.env if container.application.env else ""
       app_build_args = container.application.args if container.application.args else ""
-      app_build_args = (
-          [
-              f"{{ {build_arg.split('=')[0]}: \"{build_arg.split('=')[1]}\" }}"
-              for build_arg in app_build_args.split("\n")
-          ]
-          if app_build_args
-          else []
-      )
+
+      # Resolve Application env and build args with project env values if they reference them with ${KEY}
+      for key, value in project_env:
+        app_env = app_env.replace("${" + key + "}", str(value))
+        app_build_args = app_build_args.replace("${" + key + "}", str(value))
+
+      app_build_args = parse_multiline_kv(app_build_args, lambda key, value: f"{{ {key}: \"{value}\" }}")
 
       # Create the secrets file
       await run_in_executor_with_context(
@@ -1051,7 +1235,7 @@ class Manager(Base):
           f"\"{container_dir}/volumes/{v.name}:{v.path}\""
           for v in volumes
       ]
-      volume_mkdir_cmd = ';'.join([f"mkdir -p {container_dir}/volumes/{v.name}" for v in volumes])
+      volume_mkdir_cmd = ';'.join([f"mkdir -p {container_dir}/volumes"] + [f"mkdir -p {container_dir}/volumes/{v.name}" for v in volumes])
       await run_in_executor_with_context(
           self.tailscale.exec_command,
           container.worker.hostname,
@@ -1082,7 +1266,7 @@ class Manager(Base):
             f"{container_dir}/docker-compose.yml",
             {
                 "APPLICATION_NAME": container.application.name,
-                "CONTAINER_NAME": container_name,
+                "CONTAINER_NAME": container.application.qualified_name,
                 "IMAGE": container.application.image,
                 "VOLUMES": " ,".join(volumes_config),
             },
@@ -1095,7 +1279,7 @@ class Manager(Base):
             f"{container_dir}/docker-compose.yml",
             {
                 "APPLICATION_NAME": container.application.name,
-                "CONTAINER_NAME": container_name,
+                "CONTAINER_NAME": container.application.qualified_name,
                 "REPO": container.application.repo,
                 "DOCKERFILE": container.application.path,
                 "BUILD_ARGS": " ,".join(app_build_args),
@@ -1107,7 +1291,7 @@ class Manager(Base):
       await run_in_executor_with_context(
           self.tailscale.exec_command,
           container.worker.hostname,
-          f"docker compose -f {container_dir}/docker-compose.yml up -d --wait --remove-orphans --quiet-pull --quiet-build",
+          f"docker compose -f {container_dir}/docker-compose.yml up -d --wait --remove-orphans --quiet-pull --build",
       )
 
       deployment_status = "active"
@@ -1121,10 +1305,12 @@ class Manager(Base):
     container.save()
 
     if deployment_status == "active":
-      self.notify(f"Application {container_name} container deployed to worker {container.worker.hostname}.")
+      self.notify(f"Application {container.application.qualified_name} container deployed to worker {container.worker.hostname}.")
     else:
       self.notify(
-          f"Failed to deploy application {container_name} container to worker {container.worker.hostname}: {exception_message}", "error")
+          f"Failed to deploy application {
+              container.application.qualified_name} container to worker {
+              container.worker.hostname}: {exception_message}", "error")
 
   def delete_container(self, container: Container, force: bool = False):
     """
@@ -1140,11 +1326,10 @@ class Manager(Base):
     container.status = "stopping"
     container.save()
 
-    container_dir = f"{self.worker_home_dir}/applications/{container.application.name}"
-    container_name = f"{container.application.project.name}-{container.application.name}"
+    container_dir = f"{self.worker_home_dir}/applications/{container.application.qualified_name}"
 
     logger.info(
-        f"Deleting container of application {container_name} from worker {
+        f"Deleting container of application {container.application.qualified_name} from worker {
             container.worker.hostname}")
 
     try:
@@ -1152,7 +1337,7 @@ class Manager(Base):
 
       if skip_remote_cleanup:
         logger.warning(
-            f"Force deleting container of application {container_name} from offline worker {
+            f"Force deleting container of application {container.application.qualified_name} from offline worker {
                 container.worker.hostname}; skipping remote cleanup.")
       else:
         # Stop container on worker
@@ -1170,7 +1355,7 @@ class Manager(Base):
         # Remove traefik config
         self.tailscale.exec_command(
             container.worker.hostname,
-            f"rm -rf {self.worker_home_dir}/traefik/dynamic/{container_name}-*.yml",
+            f"rm -rf {self.worker_home_dir}/traefik/dynamic/{container.application.qualified_name}-*.yml",
             timeout=30,
         )
 
@@ -1179,23 +1364,23 @@ class Manager(Base):
 
       if skip_remote_cleanup:
         self.notify(
-            f"Container of application {container_name} force-deleted from offline worker {
+            f"Container of application {container.application.qualified_name} force-deleted from offline worker {
                 container.worker.hostname}. Remote cleanup skipped.",
             "warning",
         )
       else:
         self.notify(
-            f"Container of application {container_name} deleted from worker {
+            f"Container of application {container.application.qualified_name} deleted from worker {
                 container.worker.hostname}.", "success")
     except Exception as e:
       container.status = "error"
       container.save()
       self.notify(
-          f"Failed to delete container of application {container_name} from worker {
+          f"Failed to delete container of application {container.application.qualified_name} from worker {
               container.worker.hostname}: {e}", "error")
       raise Exception(
           f"Failed to delete container {
-              container.id} of application {container_name} from worker {
+              container.id} of application {container.application.qualified_name} from worker {
               container.worker.hostname}: {e}")
 
   async def stop_application(self, application: Application):
@@ -1204,8 +1389,7 @@ class Manager(Base):
     """
     application.status = "stopping"
     application.save()
-    project_application_name = f"{application.project.name}-{application.name}"
-    logger.info(f"Stopping application {project_application_name}...")
+    logger.info(f"Stopping application {application.qualified_name}...")
 
     await asyncio.gather(
         *[self.stop_application_container(container) for container in application.containers],
@@ -1215,17 +1399,16 @@ class Manager(Base):
     if any(container.status == "error" for container in application.containers):
       application.status = "error"
       application.save()
-      self.notify(f"Failed to stop application {project_application_name}.", "error")
-      raise Exception(f"Failed to stop application {project_application_name}.")
+      self.notify(f"Failed to stop application {application.qualified_name}.", "error")
+      raise Exception(f"Failed to stop application {application.qualified_name}.")
     else:
       application.status = "inactive"
       application.save()
-      self.notify(f"Application {project_application_name} stopped.", "success")
+      self.notify(f"Application {application.qualified_name} stopped.", "success")
 
   async def stop_application_container(self, container: Container):
     # Create an event for tracking with a different task id.
     container_task_id = generate_task_id_token()
-    container_name = f"{container.application.project.name}-{container.application.name}"
     was_inactive = container.status == "inactive"
     Event.create(
         container=container,
@@ -1236,18 +1419,18 @@ class Manager(Base):
     container.status = "stopping"
     container.save()
     logger.info(
-        f"Stopping application {container_name} container on worker {
+        f"Stopping application {container.application.qualified_name} container on worker {
             container.worker.hostname} with task id {container_task_id}...")
 
     exception_message = None
 
     try:
       task_id_token = task_id.set(container_task_id)
-      container_dir = f"{self.worker_home_dir}/applications/{container.application.name}"
+      container_dir = f"{self.worker_home_dir}/applications/{container.application.qualified_name}"
 
       if was_inactive:
         logger.info(
-            f"Container of application {container_name} on worker {
+            f"Container of application {container.application.qualified_name} on worker {
                 container.worker.hostname} is already inactive. Skipping compose down.")
       else:
         # Stop with docker compose
@@ -1269,10 +1452,13 @@ class Manager(Base):
 
     if deployment_status == "inactive":
       self.notify(
-          f"Application {container_name} container stopped on worker {container.worker.hostname}.")
+          f"Application {container.application.qualified_name} container stopped on worker {container.worker.hostname}.")
     else:
       self.notify(
-          f"Failed to stop application {container_name} container on worker {container.worker.hostname}: {exception_message}", "error")
+          f"Failed to stop application {
+              container.application.qualified_name} container on worker {
+              container.worker.hostname}: {exception_message}",
+          "error")
 
   async def discover_s3_platform_backups(self):
     """
@@ -1406,6 +1592,21 @@ class Manager(Base):
           raise Exception(f"Failed to create database backup: {e}")
     finally:
       self.platform_backup_in_progress = False
+
+  def restart(self, all: bool = False, sage: bool = False, traefik: bool = False, vector: bool = False, glances: bool = False):
+    client = docker.from_env()
+
+    if all or glances:
+      client.containers.get("glances").restart()
+
+    if all or vector:
+      client.containers.get("vector").restart()
+
+    if all or traefik:
+      client.containers.get("traefik").restart()
+
+    if all or sage:
+      client.containers.get("sage").restart()
 
   async def restore_database_from_s3(self, s3_path: str):
     """

@@ -9,6 +9,41 @@ from utils.common import get_env
 cipher = Fernet(get_env("ENCRYPTION_KEY"))
 
 
+def validate_multiline_kv(config: str, field_name: str = "config"):
+  """
+  Validate multiline key/value pairs in the format:
+  KEY=value
+  KEY2=value2
+  ...
+
+  Raises ValueError if any non-empty line is malformed.
+  """
+  if not config:
+    return
+
+  for line_number, line in enumerate(config.splitlines(), start=1):
+    # allow inline comments after #
+    if "#" in line:
+      line = line.split("#", 1)[0]
+    line = line.rstrip()
+    if not line.strip():
+      continue
+    if "=" not in line:
+      raise ValueError(
+          f"{field_name} must contain lines in KEY=value format, invalid line {line_number}: {line!r}"
+      )
+    key, _, value = line.partition("=")
+    # Enforce Docker/env-file compatible key names: letters/underscore then letters/numbers/underscore
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
+      raise ValueError(
+          f"{field_name} must contain lines in KEY=value format, invalid line {line_number}: {line!r}"
+      )
+    if value != value.lstrip():
+      raise ValueError(
+          f"{field_name} must contain lines in KEY=value format, invalid line {line_number}: {line!r}"
+      )
+
+
 class EncryptedTextField(TextField):
   def python_value(self, value):
     """Decrypt when reading from DB"""

@@ -4,8 +4,7 @@ import { ArrowRight } from 'lucide-vue-next'
 import { RouterLink } from 'vue-router'
 import { Button } from '@/components/ui/button'
 import { toast } from 'vue-sonner'
-import { Card, CardAction, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Label } from '@/components/ui/label'
+import { Card, CardAction, CardHeader, CardTitle } from '@/components/ui/card'
 
 import ConfirmationButton from '@/components/ConfirmationButton.vue'
 import {
@@ -15,6 +14,7 @@ import {
   getContainerAPI,
 } from '@/services/api'
 import TitleStatus from '@/components/TitleStatus.vue'
+import CardFooter from '@/components/ui/card/CardFooter.vue'
 
 interface Props {
   worker: Worker
@@ -47,11 +47,13 @@ async function onConfirmForceDelete() {
 </script>
 
 <template>
-  <Card class="flex flex-col">
-    <CardHeader class="border-b">
+  <Card>
+    <CardHeader>
       <CardTitle>
         <TitleStatus
-          :title="props.container.application.label"
+          :title="
+            props.container.application.project.name + '-' + props.container.application.label
+          "
           :status="containerStatusClass"
           :loading="isContainerBusy"
           :statusText="props.container.status"
@@ -68,34 +70,29 @@ async function onConfirmForceDelete() {
       </CardAction>
     </CardHeader>
 
-    <CardContent class="space-y-4">
-      <div>
-        <Label>Project</Label>
-        <Button as-child variant="outline" size="sm" class="mt-2 w-full min-w-0">
-          <RouterLink
-            :to="`/projects/${props.container.application.project.name}`"
-            class="w-full min-w-0"
-            :title="`Project: ${props.container.application.project.label}`"
-          >
-            <span class="block truncate">{{ props.container.application.project.label }}</span
-            ><ArrowRight />
-          </RouterLink>
-        </Button>
-      </div>
+    <CardFooter class="border-t flex-col space-y-4">
+      <Button as-child variant="outline" size="sm" class="w-full min-w-0">
+        <RouterLink
+          :to="`/projects/${props.container.application.project.name}`"
+          class="w-full min-w-0"
+          :title="`Project: ${props.container.application.project.label}`"
+        >
+          <span class="block truncate"
+            >Project: {{ props.container.application.project.label }}</span
+          ><ArrowRight />
+        </RouterLink>
+      </Button>
 
-      <div>
-        <Label>Application</Label>
-        <Button as-child variant="outline" size="sm" class="mt-2 w-full min-w-0">
-          <RouterLink
-            :to="`/projects/${props.container.application.project.name}/${props.container.application.name}`"
-            class="w-full min-w-0"
-            :title="`Application: ${props.container.application.label}`"
-          >
-            <span class="block truncate">{{ props.container.application.label }}</span
-            ><ArrowRight />
-          </RouterLink>
-        </Button>
-      </div>
-    </CardContent>
+      <Button as-child variant="outline" size="sm" class="w-full min-w-0">
+        <RouterLink
+          :to="`/projects/${props.container.application.project.name}/${props.container.application.name}`"
+          class="w-full min-w-0"
+          :title="`Application: ${props.container.application.label}`"
+        >
+          <span class="block truncate">Application: {{ props.container.application.label }}</span
+          ><ArrowRight />
+        </RouterLink>
+      </Button>
+    </CardFooter>
   </Card>
 </template>

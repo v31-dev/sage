@@ -82,10 +82,11 @@ If this context may have been lost, reread this file plus the relevant `docs/` p
 ## Working Rules
 
 1. Read the relevant docs and code before editing.
-2. Preserve the manager/worker architecture and existing operational assumptions.
-3. Prefer small, local changes that match current patterns.
-4. Verify task flow, logging flow, and async boundaries when touching orchestration code.
-5. Update docs when behavior or developer workflow changes.
+2. Always read the current state of a file before commenting on whether code will work — never assume based on a previous version in the conversation.
+3. Preserve the manager/worker architecture and existing operational assumptions.
+4. Prefer small, local changes that match current patterns.
+5. Verify task flow, logging flow, and async boundaries when touching orchestration code.
+6. Update docs when behavior or developer workflow changes.
 
 ## Token And Context Budget
 
@@ -134,6 +135,7 @@ docker compose -f docker-compose.yml -f docker-compose.override.yml up -d
 ## Don't
 
 - Don't write code when the user only asked for diagnosis or discussion.
+- Don't make unnecessary modifications beyond the requested change.
 - Don't break `task_id` propagation.
 - Don't change scheduler behavior casually.
 - Don't replace the SQLite/WAL model with heavier infrastructure without a clear requirement.

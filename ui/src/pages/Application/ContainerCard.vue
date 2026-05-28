@@ -77,12 +77,11 @@ const workerStatusDotClass = computed(() => {
         </p>
       </div>
     </CardContent>
-    <CardFooter class="border-t flex gap-2">
-      <EventLogsButton :container="props.container" />
-      <Button as-child variant="outline" size="sm" class="flex-1 min-w-0">
+    <CardFooter class="border-t flex-col space-y-4">
+      <EventLogsButton :container="props.container" class="w-full min-w-0" />
+      <Button as-child variant="outline" size="sm" class="w-full min-w-0">
         <RouterLink
           :to="`/workers/${props.container.worker.hostname}`"
-          class="w-full min-w-0"
           :title="`Worker: ${props.container.worker.hostname}`"
         >
           <span

@@ -3,6 +3,9 @@ FROM node:lts-alpine AS ui-builder
 
 WORKDIR /ui
 
+ARG VITE_LOAD_DELAY=0
+ENV VITE_LOAD_DELAY=${VITE_LOAD_DELAY}
+
 COPY ui/package*.json ./
 
 RUN npm install

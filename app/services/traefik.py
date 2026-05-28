@@ -35,6 +35,13 @@ class Traefik(Base):
 
     # Static Traefik config
     os.makedirs(self.config_path, exist_ok=True)
+
+    # Cloudflare DNS API token file (Traefik reads via CLOUDFLARE_DNS_API_TOKEN_FILE
+    # so token rotation only needs a container restart, not a recreate).
+    token_path = Path(self.config_path) / "cloudflare_dns_api_token"
+    token_path.write_text(Settings().get("cloudflare", "api_token"))
+    token_path.chmod(0o600)
+
     with open(app_dir / "templates/manager/traefik/traefik.yml", "r") as f:
       traefik_config = f.read()
       traefik_config = traefik_config.replace("${ADMIN_EMAIL}", self.admin_email)

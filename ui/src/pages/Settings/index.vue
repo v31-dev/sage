@@ -2,6 +2,7 @@
 import NotificationsSettingsCard from './NotificationsSettingsCard.vue'
 import CloudflareSettingsCard from './CloudflareSettingsCard.vue'
 import S3SettingsCard from './S3SettingsCard.vue'
+import SystemCard from './SystemCard.vue'
 </script>
 
 <template>
@@ -11,6 +12,7 @@ import S3SettingsCard from './S3SettingsCard.vue'
         <CloudflareSettingsCard />
         <S3SettingsCard />
         <NotificationsSettingsCard />
+        <SystemCard />
       </div>
     </div>
   </main>

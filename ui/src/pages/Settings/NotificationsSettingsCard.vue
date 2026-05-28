@@ -17,9 +17,9 @@ import {
   FieldLabel,
   FieldSet,
 } from '@/components/ui/field'
-import { Input } from '@/components/ui/input'
 import { Spinner } from '@/components/ui/spinner'
 import { coerceSettingFields, loadSetting, saveSetting, type SettingFields } from './common'
+import CustomInput from '@/components/CustomInput.vue'
 
 const NOTIFICATION_FIELD_KEYS = ['discord_webhook'] as const
 
@@ -38,8 +38,8 @@ const load = () =>
     fallbackMessage: 'Failed to load notification settings',
   })
 
-function updateField(fieldKey: string, value: string | number) {
-  fields.value[fieldKey] = String(value)
+function updateField(fieldKey: string, value: string | number | undefined) {
+  fields.value[fieldKey] = value == null ? '' : String(value)
   error.value = ''
 }
 
@@ -82,11 +82,11 @@ onMounted(() => {
           <FieldGroup>
             <Field>
               <FieldLabel for="notifications-discord-webhook">Discord Webhook</FieldLabel>
-              <Input
+              <CustomInput
                 id="notifications-discord-webhook"
+                secret
                 :model-value="fields.discord_webhook ?? ''"
                 @update:model-value="value => updateField('discord_webhook', value)"
-                type="url"
                 placeholder="https://discord.com/api/webhooks/..."
                 :disabled="saving || isLoading"
               />
@@ -94,7 +94,6 @@ onMounted(() => {
                 Webhook endpoint used for async notification delivery.
               </FieldDescription>
             </Field>
-
             <Field v-if="error">
               <FieldError>{{ error }}</FieldError>
             </Field>

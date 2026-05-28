@@ -67,14 +67,14 @@ export function levelClass(level: string): string {
 export function formatDateStringAgo(dateObj: string | Date): string {
   const now = new Date()
   let date
-    if (typeof dateObj === 'string') {
-      if (!dateObj.endsWith('Z')) {
-        dateObj += 'Z'
-      }
-      date = new Date(dateObj)
-    } else {
-      date = dateObj
+  if (typeof dateObj === 'string') {
+    if (!dateObj.endsWith('Z')) {
+      dateObj += 'Z'
     }
+    date = new Date(dateObj)
+  } else {
+    date = dateObj
+  }
   const diffMs = now.getTime() - date.getTime()
   const diffMins = Math.floor(diffMs / 60000)
   const diffHours = Math.floor(diffMs / 3600000)

@@ -22,6 +22,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import CustomInput from '@/components/CustomInput.vue'
 
 import { type Application, getApplicationAPI } from '@/services/api'
 import { Edit } from 'lucide-vue-next'
@@ -34,6 +35,9 @@ interface Props {
 
 const props = withDefaults(defineProps<Props>(), {})
 
+const envTooltip =
+  'KEY=VALUE pairs, one per line\nComments with # are allowed\nVALUE can be string quoted\n' +
+  '${SAGE_WORKER_HOSTNAME} can be used for worker hostname'
 const isEditDialogOpen = ref(false)
 const editFormData = ref({
   label: '',
@@ -132,16 +136,29 @@ async function handleUpdateApplication() {
           </Field>
           <Field v-if="editFormData.type == 'git'">
             <FieldLabel for="repo"> Repository </FieldLabel>
-            <Input id="repo" v-model="editFormData.repo" placeholder="required" />
+            <CustomInput
+              id="repo"
+              v-model="editFormData.repo"
+              placeholder="required"
+              tooltip="https://github.com/user/repo.git<?#branch><?:sub-directory>"
+            />
           </Field>
           <Field v-if="editFormData.type == 'git'">
             <FieldLabel for="path"> Path </FieldLabel>
-            <Input id="path" v-model="editFormData.path" placeholder="required" />
+            <CustomInput
+              id="path"
+              v-model="editFormData.path"
+              placeholder="required"
+              tooltip="Dockerfile"
+            />
           </Field>
           <Field>
             <FieldLabel for="env"> Environment Variables </FieldLabel>
-            <Textarea
+            <CustomInput
               id="env"
+              type="textarea"
+              :tooltip="envTooltip"
+              secret
               v-model="editFormData.env"
               class="resize-none"
               placeholder="optional"
@@ -149,8 +166,11 @@ async function handleUpdateApplication() {
           </Field>
           <Field v-if="editFormData.type == 'git'">
             <FieldLabel for="args"> Build Arguments </FieldLabel>
-            <Textarea
+            <CustomInput
               id="args"
+              type="textarea"
+              :tooltip="envTooltip"
+              secret
               v-model="editFormData.args"
               class="resize-none"
               placeholder="optional"

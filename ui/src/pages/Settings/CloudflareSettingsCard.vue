@@ -20,6 +20,7 @@ import {
 import { Input } from '@/components/ui/input'
 import { Spinner } from '@/components/ui/spinner'
 import { coerceSettingFields, loadSetting, saveSetting, type SettingFields } from './common'
+import CustomInput from '@/components/CustomInput.vue'
 
 const CLOUDFLARE_FIELD_KEYS = ['domain', 'admin_email', 'api_token', 'account_id'] as const
 
@@ -38,8 +39,8 @@ const load = () =>
     fallbackMessage: 'Failed to load Cloudflare settings',
   })
 
-function updateField(fieldKey: string, value: string | number) {
-  settings.value[fieldKey] = String(value)
+function updateField(fieldKey: string, value: string | number | undefined) {
+  settings.value[fieldKey] = value == null ? '' : String(value)
   error.value = ''
 }
 
@@ -122,8 +123,9 @@ onMounted(() => {
 
             <Field>
               <FieldLabel for="cloudflare-api-token">API Token</FieldLabel>
-              <Input
+              <CustomInput
                 id="cloudflare-api-token"
+                secret
                 :model-value="settings.api_token ?? ''"
                 @update:model-value="value => updateField('api_token', value)"
                 placeholder="Cloudflare API token"

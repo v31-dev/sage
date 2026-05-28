@@ -47,6 +47,7 @@ Routes in `ui/src/router/index.ts` currently cover:
 
 ## Main Feature Areas
 
+- Home dashboard for platform posture, recent activity, and critical events
 - Projects and applications
 - Application containers, domains, and volumes
 - Application logs and metrics

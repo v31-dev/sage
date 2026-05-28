@@ -55,3 +55,51 @@ def update_config_file(path, config):
       else:
         logger.info(f"Config file '{path}' is unchanged.")
         return False
+
+
+def parse_multiline_kv(config, fn):
+  """
+  Parse multiline key-value pairs from a string in the format:
+  KEY1=value1
+  KEY2=value2
+  ...
+
+  - strips inline comments (ignoring '#' inside quoted values)
+  - skips blank or comment-only lines
+  - splits on first '=' and strips both key and value
+  - leaves quoted values intact (do not remove surrounding quotes)
+
+  Returns a list of results from applying the provided function `fn` to each key-value pair.
+  """
+  if not config:
+    return []
+
+  results = []
+  for line in config.splitlines():
+    # inline comment stripping while respecting quotes
+    # # can be inside quotes
+    in_squote = False
+    in_dquote = False
+    out_chars = []
+    for ch in line:
+      if ch == "'" and not in_dquote:
+        in_squote = not in_squote
+        out_chars.append(ch)
+        continue
+      if ch == '"' and not in_squote:
+        in_dquote = not in_dquote
+        out_chars.append(ch)
+        continue
+      if ch == "#" and not in_squote and not in_dquote:
+        break
+      out_chars.append(ch)
+    line = ''.join(out_chars).strip()
+    if not line:
+      continue
+    if "=" not in line:
+      continue
+    key, _, value = line.partition("=")
+    key = key.strip()
+    value = value.strip()
+    results.append(fn(key, value))
+  return results

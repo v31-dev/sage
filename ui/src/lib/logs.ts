@@ -6,8 +6,7 @@ export interface ManagerLogEntry {
   message: string
 }
 
-const MANAGER_LOG_RE =
-  /^\[([^\]]+)\]\s+\[([^\]]+)\]\s+\[([^\]]+)\]\s+\[([^\]]*)\]\s*([\s\S]*)$/
+const MANAGER_LOG_RE = /^\[([^\]]+)\]\s+\[([^\]]+)\]\s+\[([^\]]+)\]\s+\[([^\]]*)\]\s*([\s\S]*)$/
 
 export function parseManagerLog(raw: string): ManagerLogEntry {
   const match = raw.match(MANAGER_LOG_RE)

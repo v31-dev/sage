@@ -13,7 +13,7 @@ from peewee import (
 )
 from playhouse.signals import Model
 
-from utils.db import CleanCharField, EncryptedJSONField, EncryptedTextField
+from utils.db import CleanCharField, EncryptedJSONField, EncryptedTextField, validate_multiline_kv
 
 DB_PATH = "/app/data/data.db"
 os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
@@ -62,6 +62,12 @@ class Project(BaseModel):
   env = EncryptedTextField(null=True)
   application_count = IntegerField(default=0)
 
+  def save(self, *args, **kwargs):
+    if self.env:
+      validate_multiline_kv(self.env, "project.env")
+
+    return super().save(*args, **kwargs)
+
 
 class Application(BaseModel):
   project = ForeignKeyField(Project, backref="applications", on_delete="RESTRICT")
@@ -78,6 +84,13 @@ class Application(BaseModel):
   domains_synced = BooleanField(default=False)
   container_count = IntegerField(default=0)
 
+  @property
+  def qualified_name(self) -> str:
+    '''
+      This is the name of the application used on the worker to prevent name space collisions.
+    '''
+    return f"{self.project.name}-{self.name}"
+
   def save(self, *args, **kwargs):
     if self.type == "docker":
       self.repo = None
@@ -87,11 +100,16 @@ class Application(BaseModel):
     if self.type == "git":
       self.image = None
       if self.repo:
-        pattern = r"^https?://[\w.-]+/[\w.-]+/[\w.-]+(?:\.git)?(?:#[\w.-]+)?(?::[\w./-]+)?$"
+        pattern = r"^https?://[\w.-]+/[\w.-]+/[\w.-]+\.git(?:#[\w.-]+)?(?::[\w./-]+)?$"
         if not re.match(pattern, self.repo):
           raise ValueError(
-              f"Invalid Git repository URL: {
-                  self.repo}. Should be in format 'https://github.com/user/repo<?.git><?#branch><?:sub-directory>'")
+              f"Invalid Git repository URL: {self.repo}. Should be in format 'https://github.com/user/repo.git<?#branch><?:sub-directory>'")
+
+    if self.env:
+      validate_multiline_kv(self.env, "application.env")
+
+    if self.args:
+      validate_multiline_kv(self.args, "application.args")
 
     return super().save(*args, **kwargs)
 
@@ -114,6 +132,12 @@ class Container(BaseModel):
   worker = ForeignKeyField(Worker, backref="containers")
   status = CharField(choices=STATUS_CHOICES, default="inactive")
   domain_tag = CleanCharField(null=True)
+
+  def save(self, *args, **kwargs):
+    if self.domain_tag and self.domain_tag == "x_tag":
+      raise ValueError("Domain tag cannot be 'x_tag' as it is reserved for internal use.")
+
+    return super().save(*args, **kwargs)
 
   class Meta:
     indexes = ((("application", "worker"), True),)

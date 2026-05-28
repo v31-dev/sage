@@ -1,8 +1,8 @@
 import logging
+import requests
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
-
-import requests
+from types import SimpleNamespace
 
 from services.base import Base
 from services.settings import Settings
@@ -50,6 +50,11 @@ class Notifications(Base):
       return self.notifications_config.get(key, default)
 
   def dispatch(self, instance):
+    if isinstance(instance, dict):
+      instance = SimpleNamespace(type=instance.get("type", "info"),
+                                 content=instance["content"],
+                                 link=instance.get("link"),)
+
     if self.get_notification_value("discord_webhook"):
       self.send_discord(instance)
 

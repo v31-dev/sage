@@ -82,6 +82,8 @@ The top-level `Dockerfile` builds:
 1. the UI bundle
 2. the Python app image that serves the built frontend from `/app/static` and exposes it at `/` while leaving `/api` on the backend
 
+The production UI build currently injects `VITE_LOAD_DELAY=0`, while local frontend development keeps the source default delay.
+
 ## CI And Release Notes
 
 Current GitHub workflows:

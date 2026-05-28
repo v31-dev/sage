@@ -82,6 +82,17 @@ async def collect_metrics():
     raise TaskFailed()
 
 
+@app.task(every("1 day"))
+async def send_summary_notification():
+  Manager().send_summary_notification()
+
+
+# Refresh the latest sage release version from GitHub
+@app.task(every("6 hours"))
+async def refresh_latest_version():
+  await run_in_executor_with_context(Manager().get_latest_version)
+
+
 # Backup the main database
 @app.task((every("6 hours") & ~SchedulerStarted(period=TimeDelta("10 minute"))), name="backup_database")
 async def backup_database():
@@ -101,11 +112,12 @@ async def traefik_sync_certs():
   await Manager().sync_traefik_certificates()
 
 
-# Refresh worker Traefik state after Cloudflare domain/email changes.
-@app.task(name="update_workers_config")
-async def update_workers_config(admin_email_changed=False, domain_changed=False):
-  await Manager().update_workers_config(admin_email_changed=admin_email_changed,
-                                        domain_changed=domain_changed)
+# Refresh Manager + worker Traefik state after Cloudflare domain/email/token changes.
+@app.task(name="refresh_traefik")
+async def refresh_traefik(admin_email_changed=False, domain_changed=False, api_token_changed=False):
+  await Manager().refresh_traefik(admin_email_changed=admin_email_changed,
+                                  domain_changed=domain_changed,
+                                  api_token_changed=api_token_changed)
 
 
 # Deploy Application

@@ -1,13 +1,23 @@
 import { CRUDAPI } from '@/lib/api'
 
 const API_ROOT = '/api'
-const LOAD_DELAY = 300
+
+function getLoadDelay() {
+  const rawDelay = import.meta.env.VITE_LOAD_DELAY
+  const parsedDelay = rawDelay ? Number(rawDelay) : 300
+
+  return Number.isFinite(parsedDelay) && parsedDelay >= 0 ? parsedDelay : 300
+}
+
+const LOAD_DELAY = getLoadDelay()
 
 export interface AppInfo {
   version: string
+  latest_version: string | null
   domain: string
   hostname: string
   ip: string
+  start_time: string
 }
 
 export interface Worker {
@@ -58,10 +68,7 @@ export const APPLICATION_BUSY_STATUSES: Application['status'][] = [
   'restoring',
 ]
 
-export const APPLICATION_STOP_ELIGIBLE_STATUSES: Application['status'][] = [
-  'active',
-  'error',
-]
+export const APPLICATION_STOP_ELIGIBLE_STATUSES: Application['status'][] = ['active', 'error']
 
 export interface Domain {
   name: string
@@ -284,6 +291,58 @@ export interface Notification {
   updated_at: string
 }
 
+export interface HomeSummary {
+  generated_at: string
+  workers_total: number
+  workers_online: number
+  workers_offline: number
+  projects_total: number
+  applications_total: number
+  applications_active: number
+  applications_inactive: number
+  applications_error: number
+  applications_deploying: number
+  applications_stopping: number
+  applications_backup: number
+  applications_restoring: number
+  deployments_last_24h: number
+  containers_total: number
+  containers_active: number
+  containers_inactive: number
+  containers_error: number
+  containers_deploying: number
+  containers_stopping: number
+  containers_backup: number
+  containers_restoring: number
+  domains_total: number
+  domains_active: number
+  domains_inactive: number
+  backups_total: number
+  backups_system: number
+  backups_application: number
+  backups_last_24h: number
+  latest_backup_at: string | null
+  critical_error_count_last_24h: number
+  critical_warning_count_last_24h: number
+  critical_events_last_24h: Notification[]
+}
+
+export async function fetchHomeSummary(): Promise<HomeSummary> {
+  try {
+    await new Promise(resolve => setTimeout(resolve, LOAD_DELAY))
+    const response = await fetch(`${API_ROOT}/summary`)
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}))
+      const detail = data.detail || 'Failed to fetch home summary'
+      throw new Error(detail)
+    }
+    return await response.json()
+  } catch (error) {
+    console.error('Error fetching home summary:', error)
+    throw error
+  }
+}
+
 export async function fetchNotifications({
   limit = null,
   from_ts = null,
@@ -327,7 +386,11 @@ export const backupAPI = new CRUDAPI({
   load_delay: LOAD_DELAY,
 })
 
-export function getVolumeBackupAPI(projectName: string, applicationName: string, volumeName: string) {
+export function getVolumeBackupAPI(
+  projectName: string,
+  applicationName: string,
+  volumeName: string
+) {
   return new CRUDAPI({
     name: 'Volume Backup',
     path: `${API_ROOT}/projects/{project}/applications/{application}/volumes/{volume}/backups`,

@@ -142,9 +142,7 @@ watch(isOpen, async open => {
 <template>
   <Dialog v-model:open="isOpen">
     <DialogTrigger asChild>
-      <Button size="sm" class="flex-1" variant="outline">
-        <ArchiveRestore />Restore
-      </Button>
+      <Button size="sm" class="flex-1" variant="outline"> <ArchiveRestore />Restore </Button>
     </DialogTrigger>
     <DialogContent class="sm:max-w-xl">
       <DialogHeader>
@@ -185,7 +183,10 @@ watch(isOpen, async open => {
               </SelectContent>
             </Select>
 
-            <div v-if="selectedBackup" class="rounded-md border p-3 text-sm text-muted-foreground space-y-1">
+            <div
+              v-if="selectedBackup"
+              class="rounded-md border p-3 text-sm text-muted-foreground space-y-1"
+            >
               <p>Source Worker: {{ parseBackupPath(selectedBackup.s3_path).worker }}</p>
               <p>Backup Timestamp: {{ parseBackupPath(selectedBackup.s3_path).timestamp }}</p>
               <p class="break-all">S3 Path: {{ selectedBackup.s3_path }}</p>
