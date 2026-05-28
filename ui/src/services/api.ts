@@ -16,6 +16,7 @@ export interface AppInfo {
   domain: string
   hostname: string
   ip: string
+  start_time: string
 }
 
 export interface Worker {
@@ -395,4 +396,12 @@ export function getVolumeBackupAPI(
     params: { project: projectName, application: applicationName, volume: volumeName },
     load_delay: LOAD_DELAY,
   })
+}
+
+export async function restartManager(): Promise<void> {
+  const response = await fetch(`${API_ROOT}/restart`, { method: 'POST' })
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}))
+    throw new Error(data.detail || 'Failed to initiate restart')
+  }
 }

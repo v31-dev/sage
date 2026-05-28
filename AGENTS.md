@@ -82,10 +82,11 @@ If this context may have been lost, reread this file plus the relevant `docs/` p
 ## Working Rules
 
 1. Read the relevant docs and code before editing.
-2. Preserve the manager/worker architecture and existing operational assumptions.
-3. Prefer small, local changes that match current patterns.
-4. Verify task flow, logging flow, and async boundaries when touching orchestration code.
-5. Update docs when behavior or developer workflow changes.
+2. Always read the current state of a file before commenting on whether code will work — never assume based on a previous version in the conversation.
+3. Preserve the manager/worker architecture and existing operational assumptions.
+4. Prefer small, local changes that match current patterns.
+5. Verify task flow, logging flow, and async boundaries when touching orchestration code.
+6. Update docs when behavior or developer workflow changes.
 
 ## Token And Context Budget
 

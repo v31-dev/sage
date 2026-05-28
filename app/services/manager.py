@@ -1,4 +1,5 @@
 import asyncio
+import docker
 import json
 import logging
 import re
@@ -1560,6 +1561,21 @@ class Manager(Base):
           raise Exception(f"Failed to create database backup: {e}")
     finally:
       self.platform_backup_in_progress = False
+
+  def restart(self, all: bool = False, sage: bool = False, traefik: bool = False, vector: bool = False, glances: bool = False):
+    client = docker.from_env()
+
+    if all or glances:
+      client.containers.get("glances").restart()
+
+    if all or vector:
+      client.containers.get("vector").restart()
+
+    if all or traefik:
+      client.containers.get("traefik").restart()
+
+    if all or sage:
+      client.containers.get("sage").restart()
 
   async def restore_database_from_s3(self, s3_path: str):
     """
