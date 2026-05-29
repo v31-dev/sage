@@ -263,7 +263,7 @@ class Manager(Base):
 
     Notifications().dispatch({"content": "\n".join(lines), "type": notification_type})
 
-  def sync_workers(self):
+  def sync_workers(self, force: bool = False):
     """
     Check for worker changes.
     - New workers (not in db but in tailscale)
@@ -273,8 +273,7 @@ class Manager(Base):
     - Offline workers (in db but not in tailscale)
     """
     existing_workers = list(Worker.select())
-    tailscale_workers = self.tailscale.get_by_tag(
-        get_env("WORKER_TAILSCALE_TAG"))
+    tailscale_workers = self.tailscale.get_by_tag(get_env("WORKER_TAILSCALE_TAG"))
 
     logger.info(
         f"Existing workers: {[(w.hostname, w.ip, 'online' if w.online else 'offline') for w in existing_workers]}")
@@ -282,49 +281,62 @@ class Manager(Base):
         f"Tailscale workers: {[(w.hostname, w.ip, 'online' if w.online else 'offline') for w in tailscale_workers]}")
 
     for worker in tailscale_workers:
-      existing_worker = next((w for w in existing_workers if w.hostname == worker.hostname), None)
-      if existing_worker:
-        if existing_worker.online and not worker.online:
-          # worker went offline
-          logger.info(f"Worker {worker.hostname} went offline.")
-          self.set_worker_offline(worker)
-        elif not existing_worker.online and worker.online:
-          # worker came back online
-          logger.info(f"Worker {worker.hostname} came back online.")
-          self.set_worker_online(worker)
+      try:
+        existing_worker = next((w for w in existing_workers if w.hostname == worker.hostname), None)
+        if existing_worker:
+          if existing_worker.online and not worker.online:
+            # worker went offline
+            logger.info(f"Worker {worker.hostname} went offline.")
+            self.set_worker_offline(worker)
+          elif not existing_worker.online and worker.online:
+            # worker came back online
+            logger.info(f"Worker {worker.hostname} came back online.")
+            self.set_worker_online(worker)
 
-        if existing_worker.ip != worker.ip:
-          # worker IP changed (worker was re-created)
-          logger.info(
-              f"Worker {
-                  worker.hostname} IP changed from {
-                  existing_worker.ip} to {
-                  worker.ip}.")
+          if existing_worker.ip != worker.ip:
+            # worker IP changed (worker was re-created)
+            logger.info(
+                f"Worker {
+                    worker.hostname} IP changed from {
+                    existing_worker.ip} to {
+                    worker.ip}.")
+            self.setup_worker(worker)
+          elif force:
+            # worker is the same but force re-sync requested
+            logger.info(f"Force syncing worker {worker.hostname}.")
+            self.setup_worker(worker)
+        else:
+          # new worker
+          logger.info(f"New worker {worker.hostname} detected.")
           self.setup_worker(worker)
-      else:
-        # new worker
-        logger.info(f"New worker {worker.hostname} detected.")
-        self.setup_worker(worker)
+      except Exception as e:
+        logger.error(f"sync_workers failed for {worker.hostname}: {e}")
 
     for existing_worker in existing_workers:
-      if (not any(w.hostname == existing_worker.hostname for w in tailscale_workers)
-              and existing_worker.online):
-        # worker went offline or was removed
-        logger.info(
-            f"Worker {
-                existing_worker.hostname} not found in tailscale. Presumed it went offline.")
-        self.set_worker_offline(existing_worker)
+      try:
+        if (not any(w.hostname == existing_worker.hostname for w in tailscale_workers)
+                and existing_worker.online):
+          # worker went offline or was removed
+          logger.info(
+              f"Worker {existing_worker.hostname} not found in tailscale. Presumed it went offline.")
+          self.set_worker_offline(existing_worker)
+      except Exception as e:
+        logger.error(f"sync_workers offline-check failed for {existing_worker.hostname}: {e}")
 
   def setup_worker(self, worker):
     """
-    Setup a new worker -
+    Setup or re-sync a worker -
     - Add to Manager database
     - Create Cloudflare DNS entry (*.int) for Tailscale routing
     - Fetch a Cloudflare Tunnel Token
     - Sync Compose, Traefik, Cloudflared files
     - Start Compose
+
+    Safe to call against an existing worker for re-sync. On failure, the worker
+    row + DNS are only cleaned up if this call was adding a brand-new worker.
     """
-    logger.info(f"Adding worker {worker.hostname} to manager.")
+    is_new = not Worker.select().where(Worker.hostname == worker.hostname).exists()
+    logger.info(f"{'Adding' if is_new else 'Re-syncing'} worker {worker.hostname}.")
     try:
       domain = Settings().get("cloudflare", "domain")
       admin_email = Settings().get("cloudflare", "admin_email")
@@ -394,12 +406,14 @@ class Manager(Base):
                   Container.application_id).where(
                   Container.worker_id == worker.hostname))).execute()
 
-      self.notify(f"Worker {worker.hostname} added.")
+      self.notify(f"Worker {worker.hostname} {'added' if is_new else 'synced'}.")
     except Exception as e:
-      # Cleanup on failure
-      self.notify(f"Failed to setup worker {worker.hostname} : {e}", "error")
-      self.remove_worker(worker)
-      raise Exception(f"Failed to setup worker {worker.hostname} : {e}")
+      action = "setup" if is_new else "sync"
+      self.notify(f"Failed to {action} worker {worker.hostname} : {e}", "error")
+      # Only roll back the worker row + DNS if this was a fresh add.
+      if is_new:
+        self.remove_worker(worker)
+      raise Exception(f"Failed to {action} worker {worker.hostname} : {e}")
 
   def remove_worker(self, worker):
     """
@@ -1613,11 +1627,12 @@ class Manager(Base):
     Restore database from S3 backup.
 
     Process:
-    1. Download backup file from S3 to temporary location
-    2. Validate it's a valid SQLite database
-    3. Create safety backup of current database
-    4. Restore into the live database using SQLite's online backup API
-    5. Verify database integrity
+    - Download backup file from S3 to temporary location
+    - Validate it's a valid SQLite database
+    - Create safety backup of current database
+    - Restore into the live database using SQLite's online backup API
+    - Verify database integrity
+    - Re-sync workers
     """
     try:
       logger.info(f"Starting database restore from {s3_path}")
@@ -1712,6 +1727,8 @@ class Manager(Base):
           raise Exception(f"Database integrity check failed and recovery unsuccessful: {e}")
 
         self.notify(f"Platform restored from backup {s3_path} successfully.", "success")
+
+        await run_in_executor_with_context(self.sync_workers, force=True)
 
     except Exception as e:
       self.notify(f"Platform restore failed: {e}", "error")
