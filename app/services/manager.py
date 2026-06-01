@@ -6,6 +6,7 @@ import logging
 import re
 import sqlite3
 import shutil
+import threading
 from functools import partial
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -65,6 +66,12 @@ class Manager(Base):
       with open(app_dir / "VERSION") as f:
         self.version = f.read().strip()
       self.latest_version = self.version
+
+      # Cross-thread signal: when set, the next periodic sync_workers tick will
+      # run with force=True and clear the flag. Used by the UI resync button
+      # and the platform restore flow to defer a force-resync onto the single
+      # scheduled task path (so it can't race with the periodic tick).
+      self.force_resync_pending = threading.Event()
 
       # Initialize all services
       Database()
@@ -1728,7 +1735,9 @@ class Manager(Base):
 
         self.notify(f"Platform restored from backup {s3_path} successfully.", "success")
 
-        await run_in_executor_with_context(self.sync_workers, force=True)
+        # Queue a force-resync on the next scheduler tick so the periodic
+        # sync_workers task remains the single executor — avoids racing with it.
+        self.force_resync_pending.set()
 
     except Exception as e:
       self.notify(f"Platform restore failed: {e}", "error")
