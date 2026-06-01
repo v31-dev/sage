@@ -30,10 +30,10 @@ async function onConfirmResync() {
   errorMessage.value = ''
 
   try {
-    await settingsAPI.action('resync_traefik')
+    await settingsAPI.action('resync_workers')
     dialogOpen.value = false
   } catch (err) {
-    errorMessage.value = err instanceof Error ? err.message : 'Failed to initiate Traefik resync'
+    errorMessage.value = err instanceof Error ? err.message : 'Failed to queue worker resync'
   } finally {
     submitting.value = false
   }
@@ -46,11 +46,12 @@ async function onConfirmResync() {
       <FieldSet>
         <FieldGroup>
           <Field>
-            <FieldLabel>Resync Traefik</FieldLabel>
+            <FieldLabel>Resync Workers</FieldLabel>
             <FieldDescription>
-              ⚠ Rewrites all Traefik config on the manager and online workers, restarts Traefik
-              containers, and forces certificate re-issuance. Use when TLS certs are broken, ACME
-              state is corrupt, or you've rotated the Cloudflare API token outside of settings.
+              ⚠ Re-pushes compose, Traefik, and Vector templates to every online worker and
+              restarts their base stack. Use when worker templates have drifted. Also re-pushes
+              worker Traefik config, but does not clear acme.json or re-issue certificates — use
+              Resync Traefik for that.
             </FieldDescription>
           </Field>
         </FieldGroup>
@@ -74,32 +75,34 @@ async function onConfirmResync() {
           <DialogHeader>
             <DialogTitle class="flex items-center gap-2">
               <TriangleAlert class="h-4 w-4 text-destructive" />
-              Resync Traefik
+              Resync Workers
             </DialogTitle>
             <DialogDescription>
-              This rebuilds Traefik state across the platform — manager config, ACME certs, and
-              worker Traefik. Use for cert/ACME failures or Cloudflare API token rotation, not
-              for general worker drift.
+              This queues a re-sync of every online worker that will run on the next scheduler
+              tick (within ~30s). Use when worker compose, env, or Vector templates have drifted.
+              Does not touch certificates — use Resync Traefik for cert/ACME issues.
             </DialogDescription>
           </DialogHeader>
 
           <div class="space-y-3 py-2 text-sm text-muted-foreground">
-            <p>The following will happen:</p>
+            <p>The following will happen for each online worker:</p>
             <ul class="ml-4 list-disc space-y-1 text-xs">
-              <li>Manager Traefik config files and DNS API token file are rewritten.</li>
-              <li>Manager Traefik is restarted; existing certificates are re-issued via ACME.</li>
+              <li>Compose, Traefik, Vector, and worker.env files are re-rsynced.</li>
+              <li>The Cloudflare <code>*.int</code> DNS record is reasserted.</li>
               <li>
-                Worker Traefik static and dynamic config is resynced; worker Traefik restarted.
+                <code>docker compose up -d</code> is run on the worker; base-stack services with
+                config drift will recreate.
               </li>
               <li>
-                Every application is flagged for domain config resync on the next scheduler tick.
+                Every application on the worker is flagged for Traefik domain config resync on the
+                next scheduler tick.
               </li>
             </ul>
             <p
               class="rounded border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs text-destructive"
             >
-              <strong>Brief downtime expected.</strong> Public traffic to all apps may drop for a
-              few seconds during Traefik restarts.
+              <strong>Brief downtime expected.</strong> Worker Traefik may restart, causing a few
+              seconds of dropped traffic to apps on that worker.
             </p>
           </div>
 
@@ -112,7 +115,7 @@ async function onConfirmResync() {
             <Button variant="destructive" size="sm" :disabled="submitting" @click="onConfirmResync">
               <Spinner v-if="submitting" class="animate-spin" />
               <RotateCw v-else class="h-3.5 w-3.5" />
-              {{ submitting ? 'Triggering…' : 'Resync' }}
+              {{ submitting ? 'Queueing…' : 'Resync' }}
             </Button>
           </DialogFooter>
         </DialogContent>

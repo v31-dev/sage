@@ -20,10 +20,15 @@ app = LoggedRocketry(execution="async")
 task_dispatcher = LoggedSession(app.session)
 
 
-# Sync workers for setup
+# Sync workers for setup. Consumes Manager().force_resync_pending so a UI
+# resync click or post-restore signal runs as the next tick (force=True),
+# keeping this task as the single executor and avoiding races with itself.
 @app.task(every("30 seconds"))
 async def manager_sync_workers():
-  await run_in_executor_with_context(Manager().sync_workers)
+  force = Manager().force_resync_pending.is_set()
+  if force:
+    Manager().force_resync_pending.clear()
+  await run_in_executor_with_context(Manager().sync_workers, force=force)
 
 
 # Sync Application status

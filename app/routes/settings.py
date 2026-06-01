@@ -140,3 +140,21 @@ async def resync_traefik(request: Request):
       api_token_changed=True,
   )
   return {"message": "Traefik resync initiated."}
+
+
+@router.post("/resync_workers")
+async def resync_workers():
+  """
+  Queue a force re-sync of all online workers. The flag is consumed by the
+  next periodic manager_sync_workers tick (up to ~30s), which then calls
+  sync_workers(force=True). Keeps the periodic task as the single executor
+  so there is no concurrency with itself or with the post-restore signal.
+  """
+  if Manager().force_resync_pending.is_set():
+    raise HTTPException(
+        status_code=409,
+        detail="A worker resync is already queued. It will run on the next scheduler tick.",
+    )
+
+  Manager().force_resync_pending.set()
+  return {"message": "Worker resync queued for the next scheduler tick."}

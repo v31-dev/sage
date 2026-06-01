@@ -4,6 +4,7 @@ import { TriangleAlert } from 'lucide-vue-next'
 
 import RestartSubCard from '@/pages/Settings/RestartSubCard.vue'
 import TraefikResyncSubCard from '@/pages/Settings/TraefikResyncSubCard.vue'
+import WorkersResyncSubCard from '@/pages/Settings/WorkersResyncSubCard.vue'
 </script>
 
 <template>
@@ -18,6 +19,7 @@ import TraefikResyncSubCard from '@/pages/Settings/TraefikResyncSubCard.vue'
 
     <CardContent class="space-y-4">
       <TraefikResyncSubCard />
+      <WorkersResyncSubCard />
       <RestartSubCard />
     </CardContent>
   </Card>
