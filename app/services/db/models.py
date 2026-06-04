@@ -120,7 +120,7 @@ class Application(BaseModel):
 class Domain(BaseModel):
   application = ForeignKeyField(Application, backref="domains", on_delete="CASCADE")
   name = CleanCharField(null=False)
-  type = CharField(choices=["internal", "public"], default="internal")
+  type = CharField(choices=["internal", "public", "tcp"], default="internal")
   port = IntegerField(null=False)
 
   class Meta:

@@ -13,7 +13,14 @@ import {
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Field, FieldGroup, FieldLabel, FieldSet, FieldError } from '@/components/ui/field'
+import {
+  Field,
+  FieldGroup,
+  FieldLabel,
+  FieldSet,
+  FieldError,
+  FieldDescription,
+} from '@/components/ui/field'
 import {
   Select,
   SelectContent,
@@ -36,7 +43,7 @@ const props = withDefaults(defineProps<Props>(), {})
 const isAddDomainDialogOpen = ref(false)
 const domain = ref({
   name: '',
-  type: 'internal' as 'internal' | 'public',
+  type: 'internal' as 'internal' | 'public' | 'tcp',
   port: 80,
 })
 const addDomainErrorMessage = ref('')
@@ -104,8 +111,12 @@ async function onClickAddDomainConfirm() {
               <SelectContent>
                 <SelectItem value="internal"> Internal </SelectItem>
                 <SelectItem value="public"> Public </SelectItem>
+                <SelectItem value="tcp"> TCP </SelectItem>
               </SelectContent>
             </Select>
+            <FieldDescription v-if="domain.type === 'tcp'">
+              TCP routes by SNI only — x-tag domain tags are not supported.
+            </FieldDescription>
           </Field>
           <Field>
             <FieldLabel for="domain-port"> Port </FieldLabel>

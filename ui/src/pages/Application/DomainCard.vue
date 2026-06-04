@@ -19,7 +19,14 @@ import {
   InputGroupInput,
   InputGroupText,
 } from '@/components/ui/input-group'
-import { Field, FieldGroup, FieldLabel, FieldSet, FieldError } from '@/components/ui/field'
+import {
+  Field,
+  FieldGroup,
+  FieldLabel,
+  FieldSet,
+  FieldError,
+  FieldDescription,
+} from '@/components/ui/field'
 import {
   Select,
   SelectContent,
@@ -48,14 +55,18 @@ const appStore = useAppStore()
 const isEditDomainDialogOpen = ref(false)
 const domain = ref({
   name: '',
-  type: 'internal' as 'internal' | 'public',
+  type: 'internal' as 'internal' | 'public' | 'tcp',
   port: 80,
 })
 const editDomainErrorMessage = ref('')
 const isClickedEditDomainConfirm = ref(false)
+const isTcp = computed(() => props.domain.type === 'tcp')
 const link = computed(() => {
   if (props.domain.type === 'public') {
     return `https://${props.domain.name}.${appStore.info!.domain}`
+  } else if (props.domain.type === 'tcp') {
+    // Raw-TCP backing service reached over the mesh's shared SNI port; not an https URL.
+    return `${props.domain.name}.int.${appStore.info!.domain}:8443`
   } else {
     return `https://${props.domain.name}.int.${appStore.info!.domain}`
   }
@@ -123,7 +134,10 @@ async function onClickConfirmDelete() {
       </CardAction>
     </CardHeader>
     <CardFooter class="border-t">
-      <Button size="sm" variant="outline" class="w-full" as-child>
+      <Button v-if="isTcp" size="sm" variant="outline" class="w-full" disabled>
+        {{ link }}
+      </Button>
+      <Button v-else size="sm" variant="outline" class="w-full" as-child>
         <a :href="link" target="_blank">
           <ExternalLink />
           {{ link }}
@@ -147,7 +161,7 @@ async function onClickConfirmDelete() {
             <FieldLabel for="edit-domain-name"> Name </FieldLabel>
             <InputGroup>
               <InputGroupAddon>
-                <InputGroupText>https://</InputGroupText>
+                <InputGroupText>{{ domain.type == 'tcp' ? '' : 'https://' }}</InputGroupText>
               </InputGroupAddon>
               <InputGroupInput
                 id="edit-domain-name"
@@ -157,8 +171,8 @@ async function onClickConfirmDelete() {
               />
               <InputGroupAddon align="inline-end">
                 <InputGroupText
-                  >.{{ domain.type == 'internal' ? 'int.' : ''
-                  }}{{ appStore.info!.domain }}</InputGroupText
+                  >.{{ domain.type == 'public' ? '' : 'int.' }}{{ appStore.info!.domain
+                  }}{{ domain.type == 'tcp' ? ':8443' : '' }}</InputGroupText
                 >
               </InputGroupAddon>
             </InputGroup>
@@ -172,8 +186,12 @@ async function onClickConfirmDelete() {
               <SelectContent>
                 <SelectItem value="internal"> Internal </SelectItem>
                 <SelectItem value="public"> Public </SelectItem>
+                <SelectItem value="tcp"> TCP </SelectItem>
               </SelectContent>
             </Select>
+            <FieldDescription v-if="domain.type === 'tcp'">
+              TCP routes by SNI only — x-tag domain tags are not supported.
+            </FieldDescription>
           </Field>
           <Field>
             <FieldLabel for="edit-domain-port"> Port </FieldLabel>

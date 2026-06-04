@@ -53,6 +53,33 @@ Current traffic and naming patterns are driven by Cloudflare, Traefik, and Tails
 
 The manager keeps DNS and Traefik state in sync as workers and application domains change.
 
+### Domain Types
+
+A `Domain` has a `type` that selects how Traefik routes it:
+
+- `public` — HTTP(S) via the Cloudflare tunnel on `<sub>.<domain>`.
+- `internal` — HTTP(S) over the Tailscale mesh on `<sub>.int.<domain>`. The edge
+  Traefik marks the request with `X-Mesh-Hops` and load-balances to the `mesh`
+  entrypoint (`:9002`) of each backing worker, which forwards to the local
+  container. WebSockets ride this path unchanged (HTTP Upgrade).
+- `tcp` — raw TCP backing service (redis/postgres/...) over the mesh on
+  `<sub>.int.<domain>:8443`. TCP has no Host header, so routing is by **TLS SNI** on
+  a single shared client port (`tcps` = `:8443`). Clients connect with TLS (e.g.
+  `rediss://`, libpq `sslmode=require`); Traefik handles Postgres STARTTLS
+  automatically (Traefik 3.x), so no `sslnegotiation=direct` or sidecar is needed.
+  The edge router is **passthrough** (so the SNI survives to the mesh hop) and
+  load-balances across every active backing worker, exactly like the internal/public
+  routers. The final hop on `meshtcp` (`:9003`, the TCP analog of `mesh:9002`)
+  **terminates** TLS with the `*.int` wildcard already in the worker's `acme.json`
+  and forwards plaintext to the local stock container — so the cert never leaves
+  Traefik and backends need no TLS config. The separate `meshtcp` entrypoint stands
+  in for the `X-Mesh-Hops` header that TCP cannot carry. `tcp` is Tailscale-only (no
+  public variant) and has no `x-tag` pool variant, but multi-container load balancing
+  works the same as other domain types.
+
+For same-node, same-protocol access between containers, skip the mesh entirely and
+use the Docker DNS name (the container's `qualified_name`) on `sage_default`.
+
 ## Main Data Model
 
 The main manager database is SQLite with WAL mode and lives at `/app/data/data.db`.

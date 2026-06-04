@@ -1,0 +1,38 @@
+tcp:
+  routers:
+    # Shared client entrypoint via Tailscale. Routed by the SNI in the client's TLS
+    # ClientHello (Traefik handles Postgres STARTTLS automatically, so libpq with
+    # sslmode=require works without sslnegotiation=direct). Passthrough keeps the
+    # SNI readable so the mesh hop can still route; it load-balances across every
+    # active backing worker, exactly like the internal/public HTTP routers.
+    ${SERVICE}_${SUBDOMAIN}_tcp_internal:
+      rule: HostSNI(`${SUBDOMAIN}.int.${DOMAIN}`)
+      entryPoints:
+        - tcps
+      middlewares:
+        - tailscale-only-tcp
+      service: ${SERVICE}_${SUBDOMAIN}_tcp_internal
+      tls:
+        passthrough: true
+
+    # Final mesh hop: terminate TLS with the wildcard cert (already synced to the
+    # worker via acme.json) and forward plaintext to the local stock container.
+    # Distinguished from the edge by entrypoint, since TCP carries no X-Mesh-Hops.
+    ${SERVICE}_${SUBDOMAIN}_tcp_mesh_internal:
+      rule: HostSNI(`${SUBDOMAIN}.int.${DOMAIN}`)
+      entryPoints:
+        - meshtcp
+      service: ${SERVICE}_${SUBDOMAIN}_tcp_local_internal
+      tls:
+        certResolver: cloudflare
+
+  services:
+    # Final mesh service -> local backend container on sage_default.
+    ${SERVICE}_${SUBDOMAIN}_tcp_local_internal:
+      loadBalancer:
+        servers:
+          - address: "${SERVICE}:${PORT}"
+    # Load-balanced edge service -> meshtcp entrypoint of each active backing worker.
+    ${SERVICE}_${SUBDOMAIN}_tcp_internal:
+      loadBalancer:
+        servers: [ ${LOAD_BALANCED_SERVERS} ]

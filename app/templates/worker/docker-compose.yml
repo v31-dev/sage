@@ -16,6 +16,8 @@ services:
       - ${TS_IP}:80:80
       - ${TS_IP}:443:443
       - ${TS_IP}:9002:9002
+      - ${TS_IP}:8443:8443
+      - ${TS_IP}:9003:9003
     command:
       - "--configFile=/etc/traefik/traefik.yml"
 

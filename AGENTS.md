@@ -87,6 +87,7 @@ If this context may have been lost, reread this file plus the relevant `docs/` p
 4. Prefer small, local changes that match current patterns.
 5. Verify task flow, logging flow, and async boundaries when touching orchestration code.
 6. Update docs when behavior or developer workflow changes.
+7. Verify, don't assert from memory. Before a claim about a third-party tool, library, or protocol (Traefik, Tailscale, Cloudflare, Peewee, Postgres/redis wire behavior, etc.) drives a design decision or recommendation, confirm it against the current docs, source, or release notes — especially capability claims ("X can't do Y", "the only way is Z") and version-specific behavior. Treat such claims as checkable facts, not recall. State what was verified and link the source; if it cannot be verified, say so explicitly rather than presenting a guess as fact. Check the pinned version in use (e.g. the `traefik:` tag in `docker-compose.yml`), since behavior changes across releases.
 
 ## Token And Context Budget
 

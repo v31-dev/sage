@@ -31,5 +31,13 @@ http:
           style-src 'self' 'unsafe-inline'; 
           img-src 'self' data: *.openstreetmap.org; 
           worker-src 'self' blob:;
-          frame-ancestors 'none'; 
+          frame-ancestors 'none';
           form-action 'self' *.${DOMAIN};
+
+tcp:
+  middlewares:
+    tailscale-only-tcp:
+      ipAllowList:
+        sourceRange:
+          - "100.64.0.0/10"
+          - "172.16.0.0/12"

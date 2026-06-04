@@ -21,10 +21,18 @@ entryPoints:
         - "127.0.0.1/32"
         - "172.16.0.0/12" # Cover all default Docker bridge ranges
         - "100.64.0.0/10" # Trust Tailscale range if you're hitting via TS
+  # Internal HTTPS client entry via Tailscale (the *.int domains); TLS terminated here.
   websecure:
     address: :443
+  # Internal HTTP mesh final hop — the internal/public load-balancing target between Traefik nodes.
   mesh:
     address: :9002
+  # tcp backing services (redis/postgres/...). tcps is the shared client entry
+  # (SNI-routed); meshtcp is the internal final hop (the TCP analog of mesh:9002).
+  tcps:
+    address: :8443
+  meshtcp:
+    address: :9003
 
 certificatesResolvers:
   cloudflare:
