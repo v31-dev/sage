@@ -1324,7 +1324,7 @@ class Manager(Base):
                 "APPLICATION_NAME": container.application.name,
                 "CONTAINER_NAME": container.application.qualified_name,
                 "IMAGE": container.application.image,
-                "VOLUMES": " ,".join(volumes_config),
+                "VOLUMES": ", ".join(volumes_config),
             },
         )
       elif container.application.type == "git":
@@ -1338,8 +1338,8 @@ class Manager(Base):
                 "CONTAINER_NAME": container.application.qualified_name,
                 "REPO": container.application.repo,
                 "DOCKERFILE": container.application.path,
-                "BUILD_ARGS": " ,".join(app_build_args),
-                "VOLUMES": " ,".join(volumes_config),
+                "BUILD_ARGS": ", ".join(app_build_args),
+                "VOLUMES": ", ".join(volumes_config),
             },
         )
 
