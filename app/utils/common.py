@@ -57,7 +57,7 @@ def update_config_file(path, config):
         return False
 
 
-def parse_multiline_kv(config, fn):
+def parse_multiline_kv(config, fn, strip_quotes=False):
   """
   Parse multiline key-value pairs from a string in the format:
   KEY1=value1
@@ -67,7 +67,8 @@ def parse_multiline_kv(config, fn):
   - strips inline comments (ignoring '#' inside quoted values)
   - skips blank or comment-only lines
   - splits on first '=' and strips both key and value
-  - leaves quoted values intact (do not remove surrounding quotes)
+  - leaves quoted values intact, unless strip_quotes=True, which removes one
+    matching surrounding pair of single/double quotes (e.g. values with spaces)
 
   Returns a list of results from applying the provided function `fn` to each key-value pair.
   """
@@ -101,5 +102,7 @@ def parse_multiline_kv(config, fn):
     key, _, value = line.partition("=")
     key = key.strip()
     value = value.strip()
+    if strip_quotes and len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+      value = value[1:-1]
     results.append(fn(key, value))
   return results

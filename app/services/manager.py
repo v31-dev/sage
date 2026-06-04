@@ -1239,7 +1239,8 @@ class Manager(Base):
         app_env = app_env.replace("${" + key + "}", str(value))
         app_build_args = app_build_args.replace("${" + key + "}", str(value))
 
-      app_build_args = parse_multiline_kv(app_build_args, lambda key, value: f"{{ {key}: \"{value}\" }}")
+      app_build_args = parse_multiline_kv(app_build_args, lambda key, value: json.dumps(f"{key}={value}"),
+                                          strip_quotes=True)
 
       # Create the secrets file
       await run_in_executor_with_context(
