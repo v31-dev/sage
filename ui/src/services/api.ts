@@ -72,7 +72,7 @@ export const APPLICATION_STOP_ELIGIBLE_STATUSES: Application['status'][] = ['act
 
 export interface Domain {
   name: string
-  type: 'internal' | 'public'
+  type: 'internal' | 'public' | 'tcp'
   port: number
   application: Application
   created_at: Date
