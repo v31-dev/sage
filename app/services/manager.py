@@ -760,49 +760,83 @@ class Manager(Base):
         }
         for worker in online_workers
     }
+    # TCP backing services mesh over port 9003 (address form, not URL). The edge
+    # passthrough router load-balances across every active backing worker, just like
+    # the HTTP mesh; same-worker uses traefik to avoid hairpinning.
+    tcp_load_balanced_servers = {
+        worker.hostname: ", ".join(
+            (
+                '{ address: "traefik:9003" }'
+                if worker.hostname == container.worker.hostname
+                else f'{{ address: "{container.worker.ip}:9003" }}'
+            )
+            for container in active_containers
+        )
+        for worker in online_workers
+    }
 
     # Application is active -> sync Traefik config based on active containers
     # to all online workers (mesh network).
     for worker in online_workers:
       for domain in application_domains:
-        traefik_config_template, traefik_config_template_domain_pool = template_names[
-            domain.type
-        ]
-        self.tailscale.sync_file(
-            worker.hostname,
-            app_dir / f"templates/worker/traefik/{traefik_config_template}",
-            f"{self.worker_home_dir}/traefik/dynamic/{application.qualified_name}-{domain.type}-{domain.name}.yml",
-            {
-                "SERVICE": application.qualified_name,
-                "SUBDOMAIN": domain.name,
-                "DOMAIN": domain_name,
-                "DOMAIN_TAGS_HEADER": json.dumps(domain_tags),
-                "PORT": domain.port,
-                "LOAD_BALANCED_SERVERS": load_balanced_servers[worker.hostname],
-            },
-        )
-
-        # Create Domain Tag pool config.
-        for domain_tag in domain_tags:
+        # TCP services route by SNI and have no x-tag pool variant (TCP carries no
+        # query string), so they use a dedicated single-template path.
+        if domain.type == "tcp":
           self.tailscale.sync_file(
               worker.hostname,
-              app_dir / f"templates/worker/traefik/{traefik_config_template_domain_pool}",
-              f"{self.worker_home_dir}/traefik/dynamic/{application.qualified_name}-{domain.type}-{domain.name}-{domain_tag}.yml",
+              app_dir / "templates/worker/traefik/service_internal_tcp.yml",
+              f"{self.worker_home_dir}/traefik/dynamic/{application.qualified_name}-{domain.type}-{domain.name}.yml",
               {
                   "SERVICE": application.qualified_name,
                   "SUBDOMAIN": domain.name,
                   "DOMAIN": domain_name,
-                  "POOL_TAG": domain_tag,
-                  "LOAD_BALANCED_SERVERS": domain_tag_load_balanced_servers[worker.hostname][domain_tag],
+                  "PORT": domain.port,
+                  "LOAD_BALANCED_SERVERS": tcp_load_balanced_servers[worker.hostname],
               },
           )
 
+        # HTTP services can route by path and support x-tag based pool splitting,
+        # so they use the standard template pair.
+        else:
+          traefik_config_template, traefik_config_template_domain_pool = template_names[
+              domain.type
+          ]
+          self.tailscale.sync_file(
+              worker.hostname,
+              app_dir / f"templates/worker/traefik/{traefik_config_template}",
+              f"{self.worker_home_dir}/traefik/dynamic/{application.qualified_name}-{domain.type}-{domain.name}.yml",
+              {
+                  "SERVICE": application.qualified_name,
+                  "SUBDOMAIN": domain.name,
+                  "DOMAIN": domain_name,
+                  "DOMAIN_TAGS_HEADER": json.dumps(domain_tags),
+                  "PORT": domain.port,
+                  "LOAD_BALANCED_SERVERS": load_balanced_servers[worker.hostname],
+              },
+          )
+
+          # Create Domain Tag pool config.
+          for domain_tag in domain_tags:
+            self.tailscale.sync_file(
+                worker.hostname,
+                app_dir / f"templates/worker/traefik/{traefik_config_template_domain_pool}",
+                f"{self.worker_home_dir}/traefik/dynamic/{application.qualified_name}-{domain.type}-{domain.name}-{domain_tag}.yml",
+                {
+                    "SERVICE": application.qualified_name,
+                    "SUBDOMAIN": domain.name,
+                    "DOMAIN": domain_name,
+                    "POOL_TAG": domain_tag,
+                    "LOAD_BALANCED_SERVERS": domain_tag_load_balanced_servers[worker.hostname][domain_tag],
+                },
+            )
+
     for domain in application_domains:
-      domain_url = (
-          f"https://{domain.name}.int.{domain_name}"
-          if domain.type == "internal"
-          else f"https://{domain.name}.{domain_name}"
-      )
+      if domain.type == "tcp":
+        domain_url = f"{domain.name}.int.{domain_name}:8443"
+      elif domain.type == "internal":
+        domain_url = f"https://{domain.name}.int.{domain_name}"
+      else:
+        domain_url = f"https://{domain.name}.{domain_name}"
       self.notify(
           f"Traefik config synced for application {application.qualified_name} with domain {domain.type}:{domain.name}.",
           link=domain_url,
