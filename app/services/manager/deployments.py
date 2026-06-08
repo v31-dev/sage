@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import re
 import shlex
 
 from services.db import (
@@ -103,7 +104,7 @@ class DeploymentsMixin:
       # Create the volumes
       volumes = list(container.application.volumes)
       volumes_config = [
-          f"\"{container_dir}/volumes/{v.name}:{v.path}\""
+          json.dumps(f"{container_dir}/volumes/{v.name}:{v.path}")
           for v in volumes
       ]
       volume_mkdir_cmd = ';'.join([f"mkdir -p {container_dir}/volumes"] + [f"mkdir -p {container_dir}/volumes/{v.name}" for v in volumes])
@@ -119,7 +120,12 @@ class DeploymentsMixin:
           container.worker.hostname,
           f"ls -1 {container_dir}/volumes || true",
       )
-      volumes_to_cleanup = set(existing_volumes) - set(v.name for v in volumes)
+      # Restrict cleanup to Sage's own volume naming so a directory planted on the
+      # worker can't smuggle shell metacharacters into the remote rm command.
+      volumes_to_cleanup = {
+          name for name in (set(existing_volumes) - set(v.name for v in volumes))
+          if re.fullmatch(r"[a-z0-9-]+", name)
+      }
       if volumes_to_cleanup:
         volume_cleanup_cmd = ';'.join([f"rm -rf {container_dir}/volumes/{v}" for v in volumes_to_cleanup])
         await run_in_executor_with_context(

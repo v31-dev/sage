@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -132,6 +133,11 @@ class Metrics(Base):
     ContainerLogs stores all fields; ContainerLogsIndex is an FTS5 virtual table
     that indexes only the message text for fast full-text search.
     """
+    # container is a qualified application name; reject anything that could escape
+    # the logs directory when interpolated into the shard file path.
+    if not re.fullmatch(r"[a-z0-9-]+", container or ""):
+      raise ValueError(f"Invalid container name: {container!r}")
+
     with self.lock:
       if container not in self._dbs["logs"]:
         path = f"{self.db_path}/logs/{container}.db"

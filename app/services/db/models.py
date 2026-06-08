@@ -106,6 +106,10 @@ class Application(BaseModel):
           raise ValueError(
               f"Invalid Git repository URL: {self.repo}. Should be in format 'https://github.com/user/repo.git<?#branch><?:sub-directory>'")
 
+    if self.image and not re.fullmatch(r"[A-Za-z0-9][\w.\-/:@]*", self.image):
+      raise ValueError(
+          f"Invalid image reference: {self.image!r}. Allowed characters: letters, digits, and . _ - / : @")
+
     if self.env:
       validate_multiline_kv(self.env, "application.env")
 
@@ -149,6 +153,15 @@ class Volume(BaseModel):
   path = CharField()
   backup_cron = CharField(null=True)
   application = ForeignKeyField(Application, backref="volumes", on_delete="CASCADE")
+
+  def save(self, *args, **kwargs):
+    # Container-side mount target: must be absolute and free of the ':' separator
+    # and quotes that would break the compose volume entry.
+    if not re.fullmatch(r"/[^\n\r:\"]*", self.path or ""):
+      raise ValueError(
+          f"Invalid volume path: {self.path!r}. Must be an absolute path without ':' or quotes.")
+
+    return super().save(*args, **kwargs)
 
   class Meta:
     indexes = ((("application", "name"), True),)
