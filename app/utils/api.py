@@ -92,8 +92,7 @@ def generic_update(model, instance, data: dict):
       raise HTTPException(status_code=404, detail=f"{model.__name__} not found")
 
     for field, value in data.items():
-      if value is not None:
-        setattr(instance, field, value)
+      setattr(instance, field, value)
 
     instance.save()
     return model_to_dict(instance)
