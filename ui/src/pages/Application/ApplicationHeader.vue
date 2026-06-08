@@ -145,6 +145,12 @@ const repoURL = computed(() => {
           {{ props.application.path ? props.application.path : '-' }}
         </p>
       </div>
+      <div v-if="props.application.command">
+        <Label>Command</Label>
+        <p class="text-sm text-muted-foreground whitespace-pre-wrap">
+          {{ props.application.command }}
+        </p>
+      </div>
     </CardContent>
     <CardFooter
       class="border-t flex flex-col md:flex-row justify-between items-center gap-2 md:gap-0"

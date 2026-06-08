@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import shlex
 
 from services.db import (
     Application,
@@ -71,14 +72,24 @@ class DeploymentsMixin:
 
       app_env = container.application.env if container.application.env else ""
       app_build_args = container.application.args if container.application.args else ""
+      app_command = container.application.command if container.application.command else ""
 
-      # Resolve Application env and build args with project env values if they reference them with ${KEY}
+      # Resolve Application env, build args and command with project env values if they reference them with ${KEY}
       for key, value in project_env:
         app_env = app_env.replace("${" + key + "}", str(value))
         app_build_args = app_build_args.replace("${" + key + "}", str(value))
+        app_command = app_command.replace("${" + key + "}", str(value))
 
       app_build_args = parse_multiline_kv(app_build_args, lambda key, value: json.dumps(f"{key}={value}"),
                                           strip_quotes=True)
+
+      # Override the image command in exec/array form so tokens pass through literally and YAML stays safe.
+      # Left blank when unset so the template renders `command:` (null), which Compose drops in favour
+      # of the image's default CMD. An empty string ("") would override CMD to empty, so avoid it.
+      command_value = ""
+      if app_command.strip():
+        command_tokens = ", ".join(json.dumps(token) for token in shlex.split(app_command))
+        command_value = f"[{command_tokens}]"
 
       # Create the secrets file
       await run_in_executor_with_context(
@@ -128,6 +139,7 @@ class DeploymentsMixin:
                 "APPLICATION_NAME": container.application.name,
                 "CONTAINER_NAME": container.application.qualified_name,
                 "IMAGE": container.application.image,
+                "COMMAND": command_value,
                 "VOLUMES": ", ".join(volumes_config),
             },
         )
@@ -143,6 +155,7 @@ class DeploymentsMixin:
                 "REPO": container.application.repo,
                 "DOCKERFILE": container.application.path,
                 "BUILD_ARGS": ", ".join(app_build_args),
+                "COMMAND": command_value,
                 "VOLUMES": ", ".join(volumes_config),
             },
         )

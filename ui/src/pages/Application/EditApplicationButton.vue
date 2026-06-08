@@ -38,6 +38,9 @@ const props = withDefaults(defineProps<Props>(), {})
 const envTooltip =
   'KEY=VALUE pairs, one per line\nComments with # are allowed\nVALUE can be string quoted\n' +
   '${SAGE_WORKER_HOSTNAME} can be used for worker hostname'
+const commandTooltip =
+  "Overrides the image's default command, e.g. python -m http.server 8000\n" +
+  '${KEY} resolves to project env values'
 const isEditDialogOpen = ref(false)
 const editFormData = ref({
   label: '',
@@ -48,6 +51,7 @@ const editFormData = ref({
   path: 'Dockerfile',
   env: '',
   args: '',
+  command: '',
 })
 const editDialogErrorMessage = ref('')
 const isClickedEditConfirm = ref(false)
@@ -61,6 +65,7 @@ function openEditDialog() {
   editFormData.value.path = props.application.path || 'Dockerfile'
   editFormData.value.env = props.application.env || ''
   editFormData.value.args = props.application.args || ''
+  editFormData.value.command = props.application.command || ''
   editDialogErrorMessage.value = ''
   isEditDialogOpen.value = true
 }
@@ -77,6 +82,7 @@ async function handleUpdateApplication() {
       image: editFormData.value.image || null,
       repo: editFormData.value.repo || null,
       path: editFormData.value.path || null,
+      command: editFormData.value.command || null,
       env: editFormData.value.env || null,
       args: editFormData.value.args || null,
     })
@@ -150,6 +156,15 @@ async function handleUpdateApplication() {
               v-model="editFormData.path"
               placeholder="required"
               tooltip="Dockerfile"
+            />
+          </Field>
+          <Field>
+            <FieldLabel for="command"> Command </FieldLabel>
+            <CustomInput
+              id="command"
+              v-model="editFormData.command"
+              :tooltip="commandTooltip"
+              placeholder="optional"
             />
           </Field>
           <Field>

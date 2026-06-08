@@ -68,7 +68,7 @@ def get_application(request: Request):
 def update_application(request: Request, application_data: dict = Body(...)):
   data = parse_api_data(
       application_data,
-      ["label", "description", "image", "env", "args", "type", "repo", "path"],
+      ["label", "description", "image", "env", "args", "command", "type", "repo", "path"],
   )
 
   return generic_update(Application, request.state.models["application"], data)
