@@ -80,6 +80,7 @@ class Application(BaseModel):
   path = CharField(default="Dockerfile")
   env = EncryptedTextField(null=True)
   args = EncryptedTextField(null=True)
+  command = CharField(null=True)
   status = CharField(choices=STATUS_CHOICES, default="inactive")
   domains_synced = BooleanField(default=False)
   container_count = IntegerField(default=0)

@@ -6,6 +6,7 @@ services:
       args: [ ${BUILD_ARGS} ]
     container_name: ${CONTAINER_NAME}
     restart: unless-stopped
+    command: ${COMMAND}
     volumes: [ ${VOLUMES} ]
     env_file: .env
     networks:
