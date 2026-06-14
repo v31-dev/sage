@@ -10,12 +10,10 @@ from routes.settings import router as settings_router
 from routes.projects import router as projects_router
 from routes.workers import router as workers_router
 from routes.notifications import router as notifications_router
-from scheduler import app as app_rocketry
-from utils.logging import LoggedSession, fastapi_middleware
+from utils.logging import fastapi_middleware
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, redirect_slashes=False)
 app.add_middleware(fastapi_middleware)
-app.state.rocketry = LoggedSession(app_rocketry.session)
 
 static_dir = Path("/app/static")
 

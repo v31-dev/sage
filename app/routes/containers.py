@@ -1,14 +1,16 @@
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 
 from services.db import APPLICATION_BUSY_STATUSES, Container, Worker
+from services.manager import Manager
 from utils.api import (
-  get_request_models,
+    get_request_models,
     generic_create,
     generic_get,
     generic_list,
     generic_update,
     parse_api_data,
 )
+
 
 
 # Container is a sub-route of Application & Worker
@@ -109,6 +111,13 @@ def delete_container(request: Request, force: bool = False):
   if container.status in CONTAINER_BUSY_STATUSES:
     raise HTTPException(status_code=409, detail=f"Container is currently {container.status}.")
 
-  request.app.state.rocketry["delete_container"].run(container=container, force=force)
+  if not Manager().add_task(
+      task=Manager().delete_container,
+      scopes={f"app:{container.application_id}"},
+      params={"container_id": container.id, "force": force},
+      executor="app",
+      task_id=request.state.task_id,
+  ):
+    raise HTTPException(status_code=409, detail="Application already has an operation in progress.")
 
   return {"status": "OK"}

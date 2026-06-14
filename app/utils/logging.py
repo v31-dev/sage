@@ -88,7 +88,9 @@ def run_in_executor_with_context(
   )
 
 
-def with_task_id(func):
+def with_task_id(func, log=True):
+  # log=False suppresses the per-run started/completed lines for high-frequency
+  # tasks (e.g. the 1s operation dispatcher); failures are always logged.
   _logger = logging.getLogger(func.__module__)
   if inspect.iscoroutinefunction(func):
 
@@ -97,9 +99,11 @@ def with_task_id(func):
       # _task_id injected by LoggedSession for API-triggered runs; otherwise generate fresh.
       var_token = task_id.set(kwargs.pop("_task_id", None) or generate_task_id_token())
       try:
-        _logger.info(f"{func.__name__}: started")
+        if log:
+          _logger.info(f"{func.__name__}: started")
         result = await func(*args, **kwargs)
-        _logger.info(f"{func.__name__}: completed")
+        if log:
+          _logger.info(f"{func.__name__}: completed")
         return result
       except Exception as exc:
         if isinstance(exc, TaskFailed):
@@ -117,9 +121,11 @@ def with_task_id(func):
     def wrapper(*args, **kwargs):
       var_token = task_id.set(kwargs.pop("_task_id", None) or generate_task_id_token())
       try:
-        _logger.info(f"{func.__name__}: started")
+        if log:
+          _logger.info(f"{func.__name__}: started")
         result = func(*args, **kwargs)
-        _logger.info(f"{func.__name__}: completed")
+        if log:
+          _logger.info(f"{func.__name__}: completed")
         return result
       except Exception as exc:
         if isinstance(exc, TaskFailed):
@@ -180,9 +186,9 @@ class _SuppressTracebackFilter(logging.Filter):
 class LoggedRocketry(Rocketry):
   """Rocketry subclass that auto-applies with_task_id to every registered task."""
 
-  def task(self, *args, **kwargs):
+  def task(self, *args, log=True, **kwargs):
     decorator = super().task(*args, **kwargs)
-    return lambda func: decorator(with_task_id(func))
+    return lambda func: decorator(with_task_id(func, log=log))
 
 
 class ExactPathFilter(logging.Filter):

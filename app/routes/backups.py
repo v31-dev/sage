@@ -72,15 +72,22 @@ def create_backup(request: Request):
     if resource_error:
       raise HTTPException(status_code=400, detail=resource_error)
 
-    request.app.state.rocketry["backup_application"].run(
-        application=application,
-        volume_ids=[volume.id],
-    )
+    if not Manager().add_task(
+        task=Manager().backup_application_s3,
+        scopes={f"app:{application.id}"},
+        params={"application_id": application.id, "volume_ids": [volume.id]},
+        executor="app",
+        task_id=request.state.task_id,
+    ):
+      raise HTTPException(status_code=409, detail="Application already has an operation in progress.")
   else:
-    if Manager().is_platform_backup_in_progress():
+    if Manager().is_platform_backup_in_progress() or not Manager().add_task(
+        task=Manager().backup_database_s3,
+        scopes={"platform", "app"},
+        executor="platform",
+        task_id=request.state.task_id,
+    ):
       raise HTTPException(status_code=409, detail="Platform backup already in progress")
-
-    request.app.state.rocketry["backup_database"].run()
 
   return {"status": "OK"}
 
@@ -94,7 +101,14 @@ def delete_backup(request: Request):
   generic_delete(Backup, backup)
 
   # Delete backup file from S3 asynchronously
-  request.app.state.rocketry["delete_backup_s3"].run(s3_path=backup.s3_path)
+  Manager().add_task(
+      task=Manager().delete_backup_s3,
+      scopes={"common"},
+      params={"s3_path": backup.s3_path},
+      executor="common",
+      task_id=request.state.task_id,
+      queue=True,
+  )
 
   return {"status": "OK"}
 
@@ -119,24 +133,32 @@ async def restore_backup(request: Request, restore_data: dict = Body(default={})
     if not isinstance(target_worker, str) or target_worker.strip() == "":
       raise HTTPException(status_code=400, detail="target_worker is required for volume restore")
 
-    try:
-      await Manager().restore_application_volume_from_s3(
-          application,
-          volume,
-          backup,
-          target_worker.strip(),
-      )
-      return {"status": "OK"}
-    except ValueError as e:
-      raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-      raise HTTPException(status_code=500, detail=f"Restore failed: {str(e)}")
+    if not Manager().add_task(
+        task=Manager().restore_application_volume_from_s3,
+        scopes={f"app:{application.id}"},
+        params={
+            "application_id": application.id,
+            "volume_id": volume.id,
+            "backup_id": backup.id,
+            "target_worker_hostname": target_worker.strip(),
+        },
+        executor="app",
+        task_id=request.state.task_id,
+    ):
+      raise HTTPException(status_code=409, detail="Application already has an operation in progress.")
+
+    return {"status": "OK"}
 
   if backup.type != "platform":
     raise HTTPException(status_code=400, detail="Only platform backups can be restored")
 
-  try:
-    await Manager().restore_database_from_s3(backup.s3_path)
-    return {"status": "OK"}
-  except Exception as e:
-    raise HTTPException(status_code=500, detail=f"Restore failed: {str(e)}")
+  if not Manager().add_task(
+      task=Manager().restore_database_from_s3,
+      scopes={"platform", "app"},
+      params={"s3_path": backup.s3_path},
+      executor="platform",
+      task_id=request.state.task_id,
+  ):
+    raise HTTPException(status_code=409, detail="A platform operation is already in progress.")
+
+  return {"status": "OK"}

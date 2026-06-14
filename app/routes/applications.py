@@ -7,12 +7,13 @@ from routes.volumes import router as volume_router
 from routes.containers import router as container_router
 from routes.domains import router as domain_router
 from services.db import (
-  APPLICATION_BUSY_STATUSES,
-  APPLICATION_STOP_ELIGIBLE_STATUSES,
-  Application,
-  Container,
-  Worker,
+    APPLICATION_BUSY_STATUSES,
+    APPLICATION_STOP_ELIGIBLE_STATUSES,
+    Application,
+    Container,
+    Worker,
 )
+from services.manager import Manager
 from services.metrics import Metrics
 from utils.api import (
     get_request_models,
@@ -130,7 +131,14 @@ def deploy_application(request: Request):
         detail="Git applications must have a repo & path specified.",
     )
 
-  request.app.state.rocketry["deploy_application"].run(application=application)
+  if not Manager().add_task(
+      task=Manager().deploy_application,
+      scopes={f"app:{application.id}"},
+      params={"application_id": application.id},
+      executor="app",
+      task_id=request.state.task_id,
+  ):
+    raise HTTPException(status_code=409, detail="Application already has an operation in progress.")
 
   return {"status": "OK"}
 
@@ -152,7 +160,14 @@ def stop_application(request: Request):
   if application.container_count == 0:
     raise HTTPException(status_code=400, detail="Application has no containers to stop.")
 
-  request.app.state.rocketry["stop_application"].run(application=application)
+  if not Manager().add_task(
+      task=Manager().stop_application,
+      scopes={f"app:{application.id}"},
+      params={"application_id": application.id},
+      executor="app",
+      task_id=request.state.task_id,
+  ):
+    raise HTTPException(status_code=409, detail="Application already has an operation in progress.")
 
   return {"status": "OK"}
 

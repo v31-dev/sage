@@ -18,10 +18,11 @@ logger = logging.getLogger(__name__)
 
 
 class DeploymentsMixin:
-  async def deploy_application(self, application: Application):
+  async def deploy_application(self, application_id: int):
     """
     Deploy an application.
     """
+    application = Application.get_by_id(application_id)
     application.status = "deploying"
     application.save()
     logger.info(f"Deploying application {application.qualified_name}...")
@@ -191,10 +192,11 @@ class DeploymentsMixin:
               container.application.qualified_name} container to worker {
               container.worker.hostname}: {exception_message}", "error")
 
-  def delete_container(self, container: Container, force: bool = False):
+  def delete_container(self, container_id: int, force: bool = False):
     """
     Delete a container.
     """
+    container = Container.get_by_id(container_id)
     # Create an event for tracking in case of error.
     Event.create(
         container=container,
@@ -262,10 +264,11 @@ class DeploymentsMixin:
               container.id} of application {container.application.qualified_name} from worker {
               container.worker.hostname}: {e}")
 
-  async def stop_application(self, application: Application):
+  async def stop_application(self, application_id: int):
     """
     Stop an application.
     """
+    application = Application.get_by_id(application_id)
     application.status = "stopping"
     application.save()
     logger.info(f"Stopping application {application.qualified_name}...")

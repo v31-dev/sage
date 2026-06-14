@@ -287,8 +287,8 @@ class BackupsMixin:
     finally:
       task_id.reset(task_id_token)
 
-  async def backup_application_s3(self, application: Application, volume_ids: list[int] | None = None):
-    application = Application.get_by_id(application.id)
+  async def backup_application_s3(self, application_id: int, volume_ids: list[int] | None = None):
+    application = Application.get_by_id(application_id)
 
     if application.status not in BACKUP_ELIGIBLE_STATUSES:
       raise Exception(
@@ -360,16 +360,24 @@ class BackupsMixin:
             container.save()
       raise
 
+  async def delete_backup_s3(self, s3_path: str):
+    try:
+      await self.s3.delete_key(s3_path, raw_path=True)
+      logger.info(f"Successfully deleted S3 backup: {s3_path}")
+    except Exception as e:
+      logger.error(f"Failed to delete S3 backup {s3_path}: {e}")
+      raise
+
   async def restore_application_volume_from_s3(
       self,
-      application: Application,
-      volume: Volume,
-      backup: Backup,
+      application_id: int,
+      volume_id: int,
+      backup_id: int,
       target_worker_hostname: str,
   ):
-    application = Application.get_by_id(application.id)
-    volume = Volume.get_by_id(volume.id)
-    backup = Backup.get_by_id(backup.id)
+    application = Application.get_by_id(application_id)
+    volume = Volume.get_by_id(volume_id)
+    backup = Backup.get_by_id(backup_id)
 
     if application.status != "inactive":
       raise ValueError(

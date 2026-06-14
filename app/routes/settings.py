@@ -88,10 +88,10 @@ def update_setting(request: Request, setting_data: dict = Body(...)):
     if cloudflare_config_changed and not Cloudflare().check_config(merged_setting_value):
       raise HTTPException(status_code=400, detail="Invalid Cloudflare configuration. Please verify the API token, account ID, and domain.")
 
-    if traefik_refresh_needed and request.app.state.rocketry.is_task_pending("refresh_traefik"):
+    if traefik_refresh_needed and Manager().is_busy({"platform", "app"}):
       raise HTTPException(
           status_code=409,
-          detail="A Traefik refresh is already in progress. Wait for it to finish before changing the Cloudflare domain, admin email, or API token again.",
+          detail="A platform operation is already in progress. Wait for it to finish before changing the Cloudflare domain, admin email, or API token again.",
       )
 
     if cloudflare_setting_changed:
@@ -103,10 +103,16 @@ def update_setting(request: Request, setting_data: dict = Body(...)):
     if traefik_refresh_needed:
       # Manager Traefik static config / token file rewritten and container restarted;
       # worker Traefik config resynced when email or domain change.
-      request.app.state.rocketry["refresh_traefik"].run(
-          admin_email_changed=admin_email_changed,
-          domain_changed=domain_changed,
-          api_token_changed=api_token_changed,
+      Manager().add_task(
+          task=Manager().refresh_traefik,
+          scopes={"platform", "app"},
+          params={
+              "admin_email_changed": admin_email_changed,
+              "domain_changed": domain_changed,
+              "api_token_changed": api_token_changed,
+          },
+          executor="platform",
+          task_id=request.state.task_id,
       )
 
   return generic_get(Setting, (Setting.key == setting_key))
@@ -128,17 +134,22 @@ async def resync_traefik(request: Request):
   Force a full Traefik state resync to manager and workers. Reuses the
   refresh_traefik task with all change flags set; cert re-issuance is expected.
   """
-  if request.app.state.rocketry.is_task_pending("refresh_traefik"):
+  if not Manager().add_task(
+      task=Manager().refresh_traefik,
+      scopes={"platform", "app"},
+      params={
+          "admin_email_changed": True,
+          "domain_changed": True,
+          "api_token_changed": True,
+      },
+      executor="platform",
+      task_id=request.state.task_id,
+  ):
     raise HTTPException(
         status_code=409,
-        detail="A Traefik refresh is already in progress. Wait for it to finish before resyncing.",
+        detail="A platform operation is already in progress. Wait for it to finish before resyncing.",
     )
 
-  request.app.state.rocketry["refresh_traefik"].run(
-      admin_email_changed=True,
-      domain_changed=True,
-      api_token_changed=True,
-  )
   return {"message": "Traefik resync initiated."}
 
 
