@@ -11,6 +11,7 @@ from services.db import (
     Event,
     Notification,
     Project,
+    Task,
     Worker,
 )
 from services.notification import Notifications
@@ -40,11 +41,24 @@ class CoreMixin:
     """
     Perform async initialization after Manager.__init__().
     - Discovers and reconciles S3 backups with the database.
+    - Marks tasks left "running" by a previous process as failed.
     """
     try:
       await self.discover_s3_platform_backups()
     except Exception as e:
       logger.error(f"S3 backup discovery failed during startup: {e}")
+
+    # The queue is in-memory, so any task still "running" in the DB is from a
+    # process that exited mid-task; reconcile it to a terminal state.
+    try:
+      interrupted = (
+          Task.update(status="failed", finished_at=datetime.now(), updated_at=datetime.now())
+          .where(Task.status == "running").execute()
+      )
+      if interrupted:
+        logger.info(f"Marked {interrupted} interrupted task(s) as failed on startup.")
+    except Exception as e:
+      logger.error(f"Failed to reconcile interrupted tasks: {e}")
 
   def notify(self, message: str, type: str = "info", link: str | None = None):
     # Python logging has no success level; treat it as info.

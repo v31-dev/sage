@@ -48,7 +48,7 @@ def _dominates(a: frozenset[str], b: frozenset[str]) -> bool:
 
 
 @dataclass(frozen=True)
-class Task:
+class QueuedTask:
   name: str
   scopes: frozenset[str]
   task: Callable
@@ -71,13 +71,17 @@ class TaskQueue:
   coroutines run on the event loop.
   """
 
-  def __init__(self, scopes: frozenset[str], executors: dict[str, ThreadPoolExecutor]):
+  def __init__(self, scopes: frozenset[str], executors: dict[str, ThreadPoolExecutor],
+               record: Callable[["QueuedTask", str], None] | None = None):
     self._scopes = scopes
     self._executors = executors
+    # Persistence hook called with (task, status) at running/completed/failed/
+    # cancelled so the owner can log tasks to a store. Best-effort.
+    self._record = record or (lambda *_: None)
 
     self._lock = Lock()
-    self._queue: list[Task] = []
-    self._running: list[Task] = []
+    self._queue: list[QueuedTask] = []
+    self._running: list[QueuedTask] = []
     self._tasks: set[asyncio.Task] = set()
 
   def add_task(self, task: Callable, scopes: frozenset[str], executor: str,
@@ -119,8 +123,8 @@ class TaskQueue:
       if not queue and self.has_task_scopes(scopes, only_running=False):
         return False
 
-      new_task = Task(name=name, scopes=scopes, task=task,
-                      params=params or {}, executor=executor, task_id=task_id)
+      new_task = QueuedTask(name=name, scopes=scopes, task=task,
+                            params=params or {}, executor=executor, task_id=task_id)
 
       if priority:
         position = 0
@@ -162,6 +166,25 @@ class TaskQueue:
     with self._lock:
       return self.has_task_scopes(frozenset(scopes), only_running=False)
 
+  def snapshot(self) -> dict:
+    """Point-in-time view of running and queued tasks (for the UI)."""
+    with self._lock:
+      return {
+          "running": [self._task_dict(t, "running") for t in self._running],
+          "queued": [self._task_dict(t, "queued") for t in self._queue],
+      }
+
+  @staticmethod
+  def _task_dict(task: "QueuedTask", status: str) -> dict:
+    return {
+        "task_id": task.task_id,
+        "name": task.name,
+        "scopes": sorted(task.scopes),
+        "params": task.params,
+        "executor": task.executor,
+        "status": status,
+    }
+
   def _validate(self, scopes: frozenset[str], executor: str):
     # Fail fast on wiring mistakes: every scope's root and the executor name
     # must be declared on the queue. Scope roots are dynamic below the root
@@ -190,7 +213,7 @@ class TaskQueue:
           self._tasks.add(handle)
           handle.add_done_callback(self._tasks.discard)
 
-  def _cancel(self, task: Task):
+  def _cancel(self, task: QueuedTask):
     """Drop a pending task from the queue (caller holds the lock).
 
     Single seam for cancellation, whether triggered by cancel_existing or a
@@ -198,12 +221,14 @@ class TaskQueue:
     """
     self._queue.remove(task)
     logger.info(f"{task.name}: cancelled")
+    self._record(task, "cancelled")
 
-  async def run_task(self, task: Task):
+  async def run_task(self, task: QueuedTask):
     token = task_id.set(task.task_id)
     # Bind the task's pool so blocking offloads inside it (and the sync task
     # itself) flow to that executor without each call site naming it.
     executor_token = active_executor.set(self._executors[task.executor])
+    self._record(task, "running")
     try:
       logger.info(f"{task.name}: started")
       if iscoroutinefunction(task.task):
@@ -211,10 +236,13 @@ class TaskQueue:
       else:
         await run_in_executor_with_context(task.task, **task.params)
       logger.info(f"{task.name}: completed")
+      self._record(task, "completed")
     except TaskFailed:
       logger.error(f"{task.name}: failed")
+      self._record(task, "failed")
     except Exception:
       logger.exception(f"{task.name}: failed")
+      self._record(task, "failed")
     finally:
       active_executor.reset(executor_token)
       task_id.reset(token)

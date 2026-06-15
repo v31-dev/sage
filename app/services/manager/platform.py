@@ -10,6 +10,7 @@ from services.db import (
     Backup,
     Event,
     Notification,
+    Task,
     DB_PATH,
     db,
 )
@@ -87,6 +88,10 @@ class PlatformMixin:
     deleted_count = (Backup.delete().where(Backup.created_at < cutoff).execute())
     logger.info(
         f"Backups cleanup: removed {deleted_count} backups rows older than {days} days.")
+
+    # Cleanup task log
+    deleted_count = (Task.delete().where(Task.created_at < cutoff).execute())
+    logger.info(f"Tasks cleanup: removed {deleted_count} task rows older than {days} days.")
 
     # Cleanup application backups from S3
     try:

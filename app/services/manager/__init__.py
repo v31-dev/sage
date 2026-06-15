@@ -70,7 +70,9 @@ class Manager(
                   max_workers=max(1, (_CPU_COUNT * 2) - 2),
                   thread_name_prefix="sage-app",
               ),
-          })
+          },
+          record=self._persist_task,
+      )
 
       # Initialize all services
       Database()

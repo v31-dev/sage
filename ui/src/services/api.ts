@@ -373,6 +373,41 @@ export async function fetchNotifications({
   }
 }
 
+export interface QueueTask {
+  task_id: string
+  name: string
+  scopes: string[]
+  params: Record<string, any>
+  executor: string
+  status: string
+}
+
+export interface CompletedTask extends QueueTask {
+  created_at: string
+  updated_at: string
+  finished_at: string | null
+}
+
+export interface TasksResponse {
+  running: QueueTask[]
+  queued: QueueTask[]
+  completed: CompletedTask[]
+}
+
+export async function fetchTasks(): Promise<TasksResponse> {
+  try {
+    const response = await fetch(`${API_ROOT}/tasks/`)
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}))
+      throw new Error(data.detail || 'Failed to fetch tasks')
+    }
+    return await response.json()
+  } catch (error) {
+    console.error('Error fetching tasks:', error)
+    throw error
+  }
+}
+
 export interface Backup {
   id: number
   s3_path: string
