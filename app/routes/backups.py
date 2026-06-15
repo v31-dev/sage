@@ -74,7 +74,7 @@ def create_backup(request: Request):
 
     if not Manager().add_task(
         task=Manager().backup_application_s3,
-        scopes={f"app:{application.id}"},
+        scopes={f"app:{application.qualified_name}"},
         params={"application_id": application.id, "volume_ids": [volume.id]},
         executor="app",
         task_id=request.state.task_id,
@@ -135,7 +135,7 @@ async def restore_backup(request: Request, restore_data: dict = Body(default={})
 
     if not Manager().add_task(
         task=Manager().restore_application_volume_from_s3,
-        scopes={f"app:{application.id}"},
+        scopes={f"app:{application.qualified_name}"},
         params={
             "application_id": application.id,
             "volume_id": volume.id,

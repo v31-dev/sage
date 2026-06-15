@@ -4,6 +4,7 @@ import { Spinner } from '@/components/ui/spinner'
 import { toast } from 'vue-sonner'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import {
   Table,
   TableBody,
@@ -13,7 +14,8 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { fetchTasks, type TasksResponse } from '@/services/api'
+import TaskLogsButton from '@/components/TaskLogsButton.vue'
+import { fetchTasks, cancelTask, type TasksResponse } from '@/services/api'
 import { formatDate } from '@/lib/utils'
 
 const tasks = ref<TasksResponse>({ running: [], queued: [], completed: [] })
@@ -21,8 +23,8 @@ const isLoading = ref(false)
 let timer: number | undefined
 
 const queueSections = computed(() => [
-  { title: 'Running', rows: tasks.value.running },
-  { title: 'Queued', rows: tasks.value.queued },
+  { title: 'Running', rows: tasks.value.running, cancellable: false },
+  { title: 'Queued', rows: tasks.value.queued, cancellable: true },
 ])
 
 function statusVariant(status: string) {
@@ -39,6 +41,15 @@ async function loadTasks(showSpinner = false) {
     toast.error('Failed to load tasks')
   } finally {
     if (showSpinner) isLoading.value = false
+  }
+}
+
+async function cancel(taskId: string) {
+  try {
+    await cancelTask(taskId)
+    await loadTasks()
+  } catch {
+    toast.error('Failed to cancel task')
   }
 }
 
@@ -77,18 +88,22 @@ onUnmounted(() => {
                   <TableHead>Scopes</TableHead>
                   <TableHead>Executor</TableHead>
                   <TableHead>Params</TableHead>
+                  <TableHead v-if="section.cancellable" class="w-20"></TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                <TableEmpty v-if="!section.rows.length" :colspan="5">
+                <TableEmpty v-if="!section.rows.length" :colspan="section.cancellable ? 6 : 5">
                   No {{ section.title.toLowerCase() }} tasks
                 </TableEmpty>
                 <TableRow v-for="t in section.rows" :key="t.task_id">
-                  <TableCell class="font-mono text-xs">{{ t.task_id }}</TableCell>
+                  <TableCell><TaskLogsButton :taskId="t.task_id" /></TableCell>
                   <TableCell>{{ t.name }}</TableCell>
                   <TableCell class="font-mono text-xs">{{ t.scopes.join(', ') }}</TableCell>
                   <TableCell>{{ t.executor }}</TableCell>
                   <TableCell class="font-mono text-xs">{{ JSON.stringify(t.params) }}</TableCell>
+                  <TableCell v-if="section.cancellable">
+                    <Button variant="outline" size="sm" @click="cancel(t.task_id)">Cancel</Button>
+                  </TableCell>
                 </TableRow>
               </TableBody>
             </Table>
@@ -119,7 +134,7 @@ onUnmounted(() => {
                   No completed tasks
                 </TableEmpty>
                 <TableRow v-for="t in tasks.completed" :key="t.task_id">
-                  <TableCell class="font-mono text-xs">{{ t.task_id }}</TableCell>
+                  <TableCell><TaskLogsButton :taskId="t.task_id" /></TableCell>
                   <TableCell>{{ t.name }}</TableCell>
                   <TableCell class="font-mono text-xs">{{ t.scopes.join(', ') }}</TableCell>
                   <TableCell>{{ t.executor }}</TableCell>

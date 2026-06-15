@@ -133,7 +133,7 @@ def deploy_application(request: Request):
 
   if not Manager().add_task(
       task=Manager().deploy_application,
-      scopes={f"app:{application.id}"},
+      scopes={f"app:{application.qualified_name}"},
       params={"application_id": application.id},
       executor="app",
       task_id=request.state.task_id,
@@ -162,7 +162,7 @@ def stop_application(request: Request):
 
   if not Manager().add_task(
       task=Manager().stop_application,
-      scopes={f"app:{application.id}"},
+      scopes={f"app:{application.qualified_name}"},
       params={"application_id": application.id},
       executor="app",
       task_id=request.state.task_id,

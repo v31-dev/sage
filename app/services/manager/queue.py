@@ -15,6 +15,9 @@ class QueueMixin:
   def is_busy(self, scopes: frozenset[str]) -> bool:
     return self.task_queue.is_busy(scopes)
 
+  def cancel_task(self, task_id: str) -> bool:
+    return self.task_queue.cancel(task_id)
+
   def dispatch_tick(self):
     self.task_queue.dispatch_tick()
 

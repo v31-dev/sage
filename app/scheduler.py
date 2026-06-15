@@ -7,7 +7,7 @@ from rocketry.conds import every, minutely
 from rocketry.conditions import SchedulerStarted
 from rocketry.time import TimeDelta
 
-from services.db import Application, Worker
+from services.db import Application, Project, Worker
 from services.manager import Manager
 from services.metrics import METRICS_EXECUTOR, Metrics
 from utils.common import get_env
@@ -43,10 +43,10 @@ async def sync_workers():
 # rejected (skipped) for this cycle; container-less apps are a no-op.
 @app.task(minutely)
 async def sync_application_status():
-  for application in Application.select():
+  for application in Application.select(Application, Project).join(Project):
     Manager().add_task(
         task=Manager().sync_application_status,
-        scopes={f"app:{application.id}"},
+        scopes={f"app:{application.qualified_name}"},
         params={"application_id": application.id},
         executor="app",
     )
@@ -59,7 +59,7 @@ async def schedule_application_backups():
   for application, volumes in Manager().get_due_volume_backups(now):
     Manager().add_task(
         task=Manager().backup_application_s3,
-        scopes={f"app:{application.id}"},
+        scopes={f"app:{application.qualified_name}"},
         params={"application_id": application.id, "volume_ids": [volume.id for volume in volumes]},
         executor="app",
     )
@@ -68,10 +68,10 @@ async def schedule_application_backups():
 # Sync Traefik domain config per application (per-app scope).
 @app.task(minutely)
 async def sync_application_traefik_domains_config():
-  for application in Application.select().where(Application.domains_synced == False):
+  for application in Application.select(Application, Project).join(Project).where(Application.domains_synced == False):
     Manager().add_task(
         task=Manager().sync_application_traefik_domains_config,
-        scopes={f"app:{application.id}"},
+        scopes={f"app:{application.qualified_name}"},
         params={"application_id": application.id},
         executor="app",
     )

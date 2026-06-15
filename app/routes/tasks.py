@@ -1,5 +1,5 @@
 import logging
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
 from services.db import Task
 from services.manager import Manager
@@ -25,3 +25,11 @@ def list_tasks(limit: int = 100):
       "queued": snapshot["queued"],
       "completed": completed,
   }
+
+
+@router.delete("/{task_id}")
+def cancel_task(task_id: str):
+  """Cancel a queued task. Only pending tasks can be cancelled."""
+  if not Manager().cancel_task(task_id):
+    raise HTTPException(status_code=409, detail="Task is not queued (already running or finished).")
+  return {"status": "cancelled"}

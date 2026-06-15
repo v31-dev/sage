@@ -113,7 +113,7 @@ def delete_container(request: Request, force: bool = False):
 
   if not Manager().add_task(
       task=Manager().delete_container,
-      scopes={f"app:{container.application_id}"},
+      scopes={f"app:{application.qualified_name}"},
       params={"container_id": container.id, "force": force},
       executor="app",
       task_id=request.state.task_id,
