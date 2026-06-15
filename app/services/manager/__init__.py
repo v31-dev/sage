@@ -1,6 +1,5 @@
 import os
 import logging
-import threading
 from concurrent.futures import ThreadPoolExecutor
 
 from services.base import Base
@@ -53,12 +52,6 @@ class Manager(
       with open(app_dir / "VERSION") as f:
         self.version = f.read().strip()
       self.latest_version = self.version
-
-      # Cross-thread signal: when set, the next periodic sync_workers tick will
-      # run with force=True and clear the flag. Used by the UI resync button
-      # and the platform restore flow to defer a force-resync onto the single
-      # scheduled task path (so it can't race with the periodic tick).
-      self.force_resync_pending = threading.Event()
 
       # Single-dispatcher operation queue. platform/app/common are independent
       # scope roots; platform and common get one worker each, app gets the rest.

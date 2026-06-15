@@ -154,18 +154,19 @@ async def resync_traefik(request: Request):
 
 
 @router.post("/resync_workers")
-async def resync_workers():
+async def resync_workers(request: Request):
   """
-  Queue a force re-sync of all online workers. The flag is consumed by the
-  next periodic manager_sync_workers tick (up to ~30s), which then calls
-  sync_workers(force=True). Keeps the periodic task as the single executor
-  so there is no concurrency with itself or with the post-restore signal.
+  Queue a force re-sync of all online workers. cancel_existing supersedes any
+  pending sync so the latest request wins; queue=True lets it wait behind a
+  running sync rather than being dropped.
   """
-  if Manager().force_resync_pending.is_set():
-    raise HTTPException(
-        status_code=409,
-        detail="A worker resync is already queued. It will run on the next scheduler tick.",
-    )
-
-  Manager().force_resync_pending.set()
-  return {"message": "Worker resync queued for the next scheduler tick."}
+  Manager().add_task(
+      task=Manager().sync_workers,
+      scopes={"platform", "app"},
+      params={"force": True},
+      executor="platform",
+      task_id=request.state.task_id,
+      cancel_existing=True,
+      queue=True,
+  )
+  return {"message": "Worker resync queued."}

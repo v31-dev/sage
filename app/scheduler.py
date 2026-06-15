@@ -28,19 +28,14 @@ async def dispatch_tick():
 
 
 # Detect worker changes. platform+app scoped so it serializes with deploys;
-# rejected when something is in flight (no pile-up). The force-resync flag is
-# only consumed once a sync is actually queued.
+# rejected when something is in flight (no pile-up).
 @app.task(every("30 seconds"))
 async def sync_workers():
-  force = Manager().force_resync_pending.is_set()
-  submitted = Manager().add_task(
+  Manager().add_task(
       task=Manager().sync_workers,
       scopes={"platform", "app"},
-      params={"force": force},
       executor="platform",
   )
-  if submitted and force:
-    Manager().force_resync_pending.clear()
 
 
 # Reconcile each application's status independently (per-app scope), so one busy

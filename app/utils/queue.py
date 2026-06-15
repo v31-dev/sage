@@ -82,8 +82,8 @@ class TaskQueue:
 
   def add_task(self, task: Callable, scopes: frozenset[str], executor: str,
                name: str | None = None, params: dict | None = None,
-               task_id: str | None = None,
-               priority: bool = False, queue: bool = False) -> bool:
+               task_id: str | None = None, priority: bool = False,
+               queue: bool = False, cancel_existing: bool = False) -> bool:
     """Add a task; return False if it was dropped.
 
     ### Parameters
@@ -102,15 +102,24 @@ class TaskQueue:
     - queue: if True, queue the task to wait even when its scopes conflict,
       instead of rejecting it (used for per-object housekeeping like a single
       application's status sync).
+    - cancel_existing: drop any pending task with the same name and a
+      conflicting scope before adding this one (latest-wins / debounce).
     """
+    name = name or task.__name__
     scopes = frozenset(scopes)
     self._validate(scopes, executor)
     task_id = task_id or generate_task_id_token()
     with self._lock:
+      if cancel_existing:
+        for pending in [
+            p for p in self._queue
+            if p.name == name and _scopes_conflict(scopes, p.scopes)
+        ]:
+          self._cancel(pending)
       if not queue and self.has_task_scopes(scopes, only_running=False):
         return False
 
-      new_task = Task(name=name or task.__name__, scopes=scopes, task=task,
+      new_task = Task(name=name, scopes=scopes, task=task,
                       params=params or {}, executor=executor, task_id=task_id)
 
       if priority:
@@ -180,6 +189,15 @@ class TaskQueue:
           handle = asyncio.create_task(self.run_task(task))
           self._tasks.add(handle)
           handle.add_done_callback(self._tasks.discard)
+
+  def _cancel(self, task: Task):
+    """Drop a pending task from the queue (caller holds the lock).
+
+    Single seam for cancellation, whether triggered by cancel_existing or a
+    future UI action.
+    """
+    self._queue.remove(task)
+    logger.info(f"{task.name}: cancelled")
 
   async def run_task(self, task: Task):
     token = task_id.set(task.task_id)

@@ -272,9 +272,17 @@ class PlatformMixin:
 
         self.notify(f"Platform restored from backup {s3_path} successfully.", "success")
 
-        # Queue a force-resync on the next scheduler tick so the periodic
-        # sync_workers task remains the single executor — avoids racing with it.
-        self.force_resync_pending.set()
+        # The restore rewrote worker state in the DB; queue a force-resync.
+        # cancel_existing supersedes a pending sync; queue=True lets it wait
+        # behind this restore, which holds the same scope.
+        self.add_task(
+            task=self.sync_workers,
+            scopes={"platform", "app"},
+            params={"force": True},
+            executor="platform",
+            cancel_existing=True,
+            queue=True,
+        )
 
     except Exception as e:
       self.notify(f"Platform restore failed: {e}", "error")
