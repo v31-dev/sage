@@ -1,7 +1,6 @@
 import asyncio
 import httpx
 import logging
-from contextvars import copy_context
 from datetime import datetime, timedelta
 from peewee import fn
 
@@ -18,7 +17,7 @@ from services.db import (
 from services.metrics import Metrics
 from services.notification import Notifications
 from utils.common import get_env
-from utils.executor import NOTIFICATIONS_EXECUTOR, run_in_executor_with_context
+from utils.executor import NOTIFICATIONS_EXECUTOR, run_in_executor_with_context, submit_with_context
 from utils.logging import TaskFailed
 
 logger = logging.getLogger(__name__)
@@ -77,8 +76,7 @@ class CoreMixin:
     log_method = logger.info if type == "success" else getattr(logger, type, logger.info)
     log_method(message)
     notification = Notification.create(content=message, type=type, link=link)
-    ctx = copy_context()
-    NOTIFICATIONS_EXECUTOR.submit(ctx.run, Notifications().dispatch, notification)
+    submit_with_context(NOTIFICATIONS_EXECUTOR, Notifications().dispatch, notification)
 
   def _summary_notification_dicts(self, query, limit: int):
     return list(query.order_by(Notification.created_at.desc()).limit(limit).dicts())
@@ -226,7 +224,6 @@ class CoreMixin:
     elif warning_count > 0:
       notification_type = "warning"
 
-    ctx = copy_context()
-    NOTIFICATIONS_EXECUTOR.submit(
-        ctx.run, Notifications().dispatch,
+    submit_with_context(
+        NOTIFICATIONS_EXECUTOR, Notifications().dispatch,
         {"content": "\n".join(lines), "type": notification_type})

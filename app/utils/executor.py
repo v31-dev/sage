@@ -53,3 +53,12 @@ def run_in_executor_with_context(
   ctx = copy_context()
   loop = asyncio.get_running_loop()
   return loop.run_in_executor(pool, partial(ctx.run, func, *args, **kwargs))
+
+
+def submit_with_context(executor: ThreadPoolExecutor, func, *args, **kwargs):
+  """Fire-and-forget sibling of run_in_executor_with_context: run func on the
+  given pool with the current context preserved (so task_id flows to the worker
+  thread for log correlation). Works without a running loop; returns the Future,
+  which callers may ignore."""
+  ctx = copy_context()
+  return executor.submit(ctx.run, func, *args, **kwargs)
