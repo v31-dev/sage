@@ -86,6 +86,8 @@ def create_backup(request: Request):
         scopes={"platform", "app"},
         executor="platform",
         task_id=request.state.task_id,
+        queue=True,
+        cancel_existing=True,
     ):
       raise HTTPException(status_code=409, detail="Platform backup already in progress")
 

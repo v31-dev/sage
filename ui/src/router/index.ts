@@ -13,7 +13,7 @@ import Workers from '@/pages/Workers'
 import WorkerMetrics from '@/pages/WorkerMetrics.vue'
 import Requests from '@/pages/Requests.vue'
 import Backup from '@/pages/Backup'
-import Tasks from '@/pages/Tasks.vue'
+import Tasks from '@/pages/Tasks'
 
 const routes = [
   { path: '/', name: 'Home', component: Home },

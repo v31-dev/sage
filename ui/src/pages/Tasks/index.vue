@@ -4,7 +4,6 @@ import { Spinner } from '@/components/ui/spinner'
 import { toast } from 'vue-sonner'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
 import {
   Table,
   TableBody,
@@ -14,7 +13,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import TaskLogsButton from '@/components/TaskLogsButton.vue'
+import TaskLogsButton from './TaskLogsButton.vue'
 import { tasksAPI, type TasksResponse } from '@/services/api'
 import { formatDate } from '@/lib/utils'
 
@@ -23,8 +22,8 @@ const isLoading = ref(false)
 let timer: number | undefined
 
 const queueSections = computed(() => [
-  { title: 'Running', rows: tasks.value.running, cancellable: false },
-  { title: 'Queued', rows: tasks.value.queued, cancellable: true },
+  { title: 'Running', rows: tasks.value.running },
+  { title: 'Queued', rows: tasks.value.queued },
 ])
 
 function statusVariant(status: string) {
@@ -41,15 +40,6 @@ async function loadTasks(showSpinner = false) {
     toast.error('Failed to load tasks')
   } finally {
     if (showSpinner) isLoading.value = false
-  }
-}
-
-async function cancel(taskId: string) {
-  try {
-    await tasksAPI.delete(taskId)
-    await loadTasks()
-  } catch {
-    toast.error('Failed to cancel task')
   }
 }
 
@@ -88,22 +78,24 @@ onUnmounted(() => {
                   <TableHead>Scopes</TableHead>
                   <TableHead>Executor</TableHead>
                   <TableHead>Params</TableHead>
-                  <TableHead v-if="section.cancellable" class="w-20"></TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                <TableEmpty v-if="!section.rows.length" :colspan="section.cancellable ? 6 : 5">
+                <TableEmpty v-if="!section.rows.length" :colspan="5">
                   No {{ section.title.toLowerCase() }} tasks
                 </TableEmpty>
                 <TableRow v-for="t in section.rows" :key="t.task_id">
                   <TableCell><TaskLogsButton :taskId="t.task_id" /></TableCell>
                   <TableCell>{{ t.name }}</TableCell>
-                  <TableCell class="font-mono text-xs">{{ t.scopes.join(', ') }}</TableCell>
+                  <TableCell
+                    class="max-w-[12rem] align-top font-mono text-xs break-all whitespace-pre-wrap"
+                    >{{ t.scopes.join(', ') }}</TableCell
+                  >
                   <TableCell>{{ t.executor }}</TableCell>
-                  <TableCell class="font-mono text-xs">{{ JSON.stringify(t.params) }}</TableCell>
-                  <TableCell v-if="section.cancellable">
-                    <Button variant="outline" size="sm" @click="cancel(t.task_id)">Cancel</Button>
-                  </TableCell>
+                  <TableCell
+                    class="max-w-xs align-top font-mono text-xs break-all whitespace-pre-wrap"
+                    >{{ JSON.stringify(t.params) }}</TableCell
+                  >
                 </TableRow>
               </TableBody>
             </Table>
@@ -136,7 +128,10 @@ onUnmounted(() => {
                 <TableRow v-for="t in tasks.completed" :key="t.task_id">
                   <TableCell><TaskLogsButton :taskId="t.task_id" /></TableCell>
                   <TableCell>{{ t.name }}</TableCell>
-                  <TableCell class="font-mono text-xs">{{ t.scopes.join(', ') }}</TableCell>
+                  <TableCell
+                    class="max-w-[12rem] align-top font-mono text-xs break-all whitespace-pre-wrap"
+                    >{{ t.scopes.join(', ') }}</TableCell
+                  >
                   <TableCell>{{ t.executor }}</TableCell>
                   <TableCell>
                     <Badge :variant="statusVariant(t.status)">{{ t.status }}</Badge>
@@ -147,7 +142,10 @@ onUnmounted(() => {
                   <TableCell class="text-xs whitespace-nowrap">
                     {{ t.finished_at ? formatDate(t.finished_at) : '—' }}
                   </TableCell>
-                  <TableCell class="font-mono text-xs">{{ JSON.stringify(t.params) }}</TableCell>
+                  <TableCell
+                    class="max-w-xs align-top font-mono text-xs break-all whitespace-pre-wrap"
+                    >{{ JSON.stringify(t.params) }}</TableCell
+                  >
                 </TableRow>
               </TableBody>
             </Table>

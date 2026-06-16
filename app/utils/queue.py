@@ -166,16 +166,6 @@ class TaskQueue:
     with self._lock:
       return self.has_task_scopes(frozenset(scopes), only_running=False)
 
-  def cancel(self, task_id: str) -> bool:
-    """Cancel a pending task by id. Returns False when it is not queued (already
-    running, finished, or unknown) -- only pending tasks can be cancelled."""
-    with self._lock:
-      for task in self._queue:
-        if task.task_id == task_id:
-          self._cancel(task)
-          return True
-    return False
-
   def snapshot(self) -> dict:
     """Point-in-time view of running and queued tasks (for the UI)."""
     with self._lock:
