@@ -6,9 +6,10 @@ from rocketry.conds import every, minutely
 from rocketry.conditions import SchedulerStarted
 from rocketry.time import TimeDelta
 
-from services.db import Application, Project
+from services.db import Application, Project, Worker
 from services.manager import Manager
 from services.metrics import Metrics
+from utils.common import get_env
 
 logger = logging.getLogger(__name__)
 
@@ -77,16 +78,22 @@ async def sync_application_traefik_domains_config():
     )
 
 
-# Collect metrics from all online workers & self manager on the metrics queue
-# lane (own scope + pool). Recorded only on failure since it runs every minute.
+# Collect host metrics from this manager and each online worker. One task per
+# target (sibling `metrics:<host>` scopes) so a slow or flaky worker only skips
+# its own cycle. Recorded only on failure, since it runs every minute.
 @app.task(minutely)
 async def collect_metrics():
-  Manager().add_task(
-      task=Manager().collect_metrics,
-      scopes={"metrics"},
-      executor="metrics",
-      quiet=True,
-  )
+  targets = [("host.docker.internal", get_env("HOSTNAME"))] + [
+      (worker.ip, worker.hostname) for worker in Worker.select().where(Worker.online)
+  ]
+  for ip, host in targets:
+    Manager().add_task(
+        task=Metrics().collect,
+        scopes={f"metrics:{host}"},
+        params={"ip": ip, "hostname": host},
+        executor="metrics",
+        quiet=True,
+    )
 
 
 @app.task(every("1 day"))

@@ -21,6 +21,7 @@ The main API is mounted in `app/api.py` and exposes route groups for:
 - `projects`
 - `workers`
 - `notifications`
+- `tasks`
 
 Nested routes cover:
 
@@ -34,7 +35,7 @@ The vector ingestion API is separate in `app/api_vector.py` and currently handle
 
 ## Orchestration Layer
 
-`app/services/manager.py` is the main backend coordinator. It handles:
+`app/services/manager/` is a package of mixins composed into the `Manager` singleton, the main backend coordinator. It handles:
 
 - worker discovery and setup
 - worker removal and online/offline transitions
@@ -45,7 +46,7 @@ The vector ingestion API is separate in `app/api_vector.py` and currently handle
 - notifications
 - cleanup logic
 
-Most high-level backend behavior ultimately flows through this service.
+Most high-level backend behavior ultimately flows through this service, and almost all of it is dispatched through the operation queue (below).
 
 ## Important Services
 
@@ -66,7 +67,7 @@ Most high-level backend behavior ultimately flows through this service.
 - `services/s3.py`
   - S3 validation, upload, delete, and presigned URL support
 - `services/notification.py`
-  - notification dispatch
+  - notification formatting and webhook send (the off-thread dispatch is owned by `Manager.notify`)
 
 ## Logging And Task Context
 
@@ -77,86 +78,55 @@ Key rules:
 - Every meaningful log line should carry a `task_id`.
 - `task_id` lives in a `ContextVar`.
 - FastAPI middleware creates a task id per request and returns it in `X-Task-ID`.
-- Rocketry tasks are wrapped so scheduled and API-triggered tasks also run with a task id.
+- The operation queue's `run_task` sets the `task_id` for each queued task; the offload helpers copy the context so worker threads keep it.
 
 This is a project-wide pattern, not a local implementation detail.
 
 ## Async And Blocking Work
 
-The project distinguishes between local database work and remote or network-bound work:
+- Local Peewee + SQLite calls run inline (WAL mode; cheap and local).
+- Blocking network/remote I/O is offloaded onto a thread pool — never `asyncio.to_thread()`, which bypasses context propagation. Two helpers in `app/utils/executor.py`:
+  - `run_in_executor_with_context(func, *args, executor=None)` — awaited, from async code. Resolves the pool as explicit `executor` → the running task's lane (`active_executor`) → otherwise raises. Returns an awaitable.
+  - `submit_with_context(executor, func, *args)` — fire-and-forget, works without a running loop (e.g. `Manager.notify` webhook sends).
+- Both `copy_context()` so the worker thread keeps the caller's `ContextVar`s — notably `task_id` for log correlation.
 
-- Local Peewee + SQLite calls run inline.
-- Blocking network or remote operations should go through `run_in_executor_with_context(...)`.
-- The helper preserves `ContextVar` state, including `task_id`.
+## Operation Queue
 
-The codebase explicitly avoids `asyncio.to_thread()` for this reason.
+The Manager owns a single in-memory `TaskQueue` (`app/utils/queue.py`). It is the one place concurrency is controlled; Rocketry only enqueues.
 
-## Deferred-Trigger Pattern (Pending-Flag On A Recurring Task)
+- **Enqueue.** Every operation runs via `Manager().add_task(task=..., scopes=..., executor=..., params=..., ...)`. Handlers receive ids (not ORM objects) and re-fetch, so nothing carries a stale snapshot across the queue boundary.
+- **Scopes** are `:`-delimited and hierarchical. Roots: `platform`, `app` (with `app:<qualified_name>` children), `common`, `metrics`. A parent scope conflicts with all of its children; siblings never conflict. Conflicting tasks are mutually excluded.
+- **Dispatch.** A one-second Rocketry tick calls `dispatch_tick`, which starts every pending task whose scope is free. One dispatcher makes the scan race-free; a `threading.Lock` guards the queue because producers run on FastAPI/loop threads.
+- **Admission flags on `add_task`:**
+  - `queue` — default `False` rejects when the scope is busy (drops the task, returns `False`); `True` waits in line instead. Use `False` for retry-friendly reconcilers and rejectable user actions; `True` for deliberate actions that must not be dropped (a backup behind a deploy, an S3 delete).
+  - `cancel_existing` — drop any pending task with the same name and a conflicting scope before adding (latest-wins). It matches on **name + scope, not params**, so only use it for idempotent, params-light work (worker resync, platform backup) — never where params identify the work (volume ids, an s3 path).
+  - `priority` — insert ahead of lower/equal work but behind dominating scopes.
+  - `quiet` — record only on failure (see below).
+- **Persistence.** The queue calls a `record` hook (`Manager._persist_task`) at each terminal state. Only `completed`/`failed`/`cancelled` are written to the `Task` table; running and queued tasks live in memory and are exposed via `snapshot()` for the UI. `quiet=True` tasks skip the `completed` record so high-frequency reconcilers (metrics collection, per-app status/domain sync, the 30s worker sync) don't flood the table — failures still record.
 
-When a user action (or an internal flow) needs to invoke an expensive operation that is already running on a recurring schedule, prefer signalling the *existing* scheduled task to run "in force mode" on its next tick — instead of spawning a parallel on-demand task that races with it.
+To make a deliberate user action coalesce with a recurring one, enqueue it with `cancel_existing=True, queue=True` (e.g. the worker force-resync); no per-operation locks or pending flags are needed.
 
-This pattern keeps a single executor for the operation, eliminates concurrency hazards entirely, and works with both UI route handlers (async, FastAPI) and inline awaited flows (e.g. restore) without introducing locks.
+## Execution Modes And Pools
 
-### Mechanics
+Pools (lanes) are defined in `app/utils/executor.py`. The first four are queue lanes wired into the `TaskQueue`; the rest are off-queue.
 
-- Store a `threading.Event` on the relevant singleton service (e.g. `Manager.force_resync_pending`).
-- Initialize it in the service's `__init__`.
-- The recurring Rocketry task reads the flag, clears it if set, and passes the resulting boolean into the underlying operation:
+| Pool | Workers | Used by |
+| --- | --- | --- |
+| `PLATFORM_EXECUTOR` | 1 | `platform` lane — main-DB backup/restore, cleanup, restart |
+| `COMMON_EXECUTOR` | 1 | `common` lane — version refresh, daily summary, S3 delete |
+| `APP_EXECUTOR` | `2N-2` (min 1) | `app` lane — per-application deploy/stop/backup/restore |
+| `METRICS_EXECUTOR` | 1–2 | `metrics` lane — collection, metrics-store cleanup |
+| `NOTIFICATIONS_EXECUTOR` | 1 | `Manager.notify` webhook sends (off-queue, fire-and-forget) |
+| `LOGS_EXECUTOR` | 1 | Vector log ingestion (off-queue, request-path; single SQLite writer) |
 
-  ```python
-  @app.task(every("30 seconds"))
-  async def manager_sync_workers():
-    manager = Manager()
-    force = manager.force_resync_pending.is_set()
-    if force:
-      manager.force_resync_pending.clear()
-    await run_in_executor_with_context(manager.sync_workers, force=force)
-  ```
+A task callable is sync or async, and `run_task` handles both:
 
-- Callers (UI route handler, internal flow) request a force run by calling `.set()`:
+- **async task** — awaited on the event loop; it fans blocking leaves out to its lane with `run_in_executor_with_context`. The task coroutine itself never occupies a pool worker.
+- **sync task** — run entirely on its lane pool via `run_in_executor_with_context`.
 
-  ```python
-  manager.force_resync_pending.set()
-  ```
+**Ambient executor.** Before running a task, `run_task` binds its lane to the `active_executor` `ContextVar`. Any `run_in_executor_with_context(fn)` inside the task with no explicit `executor=` offloads to that lane, so the lane is declared once at `add_task` and inner call sites don't repeat it. `active_executor` is a `ContextVar`, so concurrent tasks on different lanes never see each other's binding.
 
-- Re-clicks while a force is queued are no-ops; routes can detect this with `.is_set()` and return `409` for clarity.
-
-### Why `threading.Event`
-
-`threading.Event` is a stdlib primitive (since Python 2.6) — a thread-safe boolean flag with four operations:
-
-| Method        | Effect                                                                  |
-| ------------- | ----------------------------------------------------------------------- |
-| `set()`       | Set the flag to True. Atomic.                                           |
-| `clear()`     | Set the flag to False. Atomic.                                          |
-| `is_set()`    | Non-blocking read of the current value. Atomic.                         |
-| `wait(t)`     | Block the calling thread until the flag is True, or timeout. Unused here. |
-
-Internally it wraps a `Condition` + `Lock`, so all four are safe across thread boundaries. There is no need for additional locking around set/clear/is_set sequences.
-
-It is the right primitive for sage because:
-
-- The setter runs in a FastAPI async route or an inline awaited flow (main event loop thread).
-- The consumer runs in an executor worker thread (via `run_in_executor_with_context`).
-- These are different threads, so a thread-aware primitive is required.
-- `asyncio.Event` is single-thread-loop-bound and would not be safe here.
-- A bare `bool` works in CPython by accident of the GIL but loses semantic clarity and the future option of `.wait(...)`.
-
-### When to use it
-
-- A user-facing button that triggers the same operation a scheduler already runs.
-- A code path that needs to defer a force-mode run until after some other work has completed (e.g. signalling from inside a DB restore).
-- Any case where you want *exactly one* executor for an operation but multiple callers that can request it.
-
-### When not to use it
-
-- The operation has no recurring task to attach to — write a dedicated Rocketry task instead.
-- The caller needs synchronous confirmation that the work completed (the pattern is fire-and-forget; latency is bounded by the schedule interval).
-- Multiple distinct *kinds* of triggers need to be distinguished. `Event` is a single boolean; richer state needs a different shape (e.g. a `queue.Queue` of trigger reasons).
-
-### Used today
-
-- `Manager.force_resync_pending` — signals the next `manager_sync_workers` tick to run with `force=True`. Set by the `/api/settings/resync_workers` route (UI button) and by `restore_database_from_s3` after a successful platform restore.
+**Fan-out is safe because orchestrators are async.** `deploy_application`, `stop_application`, and the backup/restore container loops `await asyncio.gather(...)` over offloaded children. The async parent runs on the loop (holds no worker), so children just queue and drain on the lane pool — no parent-starves-child deadlock. A task is marked "running" once its scope is acquired, independent of pool-thread availability, so its offloads may briefly queue inside the pool; that is bounded throughput, not a stall. The invariant: **never make a sync task that submits to its own lane and blocks on the result** — that deadlocks a single-worker lane. (`run_in_executor_with_context` enforces part of this by requiring a running loop; keep any raw `submit` calls fire-and-forget.)
 
 ## Data And Persistence
 
@@ -175,28 +145,21 @@ Additional storage:
 
 ## Scheduler Notes
 
-The scheduler in `app/scheduler.py` uses async Rocketry tasks.
+`app/scheduler.py` holds async Rocketry tasks that act only as cron triggers — each one calls `Manager().add_task(...)` and contains no execution logic.
 
-Recurring tasks currently cover:
+Recurring triggers currently cover:
 
-- worker sync
-- application status sync
+- worker sync (`quiet`)
+- application status sync (`quiet`)
 - daily system digest
 - volume backup scheduling
-- Traefik domain config sync
-- metrics collection
+- Traefik domain config sync (`quiet`)
+- metrics collection (`quiet`)
 - platform backup
 - cleanup
 - certificate sync
-- Traefik refresh after Cloudflare setting changes
 
-On-demand tasks currently cover:
-
-- deploy application
-- stop application
-- delete container
-- backup application
-- delete backup from S3
+Route-driven operations enqueue through the same `add_task` path: deploy, stop, delete container, application/volume backup, restore, worker removal, platform backup/restore, delete backup from S3, and the full-stack restart (which cancels pending work and waits with priority for in-flight platform/app operations before replacing the process).
 
 ## Settings And Traefik Refresh
 
@@ -204,7 +167,7 @@ Platform settings (`s3`, `notifications`, `cloudflare`) live in the `Setting` ta
 
 UI updates in `routes/settings.py` follow the same pattern: validate the merged value, persist via `Settings().set(...)`, then reload the consuming service (`S3().load()`, `Notifications().load_notifications_config()`, `Cloudflare().load()`).
 
-Cloudflare changes additionally schedule the `refresh_traefik` Rocketry task (in `services/manager.py`):
+Cloudflare changes additionally enqueue the `refresh_traefik` operation (in `services/manager/traefik.py`):
 
 - `admin_email` change — Manager Traefik static config rewritten; Manager Traefik restarted; worker Traefik configs resynced and restarted.
 - `domain` change — additionally clears `acme.json` so Manager Traefik re-issues certs, then syncs the bundle to workers and updates worker DNS records.

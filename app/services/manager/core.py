@@ -1,4 +1,3 @@
-import asyncio
 import httpx
 import logging
 from datetime import datetime, timedelta
@@ -14,11 +13,8 @@ from services.db import (
     Project,
     Worker,
 )
-from services.metrics import Metrics
 from services.notification import Notifications
-from utils.common import get_env
-from utils.executor import NOTIFICATIONS_EXECUTOR, run_in_executor_with_context, submit_with_context
-from utils.logging import TaskFailed
+from utils.executor import NOTIFICATIONS_EXECUTOR, submit_with_context
 
 logger = logging.getLogger(__name__)
 
@@ -26,26 +22,6 @@ LATEST_RELEASE_URL = "https://api.github.com/repos/v31-dev/sage/releases/latest"
 
 
 class CoreMixin:
-  async def collect_metrics(self):
-    """Collect host metrics from this manager and every online worker in
-    parallel on the metrics pool. Raises TaskFailed if any target errors."""
-    targets = [("host.docker.internal", get_env("HOSTNAME"))] + [
-        (worker.ip, worker.hostname) for worker in Worker.select().where(Worker.online)
-    ]
-    results = await asyncio.gather(
-        *[run_in_executor_with_context(Metrics().collect, ip, host) for ip, host in targets],
-        return_exceptions=True,
-    )
-
-    failed = False
-    for (ip, host), result in zip(targets, results):
-      if isinstance(result, Exception):
-        logger.error(f"collect_metrics target failed for {host} ({ip}): {result}")
-        failed = True
-
-    if failed:
-      raise TaskFailed()
-
   def get_latest_version(self):
     try:
       with httpx.Client(timeout=10) as client:

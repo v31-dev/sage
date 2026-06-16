@@ -1,7 +1,6 @@
 import logging
 
 from services.db import (
-    APPLICATION_BUSY_STATUSES,
     Application,
     Container,
     Worker,
@@ -224,95 +223,3 @@ class WorkersMixin:
         type="A",
     )
     self.notify(f"Worker {worker.hostname} is back online.", "success")
-
-  def sync_application_status(self, application_id: int):
-    """
-    Sync a single application's container & overall status from its workers.
-    Ideally status is managed explicitly; this catches unexpected changes like
-    a container stopped from the worker side or a worker going offline without
-    the Manager knowing yet.
-    """
-    application = Application.get_by_id(application_id)
-
-    # The queue scope keeps this off an app with an operation running, but guard
-    # defensively against any explicit-action status.
-    if application.status in APPLICATION_BUSY_STATUSES:
-      return
-
-    containers = list(application.containers)
-    if not containers:
-      return
-
-    # Query container state only on the (distinct, online) workers backing this
-    # application's containers.
-    container_status = {}
-    workers = {container.worker.hostname: container.worker for container in containers}
-    for hostname, worker in workers.items():
-      if not worker.online:
-        continue
-      try:
-        _, docker_ps_output = self.tailscale.exec_command(
-            hostname, "docker ps --format '{{.Names}}|{{.State}}'")
-        for line in docker_ps_output:
-          try:
-            container_name, container_state = line.split("|")
-          except Exception:
-            continue
-          container_status[f"{hostname}-{container_name}"] = container_state
-      except Exception as e:
-        logger.error(
-            f"Failed to get container status from worker {hostname} while syncing application {application.qualified_name}: {e}")
-
-    for container in containers:
-      # Skip state update during explicit actions
-      if container.status in APPLICATION_BUSY_STATUSES:
-        continue
-
-      worker_container_name = f"{container.worker.hostname}-{application.qualified_name}"
-      status = container_status.get(worker_container_name)
-      if status:
-        if status == "running" and container.status != "active":
-          container.status = "active"
-          container.save()
-          self.notify(f"Application container {worker_container_name} is active again.", "success")
-        elif status in ["paused", "restarting"] and container.status != "error":
-          container.status = "error"
-          container.save()
-          self.notify(f"Application container {worker_container_name} is in error state ({status}).", "error")
-      else:
-        # if no status is found and container is supposed to be active, mark as
-        # error (could be offline or stopped container)
-        if container.status == "active":
-          container.status = "error"
-          container.save()
-          self.notify(f"Application container {worker_container_name} is in error state (status not found).", "error")
-
-    # Sync the overall application status from the (possibly updated) containers.
-    if application.status in APPLICATION_BUSY_STATUSES:
-      return
-
-    containers = list(application.containers)
-
-    if any(c.status == "error" for c in containers):
-      if application.status != "error":
-        application.status = "error"
-        application.save()
-        self.notify(
-            f"Application {application.qualified_name} is in error state as at least one container is in error state.",
-            "error")
-
-    elif all(c.status == "active" for c in containers):
-      if application.status != "active":
-        application.status = "active"
-        application.save()
-        self.notify(
-            f"Application {application.qualified_name} is active as all containers are active.",
-            "success")
-
-    elif all(c.status == "inactive" for c in containers):
-      if application.status != "inactive":
-        application.status = "inactive"
-        application.save()
-        self.notify(
-            f"Application {application.qualified_name} is inactive as all containers are inactive.",
-            "warning")

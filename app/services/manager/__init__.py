@@ -18,9 +18,9 @@ from utils.executor import (
 from utils.queue import TaskQueue
 
 from ._common import app_dir
+from .application import ApplicationMixin
 from .backups import BackupsMixin
 from .core import CoreMixin
-from .deployments import DeploymentsMixin
 from .platform import PlatformMixin
 from .queue import QueueMixin
 from .traefik import TraefikMixin
@@ -33,7 +33,7 @@ class Manager(
     CoreMixin,
     WorkersMixin,
     TraefikMixin,
-    DeploymentsMixin,
+    ApplicationMixin,
     BackupsMixin,
     PlatformMixin,
     QueueMixin,
