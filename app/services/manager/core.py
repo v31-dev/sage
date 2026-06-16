@@ -72,11 +72,10 @@ class CoreMixin:
     except Exception as e:
       logger.error(f"S3 backup discovery failed during startup: {e}")
 
-  def notify(self, message: str, type: str = "info", link: str | None = None, log: bool = True):
-    if log:
-      # Python logging has no success level; treat it as info.
-      log_method = logger.info if type == "success" else getattr(logger, type, logger.info)
-      log_method(message)
+  def notify(self, message: str, type: str = "info", link: str | None = None):
+    # Python logging has no success level; treat it as info.
+    log_method = logger.info if type == "success" else getattr(logger, type, logger.info)
+    log_method(message)
     notification = Notification.create(content=message, type=type, link=link)
     ctx = copy_context()
     NOTIFICATIONS_EXECUTOR.submit(ctx.run, Notifications().dispatch, notification)
@@ -227,4 +226,7 @@ class CoreMixin:
     elif warning_count > 0:
       notification_type = "warning"
 
-    self.notify("\n".join(lines), type=notification_type, log=False)
+    ctx = copy_context()
+    NOTIFICATIONS_EXECUTOR.submit(
+        ctx.run, Notifications().dispatch,
+        {"content": "\n".join(lines), "type": notification_type})
