@@ -15,7 +15,7 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import TaskLogsButton from '@/components/TaskLogsButton.vue'
-import { fetchTasks, cancelTask, type TasksResponse } from '@/services/api'
+import { tasksAPI, type TasksResponse } from '@/services/api'
 import { formatDate } from '@/lib/utils'
 
 const tasks = ref<TasksResponse>({ running: [], queued: [], completed: [] })
@@ -36,7 +36,7 @@ function statusVariant(status: string) {
 async function loadTasks(showSpinner = false) {
   if (showSpinner) isLoading.value = true
   try {
-    tasks.value = await fetchTasks()
+    tasks.value = (await tasksAPI.fetchAll()) as unknown as TasksResponse
   } catch {
     toast.error('Failed to load tasks')
   } finally {
@@ -46,7 +46,7 @@ async function loadTasks(showSpinner = false) {
 
 async function cancel(taskId: string) {
   try {
-    await cancelTask(taskId)
+    await tasksAPI.delete(taskId)
     await loadTasks()
   } catch {
     toast.error('Failed to cancel task')

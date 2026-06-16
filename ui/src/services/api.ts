@@ -394,20 +394,11 @@ export interface TasksResponse {
   completed: CompletedTask[]
 }
 
-export const tasksAPI = new CRUDAPI<TasksResponse>({
+export const tasksAPI = new CRUDAPI({
   name: 'Task',
   path: `${API_ROOT}/tasks`,
-  load_delay: 0,
+  load_delay: LOAD_DELAY,
 })
-
-// The list endpoint returns running/queued/completed as one object, not a list.
-export async function fetchTasks(): Promise<TasksResponse> {
-  return (await tasksAPI.fetchAll()) as unknown as TasksResponse
-}
-
-export async function cancelTask(taskId: string): Promise<void> {
-  await tasksAPI.delete(taskId)
-}
 
 export interface Backup {
   id: number
