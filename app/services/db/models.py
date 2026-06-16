@@ -194,15 +194,15 @@ class Backup(BaseModel):
 
 
 class Task(BaseModel):
-  # Log of operations that ran through the in-memory queue. A row is written
-  # when a task is dispatched (status="running") and updated on completion;
-  # cancelled tasks (never dispatched) are written directly as "cancelled".
+  # Log of finished operations from the in-memory queue. Running tasks live in
+  # memory only (see the live snapshot); a row is written once a task reaches a
+  # terminal state -- completed, failed, or cancelled.
   task_id = CharField(primary_key=True)
   name = CharField()
   scopes = JSONField(null=True)
   params = JSONField(null=True)
   executor = CharField()
-  status = CharField(choices=["running", "completed", "failed", "cancelled"], default="running")
+  status = CharField(choices=["completed", "failed", "cancelled"])
   finished_at = DateTimeField(null=True)
 
   class Meta:

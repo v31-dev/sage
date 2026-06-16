@@ -1,7 +1,6 @@
 import logging
 import os
 import re
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -23,15 +22,6 @@ from utils.common import get_env
 
 app_dir = Path(__file__).parent.parent
 logger = logging.getLogger(__name__)
-_CPU_COUNT = max(1, os.cpu_count() or 1)
-METRICS_EXECUTOR = ThreadPoolExecutor(
-    max_workers=1 if _CPU_COUNT <= 2 else 2,
-    thread_name_prefix="sage-metrics",
-)
-LOGS_EXECUTOR = ThreadPoolExecutor(
-    max_workers=1,
-    thread_name_prefix="sage-logs",
-)
 
 # delta is period start end range
 # buckets is number of points to aggregate

@@ -1,4 +1,3 @@
-import asyncio
 import logging
 from datetime import datetime
 
@@ -7,11 +6,9 @@ from rocketry.conds import every, minutely
 from rocketry.conditions import SchedulerStarted
 from rocketry.time import TimeDelta
 
-from services.db import Application, Project, Worker
+from services.db import Application, Project
 from services.manager import Manager
-from services.metrics import METRICS_EXECUTOR, Metrics
-from utils.common import get_env
-from utils.logging import TaskFailed, run_in_executor_with_context
+from services.metrics import Metrics
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +32,7 @@ async def sync_workers():
       task=Manager().sync_workers,
       scopes={"platform", "app"},
       executor="platform",
+      quiet=True,
   )
 
 
@@ -49,6 +47,7 @@ async def sync_application_status():
         scopes={f"app:{application.qualified_name}"},
         params={"application_id": application.id},
         executor="app",
+        quiet=True,
     )
 
 
@@ -74,32 +73,20 @@ async def sync_application_traefik_domains_config():
         scopes={f"app:{application.qualified_name}"},
         params={"application_id": application.id},
         executor="app",
+        quiet=True,
     )
 
 
-# Collect metrics from all online workers & self manager. Metrics/logs are not
-# routed through the operation queue yet; they keep their own executor.
+# Collect metrics from all online workers & self manager on the metrics queue
+# lane (own scope + pool). Recorded only on failure since it runs every minute.
 @app.task(minutely)
 async def collect_metrics():
-  worker_targets = [(w.ip, w.hostname) for w in Worker.select().where(Worker.online)]
-  targets = [("host.docker.internal", get_env("HOSTNAME"))] + worker_targets
-
-  errors = await asyncio.gather(
-      *[
-          run_in_executor_with_context(Metrics().collect, ip, host, executor=METRICS_EXECUTOR)
-          for ip, host in targets
-      ],
-      return_exceptions=True,
+  Manager().add_task(
+      task=Manager().collect_metrics,
+      scopes={"metrics"},
+      executor="metrics",
+      quiet=True,
   )
-
-  failed = False
-  for (ip, host), result in zip(targets, errors):
-    if isinstance(result, Exception):
-      logger.error(f"collect_metrics target failed for {host} ({ip}): {result}")
-      failed = True
-
-  if failed:
-    raise TaskFailed()
 
 
 @app.task(every("1 day"))
@@ -131,12 +118,20 @@ async def backup_database():
   )
 
 
-# Daily clean up check. Metrics cleanup stays on its own executor; the manager
-# cleanup runs as a platform-scoped op (fenced against backup/restore, but it
-# does not block application work).
+# Daily clean up check. Metrics cleanup runs on the metrics lane (queued so it
+# waits for an in-flight collect instead of being skipped); the manager cleanup
+# runs as a platform-scoped op (fenced against backup/restore, but it does not
+# block application work).
 @app.task((every("1 day") & ~SchedulerStarted(period=TimeDelta("10 minute"))))
 async def cleanup():
-  await run_in_executor_with_context(Metrics().cleanup, executor=METRICS_EXECUTOR)
+  Manager().add_task(
+      task=Metrics().cleanup,
+      name="metrics_cleanup",
+      scopes={"metrics"},
+      executor="metrics",
+      quiet=True,
+      queue=True,
+  )
   Manager().add_task(
       task=Manager().cleanup,
       scopes={"platform"},

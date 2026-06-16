@@ -15,6 +15,9 @@ class QueueMixin:
   def is_busy(self, scopes: frozenset[str]) -> bool:
     return self.task_queue.is_busy(scopes)
 
+  def cancel_all_tasks(self):
+    self.task_queue.cancel_all()
+
   def dispatch_tick(self):
     self.task_queue.dispatch_tick()
 
@@ -23,23 +26,19 @@ class QueueMixin:
     return self.task_queue.snapshot()
 
   def _persist_task(self, task, status: str):
-    """TaskQueue persistence hook: log tasks to the Task table. Best-effort so a
-    DB hiccup never breaks the operation. A row is created on dispatch (running)
-    and on cancellation; completed/failed update the existing row."""
+    """TaskQueue persistence hook: record a finished task in the Task table.
+    Running tasks are tracked in memory only; only completed/failed/cancelled
+    reach the DB, each as a single row. Best-effort so a DB hiccup never breaks
+    the operation."""
     try:
-      now = datetime.now()
-      if status in ("running", "cancelled"):
-        Task.create(
-            task_id=task.task_id,
-            name=task.name,
-            scopes=sorted(task.scopes),
-            params=task.params,
-            executor=task.executor,
-            status=status,
-            finished_at=now if status == "cancelled" else None,
-        )
-      else:  # completed / failed
-        (Task.update(status=status, finished_at=now, updated_at=now)
-         .where(Task.task_id == task.task_id).execute())
+      Task.create(
+          task_id=task.task_id,
+          name=task.name,
+          scopes=sorted(task.scopes),
+          params=task.params,
+          executor=task.executor,
+          status=status,
+          finished_at=datetime.now(),
+      )
     except Exception as e:
       logger.error(f"Failed to persist task {task.task_id} ({status}): {e}")

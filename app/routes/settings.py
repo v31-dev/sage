@@ -14,7 +14,6 @@ from utils.api import (
     parse_api_data,
 )
 from utils.common import DOMAIN_RE, EMAIL_RE
-from utils.logging import run_in_executor_with_context
 
 router = APIRouter()
 
@@ -121,10 +120,20 @@ def update_setting(request: Request, setting_data: dict = Body(...)):
 @router.post("/restart")
 async def restart():
   """
-  Trigger a restart of the full compose stack via the Docker API socket.
-  Progress is not tracked — if the restart fails the operator must intervene.
+  Trigger a restart of the full compose stack via the Docker API socket. Pending
+  queued work is cancelled and the restart waits (with priority) for in-flight
+  platform/app operations to finish before the process is replaced. Progress is
+  not tracked once the restart fires.
   """
-  run_in_executor_with_context(Manager().restart, all=True)
+  Manager().cancel_all_tasks()
+  Manager().add_task(
+      task=Manager().restart,
+      params={"all": True},
+      scopes={"platform", "app"},
+      executor="platform",
+      queue=True,
+      priority=True,
+  )
   return {"message": "Restart initiated."}
 
 

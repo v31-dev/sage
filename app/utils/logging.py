@@ -1,13 +1,10 @@
-import asyncio
 import fnmatch
 import logging
 import os
 import re
 import sys
 import uuid
-from concurrent.futures import ThreadPoolExecutor
-from contextvars import ContextVar, copy_context
-from functools import partial
+from contextvars import ContextVar
 
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -46,20 +43,6 @@ class ExcludeLoggerFilter(logging.Filter):
 
 uvicorn_access_logger = logging.getLogger("uvicorn.access")
 
-_CPU_COUNT = max(1, os.cpu_count() or 1)
-# Fallback pool for blocking offloads made outside a queued task (e.g. the
-# /restart route and log ingestion). Queued operations instead offload to their
-# declared pool, bound per-task via `active_executor`.
-_FALLBACK_EXECUTOR = ThreadPoolExecutor(
-    max_workers=2 if _CPU_COUNT == 1 else min(3, _CPU_COUNT),
-    thread_name_prefix="sage-fallback",
-)
-
-# Set by TaskQueue.run_task to the running task's executor pool, so blocking
-# offloads inside an operation flow to that pool without each call site naming it.
-active_executor: ContextVar[ThreadPoolExecutor | None] = ContextVar(
-    "active_executor", default=None)
-
 
 class fastapi_middleware(BaseHTTPMiddleware):
   async def dispatch(self, request, call_next):
@@ -77,25 +60,6 @@ class fastapi_middleware(BaseHTTPMiddleware):
     )
     response.headers["X-Task-ID"] = token
     return response
-
-
-def run_in_executor_with_context(
-    func,
-    *args,
-    executor: ThreadPoolExecutor | None = None,
-    **kwargs,
-):
-  """Run a sync function in a thread pool with the current context preserved.
-
-  Pool resolution: an explicit ``executor``, else the running task's pool
-  (``active_executor``, set by TaskQueue.run_task), else the fallback pool.
-  """
-  ctx = copy_context()
-  loop = asyncio.get_running_loop()
-  return loop.run_in_executor(
-      executor or active_executor.get() or _FALLBACK_EXECUTOR,
-      partial(ctx.run, func, *args, **kwargs),
-  )
 
 
 class TaskFailed(Exception):

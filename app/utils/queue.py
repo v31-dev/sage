@@ -6,11 +6,10 @@ from inspect import iscoroutinefunction
 from threading import Lock
 from typing import Callable
 
+from utils.executor import active_executor, run_in_executor_with_context
 from utils.logging import (
     TaskFailed,
-    active_executor,
     generate_task_id_token,
-    run_in_executor_with_context,
     task_id,
 )
 
@@ -55,6 +54,7 @@ class QueuedTask:
   params: dict
   executor: str | None = None   # key into TaskQueue executors; None runs on the loop
   task_id: str | None = None
+  quiet: bool = False           # persist only on failure (high-frequency housekeeping)
 
 
 class TaskQueue:
@@ -75,8 +75,9 @@ class TaskQueue:
                record: Callable[["QueuedTask", str], None] | None = None):
     self._scopes = scopes
     self._executors = executors
-    # Persistence hook called with (task, status) at running/completed/failed/
-    # cancelled so the owner can log tasks to a store. Best-effort.
+    # Persistence hook called with (task, status) at each terminal state
+    # (completed/failed/cancelled) so the owner can log tasks to a store.
+    # Running tasks are not recorded -- they live in memory. Best-effort.
     self._record = record or (lambda *_: None)
 
     self._lock = Lock()
@@ -87,7 +88,8 @@ class TaskQueue:
   def add_task(self, task: Callable, scopes: frozenset[str], executor: str,
                name: str | None = None, params: dict | None = None,
                task_id: str | None = None, priority: bool = False,
-               queue: bool = False, cancel_existing: bool = False) -> bool:
+               queue: bool = False, cancel_existing: bool = False,
+               quiet: bool = False) -> bool:
     """Add a task; return False if it was dropped.
 
     ### Parameters
@@ -108,6 +110,8 @@ class TaskQueue:
       application's status sync).
     - cancel_existing: drop any pending task with the same name and a
       conflicting scope before adding this one (latest-wins / debounce).
+    - quiet: persist this task to the record store only when it fails, so
+      high-frequency housekeeping (e.g. metrics) does not flood it.
     """
     name = name or task.__name__
     scopes = frozenset(scopes)
@@ -124,7 +128,8 @@ class TaskQueue:
         return False
 
       new_task = QueuedTask(name=name, scopes=scopes, task=task,
-                            params=params or {}, executor=executor, task_id=task_id)
+                            params=params or {}, executor=executor, task_id=task_id,
+                            quiet=quiet)
 
       if priority:
         position = 0
@@ -165,6 +170,14 @@ class TaskQueue:
     """True if any running or pending task conflicts with the given scopes."""
     with self._lock:
       return self.has_task_scopes(frozenset(scopes), only_running=False)
+
+  def cancel_all(self):
+    """Cancel every pending (not yet running) task; running tasks are left to
+    finish. Used before a restart so queued work is recorded as cancelled
+    instead of silently lost when the process exits."""
+    with self._lock:
+      for task in list(self._queue):
+        self._cancel(task)
 
   def snapshot(self) -> dict:
     """Point-in-time view of running and queued tasks (for the UI)."""
@@ -228,7 +241,6 @@ class TaskQueue:
     # Bind the task's pool so blocking offloads inside it (and the sync task
     # itself) flow to that executor without each call site naming it.
     executor_token = active_executor.set(self._executors[task.executor])
-    self._record(task, "running")
     try:
       logger.info(f"{task.name}: started")
       if iscoroutinefunction(task.task):
@@ -236,7 +248,10 @@ class TaskQueue:
       else:
         await run_in_executor_with_context(task.task, **task.params)
       logger.info(f"{task.name}: completed")
-      self._record(task, "completed")
+      # Quiet reconcilers (metrics, per-app syncs) skip routine completion so
+      # they don't flood the store; failures and cancellations always record.
+      if not task.quiet:
+        self._record(task, "completed")
     except TaskFailed:
       logger.error(f"{task.name}: failed")
       self._record(task, "failed")

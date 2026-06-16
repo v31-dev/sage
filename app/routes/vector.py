@@ -4,8 +4,8 @@ import logging
 
 from fastapi import APIRouter, Request, Response
 
-from services.metrics import LOGS_EXECUTOR, Metrics
-from utils.logging import run_in_executor_with_context
+from services.metrics import Metrics
+from utils.executor import LOGS_EXECUTOR, run_in_executor_with_context
 
 logger = logging.getLogger(__name__)
 router = APIRouter()

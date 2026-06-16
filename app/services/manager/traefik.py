@@ -7,7 +7,7 @@ from services.db import (
     Worker,
 )
 from services.settings import Settings
-from utils.logging import run_in_executor_with_context
+from utils.executor import run_in_executor_with_context
 
 from ._common import app_dir
 

@@ -8,6 +8,7 @@ from services.db import (
 )
 from services.settings import Settings
 from utils.common import get_env
+from utils.logging import TaskFailed
 
 from ._common import app_dir
 
@@ -167,13 +168,24 @@ class WorkersMixin:
         self.remove_worker(worker)
       raise Exception(f"Failed to {action} worker {worker.hostname} : {e}")
 
-  def remove_worker(self, worker):
+  def remove_worker(self, worker_hostname: str):
     """
     A removed worker is assumed to have been destoryed externally (VM + Tailscale) -
     - Remove from Manager database
     - Delete Cloudflare DNS entry (*.int) for Tailscale routing
     - Cloudflare automatically cleans up dead tunnels
     """
+    worker = Worker.get_or_none(Worker.hostname == worker_hostname)
+    if not worker:
+      return
+
+    # Re-check under the scope lock: a deploy could have placed a container here
+    # between the route's check and this task running. Fail loudly so it surfaces
+    # in the task table rather than vanishing.
+    if worker.containers.count() > 0:
+      logger.error(f"Worker {worker_hostname} gained containers before removal; aborting.")
+      raise TaskFailed()
+
     logger.info(f"Removing worker {worker.hostname} from manager.")
     Worker.delete().where(Worker.hostname == worker.hostname).execute()
     self.cloudflare.delete_dns_record(

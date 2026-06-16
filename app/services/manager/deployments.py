@@ -10,7 +10,8 @@ from services.db import (
     Event,
 )
 from utils.common import get_env, parse_multiline_kv
-from utils.logging import generate_task_id_token, run_in_executor_with_context, task_id
+from utils.executor import run_in_executor_with_context
+from utils.logging import generate_task_id_token, task_id
 
 from ._common import app_dir
 

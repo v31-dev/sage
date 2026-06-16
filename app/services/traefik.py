@@ -8,7 +8,7 @@ from services.base import Base
 from services.settings import Settings
 from services.db import Worker
 from utils.common import get_env
-from utils.logging import run_in_executor_with_context
+from utils.executor import run_in_executor_with_context
 
 app_dir = Path(__file__).parent.parent
 logger = logging.getLogger(__name__)

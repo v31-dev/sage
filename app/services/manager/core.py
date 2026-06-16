@@ -1,5 +1,7 @@
+import asyncio
 import httpx
 import logging
+from contextvars import copy_context
 from datetime import datetime, timedelta
 from peewee import fn
 
@@ -11,10 +13,13 @@ from services.db import (
     Event,
     Notification,
     Project,
-    Task,
     Worker,
 )
+from services.metrics import Metrics
 from services.notification import Notifications
+from utils.common import get_env
+from utils.executor import NOTIFICATIONS_EXECUTOR, run_in_executor_with_context
+from utils.logging import TaskFailed
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +27,26 @@ LATEST_RELEASE_URL = "https://api.github.com/repos/v31-dev/sage/releases/latest"
 
 
 class CoreMixin:
+  async def collect_metrics(self):
+    """Collect host metrics from this manager and every online worker in
+    parallel on the metrics pool. Raises TaskFailed if any target errors."""
+    targets = [("host.docker.internal", get_env("HOSTNAME"))] + [
+        (worker.ip, worker.hostname) for worker in Worker.select().where(Worker.online)
+    ]
+    results = await asyncio.gather(
+        *[run_in_executor_with_context(Metrics().collect, ip, host) for ip, host in targets],
+        return_exceptions=True,
+    )
+
+    failed = False
+    for (ip, host), result in zip(targets, results):
+      if isinstance(result, Exception):
+        logger.error(f"collect_metrics target failed for {host} ({ip}): {result}")
+        failed = True
+
+    if failed:
+      raise TaskFailed()
+
   def get_latest_version(self):
     try:
       with httpx.Client(timeout=10) as client:
@@ -41,31 +66,20 @@ class CoreMixin:
     """
     Perform async initialization after Manager.__init__().
     - Discovers and reconciles S3 backups with the database.
-    - Marks tasks left "running" by a previous process as failed.
     """
     try:
       await self.discover_s3_platform_backups()
     except Exception as e:
       logger.error(f"S3 backup discovery failed during startup: {e}")
 
-    # The queue is in-memory, so any task still "running" in the DB is from a
-    # process that exited mid-task; reconcile it to a terminal state.
-    try:
-      interrupted = (
-          Task.update(status="failed", finished_at=datetime.now(), updated_at=datetime.now())
-          .where(Task.status == "running").execute()
-      )
-      if interrupted:
-        logger.info(f"Marked {interrupted} interrupted task(s) as failed on startup.")
-    except Exception as e:
-      logger.error(f"Failed to reconcile interrupted tasks: {e}")
-
-  def notify(self, message: str, type: str = "info", link: str | None = None):
-    # Python logging has no success level; treat it as info.
-    log_method = logger.info if type == "success" else getattr(logger, type, logger.info)
-    log_method(message)
+  def notify(self, message: str, type: str = "info", link: str | None = None, log: bool = True):
+    if log:
+      # Python logging has no success level; treat it as info.
+      log_method = logger.info if type == "success" else getattr(logger, type, logger.info)
+      log_method(message)
     notification = Notification.create(content=message, type=type, link=link)
-    Notifications().dispatch(notification)
+    ctx = copy_context()
+    NOTIFICATIONS_EXECUTOR.submit(ctx.run, Notifications().dispatch, notification)
 
   def _summary_notification_dicts(self, query, limit: int):
     return list(query.order_by(Notification.created_at.desc()).limit(limit).dicts())
@@ -213,4 +227,4 @@ class CoreMixin:
     elif warning_count > 0:
       notification_type = "warning"
 
-    Notifications().dispatch({"content": "\n".join(lines), "type": notification_type})
+    self.notify("\n".join(lines), type=notification_type, log=False)

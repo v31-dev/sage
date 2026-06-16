@@ -96,10 +96,18 @@ def delete_worker(request: Request, hostname: str):
   if worker and worker.containers.count() > 0:
     raise HTTPException(status_code=400, detail="Worker has active containers and cannot be deleted.")
 
-  # Delete worker and cleanup
-  Manager().remove_worker(worker)
+  # platform+app scoped so it serializes with worker sync and deploys; queue=True
+  # so a deliberate removal waits behind an in-flight op instead of being dropped.
+  Manager().add_task(
+      task=Manager().remove_worker,
+      scopes={"platform", "app"},
+      params={"worker_hostname": worker.hostname},
+      executor="platform",
+      task_id=request.state.task_id,
+      queue=True,
+  )
 
-  return {"status": "deleted"}
+  return {"status": "OK"}
 
 
 # Container routes

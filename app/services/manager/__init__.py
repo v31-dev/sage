@@ -1,6 +1,4 @@
-import os
 import logging
-from concurrent.futures import ThreadPoolExecutor
 
 from services.base import Base
 from services.cloudflare import Cloudflare
@@ -11,6 +9,12 @@ from services.s3 import S3
 from services.settings import Settings
 from services.tailscale import Tailscale
 from services.traefik import Traefik
+from utils.executor import (
+    APP_EXECUTOR,
+    COMMON_EXECUTOR,
+    METRICS_EXECUTOR,
+    PLATFORM_EXECUTOR,
+)
 from utils.queue import TaskQueue
 
 from ._common import app_dir
@@ -23,8 +27,6 @@ from .traefik import TraefikMixin
 from .workers import WorkersMixin
 
 logger = logging.getLogger(__name__)
-
-_CPU_COUNT = max(1, os.cpu_count() or 1)
 
 
 class Manager(
@@ -53,23 +55,15 @@ class Manager(
         self.version = f.read().strip()
       self.latest_version = self.version
 
-      # Single-dispatcher operation queue. platform/app/common are independent
-      # scope roots; platform and common get one worker each, app gets the rest.
+      # Single-dispatcher operation queue. Each scope root maps to an independent
+      # lane pool (all defined in utils.executor).
       self.task_queue = TaskQueue(
-          scopes=frozenset(["platform", "app", "common"]),
+          scopes=frozenset(["platform", "app", "common", "metrics"]),
           executors={
-              "platform": ThreadPoolExecutor(
-                  max_workers=1,
-                  thread_name_prefix="sage-platform",
-              ),
-              "common": ThreadPoolExecutor(
-                  max_workers=1,
-                  thread_name_prefix="sage-common",
-              ),
-              "app": ThreadPoolExecutor(
-                  max_workers=max(1, (_CPU_COUNT * 2) - 2),
-                  thread_name_prefix="sage-app",
-              ),
+              "platform": PLATFORM_EXECUTOR,
+              "common": COMMON_EXECUTOR,
+              "app": APP_EXECUTOR,
+              "metrics": METRICS_EXECUTOR,
           },
           record=self._persist_task,
       )
