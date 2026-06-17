@@ -6,7 +6,7 @@
   // Install dependencies and setup environment
   "postCreateCommand": "bash setup/dev/devcontainer.sh",
   // Tailscale requires access
-  "runArgs": ["--device=/dev/net/tun"],
+  "runArgs": ["--device=/dev/net/tun", "--hostname=dev-sage"],
   // https://github.com/devcontainers/features/tree/main/src
   "features": {
     "ghcr.io/anthropics/devcontainer-features/claude-code:1.0": {},
