@@ -1,6 +1,7 @@
 {
   "recommendations": [
-    "ms-python.autopep8"
+    "ms-python.autopep8",
+    "esbenp.prettier-vscode"
   ],
   "unwantedRecommendations": ["ms-python.vscode-pylance"]
 }

@@ -23,9 +23,14 @@
   // Configure tool-specific properties.
   "customizations": {
     "vscode": {
+      "settings": {
+        "remote.autoForwardPorts": false,
+        "remote.restoreForwardedPorts": false
+      },
       "extensions": [
         "mhutchie.git-graph",
         "mutantdino.resourcemonitor",
+        "esbenp.prettier-vscode",
         "Vue.volar"
       ]
     }
