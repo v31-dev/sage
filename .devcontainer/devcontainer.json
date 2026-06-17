@@ -7,6 +7,10 @@
   "postCreateCommand": "bash setup/dev/devcontainer.sh",
   // Tailscale requires access
   "runArgs": ["--device=/dev/net/tun", "--hostname=dev-sage"],
+  // Persist Claude Code auth/session across container rebuilds
+  "mounts": [
+    "source=claude-code-config-${devcontainerId},target=/home/vscode/.claude,type=volume"
+  ],
   // https://github.com/devcontainers/features/tree/main/src
   "features": {
     "ghcr.io/anthropics/devcontainer-features/claude-code:1.0": {},
