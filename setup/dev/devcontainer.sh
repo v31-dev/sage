@@ -2,6 +2,9 @@
 
 set -e
 
+# Claude Code
+sudo chown -R vscode:vscode /home/vscode/.claude
+
 sudo apt-get update -qq
 
 # Setup Python venv
