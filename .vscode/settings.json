@@ -13,6 +13,7 @@
     "editor.formatOnSave": true
   },
   "python.defaultInterpreterPath": "${workspaceFolder}/app/app-venv/bin/python",
+  "python.terminal.activateEnvironment": false,
   "autopep8.args": [
     "--global-config",
     "${workspaceFolder}/app/pyproject.toml"
