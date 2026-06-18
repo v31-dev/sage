@@ -112,6 +112,7 @@ def update_setting(request: Request, setting_data: dict = Body(...)):
           },
           executor="platform",
           task_id=request.state.task_id,
+          queue=True,
       )
 
   return generic_get(Setting, (Setting.key == setting_key))
@@ -129,7 +130,7 @@ async def restart():
   Manager().add_task(
       task=Manager().restart,
       params={"all": True},
-      scopes={"platform", "app"},
+      scopes={"platform", "app", "common", "metrics"},
       executor="platform",
       queue=True,
       priority=True,

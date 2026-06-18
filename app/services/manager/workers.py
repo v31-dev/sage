@@ -164,7 +164,7 @@ class WorkersMixin:
       self.notify(f"Failed to {action} worker {worker.hostname} : {e}", "error")
       # Only roll back the worker row + DNS if this was a fresh add.
       if is_new:
-        self.remove_worker(worker)
+        self.remove_worker(worker.hostname)
       raise Exception(f"Failed to {action} worker {worker.hostname} : {e}")
 
   def remove_worker(self, worker_hostname: str):
