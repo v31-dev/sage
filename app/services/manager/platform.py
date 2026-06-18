@@ -14,6 +14,7 @@ from services.db import (
     DB_PATH,
     db,
 )
+from utils.queue import OnConflict
 
 logger = logging.getLogger(__name__)
 
@@ -117,44 +118,30 @@ class PlatformMixin:
     except Exception as e:
       logger.error(f"Failed to cleanup old S3 backups: {e}")
 
-  def is_platform_backup_in_progress(self) -> bool:
-    """Check if a platform backup is currently in progress."""
-    return self.platform_backup_in_progress
-
   async def backup_database_s3(self):
-    # Check if backup already in progress
-    if self.platform_backup_in_progress:
-      logger.warning("Platform backup already in progress, skipping")
-      return
+    # Create the backup
+    with TemporaryDirectory() as temp_dir:
+      timestamp = datetime.now().strftime(self.backup_timestamp_format)
+      backup_file = f"{temp_dir}/{timestamp}.db"
 
-    try:
-      self.platform_backup_in_progress = True
+      try:
+        # Use SQLite's native backup API
+        src_conn = db.connection()
+        backup_conn = sqlite3.connect(backup_file)
+        src_conn.backup(backup_conn)
+        backup_conn.close()
 
-      # Create the backup
-      with TemporaryDirectory() as temp_dir:
-        timestamp = datetime.now().strftime(self.backup_timestamp_format)
-        backup_file = f"{temp_dir}/{timestamp}.db"
+        # Upload to S3
+        await self.s3.upload_to_key(backup_file, self.s3_backup_path_platform)
 
-        try:
-          # Use SQLite's native backup API
-          src_conn = db.connection()
-          backup_conn = sqlite3.connect(backup_file)
-          src_conn.backup(backup_conn)
-          backup_conn.close()
+        # Record backup in database
+        full_backup_path = f"{self.s3.get_full_path(self.s3_backup_path_platform)}/{timestamp}.db"
+        Backup.create(s3_path=full_backup_path, type="platform")
 
-          # Upload to S3
-          await self.s3.upload_to_key(backup_file, self.s3_backup_path_platform)
-
-          # Record backup in database
-          full_backup_path = f"{self.s3.get_full_path(self.s3_backup_path_platform)}/{timestamp}.db"
-          Backup.create(s3_path=full_backup_path, type="platform")
-
-          self.notify(f"Database backup created at {timestamp}.")
-        except Exception as e:
-          self.notify(f"Failed to create database backup: {e}", "error")
-          raise Exception(f"Failed to create database backup: {e}")
-    finally:
-      self.platform_backup_in_progress = False
+        self.notify(f"Database backup created at {timestamp}.")
+      except Exception as e:
+        self.notify(f"Failed to create database backup: {e}", "error")
+        raise Exception(f"Failed to create database backup: {e}")
 
   def restart(self, all: bool = False, sage: bool = False, traefik: bool = False, vector: bool = False, glances: bool = False):
     client = docker.from_env()
@@ -278,15 +265,14 @@ class PlatformMixin:
         self.notify(f"Platform restored from backup {s3_path} successfully.", "success")
 
         # The restore rewrote worker state in the DB; queue a force-resync.
-        # cancel_existing supersedes a pending sync; queue=True lets it wait
-        # behind this restore, which holds the same scope.
+        # REPLACE supersedes a pending sync and waits behind this restore, which
+        # holds the same scope.
         self.add_task(
             task=self.sync_workers,
             scopes={"platform", "app"},
             params={"force": True},
             executor="platform",
-            cancel_existing=True,
-            queue=True,
+            on_conflict=OnConflict.REPLACE,
         )
 
     except Exception as e:

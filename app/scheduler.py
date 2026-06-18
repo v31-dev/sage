@@ -10,6 +10,7 @@ from services.db import Application, Project, Worker
 from services.manager import Manager
 from services.metrics import Metrics
 from utils.common import get_env
+from utils.queue import OnConflict
 
 logger = logging.getLogger(__name__)
 
@@ -96,12 +97,15 @@ async def collect_metrics():
     )
 
 
+# Long-period crons use REPLACE so a transient scope conflict doesn't skip the
+# whole cycle (next run is hours/days away); latest-wins keeps no backlog.
 @app.task(every("1 day"))
 async def send_summary_notification():
   Manager().add_task(
       task=Manager().send_summary_notification,
       scopes={"common"},
       executor="common",
+      on_conflict=OnConflict.REPLACE,
   )
 
 
@@ -112,23 +116,25 @@ async def refresh_latest_version():
       task=Manager().get_latest_version,
       scopes={"common"},
       executor="common",
+      on_conflict=OnConflict.REPLACE,
   )
 
 
-# Backup the main database.
+# Backup the main database. REPLACE: supersede a pending backup (latest wins) and
+# wait behind a running one, so at most one backup is queued behind the in-flight work.
 @app.task((every("6 hours") & ~SchedulerStarted(period=TimeDelta("10 minute"))), name="backup_database")
 async def backup_database():
   Manager().add_task(
       task=Manager().backup_database_s3,
       scopes={"platform", "app"},
       executor="platform",
+      on_conflict=OnConflict.REPLACE,
   )
 
 
-# Daily clean up check. Metrics cleanup runs on the metrics lane (queued so it
-# waits for an in-flight collect instead of being skipped); the manager cleanup
-# runs as a platform-scoped op (fenced against backup/restore, but it does not
-# block application work).
+# Daily clean up check. Both use REPLACE so a transient conflict (a running metrics
+# collect, or a backup/restore on the platform lane) defers rather than skips the
+# day's cleanup; the manager cleanup is platform-scoped and does not block app work.
 @app.task((every("1 day") & ~SchedulerStarted(period=TimeDelta("10 minute"))))
 async def cleanup():
   Manager().add_task(
@@ -137,20 +143,23 @@ async def cleanup():
       scopes={"metrics"},
       executor="metrics",
       quiet=True,
-      queue=True,
+      on_conflict=OnConflict.REPLACE,
   )
   Manager().add_task(
       task=Manager().cleanup,
       scopes={"platform"},
       executor="platform",
+      on_conflict=OnConflict.REPLACE,
   )
 
 
-# Sync Traefik wildcard certificates to workers.
+# Sync Traefik wildcard certificates to workers. REPLACE so a transient app-scope
+# conflict doesn't skip the sync for another 10 days.
 @app.task((every("10 days")), name="traefik_sync_certs")
 async def traefik_sync_certs():
   Manager().add_task(
       task=Manager().sync_traefik_certificates,
       scopes={"app"},
       executor="app",
+      on_conflict=OnConflict.REPLACE,
   )

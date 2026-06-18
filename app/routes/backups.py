@@ -5,6 +5,7 @@ from fastapi import APIRouter, Body, Request, Depends, HTTPException
 from services.db import Backup
 from services.manager import Manager
 from utils.api import get_request_models, generic_delete, generic_get, generic_list
+from utils.queue import OnConflict
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +52,7 @@ def list_backups(request: Request):
 @router.post("/platform_backup_status")
 def get_platform_backup_status(request: Request):
   """Get current platformbackup status."""
-  return {"platform_backup_in_progress": Manager().is_platform_backup_in_progress()}
+  return {"platform_backup_in_progress": Manager().is_task_running("backup_database_s3")}
 
 
 @router.post("/")
@@ -81,15 +82,16 @@ def create_backup(request: Request):
     ):
       raise HTTPException(status_code=409, detail="Application already has an operation in progress.")
   else:
-    if Manager().is_platform_backup_in_progress() or not Manager().add_task(
+    # REPLACE: never rejected. Supersedes a pending backup (latest wins) and waits
+    # behind a running one, so the user's trigger captures changes made during the
+    # in-flight backup, with at most one backup queued behind it.
+    Manager().add_task(
         task=Manager().backup_database_s3,
         scopes={"platform", "app"},
         executor="platform",
         task_id=request.state.task_id,
-        queue=True,
-        cancel_existing=True,
-    ):
-      raise HTTPException(status_code=409, detail="Platform backup already in progress")
+        on_conflict=OnConflict.REPLACE,
+    )
 
   return {"status": "OK"}
 
@@ -109,7 +111,7 @@ def delete_backup(request: Request):
       params={"s3_path": backup.s3_path},
       executor="common",
       task_id=request.state.task_id,
-      queue=True,
+      on_conflict=OnConflict.QUEUE,
   )
 
   return {"status": "OK"}

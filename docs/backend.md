@@ -97,14 +97,15 @@ The Manager owns a single in-memory `TaskQueue` (`app/utils/queue.py`). It is th
 - **Enqueue.** Every operation runs via `Manager().add_task(task=..., scopes=..., executor=..., params=..., ...)`. Handlers receive ids (not ORM objects) and re-fetch, so nothing carries a stale snapshot across the queue boundary.
 - **Scopes** are `:`-delimited and hierarchical. Roots: `platform`, `app` (with `app:<qualified_name>` children), `common`, `metrics`. A parent scope conflicts with all of its children; siblings never conflict. Conflicting tasks are mutually excluded.
 - **Dispatch.** A one-second Rocketry tick calls `dispatch_tick`, which starts every pending task whose scope is free. One dispatcher makes the scan race-free; a `threading.Lock` guards the queue because producers run on FastAPI/loop threads.
-- **Admission flags on `add_task`:**
-  - `queue` — default `False` rejects when the scope is busy (drops the task, returns `False`); `True` waits in line instead. Use `False` for retry-friendly reconcilers and rejectable user actions; `True` for deliberate actions that must not be dropped (a backup behind a deploy, an S3 delete).
-  - `cancel_existing` — drop any pending task with the same name and a conflicting scope before adding (latest-wins). It matches on **name + scope, not params**, so only use it for idempotent, params-light work (worker resync, platform backup) — never where params identify the work (volume ids, an s3 path).
-  - `priority` — insert ahead of lower/equal work but behind dominating scopes.
-  - `quiet` — record only on failure (see below).
+- **Admission policy — `on_conflict` on `add_task`** (enum `OnConflict`; the decision is made atomically under the queue lock):
+  - `REJECT` (default) — drop and return `False` if any conflicting task is running or queued. For retry-friendly reconcilers and rejectable user actions.
+  - `QUEUE` — always enqueue and wait in line, even when the scope is busy. For deliberate actions that must not be dropped (S3 delete, worker removal, the settings Traefik refresh).
+  - `REPLACE` — cancel any **pending** duplicate (same name + **exact** scope; latest-wins), then enqueue and wait. Never rejected. Used by the platform backup (cron + UI enqueue identically: at most one backup queued behind a running one) and the worker force-resync. Identity is **name + scope, not params**, so use it only where the name + scope fully identify the work — never where params identify it (volume ids, an s3 path); those use `QUEUE`.
+- **`priority`** (separate flag) — insert ahead of lower/equal work but behind dominating scopes.
+- **`quiet`** (separate flag) — record only on failure (see below).
 - **Persistence.** The queue calls a `record` hook (`Manager._persist_task`) at each terminal state. Only `completed`/`failed`/`cancelled` are written to the `Task` table; running and queued tasks live in memory and are exposed via `snapshot()` for the UI. `quiet=True` tasks skip the `completed` record so high-frequency reconcilers (metrics collection, per-app status/domain sync, the 30s worker sync) don't flood the table — failures still record.
 
-To make a deliberate user action coalesce with a recurring one, enqueue it with `cancel_existing=True, queue=True` (e.g. the worker force-resync); no per-operation locks or pending flags are needed.
+To make a deliberate user action coalesce with a recurring one, enqueue both with `on_conflict=OnConflict.REPLACE` (latest-wins; e.g. the platform backup and the worker force-resync); no per-operation locks or pending flags are needed.
 
 ## Execution Modes And Pools
 
@@ -145,21 +146,57 @@ Additional storage:
 
 ## Scheduler Notes
 
-`app/scheduler.py` holds async Rocketry tasks that act only as cron triggers — each one calls `Manager().add_task(...)` and contains no execution logic.
+`app/scheduler.py` holds async Rocketry tasks that act only as cron triggers — each one calls `Manager().add_task(...)` and contains no execution logic. Route handlers enqueue through the same `add_task` path, and a few tasks are enqueued internally from within another task.
 
-Recurring triggers currently cover:
+## Task Catalog
 
-- worker sync (`quiet`)
-- application status sync (`quiet`)
-- daily system digest
-- volume backup scheduling
-- Traefik domain config sync (`quiet`)
-- metrics collection (`quiet`)
-- platform backup
-- cleanup
-- certificate sync
+Every queued operation, its scope, where it is enqueued from, its lane pool, and its `on_conflict` policy. Keep this current when adding, removing, or re-scoping a task. `<qn>` is an application's `qualified_name`; `<host>` a worker hostname.
 
-Route-driven operations enqueue through the same `add_task` path: deploy, stop, delete container, application/volume backup, restore, worker removal, platform backup/restore, delete backup from S3, and the full-stack restart (which cancels pending work and waits with priority for in-flight platform/app operations before replacing the process).
+**Scheduled (Rocketry cron → `add_task`)**
+
+| Task | Scope | Source | Lane | on_conflict |
+| --- | --- | --- | --- | --- |
+| `sync_workers` | platform, app | cron 30s | platform | REJECT |
+| `sync_application_status` | app:`<qn>` | cron 1m | app | REJECT |
+| `backup_application_s3` | app:`<qn>` | cron 1m (due backups) | app | REJECT |
+| `sync_application_traefik_domains_config` | app:`<qn>` | cron 1m | app | REJECT |
+| `Metrics.collect` | metrics:`<host>` | cron 1m | metrics | REJECT |
+| `send_summary_notification` | common | cron 1d | common | REPLACE |
+| `get_latest_version` | common | cron 6h | common | REPLACE |
+| `backup_database_s3` | platform, app | cron 6h | platform | REPLACE |
+| `Metrics.cleanup` | metrics | cron 1d | metrics | REPLACE |
+| `cleanup` | platform | cron 1d | platform | REPLACE |
+| `sync_traefik_certificates` | app | cron 10d | app | REPLACE |
+
+**Route-driven (HTTP → `add_task`)**
+
+| Task | Scope | Source | Lane | on_conflict |
+| --- | --- | --- | --- | --- |
+| `deploy_application` | app:`<qn>` | POST …/deploy | app | REJECT |
+| `stop_application` | app:`<qn>` | POST …/stop | app | REJECT |
+| `delete_container` | app:`<qn>` | DELETE …/containers/{c} | app | REJECT |
+| `backup_application_s3` | app:`<qn>` | POST …/volumes/{v}/backups | app | REJECT |
+| `restore_application_volume_from_s3` | app:`<qn>` | POST …/backups/{b}/restore | app | REJECT |
+| `backup_database_s3` | platform, app | POST /backups | platform | REPLACE |
+| `restore_database_from_s3` | platform, app | POST /backups/{b}/restore | platform | REJECT |
+| `delete_backup_s3` | common | DELETE /backups/{b} | common | QUEUE |
+| `remove_worker` | platform, app | DELETE /workers/{h} | platform | QUEUE |
+| `refresh_traefik` | platform, app | PUT /settings/cloudflare | platform | QUEUE |
+| `refresh_traefik` | platform, app | POST /settings/resync_traefik | platform | REJECT |
+| `restart` | platform, app, common, metrics | POST /settings/restart | platform | QUEUE (+priority) |
+| `sync_workers` | platform, app | POST /settings/resync_workers | platform | REPLACE |
+
+**Internal (enqueued from within another task)**
+
+| Task | Scope | Source | Lane | on_conflict |
+| --- | --- | --- | --- | --- |
+| `sync_workers` | platform, app | `restore_database_from_s3` | platform | REPLACE |
+
+Quiet tasks (recorded only on failure): `sync_workers` (cron), `sync_application_status`, `sync_application_traefik_domains_config`, `Metrics.collect`, `Metrics.cleanup`.
+
+Cron cadence convention: **≤ 1m → `REJECT`** (a high-frequency reconciler skips a busy cycle; the next run is seconds away), **> 1m → `REPLACE`** (a 6h/1d/10d task must not skip its whole cycle on a transient conflict; latest-wins keeps no backlog). This keeps `sync_workers` (30s) on `REJECT` so it skips rather than queuing its broad `platform, app` scope.
+
+`sync_workers` deliberately differs by source — cron uses `REJECT`, while resync/restore use `REPLACE` with `{force: True}` to supersede a pending plain sync. That is why REPLACE's identity is name + scope and not params. The full-stack `restart` cancels pending work and waits with priority for in-flight platform/app operations before replacing the process.
 
 ## Settings And Traefik Refresh
 

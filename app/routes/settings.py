@@ -14,6 +14,7 @@ from utils.api import (
     parse_api_data,
 )
 from utils.common import DOMAIN_RE, EMAIL_RE
+from utils.queue import OnConflict
 
 router = APIRouter()
 
@@ -112,7 +113,7 @@ def update_setting(request: Request, setting_data: dict = Body(...)):
           },
           executor="platform",
           task_id=request.state.task_id,
-          queue=True,
+          on_conflict=OnConflict.QUEUE,
       )
 
   return generic_get(Setting, (Setting.key == setting_key))
@@ -132,7 +133,7 @@ async def restart():
       params={"all": True},
       scopes={"platform", "app", "common", "metrics"},
       executor="platform",
-      queue=True,
+      on_conflict=OnConflict.QUEUE,
       priority=True,
   )
   return {"message": "Restart initiated."}
@@ -166,9 +167,9 @@ async def resync_traefik(request: Request):
 @router.post("/resync_workers")
 async def resync_workers(request: Request):
   """
-  Queue a force re-sync of all online workers. cancel_existing supersedes any
-  pending sync so the latest request wins; queue=True lets it wait behind a
-  running sync rather than being dropped.
+  Queue a force re-sync of all online workers. REPLACE supersedes any pending
+  sync so the latest request wins, and waits behind a running sync rather than
+  being dropped.
   """
   Manager().add_task(
       task=Manager().sync_workers,
@@ -176,7 +177,6 @@ async def resync_workers(request: Request):
       params={"force": True},
       executor="platform",
       task_id=request.state.task_id,
-      cancel_existing=True,
-      queue=True,
+      on_conflict=OnConflict.REPLACE,
   )
   return {"message": "Worker resync queued."}

@@ -9,6 +9,7 @@ from services.manager import Manager
 from routes.containers import router as container_router
 from utils.common import get_env
 from utils.api import get_request_models, generic_get
+from utils.queue import OnConflict
 
 
 router = APIRouter()
@@ -96,15 +97,15 @@ def delete_worker(request: Request, hostname: str):
   if worker and worker.containers.count() > 0:
     raise HTTPException(status_code=400, detail="Worker has active containers and cannot be deleted.")
 
-  # platform+app scoped so it serializes with worker sync and deploys; queue=True
-  # so a deliberate removal waits behind an in-flight op instead of being dropped.
+  # platform+app scoped so it serializes with worker sync and deploys; QUEUE so a
+  # deliberate removal waits behind an in-flight op instead of being dropped.
   Manager().add_task(
       task=Manager().remove_worker,
       scopes={"platform", "app"},
       params={"worker_hostname": worker.hostname},
       executor="platform",
       task_id=request.state.task_id,
-      queue=True,
+      on_conflict=OnConflict.QUEUE,
   )
 
   return {"status": "OK"}

@@ -2,6 +2,7 @@ import asyncio
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from enum import Enum
 from inspect import iscoroutinefunction
 from threading import Lock
 from typing import Callable
@@ -46,6 +47,20 @@ def _dominates(a: frozenset[str], b: frozenset[str]) -> bool:
   return any(_is_ancestor_or_equal(sa, sb) for sa in a for sb in b)
 
 
+class OnConflict(Enum):
+  """How add_task admits a task when a conflicting task already exists.
+
+  A *scope conflict* is a different task holding an overlapping scope. A
+  *duplicate* is a task with the same name and the same exact scope -- the
+  identity test REPLACE uses. It ignores params, so REPLACE fits operations
+  whose identity is fully the name + scope (a per-app or platform-wide op);
+  for work identified by params, use QUEUE (which never dedupes).
+  """
+  REJECT = "reject"    # drop if any conflicting task is running or queued
+  QUEUE = "queue"      # always enqueue; wait for the scope to free (no dedupe)
+  REPLACE = "replace"  # cancel a pending duplicate (latest wins); then enqueue
+
+
 @dataclass(frozen=True)
 class QueuedTask:
   name: str
@@ -87,29 +102,27 @@ class TaskQueue:
 
   def add_task(self, task: Callable, scopes: frozenset[str], executor: str,
                name: str | None = None, params: dict | None = None,
-               task_id: str | None = None, priority: bool = False,
-               queue: bool = False, cancel_existing: bool = False,
-               quiet: bool = False) -> bool:
-    """Add a task; return False if it was dropped.
+               task_id: str | None = None,
+               on_conflict: OnConflict = OnConflict.REJECT,
+               priority: bool = False, quiet: bool = False) -> bool:
+    """Add a task; return False if it was dropped (REJECT when the scope is busy).
 
     ### Parameters
     - task: the callable to run (sync or async).
-    - scopes: scopes this task needs exclusive access to. By default the task
-      is rejected when any conflict (hierarchically) with a pending or running
-      task. A parent scope ("app") conflicts with all children ("app:app1").
-      Each scope's root must be one of the roots passed to the constructor.
+    - scopes: scopes this task needs exclusive access to. A parent scope ("app")
+      conflicts with all children ("app:app1"); siblings never conflict. Each
+      scope's root must be one of the roots passed to the constructor.
     - executor: name of the executor (key in the constructor's executors dict).
-    - name: log/UI label; defaults to the task callable's name.
+    - name: log/UI label; defaults to the task callable's name. Also the identity
+      (with the exact scope) REPLACE uses to detect a duplicate.
     - params: keyword arguments passed to `task`; defaults to none.
     - task_id: log-correlation id; generated here when omitted (scheduled work).
+    - on_conflict: admission policy (see OnConflict). REJECT drops on any scope
+      conflict; QUEUE always enqueues and waits; REPLACE supersedes a pending
+      duplicate (same name + exact scope) then enqueues and waits.
     - priority: insert ahead of lower/unrelated tasks but behind tasks that
       dominate it (same level or higher) -- a platform task jumps over app
       tasks but not over other platform tasks.
-    - queue: if True, queue the task to wait even when its scopes conflict,
-      instead of rejecting it (used for per-object housekeeping like a single
-      application's status sync).
-    - cancel_existing: drop any pending task with the same name and a
-      conflicting scope before adding this one (latest-wins / debounce).
     - quiet: persist this task to the record store only when it fails, so
       high-frequency housekeeping (e.g. metrics) does not flood it.
     """
@@ -118,14 +131,15 @@ class TaskQueue:
     self._validate(scopes, executor)
     task_id = task_id or generate_task_id_token()
     with self._lock:
-      if cancel_existing:
-        for pending in [
-            p for p in self._queue
-            if p.name == name and _scopes_conflict(scopes, p.scopes)
-        ]:
+      if on_conflict == OnConflict.REPLACE:
+        # Duplicate = same operation on the same exact scope (identity = name +
+        # scope; params are not part of identity). Supersede the pending one.
+        for pending in [t for t in self._queue if t.name == name and t.scopes == scopes]:
           self._cancel(pending)
-      if not queue and self.has_task_scopes(scopes, only_running=False):
-        return False
+      elif on_conflict == OnConflict.REJECT:
+        if self.has_task_scopes(scopes, only_running=False):
+          return False
+      # OnConflict.QUEUE: always enqueue and wait for the scope to free.
 
       new_task = QueuedTask(name=name, scopes=scopes, task=task,
                             params=params or {}, executor=executor, task_id=task_id,
@@ -170,6 +184,18 @@ class TaskQueue:
     """True if any running or pending task conflicts with the given scopes."""
     with self._lock:
       return self.has_task_scopes(frozenset(scopes), only_running=False)
+
+  def is_task_running(self, name: str, scopes: frozenset[str] | None = None) -> bool:
+    """True if a task with this name is currently executing (not merely queued).
+    When scopes is given, the running task must also conflict with them, so a
+    per-resource task (e.g. app:<qualified_name>) can be matched for one specific
+    resource rather than by name across every resource. For UI/route status of a
+    named operation, as distinct from is_busy's scope-only check."""
+    with self._lock:
+      return any(
+          task.name == name and (scopes is None or _scopes_conflict(scopes, task.scopes))
+          for task in self._running
+      )
 
   def cancel_all(self):
     """Cancel every pending (not yet running) task; running tasks are left to
@@ -229,8 +255,8 @@ class TaskQueue:
   def _cancel(self, task: QueuedTask):
     """Drop a pending task from the queue (caller holds the lock).
 
-    Single seam for cancellation, whether triggered by cancel_existing or a
-    future UI action.
+    Single seam for cancellation, whether triggered by a REPLACE admission, the
+    pre-restart drain (cancel_all), or a future UI action.
     """
     self._queue.remove(task)
     logger.info(f"{task.name}: cancelled")

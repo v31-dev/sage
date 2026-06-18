@@ -12,6 +12,9 @@ This is a living project-context file for AI coding agents. Keep it concise, cur
 
 - Default to discussion first when the user is describing a problem, asking for diagnosis, or exploring options.
 - Start implementing only when the user explicitly asks to implement, fix, add, change, create, or update something.
+- Most sessions begin as evaluation, not implementation. Assess first, then capture the findings as a numbered task list in `todo.md` at the repo root — problems only, no solutioning until a task is picked up. Maintain `todo.md` as the running tracker: update item status as work proceeds and add sub-findings under the relevant item. Work items one at a time; confirm the approach before editing code.
+- Treat every identified task as priority work. Do not defer with "revisit later" or "doesn't matter now". An item leaves the list only when it is done or the user explicitly rejects it.
+- Run this work on Claude Opus at extra-high reasoning (minimum). Evaluation and design decisions here are subtle; do not use a lighter model or lower reasoning effort.
 
 ## Project Summary
 
@@ -85,7 +88,7 @@ If this context may have been lost, reread this file plus the relevant `docs/` p
 
 - Rocketry is a pure cron trigger: each scheduled task only calls `Manager().add_task(...)`. All execution and concurrency control live in the in-memory `TaskQueue` (`app/utils/queue.py`).
 - Route and scheduled work alike enqueue via `add_task`; handlers take ids (not ORM objects) and re-fetch.
-- Scopes (`platform`, `app`/`app:<qualified_name>`, `common`, `metrics`) give hierarchical mutual exclusion; each scope root has its own lane pool. To serialize a deliberate action behind in-flight work use `queue=True`; to coalesce idempotent reruns use `cancel_existing=True`; for high-frequency reconcilers use `quiet=True` (record only on failure). Details in [docs/backend.md](docs/backend.md).
+- Scopes (`platform`, `app`/`app:<qualified_name>`, `common`, `metrics`) give hierarchical mutual exclusion; each scope root has its own lane pool. Conflict handling is one `on_conflict` enum on `add_task`: `REJECT` (default, drop if busy), `QUEUE` (always wait, no dedupe), `REPLACE` (latest-wins, supersede a pending duplicate matched on name + exact scope, then wait). `quiet=True` is a separate flag for high-frequency reconcilers (record only on failure). Details in [docs/backend.md](docs/backend.md).
 - Read Rocketry docs before changing trigger cadence or scheduler behavior.
 
 ## Working Rules
@@ -101,6 +104,7 @@ If this context may have been lost, reread this file plus the relevant `docs/` p
 9. Don't narrate the old design in code during refactors. Comments must describe the current code and why — no "this used to be X", "vs. the old Y", "the package added an extra level" framing. Explain before/after reasoning in the chat instead. (Domain wording like "worker previously offline" is fine; the rule targets references to the prior implementation/design.)
 10. Don't extract a named helper used in only one place. Inline short snippets; if two call sites share small behavior, reuse or extend an existing method (e.g. add a flag param) rather than adding a single-use private wrapper.
 11. Keep comments concise and to the point — explain the non-obvious *why*, don't restate the code or over-describe. Trim, don't pad.
+12. Simplicity means removing incidental complexity, never dropping functionality. A simpler design that loses a capability is not acceptable. Choosing a lighter mechanism for the same behavior is good (e.g. an in-memory queue instead of Redis); removing a behavior because it is fiddly to implement is not (e.g. dropping coalescing/dedup, or rejecting a valid user action, to avoid the work). Preserve the behavior; simplify the mechanism.
 
 ## Token And Context Budget
 
