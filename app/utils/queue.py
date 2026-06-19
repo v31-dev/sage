@@ -127,19 +127,22 @@ class TaskQueue:
     scopes = frozenset(scopes)
     self._validate(scopes, executor)
     task_id = task_id or generate_task_id_token()
+    cancelled: list[QueuedTask] = []
     with self._lock:
       if on_conflict == OnConflict.REPLACE:
         # Duplicate = same operation on the same exact scope (identity = name +
-        # scope; params are not part of identity). Supersede the pending one.
-        for pending in [t for t in self._queue if t.name == name and t.scopes == scopes]:
-          self._cancel(pending)
+        # scope; params are not part of identity). Supersede the pending one;
+        # persist the cancellation after the lock (see below).
+        cancelled = [t for t in self._queue if t.name == name and t.scopes == scopes]
+        for pending in cancelled:
+          self._queue.remove(pending)
       elif on_conflict == OnConflict.DEDUP:
         # Skip if an identical op (name + exact scope) is already pending or
         # running -- pile-up / double-trigger prevention. A *different* op on a
         # conflicting scope is not dropped here; it enqueues and the dispatcher
         # serializes it by scope.
-        if any(task.name == name and task.scopes == scopes
-               for task in (*self._running, *self._queue)):
+        if any(t.name == name and t.scopes == scopes
+               for t in (*self._running, *self._queue)):
           return False
       # OnConflict.QUEUE: always enqueue and wait for the scope to free.
 
@@ -158,7 +161,11 @@ class TaskQueue:
         position = len(self._queue)
 
       self._queue.insert(position, new_task)
-      return True
+
+    # Persist cancellations outside the lock: _record does a DB write, which must
+    # stay off the critical section so the event loop never blocks on it.
+    self._record_cancelled(cancelled)
+    return True
 
   def has_task_scopes(self, scopes: frozenset[str], only_running: bool = True) -> bool:
     """True if a running (and, when only_running is False, also pending) task
@@ -174,16 +181,19 @@ class TaskQueue:
     with self._lock:
       return self.has_task_scopes(frozenset(scopes), only_running=False)
 
-  def is_task_running(self, name: str, scopes: frozenset[str] | None = None) -> bool:
-    """True if a task with this name is currently executing (not merely queued).
-    When scopes is given, the running task must also conflict with them, so a
-    per-resource task (e.g. app:<qualified_name>) can be matched for one specific
+  def is_task_running(self, task: Callable | str, scopes: frozenset[str] | None = None) -> bool:
+    """True if a task with this identity is currently executing (not merely queued).
+    Pass the task callable (rename-safe; its `__name__` is the identity add_task
+    stores by default) or, for a task enqueued with an explicit `name=`, that
+    string. When scopes is given, the running task must also conflict with them, so
+    a per-resource task (e.g. app:<qualified_name>) is matched for one specific
     resource rather than by name across every resource. For UI/route status of a
     named operation, as distinct from is_busy's scope-only check."""
+    name = task if isinstance(task, str) else task.__name__
     with self._lock:
       return any(
-          task.name == name and (scopes is None or _scopes_conflict(scopes, task.scopes))
-          for task in self._running
+          running.name == name and (scopes is None or _scopes_conflict(scopes, running.scopes))
+          for running in self._running
       )
 
   def cancel_all(self):
@@ -191,8 +201,9 @@ class TaskQueue:
     finish. Used before a restart so queued work is recorded as cancelled
     instead of silently lost when the process exits."""
     with self._lock:
-      for task in list(self._queue):
-        self._cancel(task)
+      cancelled = list(self._queue)
+      self._queue.clear()
+    self._record_cancelled(cancelled)
 
   def snapshot(self) -> dict:
     """Point-in-time view of running and queued tasks (for the UI)."""
@@ -241,15 +252,14 @@ class TaskQueue:
           self._tasks.add(handle)
           handle.add_done_callback(self._tasks.discard)
 
-  def _cancel(self, task: QueuedTask):
-    """Drop a pending task from the queue (caller holds the lock).
-
-    Single seam for cancellation, whether triggered by a REPLACE admission, the
-    pre-restart drain (cancel_all), or a future UI action.
-    """
-    self._queue.remove(task)
-    logger.info(f"{task.name}: cancelled")
-    self._record(task, "cancelled")
+  def _record_cancelled(self, tasks: list[QueuedTask]):
+    """Log and persist already-removed pending tasks as cancelled. Call this
+    OUTSIDE the lock -- `_record` writes to the DB, which must not run inside the
+    critical section. Callers (REPLACE admission, the pre-restart drain) remove
+    the tasks from the queue under the lock, then hand them here."""
+    for task in tasks:
+      logger.info(f"{task.name}: cancelled")
+      self._record(task, "cancelled")
 
   async def run_task(self, task: QueuedTask):
     token = task_id.set(task.task_id)

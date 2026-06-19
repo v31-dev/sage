@@ -1,5 +1,6 @@
 import logging
 from datetime import datetime
+from typing import Callable
 
 from services.db import Task
 
@@ -15,8 +16,8 @@ class QueueMixin:
   def is_busy(self, scopes: frozenset[str]) -> bool:
     return self.task_queue.is_busy(scopes)
 
-  def is_task_running(self, name: str, scopes: frozenset[str] | None = None) -> bool:
-    return self.task_queue.is_task_running(name, scopes)
+  def is_task_running(self, task: Callable | str, scopes: frozenset[str] | None = None) -> bool:
+    return self.task_queue.is_task_running(task, scopes)
 
   def cancel_all_tasks(self):
     self.task_queue.cancel_all()

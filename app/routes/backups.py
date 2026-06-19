@@ -51,7 +51,7 @@ def list_backups(request: Request):
 @router.post("/platform_backup_status")
 def get_platform_backup_status(request: Request):
   """Get current platformbackup status."""
-  return {"platform_backup_in_progress": Manager().is_task_running("backup_database_s3")}
+  return {"platform_backup_in_progress": Manager().is_task_running(Manager().backup_database_s3)}
 
 
 @router.post("/")
