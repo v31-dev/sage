@@ -97,10 +97,11 @@ The Manager owns a single in-memory `TaskQueue` (`app/utils/queue.py`). It is th
 - **Enqueue.** Every operation runs via `Manager().add_task(task=..., scopes=..., executor=..., params=..., ...)`. Handlers receive ids (not ORM objects) and re-fetch, so nothing carries a stale snapshot across the queue boundary.
 - **Scopes** are `:`-delimited and hierarchical. Roots: `platform`, `app` (with `app:<qualified_name>` children), `common`, `metrics`. A parent scope conflicts with all of its children; siblings never conflict. Conflicting tasks are mutually excluded.
 - **Dispatch.** A one-second Rocketry tick calls `dispatch_tick`, which starts every pending task whose scope is free. One dispatcher makes the scan race-free; a `threading.Lock` guards the queue because producers run on FastAPI/loop threads.
-- **Admission policy — `on_conflict` on `add_task`** (enum `OnConflict`; the decision is made atomically under the queue lock):
-  - `REJECT` (default) — drop and return `False` if any conflicting task is running or queued. For retry-friendly reconcilers and rejectable user actions.
-  - `QUEUE` — always enqueue and wait in line, even when the scope is busy. For deliberate actions that must not be dropped (S3 delete, worker removal, the settings Traefik refresh).
-  - `REPLACE` — cancel any **pending** duplicate (same name + **exact** scope; latest-wins), then enqueue and wait. Never rejected. Used by the platform backup (cron + UI enqueue identically: at most one backup queued behind a running one) and the worker force-resync. Identity is **name + scope, not params**, so use it only where the name + scope fully identify the work — never where params identify it (volume ids, an s3 path); those use `QUEUE`.
+- **Admission policy — `on_conflict` on `add_task`** (enum `OnConflict`; decided atomically under the queue lock). Admission decides *drop vs. enqueue*; mutual exclusion is **separate and always scope-based** — the dispatcher serializes conflicting scopes regardless of mode, so an enqueued task simply waits for its scope to free.
+  - `DEDUP` (default) — drop and return `False` if an identical op (**same name + exact scope**) is already running or queued; otherwise enqueue and wait. Prevents reconciler pile-ups and double-triggers (e.g. a second deploy of the same app). A *different* op holding a conflicting scope does **not** cause a drop — it enqueues and waits behind that op. (So a background sync never rejects a user action; the action just defers behind it.)
+  - `QUEUE` — always enqueue and wait, even for an identical op. For work where every call must run, including params-identified work that shares a name + scope (S3 delete by path, worker removal by host, the settings Traefik refresh by change-flags).
+  - `REPLACE` — cancel any **pending** duplicate (same name + exact scope; latest-wins), then enqueue and wait. Used by the platform backup (cron + UI enqueue identically: at most one backup queued behind a running one) and the worker force-resync.
+  - `DEDUP`/`REPLACE` identity is **name + scope, not params**. DEDUP rejecting a params-distinct call is safe (it returns `False`/409, nothing is lost); REPLACE would *silently* drop it, so params-identified work uses `QUEUE`.
 - **`priority`** (separate flag) — insert ahead of lower/equal work but behind dominating scopes.
 - **`quiet`** (separate flag) — record only on failure (see below).
 - **Persistence.** The queue calls a `record` hook (`Manager._persist_task`) at each terminal state. Only `completed`/`failed`/`cancelled` are written to the `Task` table; running and queued tasks live in memory and are exposed via `snapshot()` for the UI. `quiet=True` tasks skip the `completed` record so high-frequency reconcilers (metrics collection, per-app status/domain sync, the 30s worker sync) don't flood the table — failures still record.
@@ -156,11 +157,11 @@ Every queued operation, its scope, where it is enqueued from, its lane pool, and
 
 | Task | Scope | Source | Lane | on_conflict |
 | --- | --- | --- | --- | --- |
-| `sync_workers` | platform, app | cron 30s | platform | REJECT |
-| `sync_application_status` | app:`<qn>` | cron 1m | app | REJECT |
-| `backup_application_s3` | app:`<qn>` | cron 1m (due backups) | app | REJECT |
-| `sync_application_traefik_domains_config` | app:`<qn>` | cron 1m | app | REJECT |
-| `Metrics.collect` | metrics:`<host>` | cron 1m | metrics | REJECT |
+| `sync_workers` | platform, app | cron 30s | platform | DEDUP |
+| `sync_application_status` | app:`<qn>` | cron 1m | app | DEDUP |
+| `backup_application_s3` | app:`<qn>` | cron 1m (due backups) | app | DEDUP |
+| `sync_application_traefik_domains_config` | app:`<qn>` | cron 1m | app | DEDUP |
+| `Metrics.collect` | metrics:`<host>` | cron 1m | metrics | DEDUP |
 | `send_summary_notification` | common | cron 1d | common | REPLACE |
 | `get_latest_version` | common | cron 6h | common | REPLACE |
 | `backup_database_s3` | platform, app | cron 6h | platform | REPLACE |
@@ -172,17 +173,17 @@ Every queued operation, its scope, where it is enqueued from, its lane pool, and
 
 | Task | Scope | Source | Lane | on_conflict |
 | --- | --- | --- | --- | --- |
-| `deploy_application` | app:`<qn>` | POST …/deploy | app | REJECT |
-| `stop_application` | app:`<qn>` | POST …/stop | app | REJECT |
-| `delete_container` | app:`<qn>` | DELETE …/containers/{c} | app | REJECT |
-| `backup_application_s3` | app:`<qn>` | POST …/volumes/{v}/backups | app | REJECT |
-| `restore_application_volume_from_s3` | app:`<qn>` | POST …/backups/{b}/restore | app | REJECT |
+| `deploy_application` | app:`<qn>` | POST …/deploy | app | DEDUP |
+| `stop_application` | app:`<qn>` | POST …/stop | app | DEDUP |
+| `delete_container` | app:`<qn>` | DELETE …/containers/{c} | app | DEDUP |
+| `backup_application_s3` | app:`<qn>` | POST …/volumes/{v}/backups | app | DEDUP |
+| `restore_application_volume_from_s3` | app:`<qn>` | POST …/backups/{b}/restore | app | DEDUP |
 | `backup_database_s3` | platform, app | POST /backups | platform | REPLACE |
-| `restore_database_from_s3` | platform, app | POST /backups/{b}/restore | platform | REJECT |
+| `restore_database_from_s3` | platform, app | POST /backups/{b}/restore | platform | DEDUP |
 | `delete_backup_s3` | common | DELETE /backups/{b} | common | QUEUE |
 | `remove_worker` | platform, app | DELETE /workers/{h} | platform | QUEUE |
 | `refresh_traefik` | platform, app | PUT /settings/cloudflare | platform | QUEUE |
-| `refresh_traefik` | platform, app | POST /settings/resync_traefik | platform | REJECT |
+| `refresh_traefik` | platform, app | POST /settings/resync_traefik | platform | DEDUP |
 | `restart` | platform, app, common, metrics | POST /settings/restart | platform | QUEUE (+priority) |
 | `sync_workers` | platform, app | POST /settings/resync_workers | platform | REPLACE |
 
@@ -194,9 +195,9 @@ Every queued operation, its scope, where it is enqueued from, its lane pool, and
 
 Quiet tasks (recorded only on failure): `sync_workers` (cron), `sync_application_status`, `sync_application_traefik_domains_config`, `Metrics.collect`, `Metrics.cleanup`.
 
-Cron cadence convention: **≤ 1m → `REJECT`** (a high-frequency reconciler skips a busy cycle; the next run is seconds away), **> 1m → `REPLACE`** (a 6h/1d/10d task must not skip its whole cycle on a transient conflict; latest-wins keeps no backlog). This keeps `sync_workers` (30s) on `REJECT` so it skips rather than queuing its broad `platform, app` scope.
+Cron cadence convention: **≤ 1m → `DEDUP`** (a high-frequency reconciler skips only if its own previous run is still in flight; the next tick retries), **> 1m → `REPLACE`** (a 6h/1d/10d task must not skip its whole cycle on a transient conflict; latest-wins keeps no backlog).
 
-`sync_workers` deliberately differs by source — cron uses `REJECT`, while resync/restore use `REPLACE` with `{force: True}` to supersede a pending plain sync. That is why REPLACE's identity is name + scope and not params. The full-stack `restart` cancels pending work and waits with priority for in-flight platform/app operations before replacing the process.
+`sync_workers` deliberately differs by source — cron uses `DEDUP`, while resync/restore use `REPLACE` with `{force: True}` to supersede a pending plain sync. That is why DEDUP/REPLACE identity is name + scope and not params. The full-stack `restart` cancels pending work and waits with priority for in-flight platform/app operations before replacing the process.
 
 ## Settings And Traefik Refresh
 

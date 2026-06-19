@@ -88,7 +88,7 @@ If this context may have been lost, reread this file plus the relevant `docs/` p
 
 - Rocketry is a pure cron trigger: each scheduled task only calls `Manager().add_task(...)`. All execution and concurrency control live in the in-memory `TaskQueue` (`app/utils/queue.py`).
 - Route and scheduled work alike enqueue via `add_task`; handlers take ids (not ORM objects) and re-fetch.
-- Scopes (`platform`, `app`/`app:<qualified_name>`, `common`, `metrics`) give hierarchical mutual exclusion; each scope root has its own lane pool. Conflict handling is one `on_conflict` enum on `add_task`: `REJECT` (default, drop if busy), `QUEUE` (always wait, no dedupe), `REPLACE` (latest-wins, supersede a pending duplicate matched on name + exact scope, then wait). `quiet=True` is a separate flag for high-frequency reconcilers (record only on failure). Details in [docs/backend.md](docs/backend.md).
+- Scopes (`platform`, `app`/`app:<qualified_name>`, `common`, `metrics`) give hierarchical mutual exclusion (enforced by the dispatcher); each scope root has its own lane pool. Admission (drop vs. enqueue) is one `on_conflict` enum on `add_task`: `DEDUP` (default, skip if an identical op — same name + exact scope — is already pending/running, else enqueue and wait), `QUEUE` (always enqueue, no dedupe), `REPLACE` (latest-wins, supersede a pending duplicate then wait). A different op holding a conflicting scope never drops a new task — it defers behind it. `quiet=True` is a separate flag for high-frequency reconcilers (record only on failure). Details in [docs/backend.md](docs/backend.md).
 - Read Rocketry docs before changing trigger cadence or scheduler behavior.
 
 ## Working Rules

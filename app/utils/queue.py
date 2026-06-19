@@ -48,15 +48,16 @@ def _dominates(a: frozenset[str], b: frozenset[str]) -> bool:
 
 
 class OnConflict(Enum):
-  """How add_task admits a task when a conflicting task already exists.
+  """How add_task admits a task when an identical or conflicting task exists.
 
-  A *scope conflict* is a different task holding an overlapping scope. A
-  *duplicate* is a task with the same name and the same exact scope -- the
-  identity test REPLACE uses. It ignores params, so REPLACE fits operations
-  whose identity is fully the name + scope (a per-app or platform-wide op);
-  for work identified by params, use QUEUE (which never dedupes).
+  Admission decides *drop vs. enqueue*. It is separate from mutual exclusion:
+  the dispatcher always serializes conflicting scopes regardless of mode, so a
+  task that is enqueued simply waits for its scope to free.
+
+  Identity for dedupe is name + exact scope (params are not part of it). DEDUP
+  and REPLACE act on that identity; QUEUE ignores it (every call runs).
   """
-  REJECT = "reject"    # drop if any conflicting task is running or queued
+  DEDUP = "dedup"      # skip if an identical op (name + scope) is pending/running; else enqueue
   QUEUE = "queue"      # always enqueue; wait for the scope to free (no dedupe)
   REPLACE = "replace"  # cancel a pending duplicate (latest wins); then enqueue
 
@@ -103,9 +104,10 @@ class TaskQueue:
   def add_task(self, task: Callable, scopes: frozenset[str], executor: str,
                name: str | None = None, params: dict | None = None,
                task_id: str | None = None,
-               on_conflict: OnConflict = OnConflict.REJECT,
+               on_conflict: OnConflict = OnConflict.DEDUP,
                priority: bool = False, quiet: bool = False) -> bool:
-    """Add a task; return False if it was dropped (REJECT when the scope is busy).
+    """Add a task; return False if it was dropped (DEDUP when an identical op is
+    already pending or running).
 
     ### Parameters
     - task: the callable to run (sync or async).
@@ -114,11 +116,12 @@ class TaskQueue:
       scope's root must be one of the roots passed to the constructor.
     - executor: name of the executor (key in the constructor's executors dict).
     - name: log/UI label; defaults to the task callable's name. Also the identity
-      (with the exact scope) REPLACE uses to detect a duplicate.
+      (with the exact scope) DEDUP/REPLACE use to detect a duplicate.
     - params: keyword arguments passed to `task`; defaults to none.
     - task_id: log-correlation id; generated here when omitted (scheduled work).
-    - on_conflict: admission policy (see OnConflict). REJECT drops on any scope
-      conflict; QUEUE always enqueues and waits; REPLACE supersedes a pending
+    - on_conflict: admission policy (see OnConflict). DEDUP skips if an identical
+      op (same name + exact scope) is already pending or running, else enqueues
+      and waits; QUEUE always enqueues and waits; REPLACE supersedes a pending
       duplicate (same name + exact scope) then enqueues and waits.
     - priority: insert ahead of lower/unrelated tasks but behind tasks that
       dominate it (same level or higher) -- a platform task jumps over app
@@ -136,8 +139,13 @@ class TaskQueue:
         # scope; params are not part of identity). Supersede the pending one.
         for pending in [t for t in self._queue if t.name == name and t.scopes == scopes]:
           self._cancel(pending)
-      elif on_conflict == OnConflict.REJECT:
-        if self.has_task_scopes(scopes, only_running=False):
+      elif on_conflict == OnConflict.DEDUP:
+        # Skip if an identical op (name + exact scope) is already pending or
+        # running -- pile-up / double-trigger prevention. A *different* op on a
+        # conflicting scope is not dropped here; it enqueues and the dispatcher
+        # serializes it by scope.
+        if any(task.name == name and task.scopes == scopes
+               for task in (*self._running, *self._queue)):
           return False
       # OnConflict.QUEUE: always enqueue and wait for the scope to free.
 
