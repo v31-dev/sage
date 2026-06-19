@@ -10,7 +10,7 @@ from services.db import (
     Container,
     Event,
 )
-from utils.common import get_env, parse_multiline_kv
+from utils.common import parse_multiline_kv
 from utils.executor import run_in_executor_with_context
 from utils.logging import generate_task_id_token, task_id
 
@@ -169,11 +169,13 @@ class ApplicationMixin:
             },
         )
 
-      # Deploy with docker compose
+      # Deploy with docker compose. 900s: a git build + image pull + --wait
+      # healthcheck can take well past the 300s default.
       await run_in_executor_with_context(
           self.tailscale.exec_command,
           container.worker.hostname,
           f"docker compose -f {container_dir}/docker-compose.yml up -d --wait --remove-orphans --quiet-pull --build",
+          timeout=900,
       )
 
       deployment_status = "active"
