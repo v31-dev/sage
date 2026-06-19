@@ -116,10 +116,12 @@ Pools (lanes) are defined in `app/utils/executor.py`. The first four are queue l
 | --- | --- | --- |
 | `PLATFORM_EXECUTOR` | 1 | `platform` lane — main-DB backup/restore, cleanup, restart |
 | `COMMON_EXECUTOR` | 1 | `common` lane — version refresh, daily summary, S3 delete |
-| `APP_EXECUTOR` | `2N-2` (min 1) | `app` lane — per-application deploy/stop/backup/restore |
-| `METRICS_EXECUTOR` | 1–2 | `metrics` lane — collection, metrics-store cleanup |
+| `APP_EXECUTOR` | 6 | `app` lane — per-application deploy/stop/backup/restore |
+| `METRICS_EXECUTOR` | 2 | `metrics` lane — collection, metrics-store cleanup |
 | `NOTIFICATIONS_EXECUTOR` | 1 | `Manager.notify` webhook sends (off-queue, fire-and-forget) |
 | `LOGS_EXECUTOR` | 1 | Vector log ingestion (off-queue, request-path; single SQLite writer) |
+
+Worker counts are **fixed I/O-concurrency limits, not derived from `os.cpu_count()`** — these lanes run blocking network I/O (Tailscale, S3, httpx), so the manager's core count doesn't gate them, and in a CPU-limited container `os.cpu_count()` reports host cores rather than the container's allowance. `platform`/`common` have no child scopes (their tasks never run concurrently) so they stay at 1; `app`/`metrics` are sized for the realistic ceiling (≤10 workers, ≤50 apps, a couple of parallel deploys). Concurrent DB writes from `app`-lane threads are safe: Peewee keeps per-thread SQLite connections and the DB runs WAL + `busy_timeout`.
 
 A task callable is sync or async, and `run_task` handles both:
 
