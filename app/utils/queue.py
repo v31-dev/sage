@@ -17,15 +17,9 @@ from utils.logging import (
 logger = logging.getLogger(__name__)
 
 
-def _normalize(scope: str) -> str:
-  # "app:*" is sugar for the parent scope "app" (the whole subtree).
-  return scope[:-2] if scope.endswith(":*") else scope
-
-
 def _is_ancestor_or_equal(a: str, b: str) -> bool:
   # True when scope `a` is at the same level as, or an ancestor of, `b` in the
   # ":"-delimited hierarchy (i.e. `a` covers `b`).
-  a, b = _normalize(a), _normalize(b)
   return b == a or b.startswith(a + ":")
 
 
@@ -68,7 +62,7 @@ class QueuedTask:
   scopes: frozenset[str]
   task: Callable
   params: dict
-  executor: str | None = None   # key into TaskQueue executors; None runs on the loop
+  executor: str                 # key into TaskQueue executors
   task_id: str | None = None
   quiet: bool = False           # persist only on failure (high-frequency housekeeping)
 
@@ -166,14 +160,6 @@ class TaskQueue:
       self._queue.insert(position, new_task)
       return True
 
-  def get_task_scopes(self) -> frozenset[str]:
-    """The set of all scopes currently held by pending or running tasks."""
-    with self._lock:
-      busy = set()
-      for task in (*self._running, *self._queue):
-        busy |= task.scopes
-      return frozenset(busy)
-
   def has_task_scopes(self, scopes: frozenset[str], only_running: bool = True) -> bool:
     """True if a running (and, when only_running is False, also pending) task
     conflicts with any of the given scopes. Caller must hold self._lock."""
@@ -182,11 +168,6 @@ class TaskQueue:
     if not only_running:
       return any(_scopes_conflict(scopes, task.scopes) for task in self._queue)
     return False
-
-  def is_active(self) -> bool:
-    """True when any task is running or queued."""
-    with self._lock:
-      return bool(self._running or self._queue)
 
   def is_busy(self, scopes: frozenset[str]) -> bool:
     """True if any running or pending task conflicts with the given scopes."""
@@ -237,7 +218,7 @@ class TaskQueue:
     # must be declared on the queue. Scope roots are dynamic below the root
     # (e.g. "app:app1"), so only the root segment is checked.
     for scope in scopes:
-      root = _normalize(scope).split(":", 1)[0]
+      root = scope.split(":", 1)[0]
       if root not in self._scopes:
         raise ValueError(f"Unknown scope root '{root}' (allowed: {sorted(self._scopes)})")
     if executor not in self._executors:

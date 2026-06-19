@@ -110,7 +110,6 @@ class Traefik(Base):
 
   async def sync_certificates_to_workers(self):
     # Check for certs as they can take time to be provisioned
-    acme_path = Path(self.config_path) / "acme.json"
     acme_valid = False
 
     for _ in range(20):

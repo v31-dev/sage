@@ -1,5 +1,4 @@
 import logging
-import os
 from fastapi import APIRouter, Body, Request, Depends, HTTPException
 
 from services.db import Backup
