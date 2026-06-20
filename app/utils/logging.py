@@ -1,16 +1,11 @@
-import asyncio
 import fnmatch
-import inspect
 import logging
 import os
 import re
 import sys
 import uuid
-from concurrent.futures import ThreadPoolExecutor
-from contextvars import ContextVar, copy_context
-from functools import partial, wraps
+from contextvars import ContextVar
 
-from rocketry import Rocketry
 from starlette.middleware.base import BaseHTTPMiddleware
 
 LOG_FORMAT = "[%(asctime)s] [%(levelname)-8s] [%(name)-19s] [%(task_id)s] %(message)s"
@@ -48,12 +43,6 @@ class ExcludeLoggerFilter(logging.Filter):
 
 uvicorn_access_logger = logging.getLogger("uvicorn.access")
 
-_CPU_COUNT = max(1, os.cpu_count() or 1)
-_REMOTE_EXECUTOR = ThreadPoolExecutor(
-    max_workers=2 if _CPU_COUNT == 1 else min(3, _CPU_COUNT),
-    thread_name_prefix="sage-remote",
-)
-
 
 class fastapi_middleware(BaseHTTPMiddleware):
   async def dispatch(self, request, call_next):
@@ -73,116 +62,19 @@ class fastapi_middleware(BaseHTTPMiddleware):
     return response
 
 
-def run_in_executor_with_context(
-    func,
-    *args,
-    executor: ThreadPoolExecutor | None = None,
-    **kwargs,
-):
-  """Run sync function in an executor with current request context preserved."""
-  ctx = copy_context()
-  loop = asyncio.get_running_loop()
-  return loop.run_in_executor(
-      executor or _REMOTE_EXECUTOR,
-      partial(ctx.run, func, *args, **kwargs),
-  )
-
-
-def with_task_id(func):
-  _logger = logging.getLogger(func.__module__)
-  if inspect.iscoroutinefunction(func):
-
-    @wraps(func)
-    async def wrapper(*args, **kwargs):
-      # _task_id injected by LoggedSession for API-triggered runs; otherwise generate fresh.
-      var_token = task_id.set(kwargs.pop("_task_id", None) or generate_task_id_token())
-      try:
-        _logger.info(f"{func.__name__}: started")
-        result = await func(*args, **kwargs)
-        _logger.info(f"{func.__name__}: completed")
-        return result
-      except Exception as exc:
-        if isinstance(exc, TaskFailed):
-          _logger.error(f"{func.__name__}: failed")
-        else:
-          _logger.exception(f"{func.__name__}: failed")
-        raise
-      finally:
-        task_id.reset(var_token)
-
-    return wrapper
-  else:
-
-    @wraps(func)
-    def wrapper(*args, **kwargs):
-      var_token = task_id.set(kwargs.pop("_task_id", None) or generate_task_id_token())
-      try:
-        _logger.info(f"{func.__name__}: started")
-        result = func(*args, **kwargs)
-        _logger.info(f"{func.__name__}: completed")
-        return result
-      except Exception as exc:
-        if isinstance(exc, TaskFailed):
-          _logger.error(f"{func.__name__}: failed")
-        else:
-          _logger.exception(f"{func.__name__}: failed")
-        raise
-      finally:
-        task_id.reset(var_token)
-
-    return wrapper
-
-
-class LoggedSession:
-  """Wraps a rocketry session so .run() auto-propagates the current request task_id."""
-
-  def __init__(self, session):
-    self._session = session
-
-  def __getitem__(self, name):
-    task_obj = self._session[name]
-
-    class _Proxy:
-      def run(_self, *args, **kwargs):
-        # Pass current request task_id directly into the task via kwarg.
-        # with_task_id pops it before calling the real function.
-        kwargs["_task_id"] = task_id.get()
-        return task_obj.run(*args, **kwargs)
-
-    return _Proxy()
-
-  def get_task(self, name):
-    return self._session[name]
-
-  def is_task_pending(self, name):
-    task_obj = self.get_task(name)
-    return task_obj.is_alive() or bool(task_obj.batches)
-
-  def __getattr__(self, name):
-    return getattr(self._session, name)
-
-
 class TaskFailed(Exception):
-  """Raise to mark a rocketry task as failed without printing a traceback."""
+  """Raise to mark a task as failed without printing a traceback."""
   pass
 
 
 class _SuppressTracebackFilter(logging.Filter):
-  """Strip exception tracebacks from rocketry task log records."""
+  """Strip exception tracebacks from TaskFailed log records."""
 
   def filter(self, record):
     if record.exc_info and record.exc_info[0] is TaskFailed:
       record.exc_info = None
       record.exc_text = None
     return True
-
-
-class LoggedRocketry(Rocketry):
-  """Rocketry subclass that auto-applies with_task_id to every registered task."""
-
-  def task(self, *args, **kwargs):
-    decorator = super().task(*args, **kwargs)
-    return lambda func: decorator(with_task_id(func))
 
 
 class ExactPathFilter(logging.Filter):

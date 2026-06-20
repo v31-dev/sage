@@ -8,7 +8,7 @@ from services.base import Base
 from services.settings import Settings
 from services.db import Worker
 from utils.common import get_env
-from utils.logging import run_in_executor_with_context
+from utils.executor import run_in_executor_with_context
 
 app_dir = Path(__file__).parent.parent
 logger = logging.getLogger(__name__)
@@ -110,7 +110,6 @@ class Traefik(Base):
 
   async def sync_certificates_to_workers(self):
     # Check for certs as they can take time to be provisioned
-    acme_path = Path(self.config_path) / "acme.json"
     acme_valid = False
 
     for _ in range(20):
@@ -125,20 +124,28 @@ class Traefik(Base):
           type="error"
       )
 
+    # Workers are independent, so sync them concurrently on the app lane (the
+    # async parent holds no pool worker; the rsync leaves fan out and drain).
     online_workers = list(Worker.select().where(Worker.online))
-    for worker in online_workers:
-      if acme_valid:
-        await run_in_executor_with_context(
-            self.manager.tailscale.sync_file,
-            worker.hostname,
-            f"{self.config_path}/acme.json",
-            "/opt/sage/traefik/acme.json",
-        )
+    await asyncio.gather(
+        *[self.sync_certificates_to_worker(worker, acme_valid) for worker in online_workers],
+        return_exceptions=False,
+    )
+
+  async def sync_certificates_to_worker(self, worker: Worker, acme_valid: bool):
+    # Workers auto-reload acme.json, so no Traefik restart is needed here.
+    if acme_valid:
       await run_in_executor_with_context(
           self.manager.tailscale.sync_file,
           worker.hostname,
-          app_dir / "templates/worker/traefik/traefik.yml",
-          f"{self.manager.worker_home_dir}/traefik/traefik.yml",
-          {"ADMIN_EMAIL": self.admin_email},
+          f"{self.config_path}/acme.json",
+          "/opt/sage/traefik/acme.json",
       )
-      logger.info(f"Finished syncing Traefik certificates to worker {worker.hostname}.")
+    await run_in_executor_with_context(
+        self.manager.tailscale.sync_file,
+        worker.hostname,
+        app_dir / "templates/worker/traefik/traefik.yml",
+        f"{self.manager.worker_home_dir}/traefik/traefik.yml",
+        {"ADMIN_EMAIL": self.admin_email},
+    )
+    logger.info(f"Finished syncing Traefik certificates to worker {worker.hostname}.")

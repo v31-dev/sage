@@ -13,7 +13,7 @@ from peewee import (
 )
 from playhouse.signals import Model
 
-from utils.db import CleanCharField, EncryptedJSONField, EncryptedTextField, validate_multiline_kv
+from utils.db import CleanCharField, EncryptedJSONField, EncryptedTextField, JSONField, validate_multiline_kv
 
 DB_PATH = "/app/data/data.db"
 os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
@@ -191,3 +191,19 @@ class Backup(BaseModel):
   s3_path = CharField()
   source_volume_name = CharField(null=True)
   application = ForeignKeyField(Application, backref="backups", null=True, on_delete="CASCADE")
+
+
+class Task(BaseModel):
+  # Log of finished operations from the in-memory queue. Running tasks live in
+  # memory only (see the live snapshot); a row is written once a task reaches a
+  # terminal state -- completed, failed, or cancelled.
+  task_id = CharField(primary_key=True)
+  name = CharField()
+  scopes = JSONField(null=True)
+  params = JSONField(null=True)
+  executor = CharField()
+  status = CharField(choices=["completed", "failed", "cancelled"])
+  finished_at = DateTimeField(null=True)
+
+  class Meta:
+    indexes = ((("created_at",), False),)

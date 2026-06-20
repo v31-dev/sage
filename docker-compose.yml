@@ -49,6 +49,9 @@ services:
       - ${SAGE_HOME}/traefik:/etc/traefik
     ports:
       - ${TS_IP}:443:443
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
     command:
       - "--configFile=/etc/traefik/traefik.yml"
     depends_on:

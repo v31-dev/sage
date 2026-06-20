@@ -8,6 +8,7 @@ import {
   Building,
   ExternalLink,
   Home,
+  ListTodo,
   Logs,
   Server,
   Settings2,
@@ -75,6 +76,11 @@ const menu: MenuInterface[] = [
         name: 'System',
         path: '/system',
         icon: Activity,
+      },
+      {
+        name: 'Tasks',
+        path: '/tasks',
+        icon: ListTodo,
       },
       {
         name: 'Logs',

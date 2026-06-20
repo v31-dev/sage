@@ -1,7 +1,5 @@
 import logging
 import requests
-from concurrent.futures import ThreadPoolExecutor
-from contextvars import copy_context
 from types import SimpleNamespace
 
 from services.base import Base
@@ -9,11 +7,6 @@ from services.settings import Settings
 
 
 logger = logging.getLogger(__name__)
-
-_NOTIFICATION_EXECUTOR = ThreadPoolExecutor(
-    max_workers=1,
-    thread_name_prefix="sage-notifications",
-)
 
 NOTIFICATION_STYLES = {
     "info": {"emoji": "ℹ️", "color": 3447003},
@@ -80,13 +73,6 @@ class Notifications(Base):
                 "inline": False
             }
         ]
-      ctx = copy_context()
-      _NOTIFICATION_EXECUTOR.submit(
-          ctx.run,
-          _dispatch_webhook_with_logging,
-          discord_webhook,
-          {"embeds": [embed]},
-          "Discord"
-      )
+      _dispatch_webhook_with_logging(discord_webhook, {"embeds": [embed]}, "Discord")
     except Exception as e:
       logger.error(f"Failed to send notification to Discord: {e}")

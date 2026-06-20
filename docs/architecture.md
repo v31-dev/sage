@@ -132,9 +132,9 @@ Metrics and logs are intentionally sharded:
 
 Container log search uses SQLite FTS5.
 
-## Scheduler Responsibilities
+## Scheduler And Operation Queue
 
-The Rocketry scheduler handles recurring control-plane work such as:
+Rocketry is a pure cron trigger: each scheduled task only calls `Manager().add_task(...)` to enqueue work and owns no execution or concurrency logic. Recurring triggers cover:
 
 - worker discovery and sync
 - application status sync
@@ -145,7 +145,7 @@ The Rocketry scheduler handles recurring control-plane work such as:
 - cleanup
 - certificate sync
 
-It also runs on-demand multilaunch tasks for deployment, stop, delete, and backup flows.
+All execution and mutual exclusion live in an in-memory operation queue on the `Manager` singleton (`app/utils/queue.py`). Routes (deploy, stop, delete, backup, restore, worker removal, restart) and the cron triggers above enqueue through the same `add_task` path; a single one-second dispatcher starts each pending task whose scope is free. See [backend.md](backend.md) for the queue model and execution semantics.
 
 ## Service Pattern
 

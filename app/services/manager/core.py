@@ -14,6 +14,7 @@ from services.db import (
     Worker,
 )
 from services.notification import Notifications
+from utils.executor import NOTIFICATIONS_EXECUTOR, submit_with_context
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +52,7 @@ class CoreMixin:
     log_method = logger.info if type == "success" else getattr(logger, type, logger.info)
     log_method(message)
     notification = Notification.create(content=message, type=type, link=link)
-    Notifications().dispatch(notification)
+    submit_with_context(NOTIFICATIONS_EXECUTOR, Notifications().dispatch, notification)
 
   def _summary_notification_dicts(self, query, limit: int):
     return list(query.order_by(Notification.created_at.desc()).limit(limit).dicts())
@@ -199,4 +200,6 @@ class CoreMixin:
     elif warning_count > 0:
       notification_type = "warning"
 
-    Notifications().dispatch({"content": "\n".join(lines), "type": notification_type})
+    submit_with_context(
+        NOTIFICATIONS_EXECUTOR, Notifications().dispatch,
+        {"content": "\n".join(lines), "type": notification_type})

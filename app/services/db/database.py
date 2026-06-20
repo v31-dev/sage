@@ -12,6 +12,7 @@ from .models import (
     Notification,
     Project,
     Setting,
+    Task,
     Volume,
     Worker,
     db,
@@ -19,7 +20,7 @@ from .models import (
 
 logger = logging.getLogger(__name__)
 
-MODELS = [Setting, Project, Application, Volume, Domain, Worker, Container, Event, Notification, Backup]
+MODELS = [Setting, Project, Application, Volume, Domain, Worker, Container, Event, Notification, Backup, Task]
 
 
 class Database(Base):

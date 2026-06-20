@@ -1,0 +1,38 @@
+{
+  // https://aka.ms/devcontainer.json
+  "name": "Development",
+  // https://github.com/devcontainers/images/tree/main/src
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu24.04",
+  // Install dependencies and setup environment
+  "postCreateCommand": "bash setup/dev/devcontainer.sh",
+  // Tailscale requires access
+  "runArgs": ["--device=/dev/net/tun", "--hostname=dev-sage"],
+  // Persist Claude Code auth/session across container rebuilds
+  "mounts": [
+    "source=claude-code-config-${devcontainerId},target=/home/vscode/.claude,type=volume"
+  ],
+  // https://github.com/devcontainers/features/tree/main/src
+  "features": {
+    "ghcr.io/anthropics/devcontainer-features/claude-code:1.0": {},
+    "ghcr.io/tailscale/codespace/tailscale": {},
+    "ghcr.io/devcontainers-extra/features/gh-cli": {},
+    "ghcr.io/devcontainers/features/docker-in-docker": {},
+    "ghcr.io/devcontainers/features/python": {},
+    "ghcr.io/devcontainers/features/node": {}
+  },
+  // Configure tool-specific properties.
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "remote.autoForwardPorts": false,
+        "remote.restoreForwardedPorts": false
+      },
+      "extensions": [
+        "mhutchie.git-graph",
+        "mutantdino.resourcemonitor",
+        "esbenp.prettier-vscode",
+        "Vue.volar"
+      ]
+    }
+  }
+}

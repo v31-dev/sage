@@ -73,6 +73,20 @@ class EncryptedJSONField(TextField):
     return cipher.encrypt(value.encode()).decode()
 
 
+class JSONField(TextField):
+  def python_value(self, value):
+    if value is None:
+      return None
+    return json.loads(value)
+
+  def db_value(self, value):
+    if value is None:
+      return None
+    if isinstance(value, (dict, list)):
+      value = json.dumps(value)
+    return value
+
+
 class CleanCharField(CharField):
   def db_value(self, value):
     """Clean the value by lowercasing, keeping alphanumerics and dashes. Must start with a letter."""

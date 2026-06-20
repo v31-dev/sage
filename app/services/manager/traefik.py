@@ -7,7 +7,7 @@ from services.db import (
     Worker,
 )
 from services.settings import Settings
-from utils.logging import run_in_executor_with_context
+from utils.executor import run_in_executor_with_context
 
 from ._common import app_dir
 
@@ -80,10 +80,11 @@ class TraefikMixin:
     if domain_changed:
       Application.update(domains_synced=False).execute()
 
-  def sync_application_traefik_domains_config(self, application: Application):
+  def sync_application_traefik_domains_config(self, application_id: int):
     """
     Sync Traefik domains config for an application.
     """
+    application = Application.get_by_id(application_id)
     domain_name = Settings().get("cloudflare", "domain")
     containers = list(application.containers)
     application_domains = list(application.domains)

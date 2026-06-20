@@ -373,6 +373,33 @@ export async function fetchNotifications({
   }
 }
 
+export interface QueueTask {
+  task_id: string
+  name: string
+  scopes: string[]
+  params: Record<string, any>
+  executor: string
+  status: string
+}
+
+export interface CompletedTask extends QueueTask {
+  created_at: string
+  updated_at: string
+  finished_at: string | null
+}
+
+export interface TasksResponse {
+  running: QueueTask[]
+  queued: QueueTask[]
+  completed: CompletedTask[]
+}
+
+export const tasksAPI = new CRUDAPI({
+  name: 'Task',
+  path: `${API_ROOT}/tasks`,
+  load_delay: LOAD_DELAY,
+})
+
 export interface Backup {
   id: number
   s3_path: string

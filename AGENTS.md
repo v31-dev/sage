@@ -12,10 +12,13 @@ This is a living project-context file for AI coding agents. Keep it concise, cur
 
 - Default to discussion first when the user is describing a problem, asking for diagnosis, or exploring options.
 - Start implementing only when the user explicitly asks to implement, fix, add, change, create, or update something.
+- Most sessions begin as evaluation, not implementation. Assess first, then capture the findings as a numbered task list in `todo.md` at the repo root — problems only, no solutioning until a task is picked up. Maintain `todo.md` as the running tracker: update item status as work proceeds and add sub-findings under the relevant item. Work items one at a time; confirm the approach before editing code.
+- Treat every identified task as priority work. Do not defer with "revisit later" or "doesn't matter now". An item leaves the list only when it is done or the user explicitly rejects it.
+- Run this work on Claude Opus at extra-high reasoning (minimum). Evaluation and design decisions here are subtle; do not use a lighter model or lower reasoning effort.
 
 ## Project Summary
 
-Sage is a lightweight manager-and-workers micro-PaaS that uses Tailscale for node connectivity, Cloudflare for DNS and tunnels, Traefik for ingress, Vector for logs, Glances for metrics, SQLite for persistence, Rocketry for scheduled tasks, and Vue 3 for the UI.
+Sage is a lightweight manager-and-workers micro-PaaS that uses Tailscale for node connectivity, Cloudflare for DNS and tunnels, Traefik for ingress, Vector for logs, Glances for metrics, SQLite for persistence, Rocketry as a cron trigger feeding an in-memory operation queue, and Vue 3 for the UI.
 
 ## Core Context To Preserve
 
@@ -23,10 +26,11 @@ Agents must keep this context active throughout a task, including after summarie
 
 - Manager plus workers over Tailscale is the core architecture.
 - Services are singleton-based and thread-aware.
+- All mutating/long operations run through the Manager's in-memory operation queue (`app/utils/queue.py`); Rocketry only fires cron triggers that call `Manager().add_task(...)`.
 - `task_id` propagation through `ContextVar` is a core observability requirement.
-- Blocking network or remote I/O uses `run_in_executor_with_context(...)`.
+- Blocking network or remote I/O is offloaded onto the lane pools in `app/utils/executor.py` — `run_in_executor_with_context(...)` (awaited) or `submit_with_context(...)` (fire-and-forget).
 - Local SQLite/Peewee work runs inline and relies on WAL mode.
-- Rocketry scheduler behavior must be checked against docs before scheduler or task logging changes.
+- Rocketry behavior must be checked against docs before changing the scheduler.
 
 If this context may have been lost, reread this file plus the relevant `docs/` page before continuing.
 
@@ -39,8 +43,11 @@ If this context may have been lost, reread this file plus the relevant `docs/` p
 | `app/api_vector.py` | Metrics/log ingestion FastAPI application |
 | `app/routes/` | API route handlers |
 | `app/services/` | Singleton service layer |
+| `app/services/manager/` | Manager singleton (mixins): the operation orchestrator |
 | `app/services/db/` | Peewee models and DB bootstrap |
-| `app/scheduler.py` | Scheduled and on-demand Rocketry tasks |
+| `app/scheduler.py` | Rocketry cron triggers that enqueue operations |
+| `app/utils/queue.py` | In-memory operation queue (scopes + single-dispatcher) |
+| `app/utils/executor.py` | Thread-pool lanes + context-preserving offload helpers |
 | `app/templates/` | Generated manager and worker runtime files |
 | `app/utils/` | Logging, API helpers, encrypted DB utilities |
 | `ui/` | Vue 3 frontend |
@@ -57,14 +64,17 @@ If this context may have been lost, reread this file plus the relevant `docs/` p
 ### Logging And `task_id`
 
 - `task_id` flows through `ContextVar` in `app/utils/logging.py`.
-- FastAPI middleware creates the request `task_id`.
-- Rocketry tasks are wrapped so scheduled and API-triggered work also logs with `task_id`.
-- Do not pass `task_id` through regular function parameters except at the scheduler trigger boundary that already exists.
+- FastAPI middleware creates the request `task_id`; the queue's `run_task` sets it per queued task.
+- The offload helpers copy the context, so worker threads keep the originating `task_id`.
+- Do not pass `task_id` through regular function parameters; the one boundary is `add_task(task_id=...)` for route correlation.
 
 ### Async Boundaries
 
-- Use `run_in_executor_with_context(...)` for blocking network or remote I/O.
-- Do not use `asyncio.to_thread()` here because it will bypass the intended context propagation pattern.
+- Offload blocking network/remote I/O — never `asyncio.to_thread()` (it bypasses context propagation). Both helpers live in `app/utils/executor.py`:
+  - `run_in_executor_with_context(...)` — awaited, from async code; offloads to the task's lane pool (ambient `active_executor`) or an explicit one, and raises if neither is set.
+  - `submit_with_context(...)` — fire-and-forget, no running loop required (e.g. notifications).
+- A queued task's lane is declared once at `add_task`; offloads inside it inherit it and don't re-name a pool.
+- Fan-out orchestrators (`asyncio.gather` over offloads) must be async; never block a sync task on its own lane's pool — it deadlocks a single-worker lane.
 - Local Peewee and SQLite calls are intentionally run inline.
 
 ### Database
@@ -74,10 +84,14 @@ If this context may have been lost, reread this file plus the relevant `docs/` p
 - Logs are stored in per-container SQLite files with FTS5 search.
 - Preserve the existing lightweight storage approach unless the task explicitly requires otherwise.
 
-### Scheduler
+### Operation Queue And Scheduler
 
-- Read Rocketry docs before changing scheduler or task logging behavior.
-- Preserve the current `LoggedRocketry` and `LoggedSession` patterns unless the change is deliberate and verified.
+- Rocketry is a pure cron trigger: each scheduled task only calls `Manager().add_task(...)`. All execution and concurrency control live in the in-memory `TaskQueue` (`app/utils/queue.py`).
+- Route and scheduled work alike enqueue via `add_task`; handlers take ids (not ORM objects) and re-fetch.
+- Scopes (`platform`, `app`/`app:<qualified_name>`, `common`, `metrics`) give hierarchical mutual exclusion (enforced by the dispatcher); each scope root has its own lane pool. Admission (drop vs. enqueue) is one `on_conflict` enum on `add_task`: `DEDUP` (default, skip if an identical op — same name + exact scope — is already pending/running, else enqueue and wait), `QUEUE` (always enqueue, no dedupe), `REPLACE` (latest-wins, supersede a pending duplicate then wait). A different op holding a conflicting scope never drops a new task — it defers behind it. `quiet=True` is a separate flag for high-frequency reconcilers (record only on failure). Details in [docs/backend.md](docs/backend.md).
+- Task shape: one async task that `asyncio.gather`s its offloaded leaves (independent work in one operation, shared scope), per-entity fan-out (one `add_task` per entity, each with its own scope/lifecycle/DEDUP), or sequential `await`s (ordered/dependent steps). A fan-out parent must be async — never a sync task blocking on its own lane.
+- When adding or changing a task, declare its `scopes`, `executor`, and `on_conflict` at the single `add_task` call site and **add/update its row in the Task Catalog** in [docs/backend.md](docs/backend.md). Worker-infrastructure tasks intentionally hold the broad `app` scope (no `worker` dimension; closes the new-worker race) — keep that, don't "optimize" it to per-worker.
+- Read Rocketry docs before changing trigger cadence or scheduler behavior.
 
 ## Working Rules
 
@@ -90,6 +104,9 @@ If this context may have been lost, reread this file plus the relevant `docs/` p
 7. Verify, don't assert from memory. Before a claim about a third-party tool, library, or protocol (Traefik, Tailscale, Cloudflare, Peewee, Postgres/redis wire behavior, etc.) drives a design decision or recommendation, confirm it against the current docs, source, or release notes — especially capability claims ("X can't do Y", "the only way is Z") and version-specific behavior. Treat such claims as checkable facts, not recall. State what was verified and link the source; if it cannot be verified, say so explicitly rather than presenting a guess as fact. Check the pinned version in use (e.g. the `traefik:` tag in `docker-compose.yml`), since behavior changes across releases.
 8. Scratch and throwaway file operations — cloning external repos, test files, temp scripts, scratch output — go under `/tmp`. Never create them under `/root` or any other real path; only the actual project working tree is edited in place.
 9. Don't narrate the old design in code during refactors. Comments must describe the current code and why — no "this used to be X", "vs. the old Y", "the package added an extra level" framing. Explain before/after reasoning in the chat instead. (Domain wording like "worker previously offline" is fine; the rule targets references to the prior implementation/design.)
+10. Don't extract a named helper used in only one place. Inline short snippets; if two call sites share small behavior, reuse or extend an existing method (e.g. add a flag param) rather than adding a single-use private wrapper.
+11. Keep comments concise and to the point — explain the non-obvious *why*, don't restate the code or over-describe. Trim, don't pad.
+12. Simplicity means removing incidental complexity, never dropping functionality. A simpler design that loses a capability is not acceptable. Choosing a lighter mechanism for the same behavior is good (e.g. an in-memory queue instead of Redis); removing a behavior because it is fiddly to implement is not (e.g. dropping coalescing/dedup, or rejecting a valid user action, to avoid the work). Preserve the behavior; simplify the mechanism.
 
 ## Token And Context Budget
 

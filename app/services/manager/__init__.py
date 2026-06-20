@@ -1,5 +1,4 @@
 import logging
-import threading
 
 from services.base import Base
 from services.cloudflare import Cloudflare
@@ -10,12 +9,20 @@ from services.s3 import S3
 from services.settings import Settings
 from services.tailscale import Tailscale
 from services.traefik import Traefik
+from utils.executor import (
+    APP_EXECUTOR,
+    COMMON_EXECUTOR,
+    METRICS_EXECUTOR,
+    PLATFORM_EXECUTOR,
+)
+from utils.queue import TaskQueue
 
 from ._common import app_dir
+from .application import ApplicationMixin
 from .backups import BackupsMixin
 from .core import CoreMixin
-from .deployments import DeploymentsMixin
 from .platform import PlatformMixin
+from .queue import QueueMixin
 from .traefik import TraefikMixin
 from .workers import WorkersMixin
 
@@ -26,16 +33,16 @@ class Manager(
     CoreMixin,
     WorkersMixin,
     TraefikMixin,
-    DeploymentsMixin,
+    ApplicationMixin,
     BackupsMixin,
     PlatformMixin,
+    QueueMixin,
     Base,
 ):
   worker_home_dir = "/opt/sage"
   s3_backup_path_platform = "/backups/platform"
   s3_backup_path_applications = "/backups/applications"
   backup_timestamp_format = "%Y%m%d_%H%M%S"
-  platform_backup_in_progress = False
 
   def __init__(self):
     super().__init__()
@@ -47,11 +54,18 @@ class Manager(
         self.version = f.read().strip()
       self.latest_version = self.version
 
-      # Cross-thread signal: when set, the next periodic sync_workers tick will
-      # run with force=True and clear the flag. Used by the UI resync button
-      # and the platform restore flow to defer a force-resync onto the single
-      # scheduled task path (so it can't race with the periodic tick).
-      self.force_resync_pending = threading.Event()
+      # Single-dispatcher operation queue. Each scope root maps to an independent
+      # lane pool (all defined in utils.executor).
+      self.task_queue = TaskQueue(
+          scopes=frozenset(["platform", "app", "common", "metrics"]),
+          executors={
+              "platform": PLATFORM_EXECUTOR,
+              "common": COMMON_EXECUTOR,
+              "app": APP_EXECUTOR,
+              "metrics": METRICS_EXECUTOR,
+          },
+          record=self._persist_task,
+      )
 
       # Initialize all services
       Database()

@@ -13,6 +13,7 @@ import Workers from '@/pages/Workers'
 import WorkerMetrics from '@/pages/WorkerMetrics.vue'
 import Requests from '@/pages/Requests.vue'
 import Backup from '@/pages/Backup'
+import Tasks from '@/pages/Tasks'
 
 const routes = [
   { path: '/', name: 'Home', component: Home },
@@ -27,6 +28,7 @@ const routes = [
   },
   { path: '/requests', name: 'Requests', component: Requests },
   { path: '/system', name: 'System', component: System },
+  { path: '/tasks', name: 'Tasks', component: Tasks },
   { path: '/logs', name: 'Logs', component: Logs },
   { path: '/workers', name: 'Workers', component: Workers },
   { path: '/workers/:hostname', name: 'Worker', component: Worker },
