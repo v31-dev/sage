@@ -8,6 +8,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from '@/components/ui/dialog'
+import { ScrollText } from 'lucide-vue-next'
 import LogViewer from '@/components/LogViewer.vue'
 import { parseManagerLog } from '@/lib/logs'
 import { useAppStore } from '@/stores/app'
@@ -50,7 +51,11 @@ const columns = [
 <template>
   <Dialog v-model:open="isOpen">
     <DialogTrigger asChild>
-      <button class="font-mono text-xs text-primary hover:underline cursor-pointer">
+      <button
+        :title="`View logs for task ${props.taskId}`"
+        class="inline-flex items-center gap-0.5 font-mono text-xs text-violet-600 dark:text-violet-400 hover:underline underline-offset-2 cursor-pointer"
+      >
+        <ScrollText class="w-3 h-3 shrink-0" />
         {{ props.taskId }}
       </button>
     </DialogTrigger>

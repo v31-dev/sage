@@ -3,19 +3,9 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { Spinner } from '@/components/ui/spinner'
 import { toast } from 'vue-sonner'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Badge } from '@/components/ui/badge'
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableEmpty,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table'
-import TaskLogsButton from './TaskLogsButton.vue'
+import TaskCard from './TaskCard.vue'
+import TaskTable from './TaskTable.vue'
 import { tasksAPI, type TasksResponse } from '@/services/api'
-import { formatDate } from '@/lib/utils'
 
 const tasks = ref<TasksResponse>({ running: [], queued: [], completed: [] })
 const isLoading = ref(false)
@@ -25,12 +15,6 @@ const queueSections = computed(() => [
   { title: 'Running', rows: tasks.value.running },
   { title: 'Queued', rows: tasks.value.queued },
 ])
-
-function statusVariant(status: string) {
-  if (status === 'completed') return 'default'
-  if (status === 'failed') return 'destructive'
-  return 'secondary'
-}
 
 async function loadTasks(showSpinner = false) {
   if (showSpinner) isLoading.value = true
@@ -70,35 +54,18 @@ onUnmounted(() => {
             <CardTitle>{{ section.title }} ({{ section.rows.length }})</CardTitle>
           </CardHeader>
           <CardContent>
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Task ID</TableHead>
-                  <TableHead>Name</TableHead>
-                  <TableHead>Scopes</TableHead>
-                  <TableHead>Executor</TableHead>
-                  <TableHead>Params</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                <TableEmpty v-if="!section.rows.length" :colspan="5">
-                  No {{ section.title.toLowerCase() }} tasks
-                </TableEmpty>
-                <TableRow v-for="t in section.rows" :key="t.task_id">
-                  <TableCell><TaskLogsButton :taskId="t.task_id" /></TableCell>
-                  <TableCell>{{ t.name }}</TableCell>
-                  <TableCell
-                    class="max-w-[12rem] align-top font-mono text-xs break-all whitespace-pre-wrap"
-                    >{{ t.scopes.join(', ') }}</TableCell
-                  >
-                  <TableCell>{{ t.executor }}</TableCell>
-                  <TableCell
-                    class="max-w-xs align-top font-mono text-xs break-all whitespace-pre-wrap"
-                    >{{ JSON.stringify(t.params) }}</TableCell
-                  >
-                </TableRow>
-              </TableBody>
-            </Table>
+            <!-- Desktop table (md+) -->
+            <div class="hidden md:block">
+              <TaskTable :rows="section.rows" :emptyLabel="section.title.toLowerCase()" />
+            </div>
+
+            <!-- Mobile cards (< md) -->
+            <div class="md:hidden space-y-2">
+              <p v-if="!section.rows.length" class="py-4 text-center text-sm text-muted-foreground">
+                No {{ section.title.toLowerCase() }} tasks
+              </p>
+              <TaskCard v-for="t in section.rows" :key="t.task_id" :task="t" />
+            </div>
           </CardContent>
         </Card>
 
@@ -108,47 +75,26 @@ onUnmounted(() => {
             <CardTitle>Completed ({{ tasks.completed.length }})</CardTitle>
           </CardHeader>
           <CardContent>
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Task ID</TableHead>
-                  <TableHead>Name</TableHead>
-                  <TableHead>Scopes</TableHead>
-                  <TableHead>Executor</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>Created</TableHead>
-                  <TableHead>Finished</TableHead>
-                  <TableHead>Params</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                <TableEmpty v-if="!tasks.completed.length" :colspan="8">
-                  No completed tasks
-                </TableEmpty>
-                <TableRow v-for="t in tasks.completed" :key="t.task_id">
-                  <TableCell><TaskLogsButton :taskId="t.task_id" /></TableCell>
-                  <TableCell>{{ t.name }}</TableCell>
-                  <TableCell
-                    class="max-w-[12rem] align-top font-mono text-xs break-all whitespace-pre-wrap"
-                    >{{ t.scopes.join(', ') }}</TableCell
-                  >
-                  <TableCell>{{ t.executor }}</TableCell>
-                  <TableCell>
-                    <Badge :variant="statusVariant(t.status)">{{ t.status }}</Badge>
-                  </TableCell>
-                  <TableCell class="text-xs whitespace-nowrap">{{
-                    formatDate(t.created_at)
-                  }}</TableCell>
-                  <TableCell class="text-xs whitespace-nowrap">
-                    {{ t.finished_at ? formatDate(t.finished_at) : '—' }}
-                  </TableCell>
-                  <TableCell
-                    class="max-w-xs align-top font-mono text-xs break-all whitespace-pre-wrap"
-                    >{{ JSON.stringify(t.params) }}</TableCell
-                  >
-                </TableRow>
-              </TableBody>
-            </Table>
+            <!-- Desktop table (md+) -->
+            <div class="hidden md:block">
+              <TaskTable :rows="tasks.completed" emptyLabel="completed" :showTimestamps="true" />
+            </div>
+
+            <!-- Mobile cards (< md) -->
+            <div class="md:hidden space-y-2">
+              <p
+                v-if="!tasks.completed.length"
+                class="py-4 text-center text-sm text-muted-foreground"
+              >
+                No completed tasks
+              </p>
+              <TaskCard
+                v-for="t in tasks.completed"
+                :key="t.task_id"
+                :task="t"
+                :showTimestamps="true"
+              />
+            </div>
           </CardContent>
         </Card>
       </div>
