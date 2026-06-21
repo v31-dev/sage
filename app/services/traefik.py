@@ -8,7 +8,6 @@ from services.base import Base
 from services.settings import Settings
 from services.db import Worker
 from utils.common import get_env
-from utils.executor import run_in_executor_with_context
 
 app_dir = Path(__file__).parent.parent
 logger = logging.getLogger(__name__)
@@ -124,8 +123,8 @@ class Traefik(Base):
           type="error"
       )
 
-    # Workers are independent, so sync them concurrently on the app lane (the
-    # async parent holds no pool worker; the rsync leaves fan out and drain).
+    # Workers are independent, so sync them concurrently: the asyncssh SFTP
+    # leaves fan out and drain on the event loop.
     online_workers = list(Worker.select().where(Worker.online))
     await asyncio.gather(
         *[self.sync_certificates_to_worker(worker, acme_valid) for worker in online_workers],
@@ -135,14 +134,12 @@ class Traefik(Base):
   async def sync_certificates_to_worker(self, worker: Worker, acme_valid: bool):
     # Workers auto-reload acme.json, so no Traefik restart is needed here.
     if acme_valid:
-      await run_in_executor_with_context(
-          self.manager.tailscale.sync_file,
+      await self.manager.tailscale.sync_file(
           worker.hostname,
           f"{self.config_path}/acme.json",
           "/opt/sage/traefik/acme.json",
       )
-    await run_in_executor_with_context(
-        self.manager.tailscale.sync_file,
+    await self.manager.tailscale.sync_file(
         worker.hostname,
         app_dir / "templates/worker/traefik/traefik.yml",
         f"{self.manager.worker_home_dir}/traefik/traefik.yml",

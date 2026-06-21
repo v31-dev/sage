@@ -43,8 +43,7 @@ class TraefikMixin:
     online_workers = list(Worker.select().where(Worker.online))
     for worker in online_workers:
       if admin_email_changed:
-        await run_in_executor_with_context(
-            self.tailscale.sync_file,
+        await self.tailscale.sync_file(
             worker.hostname,
             app_dir / "templates/worker/traefik/traefik.yml",
             f"{self.worker_home_dir}/traefik/traefik.yml",
@@ -52,8 +51,7 @@ class TraefikMixin:
         )
 
       if domain_changed:
-        await run_in_executor_with_context(
-            self.tailscale.sync_file,
+        await self.tailscale.sync_file(
             worker.hostname,
             app_dir / "templates/worker/traefik/config.yml",
             f"{self.worker_home_dir}/traefik/dynamic/config.yml",
@@ -69,8 +67,7 @@ class TraefikMixin:
         )
 
       if admin_email_changed or domain_changed:
-        await run_in_executor_with_context(
-            self.tailscale.exec_command,
+        await self.tailscale.exec_command(
             worker.hostname,
             f"docker compose -f {self.worker_home_dir}/docker-compose.yml restart traefik",
             timeout=60,
@@ -80,7 +77,7 @@ class TraefikMixin:
     if domain_changed:
       Application.update(domains_synced=False).execute()
 
-  def sync_application_traefik_domains_config(self, application_id: int):
+  async def sync_application_traefik_domains_config(self, application_id: int):
     """
     Sync Traefik domains config for an application.
     """
@@ -120,7 +117,7 @@ class TraefikMixin:
                 application.qualified_name} on this worker.")
         continue
 
-      self.tailscale.exec_command(
+      await self.tailscale.exec_command(
           worker.hostname,
           f"rm -f {self.worker_home_dir}/traefik/dynamic/{application.qualified_name}-*.yml",
       )
@@ -184,7 +181,7 @@ class TraefikMixin:
         # TCP services route by SNI and have no x-tag pool variant (TCP carries no
         # query string), so they use a dedicated single-template path.
         if domain.type == "tcp":
-          self.tailscale.sync_file(
+          await self.tailscale.sync_file(
               worker.hostname,
               app_dir / "templates/worker/traefik/service_internal_tcp.yml",
               f"{self.worker_home_dir}/traefik/dynamic/{application.qualified_name}-{domain.type}-{domain.name}.yml",
@@ -203,7 +200,7 @@ class TraefikMixin:
           traefik_config_template, traefik_config_template_domain_pool = template_names[
               domain.type
           ]
-          self.tailscale.sync_file(
+          await self.tailscale.sync_file(
               worker.hostname,
               app_dir / f"templates/worker/traefik/{traefik_config_template}",
               f"{self.worker_home_dir}/traefik/dynamic/{application.qualified_name}-{domain.type}-{domain.name}.yml",
@@ -219,7 +216,7 @@ class TraefikMixin:
 
           # Create Domain Tag pool config.
           for domain_tag in domain_tags:
-            self.tailscale.sync_file(
+            await self.tailscale.sync_file(
                 worker.hostname,
                 app_dir / f"templates/worker/traefik/{traefik_config_template_domain_pool}",
                 f"{self.worker_home_dir}/traefik/dynamic/{application.qualified_name}-{domain.type}-{domain.name}-{domain_tag}.yml",

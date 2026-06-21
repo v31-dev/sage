@@ -11,7 +11,6 @@ from services.db import (
     Event,
 )
 from utils.common import parse_multiline_kv
-from utils.executor import run_in_executor_with_context
 from utils.logging import generate_task_id_token, task_id
 
 from ._common import app_dir
@@ -96,8 +95,7 @@ class ApplicationMixin:
         command_value = f"[{command_tokens}]"
 
       # Create the secrets file
-      await run_in_executor_with_context(
-          self.tailscale.sync_file,
+      await self.tailscale.sync_file(
           container.worker.hostname,
           app_dir / "templates/worker/file",
           f"{container_dir}/.env",
@@ -111,15 +109,13 @@ class ApplicationMixin:
           for v in volumes
       ]
       volume_mkdir_cmd = ';'.join([f"mkdir -p {container_dir}/volumes"] + [f"mkdir -p {container_dir}/volumes/{v.name}" for v in volumes])
-      await run_in_executor_with_context(
-          self.tailscale.exec_command,
+      await self.tailscale.exec_command(
           container.worker.hostname,
           volume_mkdir_cmd
       )
 
       # Get existing volumes on worker which are not in the current config and need to be cleaned up
-      _, existing_volumes = await run_in_executor_with_context(
-          self.tailscale.exec_command,
+      _, existing_volumes = await self.tailscale.exec_command(
           container.worker.hostname,
           f"ls -1 {container_dir}/volumes || true",
       )
@@ -131,16 +127,14 @@ class ApplicationMixin:
       }
       if volumes_to_cleanup:
         volume_cleanup_cmd = ';'.join([f"rm -rf {container_dir}/volumes/{v}" for v in volumes_to_cleanup])
-        await run_in_executor_with_context(
-            self.tailscale.exec_command,
+        await self.tailscale.exec_command(
             container.worker.hostname,
             volume_cleanup_cmd
         )
 
       # Create the compose file based on application type
       if container.application.type == "docker":
-        await run_in_executor_with_context(
-            self.tailscale.sync_file,
+        await self.tailscale.sync_file(
             container.worker.hostname,
             app_dir / "templates/worker/application/dockerhub-compose.yml",
             f"{container_dir}/docker-compose.yml",
@@ -153,8 +147,7 @@ class ApplicationMixin:
             },
         )
       elif container.application.type == "git":
-        await run_in_executor_with_context(
-            self.tailscale.sync_file,
+        await self.tailscale.sync_file(
             container.worker.hostname,
             app_dir / "templates/worker/application/gitrepo-compose.yml",
             f"{container_dir}/docker-compose.yml",
@@ -171,8 +164,7 @@ class ApplicationMixin:
 
       # Deploy with docker compose. 900s: a git build + image pull + --wait
       # healthcheck can take well past the 300s default.
-      await run_in_executor_with_context(
-          self.tailscale.exec_command,
+      await self.tailscale.exec_command(
           container.worker.hostname,
           f"docker compose -f {container_dir}/docker-compose.yml up -d --wait --remove-orphans --quiet-pull --build",
           timeout=900,
@@ -196,7 +188,7 @@ class ApplicationMixin:
               container.application.qualified_name} container to worker {
               container.worker.hostname}: {exception_message}", "error")
 
-  def delete_container(self, container_id: int, force: bool = False):
+  async def delete_container(self, container_id: int, force: bool = False):
     """
     Delete a container.
     """
@@ -226,19 +218,19 @@ class ApplicationMixin:
                 container.worker.hostname}; skipping remote cleanup.")
       else:
         # Stop container on worker
-        self.tailscale.exec_command(
+        await self.tailscale.exec_command(
             container.worker.hostname,
             f'[ ! -d "{container_dir}" ] || docker compose -f "{container_dir}/docker-compose.yml" down --volumes --rmi all --remove-orphans',
             timeout=60,
         )
 
         # Remove application folder
-        self.tailscale.exec_command(
+        await self.tailscale.exec_command(
             container.worker.hostname, f"rm -rf {container_dir}", timeout=30
         )
 
         # Remove traefik config
-        self.tailscale.exec_command(
+        await self.tailscale.exec_command(
             container.worker.hostname,
             f"rm -rf {self.worker_home_dir}/traefik/dynamic/{container.application.qualified_name}-*.yml",
             timeout=30,
@@ -320,8 +312,7 @@ class ApplicationMixin:
                 container.worker.hostname} is already inactive. Skipping compose down.")
       else:
         # Stop with docker compose
-        await run_in_executor_with_context(
-            self.tailscale.exec_command,
+        await self.tailscale.exec_command(
             container.worker.hostname,
             f"docker compose -f {container_dir}/docker-compose.yml down",
         )
@@ -346,7 +337,7 @@ class ApplicationMixin:
               container.worker.hostname}: {exception_message}",
           "error")
 
-  def sync_application_status(self, application_id: int):
+  async def sync_application_status(self, application_id: int):
     """
     Sync a single application's container & overall status from its workers.
     Ideally status is managed explicitly; this catches unexpected changes like
@@ -372,7 +363,7 @@ class ApplicationMixin:
       if not worker.online:
         continue
       try:
-        _, docker_ps_output = self.tailscale.exec_command(
+        _, docker_ps_output = await self.tailscale.exec_command(
             hostname, "docker ps --format '{{.Names}}|{{.State}}'")
         for line in docker_ps_output:
           try:

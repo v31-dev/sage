@@ -14,7 +14,6 @@ from services.db import (
     Volume,
 )
 from utils.common import get_env
-from utils.executor import run_in_executor_with_context
 from utils.logging import generate_task_id_token, task_id
 
 from ._common import app_dir
@@ -186,8 +185,7 @@ class BackupsMixin:
     logger.info(
         f"Stopping application {container.application.qualified_name} container on worker {container.worker.hostname} for backup."
     )
-    await run_in_executor_with_context(
-        self.tailscale.exec_command,
+    await self.tailscale.exec_command(
         container.worker.hostname,
         f"docker compose -f {container_dir}/docker-compose.yml down",
     )
@@ -199,8 +197,7 @@ class BackupsMixin:
     )
 
     try:
-      await run_in_executor_with_context(
-          self.tailscale.exec_command,
+      await self.tailscale.exec_command(
           container.worker.hostname,
           f"docker compose -f {container_dir}/docker-compose.yml up -d --wait",
       )
@@ -255,8 +252,7 @@ class BackupsMixin:
 
     task_id_token = task_id.set(container_task_id)
     try:
-      await run_in_executor_with_context(
-          self.tailscale.sync_file,
+      await self.tailscale.sync_file(
           container.worker.hostname,
           app_dir / "templates/worker/application/backup.sh",
           remote_script_path,
@@ -268,8 +264,7 @@ class BackupsMixin:
               "ENCRYPTION_KEY": get_env("ENCRYPTION_KEY"),
               "UPLOAD_URL": upload_url,
           })
-      await run_in_executor_with_context(
-          self.tailscale.exec_command,
+      await self.tailscale.exec_command(
           container.worker.hostname,
           f"chmod 700 {remote_script_path} && {remote_script_path}",
           900,
@@ -431,8 +426,7 @@ class BackupsMixin:
 
     try:
       self._set_application_restore_status(application, target_container)
-      await run_in_executor_with_context(
-          self.tailscale.sync_file,
+      await self.tailscale.sync_file(
           target_container.worker.hostname,
           app_dir / "templates/worker/application/restore.sh",
           remote_script_path,
@@ -444,8 +438,7 @@ class BackupsMixin:
               "DOWNLOAD_URL": download_url,
           },
       )
-      await run_in_executor_with_context(
-          self.tailscale.exec_command,
+      await self.tailscale.exec_command(
           target_container.worker.hostname,
           f"chmod 700 {remote_script_path} && {remote_script_path}",
           900,

@@ -122,6 +122,7 @@ def setup_logger():
   root_logger.addHandler(handler)
 
   logging.getLogger("httpx").setLevel(logging.WARNING)
+  logging.getLogger("asyncssh").setLevel(logging.WARNING)
   # Exclude some paths from logs
   logging.getLogger("uvicorn.access").addFilter(ExactPathFilter(fastapi_exclude_log_paths))
 

@@ -6,8 +6,8 @@ from functools import partial
 # Every thread pool in the process is defined here. The first four are the
 # operation-queue lanes (wired into TaskQueue by the Manager); each scope root
 # gets its own pool. Worker counts are fixed I/O-concurrency limits, not derived
-# from os.cpu_count(): these lanes run blocking network I/O (Tailscale SSH/rsync,
-# S3, httpx), so the manager's core count doesn't gate them -- and in a CPU-limited
+# from os.cpu_count(): these lanes run blocking network I/O (Cloudflare API, S3,
+# tailscale status, httpx), so the manager's core count doesn't gate them -- and in a CPU-limited
 # container os.cpu_count() reports host cores, not the container's allowance.
 # platform/common have no child scopes, so their tasks never run concurrently --
 # one worker each. app sizes for a couple of parallel multi-worker deploys plus the
