@@ -73,17 +73,13 @@ class Tailscale(Base):
     """
     Execute a command on a worker over the Tailscale SSH server via asyncssh.
     Returns (exit_status, output_lines); raises on timeout or non-zero exit.
-
-    Connects to the worker's Tailscale SSH server directly with asyncssh, so
-    there is no SSH client subprocess (or proxy process) to manage or leak.
     """
     logger.info(f"Executing command on {hostname}: {command}")
     try:
       async with asyncssh.connect(
           hostname, username=SSH_USER, known_hosts=None, connect_timeout=30
       ) as conn:
-        # Merge stderr into stdout so a failing command's error output is
-        # captured and logged (parity with the old stderr=STDOUT pipe).
+        # merge stderr into stdout so a failed command's output is captured
         result = await conn.run(
             command, timeout=timeout, check=False, stderr=asyncssh.STDOUT)
     except (asyncio.TimeoutError, asyncssh.TimeoutError):
@@ -113,9 +109,8 @@ class Tailscale(Base):
     If keys (dict) is given, src is treated as a template and ${VAR} placeholders
     are substituted before upload. Missing parent directories are created.
 
-    `timeout` is a wall-clock cap on the whole connect+transfer: sage only syncs
-    small config/script files, so it exists to stop a wedged transfer from
-    holding a task's scope forever.
+    `timeout` caps the whole connect+transfer so a wedged sync can't hold a
+    task's scope forever.
     """
     if os.path.isdir(src):
       raise Exception(f"src must be a file, not a directory: {src}")
@@ -124,7 +119,6 @@ class Tailscale(Base):
     if keys:
       with open(src, "r") as f:
         content = f.read()
-      # Replace ${KEY} with values from keys dict
       for key, value in keys.items():
         content = content.replace("${" + key + "}", str(value))
 
@@ -138,11 +132,9 @@ class Tailscale(Base):
           if remote_dir:
             await sftp.makedirs(remote_dir, exist_ok=True)
           if content is not None:
-            # Template: write the substituted text directly (no local temp file).
             async with sftp.open(dst, "w") as remote_file:
               await remote_file.write(content)
           else:
-            # Plain file: byte-exact upload, no substitution.
             await sftp.put(str(src), dst)
 
     logger.info(f"Syncing file to {hostname} from {src} to {dst}.")
