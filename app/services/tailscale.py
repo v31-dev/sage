@@ -1,14 +1,18 @@
+import asyncio
 import json
 import logging
 import os
+import posixpath
 import subprocess
-import threading
-from tempfile import NamedTemporaryFile
+
+import asyncssh
 
 from services.base import Base
 from utils.common import dict_to_obj
 
 logger = logging.getLogger(__name__)
+
+SSH_USER = "root"
 
 
 class Tailscale(Base):
@@ -65,126 +69,87 @@ class Tailscale(Base):
         if any(_tag == f"tag:{tag}" for _tag in peer.get("Tags", []))
     ]
 
-  def sync_file(self, hostname, src, dst, keys=None, timeout=120):
+  async def exec_command(self, hostname, command, timeout=300):
     """
-    Sync a single file using rsync over Tailscale SSH.
-    If keys (dict) is provided then src will be considered as a template file and vars will
-    be replaced with ${VAR} format.
+    Execute a command on a worker over the Tailscale SSH server via asyncssh.
+    Returns (exit_status, output_lines); raises on timeout or non-zero exit.
 
-    `timeout` is a hard wall-clock cap on the rsync subprocess; rsync's own
-    `--timeout` aborts a stalled transfer earlier. Sage only syncs small config
-    and script files, so the defaults are generous -- they exist to prevent a
-    wedged transfer from hanging the task (and holding its scope) forever.
+    Connects to the worker's Tailscale SSH server directly with asyncssh, so
+    there is no SSH client subprocess (or proxy process) to manage or leak.
+    """
+    logger.info(f"Executing command on {hostname}: {command}")
+    try:
+      async with asyncssh.connect(
+          hostname, username=SSH_USER, known_hosts=None, connect_timeout=30
+      ) as conn:
+        # Merge stderr into stdout so a failing command's error output is
+        # captured and logged (parity with the old stderr=STDOUT pipe).
+        result = await conn.run(
+            command, timeout=timeout, check=False, stderr=asyncssh.STDOUT)
+    except (asyncio.TimeoutError, asyncssh.TimeoutError):
+      raise Exception(f"Command on {hostname} timed out after {timeout}s: {command}")
+    except (OSError, asyncssh.Error) as e:
+      raise Exception(f"Error executing command on {hostname}: {e}")
+
+    output_lines = [
+        line for line in (result.stdout or "").splitlines()
+        if "Warning: client version" not in line
+    ]
+    for line in output_lines:
+      logger.info(f"[{hostname}] {line}")
+
+    if result.exit_status != 0:
+      tail = "\n".join(output_lines[-10:])
+      raise Exception(
+          f"Error executing command on {hostname}: exit code {result.exit_status}"
+          + (f"\n{tail}" if tail else ""))
+
+    logger.info(f"Successfully executed command on {hostname}.")
+    return (result.exit_status, output_lines)
+
+  async def sync_file(self, hostname, src, dst, keys=None, timeout=120):
+    """
+    Copy a single file to a worker via SFTP over the Tailscale SSH server.
+    If keys (dict) is given, src is treated as a template and ${VAR} placeholders
+    are substituted before upload. Missing parent directories are created.
+
+    `timeout` is a wall-clock cap on the whole connect+transfer: sage only syncs
+    small config/script files, so it exists to stop a wedged transfer from
+    holding a task's scope forever.
     """
     if os.path.isdir(src):
       raise Exception(f"src must be a file, not a directory: {src}")
 
-    file_to_sync = src
-    temp_file = None
-
+    content = None
     if keys:
       with open(src, "r") as f:
         content = f.read()
-
       # Replace ${KEY} with values from keys dict
       for key, value in keys.items():
         content = content.replace("${" + key + "}", str(value))
 
-      # Create a temporary file with substituted content
-      with NamedTemporaryFile(mode="w", delete=False) as temp_file:
-        temp_file.write(content)
-        file_to_sync = temp_file.name
+    remote_dir = posixpath.dirname(dst)
 
+    async def _upload():
+      async with asyncssh.connect(
+          hostname, username=SSH_USER, known_hosts=None, connect_timeout=30
+      ) as conn:
+        async with conn.start_sftp_client() as sftp:
+          if remote_dir:
+            await sftp.makedirs(remote_dir, exist_ok=True)
+          if content is not None:
+            # Template: write the substituted text directly (no local temp file).
+            async with sftp.open(dst, "w") as remote_file:
+              await remote_file.write(content)
+          else:
+            # Plain file: byte-exact upload, no substitution.
+            await sftp.put(str(src), dst)
+
+    logger.info(f"Syncing file to {hostname} from {src} to {dst}.")
     try:
-      logger.info(f"Syncing files to {hostname} from {src} to {dst}.")
-      result = subprocess.run(
-          [
-              "rsync",
-              "-avz",
-              "--mkpath",
-              "--no-perms",
-              "--no-owner",
-              "--no-group",
-              "--timeout=60",  # abort a stalled transfer (no I/O for 60s)
-              "-e",
-              "tailscale ssh",
-              file_to_sync,
-              f"{hostname}:{dst}",
-          ],
-          capture_output=True,
-          text=True,
-          timeout=timeout,  # hard cap as a backstop to rsync's own --timeout
-      )
-
-      if result.returncode != 0:
-        raise Exception(f"Error syncing files to {hostname}: {result.stderr.strip()}")
-
-      logger.info(f"Successfully synced files to {hostname}: {dst}.")
-    except subprocess.TimeoutExpired:
-      raise Exception(f"Syncing files to {hostname} timed out after {timeout}s: {dst}")
-    finally:
-      # Clean up temporary file if created
-      if temp_file:
-        os.remove(file_to_sync)
-
-  def exec_command(self, hostname, command, timeout=300):
-    """
-    Execute a command on a remote host via Tailscale SSH.
-    Streams output in real-time to logger.
-    Returns (exit code, command stdout) and raises an exception if the command fails.
-
-    Args:
-      hostname: Target host to execute command on
-      command: Command to execute
-      timeout: Timeout in seconds (default 300s = 5min for healthchecks)
-
-    A watchdog kills the process at `timeout`. The kill is what enforces the cap:
-    the streaming readline loop only ends on EOF, so a remote command that hangs
-    with stdout open (e.g. `docker compose up --wait` on a never-healthy
-    container) would otherwise block past `timeout`. Killing closes stdout, which
-    unblocks readline and the subsequent wait.
-    """
-    logger.info(f"Executing command on {hostname}: {command}")
-    process = subprocess.Popen(
-        ["tailscale", "ssh", hostname, command],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-    )
-
-    timed_out = threading.Event()
-
-    def _on_timeout():
-      timed_out.set()
-      try:
-        process.kill()
-      except Exception:
-        pass
-
-    watchdog = threading.Timer(timeout, _on_timeout)
-    watchdog.start()
-    try:
-      # Capture output and stream line-by-line.
-      output_lines = []
-      for line in iter(process.stdout.readline, ""):
-        if line:
-          # Ignore Tailscale client warning
-          if "Warning: client version" in line:
-            continue
-          logger.info(f"[{hostname}] {line.rstrip()}")
-          output_lines.append(line.rstrip())
-
-      process.wait()
-    finally:
-      watchdog.cancel()
-
-    if timed_out.is_set():
-      raise Exception(f"Command on {hostname} timed out after {timeout}s: {command}")
-
-    if process.returncode != 0:
-      raise Exception(
-          f"Error executing command on {hostname}: exit code {process.returncode}"
-      )
-
-    logger.info(f"Successfully executed command on {hostname}.")
-    return (process.returncode, output_lines)
+      await asyncio.wait_for(_upload(), timeout)
+    except asyncio.TimeoutError:
+      raise Exception(f"Syncing file to {hostname} timed out after {timeout}s: {dst}")
+    except (OSError, asyncssh.Error) as e:
+      raise Exception(f"Error syncing file to {hostname}: {e}")
+    logger.info(f"Successfully synced file to {hostname}: {dst}.")

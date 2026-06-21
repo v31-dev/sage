@@ -16,11 +16,6 @@ cleanup() {
 
 trap cleanup EXIT
 
-if [ ! -d "$APP_DIR" ]; then
-  echo "Application directory not found: $APP_DIR" >&2
-  exit 1
-fi
-
 if ! command -v openssl >/dev/null 2>&1; then
   echo "openssl is required on worker for encrypted restores" >&2
   exit 1

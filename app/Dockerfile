@@ -4,7 +4,7 @@ ARG ENV=production
 
 # Install dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
-  curl rsync openssh-client \
+  curl \
   && rm -rf /var/lib/apt/lists/*
 
 # Install Tailscale 

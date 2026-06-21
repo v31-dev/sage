@@ -27,7 +27,7 @@ Startup is service-driven:
 
 ## Worker Runtime
 
-Workers are bootstrapped remotely over Tailscale SSH and rsync. The manager syncs files from `app/templates/worker/` to `/opt/sage` on each worker, including:
+Workers are bootstrapped remotely over Tailscale SSH (asyncssh): the manager runs remote commands and copies files via SFTP from `app/templates/worker/` to `/opt/sage` on each worker, including:
 
 - `docker-compose.yml`
 - worker `.env`

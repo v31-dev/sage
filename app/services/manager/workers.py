@@ -7,6 +7,7 @@ from services.db import (
 )
 from services.settings import Settings
 from utils.common import get_env
+from utils.executor import run_in_executor_with_context
 from utils.logging import TaskFailed
 
 from ._common import app_dir
@@ -15,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 class WorkersMixin:
-  def sync_workers(self, force: bool = False):
+  async def sync_workers(self, force: bool = False):
     """
     Check for worker changes.
     - New workers (not in db but in tailscale)
@@ -25,7 +26,8 @@ class WorkersMixin:
     - Offline workers (in db but not in tailscale)
     """
     existing_workers = list(Worker.select())
-    tailscale_workers = self.tailscale.get_by_tag(get_env("WORKER_TAILSCALE_TAG"))
+    tailscale_workers = await run_in_executor_with_context(
+        self.tailscale.get_by_tag, get_env("WORKER_TAILSCALE_TAG"))
 
     logger.info(
         f"Existing workers: {[(w.hostname, w.ip, 'online' if w.online else 'offline') for w in existing_workers]}")
@@ -39,11 +41,11 @@ class WorkersMixin:
           if existing_worker.online and not worker.online:
             # worker went offline
             logger.info(f"Worker {worker.hostname} went offline.")
-            self.set_worker_offline(worker)
+            await run_in_executor_with_context(self.set_worker_offline, worker)
           elif not existing_worker.online and worker.online:
             # worker came back online
             logger.info(f"Worker {worker.hostname} came back online.")
-            self.set_worker_online(worker)
+            await run_in_executor_with_context(self.set_worker_online, worker)
 
           if existing_worker.ip != worker.ip:
             # worker IP changed (worker was re-created)
@@ -52,15 +54,15 @@ class WorkersMixin:
                     worker.hostname} IP changed from {
                     existing_worker.ip} to {
                     worker.ip}.")
-            self.setup_worker(worker)
+            await self.setup_worker(worker)
           elif force:
             # worker is the same but force re-sync requested
             logger.info(f"Force syncing worker {worker.hostname}.")
-            self.setup_worker(worker)
+            await self.setup_worker(worker)
         else:
           # new worker
           logger.info(f"New worker {worker.hostname} detected.")
-          self.setup_worker(worker)
+          await self.setup_worker(worker)
       except Exception as e:
         logger.error(f"sync_workers failed for {worker.hostname}: {e}")
 
@@ -71,11 +73,11 @@ class WorkersMixin:
           # worker went offline or was removed
           logger.info(
               f"Worker {existing_worker.hostname} not found in tailscale. Presumed it went offline.")
-          self.set_worker_offline(existing_worker)
+          await run_in_executor_with_context(self.set_worker_offline, existing_worker)
       except Exception as e:
         logger.error(f"sync_workers offline-check failed for {existing_worker.hostname}: {e}")
 
-  def setup_worker(self, worker):
+  async def setup_worker(self, worker):
     """
     Setup or re-sync a worker -
     - Add to Manager database
@@ -96,21 +98,22 @@ class WorkersMixin:
       Worker.insert(hostname=worker.hostname, ip=worker.ip).on_conflict(
           conflict_target=[Worker.hostname], preserve=[Worker.ip]
       ).execute()
-      self.cloudflare.create_dns_record(
+      await run_in_executor_with_context(
+          self.cloudflare.create_dns_record,
           name=f"*.int.{domain}",
           content=worker.ip,
           comment=f"sage-worker-{worker.hostname}",
           type="A",
       )
-      tunnel = self.cloudflare.get_tunnel_token()
+      tunnel = await run_in_executor_with_context(self.cloudflare.get_tunnel_token)
 
       # Sync files
-      self.tailscale.sync_file(
+      await self.tailscale.sync_file(
           worker.hostname,
           app_dir / "templates/worker/docker-compose.yml",
           f"{self.worker_home_dir}/docker-compose.yml",
       )
-      self.tailscale.sync_file(
+      await self.tailscale.sync_file(
           worker.hostname,
           app_dir / "templates/worker/worker.env",
           f"{self.worker_home_dir}/.env",
@@ -121,19 +124,19 @@ class WorkersMixin:
               "TUNNEL_TOKEN": tunnel.token,
           },
       )
-      self.tailscale.sync_file(
+      await self.tailscale.sync_file(
           worker.hostname,
           app_dir / "templates/worker/traefik/traefik.yml",
           f"{self.worker_home_dir}/traefik/traefik.yml",
           {"ADMIN_EMAIL": admin_email},
       )
-      self.tailscale.sync_file(
+      await self.tailscale.sync_file(
           worker.hostname,
           app_dir / "templates/worker/traefik/config.yml",
           f"{self.worker_home_dir}/traefik/dynamic/config.yml",
           {"DOMAIN": domain, "HOSTNAME": worker.hostname},
       )
-      self.tailscale.sync_file(
+      await self.tailscale.sync_file(
           worker.hostname,
           app_dir / "templates/worker/vector/vector.yml",
           f"{self.worker_home_dir}/vector/config/vector.yml",
@@ -141,7 +144,7 @@ class WorkersMixin:
       )
 
       # Start containers
-      self.tailscale.exec_command(
+      await self.tailscale.exec_command(
           worker.hostname,
           f"docker compose -f {self.worker_home_dir}/docker-compose.yml up -d --wait --remove-orphans --quiet-pull --quiet-build",
           timeout=300,
@@ -164,7 +167,7 @@ class WorkersMixin:
       self.notify(f"Failed to {action} worker {worker.hostname} : {e}", "error")
       # Only roll back the worker row + DNS if this was a fresh add.
       if is_new:
-        self.remove_worker(worker.hostname)
+        await run_in_executor_with_context(self.remove_worker, worker.hostname)
       raise Exception(f"Failed to {action} worker {worker.hostname} : {e}")
 
   def remove_worker(self, worker_hostname: str):
