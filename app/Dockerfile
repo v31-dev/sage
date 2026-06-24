@@ -1,9 +1,9 @@
-FROM python:3.12.3-slim
+FROM python:3.12-slim
 
 ARG ENV=production
 
 # Install dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get -y upgrade && apt-get install -y --no-install-recommends \
   curl \
   && rm -rf /var/lib/apt/lists/*
 
@@ -15,7 +15,8 @@ WORKDIR /app
 COPY ./requirements.txt /app/requirements.txt
 COPY ./requirements-dev.txt /app/requirements-dev.txt
 
-RUN pip install --no-cache-dir --upgrade -r /app/requirements.txt && \
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
+    pip install --no-cache-dir --upgrade -r /app/requirements.txt && \
     if [ "$ENV" = "development" ]; then pip install --no-cache-dir --upgrade -r /app/requirements-dev.txt; fi
 
 COPY . /app

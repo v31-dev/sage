@@ -15,11 +15,11 @@ COPY ui/ .
 RUN npm run build
 
 # Stage 2: Python app with built UI
-FROM python:3.12.3-slim
+FROM python:3.12-slim
 
 # Install dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
-  curl rsync openssh-client \
+RUN apt-get update && apt-get -y upgrade && apt-get install -y --no-install-recommends \
+  curl \
   && rm -rf /var/lib/apt/lists/*
 
 # Install Tailscale
@@ -31,7 +31,8 @@ WORKDIR /app
 COPY app/requirements.txt /app/requirements.txt
 
 # Install Python dependencies
-RUN pip install --no-cache-dir --upgrade -r /app/requirements.txt
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel \
+  && pip install --no-cache-dir --upgrade -r /app/requirements.txt
 
 # Copy Python app
 COPY app/ /app/
