@@ -10,7 +10,7 @@ from services.db import (
     Container,
     Event,
 )
-from utils.common import parse_multiline_kv
+from utils.common import format_yaml, parse_multiline_kv
 from utils.logging import generate_task_id_token, task_id
 
 from ._common import app_dir
@@ -149,6 +149,7 @@ class ApplicationMixin:
                 "COMMAND": command_value,
                 "VOLUMES": ", ".join(volumes_config),
             },
+            formatter=format_yaml,
         )
       elif container.application.type == "git":
         # Each build secret is backed by its own file under secrets/
@@ -184,6 +185,7 @@ class ApplicationMixin:
                 "COMMAND": command_value,
                 "VOLUMES": ", ".join(volumes_config),
             },
+            formatter=format_yaml,
         )
 
       # Deploy with docker compose. 900s: a git build + image pull + --wait

@@ -3,8 +3,15 @@ import os
 import re
 from types import SimpleNamespace
 
+import yaml
 
 logger = logging.getLogger(__name__)
+
+
+def format_yaml(content: str) -> str:
+  """Parse and re-serialize a YAML document so templated output is canonical and
+  structurally validated before upload. Preserves key order; drops comments."""
+  return yaml.safe_dump(yaml.safe_load(content), sort_keys=False, default_flow_style=False)
 
 
 DOMAIN_RE = re.compile(
