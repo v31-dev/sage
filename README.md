@@ -40,7 +40,7 @@ For deeper architecture details, see [docs/architecture.md](docs/architecture.md
 ## Features
 
 - Manage projects, applications, containers, domains, volumes, workers, settings, backups, and notifications
-- Deploy applications from Docker images or public Git repositories
+- Deploy applications from Docker images or Git repositories (private repos via a `GIT_AUTH_TOKEN` build secret)
 - Stop and delete deployed workloads
 - Route public and internal traffic through generated Traefik configuration
 - Discover and bootstrap workers over Tailscale

@@ -51,6 +51,7 @@ export interface Application {
   image: string | null
   env: string | null
   args: string | null
+  build_secrets: string | null
   command: string | null
   domains: Domain[]
   containers: Container[]

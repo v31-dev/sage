@@ -80,6 +80,7 @@ class Application(BaseModel):
   path = CharField(default="Dockerfile")
   env = EncryptedTextField(null=True)
   args = EncryptedTextField(null=True)
+  build_secrets = EncryptedTextField(null=True)
   command = CharField(null=True)
   status = CharField(choices=STATUS_CHOICES, default="inactive")
   domains_synced = BooleanField(default=False)
@@ -97,6 +98,7 @@ class Application(BaseModel):
       self.repo = None
       self.path = "Dockerfile"
       self.args = None
+      self.build_secrets = None
 
     if self.type == "git":
       self.image = None
@@ -115,6 +117,9 @@ class Application(BaseModel):
 
     if self.args:
       validate_multiline_kv(self.args, "application.args")
+
+    if self.build_secrets:
+      validate_multiline_kv(self.build_secrets, "application.build_secrets")
 
     return super().save(*args, **kwargs)
 
