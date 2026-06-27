@@ -29,10 +29,19 @@ class Database(Base):
 
     db.connect(reuse_if_open=True)
 
-    db.create_tables(MODELS, safe=True)
-    self._sync_columns()
+    self.reconcile_schema()
 
     logger.info("Connected to database.")
+
+  def reconcile_schema(self):
+    """
+    Bring the live database schema up to the current models: create missing
+    tables and add missing columns. Idempotent and safe to call any time the
+    on-disk schema may lag the models -- at startup, or after a restore swaps in
+    an older database snapshot.
+    """
+    db.create_tables(MODELS, safe=True)
+    self._sync_columns()
 
   def _sync_columns(self):
     """

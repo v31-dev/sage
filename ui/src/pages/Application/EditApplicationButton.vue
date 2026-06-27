@@ -35,12 +35,15 @@ interface Props {
 
 const props = withDefaults(defineProps<Props>(), {})
 
-const envTooltip =
+const commonTooltip =
   'KEY=VALUE pairs, one per line\nComments with # are allowed\nVALUE can be string quoted\n' +
-  '${SAGE_WORKER_HOSTNAME} can be used for worker hostname'
+  '${SAGE_WORKER_HOSTNAME} can be used for worker hostname\n${KEY} resolves to project env values\n'
+const envTooltip = commonTooltip
 const commandTooltip =
   "Overrides the image's default command, e.g. python -m http.server 8000\n" +
   '${KEY} resolves to project env values'
+const buildSecretsTooltip =
+  commonTooltip + 'Set GIT_AUTH_TOKEN=<token> to build a private repository'
 const isEditDialogOpen = ref(false)
 const editFormData = ref({
   label: '',
@@ -51,6 +54,7 @@ const editFormData = ref({
   path: 'Dockerfile',
   env: '',
   args: '',
+  build_secrets: '',
   command: '',
 })
 const editDialogErrorMessage = ref('')
@@ -65,6 +69,7 @@ function openEditDialog() {
   editFormData.value.path = props.application.path || 'Dockerfile'
   editFormData.value.env = props.application.env || ''
   editFormData.value.args = props.application.args || ''
+  editFormData.value.build_secrets = props.application.build_secrets || ''
   editFormData.value.command = props.application.command || ''
   editDialogErrorMessage.value = ''
   isEditDialogOpen.value = true
@@ -85,6 +90,7 @@ async function handleUpdateApplication() {
       command: editFormData.value.command || null,
       env: editFormData.value.env || null,
       args: editFormData.value.args || null,
+      build_secrets: editFormData.value.build_secrets || null,
     })
     await props.loadApplication()
     isEditDialogOpen.value = false
@@ -187,6 +193,18 @@ async function handleUpdateApplication() {
               :tooltip="envTooltip"
               secret
               v-model="editFormData.args"
+              class="resize-none"
+              placeholder="optional"
+            />
+          </Field>
+          <Field v-if="editFormData.type == 'git'">
+            <FieldLabel for="build_secrets"> Build Secrets </FieldLabel>
+            <CustomInput
+              id="build_secrets"
+              type="textarea"
+              :tooltip="buildSecretsTooltip"
+              secret
+              v-model="editFormData.build_secrets"
               class="resize-none"
               placeholder="optional"
             />

@@ -48,11 +48,6 @@ def post_save_container(model_class, instance, created):
         Application.id == instance.application_id
     ).execute()
 
-  if instance.application.container_count == 0:
-    Application.update(status="inactive").where(
-        Application.id == instance.application_id
-    ).execute()
-
   _trigger_application_domain_sync(instance.application_id)
 
 
@@ -60,4 +55,9 @@ def post_save_container(model_class, instance, created):
 def post_delete_container(model_class, instance):
   Application.update(container_count=Application.container_count - 1).where(
       Application.id == instance.application_id
+  ).execute()
+
+  # Last container gone -> nothing to run, so the app is inactive.
+  Application.update(status="inactive").where(
+      (Application.id == instance.application_id) & (Application.container_count == 0)
   ).execute()

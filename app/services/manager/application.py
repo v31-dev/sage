@@ -10,7 +10,7 @@ from services.db import (
     Container,
     Event,
 )
-from utils.common import parse_multiline_kv
+from utils.common import format_yaml, parse_multiline_kv
 from utils.logging import generate_task_id_token, task_id
 
 from ._common import app_dir
@@ -75,16 +75,20 @@ class ApplicationMixin:
 
       app_env = container.application.env if container.application.env else ""
       app_build_args = container.application.args if container.application.args else ""
+      app_build_secrets = container.application.build_secrets if container.application.build_secrets else ""
       app_command = container.application.command if container.application.command else ""
 
-      # Resolve Application env, build args and command with project env values if they reference them with ${KEY}
+      # Resolve Application env, build args, build secrets and command with project env values if they reference them with ${KEY}
       for key, value in project_env:
         app_env = app_env.replace("${" + key + "}", str(value))
         app_build_args = app_build_args.replace("${" + key + "}", str(value))
+        app_build_secrets = app_build_secrets.replace("${" + key + "}", str(value))
         app_command = app_command.replace("${" + key + "}", str(value))
 
       app_build_args = parse_multiline_kv(app_build_args, lambda key, value: json.dumps(f"{key}={value}"),
                                           strip_quotes=True)
+      build_secret_items = parse_multiline_kv(app_build_secrets, lambda key, value: (key, value),
+                                              strip_quotes=True)
 
       # Override the image command in exec/array form so tokens pass through literally and YAML stays safe.
       # Left blank when unset so the template renders `command:` (null), which Compose drops in favour
@@ -145,8 +149,27 @@ class ApplicationMixin:
                 "COMMAND": command_value,
                 "VOLUMES": ", ".join(volumes_config),
             },
+            formatter=format_yaml,
         )
       elif container.application.type == "git":
+        # Each build secret is backed by its own file under secrets/
+        secrets_dir = f"{container_dir}/secrets"
+        await self.tailscale.exec_command(
+            container.worker.hostname,
+            f"rm -rf {secrets_dir}",
+        )
+        for name, value in build_secret_items:
+          await self.tailscale.sync_file(
+              container.worker.hostname,
+              app_dir / "templates/worker/file",
+              f"{secrets_dir}/{name}",
+              {"CONTENT": value},
+          )
+
+        secrets_block = "secrets:\n" + "\n".join(
+            f"  {name}:\n    file: ./secrets/{name}" for name, _ in build_secret_items
+        ) if build_secret_items else ""
+
         await self.tailscale.sync_file(
             container.worker.hostname,
             app_dir / "templates/worker/application/gitrepo-compose.yml",
@@ -157,9 +180,12 @@ class ApplicationMixin:
                 "REPO": container.application.repo,
                 "DOCKERFILE": container.application.path,
                 "BUILD_ARGS": ", ".join(app_build_args),
+                "BUILD_SECRETS": ", ".join(name for name, _ in build_secret_items),
+                "SECRETS_BLOCK": secrets_block,
                 "COMMAND": command_value,
                 "VOLUMES": ", ".join(volumes_config),
             },
+            formatter=format_yaml,
         )
 
       # Deploy with docker compose. 900s: a git build + image pull + --wait
@@ -353,6 +379,12 @@ class ApplicationMixin:
 
     containers = list(application.containers)
     if not containers:
+      # No containers left: the app has nothing to run, so it's inactive. Catches
+      # any app left non-inactive with a zero container count.
+      if application.status != "inactive":
+        application.status = "inactive"
+        application.save()
+        self.notify(f"Application {application.qualified_name} is inactive as it has no containers.", "warning")
       return
 
     # Query container state only on the (distinct, online) workers backing this

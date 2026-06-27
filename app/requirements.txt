@@ -13,3 +13,4 @@ cryptography==46.0.5
 boto3==1.40.61
 aioboto3==15.5.0
 asyncssh==2.23.1
+PyYAML==6.0.3

@@ -16,7 +16,7 @@
     "ghcr.io/anthropics/devcontainer-features/claude-code:1.0": {},
     "ghcr.io/tailscale/codespace/tailscale": {},
     "ghcr.io/devcontainers-extra/features/gh-cli": {},
-    "ghcr.io/devcontainers/features/docker-in-docker": {},
+    "ghcr.io/devcontainers/features/docker-in-docker:4": {},
     "ghcr.io/devcontainers/features/python": {},
     "ghcr.io/devcontainers/features/node": {}
   },
@@ -31,7 +31,8 @@
         "mhutchie.git-graph",
         "mutantdino.resourcemonitor",
         "esbenp.prettier-vscode",
-        "Vue.volar"
+        "Vue.volar",
+        "GitHub.vscode-pull-request-github"
       ]
     }
   }

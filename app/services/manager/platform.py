@@ -8,6 +8,7 @@ from tempfile import TemporaryDirectory
 
 from services.db import (
     Backup,
+    Database,
     Event,
     Notification,
     Task,
@@ -244,10 +245,17 @@ class PlatformMixin:
           if result[0] != "ok":
             raise Exception(f"Restored database failed integrity check: {result[0]}")
           logger.info("Database integrity verified successfully")
+
+          # Forward-migrate the restored snapshot to the current models: the
+          # backup may predate columns/tables the running code expects, and the
+          # online backup copied its older schema in wholesale.
+          logger.info("Reconciling restored schema with current models")
+          Database().reconcile_schema()
+          logger.info("Schema reconciled successfully")
         except Exception as e:
-          logger.error(f"Database integrity verification failed: {e}")
+          logger.error(f"Restored database verification failed: {e}")
           # Rollback to safety backup
-          logger.warning(f"Integrity check failed, rolling back from safety backup: {safety_backup_path}")
+          logger.warning(f"Verification failed, rolling back from safety backup: {safety_backup_path}")
           try:
             rollback_conn = sqlite3.connect(safety_backup_path)
             live_conn = db.connection()
@@ -260,7 +268,7 @@ class PlatformMixin:
             return
           except Exception as rollback_err:
             logger.error(f"Failed to rollback to safety backup: {rollback_err}")
-          raise Exception(f"Database integrity check failed and recovery unsuccessful: {e}")
+          raise Exception(f"Database verification failed and recovery unsuccessful: {e}")
 
         self.notify(f"Platform restored from backup {s3_path} successfully.", "success")
 

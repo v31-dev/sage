@@ -103,11 +103,14 @@ class Tailscale(Base):
     logger.info(f"Successfully executed command on {hostname}.")
     return (result.exit_status, output_lines)
 
-  async def sync_file(self, hostname, src, dst, keys=None, timeout=120):
+  async def sync_file(self, hostname, src, dst, keys=None, formatter=None, timeout=120):
     """
     Copy a single file to a worker via SFTP over the Tailscale SSH server.
     If keys (dict) is given, src is treated as a template and ${VAR} placeholders
-    are substituted before upload. Missing parent directories are created.
+    are substituted before upload. If formatter is given, it receives the file
+    text (after any substitution) and returns the text to upload. Either one
+    reads src as text; with neither, src is copied verbatim. Missing parent
+    directories are created.
 
     `timeout` caps the whole connect+transfer so a wedged sync can't hold a
     task's scope forever.
@@ -116,11 +119,14 @@ class Tailscale(Base):
       raise Exception(f"src must be a file, not a directory: {src}")
 
     content = None
-    if keys:
+    if keys or formatter:
       with open(src, "r") as f:
         content = f.read()
-      for key, value in keys.items():
-        content = content.replace("${" + key + "}", str(value))
+      if keys:
+        for key, value in keys.items():
+          content = content.replace("${" + key + "}", str(value))
+      if formatter:
+        content = formatter(content)
 
     remote_dir = posixpath.dirname(dst)
 
