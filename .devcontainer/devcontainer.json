@@ -31,7 +31,8 @@
         "mhutchie.git-graph",
         "mutantdino.resourcemonitor",
         "esbenp.prettier-vscode",
-        "Vue.volar"
+        "Vue.volar",
+        "GitHub.vscode-pull-request-github"
       ]
     }
   }
