@@ -379,6 +379,12 @@ class ApplicationMixin:
 
     containers = list(application.containers)
     if not containers:
+      # No containers left: the app has nothing to run, so it's inactive. Catches
+      # any app left non-inactive with a zero container count.
+      if application.status != "inactive":
+        application.status = "inactive"
+        application.save()
+        self.notify(f"Application {application.qualified_name} is inactive as it has no containers.", "warning")
       return
 
     # Query container state only on the (distinct, online) workers backing this
