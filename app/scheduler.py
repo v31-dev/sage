@@ -1,9 +1,12 @@
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
+from redbird.oper import less_than
+from redbird.repos import MemoryRepo
 from rocketry import Rocketry
 from rocketry.conds import every, minutely
 from rocketry.conditions import SchedulerStarted
+from rocketry.log import MinimalRecord
 from rocketry.time import TimeDelta
 
 from services.db import Application, Project, Worker
@@ -14,9 +17,10 @@ from utils.queue import OnConflict
 
 logger = logging.getLogger(__name__)
 
-# Rocketry is a pure scheduler here: it fires the functions below on a cadence;
-# all execution + concurrency control lives in the Manager operation queue.
-app = Rocketry(execution="async")
+# Rocketry is a pure scheduler here
+app = Rocketry(execution="async", logger_repo=MemoryRepo(model=MinimalRecord))
+
+ROCKETRY_LOG_RETENTION = timedelta(days=1)
 
 
 # Single consumer for the operation queue: starts every pending task whose
@@ -24,6 +28,13 @@ app = Rocketry(execution="async")
 @app.task(every("1 second"))
 async def dispatch_tick():
   Manager().dispatch_tick()
+
+
+# Prune Rocketry's in-memory task-log repo so it doesn't grow without bound.
+@app.task(every("1 day"))
+async def prune_scheduler_logs():
+  cutoff = (datetime.now() - ROCKETRY_LOG_RETENTION).timestamp()
+  app.session.get_repo().filter_by(created=less_than(cutoff)).delete()
 
 
 # Detect worker changes. platform+app scoped so it serializes with deploys;
