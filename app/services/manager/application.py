@@ -396,7 +396,8 @@ class ApplicationMixin:
         continue
       try:
         _, docker_ps_output = await self.tailscale.exec_command(
-            hostname, "docker ps --format '{{.Names}}|{{.State}}'")
+            hostname,
+            f"docker ps --filter 'name=^{application.qualified_name}$' --format '{{{{.Names}}}}|{{{{.State}}}}'")
         for line in docker_ps_output:
           try:
             container_name, container_state = line.split("|")

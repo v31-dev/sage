@@ -18,6 +18,7 @@ from peewee import (
 from playhouse.sqlite_ext import FTS5Model, RowIDField, SearchField
 
 from services.base import Base
+from services.db import Application, Project, Worker
 from utils.common import get_env
 
 app_dir = Path(__file__).parent.parent
@@ -272,35 +273,73 @@ class Metrics(Base):
       error_detail = f"{error_name}: {error_message}" if error_message else error_name
       raise RuntimeError(f"Failed to collect metrics for {hostname} ({ip}): {error_detail}") from e
 
+  def _drop_shard(self, kind: str, key: str):
+    """Close the cached connection for a shard and delete its files (`.db` plus
+    the `-wal`/`-shm` siblings). Removing the file is how space for a deleted
+    host/container is reclaimed -- its pages are never reused, so a row delete
+    or VACUUM would not."""
+    with self.lock:
+      entry = self._dbs[kind].pop(key, None)
+    if entry is not None:
+      try:
+        entry["db"].close()
+      except Exception:
+        logger.warning(f"Failed to close {kind} shard '{key}' before removal.", exc_info=True)
+    db_file = f"{self.db_path}/{kind}/{key}.db"
+    for path in (db_file, f"{db_file}-wal", f"{db_file}-shm"):
+      Path(path).unlink(missing_ok=True)
+
+  def _prune_orphan_shards(self, kind: str, live_keys: set) -> int:
+    """Delete shard files whose key is not in live_keys. Returns the count."""
+    shard_dir = Path(self.db_path) / kind
+    orphans = {path.stem for path in shard_dir.glob("*.db")} - live_keys
+    for key in sorted(orphans):
+      self._drop_shard(kind, key)
+      logger.info(f"Removed orphaned {kind} shard '{key}'.")
+    return len(orphans)
+
   def cleanup(self, days: int = 7):
     cutoff = datetime.now() - timedelta(days=days)
 
-    # Cleanup metrics
+    # Drop shards for hosts/apps that no longer exist (metrics keyed by hostname
+    # -- manager plus all workers, incl. offline; logs by app qualified_name).
+    live_hosts = {get_env("HOSTNAME")} | {worker.hostname for worker in Worker.select()}
+    live_containers = {
+        application.qualified_name
+        for application in Application.select(Application, Project).join(Project)
+    }
+    dropped_m = self._prune_orphan_shards("metrics", live_hosts)
+    dropped_l = self._prune_orphan_shards("logs", live_containers)
+
+    # Delete rows past the retention window; freed pages are reused by later
+    # inserts, so shards plateau (no VACUUM). Skip shards not yet on disk.
+    metrics_dir = Path(self.db_path) / "metrics"
+    existing_hosts = {path.stem for path in metrics_dir.glob("*.db")} & live_hosts
     deleted_w = 0
     deleted_c = 0
-    metrics_dir = Path(self.db_path) / "metrics"
-    metric_hosts = sorted(
-        set(self._dbs["metrics"]) | {path.stem for path in metrics_dir.glob("*.db")}
-    )
-    for hostname in metric_hosts:
+    for hostname in sorted(existing_hosts):
       db_info = self.get_metrics_db(hostname)
       WorkerMetrics = db_info["models"]["WorkerMetrics"]
       ContainerMetrics = db_info["models"]["ContainerMetrics"]
       deleted_w += WorkerMetrics.delete().where(WorkerMetrics.ts < cutoff).execute()
       deleted_c += ContainerMetrics.delete().where(ContainerMetrics.ts < cutoff).execute()
-    logger.info(f"Metrics cleanup: removed {deleted_w} worker rows, {deleted_c} container rows older than {days} days.")
+    logger.info(
+        f"Metrics cleanup: removed {deleted_w} worker rows, {deleted_c} container rows "
+        f"older than {days} days; dropped {dropped_m} orphaned shard(s).")
 
-    # Cleanup logs
-    deleted_l = 0
+    # Same for logs, then 'optimize' to merge the FTS index (the delete trigger
+    # only tombstones tokens, so segments accumulate without it).
     logs_dir = Path(self.db_path) / "logs"
-    log_containers = sorted(
-        set(self._dbs["logs"]) | {path.stem for path in logs_dir.glob("*.db")}
-    )
-    for container in log_containers:
+    existing_containers = {path.stem for path in logs_dir.glob("*.db")} & live_containers
+    deleted_l = 0
+    for container in sorted(existing_containers):
       db_info = self.get_logs_db(container)
       ContainerLogs = db_info["models"]["ContainerLogs"]
-      deleted_l += (ContainerLogs.delete().where(ContainerLogs.ts < cutoff.isoformat()).execute())
-    logger.info(f"Logs cleanup: removed {deleted_l} log rows older than {days} days.")
+      deleted_l += ContainerLogs.delete().where(ContainerLogs.ts < cutoff.isoformat()).execute()
+      db_info["db"].execute_sql("INSERT INTO containerlogsindex(containerlogsindex) VALUES('optimize')")
+    logger.info(
+        f"Logs cleanup: removed {deleted_l} log rows older than {days} days; "
+        f"dropped {dropped_l} orphaned shard(s).")
 
   def query_period(self, hostname: str, period: str = "1h"):
     period_config = _PERIODS.get(period, _PERIODS["1h"])
