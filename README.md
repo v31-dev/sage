@@ -73,3 +73,4 @@ If you need implementation details, development workflow notes, or release autom
 - [docs/backend.md](docs/backend.md)
 - [docs/frontend.md](docs/frontend.md)
 - [docs/development.md](docs/development.md)
+- [docs/profiling.md](docs/profiling.md)

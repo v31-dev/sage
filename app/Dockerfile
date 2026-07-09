@@ -2,13 +2,17 @@ FROM python:3.12-slim
 
 ARG ENV=production
 
-# Install dependencies
+# Install dependencies (gdb: required by `memray attach` to inject into a live process)
 RUN apt-get update && apt-get -y upgrade && apt-get install -y --no-install-recommends \
   curl \
+  gdb \
   && rm -rf /var/lib/apt/lists/*
 
-# Install Tailscale 
+# Install Tailscale
 RUN curl -fsSL https://tailscale.com/install.sh | sh
+
+# Live-profiling tools (attach via `docker exec`; need SYS_PTRACE + gdb)
+RUN pip install --no-cache-dir py-spy==0.4.2 memray==1.19.3
 
 WORKDIR /app
 

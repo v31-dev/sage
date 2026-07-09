@@ -3,7 +3,8 @@ import logging
 import re
 from datetime import datetime
 from pathlib import Path
-from rocketry.time import Cron
+
+from croniter import croniter
 
 from services.db import (
     APPLICATION_BUSY_STATUSES,
@@ -28,22 +29,21 @@ class BackupsMixin:
     if not volume.backup_cron:
       return False
 
-    try:
-      period = Cron(*volume.backup_cron.split())
-    except Exception as exc:
-      logger.error(f"Invalid backup cron for application {volume.application.qualified_name} volume {volume.name}: {exc}")
+    if not croniter.is_valid(volume.backup_cron):
+      logger.error(f"Invalid backup cron for application {volume.application.qualified_name} volume {volume.name}: {volume.backup_cron!r}")
       return False
 
-    if now not in period:
+    if not croniter.match(volume.backup_cron, now):
       return False
 
-    window = period.rollback(now)
+    # Due this cron minute: de-dupe by skipping if a backup for this volume was
+    # already made since the start of the current minute.
+    window_start = now.replace(second=0, microsecond=0)
     return not Backup.select().where(
         (Backup.type == "application")
         & (Backup.application == volume.application)
         & (Backup.source_volume_name == volume.name)
-        & (Backup.created_at >= window.left)
-        & (Backup.created_at < window.right)
+        & (Backup.created_at >= window_start)
     ).exists()
 
   def get_volume_backup_resource_error(

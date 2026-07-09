@@ -29,18 +29,6 @@ class ContextVarFilter(logging.Filter):
     return True
 
 
-class ExcludeLoggerFilter(logging.Filter):
-  def __init__(self, logger_names: list[str]):
-    super().__init__()
-    self.logger_names = logger_names
-
-  def filter(self, record: logging.LogRecord) -> bool:
-    return not any(
-        record.name == logger_name or record.name.startswith(f"{logger_name}.")
-        for logger_name in self.logger_names
-    )
-
-
 uvicorn_access_logger = logging.getLogger("uvicorn.access")
 
 
@@ -114,7 +102,6 @@ def setup_logger():
   # covering propagated child-logger records that bypass parent logger filters.
   handler.addFilter(ContextVarFilter())
   handler.addFilter(_SuppressTracebackFilter())
-  handler.addFilter(ExcludeLoggerFilter(["rocketry.task"]))
 
   root_logger = logging.getLogger()
   root_logger.setLevel(get_log_level())
@@ -123,11 +110,14 @@ def setup_logger():
 
   logging.getLogger("httpx").setLevel(logging.WARNING)
   logging.getLogger("asyncssh").setLevel(logging.WARNING)
+  # APScheduler logs every job run at INFO; keep only warnings/errors (missed
+  # runs, job exceptions) so the 1s dispatch tick doesn't flood the logs.
+  logging.getLogger("apscheduler").setLevel(logging.WARNING)
   # Exclude some paths from logs
   logging.getLogger("uvicorn.access").addFilter(ExactPathFilter(fastapi_exclude_log_paths))
 
   for logger_name in [
-      "rocketry.scheduler",
+      "apscheduler",
       "uvicorn",
       "uvicorn.access",
       "uvicorn.error",

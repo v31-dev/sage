@@ -4,7 +4,7 @@
 
 - Python 3.12
 - FastAPI
-- Rocketry
+- APScheduler + croniter
 - Peewee + SQLite
 - httpx
 - Cloudflare SDK
@@ -92,11 +92,11 @@ This is a project-wide pattern, not a local implementation detail.
 
 ## Operation Queue
 
-The Manager owns a single in-memory `TaskQueue` (`app/utils/queue.py`). It is the one place concurrency is controlled; Rocketry only enqueues.
+The Manager owns a single in-memory `TaskQueue` (`app/utils/queue.py`). It is the one place concurrency is controlled; the scheduler only enqueues.
 
 - **Enqueue.** Every operation runs via `Manager().add_task(task=..., scopes=..., executor=..., params=..., ...)`. Handlers receive ids (not ORM objects) and re-fetch, so nothing carries a stale snapshot across the queue boundary.
 - **Scopes** are `:`-delimited and hierarchical. Roots: `platform`, `app` (with `app:<qualified_name>` children), `common`, `metrics`. A parent scope conflicts with all of its children; siblings never conflict. Conflicting tasks are mutually excluded.
-- **Dispatch.** A one-second Rocketry tick calls `dispatch_tick`, which starts every pending task whose scope is free. One dispatcher makes the scan race-free; a `threading.Lock` guards the queue because producers run on FastAPI/loop threads.
+- **Dispatch.** A one-second APScheduler interval tick calls `dispatch_tick`, which starts every pending task whose scope is free. One dispatcher makes the scan race-free; a `threading.Lock` guards the queue because producers run on FastAPI/loop threads.
 - **Admission policy — `on_conflict` on `add_task`** (enum `OnConflict`; decided atomically under the queue lock). Admission decides *drop vs. enqueue*; mutual exclusion is **separate and always scope-based** — the dispatcher serializes conflicting scopes regardless of mode, so an enqueued task simply waits for its scope to free.
   - `DEDUP` (default) — drop and return `False` if an identical op (**same name + exact scope**) is already running or queued; otherwise enqueue and wait. Prevents reconciler pile-ups and double-triggers (e.g. a second deploy of the same app). A *different* op holding a conflicting scope does **not** cause a drop — it enqueues and waits behind that op. (So a background sync never rejects a user action; the action just defers behind it.)
   - `QUEUE` — always enqueue and wait, even for an identical op. For work where every call must run, including params-identified work that shares a name + scope (S3 delete by path, worker removal by host, the settings Traefik refresh by change-flags).
@@ -161,27 +161,27 @@ Additional storage:
 
 ## Scheduler Notes
 
-`app/scheduler.py` holds async Rocketry tasks that act only as cron triggers — each one calls `Manager().add_task(...)` and contains no execution logic. Route handlers enqueue through the same `add_task` path, and a few tasks are enqueued internally from within another task.
+`app/scheduler.py` holds async APScheduler triggers that act only as cron/interval triggers — each one calls `Manager().add_task(...)` and contains no execution logic. Sub-minute pumps (`dispatch_tick`, `sync_workers`) use `IntervalTrigger`; everything else uses `CronTrigger.from_crontab` and fires on exact wall-clock instants (never at boot). Note: APScheduler's `from_crontab` treats numeric day-of-week `0` as Monday (whereas the `croniter`-matched volume-backup crons use `0` = Sunday) — be explicit about the intended weekday. `dispatch_tick` must stay an `async def` (APScheduler runs coroutine jobs on the loop; a sync job would run in a worker thread where its `asyncio.create_task` has no running loop). Route handlers enqueue through the same `add_task` path, and a few tasks are enqueued internally from within another task.
 
 ## Task Catalog
 
 Every queued operation, its scope, where it is enqueued from, its lane pool, and its `on_conflict` policy. Keep this current when adding, removing, or re-scoping a task. `<qn>` is an application's `qualified_name`; `<host>` a worker hostname.
 
-**Scheduled (Rocketry cron → `add_task`)**
+**Scheduled (APScheduler cron/interval → `add_task`)**
 
 | Task | Scope | Source | Lane | on_conflict |
 | --- | --- | --- | --- | --- |
-| `sync_workers` | platform, app | cron 30s | platform | DEDUP |
+| `sync_workers` | platform, app | interval 30s | platform | DEDUP |
 | `sync_application_status` | app:`<qn>` | cron 1m | app | DEDUP |
 | `backup_application_s3` | app:`<qn>` | cron 1m (due backups) | app | DEDUP |
 | `sync_application_traefik_domains_config` | app:`<qn>` | cron 1m | app | DEDUP |
 | `Metrics.collect` | metrics:`<host>` | cron 1m | metrics | DEDUP |
-| `send_summary_notification` | common | cron 1d | common | REPLACE |
-| `get_latest_version` | common | cron 6h | common | REPLACE |
+| `send_summary_notification` | common | cron daily 08:00 | common | REPLACE |
+| `get_latest_version` | common | cron 6h (:15) | common | REPLACE |
 | `backup_database_s3` | platform, app | cron 6h | platform | REPLACE |
-| `Metrics.cleanup` | metrics | cron 1d | metrics | REPLACE |
-| `cleanup` | platform | cron 1d | platform | REPLACE |
-| `sync_traefik_certificates` | app | cron 10d | app | REPLACE |
+| `Metrics.cleanup` | metrics | cron daily 04:00 | metrics | REPLACE |
+| `cleanup` | platform | cron daily 04:00 | platform | REPLACE |
+| `sync_traefik_certificates` | app | cron weekly (Mon 03:00) | app | REPLACE |
 
 **Route-driven (HTTP → `add_task`)**
 

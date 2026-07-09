@@ -19,7 +19,7 @@ This is a living project-context file for AI coding agents. Keep it concise, cur
 
 ## Project Summary
 
-Sage is a lightweight manager-and-workers micro-PaaS that uses Tailscale for node connectivity, Cloudflare for DNS and tunnels, Traefik for ingress, Vector for logs, Glances for metrics, SQLite for persistence, Rocketry as a cron trigger feeding an in-memory operation queue, and Vue 3 for the UI.
+Sage is a lightweight manager-and-workers micro-PaaS that uses Tailscale for node connectivity, Cloudflare for DNS and tunnels, Traefik for ingress, Vector for logs, Glances for metrics, SQLite for persistence, APScheduler as a cron/interval trigger feeding an in-memory operation queue, and Vue 3 for the UI.
 
 ## Core Context To Preserve
 
@@ -27,11 +27,11 @@ Agents must keep this context active throughout a task, including after summarie
 
 - Manager plus workers over Tailscale is the core architecture.
 - Services are singleton-based and thread-aware.
-- All mutating/long operations run through the Manager's in-memory operation queue (`app/utils/queue.py`); Rocketry only fires cron triggers that call `Manager().add_task(...)`.
+- All mutating/long operations run through the Manager's in-memory operation queue (`app/utils/queue.py`); APScheduler only fires cron/interval triggers that call `Manager().add_task(...)`.
 - `task_id` propagation through `ContextVar` is a core observability requirement.
 - Blocking network or remote I/O is offloaded onto the lane pools in `app/utils/executor.py` — `run_in_executor_with_context(...)` (awaited) or `submit_with_context(...)` (fire-and-forget).
 - Local SQLite/Peewee work runs inline and relies on WAL mode.
-- Rocketry behavior must be checked against docs before changing the scheduler.
+- The scheduler is a thin APScheduler layer (`app/scheduler.py`) that only enqueues; cron jobs fire on wall-clock instants (never at boot).
 
 If this context may have been lost, reread this file plus the relevant `docs/` page before continuing.
 
@@ -39,14 +39,14 @@ If this context may have been lost, reread this file plus the relevant `docs/` p
 
 | Path | Purpose |
 | --- | --- |
-| `app/main.py` | Starts the main API, vector ingestion API, and Rocketry scheduler |
+| `app/main.py` | Starts the main API, vector ingestion API, and APScheduler scheduler |
 | `app/api.py` | Main FastAPI application |
 | `app/api_vector.py` | Metrics/log ingestion FastAPI application |
 | `app/routes/` | API route handlers |
 | `app/services/` | Singleton service layer |
 | `app/services/manager/` | Manager singleton (mixins): the operation orchestrator |
 | `app/services/db/` | Peewee models and DB bootstrap |
-| `app/scheduler.py` | Rocketry cron triggers that enqueue operations |
+| `app/scheduler.py` | APScheduler cron/interval triggers that enqueue operations |
 | `app/utils/queue.py` | In-memory operation queue (scopes + single-dispatcher) |
 | `app/utils/executor.py` | Thread-pool lanes + context-preserving offload helpers |
 | `app/templates/` | Generated manager and worker runtime files |
@@ -87,12 +87,12 @@ If this context may have been lost, reread this file plus the relevant `docs/` p
 
 ### Operation Queue And Scheduler
 
-- Rocketry is a pure cron trigger: each scheduled task only calls `Manager().add_task(...)`. All execution and concurrency control live in the in-memory `TaskQueue` (`app/utils/queue.py`).
+- APScheduler is a pure cron/interval trigger: each scheduled coroutine only calls `Manager().add_task(...)`. All execution and concurrency control live in the in-memory `TaskQueue` (`app/utils/queue.py`).
 - Route and scheduled work alike enqueue via `add_task`; handlers take ids (not ORM objects) and re-fetch.
 - Scopes (`platform`, `app`/`app:<qualified_name>`, `common`, `metrics`) give hierarchical mutual exclusion (enforced by the dispatcher); each scope root has its own lane pool. Admission (drop vs. enqueue) is one `on_conflict` enum on `add_task`: `DEDUP` (default, skip if an identical op — same name + exact scope — is already pending/running, else enqueue and wait), `QUEUE` (always enqueue, no dedupe), `REPLACE` (latest-wins, supersede a pending duplicate then wait). A different op holding a conflicting scope never drops a new task — it defers behind it. `quiet=True` is a separate flag for high-frequency reconcilers (record only on failure). Details in [docs/backend.md](docs/backend.md).
 - Task shape: one async task that `asyncio.gather`s its offloaded leaves (independent work in one operation, shared scope), per-entity fan-out (one `add_task` per entity, each with its own scope/lifecycle/DEDUP), or sequential `await`s (ordered/dependent steps). A fan-out parent must be async — never a sync task blocking on its own lane.
 - When adding or changing a task, declare its `scopes`, `executor`, and `on_conflict` at the single `add_task` call site and **add/update its row in the Task Catalog** in [docs/backend.md](docs/backend.md). Worker-infrastructure tasks intentionally hold the broad `app` scope (no `worker` dimension; closes the new-worker race) — keep that, don't "optimize" it to per-worker.
-- Read Rocketry docs before changing trigger cadence or scheduler behavior.
+- Scheduler cadence lives in `app/scheduler.py` (`AsyncIOScheduler`): sub-minute pumps use `IntervalTrigger`, everything else uses `CronTrigger.from_crontab`. Gotcha: APScheduler's `from_crontab` treats numeric day-of-week `0` as **Monday**, while the `croniter`-matched per-app volume-backup crons use standard `0` = Sunday — be explicit about the intended weekday. `dispatch_tick` must stay `async` (coroutine jobs run on the loop; a sync job runs in a worker thread where its `asyncio.create_task` has no running loop).
 
 ## Working Rules
 
