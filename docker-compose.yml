@@ -5,6 +5,8 @@ services:
     image: ghcr.io/v31-dev/sage:${SAGE_IMAGE_TAG:?Set SAGE_IMAGE_TAG to a full version such as 0.0.2}
     container_name: sage
     restart: unless-stopped
+    # Allow attaching live profilers (py-spy, memray) via `docker exec`.
+    cap_add: ["SYS_PTRACE"]
     environment:
       - CLOUDFLARE_API_TOKEN=${CLOUDFLARE_API_TOKEN}
       - CLOUDFLARE_ACCOUNT_ID=${CLOUDFLARE_ACCOUNT_ID}
