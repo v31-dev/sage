@@ -4,9 +4,9 @@ import os
 import sys
 import uvicorn
 
+import scheduler
 from api import app as app_fastapi
 from api_vector import app as app_fastapi_vector
-from scheduler import app as app_rocketry
 from services.manager import Manager
 from utils.logging import setup_logger
 
@@ -22,10 +22,10 @@ except Exception as e:
   sys.exit(1)
 
 
-# Start the FastAPI server and Rocketry scheduler
+# Start the FastAPI server and the scheduler
 class Server(uvicorn.Server):
   def handle_exit(self, sig: int, frame) -> None:
-    app_rocketry.session.shut_down()
+    scheduler.shutdown()
     return super().handle_exit(sig, frame)
 
 
@@ -38,6 +38,9 @@ class VectorServer(uvicorn.Server):
 async def main():
   # Perform manager async initialization
   await manager.async_init()
+
+  # Start the cron/interval scheduler on this running loop.
+  scheduler.start()
 
   vector_server = VectorServer(
       config=uvicorn.Config(
@@ -64,9 +67,8 @@ async def main():
 
   api = asyncio.create_task(server.serve())
   vector = asyncio.create_task(vector_server.serve())
-  sched = asyncio.create_task(app_rocketry.serve())
 
-  await asyncio.wait([sched, api, vector])
+  await asyncio.wait([api, vector])
 
 
 if __name__ == "__main__":

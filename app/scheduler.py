@@ -1,13 +1,9 @@
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 
-from redbird.oper import less_than
-from redbird.repos import MemoryRepo
-from rocketry import Rocketry
-from rocketry.conds import every, minutely
-from rocketry.conditions import SchedulerStarted
-from rocketry.log import MinimalRecord
-from rocketry.time import TimeDelta
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 
 from services.db import Application, Project, Worker
 from services.manager import Manager
@@ -15,31 +11,21 @@ from services.metrics import Metrics
 from utils.common import get_env
 from utils.queue import OnConflict
 
+
 logger = logging.getLogger(__name__)
 
-# Rocketry is a pure scheduler here
-app = Rocketry(execution="async", logger_repo=MemoryRepo(model=MinimalRecord))
+# APScheduler is used only for job scheduling
+_scheduler = AsyncIOScheduler(
+    job_defaults={"coalesce": True, "max_instances": 1, "misfire_grace_time": 30}
+)
 
-ROCKETRY_LOG_RETENTION = timedelta(days=1)
 
-
-# Single consumer for the operation queue: starts every pending task whose
-# scopes are free. Runs on the loop, not as a queued task itself.
-@app.task(every("1 second"))
 async def dispatch_tick():
   Manager().dispatch_tick()
 
-
-# Prune Rocketry's in-memory task-log repo so it doesn't grow without bound.
-@app.task(every("1 day"))
-async def prune_scheduler_logs():
-  cutoff = (datetime.now() - ROCKETRY_LOG_RETENTION).timestamp()
-  app.session.get_repo().filter_by(created=less_than(cutoff)).delete()
+# --- Triggers: each only enqueues onto the Manager operation queue -------------
 
 
-# Detect worker changes. platform+app scoped so it serializes with deploys;
-# rejected when something is in flight (no pile-up).
-@app.task(every("30 seconds"))
 async def sync_workers():
   Manager().add_task(
       task=Manager().sync_workers,
@@ -49,10 +35,6 @@ async def sync_workers():
   )
 
 
-# Reconcile each application's status independently (per-app scope), so one busy
-# app never blocks syncing the rest. An app with an operation in flight is
-# rejected (skipped) for this cycle; container-less apps are a no-op.
-@app.task(minutely)
 async def sync_application_status():
   for application in Application.select(Application, Project).join(Project):
     Manager().add_task(
@@ -64,8 +46,6 @@ async def sync_application_status():
     )
 
 
-# Dispatch scheduled application backups onto the operation queue.
-@app.task(minutely)
 async def schedule_application_backups():
   now = datetime.now()
   for application, volumes in Manager().get_due_volume_backups(now):
@@ -77,8 +57,6 @@ async def schedule_application_backups():
     )
 
 
-# Sync Traefik domain config per application (per-app scope).
-@app.task(minutely)
 async def sync_application_traefik_domains_config():
   for application in Application.select(Application, Project).join(Project).where(Application.domains_synced == False):
     Manager().add_task(
@@ -90,10 +68,6 @@ async def sync_application_traefik_domains_config():
     )
 
 
-# Collect host metrics from this manager and each online worker. One task per
-# target (sibling `metrics:<host>` scopes) so a slow or flaky worker only skips
-# its own cycle. Recorded only on failure, since it runs every minute.
-@app.task(minutely)
 async def collect_metrics():
   targets = [("host.docker.internal", get_env("HOSTNAME"))] + [
       (worker.ip, worker.hostname) for worker in Worker.select().where(Worker.online)
@@ -108,9 +82,6 @@ async def collect_metrics():
     )
 
 
-# Long-period crons use REPLACE so a transient scope conflict doesn't skip the
-# whole cycle (next run is hours/days away); latest-wins keeps no backlog.
-@app.task(every("1 day"))
 async def send_summary_notification():
   Manager().add_task(
       task=Manager().send_summary_notification,
@@ -120,8 +91,6 @@ async def send_summary_notification():
   )
 
 
-# Refresh the latest sage release version from GitHub.
-@app.task(every("6 hours"))
 async def refresh_latest_version():
   Manager().add_task(
       task=Manager().get_latest_version,
@@ -131,9 +100,6 @@ async def refresh_latest_version():
   )
 
 
-# Backup the main database. REPLACE: supersede a pending backup (latest wins) and
-# wait behind a running one, so at most one backup is queued behind the in-flight work.
-@app.task((every("6 hours") & ~SchedulerStarted(period=TimeDelta("10 minute"))), name="backup_database")
 async def backup_database():
   Manager().add_task(
       task=Manager().backup_database_s3,
@@ -143,10 +109,6 @@ async def backup_database():
   )
 
 
-# Daily clean up check. Both use REPLACE so a transient conflict (a running metrics
-# collect, or a backup/restore on the platform lane) defers rather than skips the
-# day's cleanup; the manager cleanup is platform-scoped and does not block app work.
-@app.task((every("1 day") & ~SchedulerStarted(period=TimeDelta("10 minute"))))
 async def cleanup():
   Manager().add_task(
       task=Metrics().cleanup,
@@ -164,9 +126,6 @@ async def cleanup():
   )
 
 
-# Sync Traefik wildcard certificates to workers. REPLACE so a transient app-scope
-# conflict doesn't skip the sync for another 10 days.
-@app.task((every("10 days")), name="traefik_sync_certs")
 async def traefik_sync_certs():
   Manager().add_task(
       task=Manager().sync_traefik_certificates,
@@ -174,3 +133,34 @@ async def traefik_sync_certs():
       executor="app",
       on_conflict=OnConflict.REPLACE,
   )
+
+
+# Job scheduling
+_JOBS = [
+    (dispatch_tick, IntervalTrigger(seconds=1)),
+    (sync_workers, IntervalTrigger(seconds=30)),
+    (sync_application_status, CronTrigger.from_crontab("* * * * *")),
+    (schedule_application_backups, CronTrigger.from_crontab("* * * * *")),
+    (sync_application_traefik_domains_config, CronTrigger.from_crontab("* * * * *")),
+    (collect_metrics, CronTrigger.from_crontab("* * * * *")),
+    (refresh_latest_version, CronTrigger.from_crontab("15 */6 * * *")),
+    (backup_database, CronTrigger.from_crontab("0 */6 * * *")),
+    (send_summary_notification, CronTrigger.from_crontab("0 8 * * *")),
+    (cleanup, CronTrigger.from_crontab("0 4 * * *")),
+    (traefik_sync_certs, CronTrigger.from_crontab("0 3 * * 0")),
+]
+
+
+def start():
+  """Register every trigger and start the scheduler. Call from within the
+  running event loop (AsyncIOScheduler binds to the loop on start)."""
+  for fn, trigger in _JOBS:
+    _scheduler.add_job(fn, trigger, id=fn.__name__, name=fn.__name__, replace_existing=True)
+  _scheduler.start()
+
+
+def shutdown():
+  """Stop the scheduler without waiting for running jobs (they are short
+  enqueue calls; the operation queue drains separately)."""
+  if _scheduler.running:
+    _scheduler.shutdown(wait=False)

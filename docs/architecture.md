@@ -17,7 +17,7 @@ The manager process starts three concurrent services from `app/main.py`:
 
 1. Main FastAPI API on port `9000`
 2. Vector ingestion FastAPI API on port `9001`
-3. Rocketry async scheduler
+3. APScheduler (cron/interval) scheduler
 
 Startup is service-driven:
 
@@ -134,7 +134,7 @@ Container log search uses SQLite FTS5.
 
 ## Scheduler And Operation Queue
 
-Rocketry is a pure cron trigger: each scheduled task only calls `Manager().add_task(...)` to enqueue work and owns no execution or concurrency logic. Recurring triggers cover:
+APScheduler is a pure cron/interval trigger: each scheduled coroutine only calls `Manager().add_task(...)` to enqueue work and owns no execution or concurrency logic. Recurring triggers cover:
 
 - worker discovery and sync
 - application status sync

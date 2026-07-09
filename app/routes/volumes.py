@@ -1,5 +1,5 @@
+from croniter import croniter
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
-from rocketry.time import Cron
 
 from routes.backups import router as backups_router
 from services.db import Volume
@@ -48,10 +48,8 @@ def validate_backup_cron(expression: str | None):
   if len(parts) != 5:
     raise HTTPException(status_code=400, detail="backup_cron must be a 5-part cron expression.")
 
-  try:
-    Cron(*parts)
-  except Exception as exc:
-    raise HTTPException(status_code=400, detail=f"Invalid backup_cron: {exc}")
+  if not croniter.is_valid(value):
+    raise HTTPException(status_code=400, detail="Invalid backup_cron expression.")
 
   return expression
 
