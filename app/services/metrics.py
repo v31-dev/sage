@@ -55,6 +55,9 @@ class Metrics(Base):
 
     self._dbs = {"metrics": {}, "logs": {}}
 
+    # Reused across collects which also pools connections.
+    self._http = httpx.Client(timeout=10)
+
   def get_metrics_db(self, hostname):
     """
     1 database per hostname
@@ -198,8 +201,7 @@ class Metrics(Base):
     ts = datetime.now().replace(second=0, microsecond=0)
 
     try:
-      with httpx.Client(timeout=10) as client:
-        data = {ep: client.get(f"{metrics_endpoint}/{ep}").json() for ep in plugins}
+      data = {ep: self._http.get(f"{metrics_endpoint}/{ep}").json() for ep in plugins}
 
       root_fs = max(data["fs"], key=lambda f: f.get("size", 0))
       db_info = self.get_metrics_db(hostname)

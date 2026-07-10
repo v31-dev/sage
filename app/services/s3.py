@@ -20,6 +20,8 @@ class S3(Base):
 
     self.s3_config = None
 
+    self._session = aioboto3.Session()
+
     self.load()
 
     if not self.s3_config:
@@ -151,7 +153,7 @@ class S3(Base):
     """
     self.check_config_exists()
 
-    session = aioboto3.Session()
+    session = self._session
 
     for attempt in range(max_retries):
       try:
@@ -230,7 +232,7 @@ class S3(Base):
     """
     self.check_config_exists()
 
-    session = aioboto3.Session()
+    session = self._session
 
     try:
       async with session.client('s3', **self._get_client_kwargs()) as s3_client:
@@ -281,7 +283,7 @@ class S3(Base):
     """
     self.check_config_exists()
 
-    session = aioboto3.Session()
+    session = self._session
 
     try:
       # Use the provided s3_path as-is (should already be the full key from Backup record)
@@ -319,7 +321,7 @@ class S3(Base):
     """
     self.check_config_exists()
 
-    session = aioboto3.Session()
+    session = self._session
     keys = []
 
     try:
