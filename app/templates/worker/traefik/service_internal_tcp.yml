@@ -25,6 +25,7 @@ tcp:
       service: ${SERVICE}_${SUBDOMAIN}_tcp_local_internal
       tls:
         certResolver: cloudflare
+        options: backend-tcp
 
   services:
     # Final mesh service -> local backend container on sage_default.
