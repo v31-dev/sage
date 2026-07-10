@@ -16,9 +16,12 @@ NOTIFICATION_STYLES = {
 }
 
 
+_session = requests.Session()
+
+
 def _dispatch_webhook_with_logging(webhook_url, payload, name):
   try:
-    response = requests.post(webhook_url, json=payload, timeout=5)
+    response = _session.post(webhook_url, json=payload, timeout=5)
     response.raise_for_status()
   except Exception as e:
     logger.error(f"Failed to send notification to {name}: {e}")
