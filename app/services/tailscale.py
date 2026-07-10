@@ -20,9 +20,37 @@ class Tailscale(Base):
     super().__init__()
 
     self.uds = "/var/run/tailscale/tailscaled.sock"
+    # Pooled SSH connections per worker
+    self._conns: dict[str, asyncssh.SSHClientConnection] = {}
+    self._conn_locks: dict[str, asyncio.Lock] = {}
     # validate connection on startup
     self.ip()
     logger.info("Connected to Tailscale.")
+
+  async def _get_conn(self, hostname):
+    """Return a live pooled SSH connection to `hostname`, connecting if needed."""
+    conn = self._conns.get(hostname)
+    if conn is not None and not conn.is_closed():
+      return conn
+    lock = self._conn_locks.setdefault(hostname, asyncio.Lock())
+    async with lock:
+      conn = self._conns.get(hostname)
+      if conn is not None and not conn.is_closed():
+        return conn
+      # keepalive: ping every 30s, drop after ~90s of silence, so a silently
+      # dead pooled connection is detected (is_closed) and reconnected instead
+      # of hanging the next command, and idle connections stay NAT/firewall-warm.
+      conn = await asyncssh.connect(
+          hostname, username=SSH_USER, known_hosts=None, connect_timeout=30,
+          keepalive_interval=30, keepalive_count_max=3)
+      self._conns[hostname] = conn
+      return conn
+
+  async def _evict(self, hostname):
+    """Drop and close a pooled connection (after an error, or a removed worker)."""
+    conn = self._conns.pop(hostname, None)
+    if conn is not None:
+      conn.close()
 
   def status(self):
     try:
@@ -71,21 +99,29 @@ class Tailscale(Base):
 
   async def exec_command(self, hostname, command, timeout=300):
     """
-    Execute a command on a worker over the Tailscale SSH server via asyncssh.
-    Returns (exit_status, output_lines); raises on timeout or non-zero exit.
+    Execute a command on a worker over the Tailscale SSH server via asyncssh,
+    reusing a pooled connection. Returns (exit_status, output_lines); raises on
+    timeout or non-zero exit. A stale/dead pooled connection is evicted and the
+    command retried once on a fresh connection.
     """
     logger.info(f"Executing command on {hostname}: {command}")
-    try:
-      async with asyncssh.connect(
-          hostname, username=SSH_USER, known_hosts=None, connect_timeout=30
-      ) as conn:
+    result = None
+    for attempt in range(2):
+      try:
+        conn = await self._get_conn(hostname)
+      except (OSError, asyncssh.Error) as e:
+        raise Exception(f"Error connecting to {hostname}: {e}")
+      try:
         # merge stderr into stdout so a failed command's output is captured
         result = await conn.run(
             command, timeout=timeout, check=False, stderr=asyncssh.STDOUT)
-    except (asyncio.TimeoutError, asyncssh.TimeoutError):
-      raise Exception(f"Command on {hostname} timed out after {timeout}s: {command}")
-    except (OSError, asyncssh.Error) as e:
-      raise Exception(f"Error executing command on {hostname}: {e}")
+        break
+      except (asyncio.TimeoutError, asyncssh.TimeoutError):
+        raise Exception(f"Command on {hostname} timed out after {timeout}s: {command}")
+      except (OSError, asyncssh.Error) as e:
+        await self._evict(hostname)  # connection likely dead; retry once fresh
+        if attempt == 1:
+          raise Exception(f"Error executing command on {hostname}: {e}")
 
     output_lines = [
         line for line in (result.stdout or "").splitlines()
@@ -130,24 +166,29 @@ class Tailscale(Base):
 
     remote_dir = posixpath.dirname(dst)
 
-    async def _upload():
-      async with asyncssh.connect(
-          hostname, username=SSH_USER, known_hosts=None, connect_timeout=30
-      ) as conn:
-        async with conn.start_sftp_client() as sftp:
-          if remote_dir:
-            await sftp.makedirs(remote_dir, exist_ok=True)
-          if content is not None:
-            async with sftp.open(dst, "w") as remote_file:
-              await remote_file.write(content)
-          else:
-            await sftp.put(str(src), dst)
+    async def _upload(conn):
+      async with conn.start_sftp_client() as sftp:
+        if remote_dir:
+          await sftp.makedirs(remote_dir, exist_ok=True)
+        if content is not None:
+          async with sftp.open(dst, "w") as remote_file:
+            await remote_file.write(content)
+        else:
+          await sftp.put(str(src), dst)
 
     logger.info(f"Syncing file to {hostname} from {src} to {dst}.")
-    try:
-      await asyncio.wait_for(_upload(), timeout)
-    except asyncio.TimeoutError:
-      raise Exception(f"Syncing file to {hostname} timed out after {timeout}s: {dst}")
-    except (OSError, asyncssh.Error) as e:
-      raise Exception(f"Error syncing file to {hostname}: {e}")
+    for attempt in range(2):
+      try:
+        conn = await self._get_conn(hostname)
+      except (OSError, asyncssh.Error) as e:
+        raise Exception(f"Error connecting to {hostname}: {e}")
+      try:
+        await asyncio.wait_for(_upload(conn), timeout)
+        break
+      except asyncio.TimeoutError:
+        raise Exception(f"Syncing file to {hostname} timed out after {timeout}s: {dst}")
+      except (OSError, asyncssh.Error) as e:
+        await self._evict(hostname)  # connection likely dead; retry once fresh
+        if attempt == 1:
+          raise Exception(f"Error syncing file to {hostname}: {e}")
     logger.info(f"Successfully synced file to {hostname}: {dst}.")

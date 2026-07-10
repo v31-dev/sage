@@ -44,6 +44,32 @@ Tips:
 - If the leak view points into a C boundary (sqlite, asyncssh, cryptography)
   rather than clear Python code, re-attach adding `--native` for C/C++ frames.
 
+## Leak vs. fragmentation (check both views)
+
+RSS growth is not always a leak. Always look at **both**:
+
+- `memray flamegraph --leaks` (or the leak-filtered views) = allocations **still
+  resident** at the end. If this is small but RSS keeps climbing, it is **not a
+  classic leak.**
+- `memray stats` = **cumulative churn** (total allocations / top allocators by
+  count). A huge churn with a tiny live peak (`Peak memory usage`) means the RSS
+  growth is **heap fragmentation** driven by high-frequency alloc/free — the
+  allocator holds freed pages instead of returning them to the OS.
+
+A real example from this codebase: `Metrics.collect` created a new `httpx.Client`
+every minute per host, each rebuilding an SSL context and reloading the whole CA
+bundle (~1.9M allocations, all freed) — `--leaks` showed almost nothing, but
+`stats` showed the churn. The fix was reusing one client (see `self._http`). The
+general pattern: **don't recreate expensive clients/sessions on hot paths**
+(httpx, `aioboto3.Session`, SSH connections) — build once and reuse.
+
+## Fragmentation mitigations (already applied)
+
+- **`MALLOC_ARENA_MAX=2`** (set in the Dockerfiles): the thread-pool lanes
+  otherwise make glibc spawn many arenas that fragment and inflate RSS.
+- If RSS still creeps after killing the churn and capping arenas, try jemalloc
+  via `LD_PRELOAD` (fragments less, returns memory to the OS more readily).
+
 ## CPU: what is it doing? (py-spy)
 
 ```bash
