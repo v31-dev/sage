@@ -41,3 +41,13 @@ tcp:
         sourceRange:
           - "100.64.0.0/10"
           - "172.16.0.0/12"
+
+# Shared TLS options for the TCP mesh hop (meshtcp), which terminates TLS
+tls:
+  options:
+    backend-tcp:
+      alpnProtocols:
+        - postgresql
+        - h2
+        - http/1.1
+        - acme-tls/1
