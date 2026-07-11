@@ -150,6 +150,13 @@ class WorkersMixin:
           timeout=300,
       )
 
+      # Restart vector to pick up config changes
+      await self.tailscale.exec_command(
+          worker.hostname,
+          f"docker compose -f {self.worker_home_dir}/docker-compose.yml restart vector",
+          timeout=60,
+      )
+
       Worker.update(online=True).where(
           Worker.hostname == worker.hostname).execute()
 
