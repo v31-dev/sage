@@ -153,8 +153,9 @@ class WorkersMixin:
       Worker.update(online=True).where(
           Worker.hostname == worker.hostname).execute()
 
-      # Sync certificates to worker
-      await self.traefik.sync_certificates_to_worker(worker, self.traefik.has_valid_certificates())
+      # Sync the wildcard cert to the worker when the manager has a valid one.
+      if self.traefik.has_valid_certificates():
+        await self.traefik.sync_certificates_to_worker(worker)
 
       # Trigger Traefik update config for all applications having containers on this worker
       Application.update(

@@ -122,33 +122,35 @@ class Traefik(Base):
           "Valid Traefik acme.json file not found after waiting. Skipping certificate sync to workers.",
           type="error"
       )
+      return
 
     # Workers are independent, so sync them concurrently: the asyncssh SFTP
     # leaves fan out and drain on the event loop.
     online_workers = list(Worker.select().where(Worker.online))
     await asyncio.gather(
-        *[self.sync_certificates_to_worker(worker, acme_valid) for worker in online_workers],
+        *[self.sync_certificates_to_worker(worker) for worker in online_workers],
         return_exceptions=False,
     )
 
-  async def sync_certificates_to_worker(self, worker: Worker, acme_valid: bool):
-    if acme_valid:
+  async def sync_certificates_to_worker(self, worker: Worker):
+    compose_file = f"{self.manager.worker_home_dir}/docker-compose.yml"
+    # Worker traefik needs to be restarted to pick acme.json
+    # It also needs to be stopped first since traefik tries to reload acme from memory
+    try:
+      await self.manager.tailscale.exec_command(
+          worker.hostname,
+          f"docker compose -f {compose_file} stop traefik",
+          timeout=60,
+      )
       await self.manager.tailscale.sync_file(
           worker.hostname,
           f"{self.config_path}/acme.json",
           f"{self.manager.worker_home_dir}/traefik/acme.json",
       )
-    await self.manager.tailscale.sync_file(
-        worker.hostname,
-        app_dir / "templates/worker/traefik/traefik.yml",
-        f"{self.manager.worker_home_dir}/traefik/traefik.yml",
-        {"ADMIN_EMAIL": self.admin_email},
-    )
-    # Traefik needs restart to pick new acme.json
-    if acme_valid:
+    finally:
       await self.manager.tailscale.exec_command(
           worker.hostname,
-          f"docker compose -f {self.manager.worker_home_dir}/docker-compose.yml restart traefik",
+          f"docker compose -f {compose_file} start traefik",
           timeout=60,
       )
     logger.info(f"Finished syncing Traefik certificates to worker {worker.hostname}.")
