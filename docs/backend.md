@@ -177,7 +177,7 @@ Every queued operation, its scope, where it is enqueued from, its lane pool, and
 | `sync_application_traefik_domains_config` | app:`<qn>` | cron 1m | app | DEDUP |
 | `Metrics.collect` | metrics:`<host>` | cron 1m | metrics | DEDUP |
 | `send_summary_notification` | common | cron daily 08:00 | common | REPLACE |
-| `get_latest_version` | common | cron 6h (:15) | common | REPLACE |
+| `get_latest_version` | common | cron 4h | common | REPLACE |
 | `backup_database_s3` | platform, app | cron 6h | platform | REPLACE |
 | `Metrics.cleanup` | metrics | cron daily 04:00 | metrics | REPLACE |
 | `cleanup` | platform | cron daily 04:00 | platform | REPLACE |
