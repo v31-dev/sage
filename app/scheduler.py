@@ -143,7 +143,7 @@ _JOBS = [
     (schedule_application_backups, CronTrigger.from_crontab("* * * * *")),
     (sync_application_traefik_domains_config, CronTrigger.from_crontab("* * * * *")),
     (collect_metrics, CronTrigger.from_crontab("* * * * *")),
-    (refresh_latest_version, CronTrigger.from_crontab("15 */6 * * *")),
+    (refresh_latest_version, CronTrigger.from_crontab("0 */4 * * *")),
     (backup_database, CronTrigger.from_crontab("0 */6 * * *")),
     (send_summary_notification, CronTrigger.from_crontab("0 8 * * *")),
     (cleanup, CronTrigger.from_crontab("0 4 * * *")),
