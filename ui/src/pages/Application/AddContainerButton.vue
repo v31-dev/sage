@@ -26,7 +26,6 @@ import { Spinner } from '@/components/ui/spinner'
 import {
   type Application,
   type Worker,
-  type Container,
   getApplicationAPI,
   getContainerAPI,
 } from '@/services/api'
@@ -83,10 +82,9 @@ async function onClickAddContainerConfirm() {
     if (domainTag.value) {
       containerData.domain_tag = domainTag.value
     }
-    ;(await props.containersAPI.create(containerData)) as Container
+    await props.containersAPI.create(containerData)
     isAddContainerDialogOpen.value = false
-    await props.loadApplication()
-    toast.success('Container added successfully')
+    toast.success('Container add triggered')
   } catch (err) {
     addContainerErrorMessage.value = err instanceof Error ? err.message : 'Failed to add container'
   } finally {

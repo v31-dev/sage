@@ -47,8 +47,7 @@ async function onClickEditContainerConfirm() {
     }
     await props.containersAPI.update(`${props.container.worker.hostname}`, containerData)
     isEditContainerDialogOpen.value = false
-    await props.loadApplication()
-    toast.success('Container updated successfully')
+    toast.success('Container update triggered')
   } catch (err) {
     editContainerErrorMessage.value =
       err instanceof Error ? err.message : 'Failed to update container'

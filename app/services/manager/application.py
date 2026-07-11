@@ -9,6 +9,7 @@ from services.db import (
     Application,
     Container,
     Event,
+    Worker,
 )
 from utils.common import format_yaml, parse_multiline_kv
 from utils.logging import generate_task_id_token, task_id
@@ -285,6 +286,43 @@ class ApplicationMixin:
           f"Failed to delete container {
               container.id} of application {container.application.qualified_name} from worker {
               container.worker.hostname}: {e}")
+
+  def create_container(self, application_id: int, worker_hostname: str, domain_tag: str | None = None):
+    """
+    Create a container placement on a worker. Runs on the app scope so it
+    serializes with deploy/stop/delete and the container_count signal stays
+    consistent with the rows.
+    """
+    application = Application.get_by_id(application_id)
+    try:
+      worker = Worker.get_by_id(worker_hostname)
+      Container.create(application=application, worker=worker, domain_tag=domain_tag)
+      self.notify(
+          f"Container of application {application.qualified_name} added on worker {worker_hostname}.",
+          "success")
+    except Exception as e:
+      self.notify(
+          f"Failed to add container of application {application.qualified_name} on worker {
+              worker_hostname}: {e}", "error")
+      raise
+
+  def update_container(self, container_id: int, domain_tag: str | None = None):
+    """
+    Update a container's domain tag. Runs on the app scope so the routing change
+    serializes with deploy/stop.
+    """
+    container = Container.get_by_id(container_id)
+    try:
+      container.domain_tag = domain_tag
+      container.save()
+      self.notify(
+          f"Container of application {container.application.qualified_name} on worker {
+              container.worker.hostname} updated.", "success")
+    except Exception as e:
+      self.notify(
+          f"Failed to update container of application {
+              container.application.qualified_name}: {e}", "error")
+      raise
 
   async def stop_application(self, application_id: int):
     """

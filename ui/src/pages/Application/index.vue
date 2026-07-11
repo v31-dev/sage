@@ -76,6 +76,7 @@ async function loadApplicationStatus() {
     if (application.value) {
       application.value.status = updatedApplication.status
       application.value.containers = updatedApplication.containers
+      application.value.container_count = updatedApplication.container_count
       application.value.updated_at = updatedApplication.updated_at
       application.value.domains_synced = updatedApplication.domains_synced
       appStore.updateApplicationDeployStatus(updatedApplication.status)

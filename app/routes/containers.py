@@ -4,12 +4,10 @@ from services.db import APPLICATION_BUSY_STATUSES, Container, Worker
 from services.manager import Manager
 from utils.api import (
     get_request_models,
-    generic_create,
     generic_get,
     generic_list,
-    generic_update,
-    parse_api_data,
 )
+from utils.queue import OnConflict
 
 
 
@@ -65,9 +63,7 @@ def create_container(request: Request, container_data: dict = Body(...)):
   if 'worker' in request.state.models:
     raise HTTPException(status_code=405, detail="Method not allowed.")
 
-  data = {
-      "application": request.state.models["application"],
-  }
+  application = request.state.models["application"]
 
   worker = Worker.get_or_none(Worker.hostname == container_data.get("worker"))
   if not worker:
@@ -75,13 +71,26 @@ def create_container(request: Request, container_data: dict = Body(...)):
         status_code=404,
         detail=f"Worker with hostname '{container_data.get('worker')}' not found",
     )
-  else:
-    data["worker"] = worker
 
-  if "domain_tag" in container_data:
-    data["domain_tag"] = container_data.get("domain_tag")
+  if Container.select().where(
+      (Container.application == application) & (Container.worker == worker)).exists():
+    raise HTTPException(
+        status_code=409, detail=f"Container already exists on worker '{worker.hostname}'.")
 
-  return generic_create(Container, data)
+  Manager().add_task(
+      task=Manager().create_container,
+      scopes={f"app:{application.qualified_name}"},
+      params={
+          "application_id": application.id,
+          "worker_hostname": worker.hostname,
+          "domain_tag": container_data.get("domain_tag"),
+      },
+      executor="app",
+      on_conflict=OnConflict.QUEUE,
+      task_id=request.state.task_id,
+  )
+
+  return {"status": "OK"}
 
 
 @router.put("/{container}", dependencies=[Depends(inject_container)])
@@ -89,11 +98,19 @@ def update_container(request: Request, container_data: dict = Body(...)):
   if 'worker' in request.state.models:
     raise HTTPException(status_code=405, detail="Method not allowed.")
 
-  data = parse_api_data(
-      container_data,
-      ["domain_tag"],
+  application = request.state.models["application"]
+  container = request.state.models["container"]
+
+  Manager().add_task(
+      task=Manager().update_container,
+      scopes={f"app:{application.qualified_name}"},
+      params={"container_id": container.id, "domain_tag": container_data.get("domain_tag")},
+      executor="app",
+      on_conflict=OnConflict.QUEUE,
+      task_id=request.state.task_id,
   )
-  return generic_update(Container, request.state.models["container"], data)
+
+  return {"status": "OK"}
 
 
 @router.delete("/{container}", dependencies=[Depends(inject_container)])
