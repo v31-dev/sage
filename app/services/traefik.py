@@ -132,12 +132,11 @@ class Traefik(Base):
     )
 
   async def sync_certificates_to_worker(self, worker: Worker, acme_valid: bool):
-    # Workers auto-reload acme.json, so no Traefik restart is needed here.
     if acme_valid:
       await self.manager.tailscale.sync_file(
           worker.hostname,
           f"{self.config_path}/acme.json",
-          "/opt/sage/traefik/acme.json",
+          f"{self.manager.worker_home_dir}/traefik/acme.json",
       )
     await self.manager.tailscale.sync_file(
         worker.hostname,
@@ -145,4 +144,11 @@ class Traefik(Base):
         f"{self.manager.worker_home_dir}/traefik/traefik.yml",
         {"ADMIN_EMAIL": self.admin_email},
     )
+    # Traefik needs restart to pick new acme.json
+    if acme_valid:
+      await self.manager.tailscale.exec_command(
+          worker.hostname,
+          f"docker compose -f {self.manager.worker_home_dir}/docker-compose.yml restart traefik",
+          timeout=60,
+      )
     logger.info(f"Finished syncing Traefik certificates to worker {worker.hostname}.")
