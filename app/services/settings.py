@@ -94,8 +94,12 @@ class Settings(Base):
 
     with self.lock:
       setting = Setting.get(Setting.key == key)
+      # Reassign rather than mutate in place: with only_save_dirty a nested
+      # mutation isn't tracked and would not be persisted.
+      new_value = dict(setting.value or {})
       for field, field_value in subset_value.items():
-        setting.value[field] = field_value
+        new_value[field] = field_value
+      setting.value = new_value
       setting.save()
       self.values[key] = setting.value
 

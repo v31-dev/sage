@@ -38,6 +38,7 @@ class BaseModel(Model):
 
   class Meta:
     database = db
+    only_save_dirty = True
 
   def save(self, *args, **kwargs):
     self.updated_at = datetime.now()
