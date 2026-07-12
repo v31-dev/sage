@@ -8,6 +8,7 @@ from services.db import (
 )
 from services.settings import Settings
 from utils.executor import run_in_executor_with_context
+from utils.queue import OnConflict
 
 from ._common import app_dir
 
@@ -15,6 +16,18 @@ logger = logging.getLogger(__name__)
 
 
 class TraefikMixin:
+  def request_application_traefik_sync(self, application):
+    """Mark the app's Traefik config stale and enqueue an app-scoped resync."""
+    Application.update(domains_synced=False).where(Application.id == application.id).execute()
+    self.add_task(
+        task=self.sync_application_traefik_domains_config,
+        scopes={f"app:{application.qualified_name}"},
+        params={"application_id": application.id},
+        executor="app",
+        on_conflict=OnConflict.REPLACE,
+        quiet=True,
+    )
+
   async def sync_traefik_certificates(self):
     await self.traefik.sync_certificates_to_workers()
 
@@ -73,9 +86,10 @@ class TraefikMixin:
             timeout=60,
         )
 
-    # Trigger Traefik update config for all applications to update the domain in the routing rules
+    # Trigger a Traefik resync for every application so the new domain lands in the routing rules.
     if domain_changed:
-      Application.update(domains_synced=False).execute()
+      for application in Application.select():
+        self.request_application_traefik_sync(application)
 
   async def sync_application_traefik_domains_config(self, application_id: int):
     """

@@ -174,7 +174,7 @@ Every queued operation, its scope, where it is enqueued from, its lane pool, and
 | `sync_workers` | platform, app | interval 30s | platform | DEDUP |
 | `sync_application_status` | app:`<qn>` | cron 1m | app | DEDUP |
 | `backup_application_s3` | app:`<qn>` | cron 1m (due backups) | app | DEDUP |
-| `sync_application_traefik_domains_config` | app:`<qn>` | cron 1m | app | DEDUP |
+| `sync_application_traefik_domains_config` | app:`<qn>` | cron 1m (restart backstop only) | app | DEDUP |
 | `Metrics.collect` | metrics:`<host>` | cron 1m | metrics | DEDUP |
 | `send_summary_notification` | common | cron daily 08:00 | common | REPLACE |
 | `get_latest_version` | common | cron 4h | common | REPLACE |
@@ -200,12 +200,14 @@ Every queued operation, its scope, where it is enqueued from, its lane pool, and
 | `refresh_traefik` | platform, app | POST /settings/resync_traefik | platform | DEDUP |
 | `restart` | platform, app, common, metrics | POST /settings/restart | platform | QUEUE (+priority) |
 | `sync_workers` | platform, app | POST /settings/resync_workers | platform | REPLACE |
+| `sync_application_traefik_domains_config` | app:`<qn>` | create/update/delete_domain (via `request_application_traefik_sync`) | app | REPLACE |
 
 **Internal (enqueued from within another task)**
 
 | Task | Scope | Source | Lane | on_conflict |
 | --- | --- | --- | --- | --- |
 | `sync_workers` | platform, app | `restore_database_from_s3` | platform | REPLACE |
+| `sync_application_traefik_domains_config` | app:`<qn>` | deploy/stop, delete/update-container, `sync_application_status`, `sync_workers`, `refresh_traefik` (via `request_application_traefik_sync`) | app | REPLACE |
 
 Quiet tasks (recorded only on failure): `sync_workers` (cron), `sync_application_status`, `sync_application_traefik_domains_config`, `Metrics.collect`, `Metrics.cleanup`.
 
@@ -214,6 +216,28 @@ Cron cadence convention: **≤ 1m → `DEDUP`** (a high-frequency reconciler ski
 `sync_workers` deliberately differs by source — cron uses `DEDUP`, while resync/restore use `REPLACE` with `{force: True}` to supersede a pending plain sync. That is why DEDUP/REPLACE identity is name + scope and not params. The full-stack `restart` cancels pending work and waits with priority for in-flight platform/app operations before replacing the process.
 
 Worker-infrastructure tasks (`setup_worker`/`sync_workers`, the worker cert sync, `refresh_traefik`) hold the broad `app` scope rather than a per-worker one **deliberately**: there is no `worker` scope dimension, and the breadth is what closes the *new-worker race* — a worker's row exists (with `online=False`) from the start of `setup_worker`, and container-create doesn't require `online`, so a deploy could target a worker that is still mid-reconfiguration. Blocking all app work for the duration is correct rather than landing a deploy on a half-set-up worker. The cost (a platform-wide app-op pause) is acceptable because these tasks are rare (worker churn; 10-day cert rotation), not steady-state. A narrower per-worker scope would either miss the new-worker race or require every container-touching op to declare its workers' scopes (fragile); not worth it at the target scale (≤10 workers).
+
+## Traefik Domain Sync
+
+`sync_application_traefik_domains_config` renders an application's full routing view
+(its domains × **active** containers × tag pools) and writes it to every online
+worker. It is **disruptive** — it `rm`s the app's `*.yml` on all workers before
+rewriting — so it must run only when the rendered config actually changes.
+
+The single trigger is `Manager().request_application_traefik_sync(application)`
+(`TraefikMixin`): it marks `domains_synced=False` and enqueues the app-scoped sync
+with `REPLACE` (coalesces bursts; the app scope serializes it after any in-flight
+app op, so it re-reads committed state). It is called wherever the **active routing
+set** changes — domain CRUD, deploy/stop, delete/tag-update of an **active**
+container, `sync_application_status` health flips, worker online, and Cloudflare
+domain change. It is deliberately **not** called when routing is unaffected: adding
+a container (inactive until deployed), or editing/deleting an inactive one.
+
+`domains_synced` is a progress/restart-backstop marker only — the cron re-syncs any
+app left `False` after a restart drops queued tasks. It is not a trigger by itself,
+and no DB signal maintains it (signals only keep the counters). Two rare paths that
+touch many apps (`refresh_traefik` on a domain change, worker sync) loop the
+affected apps and call the helper rather than bulk-setting the flag.
 
 ## Settings And Traefik Refresh
 

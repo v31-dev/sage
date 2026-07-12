@@ -164,13 +164,13 @@ class WorkersMixin:
       if self.traefik.has_valid_certificates():
         await self.traefik.sync_certificates_to_worker(worker)
 
-      # Trigger Traefik update config for all applications having containers on this worker
-      Application.update(
-          domains_synced=False).where(
+      # Trigger a Traefik resync for every application with a container on this worker.
+      affected_applications = Application.select().where(
           Application.id.in_(
-              Container.select(
-                  Container.application_id).where(
-                  Container.worker_id == worker.hostname))).execute()
+              Container.select(Container.application_id).where(
+                  Container.worker_id == worker.hostname)))
+      for application in affected_applications:
+        self.request_application_traefik_sync(application)
 
       self.notify(f"Worker {worker.hostname} {'added' if is_new else 'synced'}.")
     except Exception as e:

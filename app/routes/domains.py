@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 
 from services.db import Domain
+from services.manager import Manager
 from utils.api import (
     get_request_models,
     generic_create,
@@ -50,23 +51,30 @@ def list_domains(request: Request):
 
 @router.post("/")
 def create_domain(request: Request, domain_data: dict = Body(...)):
+  application = request.state.models["application"]
   data = {
-      "application": request.state.models["application"],
+      "application": application,
       "name": domain_data.get("name"),
       "type": domain_data.get("type"),
       "port": domain_data.get("port"),
   }
-  return generic_create(Domain, data)
+  result = generic_create(Domain, data)
+  Manager().request_application_traefik_sync(application)
+  return result
 
 
 @router.put("/{domain}", dependencies=[Depends(inject_domain)])
 def update_domain(request: Request, domain_data: dict = Body(...)):
   data = parse_api_data(domain_data, ["name", "type", "port"])
-  return generic_update(Domain, request.state.models["domain"], data)
+  result = generic_update(Domain, request.state.models["domain"], data)
+  Manager().request_application_traefik_sync(request.state.models["application"])
+  return result
 
 
 @router.delete("/{domain}", dependencies=[Depends(inject_domain)])
 def delete_domain(request: Request):
   """Trigger domain deletion."""
   domain = request.state.models["domain"]
-  return generic_delete(Domain, domain)
+  result = generic_delete(Domain, domain)
+  Manager().request_application_traefik_sync(request.state.models["application"])
+  return result

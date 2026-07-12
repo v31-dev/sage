@@ -35,6 +35,9 @@ class ApplicationMixin:
         return_exceptions=False,
     )
 
+    # Trigger traefik sync
+    self.request_application_traefik_sync(application)
+
     if any(container.status == "error" for container in application.containers):
       application.status = "error"
       application.save()
@@ -220,6 +223,7 @@ class ApplicationMixin:
     Delete a container.
     """
     container = Container.get_by_id(container_id)
+    was_active = container.status == "active"
     # Create an event for tracking in case of error.
     Event.create(
         container=container,
@@ -264,7 +268,11 @@ class ApplicationMixin:
         )
 
       # Delete database record
+      application = container.application
       container.delete_instance()
+      # Only a container that was in the routing pool needs a resync to drop it.
+      if was_active:
+        self.request_application_traefik_sync(application)
 
       if skip_remote_cleanup:
         self.notify(
@@ -315,6 +323,8 @@ class ApplicationMixin:
     try:
       container.domain_tag = domain_tag
       container.save()
+      if container.status == "active":
+        self.request_application_traefik_sync(container.application)
       self.notify(
           f"Container of application {container.application.qualified_name} on worker {
               container.worker.hostname} updated.", "success")
@@ -337,6 +347,9 @@ class ApplicationMixin:
         *[self.stop_application_container(container) for container in application.containers],
         return_exceptions=False,
     )
+
+    # Containers no longer active -> refresh Traefik routing.
+    self.request_application_traefik_sync(application)
 
     if any(container.status == "error" for container in application.containers):
       application.status = "error"
@@ -422,6 +435,7 @@ class ApplicationMixin:
       if application.status != "inactive":
         application.status = "inactive"
         application.save()
+        self.request_application_traefik_sync(application)
         self.notify(f"Application {application.qualified_name} is inactive as it has no containers.", "warning")
       return
 
@@ -446,6 +460,9 @@ class ApplicationMixin:
         logger.error(
             f"Failed to get container status from worker {hostname} while syncing application {application.qualified_name}: {e}")
 
+    # A container flipping active<->error changes the routing pool, so refresh
+    # Traefik once at the end if any of them moved.
+    routing_changed = False
     for container in containers:
       # Skip state update during explicit actions
       if container.status in APPLICATION_BUSY_STATUSES:
@@ -457,10 +474,12 @@ class ApplicationMixin:
         if status == "running" and container.status != "active":
           container.status = "active"
           container.save()
+          routing_changed = True
           self.notify(f"Application container {worker_container_name} is active again.", "success")
         elif status in ["paused", "restarting"] and container.status != "error":
           container.status = "error"
           container.save()
+          routing_changed = True
           self.notify(f"Application container {worker_container_name} is in error state ({status}).", "error")
       else:
         # if no status is found and container is supposed to be active, mark as
@@ -468,7 +487,11 @@ class ApplicationMixin:
         if container.status == "active":
           container.status = "error"
           container.save()
+          routing_changed = True
           self.notify(f"Application container {worker_container_name} is in error state (status not found).", "error")
+
+    if routing_changed:
+      self.request_application_traefik_sync(application)
 
     # Sync the overall application status from the (possibly updated) containers.
     if application.status in APPLICATION_BUSY_STATUSES:
