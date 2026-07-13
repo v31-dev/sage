@@ -1,7 +1,7 @@
 import json
 import logging
 
-from services.db import APPLICATION_BUSY_STATUSES, Application, Worker
+from services.db import Application, Worker
 from services.settings import Settings
 from utils.executor import run_in_executor_with_context
 from utils.queue import OnConflict
@@ -138,11 +138,6 @@ class TraefikMixin:
           worker.hostname,
           f"rm -f {self.worker_home_dir}/traefik/dynamic/{application.qualified_name}-*.yml",
       )
-
-    # Application is deploying or stopping.
-    if application.status in APPLICATION_BUSY_STATUSES:
-      logger.error(f"Application {application.qualified_name} is not active, skipping Traefik config sync.")
-      return
 
     template_names = {
         "internal": ("service_internal.yml", "service_internal_pool.yml"),
