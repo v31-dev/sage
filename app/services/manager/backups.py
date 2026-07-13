@@ -6,14 +6,7 @@ from pathlib import Path
 
 from croniter import croniter
 
-from services.db import (
-    APPLICATION_BUSY_STATUSES,
-    Application,
-    Backup,
-    Container,
-    Event,
-    Volume,
-)
+from services.db import APPLICATION_BUSY_STATUSES, Application, Backup, Container, Event, Volume
 from utils.common import get_env
 from utils.logging import generate_task_id_token, task_id
 
@@ -449,7 +442,8 @@ class BackupsMixin:
       )
     except Exception as exc:
       self.notify(
-          f"Failed to restore {restore_unit_label} from {backup.s3_path}: {exc}",
+          f"Failed to restore {restore_unit_label} from {backup.s3_path}: {exc}. "
+          "The volume may be partially restored; run the restore again before deploying.",
           "error",
       )
       raise Exception(f"Failed to restore {restore_unit_label}: {exc}") from exc

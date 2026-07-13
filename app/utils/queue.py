@@ -8,11 +8,7 @@ from threading import Lock
 from typing import Callable
 
 from utils.executor import active_executor, run_in_executor_with_context
-from utils.logging import (
-    TaskFailed,
-    generate_task_id_token,
-    task_id,
-)
+from utils.logging import TaskFailed, generate_task_id_token, task_id
 
 logger = logging.getLogger(__name__)
 
@@ -280,6 +276,11 @@ class TaskQueue:
     except TaskFailed:
       logger.error(f"{task.name}: failed")
       self._record(task, "failed")
+    except asyncio.CancelledError:
+      # Loop shutdown mid-task. Records as failed
+      logger.warning(f"{task.name}: failed (interrupted by shutdown)")
+      self._record(task, "failed")
+      raise
     except Exception:
       logger.exception(f"{task.name}: failed")
       self._record(task, "failed")

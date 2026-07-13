@@ -4,13 +4,7 @@ import logging
 import re
 import shlex
 
-from services.db import (
-    APPLICATION_BUSY_STATUSES,
-    Application,
-    Container,
-    Event,
-    Worker,
-)
+from services.db import APPLICATION_BUSY_STATUSES, Application, Container, Event, Worker
 from utils.common import format_yaml, parse_multiline_kv
 from utils.logging import generate_task_id_token, task_id
 
@@ -53,22 +47,22 @@ class ApplicationMixin:
   async def deploy_application_container(self, container: Container):
     # Create an event for tracking with a different task id.
     container_task_id = generate_task_id_token()
-    Event.create(
-        container=container,
-        type="deploy",
-        application_task_id=task_id.get(),
-        container_task_id=container_task_id,
-    )
-    container.status = "deploying"
-    container.save()
-    container_dir = f"{self.worker_home_dir}/applications/{container.application.qualified_name}"
-    logger.info(
-        f"Deploying application {container.application.qualified_name} container to worker {
-            container.worker.hostname} with task id {container_task_id}...")
-
     exception_message = None
+    task_id_token = None
 
     try:
+      Event.create(
+          container=container,
+          type="deploy",
+          application_task_id=task_id.get(),
+          container_task_id=container_task_id,
+      )
+      container.status = "deploying"
+      container.save()
+      container_dir = f"{self.worker_home_dir}/applications/{container.application.qualified_name}"
+      logger.info(
+          f"Deploying application {container.application.qualified_name} container to worker {
+              container.worker.hostname} with task id {container_task_id}...")
       task_id_token = task_id.set(container_task_id)
 
       project_env = container.application.project.env if container.application.project.env else ""
@@ -205,7 +199,8 @@ class ApplicationMixin:
       deployment_status = "error"
       exception_message = str(e)
     finally:
-      task_id.reset(task_id_token)
+      if task_id_token is not None:
+        task_id.reset(task_id_token)
 
     container.status = deployment_status
     container.save()
@@ -365,21 +360,21 @@ class ApplicationMixin:
     # Create an event for tracking with a different task id.
     container_task_id = generate_task_id_token()
     was_inactive = container.status == "inactive"
-    Event.create(
-        container=container,
-        type="stop",
-        application_task_id=task_id.get(),
-        container_task_id=container_task_id,
-    )
-    container.status = "stopping"
-    container.save()
-    logger.info(
-        f"Stopping application {container.application.qualified_name} container on worker {
-            container.worker.hostname} with task id {container_task_id}...")
-
     exception_message = None
+    task_id_token = None
 
     try:
+      Event.create(
+          container=container,
+          type="stop",
+          application_task_id=task_id.get(),
+          container_task_id=container_task_id,
+      )
+      container.status = "stopping"
+      container.save()
+      logger.info(
+          f"Stopping application {container.application.qualified_name} container on worker {
+              container.worker.hostname} with task id {container_task_id}...")
       task_id_token = task_id.set(container_task_id)
       container_dir = f"{self.worker_home_dir}/applications/{container.application.qualified_name}"
 
@@ -399,7 +394,8 @@ class ApplicationMixin:
       deployment_status = "error"
       exception_message = str(e)
     finally:
-      task_id.reset(task_id_token)
+      if task_id_token is not None:
+        task_id.reset(task_id_token)
 
     container.status = deployment_status
     container.save()
@@ -418,15 +414,23 @@ class ApplicationMixin:
     """
     Sync a single application's container & overall status from its workers.
     Ideally status is managed explicitly; this catches unexpected changes like
-    a container stopped from the worker side or a worker going offline without
-    the Manager knowing yet.
+    a container stopped from the worker side, a worker going offline without
+    the Manager knowing yet, or an operation interrupted before its terminal
+    status write (crash, restart).
     """
     application = Application.get_by_id(application_id)
 
-    # The queue scope keeps this off an app with an operation running, but guard
-    # defensively against any explicit-action status.
-    if application.status in APPLICATION_BUSY_STATUSES:
-      return
+    # Every busy-status writer runs under this app's scope, which this task
+    # holds right now — so a busy status observed here has no owning operation
+    # left (it was interrupted). Reset it and reconcile from worker state below.
+    application_was_stuck = application.status in APPLICATION_BUSY_STATUSES
+    if application_was_stuck:
+      self.notify(
+          f"Application {application.qualified_name} was stuck in '{application.status}' with no "
+          f"running operation; status reset to error.",
+          "error")
+      application.status = "error"
+      application.save()
 
     containers = list(application.containers)
     if not containers:
@@ -464,11 +468,23 @@ class ApplicationMixin:
     # Traefik once at the end if any of them moved.
     routing_changed = False
     for container in containers:
-      # Skip state update during explicit actions
-      if container.status in APPLICATION_BUSY_STATUSES:
-        continue
-
       worker_container_name = f"{container.worker.hostname}-{application.qualified_name}"
+
+      if container.status in APPLICATION_BUSY_STATUSES:
+        # Same ownership rule as the application-level reset above; the worker
+        # probe below then converges it to the real container state.
+        if application_was_stuck:
+          logger.warning(
+              f"Container {worker_container_name} reset from stuck '{container.status}' to error.")
+        else:
+          self.notify(
+              f"Application container {worker_container_name} was stuck in '{container.status}' with no "
+              f"running operation; status reset to error.",
+              "error")
+        container.status = "error"
+        container.save()
+        routing_changed = True
+
       status = container_status.get(worker_container_name)
       if status:
         if status == "running" and container.status != "active":
@@ -494,9 +510,6 @@ class ApplicationMixin:
       self.request_application_traefik_sync(application)
 
     # Sync the overall application status from the (possibly updated) containers.
-    if application.status in APPLICATION_BUSY_STATUSES:
-      return
-
     containers = list(application.containers)
 
     if any(c.status == "error" for c in containers):

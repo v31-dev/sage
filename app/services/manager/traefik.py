@@ -1,11 +1,7 @@
 import json
 import logging
 
-from services.db import (
-    APPLICATION_BUSY_STATUSES,
-    Application,
-    Worker,
-)
+from services.db import APPLICATION_BUSY_STATUSES, Application, Worker
 from services.settings import Settings
 from utils.executor import run_in_executor_with_context
 from utils.queue import OnConflict
@@ -36,60 +32,67 @@ class TraefikMixin:
     if not admin_email_changed and not domain_changed and not api_token_changed:
       return
 
-    # Refresh Manager Traefik static config (ADMIN_EMAIL), dynamic config (DOMAIN),
-    # and the Cloudflare DNS API token file, then restart the container so the
-    # static config and token are re-read by lego at provider init.
-    self.traefik.load(clear_certificates=domain_changed)
-    await run_in_executor_with_context(self.restart, traefik=True)
+    try:
+      # Refresh Manager Traefik static config (ADMIN_EMAIL), dynamic config (DOMAIN),
+      # and the Cloudflare DNS API token file, then restart the container so the
+      # static config and token are re-read by lego at provider init.
+      self.traefik.load(clear_certificates=domain_changed)
+      await run_in_executor_with_context(self.restart, traefik=True)
 
-    # Token-only rotations don't need worker churn — workers don't run ACME,
-    # they only receive synced acme.json from the manager.
-    if not admin_email_changed and not domain_changed:
-      return
+      # Token-only rotations don't need worker churn — workers don't run ACME,
+      # they only receive synced acme.json from the manager.
+      if not admin_email_changed and not domain_changed:
+        return
 
-    domain = Settings().get("cloudflare", "domain")
-    admin_email = Settings().get("cloudflare", "admin_email")
+      domain = Settings().get("cloudflare", "domain")
+      admin_email = Settings().get("cloudflare", "admin_email")
 
-    await self.traefik.sync_certificates_to_workers()
+      await self.traefik.sync_certificates_to_workers()
 
-    # Update Worker Traefik config
-    online_workers = list(Worker.select().where(Worker.online))
-    for worker in online_workers:
-      if admin_email_changed:
-        await self.tailscale.sync_file(
-            worker.hostname,
-            app_dir / "templates/worker/traefik/traefik.yml",
-            f"{self.worker_home_dir}/traefik/traefik.yml",
-            {"ADMIN_EMAIL": admin_email},
-        )
+      # Update Worker Traefik config
+      online_workers = list(Worker.select().where(Worker.online))
+      for worker in online_workers:
+        if admin_email_changed:
+          await self.tailscale.sync_file(
+              worker.hostname,
+              app_dir / "templates/worker/traefik/traefik.yml",
+              f"{self.worker_home_dir}/traefik/traefik.yml",
+              {"ADMIN_EMAIL": admin_email},
+          )
 
+        if domain_changed:
+          await self.tailscale.sync_file(
+              worker.hostname,
+              app_dir / "templates/worker/traefik/config.yml",
+              f"{self.worker_home_dir}/traefik/dynamic/config.yml",
+              {"DOMAIN": domain, "HOSTNAME": worker.hostname},
+          )
+
+          await run_in_executor_with_context(
+              self.cloudflare.create_dns_record,
+              f"*.int.{domain}",
+              worker.ip,
+              comment=f"sage-worker-{worker.hostname}",
+              type="A",
+          )
+
+        if admin_email_changed or domain_changed:
+          await self.tailscale.exec_command(
+              worker.hostname,
+              f"docker compose -f {self.worker_home_dir}/docker-compose.yml restart traefik",
+              timeout=60,
+          )
+
+      # Trigger a Traefik resync for every application so the new domain lands in the routing rules.
       if domain_changed:
-        await self.tailscale.sync_file(
-            worker.hostname,
-            app_dir / "templates/worker/traefik/config.yml",
-            f"{self.worker_home_dir}/traefik/dynamic/config.yml",
-            {"DOMAIN": domain, "HOSTNAME": worker.hostname},
-        )
-
-        await run_in_executor_with_context(
-            self.cloudflare.create_dns_record,
-            f"*.int.{domain}",
-            worker.ip,
-            comment=f"sage-worker-{worker.hostname}",
-            type="A",
-        )
-
-      if admin_email_changed or domain_changed:
-        await self.tailscale.exec_command(
-            worker.hostname,
-            f"docker compose -f {self.worker_home_dir}/docker-compose.yml restart traefik",
-            timeout=60,
-        )
-
-    # Trigger a Traefik resync for every application so the new domain lands in the routing rules.
-    if domain_changed:
-      for application in Application.select():
-        self.request_application_traefik_sync(application)
+        for application in Application.select():
+          self.request_application_traefik_sync(application)
+    except Exception as e:
+      self.notify(
+          f"Traefik refresh failed part-way: {e}. Run 'Resync Traefik' in Settings "
+          "to bring the manager and workers back in sync.",
+          "error")
+      raise
 
   async def sync_application_traefik_domains_config(self, application_id: int):
     """
