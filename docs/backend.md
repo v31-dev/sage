@@ -174,7 +174,7 @@ Every queued operation, its scope, where it is enqueued from, its lane pool, and
 | `sync_workers` | platform, app | interval 30s | platform | DEDUP |
 | `sync_application_status` | app:`<qn>` | cron 1m | app | DEDUP |
 | `backup_application_s3` | app:`<qn>` | cron 1m (due backups) | app | DEDUP |
-| `sync_application_traefik_domains_config` | app:`<qn>` | cron 1m (restart backstop only) | app | DEDUP |
+| `reconcile_traefik_configs` | platform | cron 1m | platform | DEDUP |
 | `Metrics.collect` | metrics:`<host>` | cron 1m | metrics | DEDUP |
 | `send_summary_notification` | common | cron daily 08:00 | common | REPLACE |
 | `get_latest_version` | common | cron 4h | common | REPLACE |
@@ -207,9 +207,10 @@ Every queued operation, its scope, where it is enqueued from, its lane pool, and
 | Task | Scope | Source | Lane | on_conflict |
 | --- | --- | --- | --- | --- |
 | `sync_workers` | platform, app | `restore_database_from_s3` | platform | REPLACE |
-| `sync_application_traefik_domains_config` | app:`<qn>` | deploy/stop, delete/update-container, `sync_application_status`, `sync_workers`, `refresh_traefik` (via `request_application_traefik_sync`) | app | REPLACE |
+| `sync_application_traefik_domains_config` | app:`<qn>` | deploy/stop, delete/update-container, `sync_application_status`, `sync_workers`, `refresh_traefik`, `reconcile_traefik_configs` missing-file check (via `request_application_traefik_sync`) | app | REPLACE |
+| `sync_application_traefik_domains_config` | app:`<qn>` | `reconcile_traefik_configs` `domains_synced=False` backstop | app | DEDUP |
 
-Quiet tasks (recorded only on failure): `sync_workers` (cron), `sync_application_status`, `sync_application_traefik_domains_config`, `Metrics.collect`, `Metrics.cleanup`.
+Quiet tasks (recorded only on failure): `sync_workers` (cron), `sync_application_status`, `sync_application_traefik_domains_config`, `reconcile_traefik_configs`, `Metrics.collect`, `Metrics.cleanup`.
 
 Cron cadence convention: **≤ 1m → `DEDUP`** (a high-frequency reconciler skips only if its own previous run is still in flight; the next tick retries), **> 1m → `REPLACE`** (a 6h/1d/10d task must not skip its whole cycle on a transient conflict; latest-wins keeps no backlog).
 
@@ -224,9 +225,17 @@ Worker-infrastructure tasks (`setup_worker`/`sync_workers`, the worker cert sync
 `sync_application_traefik_domains_config` renders an application's full routing view
 (its domains × **active** containers × tag pools) and writes it to every online
 worker. It is **disruptive** — it `rm`s the app's `*.yml` on all workers before
-rewriting — so it must run only when the rendered config actually changes.
+rewriting — an accepted property: a triggered sync may briefly gap routing.
 
-The single trigger is `Manager().request_application_traefik_sync(application)`
+**Empty pools are written deliberately.** An application with domains keeps its
+per-domain files even with zero active containers (`servers: [ ]` → 503): the
+main file carries the `GET /x-tag` discovery route and the `X-Tag` header of
+declared tags, so discovery keeps working and the domain stays claimed while
+the app is stopped; declared tags likewise keep their (possibly empty) pool
+files. Cleanup after **deletion** is owned by the reconciler below — files
+outlive their application by at most about a minute.
+
+The single change-trigger is `Manager().request_application_traefik_sync(application)`
 (`TraefikMixin`): it marks `domains_synced=False` and enqueues the app-scoped sync
 with `REPLACE` (coalesces bursts; the app scope serializes it after any in-flight
 app op, so it re-reads committed state). It is called wherever the **active routing
@@ -235,9 +244,21 @@ container, `sync_application_status` health flips, worker online, and Cloudflare
 domain change. It is deliberately **not** called when routing is unaffected: adding
 a container (inactive until deployed), or editing/deleting an inactive one.
 
-`domains_synced` is a progress/restart-backstop marker only — the cron re-syncs any
-app left `False` after a restart drops queued tasks. It is not a trigger by itself,
-and no DB signal maintains it (signals only keep the counters). Two rare paths that
+**`reconcile_traefik_configs`** (minutely, `platform` scope) is the declarative
+existence backstop for everything the change-triggers can miss (crash-dropped
+syncs, workers offline during a sync, app rows deleted before cleanup, workers
+joining after a sync). It lists every online worker's `traefik/dynamic/`, then
+reads the application set (in that order — app creation is an unscoped route
+write, so listing first guarantees every listed file's owner is visible in the
+read) and reconciles both directions: files matching no live application's
+`{qn}-` prefix are removed by exact filename; an application with domains
+(`domains_synced=True`) missing files on any online worker gets a sync
+requested; and any app left `domains_synced=False` gets its sync re-enqueued.
+Content correctness stays with the per-app sync — the scan checks existence
+only.
+
+`domains_synced` is a progress/backstop marker, not a trigger by itself, and no
+DB signal maintains it (signals only keep the counters). Two rare paths that
 touch many apps (`refresh_traefik` on a domain change, worker sync) loop the
 affected apps and call the helper rather than bulk-setting the flag.
 

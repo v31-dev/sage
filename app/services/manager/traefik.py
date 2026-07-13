@@ -1,7 +1,8 @@
 import json
 import logging
+import re
 
-from services.db import Application, Worker
+from services.db import Application, Domain, Project, Worker
 from services.settings import Settings
 from utils.executor import run_in_executor_with_context
 from utils.queue import OnConflict
@@ -96,7 +97,8 @@ class TraefikMixin:
 
   async def sync_application_traefik_domains_config(self, application_id: int):
     """
-    Sync Traefik domains config for an application.
+    Sync Traefik domains config for an application. Applications with no active containers
+    have config written for X-Tag discovery.
     """
     application = Application.get_by_id(application_id)
     domain_name = Settings().get("cloudflare", "domain")
@@ -256,3 +258,67 @@ class TraefikMixin:
     application.domains_synced = True
     application.save()
     logger.info(f"Traefik config synced for application {application.qualified_name}.")
+
+  async def reconcile_traefik_configs(self):
+    """
+    Existence-level reconciliation between worker Traefik dynamic configs and
+    applications: a file with no owning application is removed, and an
+    application with domains must have config on every online worker. Content
+    correctness is owned by sync_application_traefik_domains_config;
+    applications left domains_synced=False (e.g. a restart dropped their queued
+    sync) are re-enqueued here.
+    """
+    online_workers = list(Worker.select().where(Worker.online))
+    worker_files = {}
+    for worker in online_workers:
+      _, files = await self.tailscale.exec_command(
+          worker.hostname,
+          f"ls -1 {self.worker_home_dir}/traefik/dynamic 2>/dev/null || true",
+      )
+      worker_files[worker.hostname] = set(files)
+
+    # Applications are created by route writes that can interleave with this
+    # task; listing files first means any file listed above has its owner
+    # present in this read, so a fresh app is never misclassified as an orphan.
+    applications = list(Application.select(Application, Project).join(Project))
+    live_prefixes = {f"{application.qualified_name}-" for application in applications}
+
+    for worker in online_workers:
+      orphans = sorted(
+          name for name in worker_files[worker.hostname]
+          if name.endswith(".yml") and name != "config.yml"  # worker's own config
+          and re.fullmatch(r"[a-z0-9.-]+", name)             # rm-safe names only
+          and not any(name.startswith(prefix) for prefix in live_prefixes)
+      )
+      if orphans:
+        logger.info(f"Removing orphaned Traefik configs on {worker.hostname}: {orphans}")
+        await self.tailscale.exec_command(
+            worker.hostname,
+            ";".join(f"rm -f {self.worker_home_dir}/traefik/dynamic/{name}" for name in orphans),
+        )
+
+    applications_ids_with_domains = {
+        domain.application_id for domain in Domain.select(Domain.application).distinct()
+    }
+
+    for application in applications:
+      if not application.domains_synced:
+        self.add_task(
+            task=self.sync_application_traefik_domains_config,
+            scopes={f"app:{application.qualified_name}"},
+            params={"application_id": application.id},
+            executor="app",
+            quiet=True,
+        )
+        continue
+
+      # An app with domains must have config on every online worker; a missing
+      # file means the worker joined after the app's last sync.
+      if application.id not in applications_ids_with_domains:
+        continue
+      prefix = f"{application.qualified_name}-"
+      if any(
+          not any(name.startswith(prefix) for name in worker_files[worker.hostname])
+          for worker in online_workers
+      ):
+        self.request_application_traefik_sync(application)

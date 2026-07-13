@@ -11,7 +11,6 @@ from services.metrics import Metrics
 from utils.common import get_env
 from utils.queue import OnConflict
 
-
 logger = logging.getLogger(__name__)
 
 # APScheduler is used only for job scheduling
@@ -57,15 +56,13 @@ async def schedule_application_backups():
     )
 
 
-async def sync_application_traefik_domains_config():
-  for application in Application.select(Application, Project).join(Project).where(Application.domains_synced == False):
-    Manager().add_task(
-        task=Manager().sync_application_traefik_domains_config,
-        scopes={f"app:{application.qualified_name}"},
-        params={"application_id": application.id},
-        executor="app",
-        quiet=True,
-    )
+async def reconcile_traefik_configs():
+  Manager().add_task(
+      task=Manager().reconcile_traefik_configs,
+      scopes={"platform"},
+      executor="platform",
+      quiet=True,
+  )
 
 
 async def collect_metrics():
@@ -141,7 +138,7 @@ _JOBS = [
     (sync_workers, IntervalTrigger(seconds=30)),
     (sync_application_status, CronTrigger.from_crontab("* * * * *")),
     (schedule_application_backups, CronTrigger.from_crontab("* * * * *")),
-    (sync_application_traefik_domains_config, CronTrigger.from_crontab("* * * * *")),
+    (reconcile_traefik_configs, CronTrigger.from_crontab("* * * * *")),
     (collect_metrics, CronTrigger.from_crontab("* * * * *")),
     (refresh_latest_version, CronTrigger.from_crontab("0 */4 * * *")),
     (backup_database, CronTrigger.from_crontab("0 */6 * * *")),
