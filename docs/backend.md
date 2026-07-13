@@ -240,9 +240,23 @@ The single change-trigger is `Manager().request_application_traefik_sync(applica
 with `REPLACE` (coalesces bursts; the app scope serializes it after any in-flight
 app op, so it re-reads committed state). It is called wherever the **active routing
 set** changes — domain CRUD, deploy/stop, delete/tag-update of an **active**
-container, `sync_application_status` health flips, worker online, and Cloudflare
-domain change. It is deliberately **not** called when routing is unaffected: adding
-a container (inactive until deployed), or editing/deleting an inactive one.
+container, `sync_application_status` health flips, and Cloudflare domain change.
+It is deliberately **not** called when routing is unaffected: adding a container
+(inactive until deployed), or editing/deleting an inactive one.
+
+**Worker join/rejoin runs full setup.** Any worker whose state may be stale —
+brand new, back from an outage, or left half-configured by an interrupted setup
+— goes through idempotent `setup_worker`: the offline→online transition in
+`sync_workers` calls it directly (there is no lighter "mark online" path).
+Setup re-syncs all infra files and ends with a
+`request_application_traefik_sync` for every application **hosted on the
+worker**. Apps hosted elsewhere are deliberately not re-synced — a rejoin must
+never blip unrelated apps — so their routing files on the rejoined worker can
+be *topology-stale* (routing content is a function of domains/tags/active
+containers, not env or image, so only topology changes during the outage
+matter) until that app's next routing change; Settings → Resync Traefik is the
+deliberate global heal. The minutely `reconcile_traefik_configs` enforces
+existence in between.
 
 **`reconcile_traefik_configs`** (minutely, `platform` scope) is the declarative
 existence backstop for everything the change-triggers can miss (crash-dropped

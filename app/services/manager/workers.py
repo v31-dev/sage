@@ -1,10 +1,6 @@
 import logging
 
-from services.db import (
-    Application,
-    Container,
-    Worker,
-)
+from services.db import Application, Container, Worker
 from services.settings import Settings
 from utils.common import get_env
 from utils.executor import run_in_executor_with_context
@@ -43,11 +39,12 @@ class WorkersMixin:
             logger.info(f"Worker {worker.hostname} went offline.")
             await run_in_executor_with_context(self.set_worker_offline, worker)
           elif not existing_worker.online and worker.online:
-            # worker came back online
+            # Worker came back online (or an interrupted setup left it flagged
+            # offline). Full re-setup: its infra files and app routing configs
+            # may be stale from the outage; setup also refreshes a changed IP.
             logger.info(f"Worker {worker.hostname} came back online.")
-            await run_in_executor_with_context(self.set_worker_online, worker)
-
-          if existing_worker.ip != worker.ip:
+            await self.setup_worker(worker)
+          elif existing_worker.ip != worker.ip:
             # worker IP changed (worker was re-created)
             logger.info(
                 f"Worker {
@@ -221,19 +218,3 @@ class WorkersMixin:
         content=worker.ip,
     )
     self.notify(f"Worker {worker.hostname} is offline.", "error")
-
-  def set_worker_online(self, worker):
-    """
-    - Mark as online in Manager database
-    - Create Cloudflare DNS entry (*.int) for Tailscale routing
-    - Cloudflare will automatically handle tunnel re-connection
-    """
-    logger.info(f"Setting worker {worker.hostname} online.")
-    Worker.update(online=True).where(Worker.hostname == worker.hostname).execute()
-    self.cloudflare.create_dns_record(
-        name=f"*.int.{Settings().get('cloudflare', 'domain')}",
-        content=worker.ip,
-        comment=f"sage-worker-{worker.hostname}",
-        type="A",
-    )
-    self.notify(f"Worker {worker.hostname} is back online.", "success")
