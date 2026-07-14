@@ -1,5 +1,5 @@
 services:
-  ${APPLICATION_NAME}:
+  ${CONTAINER_NAME}:
     build:
       context: ${REPO}
       dockerfile: ${DOCKERFILE}

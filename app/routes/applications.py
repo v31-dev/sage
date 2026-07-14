@@ -24,6 +24,7 @@ from utils.api import (
     generic_update,
     parse_api_data,
 )
+from utils.db import AlphaNumericField
 
 
 def inject_application(request: Request):
@@ -56,7 +57,7 @@ def create_application(
 ):
   data = parse_api_data(application_data, ["label", "description"])
   data["project"] = request.state.models["project"]
-  data["name"] = data["label"]
+  data["name"] = AlphaNumericField.clean(data["label"])
   return generic_create(Application, data)
 
 

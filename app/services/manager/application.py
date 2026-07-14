@@ -141,7 +141,6 @@ class ApplicationMixin:
             app_dir / "templates/worker/application/dockerhub-compose.yml",
             f"{container_dir}/docker-compose.yml",
             {
-                "APPLICATION_NAME": container.application.name,
                 "CONTAINER_NAME": container.application.qualified_name,
                 "IMAGE": container.application.image,
                 "COMMAND": command_value,
@@ -173,7 +172,6 @@ class ApplicationMixin:
             app_dir / "templates/worker/application/gitrepo-compose.yml",
             f"{container_dir}/docker-compose.yml",
             {
-                "APPLICATION_NAME": container.application.name,
                 "CONTAINER_NAME": container.application.qualified_name,
                 "REPO": container.application.repo,
                 "DOCKERFILE": container.application.path,

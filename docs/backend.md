@@ -216,7 +216,7 @@ Cron cadence convention: **≤ 1m → `DEDUP`** (a high-frequency reconciler ski
 
 `sync_workers` deliberately differs by source — cron uses `DEDUP`, while resync/restore use `REPLACE` with `{force: True}` to supersede a pending plain sync. That is why DEDUP/REPLACE identity is name + scope and not params. The full-stack `restart` cancels pending work and waits with priority for in-flight platform/app operations before replacing the process.
 
-**Interrupted-operation recovery.** A busy status (`deploying`/`stopping`/`backup`/`restoring`) is only ever written by a task while it holds that app's scope — and `sync_application_status` holds that same scope while it runs, so by mutual exclusion any busy status it observes has no owning operation left: the mark of an interrupted task (crash, plain container restart, cancelled coroutine). Instead of skipping such apps, the sync resets the stuck app/containers to `error` (with a notification carrying recovery guidance — interrupted backup → redeploy, interrupted restore → re-run the restore) and then converges them against real `docker ps` state in the same run. This is why no boot-time status reset exists: the minutely sync covers startup wedges and mid-flight loss with one mechanism. Detection defers while a broad `app`-scope task runs (the per-app syncs queue behind it) and resumes when it finishes. Deploy/stop container children additionally run their whole body inside their try block so an early failure can never kill the parent's gather and leave detached siblings running.
+**Interrupted-operation recovery.** A busy status (`deploying`/`stopping`/`backup`/`restoring`) is only ever written by a task while it holds that app's scope — and `sync_application_status` holds that same scope while it runs, so by mutual exclusion any busy status it observes has no owning operation left: the mark of an interrupted task (crash, plain container restart, cancelled coroutine). Instead of skipping such apps, the sync resets the stuck app/containers to `error` (with a notification) and then converges them against real `docker ps` state in the same run. This is why no boot-time status reset exists: the minutely sync covers startup wedges and mid-flight loss with one mechanism. Detection defers while a broad `app`-scope task runs (the per-app syncs queue behind it) and resumes when it finishes. Deploy/stop container children additionally run their whole body inside their try block so an early failure can never kill the parent's gather and leave detached siblings running.
 
 Worker-infrastructure tasks (`setup_worker`/`sync_workers`, the worker cert sync, `refresh_traefik`) hold the broad `app` scope rather than a per-worker one **deliberately**: there is no `worker` scope dimension, and the breadth is what closes the *new-worker race* — a worker's row exists (with `online=False`) from the start of `setup_worker`, and container-create doesn't require `online`, so a deploy could target a worker that is still mid-reconfiguration. Blocking all app work for the duration is correct rather than landing a deploy on a half-set-up worker. The cost (a platform-wide app-op pause) is acceptable because these tasks are rare (worker churn; 10-day cert rotation), not steady-state. A narrower per-worker scope would either miss the new-worker race or require every container-touching op to declare its workers' scopes (fragile); not worth it at the target scale (≤10 workers).
 
@@ -257,6 +257,26 @@ containers, not env or image, so only topology changes during the outage
 matter) until that app's next routing change; Settings → Resync Traefik is the
 deliberate global heal. The minutely `reconcile_traefik_configs` enforces
 existence in between.
+
+**Name components are collision-free by construction.** Every name that ends
+up in a filename or constructed identity — project, application, and domain
+names, domain tags, volume names, and setting keys — is `AlphaNumericField`:
+lowercase alphanumerics starting with a letter, **rejected, never cleaned**,
+on any write path. Project/application names are derived from the free-text
+`label` via `AlphaNumericField.clean`, which itself raises when no valid name
+can be derived (no letters, or digits before the first letter); domain names,
+tags, and volume names are typed directly by the user and rejected as-is on
+violation. A qualified name therefore contains exactly one dash, so it is
+injective and no qn can dash-prefix another — every `{qn}-` glob and prefix
+match below is exact, and the compose service key (= qualified name, same as
+`container_name`) is a unique Docker DNS name on `sage_default`. Worker
+hostnames are Tailscale's identity, not ours: the one remaining
+`CleanCharField` (dashes allowed, still rejected-not-cleaned on violation).
+`ValueError` is the house convention for invalid user input — a global
+exception handler in `api.py` (plus the generic route handlers, whose broad
+`except` would otherwise swallow it) maps it to a 400 carrying the message, so
+routes call `clean`/`validate` bare; the container routes validate the tag at
+the route because the actual write happens later inside the queued task.
 
 **`reconcile_traefik_configs`** (minutely, `platform` scope) is the declarative
 existence backstop for everything the change-triggers can miss (crash-dropped

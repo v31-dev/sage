@@ -12,6 +12,7 @@ from utils.api import (
     generic_update,
     parse_api_data,
 )
+from utils.db import AlphaNumericField
 
 
 def inject_project(request: Request):
@@ -36,7 +37,7 @@ def list_projects():
 @router.post("/")
 def create_project(project_data: dict = Body(...)):
   data = parse_api_data(project_data, ["label", "description"])
-  data["name"] = data["label"]
+  data["name"] = AlphaNumericField.clean(data["label"])
   return generic_create(Project, data)
 
 

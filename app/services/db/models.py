@@ -2,18 +2,10 @@ import os
 import re
 from datetime import datetime
 
-from peewee import (
-    BooleanField,
-    CharField,
-    DateTimeField,
-    FixedCharField,
-    ForeignKeyField,
-    IntegerField,
-    SqliteDatabase,
-)
+from peewee import BooleanField, CharField, DateTimeField, FixedCharField, ForeignKeyField, IntegerField, SqliteDatabase
 from playhouse.signals import Model
 
-from utils.db import CleanCharField, EncryptedJSONField, EncryptedTextField, JSONField, validate_multiline_kv
+from utils.db import AlphaNumericField, CleanCharField, EncryptedJSONField, EncryptedTextField, JSONField, validate_multiline_kv
 
 DB_PATH = "/app/data/data.db"
 os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
@@ -46,7 +38,7 @@ class BaseModel(Model):
 
 
 class Setting(BaseModel):
-  key = CleanCharField(primary_key=True)
+  key = AlphaNumericField(primary_key=True)
   value = EncryptedJSONField(null=True)
 
 
@@ -57,7 +49,7 @@ class Worker(BaseModel):
 
 
 class Project(BaseModel):
-  name = CleanCharField(primary_key=True)
+  name = AlphaNumericField(primary_key=True)
   label = CharField()
   description = CharField(null=True)
   env = EncryptedTextField(null=True)
@@ -72,7 +64,7 @@ class Project(BaseModel):
 
 class Application(BaseModel):
   project = ForeignKeyField(Project, backref="applications", on_delete="RESTRICT")
-  name = CleanCharField()
+  name = AlphaNumericField()
   label = CharField()
   description = CharField(null=True)
   type = CharField(choices=["docker", "git"], default="docker")
@@ -130,7 +122,7 @@ class Application(BaseModel):
 
 class Domain(BaseModel):
   application = ForeignKeyField(Application, backref="domains", on_delete="CASCADE")
-  name = CleanCharField(null=False)
+  name = AlphaNumericField(null=False)
   type = CharField(choices=["internal", "public", "tcp"], default="internal")
   port = IntegerField(null=False)
 
@@ -142,7 +134,7 @@ class Container(BaseModel):
   application = ForeignKeyField(Application, backref="containers", on_delete="RESTRICT")
   worker = ForeignKeyField(Worker, backref="containers")
   status = CharField(choices=STATUS_CHOICES, default="inactive")
-  domain_tag = CleanCharField(null=True)
+  domain_tag = AlphaNumericField(null=True)
 
   def save(self, *args, **kwargs):
     if self.domain_tag and self.domain_tag == "x_tag":
@@ -155,7 +147,7 @@ class Container(BaseModel):
 
 
 class Volume(BaseModel):
-  name = CleanCharField()
+  name = AlphaNumericField()
   path = CharField()
   backup_cron = CharField(null=True)
   application = ForeignKeyField(Application, backref="volumes", on_delete="CASCADE")

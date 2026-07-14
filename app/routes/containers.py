@@ -7,8 +7,8 @@ from utils.api import (
     generic_get,
     generic_list,
 )
+from utils.db import AlphaNumericField
 from utils.queue import OnConflict
-
 
 
 # Container is a sub-route of Application & Worker
@@ -73,7 +73,7 @@ def create_container(request: Request, container_data: dict = Body(...)):
     )
 
   if Container.select().where(
-      (Container.application == application) & (Container.worker == worker)).exists():
+          (Container.application == application) & (Container.worker == worker)).exists():
     raise HTTPException(
         status_code=409, detail=f"Container already exists on worker '{worker.hostname}'.")
 
@@ -83,7 +83,7 @@ def create_container(request: Request, container_data: dict = Body(...)):
       params={
           "application_id": application.id,
           "worker_hostname": worker.hostname,
-          "domain_tag": container_data.get("domain_tag"),
+          "domain_tag": AlphaNumericField.validate(container_data.get("domain_tag")),
       },
       executor="app",
       on_conflict=OnConflict.QUEUE,
@@ -104,7 +104,8 @@ def update_container(request: Request, container_data: dict = Body(...)):
   Manager().add_task(
       task=Manager().update_container,
       scopes={f"app:{application.qualified_name}"},
-      params={"container_id": container.id, "domain_tag": container_data.get("domain_tag")},
+      params={"container_id": container.id,
+              "domain_tag": AlphaNumericField.validate(container_data.get("domain_tag"))},
       executor="app",
       on_conflict=OnConflict.QUEUE,
       task_id=request.state.task_id,
