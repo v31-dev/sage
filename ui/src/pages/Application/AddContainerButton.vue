@@ -84,7 +84,7 @@ async function onClickAddContainerConfirm() {
     }
     await props.containersAPI.create(containerData)
     isAddContainerDialogOpen.value = false
-    toast.success('Container add triggered')
+    toast.success('Container added')
   } catch (err) {
     addContainerErrorMessage.value = err instanceof Error ? err.message : 'Failed to add container'
   } finally {

@@ -192,6 +192,19 @@ class TaskQueue:
           for running in self._running
       )
 
+  def has_task(self, task: Callable | str, params: dict | None = None) -> bool:
+    """True if a task with this identity is running or queued. When params is
+    given, every provided key must also match the task's params — a
+    params-scoped duplicate check for QUEUE-admitted work, since admission
+    identity itself deliberately ignores params."""
+    name = task if isinstance(task, str) else task.__name__
+    with self._lock:
+      return any(
+          t.name == name
+          and (params is None or all(t.params.get(k) == v for k, v in params.items()))
+          for t in (*self._running, *self._queue)
+      )
+
   def cancel_all(self):
     """Cancel every pending (not yet running) task; running tasks are left to
     finish. Used before a restart so queued work is recorded as cancelled

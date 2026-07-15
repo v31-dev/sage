@@ -4,10 +4,11 @@ from services.db import APPLICATION_BUSY_STATUSES, Container, Worker
 from services.manager import Manager
 from utils.api import (
     get_request_models,
+    generic_create,
     generic_get,
     generic_list,
+    generic_update,
 )
-from utils.db import AlphaNumericField
 from utils.queue import OnConflict
 
 
@@ -77,20 +78,11 @@ def create_container(request: Request, container_data: dict = Body(...)):
     raise HTTPException(
         status_code=409, detail=f"Container already exists on worker '{worker.hostname}'.")
 
-  Manager().add_task(
-      task=Manager().create_container,
-      scopes={f"app:{application.qualified_name}"},
-      params={
-          "application_id": application.id,
-          "worker_hostname": worker.hostname,
-          "domain_tag": AlphaNumericField.validate(container_data.get("domain_tag")),
-      },
-      executor="app",
-      on_conflict=OnConflict.QUEUE,
-      task_id=request.state.task_id,
-  )
-
-  return {"status": "OK"}
+  return generic_create(Container, {
+      "application": application,
+      "worker": worker,
+      "domain_tag": container_data.get("domain_tag"),
+  })
 
 
 @router.put("/{container}", dependencies=[Depends(inject_container)])
@@ -101,17 +93,12 @@ def update_container(request: Request, container_data: dict = Body(...)):
   application = request.state.models["application"]
   container = request.state.models["container"]
 
-  Manager().add_task(
-      task=Manager().update_container,
-      scopes={f"app:{application.qualified_name}"},
-      params={"container_id": container.id,
-              "domain_tag": AlphaNumericField.validate(container_data.get("domain_tag"))},
-      executor="app",
-      on_conflict=OnConflict.QUEUE,
-      task_id=request.state.task_id,
-  )
+  result = generic_update(Container, container, {"domain_tag": container_data.get("domain_tag")})
+  # An active container's tag is part of the live routing view.
+  if container.status == "active":
+    Manager().request_application_traefik_sync(application)
 
-  return {"status": "OK"}
+  return result
 
 
 @router.delete("/{container}", dependencies=[Depends(inject_container)])
@@ -129,13 +116,18 @@ def delete_container(request: Request, force: bool = False):
   if container.status in CONTAINER_BUSY_STATUSES:
     raise HTTPException(status_code=409, detail=f"Container is currently {container.status}.")
 
-  if not Manager().add_task(
+  # QUEUE admission would accept a duplicate, so reject a double-delete of this
+  # specific container here; deletes of other containers still queue freely.
+  if Manager().has_task(Manager().delete_container, {"container_id": container.id}):
+    raise HTTPException(status_code=409, detail="This container is already being deleted.")
+
+  Manager().add_task(
       task=Manager().delete_container,
       scopes={f"app:{application.qualified_name}"},
       params={"container_id": container.id, "force": force},
       executor="app",
+      on_conflict=OnConflict.QUEUE,
       task_id=request.state.task_id,
-  ):
-    raise HTTPException(status_code=409, detail="Application already has an operation in progress.")
+  )
 
   return {"status": "OK"}

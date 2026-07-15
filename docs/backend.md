@@ -189,7 +189,7 @@ Every queued operation, its scope, where it is enqueued from, its lane pool, and
 | --- | --- | --- | --- | --- |
 | `deploy_application` | app:`<qn>` | POST …/deploy | app | DEDUP |
 | `stop_application` | app:`<qn>` | POST …/stop | app | DEDUP |
-| `delete_container` | app:`<qn>` | DELETE …/containers/{c} | app | DEDUP |
+| `delete_container` | app:`<qn>` | DELETE …/containers/{c} | app | QUEUE (route rejects a duplicate delete of the same container via `has_task`, the params-aware pending/running check) |
 | `backup_application_s3` | app:`<qn>` | POST …/volumes/{v}/backups | app | DEDUP |
 | `restore_application_volume_from_s3` | app:`<qn>` | POST …/backups/{b}/restore | app | DEDUP |
 | `backup_database_s3` | platform, app | POST /backups | platform | REPLACE |
@@ -200,14 +200,16 @@ Every queued operation, its scope, where it is enqueued from, its lane pool, and
 | `refresh_traefik` | platform, app | POST /settings/resync_traefik | platform | DEDUP |
 | `restart` | platform, app, common, metrics | POST /settings/restart | platform | QUEUE (+priority) |
 | `sync_workers` | platform, app | POST /settings/resync_workers | platform | REPLACE |
-| `sync_application_traefik_domains_config` | app:`<qn>` | create/update/delete_domain (via `request_application_traefik_sync`) | app | REPLACE |
+| `sync_application_traefik_domains_config` | app:`<qn>` | create/update/delete_domain, update-container tag change (via `request_application_traefik_sync`) | app | REPLACE |
+
+Container create and tag-update are **instant route-side model writes**, like every other entity's CRUD — not queued tasks. The `container_count` signal recomputes atomically from the rows and `only_save_dirty` keeps concurrent status saves from clobbering it, so no serialization is needed; only `delete_container` stays queued (it does remote cleanup). A queued deploy reads whatever is committed when it starts — see the snapshot contract (todo item 2).
 
 **Internal (enqueued from within another task)**
 
 | Task | Scope | Source | Lane | on_conflict |
 | --- | --- | --- | --- | --- |
 | `sync_workers` | platform, app | `restore_database_from_s3` | platform | REPLACE |
-| `sync_application_traefik_domains_config` | app:`<qn>` | deploy/stop, delete/update-container, `sync_application_status`, `sync_workers`, `refresh_traefik`, `reconcile_traefik_configs` missing-file check (via `request_application_traefik_sync`) | app | REPLACE |
+| `sync_application_traefik_domains_config` | app:`<qn>` | deploy/stop, delete-container, `sync_application_status`, `sync_workers`, `refresh_traefik`, `reconcile_traefik_configs` missing-file check (via `request_application_traefik_sync`) | app | REPLACE |
 | `sync_application_traefik_domains_config` | app:`<qn>` | `reconcile_traefik_configs` `domains_synced=False` backstop | app | DEDUP |
 
 Quiet tasks (recorded only on failure): `sync_workers` (cron), `sync_application_status`, `sync_application_traefik_domains_config`, `reconcile_traefik_configs`, `Metrics.collect`, `Metrics.cleanup`.
@@ -218,7 +220,7 @@ Cron cadence convention: **≤ 1m → `DEDUP`** (a high-frequency reconciler ski
 
 **Interrupted-operation recovery.** A busy status (`deploying`/`stopping`/`backup`/`restoring`) is only ever written by a task while it holds that app's scope — and `sync_application_status` holds that same scope while it runs, so by mutual exclusion any busy status it observes has no owning operation left: the mark of an interrupted task (crash, plain container restart, cancelled coroutine). Instead of skipping such apps, the sync resets the stuck app/containers to `error` (with a notification) and then converges them against real `docker ps` state in the same run. This is why no boot-time status reset exists: the minutely sync covers startup wedges and mid-flight loss with one mechanism. Detection defers while a broad `app`-scope task runs (the per-app syncs queue behind it) and resumes when it finishes. Deploy/stop container children additionally run their whole body inside their try block so an early failure can never kill the parent's gather and leave detached siblings running.
 
-Worker-infrastructure tasks (`setup_worker`/`sync_workers`, the worker cert sync, `refresh_traefik`) hold the broad `app` scope rather than a per-worker one **deliberately**: there is no `worker` scope dimension, and the breadth is what closes the *new-worker race* — a worker's row exists (with `online=False`) from the start of `setup_worker`, and container-create doesn't require `online`, so a deploy could target a worker that is still mid-reconfiguration. Blocking all app work for the duration is correct rather than landing a deploy on a half-set-up worker. The cost (a platform-wide app-op pause) is acceptable because these tasks are rare (worker churn; 10-day cert rotation), not steady-state. A narrower per-worker scope would either miss the new-worker race or require every container-touching op to declare its workers' scopes (fragile); not worth it at the target scale (≤10 workers).
+Worker-infrastructure tasks (`setup_worker`/`sync_workers`, the worker cert sync, `refresh_traefik`) hold the broad `app` scope rather than a per-worker one **deliberately**: there is no `worker` scope dimension, and the breadth is what closes the *new-worker race* — a worker's row exists (with `online=False`) from the start of `setup_worker`, and container-create doesn't require `online`, so a deploy could target a worker that is still mid-reconfiguration. Blocking all app work for the duration is correct rather than landing a deploy on a half-set-up worker. The cost (a platform-wide app-op pause) is acceptable because these tasks are rare (worker churn; 10-day cert rotation), not steady-state. This includes the cert sync's wait-for-provisioning loop (up to 10 min holding the scope): it only spins while the manager's acme.json is invalid, a window in which routing is broken platform-wide anyway, and the sync must restart each worker's traefik to load new certs — deferring would fragment the disruption, not avoid it. A narrower per-worker scope would either miss the new-worker race or require every container-touching op to declare its workers' scopes (fragile); not worth it at the target scale (≤10 workers).
 
 ## Traefik Domain Sync
 
