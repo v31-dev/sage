@@ -27,7 +27,7 @@ Agents must keep this context active throughout a task, including after summarie
 
 - Manager plus workers over Tailscale is the core architecture.
 - Services are singleton-based and thread-aware.
-- All mutating/long operations run through the Manager's in-memory operation queue (`app/utils/queue.py`); APScheduler only fires cron/interval triggers that call `Manager().add_task(...)`.
+- Long or remote-touching operations run through the Manager's in-memory operation queue (`app/utils/queue.py`); entity CRUD is an instant route-side model write (only `delete_container` is queued — it does remote cleanup). APScheduler only fires cron/interval triggers that call `Manager().add_task(...)`.
 - `task_id` propagation through `ContextVar` is a core observability requirement.
 - Blocking network or remote I/O is offloaded onto the lane pools in `app/utils/executor.py` — `run_in_executor_with_context(...)` (awaited) or `submit_with_context(...)` (fire-and-forget).
 - Local SQLite/Peewee work runs inline and relies on WAL mode.
@@ -88,7 +88,7 @@ If this context may have been lost, reread this file plus the relevant `docs/` p
 ### Operation Queue And Scheduler
 
 - APScheduler is a pure cron/interval trigger: each scheduled coroutine only calls `Manager().add_task(...)`. All execution and concurrency control live in the in-memory `TaskQueue` (`app/utils/queue.py`).
-- Route and scheduled work alike enqueue via `add_task`; handlers take ids (not ORM objects) and re-fetch.
+- Route and scheduled work alike enqueue via `add_task`; handlers take ids (not ORM objects) and re-fetch. A target row deleted before the task runs is a legitimate interleaving: re-fetch with `get_or_none` and treat a missing row as a quiet no-op (log + return), never a crash.
 - Scopes (`platform`, `app`/`app:<qualified_name>`, `common`, `metrics`) give hierarchical mutual exclusion (enforced by the dispatcher); each scope root has its own lane pool. Admission (drop vs. enqueue) is one `on_conflict` enum on `add_task`: `DEDUP` (default, skip if an identical op — same name + exact scope — is already pending/running, else enqueue and wait), `QUEUE` (always enqueue, no dedupe), `REPLACE` (latest-wins, supersede a pending duplicate then wait). A different op holding a conflicting scope never drops a new task — it defers behind it. `quiet=True` is a separate flag for high-frequency reconcilers (record only on failure). Details in [docs/backend.md](docs/backend.md).
 - Task shape: one async task that `asyncio.gather`s its offloaded leaves (independent work in one operation, shared scope), per-entity fan-out (one `add_task` per entity, each with its own scope/lifecycle/DEDUP), or sequential `await`s (ordered/dependent steps). A fan-out parent must be async — never a sync task blocking on its own lane.
 - When adding or changing a task, declare its `scopes`, `executor`, and `on_conflict` at the single `add_task` call site and **add/update its row in the Task Catalog** in [docs/backend.md](docs/backend.md). Worker-infrastructure tasks intentionally hold the broad `app` scope (no `worker` dimension; closes the new-worker race) — keep that, don't "optimize" it to per-worker.

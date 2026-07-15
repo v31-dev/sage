@@ -23,12 +23,7 @@ import {
 import { Input } from '@/components/ui/input'
 import { Spinner } from '@/components/ui/spinner'
 
-import {
-  type Application,
-  type Worker,
-  getApplicationAPI,
-  getContainerAPI,
-} from '@/services/api'
+import { type Application, type Worker, getApplicationAPI, getContainerAPI } from '@/services/api'
 
 interface Props {
   application: Application
@@ -84,6 +79,7 @@ async function onClickAddContainerConfirm() {
     }
     await props.containersAPI.create(containerData)
     isAddContainerDialogOpen.value = false
+    await props.loadApplication()
     toast.success('Container added')
   } catch (err) {
     addContainerErrorMessage.value = err instanceof Error ? err.message : 'Failed to add container'

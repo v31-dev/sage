@@ -100,7 +100,11 @@ class TraefikMixin:
     Sync Traefik domains config for an application. Applications with no active containers
     have config written for X-Tag discovery.
     """
-    application = Application.get_by_id(application_id)
+    application = Application.get_or_none(Application.id == application_id)
+    if application is None:
+      # The reconcile scan owns file cleanup for deleted applications.
+      logger.info(f"Application {application_id} deleted before Traefik sync; nothing to do.")
+      return
     domain_name = Settings().get("cloudflare", "domain")
     containers = list(application.containers)
     application_domains = list(application.domains)

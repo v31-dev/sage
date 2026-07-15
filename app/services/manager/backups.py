@@ -277,7 +277,10 @@ class BackupsMixin:
       task_id.reset(task_id_token)
 
   async def backup_application_s3(self, application_id: int, volume_ids: list[int] | None = None):
-    application = Application.get_by_id(application_id)
+    application = Application.get_or_none(Application.id == application_id)
+    if application is None:
+      logger.info(f"Application {application_id} deleted before backup; nothing to do.")
+      return
 
     if application.status not in BACKUP_ELIGIBLE_STATUSES:
       raise Exception(

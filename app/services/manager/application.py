@@ -380,7 +380,10 @@ class ApplicationMixin:
     the Manager knowing yet, or an operation interrupted before its terminal
     status write (crash, restart).
     """
-    application = Application.get_by_id(application_id)
+    application = Application.get_or_none(Application.id == application_id)
+    if application is None:
+      logger.info(f"Application {application_id} deleted before status sync; nothing to do.")
+      return
 
     # Every busy-status writer runs under this app's scope, which this task
     # holds right now — so a busy status observed here has no owning operation
