@@ -302,6 +302,19 @@ class BackupsMixin:
     resource_error = self.get_volume_backup_resource_error(application, volumes)
     if resource_error:
       raise Exception(resource_error)
+
+    # Fail before stopping any container: the backup needs every worker, and an
+    # offline one would otherwise wedge the app mid-backup until the timeout.
+    offline_workers = sorted({
+        container.worker.hostname
+        for container in application.containers
+        if not container.worker.online
+    })
+    if offline_workers:
+      raise Exception(
+          f"Cannot back up {application.qualified_name}: worker(s) offline: {', '.join(offline_workers)}."
+      )
+
     failed_backup_units = []
 
     try:

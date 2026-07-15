@@ -28,7 +28,7 @@ async def dispatch_tick():
 async def sync_workers():
   Manager().add_task(
       task=Manager().sync_workers,
-      scopes={"platform", "app"},
+      scopes={"platform"},
       executor="platform",
       quiet=True,
   )
@@ -126,7 +126,7 @@ async def cleanup():
 async def traefik_sync_certs():
   Manager().add_task(
       task=Manager().sync_traefik_certificates,
-      scopes={"app"},
+      scopes={"platform", "app"},
       executor="app",
       on_conflict=OnConflict.REPLACE,
   )

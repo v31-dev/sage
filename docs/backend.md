@@ -96,7 +96,7 @@ The Manager owns a single in-memory `TaskQueue` (`app/utils/queue.py`). It is th
 
 - **Enqueue.** Every operation runs via `Manager().add_task(task=..., scopes=..., executor=..., params=..., ...)`. Handlers receive ids (not ORM objects) and re-fetch, so nothing carries a stale snapshot across the queue boundary.
 - **Scopes** are `:`-delimited and hierarchical. Roots: `platform`, `app` (with `app:<qualified_name>` children), `common`, `metrics`. A parent scope conflicts with all of its children; siblings never conflict. Conflicting tasks are mutually excluded.
-- **Dispatch.** A one-second APScheduler interval tick calls `dispatch_tick`, which starts every pending task whose scope is free. One dispatcher makes the scan race-free; a `threading.Lock` guards the queue because producers run on FastAPI/loop threads.
+- **Dispatch.** A one-second APScheduler interval tick calls `dispatch_tick`, which starts every pending task whose scope is free. One dispatcher makes the scan race-free; a `threading.Lock` guards the queue because producers run on FastAPI/loop threads. Dispatch is **deliberately opportunistic**: conflicts are checked against *running* work only, so a blocked pending task reserves nothing and later-queued non-conflicting tasks start past it (FIFO holds within a scope, not across conflicting scopes — a queued broad `{platform,app}` task waits for a tick with no app task running, and its start can be pushed out by later app work). This is the accepted trade: a pending-scope reservation rule would let any queued broad task freeze every `app:<qn>` task behind long-running work, converting rare bounded delays on platform ops into fleet-wide stalls. `priority` is queue-position only; nothing ever preempts running work.
 - **Admission policy — `on_conflict` on `add_task`** (enum `OnConflict`; decided atomically under the queue lock). Admission decides *drop vs. enqueue*; mutual exclusion is **separate and always scope-based** — the dispatcher serializes conflicting scopes regardless of mode, so an enqueued task simply waits for its scope to free.
   - `DEDUP` (default) — drop and return `False` if an identical op (**same name + exact scope**) is already running or queued; otherwise enqueue and wait. Prevents reconciler pile-ups and double-triggers (e.g. a second deploy of the same app). A *different* op holding a conflicting scope does **not** cause a drop — it enqueues and waits behind that op. (So a background sync never rejects a user action; the action just defers behind it.)
   - `QUEUE` — always enqueue and wait, even for an identical op. For work where every call must run, including params-identified work that shares a name + scope (S3 delete by path, worker removal by host, the settings Traefik refresh by change-flags).
@@ -171,7 +171,7 @@ Every queued operation, its scope, where it is enqueued from, its lane pool, and
 
 | Task | Scope | Source | Lane | on_conflict |
 | --- | --- | --- | --- | --- |
-| `sync_workers` | platform, app | interval 30s | platform | DEDUP |
+| `sync_workers` | platform | interval 30s | platform | DEDUP |
 | `sync_application_status` | app:`<qn>` | cron 1m | app | DEDUP |
 | `backup_application_s3` | app:`<qn>` | cron 1m (due backups) | app | DEDUP |
 | `reconcile_traefik_configs` | platform | cron 1m | platform | DEDUP |
@@ -181,7 +181,7 @@ Every queued operation, its scope, where it is enqueued from, its lane pool, and
 | `backup_database_s3` | platform, app | cron 6h | platform | REPLACE |
 | `Metrics.cleanup` | metrics | cron daily 04:00 | metrics | REPLACE |
 | `cleanup` | platform | cron daily 04:00 | platform | REPLACE |
-| `sync_traefik_certificates` | app | cron weekly (Mon 03:00) | app | REPLACE |
+| `sync_traefik_certificates` | platform, app | cron weekly (Mon 03:00) | app | REPLACE |
 
 **Route-driven (HTTP → `add_task`)**
 
@@ -199,7 +199,7 @@ Every queued operation, its scope, where it is enqueued from, its lane pool, and
 | `refresh_traefik` | platform, app | PUT /settings/cloudflare | platform | QUEUE |
 | `refresh_traefik` | platform, app | POST /settings/resync_traefik | platform | DEDUP |
 | `restart` | platform, app, common, metrics | POST /settings/restart | platform | QUEUE (+priority) |
-| `sync_workers` | platform, app | POST /settings/resync_workers | platform | REPLACE |
+| `sync_workers` | platform | POST /settings/resync_workers | platform | REPLACE |
 | `sync_application_traefik_domains_config` | app:`<qn>` | create/update/delete_domain, update-container tag change (via `request_application_traefik_sync`) | app | REPLACE |
 
 Per-app tasks (status sync, the Traefik domains sync, backups, `delete_container`) re-fetch their target by id with `get_or_none` and treat a missing row as a **quiet no-op**: instant deletes are a legitimate interleaving with queued/scheduled work, so a task whose target vanished has nothing to do (the reconcile scan owns worker-side cleanup for deleted apps). `remove_worker` is the deliberate exception — its precondition re-check fails loudly because proceeding would destroy a worker that just gained containers.
@@ -210,7 +210,7 @@ Container create and tag-update are **instant route-side model writes**, like ev
 
 | Task | Scope | Source | Lane | on_conflict |
 | --- | --- | --- | --- | --- |
-| `sync_workers` | platform, app | `restore_database_from_s3` | platform | REPLACE |
+| `sync_workers` | platform | `restore_database_from_s3` | platform | REPLACE |
 | `sync_application_traefik_domains_config` | app:`<qn>` | deploy/stop, delete-container, `sync_application_status`, `sync_workers`, `refresh_traefik`, `reconcile_traefik_configs` missing-file check (via `request_application_traefik_sync`) | app | REPLACE |
 | `sync_application_traefik_domains_config` | app:`<qn>` | `reconcile_traefik_configs` `domains_synced=False` backstop | app | DEDUP |
 
@@ -222,7 +222,7 @@ Cron cadence convention: **≤ 1m → `DEDUP`** (a high-frequency reconciler ski
 
 **Interrupted-operation recovery.** A busy status (`deploying`/`stopping`/`backup`/`restoring`) is only ever written by a task while it holds that app's scope — and `sync_application_status` holds that same scope while it runs, so by mutual exclusion any busy status it observes has no owning operation left: the mark of an interrupted task (crash, plain container restart, cancelled coroutine). Instead of skipping such apps, the sync resets the stuck app/containers to `error` (with a notification) and then converges them against real `docker ps` state in the same run. This is why no boot-time status reset exists: the minutely sync covers startup wedges and mid-flight loss with one mechanism. Detection defers while a broad `app`-scope task runs (the per-app syncs queue behind it) and resumes when it finishes. Deploy/stop container children additionally run their whole body inside their try block so an early failure can never kill the parent's gather and leave detached siblings running.
 
-Worker-infrastructure tasks (`setup_worker`/`sync_workers`, the worker cert sync, `refresh_traefik`) hold the broad `app` scope rather than a per-worker one **deliberately**: there is no `worker` scope dimension, and the breadth is what closes the *new-worker race* — a worker's row exists (with `online=False`) from the start of `setup_worker`, and container-create doesn't require `online`, so a deploy could target a worker that is still mid-reconfiguration. Blocking all app work for the duration is correct rather than landing a deploy on a half-set-up worker. The cost (a platform-wide app-op pause) is acceptable because these tasks are rare (worker churn; 10-day cert rotation), not steady-state. This includes the cert sync's wait-for-provisioning loop (up to 10 min holding the scope): it only spins while the manager's acme.json is invalid, a window in which routing is broken platform-wide anyway, and the sync must restart each worker's traefik to load new certs — deferring would fragment the disruption, not avoid it. A narrower per-worker scope would either miss the new-worker race or require every container-touching op to declare its workers' scopes (fragile); not worth it at the target scale (≤10 workers).
+Worker convergence (`setup_worker`, reached only through `sync_workers`) runs on the **`platform` scope only** — it does not barrier app work, so the 30-second worker poll is never starved by long builds and worker drift is detected (and converged) within ~30s regardless of app activity. This is safe because app tasks already treat workers as unreliable — a worker can vanish mid-exec regardless of scheduling: deploy/stop/delete/backup **fast-fail on an offline-flagged worker**, any per-exec failure lands the container in `error`, and the status syncs converge from there. The residual race — a deploy targeting a worker whose setup is still mid-flight — fails loudly and converges identically, which is the same outcome as deploying to an offline worker (already possible at any time; placement doesn't require `online`). Tasks that mutate fleet-wide state keep the broad `{platform, app}` barrier: `remove_worker` (deletes the row), `refresh_traefik` (rewrites manager + worker traefik config), platform backup/restore, and the weekly cert sync — the latter holds `{platform, app}` so it also serializes with `setup_worker`'s per-worker cert sync (both stop/start a worker's traefik to load acme.json). The cert sync's wait-for-provisioning loop (up to 10 min holding its scopes) stays accepted: it only spins while the manager's acme.json is invalid, a window in which routing is broken platform-wide anyway, and the sync must restart each worker's traefik to load new certs — deferring would fragment the disruption, not avoid it. There is deliberately no per-worker scope dimension; at ≤10 workers it isn't worth the fragility.
 
 ## Traefik Domain Sync
 

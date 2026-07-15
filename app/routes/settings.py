@@ -173,7 +173,7 @@ async def resync_workers(request: Request):
   """
   Manager().add_task(
       task=Manager().sync_workers,
-      scopes={"platform", "app"},
+      scopes={"platform"},
       params={"force": True},
       executor="platform",
       task_id=request.state.task_id,

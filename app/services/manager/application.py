@@ -65,6 +65,9 @@ class ApplicationMixin:
               container.worker.hostname} with task id {container_task_id}...")
       task_id_token = task_id.set(container_task_id)
 
+      if not container.worker.online:
+        raise Exception(f"Worker {container.worker.hostname} is offline.")
+
       project_env = container.application.project.env if container.application.project.env else ""
       project_env = parse_multiline_kv(project_env, lambda key, value: (key, value))
 
@@ -243,6 +246,9 @@ class ApplicationMixin:
         logger.warning(
             f"Force deleting container of application {container.application.qualified_name} from offline worker {
                 container.worker.hostname}; skipping remote cleanup.")
+      elif not container.worker.online:
+        raise Exception(
+            f"Worker {container.worker.hostname} is offline; use force delete to remove the container record anyway.")
       else:
         # Stop container on worker
         await self.tailscale.exec_command(
@@ -344,6 +350,8 @@ class ApplicationMixin:
         logger.info(
             f"Container of application {container.application.qualified_name} on worker {
                 container.worker.hostname} is already inactive. Skipping compose down.")
+      elif not container.worker.online:
+        raise Exception(f"Worker {container.worker.hostname} is offline.")
       else:
         # Stop with docker compose
         await self.tailscale.exec_command(
