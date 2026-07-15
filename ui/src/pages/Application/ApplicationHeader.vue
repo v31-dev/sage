@@ -22,6 +22,7 @@ import EditApplicationButton from './EditApplicationButton.vue'
 import ConfirmationButton from '@/components/ConfirmationButton.vue'
 import { APPLICATION_BUSY_STATUSES, type Application, getApplicationAPI } from '@/services/api'
 import TitleStatus from '@/components/TitleStatus.vue'
+import { formatDateStringAgo } from '@/lib/utils'
 
 interface Props {
   application: Application
@@ -149,6 +150,14 @@ const repoURL = computed(() => {
         <Label>Command</Label>
         <p class="text-sm text-muted-foreground whitespace-pre-wrap">
           {{ props.application.command }}
+        </p>
+      </div>
+      <div>
+        <Label>Last Deployed</Label>
+        <p class="text-sm text-muted-foreground">
+          {{
+            props.application.deployed_at ? formatDateStringAgo(props.application.deployed_at) : '-'
+          }}
         </p>
       </div>
     </CardContent>

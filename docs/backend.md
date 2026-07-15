@@ -248,19 +248,59 @@ container, `sync_application_status` health flips, and Cloudflare domain change.
 It is deliberately **not** called when routing is unaffected: adding a container
 (inactive until deployed), or editing/deleting an inactive one.
 
-**Worker join/rejoin runs full setup.** Any worker whose state may be stale —
-brand new, back from an outage, or left half-configured by an interrupted setup
-— goes through idempotent `setup_worker`: the offline→online transition in
-`sync_workers` calls it directly (there is no lighter "mark online" path).
-Setup re-syncs all infra files and ends with a
-`request_application_traefik_sync` for every application **hosted on the
-worker**. Apps hosted elsewhere are deliberately not re-synced — a rejoin must
-never blip unrelated apps — so their routing files on the rejoined worker can
-be *topology-stale* (routing content is a function of domains/tags/active
-containers, not env or image, so only topology changes during the outage
-matter) until that app's next routing change; Settings → Resync Traefik is the
-deliberate global heal. The minutely `reconcile_traefik_configs` enforces
-existence in between.
+**Revision stamps make stale worker state detectable.** Every worker carries
+`{worker_home}/revisions/` — one hash stamp per artifact class, written by
+whatever applied the artifact, and deliberately **outside** `traefik/dynamic/`
+(which Traefik watches and the reconcile scan owns). All hashes are computed
+from current truth on demand; nothing is persisted manager-side. The stamps:
+`infra` — hash of (sage version, domain, admin email), written as the **final
+step** of `setup_worker` so it is a commit marker (an interrupted setup leaves
+the old stamp and gets retried); `certs` — hash of the manager's acme.json,
+stamped by the per-worker cert sync; one per application —
+`routing_input_hash` over domains, tags, and the active container set (the
+receiving-worker set is deliberately excluded, so one worker's outage never
+invalidates the others' stamps), stamped by the domains sync on each worker it
+wrote to. The fourth stamp is the app compose label `sage.deployed_at`
+(mirrors `Application.deployed_at`, both written from the same deploy):
+`sync_application_status` reads it in its existing `docker ps` probe and
+trusts `running` only when the label equals the app's current stamp — **no
+label, or no recorded deploy, is no match**. A running container that cannot
+prove its version is **stopped, marked `inactive`, and error-notified**
+instead of being flipped back into the routing pool. There is deliberately no
+migration leniency: after upgrading to a stamped sage version (or restoring an
+older database), every unstamped running container is stopped within a minute
+and a manual redeploy re-stamps it — routing follows the stopped containers
+(pools re-render without them) and recovers on redeploy.
+
+**`setup_worker` is the single stamp-driven convergence.** Every path — new
+worker, offline→online rejoin, IP change, force resync — calls the same
+idempotent `setup_worker`, and the worker's stamps decide how much work that
+is: infra stamp mismatch (or a changed IP, which is rendered into infra
+files) → the full file-sync/compose/restart pass; certs mismatch → per-worker
+cert sync only; per-app mismatches → targeted
+`request_application_traefik_sync` (covers hosted and mesh files alike). It
+always re-creates the DNS record, flips `online`, and runs existence-level
+orphan cleanup: containers/app dirs with no owning Container row (e.g.
+force-deleted while the worker was offline) are composed down and removed —
+otherwise a zombie runs forever and squats on a future app's container name.
+`force=True` means *distrust every stamp*: the `revisions/` dir is deleted
+first, so everything mismatches and the worker converges from scratch — a
+brand-new worker (no stamps) takes the same path. A worker that missed
+nothing costs one read. Settings → Resync Traefik remains the manual global
+routing heal. Orphan cleanup reads the worker's containers/dirs **before** the
+owning Container rows: a row is created (instant route write) before any
+deploy materializes its app dir, so a dir captured on the worker whose row is
+being created concurrently is present in the later read and never reaped
+mid-deploy.
+
+`refresh_traefik` (domain/admin-email change) rewrites each online worker's
+traefik files directly but deliberately does **not** advance their `infra`
+stamps — the stamp vouches for every infra file (compose, `.env`, vector),
+and refresh only touched the traefik ones; advancing it could falsely certify
+a worker that also missed a version upgrade. The stale stamp costs each worker
+one redundant full setup at its next convergence (one-shot per settings
+change) — the safe direction, since the stamp never claims a worker is
+fresher than it is.
 
 **Name components are collision-free by construction.** Every name that ends
 up in a filename or constructed identity — project, application, and domain
@@ -292,8 +332,11 @@ read) and reconciles both directions: files matching no live application's
 `{qn}-` prefix are removed by exact filename; an application with domains
 (`domains_synced=True`) missing files on any online worker gets a sync
 requested; and any app left `domains_synced=False` gets its sync re-enqueued.
-Content correctness stays with the per-app sync — the scan checks existence
-only.
+On top of existence, the scan compares each online worker's revision stamps
+against the recomputed `routing_input_hash` — a mismatch means the worker
+holds files rendered from stale inputs (a missed sync) and requests that app's
+sync; stamps for deleted applications are removed like their files. Rendering
+correctness stays with the per-app sync.
 
 `domains_synced` is a progress/backstop marker, not a trigger by itself, and no
 DB signal maintains it (signals only keep the counters). Two rare paths that

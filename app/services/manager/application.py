@@ -3,6 +3,7 @@ import json
 import logging
 import re
 import shlex
+from datetime import datetime
 
 from services.db import APPLICATION_BUSY_STATUSES, Application, Container, Event, Worker
 from utils.common import format_yaml, parse_multiline_kv
@@ -20,6 +21,7 @@ class ApplicationMixin:
     """
     application = Application.get_by_id(application_id)
     application.status = "deploying"
+    application.deployed_at = datetime.now()
     application.save()
     logger.info(f"Deploying application {application.qualified_name}...")
 
@@ -145,6 +147,7 @@ class ApplicationMixin:
             f"{container_dir}/docker-compose.yml",
             {
                 "CONTAINER_NAME": container.application.qualified_name,
+                "DEPLOYED_AT": container.application.deploy_stamp,
                 "IMAGE": container.application.image,
                 "COMMAND": command_value,
                 "VOLUMES": ", ".join(volumes_config),
@@ -176,6 +179,7 @@ class ApplicationMixin:
             f"{container_dir}/docker-compose.yml",
             {
                 "CONTAINER_NAME": container.application.qualified_name,
+                "DEPLOYED_AT": container.application.deploy_stamp,
                 "REPO": container.application.repo,
                 "DOCKERFILE": container.application.path,
                 "BUILD_ARGS": ", ".join(app_build_args),
@@ -416,8 +420,8 @@ class ApplicationMixin:
         self.notify(f"Application {application.qualified_name} is inactive as it has no containers.", "warning")
       return
 
-    # Query container state only on the (distinct, online) workers backing this
-    # application's containers.
+    # Query container state (and the deploy stamp label) only on the
+    # (distinct, online) workers backing this application's containers.
     container_status = {}
     workers = {container.worker.hostname: container.worker for container in containers}
     for hostname, worker in workers.items():
@@ -426,13 +430,13 @@ class ApplicationMixin:
       try:
         _, docker_ps_output = await self.tailscale.exec_command(
             hostname,
-            f"docker ps --filter 'name=^{application.qualified_name}$' --format '{{{{.Names}}}}|{{{{.State}}}}'")
+            f"docker ps --filter 'name=^{application.qualified_name}$' "
+            f"--format '{{{{.Names}}}}|{{{{.State}}}}|{{{{.Label \"sage.deployed_at\"}}}}'")
         for line in docker_ps_output:
-          try:
-            container_name, container_state = line.split("|")
-          except Exception:
+          parts = line.split("|")
+          if len(parts) != 3:
             continue
-          container_status[f"{hostname}-{container_name}"] = container_state
+          container_status[f"{hostname}-{parts[0]}"] = (parts[1], parts[2])
       except Exception as e:
         logger.error(
             f"Failed to get container status from worker {hostname} while syncing application {application.qualified_name}: {e}")
@@ -458,9 +462,35 @@ class ApplicationMixin:
         container.save()
         routing_changed = True
 
-      status = container_status.get(worker_container_name)
-      if status:
-        if status == "running" and container.status != "active":
+      entry = container_status.get(worker_container_name)
+      if entry:
+        # Container must be running + match deploy timestamp
+        status, deployed_label = entry
+        if status == "running" and deployed_label != application.deploy_stamp:
+          try:
+            await self.tailscale.exec_command(
+                container.worker.hostname,
+                f"docker compose -f {self.worker_home_dir}/applications/{application.qualified_name}/docker-compose.yml down",
+                timeout=60,
+            )
+            if container.status == "active":
+              routing_changed = True
+            container.status = "inactive"
+            container.save()
+            self.notify(
+                f"Application container {worker_container_name} was running a stale version and has "
+                f"been stopped; redeploy {application.qualified_name} to update it.",
+                "error")
+          except Exception as e:
+            if container.status != "error":
+              container.status = "error"
+              container.save()
+              routing_changed = True
+            self.notify(
+                f"Application container {worker_container_name} is running a stale version and could "
+                f"not be stopped: {e}",
+                "error")
+        elif status == "running" and container.status != "active":
           container.status = "active"
           container.save()
           routing_changed = True

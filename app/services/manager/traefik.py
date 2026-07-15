@@ -7,7 +7,7 @@ from services.settings import Settings
 from utils.executor import run_in_executor_with_context
 from utils.queue import OnConflict
 
-from ._common import app_dir
+from ._common import app_dir, routing_input_hash
 
 logger = logging.getLogger(__name__)
 
@@ -247,6 +247,10 @@ class TraefikMixin:
                 },
             )
 
+    input_hash = routing_input_hash(domain_name, application_domains, containers)
+    for worker in online_workers:
+      await self.write_worker_revision(worker.hostname, application.qualified_name, input_hash)
+
     for domain in application_domains:
       if domain.type == "tcp":
         domain_url = f"{domain.name}.int.{domain_name}:8443"
@@ -305,6 +309,27 @@ class TraefikMixin:
         domain.application_id for domain in Domain.select(Domain.application).distinct()
     }
 
+    # Revision stamps: existence checks above catch missing files; the hash
+    # layer catches files rendered from stale inputs (a worker that missed a
+    # sync). Stamps for deleted applications are removed here, like their
+    # routing files.
+    revisions_by_worker = {}
+    for worker in online_workers:
+      revisions_by_worker[worker.hostname] = await self.read_worker_revisions(worker.hostname)
+    live_names = {application.qualified_name for application in applications}
+    for worker in online_workers:
+      stale_keys = sorted(
+          key for key in revisions_by_worker[worker.hostname]
+          if key not in live_names and key not in ("infra", "certs")
+          and re.fullmatch(r"[a-z0-9-]+", key)
+      )
+      if stale_keys:
+        await self.tailscale.exec_command(
+            worker.hostname,
+            ";".join(f"rm -f {self.worker_home_dir}/revisions/{key}" for key in stale_keys),
+        )
+
+    domain_name = Settings().get("cloudflare", "domain")
     for application in applications:
       if not application.domains_synced:
         self.add_task(
@@ -318,11 +343,21 @@ class TraefikMixin:
 
       # An app with domains must have config on every online worker; a missing
       # file means the worker joined after the app's last sync.
-      if application.id not in applications_ids_with_domains:
-        continue
-      prefix = f"{application.qualified_name}-"
-      if any(
-          not any(name.startswith(prefix) for name in worker_files[worker.hostname])
-          for worker in online_workers
-      ):
+      needs_sync = False
+      if application.id in applications_ids_with_domains:
+        prefix = f"{application.qualified_name}-"
+        needs_sync = any(
+            not any(name.startswith(prefix) for name in worker_files[worker.hostname])
+            for worker in online_workers
+        )
+
+      if not needs_sync and online_workers:
+        app_hash = routing_input_hash(
+            domain_name, list(application.domains), list(application.containers))
+        needs_sync = any(
+            revisions_by_worker[worker.hostname].get(application.qualified_name) != app_hash
+            for worker in online_workers
+        )
+
+      if needs_sync:
         self.request_application_traefik_sync(application)

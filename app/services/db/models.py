@@ -78,6 +78,7 @@ class Application(BaseModel):
   status = CharField(choices=STATUS_CHOICES, default="inactive")
   domains_synced = BooleanField(default=False)
   container_count = IntegerField(default=0)
+  deployed_at = DateTimeField(null=True)
 
   @property
   def qualified_name(self) -> str:
@@ -85,6 +86,13 @@ class Application(BaseModel):
       This is the name of the application used on the worker to prevent name space collisions.
     '''
     return f"{self.project.name}-{self.name}"
+
+  @property
+  def deploy_stamp(self) -> str | None:
+    """Canonical string form of deployed_at."""
+    if self.deployed_at is None:
+      return None
+    return self.deployed_at.strftime("%Y-%m-%dT%H:%M:%S.%f")
 
   def save(self, *args, **kwargs):
     if self.type == "docker":

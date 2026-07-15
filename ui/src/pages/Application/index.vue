@@ -79,6 +79,7 @@ async function loadApplicationStatus() {
       application.value.container_count = updatedApplication.container_count
       application.value.updated_at = updatedApplication.updated_at
       application.value.domains_synced = updatedApplication.domains_synced
+      application.value.deployed_at = updatedApplication.deployed_at
       appStore.updateApplicationDeployStatus(updatedApplication.status)
     }
   } catch (err) {
