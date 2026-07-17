@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 import router from '@/router'
 import { toast } from 'vue-sonner'
-import { Logs, Activity } from 'lucide-vue-next'
+import { Logs, Activity, TriangleAlert } from 'lucide-vue-next'
 import {
   Card,
   CardAction,
@@ -159,6 +159,13 @@ const repoURL = computed(() => {
             props.application.deployed_at ? formatDateStringAgo(props.application.deployed_at) : '-'
           }}
         </p>
+      </div>
+      <div
+        v-if="props.application.config_dirty"
+        class="flex items-center gap-1.5 text-sm text-amber-600 dark:text-amber-500"
+      >
+        <TriangleAlert class="w-4 h-4 shrink-0" />
+        Configuration changed since last deploy — redeploy to apply.
       </div>
     </CardContent>
     <CardFooter

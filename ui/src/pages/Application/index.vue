@@ -80,6 +80,7 @@ async function loadApplicationStatus() {
       application.value.updated_at = updatedApplication.updated_at
       application.value.domains_synced = updatedApplication.domains_synced
       application.value.deployed_at = updatedApplication.deployed_at
+      application.value.config_dirty = updatedApplication.config_dirty
       appStore.updateApplicationDeployStatus(updatedApplication.status)
     }
   } catch (err) {

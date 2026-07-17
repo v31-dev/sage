@@ -5,7 +5,7 @@ import re
 import shlex
 from datetime import datetime
 
-from services.db import APPLICATION_BUSY_STATUSES, Application, Container, Event, Worker
+from services.db import APPLICATION_BUSY_STATUSES, Application, Container, DeployConfig, Event, Worker, db
 from utils.common import format_yaml, parse_multiline_kv
 from utils.logging import generate_task_id_token, task_id
 
@@ -19,34 +19,67 @@ class ApplicationMixin:
     """
     Deploy an application.
     """
-    application = Application.get_by_id(application_id)
-    application.status = "deploying"
-    application.deployed_at = datetime.now()
-    application.save()
-    logger.info(f"Deploying application {application.qualified_name}...")
+    # One transaction freezes the deploy inputs (app config, project env,
+    # volumes) and the container set at a single point in time; direct UI edits
+    # made after this apply on the next deploy. deployed_at is set before the
+    # snapshot so config.deploy_stamp is this deploy's version marker.
+    with db.atomic():
+      application = Application.get_or_none(Application.id == application_id)
+      if application is None:
+        logger.info(f"Application {application_id} deleted before deploy; nothing to do.")
+        return
+
+      containers = list(application.containers)
+      if not containers:
+        was_inactive = application.status == "inactive"
+        application_qualified_name = application.qualified_name
+        if not was_inactive:
+          application.status = "inactive"
+          application.save()
+      else:
+        application.status = "deploying"
+        application.deployed_at = datetime.now()
+        config = application.deploy_config
+        application.deployed_hash = config.content_hash
+        application.save()
+
+    if not containers:
+      # A last-container delete can land before a queued deploy runs; deploying
+      # over an empty set would fake a successful "active". Routing was already
+      # dropped by whatever removed the containers (delete_container syncs when
+      # it removes an active one; the reconcile scan backstops the rest).
+      if not was_inactive:
+        self.notify(
+            f"Application {application_qualified_name} has no containers to deploy; marked inactive.",
+            "warning")
+      return
+
+    logger.info(f"Deploying application {config.qualified_name}...")
 
     await asyncio.gather(
-        *[self.deploy_application_container(container)
-          for container in application.containers],
+        *[self.deploy_application_container(container, config)
+          for container in containers],
         return_exceptions=False,
     )
 
     # Trigger traefik sync
     self.request_application_traefik_sync(application)
 
-    if any(container.status == "error" for container in application.containers):
+    # Check only the snapshot's container set: an instant create mid-deploy adds
+    # an inactive row the minutely status sync owns, not this deploy's outcome.
+    if any(container.status == "error" for container in containers):
       application.status = "error"
       application.save()
       self.notify(
-          f"Failed to deploy application {application.qualified_name}.",
+          f"Failed to deploy application {config.qualified_name}.",
           "error")
-      raise Exception(f"Failed to deploy application {application.qualified_name}.")
+      raise Exception(f"Failed to deploy application {config.qualified_name}.")
     else:
       application.status = "active"
       application.save()
-      self.notify(f"Application {application.qualified_name} deployed.", "success")
+      self.notify(f"Application {config.qualified_name} deployed.", "success")
 
-  async def deploy_application_container(self, container: Container):
+  async def deploy_application_container(self, container: Container, config: DeployConfig):
     # Create an event for tracking with a different task id.
     container_task_id = generate_task_id_token()
     exception_message = None
@@ -61,25 +94,24 @@ class ApplicationMixin:
       )
       container.status = "deploying"
       container.save()
-      container_dir = f"{self.worker_home_dir}/applications/{container.application.qualified_name}"
+      container_dir = f"{self.worker_home_dir}/applications/{config.qualified_name}"
       logger.info(
-          f"Deploying application {container.application.qualified_name} container to worker {
+          f"Deploying application {config.qualified_name} container to worker {
               container.worker.hostname} with task id {container_task_id}...")
       task_id_token = task_id.set(container_task_id)
 
       if not container.worker.online:
         raise Exception(f"Worker {container.worker.hostname} is offline.")
 
-      project_env = container.application.project.env if container.application.project.env else ""
-      project_env = parse_multiline_kv(project_env, lambda key, value: (key, value))
+      project_env = parse_multiline_kv(config.project_env, lambda key, value: (key, value))
 
       # Special SAGE specific variables
       project_env.append(("SAGE_WORKER_HOSTNAME", container.worker.hostname))
 
-      app_env = container.application.env if container.application.env else ""
-      app_build_args = container.application.args if container.application.args else ""
-      app_build_secrets = container.application.build_secrets if container.application.build_secrets else ""
-      app_command = container.application.command if container.application.command else ""
+      app_env = config.env
+      app_build_args = config.args
+      app_build_secrets = config.build_secrets
+      app_command = config.command
 
       # Resolve Application env, build args, build secrets and command with project env values if they reference them with ${KEY}
       for key, value in project_env:
@@ -110,12 +142,12 @@ class ApplicationMixin:
       )
 
       # Create the volumes
-      volumes = list(container.application.volumes)
+      volumes = config.volumes
       volumes_config = [
-          json.dumps(f"{container_dir}/volumes/{v.name}:{v.path}")
-          for v in volumes
+          json.dumps(f"{container_dir}/volumes/{name}:{path}")
+          for name, path in volumes
       ]
-      volume_mkdir_cmd = ';'.join([f"mkdir -p {container_dir}/volumes"] + [f"mkdir -p {container_dir}/volumes/{v.name}" for v in volumes])
+      volume_mkdir_cmd = ';'.join([f"mkdir -p {container_dir}/volumes"] + [f"mkdir -p {container_dir}/volumes/{name}" for name, _ in volumes])
       await self.tailscale.exec_command(
           container.worker.hostname,
           volume_mkdir_cmd
@@ -129,7 +161,7 @@ class ApplicationMixin:
       # Restrict cleanup to Sage's own volume naming so a directory planted on the
       # worker can't smuggle shell metacharacters into the remote rm command.
       volumes_to_cleanup = {
-          name for name in (set(existing_volumes) - set(v.name for v in volumes))
+          name for name in (set(existing_volumes) - set(vname for vname, _ in volumes))
           if re.fullmatch(r"[a-z0-9-]+", name)
       }
       if volumes_to_cleanup:
@@ -140,21 +172,21 @@ class ApplicationMixin:
         )
 
       # Create the compose file based on application type
-      if container.application.type == "docker":
+      if config.type == "docker":
         await self.tailscale.sync_file(
             container.worker.hostname,
             app_dir / "templates/worker/application/dockerhub-compose.yml",
             f"{container_dir}/docker-compose.yml",
             {
-                "CONTAINER_NAME": container.application.qualified_name,
-                "DEPLOYED_AT": container.application.deploy_stamp,
-                "IMAGE": container.application.image,
+                "CONTAINER_NAME": config.qualified_name,
+                "DEPLOYED_AT": config.deploy_stamp,
+                "IMAGE": config.image,
                 "COMMAND": command_value,
                 "VOLUMES": ", ".join(volumes_config),
             },
             formatter=format_yaml,
         )
-      elif container.application.type == "git":
+      elif config.type == "git":
         # Each build secret is backed by its own file under secrets/
         secrets_dir = f"{container_dir}/secrets"
         await self.tailscale.exec_command(
@@ -178,10 +210,10 @@ class ApplicationMixin:
             app_dir / "templates/worker/application/gitrepo-compose.yml",
             f"{container_dir}/docker-compose.yml",
             {
-                "CONTAINER_NAME": container.application.qualified_name,
-                "DEPLOYED_AT": container.application.deploy_stamp,
-                "REPO": container.application.repo,
-                "DOCKERFILE": container.application.path,
+                "CONTAINER_NAME": config.qualified_name,
+                "DEPLOYED_AT": config.deploy_stamp,
+                "REPO": config.repo,
+                "DOCKERFILE": config.path,
                 "BUILD_ARGS": ", ".join(app_build_args),
                 "BUILD_SECRETS": ", ".join(name for name, _ in build_secret_items),
                 "SECRETS_BLOCK": secrets_block,
@@ -211,11 +243,11 @@ class ApplicationMixin:
     container.save()
 
     if deployment_status == "active":
-      self.notify(f"Application {container.application.qualified_name} container deployed to worker {container.worker.hostname}.")
+      self.notify(f"Application {config.qualified_name} container deployed to worker {container.worker.hostname}.")
     else:
       self.notify(
           f"Failed to deploy application {
-              container.application.qualified_name} container to worker {
+              config.qualified_name} container to worker {
               container.worker.hostname}: {exception_message}", "error")
 
   async def delete_container(self, container_id: int, force: bool = False):

@@ -63,7 +63,10 @@ def create_application(
 
 @router.get("/{application}", dependencies=[Depends(inject_application)])
 def get_application(request: Request):
-  return model_to_dict(request.state.models["application"], backrefs=True, max_depth=2)
+  application = request.state.models["application"]
+  data = model_to_dict(application, backrefs=True, max_depth=2)
+  data["config_dirty"] = application.config_dirty
+  return data
 
 
 @router.put("/{application}", dependencies=[Depends(inject_application)])
