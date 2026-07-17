@@ -8,11 +8,7 @@ from threading import Lock
 from typing import Callable
 
 from utils.executor import active_executor, run_in_executor_with_context
-from utils.logging import (
-    TaskFailed,
-    generate_task_id_token,
-    task_id,
-)
+from utils.logging import TaskFailed, generate_task_id_token, task_id
 
 logger = logging.getLogger(__name__)
 
@@ -196,6 +192,19 @@ class TaskQueue:
           for running in self._running
       )
 
+  def has_task(self, task: Callable | str, params: dict | None = None) -> bool:
+    """True if a task with this identity is running or queued. When params is
+    given, every provided key must also match the task's params — a
+    params-scoped duplicate check for QUEUE-admitted work, since admission
+    identity itself deliberately ignores params."""
+    name = task if isinstance(task, str) else task.__name__
+    with self._lock:
+      return any(
+          t.name == name
+          and (params is None or all(t.params.get(k) == v for k, v in params.items()))
+          for t in (*self._running, *self._queue)
+      )
+
   def cancel_all(self):
     """Cancel every pending (not yet running) task; running tasks are left to
     finish. Used before a restart so queued work is recorded as cancelled
@@ -280,6 +289,11 @@ class TaskQueue:
     except TaskFailed:
       logger.error(f"{task.name}: failed")
       self._record(task, "failed")
+    except asyncio.CancelledError:
+      # Loop shutdown mid-task. Records as failed
+      logger.warning(f"{task.name}: failed (interrupted by shutdown)")
+      self._record(task, "failed")
+      raise
     except Exception:
       logger.exception(f"{task.name}: failed")
       self._record(task, "failed")

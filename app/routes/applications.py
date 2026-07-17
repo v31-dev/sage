@@ -24,6 +24,7 @@ from utils.api import (
     generic_update,
     parse_api_data,
 )
+from utils.db import AlphaNumericField
 
 
 def inject_application(request: Request):
@@ -56,13 +57,16 @@ def create_application(
 ):
   data = parse_api_data(application_data, ["label", "description"])
   data["project"] = request.state.models["project"]
-  data["name"] = data["label"]
+  data["name"] = AlphaNumericField.clean(data["label"])
   return generic_create(Application, data)
 
 
 @router.get("/{application}", dependencies=[Depends(inject_application)])
 def get_application(request: Request):
-  return model_to_dict(request.state.models["application"], backrefs=True, max_depth=2)
+  application = request.state.models["application"]
+  data = model_to_dict(application, backrefs=True, max_depth=2)
+  data["config_dirty"] = application.config_dirty
+  return data
 
 
 @router.put("/{application}", dependencies=[Depends(inject_application)])
@@ -81,6 +85,12 @@ def delete_application(request: Request):
 
   if application.status in APPLICATION_BUSY_STATUSES:
     raise HTTPException(status_code=409, detail=f"Application is already {application.status}.")
+
+  if application.container_count > 0:
+    raise HTTPException(
+        status_code=409,
+        detail="Application has containers and cannot be deleted. Delete its containers first.",
+    )
   return generic_delete(Application, application)
 
 

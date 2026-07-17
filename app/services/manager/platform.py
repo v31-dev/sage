@@ -273,11 +273,11 @@ class PlatformMixin:
         self.notify(f"Platform restored from backup {s3_path} successfully.", "success")
 
         # The restore rewrote worker state in the DB; queue a force-resync.
-        # REPLACE supersedes a pending sync and waits behind this restore, which
-        # holds the same scope.
+        # REPLACE supersedes a pending sync and waits behind this restore, whose
+        # scopes cover the sync's platform scope.
         self.add_task(
             task=self.sync_workers,
-            scopes={"platform", "app"},
+            scopes={"platform"},
             params={"force": True},
             executor="platform",
             on_conflict=OnConflict.REPLACE,

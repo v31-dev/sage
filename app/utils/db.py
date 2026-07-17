@@ -88,10 +88,42 @@ class JSONField(TextField):
 
 
 class CleanCharField(CharField):
-  def db_value(self, value):
-    """Clean the value by lowercasing, keeping alphanumerics and dashes. Must start with a letter."""
-    if value:
-      value = value.lower()
-      # Keep only alphanumerics and dashes
-      value = re.sub(r"[^a-z0-9-]", "", value)
+  """Lowercase alphanumerics and dashes."""
+
+  @staticmethod
+  def validate(value):
+    if value is not None and not re.fullmatch(r"[a-z0-9-]+", value):
+      raise ValueError(
+          f"Invalid name {value!r}: must contain lowercase letters, digits, or dashes."
+      )
     return value
+
+  def db_value(self, value):
+    return self.validate(value)
+
+
+class AlphaNumericField(CharField):
+  """Lowercase alphanumerics only."""
+
+  @staticmethod
+  def clean(value):
+    """Derive a valid name from free text (e.g. a display label); raises when
+    nothing valid can be derived (no letters at all, or digits before the
+    first letter)."""
+    cleaned = re.sub(r"[^a-z0-9]", "", (value or "").lower())
+    if not re.fullmatch(r"[a-z][a-z0-9]*", cleaned):
+      raise ValueError(
+          f"{value!r} does not produce a valid name: it must contain letters and digits only, starting with a letter."
+      )
+    return cleaned
+
+  @staticmethod
+  def validate(value):
+    if value is not None and not re.fullmatch(r"[a-z][a-z0-9]*", value):
+      raise ValueError(
+          f"Invalid name {value!r}: must be lowercase letters and digits only, starting with a letter."
+      )
+    return value
+
+  def db_value(self, value):
+    return self.validate(value)

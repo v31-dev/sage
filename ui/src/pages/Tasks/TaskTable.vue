@@ -62,7 +62,11 @@ function asCompleted(t: QueueTask | CompletedTask) {
         <TableCell class="text-xs">{{ t.executor }}</TableCell>
         <template v-if="props.showTimestamps">
           <TableCell>
-            <Badge :variant="statusVariant(t.status)">{{ t.status }}</Badge>
+            <Badge
+              :variant="statusVariant(t.status)"
+              :class="{ warning: t.status === 'cancelled' }"
+              >{{ t.status }}</Badge
+            >
           </TableCell>
           <TableCell class="text-xs whitespace-nowrap">{{
             formatDate(asCompleted(t).created_at)

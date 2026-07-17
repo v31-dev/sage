@@ -1,6 +1,7 @@
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException
 from starlette.staticfiles import StaticFiles
 
@@ -15,6 +16,11 @@ from utils.logging import fastapi_middleware
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, redirect_slashes=False)
 app.add_middleware(fastapi_middleware)
+
+
+@app.exception_handler(ValueError)
+async def value_error_handler(request: Request, exc: ValueError):
+  return JSONResponse(status_code=400, content={"detail": str(exc)})
 
 static_dir = Path("/app/static")
 

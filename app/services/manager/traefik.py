@@ -1,20 +1,30 @@
 import json
 import logging
+import re
 
-from services.db import (
-    APPLICATION_BUSY_STATUSES,
-    Application,
-    Worker,
-)
+from services.db import Application, Domain, Project, Worker
 from services.settings import Settings
 from utils.executor import run_in_executor_with_context
+from utils.queue import OnConflict
 
-from ._common import app_dir
+from ._common import app_dir, routing_input_hash
 
 logger = logging.getLogger(__name__)
 
 
 class TraefikMixin:
+  def request_application_traefik_sync(self, application):
+    """Mark the app's Traefik config stale and enqueue an app-scoped resync."""
+    Application.update(domains_synced=False).where(Application.id == application.id).execute()
+    self.add_task(
+        task=self.sync_application_traefik_domains_config,
+        scopes={f"app:{application.qualified_name}"},
+        params={"application_id": application.id},
+        executor="app",
+        on_conflict=OnConflict.REPLACE,
+        quiet=True,
+    )
+
   async def sync_traefik_certificates(self):
     await self.traefik.sync_certificates_to_workers()
 
@@ -23,65 +33,78 @@ class TraefikMixin:
     if not admin_email_changed and not domain_changed and not api_token_changed:
       return
 
-    # Refresh Manager Traefik static config (ADMIN_EMAIL), dynamic config (DOMAIN),
-    # and the Cloudflare DNS API token file, then restart the container so the
-    # static config and token are re-read by lego at provider init.
-    self.traefik.load(clear_certificates=domain_changed)
-    await run_in_executor_with_context(self.restart, traefik=True)
+    try:
+      # Refresh Manager Traefik static config (ADMIN_EMAIL), dynamic config (DOMAIN),
+      # and the Cloudflare DNS API token file, then restart the container so the
+      # static config and token are re-read by lego at provider init.
+      self.traefik.load(clear_certificates=domain_changed)
+      await run_in_executor_with_context(self.restart, traefik=True)
 
-    # Token-only rotations don't need worker churn — workers don't run ACME,
-    # they only receive synced acme.json from the manager.
-    if not admin_email_changed and not domain_changed:
-      return
+      # Token-only rotations don't need worker churn — workers don't run ACME,
+      # they only receive synced acme.json from the manager.
+      if not admin_email_changed and not domain_changed:
+        return
 
-    domain = Settings().get("cloudflare", "domain")
-    admin_email = Settings().get("cloudflare", "admin_email")
+      domain = Settings().get("cloudflare", "domain")
+      admin_email = Settings().get("cloudflare", "admin_email")
 
-    await self.traefik.sync_certificates_to_workers()
+      await self.traefik.sync_certificates_to_workers()
 
-    # Update Worker Traefik config
-    online_workers = list(Worker.select().where(Worker.online))
-    for worker in online_workers:
-      if admin_email_changed:
-        await self.tailscale.sync_file(
-            worker.hostname,
-            app_dir / "templates/worker/traefik/traefik.yml",
-            f"{self.worker_home_dir}/traefik/traefik.yml",
-            {"ADMIN_EMAIL": admin_email},
-        )
+      # Update Worker Traefik config
+      online_workers = list(Worker.select().where(Worker.online))
+      for worker in online_workers:
+        if admin_email_changed:
+          await self.tailscale.sync_file(
+              worker.hostname,
+              app_dir / "templates/worker/traefik/traefik.yml",
+              f"{self.worker_home_dir}/traefik/traefik.yml",
+              {"ADMIN_EMAIL": admin_email},
+          )
 
+        if domain_changed:
+          await self.tailscale.sync_file(
+              worker.hostname,
+              app_dir / "templates/worker/traefik/config.yml",
+              f"{self.worker_home_dir}/traefik/dynamic/config.yml",
+              {"DOMAIN": domain, "HOSTNAME": worker.hostname},
+          )
+
+          await run_in_executor_with_context(
+              self.cloudflare.create_dns_record,
+              f"*.int.{domain}",
+              worker.ip,
+              comment=f"sage-worker-{worker.hostname}",
+              type="A",
+          )
+
+        if admin_email_changed or domain_changed:
+          await self.tailscale.exec_command(
+              worker.hostname,
+              f"docker compose -f {self.worker_home_dir}/docker-compose.yml restart traefik",
+              timeout=60,
+          )
+
+      # Trigger a Traefik resync for every application so the new domain lands in the routing rules.
       if domain_changed:
-        await self.tailscale.sync_file(
-            worker.hostname,
-            app_dir / "templates/worker/traefik/config.yml",
-            f"{self.worker_home_dir}/traefik/dynamic/config.yml",
-            {"DOMAIN": domain, "HOSTNAME": worker.hostname},
-        )
-
-        await run_in_executor_with_context(
-            self.cloudflare.create_dns_record,
-            f"*.int.{domain}",
-            worker.ip,
-            comment=f"sage-worker-{worker.hostname}",
-            type="A",
-        )
-
-      if admin_email_changed or domain_changed:
-        await self.tailscale.exec_command(
-            worker.hostname,
-            f"docker compose -f {self.worker_home_dir}/docker-compose.yml restart traefik",
-            timeout=60,
-        )
-
-    # Trigger Traefik update config for all applications to update the domain in the routing rules
-    if domain_changed:
-      Application.update(domains_synced=False).execute()
+        for application in Application.select():
+          self.request_application_traefik_sync(application)
+    except Exception as e:
+      self.notify(
+          f"Traefik refresh failed part-way: {e}. Run 'Resync Traefik' in Settings "
+          "to bring the manager and workers back in sync.",
+          "error")
+      raise
 
   async def sync_application_traefik_domains_config(self, application_id: int):
     """
-    Sync Traefik domains config for an application.
+    Sync Traefik domains config for an application. Applications with no active containers
+    have config written for X-Tag discovery.
     """
-    application = Application.get_by_id(application_id)
+    application = Application.get_or_none(Application.id == application_id)
+    if application is None:
+      # The reconcile scan owns file cleanup for deleted applications.
+      logger.info(f"Application {application_id} deleted before Traefik sync; nothing to do.")
+      return
     domain_name = Settings().get("cloudflare", "domain")
     containers = list(application.containers)
     application_domains = list(application.domains)
@@ -121,11 +144,6 @@ class TraefikMixin:
           worker.hostname,
           f"rm -f {self.worker_home_dir}/traefik/dynamic/{application.qualified_name}-*.yml",
       )
-
-    # Application is deploying or stopping.
-    if application.status in APPLICATION_BUSY_STATUSES:
-      logger.error(f"Application {application.qualified_name} is not active, skipping Traefik config sync.")
-      return
 
     template_names = {
         "internal": ("service_internal.yml", "service_internal_pool.yml"),
@@ -229,6 +247,10 @@ class TraefikMixin:
                 },
             )
 
+    input_hash = routing_input_hash(domain_name, application_domains, containers)
+    for worker in online_workers:
+      await self.write_worker_revision(worker.hostname, application.qualified_name, input_hash)
+
     for domain in application_domains:
       if domain.type == "tcp":
         domain_url = f"{domain.name}.int.{domain_name}:8443"
@@ -244,3 +266,98 @@ class TraefikMixin:
     application.domains_synced = True
     application.save()
     logger.info(f"Traefik config synced for application {application.qualified_name}.")
+
+  async def reconcile_traefik_configs(self):
+    """
+    Existence-level reconciliation between worker Traefik dynamic configs and
+    applications: a file with no owning application is removed, and an
+    application with domains must have config on every online worker. Content
+    correctness is owned by sync_application_traefik_domains_config;
+    applications left domains_synced=False (e.g. a restart dropped their queued
+    sync) are re-enqueued here.
+    """
+    online_workers = list(Worker.select().where(Worker.online))
+    worker_files = {}
+    for worker in online_workers:
+      _, files = await self.tailscale.exec_command(
+          worker.hostname,
+          f"ls -1 {self.worker_home_dir}/traefik/dynamic 2>/dev/null || true",
+      )
+      worker_files[worker.hostname] = set(files)
+
+    # Applications are created by route writes that can interleave with this
+    # task; listing files first means any file listed above has its owner
+    # present in this read, so a fresh app is never misclassified as an orphan.
+    applications = list(Application.select(Application, Project).join(Project))
+    live_prefixes = {f"{application.qualified_name}-" for application in applications}
+
+    for worker in online_workers:
+      orphans = sorted(
+          name for name in worker_files[worker.hostname]
+          if name.endswith(".yml") and name != "config.yml"  # worker's own config
+          and re.fullmatch(r"[a-z0-9.-]+", name)             # rm-safe names only
+          and not any(name.startswith(prefix) for prefix in live_prefixes)
+      )
+      if orphans:
+        logger.info(f"Removing orphaned Traefik configs on {worker.hostname}: {orphans}")
+        await self.tailscale.exec_command(
+            worker.hostname,
+            ";".join(f"rm -f {self.worker_home_dir}/traefik/dynamic/{name}" for name in orphans),
+        )
+
+    applications_ids_with_domains = {
+        domain.application_id for domain in Domain.select(Domain.application).distinct()
+    }
+
+    # Revision stamps: existence checks above catch missing files; the hash
+    # layer catches files rendered from stale inputs (a worker that missed a
+    # sync). Stamps for deleted applications are removed here, like their
+    # routing files.
+    revisions_by_worker = {}
+    for worker in online_workers:
+      revisions_by_worker[worker.hostname] = await self.read_worker_revisions(worker.hostname)
+    live_names = {application.qualified_name for application in applications}
+    for worker in online_workers:
+      stale_keys = sorted(
+          key for key in revisions_by_worker[worker.hostname]
+          if key not in live_names and key not in ("infra", "certs")
+          and re.fullmatch(r"[a-z0-9-]+", key)
+      )
+      if stale_keys:
+        await self.tailscale.exec_command(
+            worker.hostname,
+            ";".join(f"rm -f {self.worker_home_dir}/revisions/{key}" for key in stale_keys),
+        )
+
+    domain_name = Settings().get("cloudflare", "domain")
+    for application in applications:
+      if not application.domains_synced:
+        self.add_task(
+            task=self.sync_application_traefik_domains_config,
+            scopes={f"app:{application.qualified_name}"},
+            params={"application_id": application.id},
+            executor="app",
+            quiet=True,
+        )
+        continue
+
+      # An app with domains must have config on every online worker; a missing
+      # file means the worker joined after the app's last sync.
+      needs_sync = False
+      if application.id in applications_ids_with_domains:
+        prefix = f"{application.qualified_name}-"
+        needs_sync = any(
+            not any(name.startswith(prefix) for name in worker_files[worker.hostname])
+            for worker in online_workers
+        )
+
+      if not needs_sync and online_workers:
+        app_hash = routing_input_hash(
+            domain_name, list(application.domains), list(application.containers))
+        needs_sync = any(
+            revisions_by_worker[worker.hostname].get(application.qualified_name) != app_hash
+            for worker in online_workers
+        )
+
+      if needs_sync:
+        self.request_application_traefik_sync(application)

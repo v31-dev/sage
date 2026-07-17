@@ -32,7 +32,11 @@ function asCompleted(t: QueueTask | CompletedTask) {
         <Label class="text-muted-foreground text-xs">Task ID</Label>
         <div class="flex items-center justify-between gap-2">
           <TaskLogsButton :taskId="props.task.task_id" />
-          <Badge v-if="props.showTimestamps" :variant="statusVariant(props.task.status)">
+          <Badge
+            v-if="props.showTimestamps"
+            :variant="statusVariant(props.task.status)"
+            :class="{ warning: props.task.status === 'cancelled' }"
+          >
             {{ props.task.status }}
           </Badge>
         </div>

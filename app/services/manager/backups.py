@@ -6,14 +6,7 @@ from pathlib import Path
 
 from croniter import croniter
 
-from services.db import (
-    APPLICATION_BUSY_STATUSES,
-    Application,
-    Backup,
-    Container,
-    Event,
-    Volume,
-)
+from services.db import APPLICATION_BUSY_STATUSES, Application, Backup, Container, Event, Volume
 from utils.common import get_env
 from utils.logging import generate_task_id_token, task_id
 
@@ -284,7 +277,10 @@ class BackupsMixin:
       task_id.reset(task_id_token)
 
   async def backup_application_s3(self, application_id: int, volume_ids: list[int] | None = None):
-    application = Application.get_by_id(application_id)
+    application = Application.get_or_none(Application.id == application_id)
+    if application is None:
+      logger.info(f"Application {application_id} deleted before backup; nothing to do.")
+      return
 
     if application.status not in BACKUP_ELIGIBLE_STATUSES:
       raise Exception(
@@ -306,6 +302,19 @@ class BackupsMixin:
     resource_error = self.get_volume_backup_resource_error(application, volumes)
     if resource_error:
       raise Exception(resource_error)
+
+    # Fail before stopping any container: the backup needs every worker, and an
+    # offline one would otherwise wedge the app mid-backup until the timeout.
+    offline_workers = sorted({
+        container.worker.hostname
+        for container in application.containers
+        if not container.worker.online
+    })
+    if offline_workers:
+      raise Exception(
+          f"Cannot back up {application.qualified_name}: worker(s) offline: {', '.join(offline_workers)}."
+      )
+
     failed_backup_units = []
 
     try:
@@ -449,7 +458,8 @@ class BackupsMixin:
       )
     except Exception as exc:
       self.notify(
-          f"Failed to restore {restore_unit_label} from {backup.s3_path}: {exc}",
+          f"Failed to restore {restore_unit_label} from {backup.s3_path}: {exc}. "
+          "The volume may be partially restored; run the restore again before deploying.",
           "error",
       )
       raise Exception(f"Failed to restore {restore_unit_label}: {exc}") from exc

@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import logging
 import json
 import os
@@ -132,6 +133,14 @@ class Traefik(Base):
         return_exceptions=False,
     )
 
+  def certificates_hash(self):
+    """Content hash of the manager's acme.json (None when absent); compared
+    against a worker's `revisions/certs` stamp to detect missed rotations."""
+    acme_path = Path(self.config_path) / "acme.json"
+    if not acme_path.exists():
+      return None
+    return hashlib.sha256(acme_path.read_bytes()).hexdigest()[:16]
+
   async def sync_certificates_to_worker(self, worker: Worker):
     compose_file = f"{self.manager.worker_home_dir}/docker-compose.yml"
     # Worker traefik needs to be restarted to pick acme.json
@@ -153,4 +162,6 @@ class Traefik(Base):
           f"docker compose -f {compose_file} start traefik",
           timeout=60,
       )
+    await self.manager.write_worker_revision(
+        worker.hostname, "certs", self.certificates_hash() or "")
     logger.info(f"Finished syncing Traefik certificates to worker {worker.hostname}.")

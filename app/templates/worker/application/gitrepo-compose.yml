@@ -1,11 +1,13 @@
 services:
-  ${APPLICATION_NAME}:
+  ${CONTAINER_NAME}:
     build:
       context: ${REPO}
       dockerfile: ${DOCKERFILE}
       args: [ ${BUILD_ARGS} ]
       secrets: [ ${BUILD_SECRETS} ]
     container_name: ${CONTAINER_NAME}
+    labels:
+      sage.deployed_at: "${DEPLOYED_AT}"
     restart: unless-stopped
     command: ${COMMAND}
     volumes: [ ${VOLUMES} ]

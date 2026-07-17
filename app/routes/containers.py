@@ -8,9 +8,8 @@ from utils.api import (
     generic_get,
     generic_list,
     generic_update,
-    parse_api_data,
 )
-
+from utils.queue import OnConflict
 
 
 # Container is a sub-route of Application & Worker
@@ -65,9 +64,7 @@ def create_container(request: Request, container_data: dict = Body(...)):
   if 'worker' in request.state.models:
     raise HTTPException(status_code=405, detail="Method not allowed.")
 
-  data = {
-      "application": request.state.models["application"],
-  }
+  application = request.state.models["application"]
 
   worker = Worker.get_or_none(Worker.hostname == container_data.get("worker"))
   if not worker:
@@ -75,13 +72,17 @@ def create_container(request: Request, container_data: dict = Body(...)):
         status_code=404,
         detail=f"Worker with hostname '{container_data.get('worker')}' not found",
     )
-  else:
-    data["worker"] = worker
 
-  if "domain_tag" in container_data:
-    data["domain_tag"] = container_data.get("domain_tag")
+  if Container.select().where(
+          (Container.application == application) & (Container.worker == worker)).exists():
+    raise HTTPException(
+        status_code=409, detail=f"Container already exists on worker '{worker.hostname}'.")
 
-  return generic_create(Container, data)
+  return generic_create(Container, {
+      "application": application,
+      "worker": worker,
+      "domain_tag": container_data.get("domain_tag"),
+  })
 
 
 @router.put("/{container}", dependencies=[Depends(inject_container)])
@@ -89,11 +90,15 @@ def update_container(request: Request, container_data: dict = Body(...)):
   if 'worker' in request.state.models:
     raise HTTPException(status_code=405, detail="Method not allowed.")
 
-  data = parse_api_data(
-      container_data,
-      ["domain_tag"],
-  )
-  return generic_update(Container, request.state.models["container"], data)
+  application = request.state.models["application"]
+  container = request.state.models["container"]
+
+  result = generic_update(Container, container, {"domain_tag": container_data.get("domain_tag")})
+  # An active container's tag is part of the live routing view.
+  if container.status == "active":
+    Manager().request_application_traefik_sync(application)
+
+  return result
 
 
 @router.delete("/{container}", dependencies=[Depends(inject_container)])
@@ -111,13 +116,18 @@ def delete_container(request: Request, force: bool = False):
   if container.status in CONTAINER_BUSY_STATUSES:
     raise HTTPException(status_code=409, detail=f"Container is currently {container.status}.")
 
-  if not Manager().add_task(
+  # QUEUE admission would accept a duplicate, so reject a double-delete of this
+  # specific container here; deletes of other containers still queue freely.
+  if Manager().has_task(Manager().delete_container, {"container_id": container.id}):
+    raise HTTPException(status_code=409, detail="This container is already being deleted.")
+
+  Manager().add_task(
       task=Manager().delete_container,
       scopes={f"app:{application.qualified_name}"},
       params={"container_id": container.id, "force": force},
       executor="app",
+      on_conflict=OnConflict.QUEUE,
       task_id=request.state.task_id,
-  ):
-    raise HTTPException(status_code=409, detail="Application already has an operation in progress.")
+  )
 
   return {"status": "OK"}

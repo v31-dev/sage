@@ -96,7 +96,7 @@ The Manager owns a single in-memory `TaskQueue` (`app/utils/queue.py`). It is th
 
 - **Enqueue.** Every operation runs via `Manager().add_task(task=..., scopes=..., executor=..., params=..., ...)`. Handlers receive ids (not ORM objects) and re-fetch, so nothing carries a stale snapshot across the queue boundary.
 - **Scopes** are `:`-delimited and hierarchical. Roots: `platform`, `app` (with `app:<qualified_name>` children), `common`, `metrics`. A parent scope conflicts with all of its children; siblings never conflict. Conflicting tasks are mutually excluded.
-- **Dispatch.** A one-second APScheduler interval tick calls `dispatch_tick`, which starts every pending task whose scope is free. One dispatcher makes the scan race-free; a `threading.Lock` guards the queue because producers run on FastAPI/loop threads.
+- **Dispatch.** A one-second APScheduler interval tick calls `dispatch_tick`, which starts every pending task whose scope is free. One dispatcher makes the scan race-free; a `threading.Lock` guards the queue because producers run on FastAPI/loop threads. Dispatch is **deliberately opportunistic**: conflicts are checked against *running* work only, so a blocked pending task reserves nothing and later-queued non-conflicting tasks start past it (FIFO holds within a scope, not across conflicting scopes — a queued broad `{platform,app}` task waits for a tick with no app task running, and its start can be pushed out by later app work). This is the accepted trade: a pending-scope reservation rule would let any queued broad task freeze every `app:<qn>` task behind long-running work, converting rare bounded delays on platform ops into fleet-wide stalls. `priority` is queue-position only; nothing ever preempts running work.
 - **Admission policy — `on_conflict` on `add_task`** (enum `OnConflict`; decided atomically under the queue lock). Admission decides *drop vs. enqueue*; mutual exclusion is **separate and always scope-based** — the dispatcher serializes conflicting scopes regardless of mode, so an enqueued task simply waits for its scope to free.
   - `DEDUP` (default) — drop and return `False` if an identical op (**same name + exact scope**) is already running or queued; otherwise enqueue and wait. Prevents reconciler pile-ups and double-triggers (e.g. a second deploy of the same app). A *different* op holding a conflicting scope does **not** cause a drop — it enqueues and waits behind that op. (So a background sync never rejects a user action; the action just defers behind it.)
   - `QUEUE` — always enqueue and wait, even for an identical op. For work where every call must run, including params-identified work that shares a name + scope (S3 delete by path, worker removal by host, the settings Traefik refresh by change-flags).
@@ -104,7 +104,7 @@ The Manager owns a single in-memory `TaskQueue` (`app/utils/queue.py`). It is th
   - `DEDUP`/`REPLACE` identity is **name + scope, not params**. DEDUP rejecting a params-distinct call is safe (it returns `False`/409, nothing is lost); REPLACE would *silently* drop it, so params-identified work uses `QUEUE`.
 - **`priority`** (separate flag) — insert ahead of lower/equal work but behind dominating scopes.
 - **`quiet`** (separate flag) — record only on failure (see below).
-- **Persistence.** The queue calls a `record` hook (`Manager._persist_task`) at each terminal state. Only `completed`/`failed`/`cancelled` are written to the `Task` table; running and queued tasks live in memory and are exposed via `snapshot()` for the UI. `quiet=True` tasks skip the `completed` record so high-frequency reconcilers (metrics collection, per-app status/domain sync, the 30s worker sync) don't flood the table — failures still record.
+- **Persistence.** The queue calls a `record` hook (`Manager._persist_task`) at each terminal state. Only `completed`/`failed`/`cancelled` are written to the `Task` table; running and queued tasks live in memory and are exposed via `snapshot()` for the UI. `quiet=True` tasks skip the `completed` record so high-frequency reconcilers (metrics collection, per-app status/domain sync, the 30s worker sync) don't flood the table — failures still record. Status vocabulary: `cancelled` means the task **never started** (REPLACE supersession, the pre-restart drain); a task interrupted **mid-run** — the loop's shutdown cancels its coroutine — records as `failed` (started but did not complete).
 
 To make a deliberate user action coalesce with a recurring one, enqueue both with `on_conflict=OnConflict.REPLACE` (latest-wins; e.g. the platform backup and the worker force-resync); no per-operation locks or pending flags are needed.
 
@@ -171,17 +171,17 @@ Every queued operation, its scope, where it is enqueued from, its lane pool, and
 
 | Task | Scope | Source | Lane | on_conflict |
 | --- | --- | --- | --- | --- |
-| `sync_workers` | platform, app | interval 30s | platform | DEDUP |
+| `sync_workers` | platform | interval 30s | platform | DEDUP |
 | `sync_application_status` | app:`<qn>` | cron 1m | app | DEDUP |
 | `backup_application_s3` | app:`<qn>` | cron 1m (due backups) | app | DEDUP |
-| `sync_application_traefik_domains_config` | app:`<qn>` | cron 1m | app | DEDUP |
+| `reconcile_traefik_configs` | platform | cron 1m | platform | DEDUP |
 | `Metrics.collect` | metrics:`<host>` | cron 1m | metrics | DEDUP |
 | `send_summary_notification` | common | cron daily 08:00 | common | REPLACE |
 | `get_latest_version` | common | cron 4h | common | REPLACE |
 | `backup_database_s3` | platform, app | cron 6h | platform | REPLACE |
 | `Metrics.cleanup` | metrics | cron daily 04:00 | metrics | REPLACE |
 | `cleanup` | platform | cron daily 04:00 | platform | REPLACE |
-| `sync_traefik_certificates` | app | cron weekly (Mon 03:00) | app | REPLACE |
+| `sync_traefik_certificates` | platform, app | cron weekly (Mon 03:00) | app | REPLACE |
 
 **Route-driven (HTTP → `add_task`)**
 
@@ -189,7 +189,7 @@ Every queued operation, its scope, where it is enqueued from, its lane pool, and
 | --- | --- | --- | --- | --- |
 | `deploy_application` | app:`<qn>` | POST …/deploy | app | DEDUP |
 | `stop_application` | app:`<qn>` | POST …/stop | app | DEDUP |
-| `delete_container` | app:`<qn>` | DELETE …/containers/{c} | app | DEDUP |
+| `delete_container` | app:`<qn>` | DELETE …/containers/{c} | app | QUEUE (route rejects a duplicate delete of the same container via `has_task`, the params-aware pending/running check) |
 | `backup_application_s3` | app:`<qn>` | POST …/volumes/{v}/backups | app | DEDUP |
 | `restore_application_volume_from_s3` | app:`<qn>` | POST …/backups/{b}/restore | app | DEDUP |
 | `backup_database_s3` | platform, app | POST /backups | platform | REPLACE |
@@ -199,21 +199,153 @@ Every queued operation, its scope, where it is enqueued from, its lane pool, and
 | `refresh_traefik` | platform, app | PUT /settings/cloudflare | platform | QUEUE |
 | `refresh_traefik` | platform, app | POST /settings/resync_traefik | platform | DEDUP |
 | `restart` | platform, app, common, metrics | POST /settings/restart | platform | QUEUE (+priority) |
-| `sync_workers` | platform, app | POST /settings/resync_workers | platform | REPLACE |
+| `sync_workers` | platform | POST /settings/resync_workers | platform | REPLACE |
+| `sync_application_traefik_domains_config` | app:`<qn>` | create/update/delete_domain, update-container tag change (via `request_application_traefik_sync`) | app | REPLACE |
+
+Per-app tasks (status sync, the Traefik domains sync, backups, `delete_container`) re-fetch their target by id with `get_or_none` and treat a missing row as a **quiet no-op**: instant deletes are a legitimate interleaving with queued/scheduled work, so a task whose target vanished has nothing to do (the reconcile scan owns worker-side cleanup for deleted apps). `remove_worker` is the deliberate exception — its precondition re-check fails loudly because proceeding would destroy a worker that just gained containers.
+
+Container create and tag-update are **instant route-side model writes**, like every other entity's CRUD — not queued tasks. The `container_count` signal recomputes atomically from the rows and `only_save_dirty` keeps concurrent status saves from clobbering it, so no serialization is needed; only `delete_container` stays queued (it does remote cleanup).
+
+**Deploy input snapshot.** Config edits (app env/args/image/repo/command/build_secrets/type, project env, volumes) stay instant and unserialized — the contract is that they apply on the **next** deploy, not the running one. `deploy_application` captures a frozen `Application.deploy_config` (a `DeployConfig`) and the container list once, inside a single `db.atomic()` transaction, so one deploy reads a single point-in-time view instead of re-reading each `container.application.*` across the gather. `deployed_at` is set before the snapshot so `config.deploy_stamp` is this deploy's version marker; the child renders entirely from `config` (only `container.worker`/`container.status` stay live). The final status judges **only the snapshot's container list**, so an instant create landing mid-deploy is left for the minutely status sync, not folded into the outcome. Re-validation at snapshot time is part of the freeze: a gone app row is a quiet no-op, and a deploy that finds **zero containers** (a last-container delete that landed first) marks the app `inactive` rather than gathering over nothing and faking `active`. The load-bearing invariant is that `delete_container` stays queued on the app scope, so under a running deploy container rows are only ever *added*, never removed — the snapshot's worker references stay valid for the deploy's duration. Backup/restore already snapshot their container/volume set at task start; their remaining volume-delete / backup-delete races fail loudly by design.
+
+**Config-changed indicator.** Deploy stamps `Application.deployed_hash = config.content_hash` (a SHA-256 over the code-deployment inputs only — build/env/volumes; it deliberately excludes `deploy_stamp`, which is fresh each deploy, and the immutable `qualified_name`). `Application.config_dirty` compares the current `deploy_config.content_hash` against that baseline; the application GET exposes it so the UI shows a "configuration changed since last deploy" hint. A null baseline (never deployed) is not dirty.
 
 **Internal (enqueued from within another task)**
 
 | Task | Scope | Source | Lane | on_conflict |
 | --- | --- | --- | --- | --- |
-| `sync_workers` | platform, app | `restore_database_from_s3` | platform | REPLACE |
+| `sync_workers` | platform | `restore_database_from_s3` | platform | REPLACE |
+| `sync_application_traefik_domains_config` | app:`<qn>` | deploy/stop, delete-container, `sync_application_status`, `sync_workers`, `refresh_traefik`, `reconcile_traefik_configs` missing-file check (via `request_application_traefik_sync`) | app | REPLACE |
+| `sync_application_traefik_domains_config` | app:`<qn>` | `reconcile_traefik_configs` `domains_synced=False` backstop | app | DEDUP |
 
-Quiet tasks (recorded only on failure): `sync_workers` (cron), `sync_application_status`, `sync_application_traefik_domains_config`, `Metrics.collect`, `Metrics.cleanup`.
+Quiet tasks (recorded only on failure): `sync_workers` (cron), `sync_application_status`, `sync_application_traefik_domains_config`, `reconcile_traefik_configs`, `Metrics.collect`, `Metrics.cleanup`.
 
 Cron cadence convention: **≤ 1m → `DEDUP`** (a high-frequency reconciler skips only if its own previous run is still in flight; the next tick retries), **> 1m → `REPLACE`** (a 6h/1d/10d task must not skip its whole cycle on a transient conflict; latest-wins keeps no backlog).
 
 `sync_workers` deliberately differs by source — cron uses `DEDUP`, while resync/restore use `REPLACE` with `{force: True}` to supersede a pending plain sync. That is why DEDUP/REPLACE identity is name + scope and not params. The full-stack `restart` cancels pending work and waits with priority for in-flight platform/app operations before replacing the process.
 
-Worker-infrastructure tasks (`setup_worker`/`sync_workers`, the worker cert sync, `refresh_traefik`) hold the broad `app` scope rather than a per-worker one **deliberately**: there is no `worker` scope dimension, and the breadth is what closes the *new-worker race* — a worker's row exists (with `online=False`) from the start of `setup_worker`, and container-create doesn't require `online`, so a deploy could target a worker that is still mid-reconfiguration. Blocking all app work for the duration is correct rather than landing a deploy on a half-set-up worker. The cost (a platform-wide app-op pause) is acceptable because these tasks are rare (worker churn; 10-day cert rotation), not steady-state. A narrower per-worker scope would either miss the new-worker race or require every container-touching op to declare its workers' scopes (fragile); not worth it at the target scale (≤10 workers).
+**Interrupted-operation recovery.** A busy status (`deploying`/`stopping`/`backup`/`restoring`) is only ever written by a task while it holds that app's scope — and `sync_application_status` holds that same scope while it runs, so by mutual exclusion any busy status it observes has no owning operation left: the mark of an interrupted task (crash, plain container restart, cancelled coroutine). Instead of skipping such apps, the sync resets the stuck app/containers to `error` (with a notification) and then converges them against real `docker ps` state in the same run. This is why no boot-time status reset exists: the minutely sync covers startup wedges and mid-flight loss with one mechanism. Detection defers while a broad `app`-scope task runs (the per-app syncs queue behind it) and resumes when it finishes. Deploy/stop container children additionally run their whole body inside their try block so an early failure can never kill the parent's gather and leave detached siblings running.
+
+Worker convergence (`setup_worker`, reached only through `sync_workers`) runs on the **`platform` scope only** — it does not barrier app work, so the 30-second worker poll is never starved by long builds and worker drift is detected (and converged) within ~30s regardless of app activity. This is safe because app tasks already treat workers as unreliable — a worker can vanish mid-exec regardless of scheduling: deploy/stop/delete/backup **fast-fail on an offline-flagged worker**, any per-exec failure lands the container in `error`, and the status syncs converge from there. The residual race — a deploy targeting a worker whose setup is still mid-flight — fails loudly and converges identically, which is the same outcome as deploying to an offline worker (already possible at any time; placement doesn't require `online`). Tasks that mutate fleet-wide state keep the broad `{platform, app}` barrier: `remove_worker` (deletes the row), `refresh_traefik` (rewrites manager + worker traefik config), platform backup/restore, and the weekly cert sync — the latter holds `{platform, app}` so it also serializes with `setup_worker`'s per-worker cert sync (both stop/start a worker's traefik to load acme.json). The cert sync's wait-for-provisioning loop (up to 10 min holding its scopes) stays accepted: it only spins while the manager's acme.json is invalid, a window in which routing is broken platform-wide anyway, and the sync must restart each worker's traefik to load new certs — deferring would fragment the disruption, not avoid it. There is deliberately no per-worker scope dimension; at ≤10 workers it isn't worth the fragility.
+
+## Traefik Domain Sync
+
+`sync_application_traefik_domains_config` renders an application's full routing view
+(its domains × **active** containers × tag pools) and writes it to every online
+worker. It is **disruptive** — it `rm`s the app's `*.yml` on all workers before
+rewriting — an accepted property: a triggered sync may briefly gap routing.
+
+**Empty pools are written deliberately.** An application with domains keeps its
+per-domain files even with zero active containers (`servers: [ ]` → 503): the
+main file carries the `GET /x-tag` discovery route and the `X-Tag` header of
+declared tags, so discovery keeps working and the domain stays claimed while
+the app is stopped; declared tags likewise keep their (possibly empty) pool
+files. Cleanup after **deletion** is owned by the reconciler below — files
+outlive their application by at most about a minute.
+
+The single change-trigger is `Manager().request_application_traefik_sync(application)`
+(`TraefikMixin`): it marks `domains_synced=False` and enqueues the app-scoped sync
+with `REPLACE` (coalesces bursts; the app scope serializes it after any in-flight
+app op, so it re-reads committed state). It is called wherever the **active routing
+set** changes — domain CRUD, deploy/stop, delete/tag-update of an **active**
+container, `sync_application_status` health flips, and Cloudflare domain change.
+It is deliberately **not** called when routing is unaffected: adding a container
+(inactive until deployed), or editing/deleting an inactive one.
+
+**Revision stamps make stale worker state detectable.** Every worker carries
+`{worker_home}/revisions/` — one hash stamp per artifact class, written by
+whatever applied the artifact, and deliberately **outside** `traefik/dynamic/`
+(which Traefik watches and the reconcile scan owns). All hashes are computed
+from current truth on demand; nothing is persisted manager-side. The stamps:
+`infra` — hash of (sage version, domain, admin email), written as the **final
+step** of `setup_worker` so it is a commit marker (an interrupted setup leaves
+the old stamp and gets retried); `certs` — hash of the manager's acme.json,
+stamped by the per-worker cert sync; one per application —
+`routing_input_hash` over domains, tags, and the active container set (the
+receiving-worker set is deliberately excluded, so one worker's outage never
+invalidates the others' stamps), stamped by the domains sync on each worker it
+wrote to. The fourth stamp is the app compose label `sage.deployed_at`
+(mirrors `Application.deployed_at`, both written from the same deploy):
+`sync_application_status` reads it in its existing `docker ps` probe and
+trusts `running` only when the label equals the app's current stamp — **no
+label, or no recorded deploy, is no match**. A running container that cannot
+prove its version is **stopped, marked `inactive`, and error-notified**
+instead of being flipped back into the routing pool. There is deliberately no
+migration leniency: after upgrading to a stamped sage version (or restoring an
+older database), every unstamped running container is stopped within a minute
+and a manual redeploy re-stamps it — routing follows the stopped containers
+(pools re-render without them) and recovers on redeploy.
+
+**`setup_worker` is the single stamp-driven convergence.** Every path — new
+worker, offline→online rejoin, IP change, force resync — calls the same
+idempotent `setup_worker`, and the worker's stamps decide how much work that
+is: infra stamp mismatch (or a changed IP, which is rendered into infra
+files) → the full file-sync/compose/restart pass; certs mismatch → per-worker
+cert sync only; per-app mismatches → targeted
+`request_application_traefik_sync` (covers hosted and mesh files alike). It
+always re-creates the DNS record, flips `online`, and runs existence-level
+orphan cleanup: containers/app dirs with no owning Container row (e.g.
+force-deleted while the worker was offline) are composed down and removed —
+otherwise a zombie runs forever and squats on a future app's container name.
+`force=True` means *distrust every stamp*: the `revisions/` dir is deleted
+first, so everything mismatches and the worker converges from scratch — a
+brand-new worker (no stamps) takes the same path. A worker that missed
+nothing costs one read. Settings → Resync Traefik remains the manual global
+routing heal. Orphan cleanup reads the worker's containers/dirs **before** the
+owning Container rows: a row is created (instant route write) before any
+deploy materializes its app dir, so a dir captured on the worker whose row is
+being created concurrently is present in the later read and never reaped
+mid-deploy.
+
+`refresh_traefik` (domain/admin-email change) rewrites each online worker's
+traefik files directly but deliberately does **not** advance their `infra`
+stamps — the stamp vouches for every infra file (compose, `.env`, vector),
+and refresh only touched the traefik ones; advancing it could falsely certify
+a worker that also missed a version upgrade. The stale stamp costs each worker
+one redundant full setup at its next convergence (one-shot per settings
+change) — the safe direction, since the stamp never claims a worker is
+fresher than it is.
+
+**Name components are collision-free by construction.** Every name that ends
+up in a filename or constructed identity — project, application, and domain
+names, domain tags, volume names, and setting keys — is `AlphaNumericField`:
+lowercase alphanumerics starting with a letter, **rejected, never cleaned**,
+on any write path. Project/application names are derived from the free-text
+`label` via `AlphaNumericField.clean`, which itself raises when no valid name
+can be derived (no letters, or digits before the first letter); domain names,
+tags, and volume names are typed directly by the user and rejected as-is on
+violation. A qualified name therefore contains exactly one dash, so it is
+injective and no qn can dash-prefix another — every `{qn}-` glob and prefix
+match below is exact, and the compose service key (= qualified name, same as
+`container_name`) is a unique Docker DNS name on `sage_default`. Worker
+hostnames are Tailscale's identity, not ours: the one remaining
+`CleanCharField` (dashes allowed, still rejected-not-cleaned on violation).
+`ValueError` is the house convention for invalid user input — a global
+exception handler in `api.py` (plus the generic route handlers, whose broad
+`except` would otherwise swallow it) maps it to a 400 carrying the message, so
+routes call `clean`/`validate` bare; the container routes validate the tag at
+the route because the actual write happens later inside the queued task.
+
+**`reconcile_traefik_configs`** (minutely, `platform` scope) is the declarative
+existence backstop for everything the change-triggers can miss (crash-dropped
+syncs, workers offline during a sync, app rows deleted before cleanup, workers
+joining after a sync). It lists every online worker's `traefik/dynamic/`, then
+reads the application set (in that order — app creation is an unscoped route
+write, so listing first guarantees every listed file's owner is visible in the
+read) and reconciles both directions: files matching no live application's
+`{qn}-` prefix are removed by exact filename; an application with domains
+(`domains_synced=True`) missing files on any online worker gets a sync
+requested; and any app left `domains_synced=False` gets its sync re-enqueued.
+On top of existence, the scan compares each online worker's revision stamps
+against the recomputed `routing_input_hash` — a mismatch means the worker
+holds files rendered from stale inputs (a missed sync) and requests that app's
+sync; stamps for deleted applications are removed like their files. Rendering
+correctness stays with the per-app sync.
+
+`domains_synced` is a progress/backstop marker, not a trigger by itself, and no
+DB signal maintains it (signals only keep the counters). Two rare paths that
+touch many apps (`refresh_traefik` on a domain change, worker sync) loop the
+affected apps and call the helper rather than bulk-setting the flag.
 
 ## Settings And Traefik Refresh
 

@@ -1,19 +1,14 @@
+import hashlib
+import json
 import os
 import re
+from dataclasses import dataclass
 from datetime import datetime
 
-from peewee import (
-    BooleanField,
-    CharField,
-    DateTimeField,
-    FixedCharField,
-    ForeignKeyField,
-    IntegerField,
-    SqliteDatabase,
-)
+from peewee import BooleanField, CharField, DateTimeField, FixedCharField, ForeignKeyField, IntegerField, SqliteDatabase
 from playhouse.signals import Model
 
-from utils.db import CleanCharField, EncryptedJSONField, EncryptedTextField, JSONField, validate_multiline_kv
+from utils.db import AlphaNumericField, CleanCharField, EncryptedJSONField, EncryptedTextField, JSONField, validate_multiline_kv
 
 DB_PATH = "/app/data/data.db"
 os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
@@ -38,6 +33,7 @@ class BaseModel(Model):
 
   class Meta:
     database = db
+    only_save_dirty = True
 
   def save(self, *args, **kwargs):
     self.updated_at = datetime.now()
@@ -45,7 +41,7 @@ class BaseModel(Model):
 
 
 class Setting(BaseModel):
-  key = CleanCharField(primary_key=True)
+  key = AlphaNumericField(primary_key=True)
   value = EncryptedJSONField(null=True)
 
 
@@ -56,7 +52,7 @@ class Worker(BaseModel):
 
 
 class Project(BaseModel):
-  name = CleanCharField(primary_key=True)
+  name = AlphaNumericField(primary_key=True)
   label = CharField()
   description = CharField(null=True)
   env = EncryptedTextField(null=True)
@@ -69,9 +65,50 @@ class Project(BaseModel):
     return super().save(*args, **kwargs)
 
 
+@dataclass(frozen=True)
+class DeployConfig:
+  """Immutable snapshot of an application's deploy inputs, captured once at task
+  start so a deploy reads a single point-in-time view while direct UI edits stay
+  instant. `content_hash` covers only the code-deployment inputs (build, env,
+  volumes); it drives the "configuration changed since last deploy" state and so
+  excludes `deploy_stamp` (a fresh value every deploy) and the immutable
+  `qualified_name`."""
+  qualified_name: str
+  deploy_stamp: str | None
+  type: str
+  image: str | None
+  repo: str | None
+  path: str
+  env: str
+  args: str
+  build_secrets: str
+  command: str
+  project_env: str
+  volumes: tuple[tuple[str, str], ...]
+
+  @property
+  def content_hash(self) -> str:
+    payload = json.dumps(
+        {
+            "type": self.type,
+            "image": self.image,
+            "repo": self.repo,
+            "path": self.path,
+            "env": self.env,
+            "args": self.args,
+            "build_secrets": self.build_secrets,
+            "command": self.command,
+            "project_env": self.project_env,
+            "volumes": [list(v) for v in self.volumes],
+        },
+        sort_keys=True,
+    )
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
 class Application(BaseModel):
   project = ForeignKeyField(Project, backref="applications", on_delete="RESTRICT")
-  name = CleanCharField()
+  name = AlphaNumericField()
   label = CharField()
   description = CharField(null=True)
   type = CharField(choices=["docker", "git"], default="docker")
@@ -85,6 +122,8 @@ class Application(BaseModel):
   status = CharField(choices=STATUS_CHOICES, default="inactive")
   domains_synced = BooleanField(default=False)
   container_count = IntegerField(default=0)
+  deployed_at = DateTimeField(null=True)
+  deployed_hash = CharField(null=True)
 
   @property
   def qualified_name(self) -> str:
@@ -92,6 +131,39 @@ class Application(BaseModel):
       This is the name of the application used on the worker to prevent name space collisions.
     '''
     return f"{self.project.name}-{self.name}"
+
+  @property
+  def deploy_stamp(self) -> str | None:
+    """Canonical string form of deployed_at."""
+    if self.deployed_at is None:
+      return None
+    return self.deployed_at.strftime("%Y-%m-%dT%H:%M:%S.%f")
+
+  @property
+  def deploy_config(self) -> DeployConfig:
+    """Point-in-time snapshot of this application's deploy inputs. Reads
+    project.env and volumes lazily, so a caller needing a strictly consistent
+    view (the deploy task) builds it inside a single transaction."""
+    return DeployConfig(
+        qualified_name=self.qualified_name,
+        deploy_stamp=self.deploy_stamp,
+        type=self.type,
+        image=self.image,
+        repo=self.repo,
+        path=self.path,
+        env=self.env or "",
+        args=self.args or "",
+        build_secrets=self.build_secrets or "",
+        command=self.command or "",
+        project_env=self.project.env or "",
+        volumes=tuple(sorted((v.name, v.path) for v in self.volumes)),
+    )
+
+  @property
+  def config_dirty(self) -> bool:
+    """True when the current deploy inputs differ from those of the last deploy.
+    A null baseline (never deployed) is not dirty."""
+    return self.deployed_hash is not None and self.deploy_config.content_hash != self.deployed_hash
 
   def save(self, *args, **kwargs):
     if self.type == "docker":
@@ -129,7 +201,7 @@ class Application(BaseModel):
 
 class Domain(BaseModel):
   application = ForeignKeyField(Application, backref="domains", on_delete="CASCADE")
-  name = CleanCharField(null=False)
+  name = AlphaNumericField(null=False)
   type = CharField(choices=["internal", "public", "tcp"], default="internal")
   port = IntegerField(null=False)
 
@@ -141,7 +213,7 @@ class Container(BaseModel):
   application = ForeignKeyField(Application, backref="containers", on_delete="RESTRICT")
   worker = ForeignKeyField(Worker, backref="containers")
   status = CharField(choices=STATUS_CHOICES, default="inactive")
-  domain_tag = CleanCharField(null=True)
+  domain_tag = AlphaNumericField(null=True)
 
   def save(self, *args, **kwargs):
     if self.domain_tag and self.domain_tag == "x_tag":
@@ -154,7 +226,7 @@ class Container(BaseModel):
 
 
 class Volume(BaseModel):
-  name = CleanCharField()
+  name = AlphaNumericField()
   path = CharField()
   backup_cron = CharField(null=True)
   application = ForeignKeyField(Application, backref="volumes", on_delete="CASCADE")

@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 import router from '@/router'
 import { toast } from 'vue-sonner'
-import { Logs, Activity } from 'lucide-vue-next'
+import { Logs, Activity, TriangleAlert } from 'lucide-vue-next'
 import {
   Card,
   CardAction,
@@ -22,6 +22,7 @@ import EditApplicationButton from './EditApplicationButton.vue'
 import ConfirmationButton from '@/components/ConfirmationButton.vue'
 import { APPLICATION_BUSY_STATUSES, type Application, getApplicationAPI } from '@/services/api'
 import TitleStatus from '@/components/TitleStatus.vue'
+import { formatDateStringAgo } from '@/lib/utils'
 
 interface Props {
   application: Application
@@ -150,6 +151,21 @@ const repoURL = computed(() => {
         <p class="text-sm text-muted-foreground whitespace-pre-wrap">
           {{ props.application.command }}
         </p>
+      </div>
+      <div>
+        <Label>Last Deployed</Label>
+        <p class="text-sm text-muted-foreground">
+          {{
+            props.application.deployed_at ? formatDateStringAgo(props.application.deployed_at) : '-'
+          }}
+        </p>
+      </div>
+      <div
+        v-if="props.application.config_dirty"
+        class="flex items-center gap-1.5 text-sm text-amber-600 dark:text-amber-500"
+      >
+        <TriangleAlert class="w-4 h-4 shrink-0" />
+        Configuration changed since last deploy — redeploy to apply.
       </div>
     </CardContent>
     <CardFooter

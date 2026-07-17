@@ -1,7 +1,9 @@
 services:
-  ${APPLICATION_NAME}:
+  ${CONTAINER_NAME}:
     image: ${IMAGE}
     container_name: ${CONTAINER_NAME}
+    labels:
+      sage.deployed_at: "${DEPLOYED_AT}"
     restart: unless-stopped
     command: ${COMMAND}
     volumes: [ ${VOLUMES} ]

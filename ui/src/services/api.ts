@@ -59,6 +59,9 @@ export interface Application {
   container_count: number
   status: 'active' | 'inactive' | 'deploying' | 'stopping' | 'backup' | 'restoring' | 'error'
   domains_synced: boolean
+  deployed_at: Date | null
+  deployed_hash: string | null
+  config_dirty?: boolean
   created_at: Date
   updated_at: Date
 }

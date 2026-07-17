@@ -1,6 +1,7 @@
 import logging
 
 from fastapi import HTTPException, Request
+from peewee import IntegrityError
 from playhouse.shortcuts import model_to_dict
 
 logger = logging.getLogger(__name__)
@@ -48,6 +49,10 @@ def generic_create(model, data: dict):
   try:
     instance = model.create(**data)
     return model_to_dict(instance)
+  except ValueError as e:
+    raise HTTPException(status_code=400, detail=str(e))
+  except IntegrityError as e:
+    raise HTTPException(status_code=409, detail=f"Conflict: {e}")
   except Exception as e:
     logger.error(f"Error creating {model.__name__}: {e}")
     raise HTTPException(
@@ -72,6 +77,8 @@ def generic_get(model, query_condition, return_model=False):
       return model_to_dict(instance)
   except HTTPException:
     raise
+  except ValueError as e:
+    raise HTTPException(status_code=400, detail=str(e))
   except Exception as e:
     logger.error(f"Error fetching {model.__name__}: {e}")
     raise HTTPException(
@@ -98,6 +105,10 @@ def generic_update(model, instance, data: dict):
     return model_to_dict(instance)
   except HTTPException:
     raise
+  except ValueError as e:
+    raise HTTPException(status_code=400, detail=str(e))
+  except IntegrityError as e:
+    raise HTTPException(status_code=409, detail=f"Conflict: {e}")
   except Exception as e:
     logger.error(f"Error updating {model.__name__}: {e}")
     raise HTTPException(
