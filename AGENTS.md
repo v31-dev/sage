@@ -12,7 +12,11 @@ This is a living project-context file for AI coding agents. Keep it concise, cur
 
 - Default to discussion first when the user is describing a problem, asking for diagnosis, or exploring options.
 - Start implementing only when the user explicitly asks to implement, fix, add, change, create, or update something.
-- Most sessions begin as evaluation, not implementation. Assess first, then capture the findings as a numbered task list in `todo.md` at the repo root — problems only, no solutioning until a task is picked up. Maintain `todo.md` as the running tracker: update item status as work proceeds and add sub-findings under the relevant item. Work items one at a time.
+- Most sessions begin as evaluation, not implementation. Assess first, then capture the findings in the two-tier todo tracker at the repo root (both tiers are git-ignored — they are the local working tracker, not committed):
+  - `todo.md` is the **headline-level index**: one short entry per item (number, title, one-line status), grouped into `Open` and `Done`, each linking to its detail file. Problems only — no solutioning here. This is the running tracker; update item status as work proceeds.
+  - `todo/` holds **one detail file per item** (`NN-slug.md`, numbered to match its `todo.md` entry) carrying the in-depth analysis, options, trade-offs, and the proposed/agreed approach. Add sub-findings to the relevant item's detail file, not to `todo.md`.
+  - When a cycle's items are all resolved and the tracker is reset for new work, move the finished detail files into `todo/archive/` rather than deleting them; start the new cycle's numbering fresh.
+  - Work items one at a time.
 - **Discussion-first per item:** when working through a task list, make no code or file changes for an item until its approach has been discussed and explicitly approved. Settle the design in conversation, get sign-off, then implement.
 - Treat every identified task as priority work. Do not defer with "revisit later" or "doesn't matter now". An item leaves the list only when it is done or the user explicitly rejects it.
 - Run this work on Claude Opus at extra-high reasoning (minimum). Evaluation and design decisions here are subtle; do not use a lighter model or lower reasoning effort.

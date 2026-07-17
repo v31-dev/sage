@@ -11,4 +11,4 @@ __pycache__
 # Ignore marked files
 *-gitignore
 todo*.md
-todo/*.md
+todo/**
