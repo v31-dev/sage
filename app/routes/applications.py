@@ -85,6 +85,12 @@ def delete_application(request: Request):
 
   if application.status in APPLICATION_BUSY_STATUSES:
     raise HTTPException(status_code=409, detail=f"Application is already {application.status}.")
+
+  if application.container_count > 0:
+    raise HTTPException(
+        status_code=409,
+        detail="Application has containers and cannot be deleted. Delete its containers first.",
+    )
   return generic_delete(Application, application)
 
 

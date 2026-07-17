@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Body, Depends, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from playhouse.shortcuts import model_to_dict
 
 from routes.applications import router as app_router
@@ -54,7 +54,14 @@ def update_project(request: Request, project_data: dict = Body(...)):
 
 @router.delete("/{project}", dependencies=[Depends(inject_project)])
 def delete_project(request: Request):
-  return generic_delete(Project, request.state.models["project"])
+  project = request.state.models["project"]
+
+  if project.application_count > 0:
+    raise HTTPException(
+        status_code=409,
+        detail="Project has applications and cannot be deleted. Delete its applications first.",
+    )
+  return generic_delete(Project, project)
 
 
 # Application routes

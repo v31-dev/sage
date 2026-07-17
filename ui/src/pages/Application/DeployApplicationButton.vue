@@ -36,7 +36,8 @@ async function onClickDeployApplication() {
   try {
     await props.applicationAPI.action(`${props.application.name}/deploy`)
   } catch (err) {
-    appStore.updateApplicationDeployStatus('error')
+    // Deployment is a deferred operation so error means the deployment was rejected and not even triggered
+    appStore.updateApplicationDeployStatus(props.application.status)
     toast.error('Failed to deploy application ' + (err instanceof Error ? err.message : ''))
   }
 }
