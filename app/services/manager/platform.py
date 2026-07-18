@@ -6,15 +6,8 @@ from datetime import datetime, timedelta
 from functools import partial
 from tempfile import TemporaryDirectory
 
-from services.db import (
-    Backup,
-    Database,
-    Event,
-    Notification,
-    Task,
-    DB_PATH,
-    db,
-)
+
+from services.db import DB_PATH, Backup, Database, Event, Notification, Task, db
 from utils.queue import OnConflict
 
 logger = logging.getLogger(__name__)
@@ -144,11 +137,8 @@ class PlatformMixin:
         self.notify(f"Failed to create database backup: {e}", "error")
         raise Exception(f"Failed to create database backup: {e}")
 
-  def restart(self, all: bool = False, sage: bool = False, traefik: bool = False, vector: bool = False, glances: bool = False):
+  def restart(self, all: bool = False, sage: bool = False, traefik: bool = False, vector: bool = False):
     client = docker.from_env()
-
-    if all or glances:
-      client.containers.get("glances").restart()
 
     if all or vector:
       client.containers.get("vector").restart()

@@ -1,20 +1,14 @@
 import logging
 import os
 import re
+import shutil
+import threading
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
 import httpx
-from peewee import (
-    CharField,
-    CompositeKey,
-    DateTimeField,
-    FloatField,
-    IntegerField,
-    Model,
-    SqliteDatabase,
-    TextField,
-)
+from peewee import CharField, CompositeKey, DateTimeField, FloatField, IntegerField, Model, SqliteDatabase, TextField
 from playhouse.sqlite_ext import FTS5Model, RowIDField, SearchField
 
 from services.base import Base
@@ -34,6 +28,10 @@ _PERIODS = {
     "24h": {"delta": timedelta(hours=24), "bucket": 24, "points": 60},
     "1w": {"delta": timedelta(days=7), "bucket": 168, "points": 60},
 }
+
+# The manager samples its own usage every few seconds and reports the per-minute peak
+_CGROUP = Path("/sys/fs/cgroup")
+_SAMPLE_INTERVAL = 5
 
 
 class Metrics(Base):
@@ -57,6 +55,16 @@ class Metrics(Base):
 
     # Reused across collects which also pools connections.
     self._http = httpx.Client(timeout=10)
+
+    # In-memory per-minute peak accumulator for the manager's own metrics: the
+    # background sampler folds samples in, the minutely flush drains completed
+    # minutes to the shard. `_sampler_prev` is the last CPU/net counter sample.
+    self._peaks = {}
+    self._sampler_prev = None
+    self._sampler_stop = threading.Event()
+    self._sampler_thread = threading.Thread(
+        target=self._sample_loop, name="metrics-sampler", daemon=True)
+    self._sampler_thread.start()
 
   def get_metrics_db(self, hostname):
     """
@@ -91,9 +99,9 @@ class Metrics(Base):
           mem_used_mb = IntegerField()
           mem_cached_mb = IntegerField()
           disk_used_gb = FloatField()
-          load_avg_1m = FloatField()
-          load_avg_5m = FloatField()
-          load_avg_15m = FloatField()
+          load_avg_1m = FloatField(null=True)
+          load_avg_5m = FloatField(null=True)
+          load_avg_15m = FloatField(null=True)
           net_rx_kbps = FloatField()
           net_tx_kbps = FloatField()
 
@@ -274,6 +282,129 @@ class Metrics(Base):
       error_message = str(e).strip()
       error_detail = f"{error_name}: {error_message}" if error_message else error_name
       raise RuntimeError(f"Failed to collect metrics for {hostname} ({ip}): {error_detail}") from e
+
+  def _sample_loop(self):
+    """Background thread: read the manager container's own cgroup/net/disk usage
+    every few seconds and fold it into the current minute's peak. CPU is
+    normalized against the container's CPU allowance (cgroup quota if limited,
+    else host cores); memory total is the cgroup limit if set, else host memory;
+    disk is the root filesystem so temp usage counts. The minutely flush
+    (`collect_self`) drains it to the shard."""
+    while not self._sampler_stop.wait(_SAMPLE_INTERVAL):
+      try:
+        now = time.monotonic()
+        minute = datetime.now().replace(second=0, microsecond=0)
+
+        cpu_usage_usec = next(
+            int(line.split()[1])
+            for line in (_CGROUP / "cpu.stat").read_text().splitlines()
+            if line.startswith("usage_usec ")
+        )
+        interfaces = [
+            line.split()
+            for line in Path("/proc/net/dev").read_text().splitlines()[2:]
+            if ":" in line
+        ]
+        rx_bytes = sum(int(f[1]) for f in interfaces if not f[0].startswith("lo:"))
+        tx_bytes = sum(int(f[9]) for f in interfaces if not f[0].startswith("lo:"))
+
+        prev, self._sampler_prev = self._sampler_prev, (cpu_usage_usec, rx_bytes, tx_bytes, now)
+        if prev is None:
+          continue  # no previous counter for a rate -> seed only, skip this point
+        elapsed = now - prev[3]
+
+        cpu_max = (_CGROUP / "cpu.max").read_text().split()
+        cpu_allowance = (os.cpu_count() or 1) if cpu_max[0] == "max" else int(cpu_max[0]) / int(cpu_max[1])
+        cpu_pct = round(max(cpu_usage_usec - prev[0], 0) / (elapsed * 1_000_000) / cpu_allowance * 100, 2)
+        net_rx_kbps = round(max(rx_bytes - prev[1], 0) / 1024 / elapsed, 2)
+        net_tx_kbps = round(max(tx_bytes - prev[2], 0) / 1024 / elapsed, 2)
+
+        mem_used = int((_CGROUP / "memory.current").read_text())
+        mem_stat = dict(
+            line.split(maxsplit=1) for line in (_CGROUP / "memory.stat").read_text().splitlines()
+        )
+        mem_cached = int(mem_stat.get("file", 0))
+        mem_max = (_CGROUP / "memory.max").read_text().strip()
+        if mem_max == "max":
+          mem_total = next(
+              int(line.split()[1]) * 1024
+              for line in Path("/proc/meminfo").read_text().splitlines()
+              if line.startswith("MemTotal:")
+          )
+        else:
+          mem_total = int(mem_max)
+
+        disk = shutil.disk_usage("/")
+
+        with self.lock:
+          # The minutely flush drains completed minutes, so this normally holds
+          # one or two; bound it in case the flush ever stalls.
+          cutoff = minute - timedelta(minutes=10)
+          for stale in [m for m in self._peaks if m < cutoff]:
+            del self._peaks[stale]
+
+          peak = self._peaks.setdefault(minute, {
+              "cpu_pct": 0.0, "mem_used_mb": 0, "mem_cached_mb": 0,
+              "disk_used_gb": 0.0, "net_rx_kbps": 0.0, "net_tx_kbps": 0.0,
+          })
+          peak["cpu_pct"] = max(peak["cpu_pct"], cpu_pct)
+          peak["mem_used_mb"] = max(peak["mem_used_mb"], mem_used // (1024**2))
+          peak["mem_cached_mb"] = max(peak["mem_cached_mb"], mem_cached // (1024**2))
+          peak["disk_used_gb"] = max(peak["disk_used_gb"], round(disk.used / (1024**3), 2))
+          peak["net_rx_kbps"] = max(peak["net_rx_kbps"], net_rx_kbps)
+          peak["net_tx_kbps"] = max(peak["net_tx_kbps"], net_tx_kbps)
+          peak["cpu_cores"] = round(cpu_allowance)
+          peak["mem_total_mb"] = mem_total // (1024**2)
+          peak["disk_total_gb"] = round(disk.total / (1024**3), 2)
+      except Exception:
+        logger.warning("Manager metrics sample failed.", exc_info=True)
+
+  def stop_sampler(self):
+    self._sampler_stop.set()
+
+  def collect_self(self):
+    """Flush completed minutes of the manager's peak accumulator to its shard.
+    The in-progress minute is left to keep accumulating; a minute with no samples
+    (e.g. spanning a restart) simply gets no row."""
+    hostname = get_env("HOSTNAME")
+    now_minute = datetime.now().replace(second=0, microsecond=0)
+
+    with self.lock:
+      completed = {minute: peak for minute, peak in self._peaks.items() if minute < now_minute}
+      for minute in completed:
+        del self._peaks[minute]
+
+    if not completed:
+      return
+
+    db_info = self.get_metrics_db(hostname)
+    WorkerMeta = db_info["models"]["WorkerMeta"]
+    WorkerMetrics = db_info["models"]["WorkerMetrics"]
+
+    latest = completed[max(completed)]
+    WorkerMeta.replace(
+        id=1,
+        cpu_cores=latest["cpu_cores"],
+        mem_total_mb=latest["mem_total_mb"],
+        disk_total_gb=latest["disk_total_gb"],
+    ).execute()
+
+    for minute in sorted(completed):
+      peak = completed[minute]
+      WorkerMetrics.replace(
+          ts=minute,
+          cpu_pct=peak["cpu_pct"],
+          mem_used_mb=peak["mem_used_mb"],
+          mem_cached_mb=peak["mem_cached_mb"],
+          disk_used_gb=peak["disk_used_gb"],
+          load_avg_1m=None,
+          load_avg_5m=None,
+          load_avg_15m=None,
+          net_rx_kbps=peak["net_rx_kbps"],
+          net_tx_kbps=peak["net_tx_kbps"],
+      ).execute()
+
+    logger.info(f"Flushed manager metrics for {hostname}: {len(completed)} minute(s).")
 
   def _drop_shard(self, kind: str, key: str):
     """Close the cached connection for a shard and delete its files (`.db` plus

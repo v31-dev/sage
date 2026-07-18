@@ -66,14 +66,20 @@ async def reconcile_traefik_configs():
 
 
 async def collect_metrics():
-  targets = [("host.docker.internal", get_env("HOSTNAME"))] + [
-      (worker.ip, worker.hostname) for worker in Worker.select().where(Worker.online)
-  ]
-  for ip, host in targets:
+  # The manager collects its own container metrics in-process (cgroup/statvfs);
+  Manager().add_task(
+      task=Metrics().collect_self,
+      scopes={f"metrics:{get_env('HOSTNAME')}"},
+      executor="metrics",
+      quiet=True,
+  )
+
+  # Worker metrics are polled over their Glances endpoint.
+  for worker in Worker.select().where(Worker.online):
     Manager().add_task(
         task=Metrics().collect,
-        scopes={f"metrics:{host}"},
-        params={"ip": ip, "hostname": host},
+        scopes={f"metrics:{worker.hostname}"},
+        params={"ip": worker.ip, "hostname": worker.hostname},
         executor="metrics",
         quiet=True,
     )

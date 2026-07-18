@@ -175,7 +175,8 @@ Every queued operation, its scope, where it is enqueued from, its lane pool, and
 | `sync_application_status` | app:`<qn>` | cron 1m | app | DEDUP |
 | `backup_application_s3` | app:`<qn>` | cron 1m (due backups) | app | DEDUP |
 | `reconcile_traefik_configs` | platform | cron 1m | platform | DEDUP |
-| `Metrics.collect` | metrics:`<host>` | cron 1m | metrics | DEDUP |
+| `Metrics.collect` | metrics:`<worker>` | cron 1m | metrics | DEDUP |
+| `Metrics.collect_self` | metrics:`<manager>` | cron 1m | metrics | DEDUP |
 | `send_summary_notification` | common | cron daily 08:00 | common | REPLACE |
 | `get_latest_version` | common | cron 4h | common | REPLACE |
 | `backup_database_s3` | platform, app | cron 6h | platform | REPLACE |
@@ -218,7 +219,9 @@ Container create and tag-update are **instant route-side model writes**, like ev
 | `sync_application_traefik_domains_config` | app:`<qn>` | deploy/stop, delete-container, `sync_application_status`, `sync_workers`, `refresh_traefik`, `reconcile_traefik_configs` missing-file check (via `request_application_traefik_sync`) | app | REPLACE |
 | `sync_application_traefik_domains_config` | app:`<qn>` | `reconcile_traefik_configs` `domains_synced=False` backstop | app | DEDUP |
 
-Quiet tasks (recorded only on failure): `sync_workers` (cron), `sync_application_status`, `sync_application_traefik_domains_config`, `reconcile_traefik_configs`, `Metrics.collect`, `Metrics.cleanup`.
+Quiet tasks (recorded only on failure): `sync_workers` (cron), `sync_application_status`, `sync_application_traefik_domains_config`, `reconcile_traefik_configs`, `Metrics.collect`, `Metrics.collect_self`, `Metrics.cleanup`.
+
+Not every periodic job is a queue task. The manager samples its **own** container metrics (cgroup v2 / root-fs / net) every few seconds from a `Metrics`-owned daemon thread into an in-memory per-minute peak accumulator — a trivial in-process read with no scope to serialize and no remote/DB I/O, so it stays off the queue (like the `dispatch_tick` pump). Only the DB write is a queue task: `Metrics.collect_self` runs minutely, flushing completed minutes' peaks to the manager's shard (so it serializes with `Metrics.cleanup` on the `metrics` scope). Workers are still polled over Glances by `Metrics.collect`.
 
 Cron cadence convention: **≤ 1m → `DEDUP`** (a high-frequency reconciler skips only if its own previous run is still in flight; the next tick retries), **> 1m → `REPLACE`** (a 6h/1d/10d task must not skip its whole cycle on a transient conflict; latest-wins keeps no backlog).
 

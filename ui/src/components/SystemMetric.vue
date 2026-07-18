@@ -87,6 +87,12 @@ const chartData = computed(() => {
 const containerChartData = computed(() =>
   processContainerData((data.value?.containers ?? []) as Array<Array<ContainerMetricsPoint>>)
 )
+
+const hasLoad = computed(() =>
+  chartData.value.some(d => d.load_1 !== null || d.load_5 !== null || d.load_15 !== null)
+)
+
+const hasContainers = computed(() => containerChartData.value.colors.length > 0)
 </script>
 
 <template>
@@ -192,6 +198,7 @@ const containerChartData = computed(() =>
             />
 
             <MetricChart
+              v-if="hasLoad"
               title="Load Average"
               type="area"
               :data="
@@ -269,102 +276,104 @@ const containerChartData = computed(() =>
               ]"
             />
 
-            <MetricChart
-              title="Containers (CPU Usage)"
-              type="line"
-              :data="
-                containerChartData.data.map(d => {
-                  const { date, ...rest } = d
-                  return {
-                    date,
-                    ...Object.fromEntries(
-                      Object.entries(rest).filter(
-                        ([k]) => k.endsWith('_cpu_pct') || k.endsWith('_cpu_pct_label')
-                      )
-                    ),
-                  }
-                })
-              "
-              :yMax="100"
-              unit="%"
-              :height="'300px'"
-              :series="
-                containerChartData.colors.map(({ name, color }) => ({
-                  key: `${name}_cpu_pct`,
-                  tooltip_label: `${name}_cpu_pct_label`,
-                  name,
-                  color,
-                }))
-              "
-            />
+            <template v-if="hasContainers">
+              <MetricChart
+                title="Containers (CPU Usage)"
+                type="line"
+                :data="
+                  containerChartData.data.map(d => {
+                    const { date, ...rest } = d
+                    return {
+                      date,
+                      ...Object.fromEntries(
+                        Object.entries(rest).filter(
+                          ([k]) => k.endsWith('_cpu_pct') || k.endsWith('_cpu_pct_label')
+                        )
+                      ),
+                    }
+                  })
+                "
+                :yMax="100"
+                unit="%"
+                :height="'300px'"
+                :series="
+                  containerChartData.colors.map(({ name, color }) => ({
+                    key: `${name}_cpu_pct`,
+                    tooltip_label: `${name}_cpu_pct_label`,
+                    name,
+                    color,
+                  }))
+                "
+              />
 
-            <MetricChart
-              title="Containers (Memory Usage)"
-              type="line"
-              :data="
-                containerChartData.data.map(d => {
-                  const { date, ...rest } = d
-                  return {
-                    date,
-                    ...Object.fromEntries(
-                      Object.entries(rest).filter(
-                        ([k]) => k.endsWith('_mem_used_mb') || k.endsWith('_mem_used_mb_label')
-                      )
-                    ),
-                  }
-                })
-              "
-              :yMax="containerChartData.memMax"
-              unit="MB"
-              :height="'300px'"
-              :series="
-                containerChartData.colors.map(({ name, color }) => ({
-                  key: `${name}_mem_used_mb`,
-                  tooltip_label: `${name}_mem_used_mb_label`,
-                  name,
-                  color,
-                }))
-              "
-            />
+              <MetricChart
+                title="Containers (Memory Usage)"
+                type="line"
+                :data="
+                  containerChartData.data.map(d => {
+                    const { date, ...rest } = d
+                    return {
+                      date,
+                      ...Object.fromEntries(
+                        Object.entries(rest).filter(
+                          ([k]) => k.endsWith('_mem_used_mb') || k.endsWith('_mem_used_mb_label')
+                        )
+                      ),
+                    }
+                  })
+                "
+                :yMax="containerChartData.memMax"
+                unit="MB"
+                :height="'300px'"
+                :series="
+                  containerChartData.colors.map(({ name, color }) => ({
+                    key: `${name}_mem_used_mb`,
+                    tooltip_label: `${name}_mem_used_mb_label`,
+                    name,
+                    color,
+                  }))
+                "
+              />
 
-            <MetricChart
-              title="Containers (Network)"
-              type="line"
-              :data="
-                containerChartData.data.map(d => {
-                  const { date, ...rest } = d
-                  return {
-                    date,
-                    ...Object.fromEntries(
-                      Object.entries(rest).filter(
-                        ([k]) =>
-                          k.endsWith('_net_rx') ||
-                          k.endsWith('_net_rx_label') ||
-                          k.endsWith('_net_tx') ||
-                          k.endsWith('_net_tx_label')
-                      )
-                    ),
-                  }
-                })
-              "
-              :yMax="containerChartData.netMax"
-              unit="Mbps"
-              :height="'300px'"
-              :series="[
-                ...containerChartData.colors.map(({ name, color }) => ({
-                  key: `${name}_net_rx`,
-                  tooltip_label: `${name}_net_rx_label`,
-                  name: `${name} Download`,
-                  color,
-                })),
-                ...containerChartData.colors.map(({ name, color }) => ({
-                  key: `${name}_net_tx`,
-                  tooltip_label: `${name}_net_tx_label`,
-                  name: `${name} Upload`,
-                  color,
-                })),
-              ]"
-            />
+              <MetricChart
+                title="Containers (Network)"
+                type="line"
+                :data="
+                  containerChartData.data.map(d => {
+                    const { date, ...rest } = d
+                    return {
+                      date,
+                      ...Object.fromEntries(
+                        Object.entries(rest).filter(
+                          ([k]) =>
+                            k.endsWith('_net_rx') ||
+                            k.endsWith('_net_rx_label') ||
+                            k.endsWith('_net_tx') ||
+                            k.endsWith('_net_tx_label')
+                        )
+                      ),
+                    }
+                  })
+                "
+                :yMax="containerChartData.netMax"
+                unit="Mbps"
+                :height="'300px'"
+                :series="[
+                  ...containerChartData.colors.map(({ name, color }) => ({
+                    key: `${name}_net_rx`,
+                    tooltip_label: `${name}_net_rx_label`,
+                    name: `${name} Download`,
+                    color,
+                  })),
+                  ...containerChartData.colors.map(({ name, color }) => ({
+                    key: `${name}_net_tx`,
+                    tooltip_label: `${name}_net_tx_label`,
+                    name: `${name} Upload`,
+                    color,
+                  })),
+                ]"
+              />
+            </template>
           </div>
         </template>
 
