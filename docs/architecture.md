@@ -9,7 +9,7 @@ Sage is a manager-and-workers platform designed for Docker workloads connected t
 - Cloudflare provides public DNS and tunnel integration.
 - Traefik provides ingress and certificate handling.
 - Vector forwards logs to the manager.
-- Glances provides metrics endpoints that the manager polls.
+- Glances runs on workers and exposes metrics endpoints the manager polls; the manager collects its own container metrics in-process.
 
 ## Manager Runtime
 
@@ -130,7 +130,9 @@ Metrics and logs are intentionally sharded:
 - Metrics: one SQLite database per hostname under `/app/data/metrics/metrics/`
 - Logs: one SQLite database per container under `/app/data/metrics/logs/`
 
-Container log search uses SQLite FTS5.
+Container log search uses SQLite FTS5. Worker metric shards are populated from
+Glances; the manager's own shard is populated in-process from cgroup v2 and the data
+volume (its single sage container, so no host load average).
 
 ## Scheduler And Operation Queue
 

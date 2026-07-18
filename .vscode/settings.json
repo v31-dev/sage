@@ -18,6 +18,7 @@
     "--global-config",
     "${workspaceFolder}/app/pyproject.toml"
   ],
+  "peacock.remoteColor": "#051120",
   "workbench.colorCustomizations": {
     "activityBar.activeBackground": "#0c284c",
     "activityBar.background": "#0c284c",
@@ -36,6 +37,5 @@
     "titleBar.activeForeground": "#e7e7e7",
     "titleBar.inactiveBackground": "#05112099",
     "titleBar.inactiveForeground": "#e7e7e799"
-  },
-  "peacock.remoteColor": "#051120"
+  }
 }

@@ -33,13 +33,9 @@ services:
       - 100.100.100.100
       - 8.8.8.8
       - 1.1.1.1
-    extra_hosts:
-    - "host.docker.internal:host-gateway"
     healthcheck:
       test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:9000/api\").getcode() == 200 or exit(1)'"]
       start_period: 10s
-    depends_on:
-      - glances
   traefik:
     image: traefik:v3.6.7
     container_name: traefik
@@ -71,14 +67,3 @@ services:
     depends_on:
       sage:
         condition: service_healthy
-
-  glances:
-    image: nicolargo/glances:latest
-    container_name: glances
-    restart: unless-stopped
-    network_mode: host
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-    environment:
-      - GLANCES_OPT=-w --disable-webui
-    pid: host
