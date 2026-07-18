@@ -1,18 +1,10 @@
-import httpx
 import logging
 from datetime import datetime, timedelta
+
+import httpx
 from peewee import fn
 
-from services.db import (
-    Application,
-    Backup,
-    Container,
-    Domain,
-    Event,
-    Notification,
-    Project,
-    Worker,
-)
+from services.db import Application, Backup, Container, Domain, Event, Notification, Project, Worker
 from services.notification import Notifications
 from utils.executor import NOTIFICATIONS_EXECUTOR, submit_with_context
 

@@ -3,20 +3,8 @@ import logging
 from playhouse.migrate import SqliteMigrator, migrate
 
 from services.base import Base
-from .models import (
-    Application,
-    Backup,
-    Container,
-    Domain,
-    Event,
-    Notification,
-    Project,
-    Setting,
-    Task,
-    Volume,
-    Worker,
-    db,
-)
+
+from .models import Application, Backup, Container, Domain, Event, Notification, Project, Setting, Task, Volume, Worker, db
 
 logger = logging.getLogger(__name__)
 

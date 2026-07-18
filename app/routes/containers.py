@@ -2,13 +2,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Request
 
 from services.db import APPLICATION_BUSY_STATUSES, Container, Worker
 from services.manager import Manager
-from utils.api import (
-    get_request_models,
-    generic_create,
-    generic_get,
-    generic_list,
-    generic_update,
-)
+from utils.api import generic_create, generic_get, generic_list, generic_update, get_request_models
 from utils.queue import OnConflict
 
 

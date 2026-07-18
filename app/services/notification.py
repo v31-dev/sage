@@ -1,10 +1,10 @@
 import logging
-import requests
 from types import SimpleNamespace
+
+import requests
 
 from services.base import Base
 from services.settings import Settings
-
 
 logger = logging.getLogger(__name__)
 

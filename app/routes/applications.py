@@ -3,27 +3,13 @@ from typing import Literal
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from playhouse.shortcuts import model_to_dict
 
-from routes.volumes import router as volume_router
 from routes.containers import router as container_router
 from routes.domains import router as domain_router
-from services.db import (
-    APPLICATION_BUSY_STATUSES,
-    APPLICATION_STOP_ELIGIBLE_STATUSES,
-    Application,
-    Container,
-    Worker,
-)
+from routes.volumes import router as volume_router
+from services.db import APPLICATION_BUSY_STATUSES, APPLICATION_STOP_ELIGIBLE_STATUSES, Application, Container, Worker
 from services.manager import Manager
 from services.metrics import Metrics
-from utils.api import (
-    get_request_models,
-    generic_create,
-    generic_delete,
-    generic_get,
-    generic_list,
-    generic_update,
-    parse_api_data,
-)
+from utils.api import generic_create, generic_delete, generic_get, generic_list, generic_update, get_request_models, parse_api_data
 from utils.db import AlphaNumericField
 
 

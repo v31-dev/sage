@@ -9,12 +9,7 @@ from services.s3 import S3
 from services.settings import Settings
 from services.tailscale import Tailscale
 from services.traefik import Traefik
-from utils.executor import (
-    APP_EXECUTOR,
-    COMMON_EXECUTOR,
-    METRICS_EXECUTOR,
-    PLATFORM_EXECUTOR,
-)
+from utils.executor import APP_EXECUTOR, COMMON_EXECUTOR, METRICS_EXECUTOR, PLATFORM_EXECUTOR
 from utils.queue import TaskQueue
 
 from ._common import app_dir

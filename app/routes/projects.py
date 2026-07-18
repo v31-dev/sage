@@ -3,15 +3,7 @@ from playhouse.shortcuts import model_to_dict
 
 from routes.applications import router as app_router
 from services.db import Project
-from utils.api import (
-    get_request_models,
-    generic_create,
-    generic_delete,
-    generic_get,
-    generic_list,
-    generic_update,
-    parse_api_data,
-)
+from utils.api import generic_create, generic_delete, generic_get, generic_list, generic_update, get_request_models, parse_api_data
 from utils.db import AlphaNumericField
 
 

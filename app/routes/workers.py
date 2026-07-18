@@ -1,16 +1,16 @@
 from typing import Literal
-from fastapi import APIRouter, HTTPException, Depends, Request
+
+from fastapi import APIRouter, Depends, HTTPException, Request
 from playhouse.shortcuts import model_to_dict
 
+from routes.containers import router as container_router
 from services.db import Application, Container, Project, Worker
+from services.manager import Manager
 from services.metrics import Metrics
 from services.tailscale import Tailscale
-from services.manager import Manager
-from routes.containers import router as container_router
+from utils.api import generic_get, get_request_models
 from utils.common import get_env
-from utils.api import get_request_models, generic_get
 from utils.queue import OnConflict
-
 
 router = APIRouter()
 

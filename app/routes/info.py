@@ -1,6 +1,7 @@
 import logging
-from fastapi import APIRouter
 from datetime import datetime
+
+from fastapi import APIRouter
 
 from services.manager import Manager
 from services.settings import Settings

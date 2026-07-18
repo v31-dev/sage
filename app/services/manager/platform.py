@@ -1,4 +1,3 @@
-import docker
 import logging
 import shutil
 import sqlite3
@@ -6,6 +5,7 @@ from datetime import datetime, timedelta
 from functools import partial
 from tempfile import TemporaryDirectory
 
+import docker
 
 from services.db import DB_PATH, Backup, Database, Event, Notification, Task, db
 from utils.queue import OnConflict

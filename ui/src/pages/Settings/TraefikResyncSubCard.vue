@@ -78,8 +78,8 @@ async function onConfirmResync() {
             </DialogTitle>
             <DialogDescription>
               This rebuilds Traefik state across the platform — manager config, ACME certs, and
-              worker Traefik. Use for cert/ACME failures or Cloudflare API token rotation, not
-              for general worker drift.
+              worker Traefik. Use for cert/ACME failures or Cloudflare API token rotation, not for
+              general worker drift.
             </DialogDescription>
           </DialogHeader>
 

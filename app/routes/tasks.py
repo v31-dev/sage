@@ -1,4 +1,5 @@
 import logging
+
 from fastapi import APIRouter
 
 from services.db import Task

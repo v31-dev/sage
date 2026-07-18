@@ -1,18 +1,13 @@
-from fastapi import APIRouter, HTTPException, Depends, Request, Body
+from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from playhouse.shortcuts import model_to_dict
 
 from services.cloudflare import Cloudflare
 from services.db import Setting
 from services.manager import Manager
 from services.notification import Notifications
-from services.settings import Settings
 from services.s3 import S3
-from utils.api import (
-    get_request_models,
-    generic_list,
-    generic_get,
-    parse_api_data,
-)
+from services.settings import Settings
+from utils.api import generic_get, generic_list, get_request_models, parse_api_data
 from utils.common import DOMAIN_RE, EMAIL_RE
 from utils.queue import OnConflict
 
