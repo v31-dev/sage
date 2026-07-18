@@ -14,6 +14,11 @@ services:
       interval: 10s
       retries: 6
     command: python -m debugpy --listen 0.0.0.0:5678 main.py
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 4G
 
   ui:
     build:

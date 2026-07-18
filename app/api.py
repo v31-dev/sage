@@ -5,13 +5,13 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException
 from starlette.staticfiles import StaticFiles
 
-from routes.info import router as info_router
 from routes.backups import router as backup_router
-from routes.settings import router as settings_router
-from routes.projects import router as projects_router
-from routes.workers import router as workers_router
+from routes.info import router as info_router
 from routes.notifications import router as notifications_router
+from routes.projects import router as projects_router
+from routes.settings import router as settings_router
 from routes.tasks import router as tasks_router
+from routes.workers import router as workers_router
 from utils.logging import fastapi_middleware
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, redirect_slashes=False)

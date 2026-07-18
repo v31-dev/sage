@@ -3,7 +3,6 @@ import os
 from services.base import Base
 from services.db import Setting
 
-
 # Format of -
 # "key": { "property": { "env": "<If it exists in the environment>", "required": bool } }
 SETTING_DEFINITIONS = {
