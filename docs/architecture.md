@@ -8,7 +8,7 @@ Sage is a manager-and-workers platform designed for Docker workloads connected t
 - Workers run application containers and edge components.
 - Cloudflare provides public DNS and tunnel integration.
 - Traefik provides ingress and certificate handling.
-- Vector forwards logs to the manager.
+- Vector runs on workers and forwards their container logs to the manager; the manager captures its own logs in-process.
 - Glances runs on workers and exposes metrics endpoints the manager polls; the manager collects its own container metrics in-process.
 
 ## Manager Runtime
@@ -16,7 +16,7 @@ Sage is a manager-and-workers platform designed for Docker workloads connected t
 The manager process starts three concurrent services from `app/main.py`:
 
 1. Main FastAPI API on port `9000`
-2. Vector ingestion FastAPI API on port `9001`
+2. Log/metric ingestion FastAPI API on port `9001` (receives workers' Vector log shipments)
 3. APScheduler (cron/interval) scheduler
 
 Startup is service-driven:
@@ -132,7 +132,9 @@ Metrics and logs are intentionally sharded:
 
 Container log search uses SQLite FTS5. Worker metric shards are populated from
 Glances; the manager's own shard is populated in-process from cgroup v2 and the data
-volume (its single sage container, so no host load average).
+volume (its single sage container, so no host load average). Worker container logs
+arrive via each worker's Vector (the `:9001` ingestion API); the manager's own logs
+are written to the `sage` shard in-process by a logging handler (no Vector sidecar).
 
 ## Scheduler And Operation Queue
 

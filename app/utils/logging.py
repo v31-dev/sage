@@ -55,7 +55,7 @@ class TaskFailed(Exception):
   pass
 
 
-class _SuppressTracebackFilter(logging.Filter):
+class SuppressTracebackFilter(logging.Filter):
   """Strip exception tracebacks from TaskFailed log records."""
 
   def filter(self, record):
@@ -101,7 +101,7 @@ def setup_logger():
   # Filter on the handler runs once for every record it processes,
   # covering propagated child-logger records that bypass parent logger filters.
   handler.addFilter(ContextVarFilter())
-  handler.addFilter(_SuppressTracebackFilter())
+  handler.addFilter(SuppressTracebackFilter())
 
   root_logger = logging.getLogger()
   root_logger.setLevel(get_log_level())

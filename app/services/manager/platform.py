@@ -137,11 +137,8 @@ class PlatformMixin:
         self.notify(f"Failed to create database backup: {e}", "error")
         raise Exception(f"Failed to create database backup: {e}")
 
-  def restart(self, all: bool = False, sage: bool = False, traefik: bool = False, vector: bool = False):
+  def restart(self, all: bool = False, sage: bool = False, traefik: bool = False):
     client = docker.from_env()
-
-    if all or vector:
-      client.containers.get("vector").restart()
 
     if all or traefik:
       client.containers.get("traefik").restart()

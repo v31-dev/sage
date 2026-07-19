@@ -5,6 +5,7 @@ from playhouse.shortcuts import model_to_dict
 
 from routes.containers import router as container_router
 from services.db import Application, Container, Project, Worker
+from services.logs import Logs
 from services.manager import Manager
 from services.metrics import Metrics
 from services.tailscale import Tailscale
@@ -79,7 +80,7 @@ def get_logs(hostname: str, container: str, search: str = "", from_ts: str = "",
     hostname = ""
 
   try:
-    return Metrics().query_logs(
+    return Logs().query_logs(
         container, hostname=hostname, search=search, from_ts=from_ts, to_ts=to_ts
     )
   except Exception as e:

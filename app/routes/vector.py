@@ -4,7 +4,7 @@ import logging
 
 from fastapi import APIRouter, Request, Response
 
-from services.metrics import Metrics
+from services.logs import Logs
 from utils.executor import LOGS_EXECUTOR, run_in_executor_with_context
 
 logger = logging.getLogger(__name__)
@@ -50,7 +50,7 @@ async def vector_logs(request: Request):
     await asyncio.gather(
         *[
             run_in_executor_with_context(
-                Metrics().write_logs,
+                Logs().write_logs,
                 container,
                 entries,
                 executor=LOGS_EXECUTOR,
