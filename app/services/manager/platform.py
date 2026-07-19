@@ -3,6 +3,7 @@ import shutil
 import sqlite3
 from datetime import datetime, timedelta
 from functools import partial
+from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import docker
@@ -87,6 +88,20 @@ class PlatformMixin:
     # Cleanup task log
     deleted_count = (Task.delete().where(Task.created_at < cutoff).execute())
     logger.info(f"Tasks cleanup: removed {deleted_count} task rows older than {days} days.")
+
+    # Cleanup local DB-restore safety copies (data.db.backup.<ts>) past retention.
+    # They exist only to roll back an in-flight restore, so old ones are dead weight.
+    db_file = Path(DB_PATH)
+    removed = 0
+    for path in db_file.parent.glob(f"{db_file.name}.backup.*"):
+      try:
+        stamp = datetime.strptime(path.name.rsplit(".", 1)[-1], self.backup_timestamp_format)
+      except ValueError:
+        continue
+      if stamp < cutoff:
+        path.unlink(missing_ok=True)
+        removed += 1
+    logger.info(f"Restore safety-copy cleanup: removed {removed} older than {days} days.")
 
     # Cleanup application backups from S3
     try:

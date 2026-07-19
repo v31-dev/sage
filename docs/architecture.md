@@ -127,8 +127,8 @@ Relationships are centered on:
 
 Metrics and logs are intentionally sharded:
 
-- Metrics: one SQLite database per hostname under `/app/data/metrics/metrics/`
-- Logs: one SQLite database per container under `/app/data/metrics/logs/`
+- Metrics: one SQLite database per hostname under `/app/data/metrics/`
+- Logs: one SQLite database per container under `/app/data/logs/`
 
 Container log search uses SQLite FTS5. Worker metric shards are populated from
 Glances; the manager's own shard is populated in-process from cgroup v2 and the data
