@@ -35,7 +35,7 @@ class Metrics(Base):
   def __init__(self):
     super().__init__()
 
-    self.db_path = "/app/data/metrics"
+    self.db_path = "/app/data"
     os.makedirs(f"{self.db_path}/metrics", exist_ok=True)
 
     self._dbs = {"metrics": {}}
