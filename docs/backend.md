@@ -119,7 +119,7 @@ Pools (lanes) are defined in `app/utils/executor.py`. The first four are queue l
 | `APP_EXECUTOR` | 6 | `app` lane — per-application deploy/stop/backup/restore |
 | `METRICS_EXECUTOR` | 2 | `metrics` lane — collection, metrics-store cleanup |
 | `NOTIFICATIONS_EXECUTOR` | 1 | `Manager.notify` webhook sends (off-queue, fire-and-forget) |
-| `LOGS_EXECUTOR` | 1 | Vector log ingestion (off-queue, request-path; single SQLite writer) |
+| `LOGS_EXECUTOR` | 1 | Workers' Vector log ingestion (off-queue, request-path; single SQLite writer) |
 
 Worker counts are **fixed I/O-concurrency limits, not derived from `os.cpu_count()`** — these lanes run blocking network I/O (Tailscale, S3, httpx), so the manager's core count doesn't gate them, and in a CPU-limited container `os.cpu_count()` reports host cores rather than the container's allowance. `platform`/`common` have no child scopes (their tasks never run concurrently) so they stay at 1; `app`/`metrics` are sized for the realistic ceiling (≤10 workers, ≤50 apps, a couple of parallel deploys). Concurrent DB writes from `app`-lane threads are safe: Peewee keeps per-thread SQLite connections and the DB runs WAL + `busy_timeout`.
 
@@ -156,8 +156,8 @@ Main database:
 Additional storage:
 
 - metrics SQLite shards
-- log SQLite shards with FTS5
-- Traefik and Vector runtime config written to mounted directories
+- log SQLite shards with FTS5 (worker containers via Vector ingestion; the manager's own logs written in-process by a logging handler)
+- Traefik runtime config written to a mounted directory
 
 ## Scheduler Notes
 
@@ -181,6 +181,7 @@ Every queued operation, its scope, where it is enqueued from, its lane pool, and
 | `get_latest_version` | common | cron 4h | common | REPLACE |
 | `backup_database_s3` | platform, app | cron 6h | platform | REPLACE |
 | `Metrics.cleanup` | metrics | cron daily 04:00 | metrics | REPLACE |
+| `Logs.cleanup` | common | cron daily 04:00 | common | REPLACE |
 | `cleanup` | platform | cron daily 04:00 | platform | REPLACE |
 | `sync_traefik_certificates` | platform, app | cron weekly (Mon 03:00) | app | REPLACE |
 
@@ -219,9 +220,9 @@ Container create and tag-update are **instant route-side model writes**, like ev
 | `sync_application_traefik_domains_config` | app:`<qn>` | deploy/stop, delete-container, `sync_application_status`, `sync_workers`, `refresh_traefik`, `reconcile_traefik_configs` missing-file check (via `request_application_traefik_sync`) | app | REPLACE |
 | `sync_application_traefik_domains_config` | app:`<qn>` | `reconcile_traefik_configs` `domains_synced=False` backstop | app | DEDUP |
 
-Quiet tasks (recorded only on failure): `sync_workers` (cron), `sync_application_status`, `sync_application_traefik_domains_config`, `reconcile_traefik_configs`, `Metrics.collect`, `Metrics.collect_self`, `Metrics.cleanup`.
+Quiet tasks (recorded only on failure): `sync_workers` (cron), `sync_application_status`, `sync_application_traefik_domains_config`, `reconcile_traefik_configs`, `Metrics.collect`, `Metrics.collect_self`, `Metrics.cleanup`, `Logs.cleanup`.
 
-Not every periodic job is a queue task. The manager samples its **own** container metrics (cgroup v2 / root-fs / net) every few seconds from a `Metrics`-owned daemon thread into an in-memory per-minute peak accumulator — a trivial in-process read with no scope to serialize and no remote/DB I/O, so it stays off the queue (like the `dispatch_tick` pump). Only the DB write is a queue task: `Metrics.collect_self` runs minutely, flushing completed minutes' peaks to the manager's shard (so it serializes with `Metrics.cleanup` on the `metrics` scope). Workers are still polled over Glances by `Metrics.collect`.
+Not every periodic/background job is a queue task. Two service-owned daemon threads run off the queue: the `Metrics` sampler reads the manager's **own** container metrics (cgroup v2 / root-fs / net) every few seconds into an in-memory per-minute peak accumulator; and the `Logs` capture thread drains formatted self-log records (enqueued by a root-logger handler) to the manager's `sage` log shard. Both are trivial in-process work with no scope to serialize (like the `dispatch_tick` pump). Their periodic DB maintenance stays on the queue: `Metrics.collect_self` (minutely peak flush) and `Metrics.cleanup` (daily, fast row-deletes) on the `metrics` scope, and `Logs.cleanup` on `common` — kept off `metrics` because its per-shard FTS `optimize` can run long, and blocking the `metrics` scope that long would stall the minutely flush past the sampler's 10-minute peak buffer. Workers are still polled over Glances by `Metrics.collect`, and ship their container logs to `LOGS_EXECUTOR` via the `:9001` ingestion API.
 
 Cron cadence convention: **≤ 1m → `DEDUP`** (a high-frequency reconciler skips only if its own previous run is still in flight; the next tick retries), **> 1m → `REPLACE`** (a 6h/1d/10d task must not skip its whole cycle on a transient conflict; latest-wins keeps no backlog).
 
@@ -369,7 +370,6 @@ The token reaches Traefik via `CLOUDFLARE_DNS_API_TOKEN_FILE`, so rotation only 
 `app/templates/` contains generated runtime inputs for:
 
 - manager Traefik config
-- manager Vector config
 - worker compose files
 - worker Traefik config
 - worker Vector config

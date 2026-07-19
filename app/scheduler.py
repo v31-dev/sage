@@ -6,6 +6,7 @@ from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
 from services.db import Application, Project, Worker
+from services.logs import Logs
 from services.manager import Manager
 from services.metrics import Metrics
 from utils.common import get_env
@@ -118,6 +119,14 @@ async def cleanup():
       name="metrics_cleanup",
       scopes={"metrics"},
       executor="metrics",
+      quiet=True,
+      on_conflict=OnConflict.REPLACE,
+  )
+  Manager().add_task(
+      task=Logs().cleanup,
+      name="logs_cleanup",
+      scopes={"common"},
+      executor="common",
       quiet=True,
       on_conflict=OnConflict.REPLACE,
   )

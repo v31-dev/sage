@@ -1,6 +1,5 @@
 import logging
 import os
-import re
 import shutil
 import threading
 import time
@@ -8,14 +7,12 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import httpx
-from peewee import CharField, CompositeKey, DateTimeField, FloatField, IntegerField, Model, SqliteDatabase, TextField
-from playhouse.sqlite_ext import FTS5Model, RowIDField, SearchField
+from peewee import CharField, CompositeKey, DateTimeField, FloatField, IntegerField, Model, SqliteDatabase
 
 from services.base import Base
-from services.db import Application, Project, Worker
+from services.db import Worker
 from utils.common import get_env
 
-app_dir = Path(__file__).parent.parent
 logger = logging.getLogger(__name__)
 
 # delta is period start end range
@@ -38,20 +35,10 @@ class Metrics(Base):
   def __init__(self):
     super().__init__()
 
-    self.config_path = "/etc/vector"
-    os.makedirs(self.config_path, exist_ok=True)
-    with open(app_dir / "templates/manager/vector/vector.yml", "r") as f:
-      vector_config = f.read()
-      vector_config = vector_config.replace("${HOSTNAME}", get_env("HOSTNAME"))
-      vector_config = vector_config.replace("${IP}", "sage")
-      with open(f"{self.config_path}/vector.yaml", "w") as f:
-        f.write(vector_config)
-
-    self.db_path = "/app/data/metrics"
+    self.db_path = "/app/data"
     os.makedirs(f"{self.db_path}/metrics", exist_ok=True)
-    os.makedirs(f"{self.db_path}/logs", exist_ok=True)
 
-    self._dbs = {"metrics": {}, "logs": {}}
+    self._dbs = {"metrics": {}}
 
     # Reused across collects which also pools connections.
     self._http = httpx.Client(timeout=10)
@@ -128,80 +115,6 @@ class Metrics(Base):
         }
 
     return self._dbs["metrics"][hostname]
-
-  def get_logs_db(self, container):
-    """
-    1 database per container.
-    ContainerLogs stores all fields; ContainerLogsIndex is an FTS5 virtual table
-    that indexes only the message text for fast full-text search.
-    """
-    # container is a qualified application name; reject anything that could escape
-    # the logs directory when interpolated into the shard file path.
-    if not re.fullmatch(r"[a-z0-9-]+", container or ""):
-      raise ValueError(f"Invalid container name: {container!r}")
-
-    with self.lock:
-      if container not in self._dbs["logs"]:
-        path = f"{self.db_path}/logs/{container}.db"
-        db = SqliteDatabase(
-            path,
-            pragmas={
-                "journal_mode": "wal",
-                "cache_size": -2048,  # 2MB — FTS index thrashing prevented; room for B-tree
-                "busy_timeout": 5000,  # Wait up to 5s before returning SQLITE_BUSY.
-                "synchronous": 1,  # NORMAL — commit writes faster, acceptable for logs
-            },
-        )
-
-        class BaseModel(Model):
-          class Meta:
-            database = db
-
-        class ContainerLogs(BaseModel):
-          hostname = CharField()
-          ts = CharField()  # preserves Vector nanosecond precision
-          stream = CharField()
-          message = TextField()
-
-        class ContainerLogsIndex(FTS5Model):
-          rowid = RowIDField()
-          message = SearchField()
-
-          class Meta:
-            database = db
-            options = {"content": ContainerLogs, "content_rowid": "id"}
-
-        db.connect(reuse_if_open=True)
-        db.create_tables([ContainerLogs, ContainerLogsIndex], safe=True)
-        # Trigger keeps FTS index in sync incrementally — O(new rows) per insert,
-        # not O(total rows) like rebuild() would be.
-        db.execute_sql(
-            """
-          CREATE TRIGGER IF NOT EXISTS containerlogs_ai
-          AFTER INSERT ON containerlogs BEGIN
-            INSERT INTO containerlogsindex(rowid, message) VALUES (new.id, new.message);
-          END
-        """
-        )
-        # Keep the index clean when logs are deleted
-        db.execute_sql(
-            """
-            CREATE TRIGGER IF NOT EXISTS containerlogs_ad
-            AFTER DELETE ON containerlogs BEGIN
-              INSERT INTO containerlogsindex(containerlogsindex, rowid, message)
-              VALUES('delete', old.id, old.message);
-            END;
-        """
-        )
-        self._dbs["logs"][container] = {
-            "db": db,
-            "models": {
-                "ContainerLogs": ContainerLogs,
-                "ContainerLogsIndex": ContainerLogsIndex,
-            },
-        }
-
-    return self._dbs["logs"][container]
 
   def collect(self, ip, hostname):
     metrics_endpoint = f"http://{ip}:61208/api/4"
@@ -434,15 +347,10 @@ class Metrics(Base):
   def cleanup(self, days: int = 7):
     cutoff = datetime.now() - timedelta(days=days)
 
-    # Drop shards for hosts/apps that no longer exist (metrics keyed by hostname
-    # -- manager plus all workers, incl. offline; logs by app qualified_name).
+    # Drop shards for hosts that no longer exist (keyed by hostname -- manager
+    # plus all workers, incl. offline).
     live_hosts = {get_env("HOSTNAME")} | {worker.hostname for worker in Worker.select()}
-    live_containers = {
-        application.qualified_name
-        for application in Application.select(Application, Project).join(Project)
-    }
-    dropped_m = self._prune_orphan_shards("metrics", live_hosts)
-    dropped_l = self._prune_orphan_shards("logs", live_containers)
+    dropped = self._prune_orphan_shards("metrics", live_hosts)
 
     # Delete rows past the retention window; freed pages are reused by later
     # inserts, so shards plateau (no VACUUM). Skip shards not yet on disk.
@@ -458,21 +366,7 @@ class Metrics(Base):
       deleted_c += ContainerMetrics.delete().where(ContainerMetrics.ts < cutoff).execute()
     logger.info(
         f"Metrics cleanup: removed {deleted_w} worker rows, {deleted_c} container rows "
-        f"older than {days} days; dropped {dropped_m} orphaned shard(s).")
-
-    # Same for logs, then 'optimize' to merge the FTS index (the delete trigger
-    # only tombstones tokens, so segments accumulate without it).
-    logs_dir = Path(self.db_path) / "logs"
-    existing_containers = {path.stem for path in logs_dir.glob("*.db")} & live_containers
-    deleted_l = 0
-    for container in sorted(existing_containers):
-      db_info = self.get_logs_db(container)
-      ContainerLogs = db_info["models"]["ContainerLogs"]
-      deleted_l += ContainerLogs.delete().where(ContainerLogs.ts < cutoff.isoformat()).execute()
-      db_info["db"].execute_sql("INSERT INTO containerlogsindex(containerlogsindex) VALUES('optimize')")
-    logger.info(
-        f"Logs cleanup: removed {deleted_l} log rows older than {days} days; "
-        f"dropped {dropped_l} orphaned shard(s).")
+        f"older than {days} days; dropped {dropped} orphaned shard(s).")
 
   def query_period(self, hostname: str, period: str = "1h"):
     period_config = _PERIODS.get(period, _PERIODS["1h"])
@@ -610,54 +504,3 @@ class Metrics(Base):
     rows = self._aggregate_buckets(rows, period_config["bucket"], ["ts", "name"])
 
     return rows
-
-  def write_logs(self, container: str, entries: list):
-    shard = self.get_logs_db(container)
-    ContainerLogs = shard["models"]["ContainerLogs"]
-    with shard["db"].atomic():
-      ContainerLogs.insert_many(entries).execute()
-      # FTS index updated automatically via containerlogs_ai trigger
-
-    logger.info(f"Wrote {len(entries)} log entries for container {container}.")
-
-  def query_logs(
-      self,
-      container: str,
-      hostname: str = "",
-      search: str = "",
-      from_ts: str = "",
-      to_ts: str = "",
-  ) -> list:
-    """
-    If `hostname` is provided, filters to only that host's entries.
-    If `search` is provided, filters via FTS5 full-text index on message.
-    If `from_ts` and `to_ts` are provided, returns logs within that range.
-    """
-    shard = self.get_logs_db(container)
-    ContainerLogs = shard["models"]["ContainerLogs"]
-    ContainerLogsIndex = shard["models"]["ContainerLogsIndex"]
-
-    # Build base query with FTS if searching
-    if search:
-      query = (
-          ContainerLogs.select()
-          .join(
-              ContainerLogsIndex,
-              on=(ContainerLogs.id == ContainerLogsIndex.rowid),
-          )
-          .where(ContainerLogsIndex.match(search))
-      )
-    else:
-      query = ContainerLogs.select()
-
-    # Apply common filters
-    if hostname:
-      query = query.where(ContainerLogs.hostname == hostname)
-    if from_ts:
-      query = query.where(ContainerLogs.ts >= from_ts)
-    if to_ts:
-      query = query.where(ContainerLogs.ts < to_ts)
-
-    rows = query.order_by(ContainerLogs.ts.asc()).dicts()
-
-    return list(rows)

@@ -3,6 +3,7 @@ import logging
 from services.base import Base
 from services.cloudflare import Cloudflare
 from services.db import Database
+from services.logs import Logs
 from services.metrics import Metrics
 from services.notification import Notifications
 from services.s3 import S3
@@ -63,6 +64,7 @@ class Manager(
       )
 
       # Initialize all services
+      Logs()
       Database()
       Settings()
       Notifications()

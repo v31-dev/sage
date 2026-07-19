@@ -26,7 +26,6 @@ services:
       - /var/run/tailscale/tailscaled.sock:/var/run/tailscale/tailscaled.sock:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ${SAGE_HOME}/traefik:/etc/traefik
-      - ${SAGE_HOME}/vector/config:/etc/vector
     ports:
       - ${TS_IP}:9001:9001
     dns:
@@ -52,18 +51,6 @@ services:
       - 1.1.1.1
     command:
       - "--configFile=/etc/traefik/traefik.yml"
-    depends_on:
-      sage:
-        condition: service_healthy
-
-  vector:
-    image: timberio/vector:0.54.0-alpine
-    container_name: vector
-    restart: unless-stopped
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      - ${SAGE_HOME}/vector/config:/etc/vector:ro
-      - ${SAGE_HOME}/vector/buffer:/var/lib/vector
     depends_on:
       sage:
         condition: service_healthy
