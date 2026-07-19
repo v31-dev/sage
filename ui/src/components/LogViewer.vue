@@ -344,7 +344,7 @@ onUnmounted(() => {
         <template v-else>
           <!-- Desktop table (md+) -->
           <div class="hidden md:flex md:flex-col min-h-0 flex-1 border rounded-lg bg-card">
-            <Table>
+            <Table class="table-fixed">
               <TableHeader class="bg-muted/50">
                 <TableRow class="hover:bg-muted/50">
                   <TableHead v-for="column in columns" :key="column.key" :class="column.headerClass"
@@ -354,7 +354,7 @@ onUnmounted(() => {
               </TableHeader>
             </Table>
             <div ref="desktopViewport" class="flex-1 min-h-0 overflow-y-auto">
-              <table class="w-full caption-bottom text-sm">
+              <table class="w-full caption-bottom text-sm table-fixed">
                 <TableBody>
                   <TableRow
                     v-for="{ entry, parsed } in parsedLogs"
