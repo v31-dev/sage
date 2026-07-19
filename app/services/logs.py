@@ -16,6 +16,8 @@ from utils.logging import LOG_FORMAT, ContextVarFilter, SuppressTracebackFilter
 
 logger = logging.getLogger(__name__)
 
+_SYSTEM_LOG_CONTAINERS = {"sage", "cloudflared", "traefik", "glances", "vector"}
+
 
 class Logs(Base):
   """Per-container log shards (one SQLite DB each, with an FTS5 message index),
@@ -199,9 +201,9 @@ class Logs(Base):
   def cleanup(self, days: int = 7):
     cutoff = datetime.now() - timedelta(days=days)
 
-    # Drop shards for apps that no longer exist (logs keyed by app qualified_name;
-    # the manager's own `sage` shard is always kept).
-    live_containers = {"sage"} | {
+    # Drop shards for apps that no longer exist (logs keyed by app qualified_name);
+    # system containers (manager + worker edge stack) are always kept.
+    live_containers = _SYSTEM_LOG_CONTAINERS | {
         application.qualified_name
         for application in Application.select(Application, Project).join(Project)
     }
