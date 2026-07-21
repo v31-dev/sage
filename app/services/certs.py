@@ -26,6 +26,8 @@ DNS_PROPAGATION_TIMEOUT = 180
 DNS_POLL_INTERVAL = 5
 FINALIZE_TIMEOUT_SECONDS = 180
 CHALLENGE_COMMENT = "sage-acme-challenge"
+# Exponential backoff between cold-start issuance attempts
+STARTUP_RETRY_DELAYS = (60, 240, 960)
 
 
 class Certs(Base):
@@ -49,7 +51,29 @@ class Certs(Base):
     self.tls_context = None
 
     self.load()
-    self.ensure()
+
+    # Sage cannot serve :443 without a certificate, so a cold start retries with
+    # backoff before giving up. An existing valid certificate means this was only
+    # a renewal, so a failure is logged and left to the daily renewal op rather
+    # than holding startup — or failing it — for a certificate that still works.
+    for delay in (*STARTUP_RETRY_DELAYS, None):
+      try:
+        self.ensure()
+        break
+      except Exception as e:
+        if self.has_valid_certificates():
+          logger.error(
+              f"Certificate renewal failed during startup: {e}. Continuing on the current "
+              f"certificate (expires {self.expiry()}); the daily renewal will retry.",
+              exc_info=True)
+          break
+        # Let's Encrypt's Retry-After for a rate limit is measured in hours, so
+        # further attempts this session would fail regardless.
+        if delay is None or (isinstance(e, messages.Error) and e.code == "rateLimited"):
+          raise
+        logger.warning(
+            f"Certificate issuance failed during startup: {e}. Retrying in {delay}s.")
+        time.sleep(delay)
 
   def load(self):
     self.domain = Settings().get("cloudflare", "domain")
@@ -141,17 +165,26 @@ class Certs(Base):
     authoritative nameservers — the same place Let's Encrypt queries — so a
     challenge is never answered before it can be seen. Raises on timeout."""
     ns_ips = []
-    for ns in dns.resolver.resolve(self.domain, "NS"):
-      for record_type in ("A", "AAAA"):
-        try:
-          ns_ips.extend(ip.to_text() for ip in dns.resolver.resolve(ns.target, record_type))
-        except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN):
-          continue
+    try:
+      for ns in dns.resolver.resolve(self.domain, "NS"):
+        for record_type in ("A", "AAAA"):
+          try:
+            ns_ips.extend(ip.to_text() for ip in dns.resolver.resolve(ns.target, record_type))
+          except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN):
+            continue
+    except dns.exception.DNSException as e:
+      logger.warning(f"Could not resolve nameservers for {self.domain}: {e}.")
 
-    resolver = dns.resolver.Resolver()
     if ns_ips:
       resolver = dns.resolver.Resolver(configure=False)
       resolver.nameservers = ns_ips
+    else:
+      # The system resolver caches, so a negative answer can outlive the record
+      # and stall the poll until it times out.
+      logger.warning(
+          f"No authoritative nameservers resolved for {self.domain}; falling back to the "
+          "system resolver to observe DNS-01 records.")
+      resolver = dns.resolver.Resolver()
     resolver.lifetime = 10
 
     deadline = time.time() + DNS_PROPAGATION_TIMEOUT
@@ -235,14 +268,16 @@ class Certs(Base):
       return
 
     cert_hash = self.certificates_hash()
-    targets = []
-    for worker in Worker.select().where(Worker.online):
-      if force:
-        targets.append(worker)
-      else:
-        revisions = await self.manager.read_worker_revisions(worker.hostname)
-        if revisions.get("certs") != cert_hash:
-          targets.append(worker)
+    workers = list(Worker.select().where(Worker.online))
+    if force:
+      targets = workers
+    else:
+      revisions = await asyncio.gather(
+          *[self.manager.read_worker_revisions(worker.hostname) for worker in workers])
+      targets = [
+          worker for worker, revision in zip(workers, revisions)
+          if revision.get("certs") != cert_hash
+      ]
 
     # Workers are independent, so sync them concurrently: the asyncssh SFTP
     # leaves fan out and drain on the event loop.
