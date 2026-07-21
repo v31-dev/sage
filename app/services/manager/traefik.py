@@ -278,7 +278,8 @@ class TraefikMixin:
     for worker in online_workers:
       orphans = sorted(
           name for name in worker_files[worker.hostname]
-          if name.endswith(".yml") and name != "config.yml"  # worker's own config
+          if name.endswith(".yml")
+          and name not in ("config.yml", "certs.yml")        # worker's own infra configs
           and re.fullmatch(r"[a-z0-9.-]+", name)             # rm-safe names only
           and not any(name.startswith(prefix) for prefix in live_prefixes)
       )
