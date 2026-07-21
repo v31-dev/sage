@@ -243,6 +243,14 @@ class WorkersMixin:
             {"IP": self.tailscale.ip(), "HOSTNAME": worker.hostname},
         )
 
+      # Land the cert before any container start/restart below
+      repaired = []
+      if (self.certs.has_valid_certificates()
+              and revisions.get("certs") != self.certs.certificates_hash()):
+        await self.certs.sync_certificates_to_worker(worker)
+        repaired.append("certificates")
+
+      if infra_stale:
         # Start containers
         await self.tailscale.exec_command(
             worker.hostname,
@@ -266,12 +274,6 @@ class WorkersMixin:
 
       Worker.update(online=True).where(
           Worker.hostname == worker.hostname).execute()
-
-      repaired = []
-      if (self.certs.has_valid_certificates()
-              and revisions.get("certs") != self.certs.certificates_hash()):
-        await self.certs.sync_certificates_to_worker(worker)
-        repaired.append("certificates")
 
       # Request a resync for exactly the applications whose routing stamp on
       # this worker is stale (covers hosted and mesh files alike).
