@@ -250,6 +250,13 @@ class WorkersMixin:
             timeout=300,
         )
 
+        # Restart traefik to pick up static config changes
+        await self.tailscale.exec_command(
+            worker.hostname,
+            f"docker compose -f {self.worker_home_dir}/docker-compose.yml restart traefik",
+            timeout=60,
+        )
+
         # Restart vector to pick up config changes
         await self.tailscale.exec_command(
             worker.hostname,
