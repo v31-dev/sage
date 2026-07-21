@@ -7,7 +7,7 @@ from utils.common import get_env
 from utils.executor import run_in_executor_with_context
 from utils.logging import TaskFailed
 
-from ._common import app_dir, content_hash, routing_input_hash
+from ._common import WORKER_INFRA_TEMPLATES, app_dir, content_hash, routing_input_hash
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +80,7 @@ class WorkersMixin:
     Computed from current truth on demand — the only stored copy is the
     worker-side `revisions/infra` stamp."""
     return content_hash({
+        "templates": WORKER_INFRA_TEMPLATES,
         "version": self.version,
         "domain": Settings().get("cloudflare", "domain"),
     })

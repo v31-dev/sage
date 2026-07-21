@@ -263,14 +263,32 @@ It is deliberately **not** called when routing is unaffected: adding a container
 whatever applied the artifact, and deliberately **outside** `traefik/dynamic/`
 (which Traefik watches and the reconcile scan owns). All hashes are computed
 from current truth on demand; nothing is persisted manager-side. The stamps:
-`infra` — hash of (sage version, domain), written as the **final
-step** of `setup_worker` so it is a commit marker (an interrupted setup leaves
-the old stamp and gets retried); `certs` — hash of the manager's issued PEM cert
-chain, stamped by the per-worker cert sync; one per application —
-`routing_input_hash` over domains, tags, and the active container set (the
-receiving-worker set is deliberately excluded, so one worker's outage never
-invalidates the others' stamps), stamped by the domains sync on each worker it
-wrote to. The fourth stamp is the app compose label `sage.deployed_at`
+`infra` — hash of (worker infra template contents, sage version, domain), written
+as the **final step** of `setup_worker` so it is a commit marker (an interrupted
+setup leaves the old stamp and gets retried); `certs` — hash of the manager's
+issued PEM cert chain, stamped by the per-worker cert sync; one per application —
+`routing_input_hash` over the per-app routing template contents, domains, tags,
+and the active container set (the receiving-worker set is deliberately excluded,
+so one worker's outage never invalidates the others' stamps), stamped by the
+domains sync on each worker it wrote to.
+
+Both hashes fold in a digest of the **template files themselves**
+(`templates_digest` in `services/manager/_common.py`, computed once at import
+since templates ship inside the image and cannot change under a running manager).
+Without it, editing a template moved no hash, so `setup_worker` skipped the sync
+and workers kept the old file until some unrelated input happened to change —
+convergence that every other input gets automatically. Two sets are hashed
+separately so an infra edit and a routing edit each invalidate only their own
+stamps: the infra set is what `setup_worker` pushes behind the `infra` stamp
+(`docker-compose.yml`, `worker.env`, `traefik/traefik.yml`, `traefik/config.yml`,
+`traefik/certs.yml`, `vector/vector.yml`), the routing set is the
+`service_*.yml` pair-per-type that the domains sync renders. Templates pushed
+unconditionally on every run — the revision-stamp writer, and the
+per-application compose/backup/restore scripts — are excluded by design: they
+cannot drift, so hashing them would only cause spurious resyncs. **Editing a
+template in either set means every worker (or every app) resyncs once on the
+next deploy** — that is the intended repair, and it is the mechanism that would
+have caught the retired `certResolver` block surviving on migrating workers. The fourth stamp is the app compose label `sage.deployed_at`
 (mirrors `Application.deployed_at`, both written from the same deploy):
 `sync_application_status` reads it in its existing `docker ps` probe and
 trusts `running` only when the label equals the app's current stamp — **no
