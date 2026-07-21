@@ -1,6 +1,5 @@
 import asyncio
 import logging
-from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -10,7 +9,7 @@ from botocore.config import Config
 from botocore.exceptions import ClientError, NoCredentialsError
 
 from services.base import Base
-from services.settings import Settings
+from services.settings import SETTING_DEFINITIONS, Settings
 
 logger = logging.getLogger(__name__)
 
@@ -36,8 +35,8 @@ class S3(Base):
 
   def check_config(self, config: dict):
     try:
-      required_keys = ["access_key", "secret_key", "bucket", "endpoint", "path"]
-      if not all(config.get(key) for key in required_keys):
+      # S3 needs every declared field, so a new one is picked up here for free.
+      if not all(config.get(key) for key in SETTING_DEFINITIONS["s3"]):
         return False
 
       client_kwargs = self._get_client_kwargs(config)
@@ -214,7 +213,7 @@ class S3(Base):
           await asyncio.sleep(wait_time)
         else:
           raise Exception(f"Failed to delete from S3 after {max_retries} attempts: {e}")
-      except Exception as e:
+      except Exception:
         if attempt < max_retries - 1:
           wait_time = 2 ** attempt
           await asyncio.sleep(wait_time)

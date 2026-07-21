@@ -65,6 +65,17 @@ class Cloudflare(Base):
       logger.warning(f"Cloudflare zone not found for domain {domain}")
       valid = False
 
+    # Validate Cloudflare Account ID access to tunnels
+    if not account_id:
+      logger.warning("Cloudflare account ID is empty")
+      valid = False
+    else:
+      try:
+        client.zero_trust.tunnels.cloudflared.list(account_id=account_id)
+      except Exception as e:
+        logger.warning(f"Cloudflare account ID {account_id} cannot access tunnels: {e}")
+        valid = False
+
     return valid
 
   def get_dns_records(self):

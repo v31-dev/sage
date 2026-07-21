@@ -37,10 +37,6 @@ class Notifications(Base):
     with self.lock:
       self.notifications_config = Settings().get("notifications")
 
-  def get_notifications_config(self):
-    with self.lock:
-      return dict(self.notifications_config)
-
   def get_notification_value(self, key: str, default=None):
     with self.lock:
       return self.notifications_config.get(key, default)
