@@ -46,9 +46,6 @@ class CoreMixin:
     notification = Notification.create(content=message, type=type, link=link)
     submit_with_context(NOTIFICATIONS_EXECUTOR, Notifications().dispatch, notification)
 
-  def _summary_notification_dicts(self, query, limit: int):
-    return list(query.order_by(Notification.created_at.desc()).limit(limit).dicts())
-
   def _status_counts(self, model):
     rows = (
         model.select(model.status, fn.COUNT(model.id).alias("count"))
@@ -142,7 +139,6 @@ class CoreMixin:
 
     error_count = summary["critical_error_count_last_24h"]
     warning_count = summary["critical_warning_count_last_24h"]
-    critical_events = summary["critical_events_last_24h"]
 
     lines = [
         f"Daily system summary ({summary['generated_at'].strftime('%Y-%m-%d %H:%M UTC')})",
