@@ -82,7 +82,6 @@ class WorkersMixin:
     return content_hash({
         "version": self.version,
         "domain": Settings().get("cloudflare", "domain"),
-        "admin_email": Settings().get("cloudflare", "admin_email"),
     })
 
   async def read_worker_revisions(self, hostname: str) -> dict:
@@ -201,7 +200,6 @@ class WorkersMixin:
       )
 
       if infra_stale:
-        admin_email = Settings().get("cloudflare", "admin_email")
         tunnel = await run_in_executor_with_context(self.cloudflare.get_tunnel_token)
 
         # Sync files
@@ -221,19 +219,22 @@ class WorkersMixin:
                 "TUNNEL_TOKEN": tunnel.token,
             },
         )
-        # Traefik restart on worker not required because admin_email is only used in the static config for ACME registration,
-        # which is only run on the manager.
         await self.tailscale.sync_file(
             worker.hostname,
             app_dir / "templates/worker/traefik/traefik.yml",
             f"{self.worker_home_dir}/traefik/traefik.yml",
-            {"ADMIN_EMAIL": admin_email},
         )
         await self.tailscale.sync_file(
             worker.hostname,
             app_dir / "templates/worker/traefik/config.yml",
             f"{self.worker_home_dir}/traefik/dynamic/config.yml",
             {"DOMAIN": domain, "HOSTNAME": worker.hostname},
+        )
+        # File-provider TLS config pointing at the PEM the manager syncs below.
+        await self.tailscale.sync_file(
+            worker.hostname,
+            app_dir / "templates/worker/traefik/certs.yml",
+            f"{self.worker_home_dir}/traefik/dynamic/certs.yml",
         )
         await self.tailscale.sync_file(
             worker.hostname,
@@ -260,9 +261,9 @@ class WorkersMixin:
           Worker.hostname == worker.hostname).execute()
 
       repaired = []
-      if (self.traefik.has_valid_certificates()
-              and revisions.get("certs") != self.traefik.certificates_hash()):
-        await self.traefik.sync_certificates_to_worker(worker)
+      if (self.certs.has_valid_certificates()
+              and revisions.get("certs") != self.certs.certificates_hash()):
+        await self.certs.sync_certificates_to_worker(worker)
         repaired.append("certificates")
 
       # Request a resync for exactly the applications whose routing stamp on

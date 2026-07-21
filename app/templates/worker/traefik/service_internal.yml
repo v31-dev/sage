@@ -11,8 +11,7 @@ http:
         - ${SERVICE}_${SUBDOMAIN}_internal_x_tag_header
       priority: 400
       service: ping@internal
-      tls:
-        certResolver: cloudflare
+      tls: {}
 
     # Entrypoint via Tailscale
     ${SERVICE}_${SUBDOMAIN}_internal:
@@ -24,8 +23,7 @@ http:
         - tailscale-only
         - mark-as-hopped
       service: ${SERVICE}_${SUBDOMAIN}_internal
-      tls:
-        certResolver: cloudflare
+      tls: {}
 
     # Final Mesh Entrypoint (for load balancing)
     ${SERVICE}_${SUBDOMAIN}_mesh_internal:

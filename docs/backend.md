@@ -60,8 +60,10 @@ Most high-level backend behavior ultimately flows through this service, and almo
   - Cloudflare DNS and tunnel management
 - `services/tailscale.py`
   - Tailscale status, SSH command execution, file sync
-- `services/traefik.py`
-  - manager-side and worker-side Traefik config generation and certificate sync
+- `services/certs.py`
+  - in-process ACME issuance (Let's Encrypt DNS-01), PEM ownership, the `:443` cert hot-reload, and cert sync to workers
+- `services/manager/traefik.py`
+  - worker-side Traefik routing-config generation (mixin)
 - `services/metrics.py`
   - metrics collection plus per-container log storage and search
 - `services/s3.py`
@@ -183,7 +185,7 @@ Every queued operation, its scope, where it is enqueued from, its lane pool, and
 | `Metrics.cleanup` | metrics | cron daily 04:00 | metrics | REPLACE |
 | `Logs.cleanup` | common | cron daily 04:00 | common | REPLACE |
 | `cleanup` | platform | cron daily 04:00 | platform | REPLACE |
-| `sync_traefik_certificates` | platform, app | cron weekly (Mon 03:00) | app | REPLACE |
+| `renew_certificates` | platform, app | cron daily 03:00 | platform | REPLACE |
 
 **Route-driven (HTTP → `add_task`)**
 
@@ -230,7 +232,7 @@ Cron cadence convention: **≤ 1m → `DEDUP`** (a high-frequency reconciler ski
 
 **Interrupted-operation recovery.** A busy status (`deploying`/`stopping`/`backup`/`restoring`) is only ever written by a task while it holds that app's scope — and `sync_application_status` holds that same scope while it runs, so by mutual exclusion any busy status it observes has no owning operation left: the mark of an interrupted task (crash, plain container restart, cancelled coroutine). Instead of skipping such apps, the sync resets the stuck app/containers to `error` (with a notification) and then converges them against real `docker ps` state in the same run. This is why no boot-time status reset exists: the minutely sync covers startup wedges and mid-flight loss with one mechanism. Detection defers while a broad `app`-scope task runs (the per-app syncs queue behind it) and resumes when it finishes. Deploy/stop container children additionally run their whole body inside their try block so an early failure can never kill the parent's gather and leave detached siblings running.
 
-Worker convergence (`setup_worker`, reached only through `sync_workers`) runs on the **`platform` scope only** — it does not barrier app work, so the 30-second worker poll is never starved by long builds and worker drift is detected (and converged) within ~30s regardless of app activity. This is safe because app tasks already treat workers as unreliable — a worker can vanish mid-exec regardless of scheduling: deploy/stop/delete/backup **fast-fail on an offline-flagged worker**, any per-exec failure lands the container in `error`, and the status syncs converge from there. The residual race — a deploy targeting a worker whose setup is still mid-flight — fails loudly and converges identically, which is the same outcome as deploying to an offline worker (already possible at any time; placement doesn't require `online`). Tasks that mutate fleet-wide state keep the broad `{platform, app}` barrier: `remove_worker` (deletes the row), `refresh_traefik` (rewrites manager + worker traefik config), platform backup/restore, and the weekly cert sync — the latter holds `{platform, app}` so it also serializes with `setup_worker`'s per-worker cert sync (both stop/start a worker's traefik to load acme.json). The cert sync's wait-for-provisioning loop (up to 10 min holding its scopes) stays accepted: it only spins while the manager's acme.json is invalid, a window in which routing is broken platform-wide anyway, and the sync must restart each worker's traefik to load new certs — deferring would fragment the disruption, not avoid it. There is deliberately no per-worker scope dimension; at ≤10 workers it isn't worth the fragility.
+Worker convergence (`setup_worker`, reached only through `sync_workers`) runs on the **`platform` scope only** — it does not barrier app work, so the 30-second worker poll is never starved by long builds and worker drift is detected (and converged) within ~30s regardless of app activity. This is safe because app tasks already treat workers as unreliable — a worker can vanish mid-exec regardless of scheduling: deploy/stop/delete/backup **fast-fail on an offline-flagged worker**, any per-exec failure lands the container in `error`, and the status syncs converge from there. The residual race — a deploy targeting a worker whose setup is still mid-flight — fails loudly and converges identically, which is the same outcome as deploying to an offline worker (already possible at any time; placement doesn't require `online`). Tasks that mutate fleet-wide state keep the broad `{platform, app}` barrier: `remove_worker` (deletes the row), `refresh_traefik` (re-issues the cert and rewrites worker traefik config on a domain change), platform backup/restore, and the daily `renew_certificates` — the latter holds `{platform, app}` so it also serializes with `setup_worker`'s per-worker cert sync. The manager now issues the wildcard cert in-process (`Certs`, via ACME DNS-01) before the sync runs, so there is no wait-for-provisioning spin; the cert reaches a worker as PEM plus a re-written `traefik/dynamic/certs.yml`, whose file-provider `watch` reloads it with no traefik restart. There is deliberately no per-worker scope dimension; at ≤10 workers it isn't worth the fragility.
 
 ## Traefik Domain Sync
 
@@ -261,10 +263,10 @@ It is deliberately **not** called when routing is unaffected: adding a container
 whatever applied the artifact, and deliberately **outside** `traefik/dynamic/`
 (which Traefik watches and the reconcile scan owns). All hashes are computed
 from current truth on demand; nothing is persisted manager-side. The stamps:
-`infra` — hash of (sage version, domain, admin email), written as the **final
+`infra` — hash of (sage version, domain), written as the **final
 step** of `setup_worker` so it is a commit marker (an interrupted setup leaves
-the old stamp and gets retried); `certs` — hash of the manager's acme.json,
-stamped by the per-worker cert sync; one per application —
+the old stamp and gets retried); `certs` — hash of the manager's issued PEM cert
+chain, stamped by the per-worker cert sync; one per application —
 `routing_input_hash` over domains, tags, and the active container set (the
 receiving-worker set is deliberately excluded, so one worker's outage never
 invalidates the others' stamps), stamped by the domains sync on each worker it
@@ -357,19 +359,16 @@ Platform settings (`s3`, `notifications`, `cloudflare`) live in the `Setting` ta
 
 UI updates in `routes/settings.py` follow the same pattern: validate the merged value, persist via `Settings().set(...)`, then reload the consuming service (`S3().load()`, `Notifications().load_notifications_config()`, `Cloudflare().load()`).
 
-Cloudflare changes additionally enqueue the `refresh_traefik` operation (in `services/manager/traefik.py`):
+The manager owns ACME in-process (`Certs`), and the settings route reloads `Certs` (domain/admin_email) synchronously like the other singletons. Only a **domain** change enqueues the `refresh_traefik` operation (in `services/manager/traefik.py`) — email/token changes are fully handled by the synchronous reloads:
 
-- `admin_email` change — Manager Traefik static config rewritten; Manager Traefik restarted; worker Traefik configs resynced and restarted.
-- `domain` change — additionally clears `acme.json` so Manager Traefik re-issues certs, then syncs the bundle to workers and updates worker DNS records.
-- `api_token` change — token file at `/etc/traefik/cloudflare_dns_api_token` is rewritten; Manager Traefik restarted (workers untouched).
-
-The token reaches Traefik via `CLOUDFLARE_DNS_API_TOKEN_FILE`, so rotation only needs a container restart instead of a compose recreate.
+- `admin_email` change — `Certs().load()` picks it up; the new contact applies on the next natural renewal (no re-issuance, no worker churn, no task).
+- `domain` change — the new SAN set means a new cert: `Certs` re-issues via ACME DNS-01, the local `:443` cert is hot-reloaded in place, the PEM is synced to workers, worker `config.yml` + DNS records are updated (file-provider reload, no worker traefik restart), and every app's routing is resynced.
+- `api_token` change — the manager's `Cloudflare` client (used for the DNS-01 challenge and DNS records) is reloaded by the settings route; nothing else to do (workers never held the token).
 
 ## Templates
 
 `app/templates/` contains generated runtime inputs for:
 
-- manager Traefik config
 - worker compose files
 - worker Traefik config
 - worker Vector config

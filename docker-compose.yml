@@ -25,8 +25,8 @@ services:
       - ${SAGE_HOME}/sage:/app/data
       - /var/run/tailscale/tailscaled.sock:/var/run/tailscale/tailscaled.sock:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
-      - ${SAGE_HOME}/traefik:/etc/traefik
     ports:
+      - ${TS_IP}:443:443
       - ${TS_IP}:9001:9001
     dns:
       - 100.100.100.100
@@ -35,22 +35,3 @@ services:
     healthcheck:
       test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:9000/api\").getcode() == 200 or exit(1)'"]
       start_period: 10s
-  traefik:
-    image: traefik:v3.6.7
-    container_name: traefik
-    restart: unless-stopped
-    environment:
-      - CLOUDFLARE_DNS_API_TOKEN_FILE=/etc/traefik/cloudflare_dns_api_token
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      - ${SAGE_HOME}/traefik:/etc/traefik
-    ports:
-      - ${TS_IP}:443:443
-    dns:
-      - 8.8.8.8
-      - 1.1.1.1
-    command:
-      - "--configFile=/etc/traefik/traefik.yml"
-    depends_on:
-      sage:
-        condition: service_healthy

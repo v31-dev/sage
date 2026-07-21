@@ -25,69 +25,53 @@ class TraefikMixin:
         quiet=True,
     )
 
-  async def sync_traefik_certificates(self):
-    await self.traefik.sync_certificates_to_workers()
+  async def renew_certificates(self):
+    """Issue the wildcard cert if it is missing or within the renewal window,
+    hot-reload the local :443 server in place, then push the cert to any worker
+    whose stamp is stale."""
+    reissued = await run_in_executor_with_context(self.certs.ensure)
+    if reissued:
+      self.certs.reload_local_tls()
+      self.notify(
+          f"Renewed wildcard certificate for {self.certs.domain}; expires {self.certs.expiry()}.",
+          "success")
+    await self.certs.sync_certificates_to_workers()
 
-  async def refresh_traefik(self, admin_email_changed=False, domain_changed=False, api_token_changed=False):
-    # No updates
-    if not admin_email_changed and not domain_changed and not api_token_changed:
-      return
-
+  async def refresh_traefik(self):
+    """Ensure the wildcard cert covers the current domain (re-issuing when a
+    domain change left the existing cert stale) and resync everything that
+    depends on it — the local :443 server, each worker's PEM + Traefik config,
+    the `*.int` DNS records, and app routing. Triggered by a domain change or a
+    manual resync; email/token changes are handled by the settings route's
+    synchronous `Certs().load()` / `Cloudflare().load()` and need no task."""
     try:
-      # Refresh Manager Traefik static config (ADMIN_EMAIL), dynamic config (DOMAIN),
-      # and the Cloudflare DNS API token file, then restart the container so the
-      # static config and token are re-read by lego at provider init.
-      self.traefik.load(clear_certificates=domain_changed)
-      await run_in_executor_with_context(self.restart, traefik=True)
-
-      # Token-only rotations don't need worker churn — workers don't run ACME,
-      # they only receive synced acme.json from the manager.
-      if not admin_email_changed and not domain_changed:
-        return
+      # A domain change makes the old cert stale (new domain isn't in its SANs)
+      if await run_in_executor_with_context(self.certs.ensure):
+        self.certs.reload_local_tls()
 
       domain = Settings().get("cloudflare", "domain")
-      admin_email = Settings().get("cloudflare", "admin_email")
+      await self.certs.sync_certificates_to_workers(force=True)
 
-      await self.traefik.sync_certificates_to_workers()
+      # Worker Traefik picks up config.yml from its watched dynamic dir (file
+      # provider), so no restart is needed.
+      for worker in Worker.select().where(Worker.online):
+        await self.tailscale.sync_file(
+            worker.hostname,
+            app_dir / "templates/worker/traefik/config.yml",
+            f"{self.worker_home_dir}/traefik/dynamic/config.yml",
+            {"DOMAIN": domain, "HOSTNAME": worker.hostname},
+        )
+        await run_in_executor_with_context(
+            self.cloudflare.create_dns_record,
+            f"*.int.{domain}",
+            worker.ip,
+            comment=f"sage-worker-{worker.hostname}",
+            type="A",
+        )
 
-      # Update Worker Traefik config
-      online_workers = list(Worker.select().where(Worker.online))
-      for worker in online_workers:
-        if admin_email_changed:
-          await self.tailscale.sync_file(
-              worker.hostname,
-              app_dir / "templates/worker/traefik/traefik.yml",
-              f"{self.worker_home_dir}/traefik/traefik.yml",
-              {"ADMIN_EMAIL": admin_email},
-          )
-
-        if domain_changed:
-          await self.tailscale.sync_file(
-              worker.hostname,
-              app_dir / "templates/worker/traefik/config.yml",
-              f"{self.worker_home_dir}/traefik/dynamic/config.yml",
-              {"DOMAIN": domain, "HOSTNAME": worker.hostname},
-          )
-
-          await run_in_executor_with_context(
-              self.cloudflare.create_dns_record,
-              f"*.int.{domain}",
-              worker.ip,
-              comment=f"sage-worker-{worker.hostname}",
-              type="A",
-          )
-
-        if admin_email_changed or domain_changed:
-          await self.tailscale.exec_command(
-              worker.hostname,
-              f"docker compose -f {self.worker_home_dir}/docker-compose.yml restart traefik",
-              timeout=60,
-          )
-
-      # Trigger a Traefik resync for every application so the new domain lands in the routing rules.
-      if domain_changed:
-        for application in Application.select():
-          self.request_application_traefik_sync(application)
+      # Resync every application so the new domain lands in the routing rules.
+      for application in Application.select():
+        self.request_application_traefik_sync(application)
     except Exception as e:
       self.notify(
           f"Traefik refresh failed part-way: {e}. Run 'Resync Traefik' in Settings "

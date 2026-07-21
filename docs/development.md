@@ -44,14 +44,11 @@ Development compose:
 docker compose -f docker-compose.yml -f docker-compose.override.yml up -d
 ```
 
-The main compose stack runs:
+The main compose stack runs a single manager container:
 
-- `sage`
-- `traefik`
-- `vector`
-- `glances`
+- `sage` — the API/UI, the `:443` TLS endpoint, in-process ACME, metrics, and log capture
 
-The development override also adds a separate `ui` service and backend debug configuration.
+Workers run their own edge stack (`cloudflared`, `traefik`, `vector`, `glances`), bootstrapped remotely. The development override also adds a separate `ui` service and backend debug configuration.
 
 ## Backend Commands
 

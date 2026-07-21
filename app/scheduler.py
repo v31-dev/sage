@@ -138,11 +138,11 @@ async def cleanup():
   )
 
 
-async def traefik_sync_certs():
+async def renew_certificates():
   Manager().add_task(
-      task=Manager().sync_traefik_certificates,
+      task=Manager().renew_certificates,
       scopes={"platform", "app"},
-      executor="app",
+      executor="platform",
       on_conflict=OnConflict.REPLACE,
   )
 
@@ -159,7 +159,7 @@ _JOBS = [
     (backup_database, CronTrigger.from_crontab("0 */6 * * *")),
     (send_summary_notification, CronTrigger.from_crontab("0 8 * * *")),
     (cleanup, CronTrigger.from_crontab("0 4 * * *")),
-    (traefik_sync_certs, CronTrigger.from_crontab("0 3 * * 0")),
+    (renew_certificates, CronTrigger.from_crontab("0 3 * * *")),
 ]
 
 

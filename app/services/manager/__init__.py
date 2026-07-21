@@ -1,6 +1,7 @@
 import logging
 
 from services.base import Base
+from services.certs import Certs
 from services.cloudflare import Cloudflare
 from services.db import Database
 from services.logs import Logs
@@ -9,7 +10,6 @@ from services.notification import Notifications
 from services.s3 import S3
 from services.settings import Settings
 from services.tailscale import Tailscale
-from services.traefik import Traefik
 from utils.executor import APP_EXECUTOR, COMMON_EXECUTOR, METRICS_EXECUTOR, PLATFORM_EXECUTOR
 from utils.queue import TaskQueue
 
@@ -70,8 +70,8 @@ class Manager(
       Notifications()
       Metrics()
       self.tailscale = Tailscale()
-      self.traefik = Traefik(self)
       self.cloudflare = Cloudflare()
+      self.certs = Certs(self)
       self.s3 = S3()
 
       self.notify("Manager started.")

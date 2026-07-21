@@ -152,14 +152,9 @@ class PlatformMixin:
         self.notify(f"Failed to create database backup: {e}", "error")
         raise Exception(f"Failed to create database backup: {e}")
 
-  def restart(self, all: bool = False, sage: bool = False, traefik: bool = False):
+  def restart(self):
     client = docker.from_env()
-
-    if all or traefik:
-      client.containers.get("traefik").restart()
-
-    if all or sage:
-      client.containers.get("sage").restart()
+    client.containers.get("sage").restart()
 
   async def restore_database_from_s3(self, s3_path: str):
     """
