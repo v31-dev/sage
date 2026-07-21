@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import re
@@ -35,7 +36,7 @@ class TraefikMixin:
       self.notify(
           f"Renewed wildcard certificate for {self.certs.domain}; expires {self.certs.expiry()}.",
           "success")
-    await self.certs.sync_certificates_to_workers()
+    await self.sync_certificates_to_workers()
 
   async def refresh_traefik(self):
     """Ensure the wildcard cert covers the current domain (re-issuing when a
@@ -50,7 +51,7 @@ class TraefikMixin:
         self.certs.reload_local_tls()
 
       domain = Settings().get("cloudflare", "domain")
-      await self.certs.sync_certificates_to_workers(force=True)
+      await self.sync_certificates_to_workers(force=True)
 
       # Worker Traefik picks up config.yml from its watched dynamic dir (file
       # provider), so no restart is needed.
@@ -78,6 +79,52 @@ class TraefikMixin:
           "to bring the manager and workers back in sync.",
           "error")
       raise
+
+  async def sync_certificates_to_workers(self, force: bool = False):
+    """Push the wildcard cert to every online worker whose stamp is stale, or to
+    all of them when forced."""
+    if not self.certs.has_valid_certificates():
+      self.notify(
+          "No valid certificate available; skipping certificate sync to workers.",
+          type="error",
+      )
+      return
+
+    cert_hash = self.certs.certificates_hash()
+    workers = list(Worker.select().where(Worker.online))
+    if force:
+      targets = workers
+    else:
+      revisions = await asyncio.gather(
+          *[self.read_worker_revisions(worker.hostname) for worker in workers])
+      targets = [
+          worker for worker, revision in zip(workers, revisions)
+          if revision.get("certs") != cert_hash
+      ]
+
+    # Workers are independent, so sync them concurrently: the asyncssh SFTP
+    # leaves fan out and drain on the event loop.
+    await asyncio.gather(
+        *[self.sync_certificates_to_worker(worker) for worker in targets],
+        return_exceptions=False,
+    )
+
+  async def sync_certificates_to_worker(self, worker: Worker):
+    traefik_dir = f"{self.worker_home_dir}/traefik"
+    await self.tailscale.sync_file(
+        worker.hostname, self.certs.fullchain_path, f"{traefik_dir}/certs/fullchain.pem")
+    await self.tailscale.sync_file(
+        worker.hostname, self.certs.key_path, f"{traefik_dir}/certs/key.pem")
+    # Re-write the watched dynamic cert config so Traefik's file-provider watch
+    # fires and reloads the new PEM; overwriting only the cert files is not a
+    # reliable reload trigger.
+    await self.tailscale.sync_file(
+        worker.hostname,
+        app_dir / "templates/worker/traefik/certs.yml",
+        f"{traefik_dir}/dynamic/certs.yml")
+    await self.write_worker_revision(
+        worker.hostname, "certs", self.certs.certificates_hash() or "")
+    logger.info(f"Synced certificate to worker {worker.hostname}.")
 
   async def sync_application_traefik_domains_config(self, application_id: int):
     """

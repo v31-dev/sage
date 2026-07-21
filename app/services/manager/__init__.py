@@ -71,7 +71,7 @@ class Manager(
       Metrics()
       self.tailscale = Tailscale()
       self.cloudflare = Cloudflare()
-      self.certs = Certs(self)
+      self.certs = Certs()
       self.s3 = S3()
 
       self.notify("Manager started.")

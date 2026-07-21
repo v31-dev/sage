@@ -248,7 +248,7 @@ class WorkersMixin:
       repaired = []
       if (self.certs.has_valid_certificates()
               and revisions.get("certs") != self.certs.certificates_hash()):
-        await self.certs.sync_certificates_to_worker(worker)
+        await self.sync_certificates_to_worker(worker)
         repaired.append("certificates")
 
       if infra_stale:

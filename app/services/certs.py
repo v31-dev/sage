@@ -1,4 +1,3 @@
-import asyncio
 import hashlib
 import logging
 import time
@@ -14,10 +13,9 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 from services.base import Base
-from services.db import Worker
+from services.cloudflare import Cloudflare
 from services.settings import Settings
 
-app_dir = Path(__file__).parent.parent
 logger = logging.getLogger(__name__)
 
 ACME_DIRECTORY = "https://acme-v02.api.letsencrypt.org/directory"
@@ -33,12 +31,11 @@ STARTUP_RETRY_DELAYS = (60, 240, 960)
 class Certs(Base):
   """Owns the wildcard TLS certificate: in-process ACME issuance (Let's Encrypt
   DNS-01 via the Cloudflare client), PEM storage sage owns directly, renewal,
-  the :443 in-place cert hot-reload, and delivery to worker Traefiks."""
+  and the :443 in-place cert hot-reload."""
 
-  def __init__(self, manager):
+  def __init__(self):
     super().__init__()
 
-    self.manager = manager
     self.cert_dir = Path("/app/data/certs")
     self.cert_dir.mkdir(parents=True, exist_ok=True)
     self.fullchain_path = self.cert_dir / "fullchain.pem"
@@ -134,8 +131,8 @@ class Certs(Base):
         challenge = next(c for c in authz.body.challenges if isinstance(c.chall, challenges.DNS01))
         response, validation = challenge.chall.response_and_validation(account_key)
         record_name = challenge.chall.validation_domain_name(authz.body.identifier.value)
-        self.manager.cloudflare.delete_dns_records(record_name, type="TXT")
-        self.manager.cloudflare.create_dns_record(
+        Cloudflare().delete_dns_records(record_name, type="TXT")
+        Cloudflare().create_dns_record(
             name=record_name, content=validation, comment=CHALLENGE_COMMENT, type="TXT")
         published.append((record_name, validation, challenge, response))
 
@@ -151,7 +148,7 @@ class Certs(Base):
     finally:
       for record_name, *_ in published:
         try:
-          self.manager.cloudflare.delete_dns_records(record_name, type="TXT")
+          Cloudflare().delete_dns_records(record_name, type="TXT")
         except Exception as e:
           logger.warning(f"Failed to remove ACME challenge record {record_name}: {e}")
 
@@ -258,47 +255,3 @@ class Certs(Base):
       return
     self.tls_context.load_cert_chain(self.fullchain_path, self.key_path)
     logger.info("Reloaded :443 TLS certificate in place.")
-
-  async def sync_certificates_to_workers(self, force: bool = False):
-    if not self.has_valid_certificates():
-      self.manager.notify(
-          "No valid certificate available; skipping certificate sync to workers.",
-          type="error",
-      )
-      return
-
-    cert_hash = self.certificates_hash()
-    workers = list(Worker.select().where(Worker.online))
-    if force:
-      targets = workers
-    else:
-      revisions = await asyncio.gather(
-          *[self.manager.read_worker_revisions(worker.hostname) for worker in workers])
-      targets = [
-          worker for worker, revision in zip(workers, revisions)
-          if revision.get("certs") != cert_hash
-      ]
-
-    # Workers are independent, so sync them concurrently: the asyncssh SFTP
-    # leaves fan out and drain on the event loop.
-    await asyncio.gather(
-        *[self.sync_certificates_to_worker(worker) for worker in targets],
-        return_exceptions=False,
-    )
-
-  async def sync_certificates_to_worker(self, worker: Worker):
-    traefik_dir = f"{self.manager.worker_home_dir}/traefik"
-    await self.manager.tailscale.sync_file(
-        worker.hostname, self.fullchain_path, f"{traefik_dir}/certs/fullchain.pem")
-    await self.manager.tailscale.sync_file(
-        worker.hostname, self.key_path, f"{traefik_dir}/certs/key.pem")
-    # Re-write the watched dynamic cert config so Traefik's file-provider watch
-    # fires and reloads the new PEM; overwriting only the cert files is not a
-    # reliable reload trigger.
-    await self.manager.tailscale.sync_file(
-        worker.hostname,
-        app_dir / "templates/worker/traefik/certs.yml",
-        f"{traefik_dir}/dynamic/certs.yml")
-    await self.manager.write_worker_revision(
-        worker.hostname, "certs", self.certificates_hash() or "")
-    logger.info(f"Synced certificate to worker {worker.hostname}.")
