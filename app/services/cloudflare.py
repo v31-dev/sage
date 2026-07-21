@@ -80,6 +80,16 @@ class Cloudflare(Base):
     else:
       logger.info(f"No DNS record found for {name} with content {content} to delete.")
 
+  def delete_dns_records(self, name, type=None):
+    """Delete every record at `name` (optionally filtered by type)."""
+    deleted = 0
+    for record in self.get_dns_records():
+      if record.name == name and (type is None or record.type == type):
+        self.client.dns.records.delete(zone_id=self.zone_id, dns_record_id=record.id)
+        deleted += 1
+    if deleted:
+      logger.info(f"Deleted {deleted} record(s) at {name}.")
+
   def create_dns_record(self, name, content, comment=None, *args, **kwargs):
     """
     Create a DNS record if it doesn't already exist.

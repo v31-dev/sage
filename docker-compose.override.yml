@@ -8,8 +8,22 @@ services:
     environment:
       - ENV=development
       - DEBUGPY_LISTEN=0.0.0.0:5678
-    ports:
-      - "5678:5678"  # debugpy port
+    # Fail fast in dev: a failed init (e.g. ACME) should stop, not restart-loop
+    # and hammer Let's Encrypt rate limits.
+    restart: "no"
+    # Dev Traefik owns :443, so replace (not merge) sage's ports to drop its own
+    # :443 mapping and free the host port.
+    ports: !override
+      - "5678:5678"  # debugpy
+      - "${TS_IP}:9001:9001"  # worker log/metric ingestion
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.sage-api.rule=Host(`sage.core.${DOMAIN}`) && PathPrefix(`/api`)"
+      - "traefik.http.routers.sage-api.entrypoints=websecure"
+      - "traefik.http.routers.sage-api.tls=true"
+      - "traefik.http.routers.sage-api.priority=100"
+      - "traefik.http.routers.sage-api.service=sage-api"
+      - "traefik.http.services.sage-api.loadbalancer.server.port=9000"
     healthcheck:
       interval: 10s
       retries: 6
@@ -30,6 +44,33 @@ services:
         - path: ./ui/src
           target: /app/src
           action: sync
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.sage-ui.rule=Host(`sage.core.${DOMAIN}`)"
+      - "traefik.http.routers.sage-ui.entrypoints=websecure"
+      - "traefik.http.routers.sage-ui.tls=true"
+      - "traefik.http.routers.sage-ui.priority=1"
+      - "traefik.http.routers.sage-ui.service=sage-ui"
+      - "traefik.http.services.sage-ui.loadbalancer.server.port=5173"
     depends_on:
       sage:
         condition: service_healthy
+
+  # Dev-only: terminates TLS on sage.core.<domain> with sage's issued cert and
+  # proxies to the Vite HMR UI (/) and the sage API (/api). In prod sage serves
+  # :443 itself and there is no Traefik in the manager stack.
+  traefik:
+    image: traefik:v3.6.7
+    container_name: sage-dev-traefik
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ${SAGE_HOME}/sage/certs:/certs:ro
+      - ./setup/dev/traefik:/etc/traefik:ro
+    ports:
+      - "${TS_IP}:443:443"
+    depends_on:
+      sage:
+        condition: service_healthy
+    command:
+      - "--configFile=/etc/traefik/traefik.yml"

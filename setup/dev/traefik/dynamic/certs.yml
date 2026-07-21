@@ -1,0 +1,10 @@
+tls:
+  # Wildcard cert sage issues in-process, mounted read-only from its data dir.
+  certificates:
+    - certFile: /certs/fullchain.pem
+      keyFile: /certs/key.pem
+  stores:
+    default:
+      defaultCertificate:
+        certFile: /certs/fullchain.pem
+        keyFile: /certs/key.pem

@@ -44,11 +44,20 @@ Development compose:
 docker compose -f docker-compose.yml -f docker-compose.override.yml up -d
 ```
 
-The main compose stack runs a single manager container:
+The production compose stack runs a single manager container:
 
 - `sage` — the API/UI, the `:443` TLS endpoint, in-process ACME, metrics, and log capture
 
-Workers run their own edge stack (`cloudflared`, `traefik`, `vector`, `glances`), bootstrapped remotely. The development override also adds a separate `ui` service and backend debug configuration.
+Workers run their own edge stack (`cloudflared`, `traefik`, `vector`, `glances`), bootstrapped remotely.
+
+### Dev routing
+
+The prod manager serves `:443` itself. In dev the override keeps the same URL (`https://sage.core.<domain>`) **and** Vite HMR by adding two more services and a dev-only Traefik:
+
+- `ui` — the Vite dev server (`:5173`, HMR).
+- `traefik` (`sage-dev-traefik`) — terminates TLS on `:443` using the cert **sage still issues in-process** (mounted PEM, file provider; no ACME in Traefik) and routes by container labels: `Host(sage.core.<domain>) && PathPrefix(/api)` → `sage:9000`, everything else → `ui:5173`.
+
+To avoid a host `:443` conflict, the override replaces sage's port list (`ports: !override`) to drop sage's own `:443` mapping, and `app/main.py` skips its TLS server when `ENV=development` (the cert is still issued for Traefik to serve). HMR rides the same `:443` (`vite.config.ts` sets `server.hmr.clientPort = 443`).
 
 ## Backend Commands
 

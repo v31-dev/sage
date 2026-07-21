@@ -5,8 +5,10 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import dns.exception
+import dns.resolver
 import josepy as jose
-from acme import challenges, client, crypto_util, messages
+from acme import challenges, client, crypto_util, errors, messages
 from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
@@ -14,14 +16,14 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from services.base import Base
 from services.db import Worker
 from services.settings import Settings
-from utils.common import get_env
 
 app_dir = Path(__file__).parent.parent
 logger = logging.getLogger(__name__)
 
-DEFAULT_ACME_DIRECTORY = "https://acme-v02.api.letsencrypt.org/directory"
+ACME_DIRECTORY = "https://acme-v02.api.letsencrypt.org/directory"
 RENEWAL_THRESHOLD_DAYS = 30
-DNS_PROPAGATION_SECONDS = 20
+DNS_PROPAGATION_TIMEOUT = 180
+DNS_POLL_INTERVAL = 5
 FINALIZE_TIMEOUT_SECONDS = 180
 CHALLENGE_COMMENT = "sage-acme-challenge"
 
@@ -78,14 +80,18 @@ class Certs(Base):
     """Run one ACME DNS-01 order for the wildcard SAN set and persist the PEM
     cert + key. Blocking (network I/O plus a DNS propagation wait) — offload to
     an executor lane, never call on the event loop."""
-    directory_url = get_env("ACME_DIRECTORY_URL", fallback=DEFAULT_ACME_DIRECTORY)
     account_key = self._account_key()
     net = client.ClientNetwork(account_key, user_agent="sage")
-    directory = client.ClientV2.get_directory(directory_url, net)
+    directory = client.ClientV2.get_directory(ACME_DIRECTORY, net)
     acme_client = client.ClientV2(directory, net=net)
-    acme_client.new_account(
-        messages.NewRegistration.from_data(email=self.admin_email, terms_of_service_agreed=True)
-    )
+    try:
+      acme_client.new_account(
+          messages.NewRegistration.from_data(email=self.admin_email, terms_of_service_agreed=True)
+      )
+    except errors.ConflictError as e:
+      # The account key is already registered
+      acme_client.net.account = messages.RegistrationResource(
+          body=messages.Registration(), uri=e.location)
 
     cert_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     cert_key_pem = cert_key.private_bytes(
@@ -95,19 +101,23 @@ class Certs(Base):
     )
     order = acme_client.new_order(crypto_util.make_csr(cert_key_pem, self._domains()))
 
-    # One DNS-01 authorization per identifier: publish every TXT, wait once for
-    # propagation, then answer all challenges and finalize.
+    # One DNS-01 authorization per identifier: clear any stale record, publish
+    # the TXT, wait for it to be visible on the authoritative nameservers, then
+    # answer all challenges and finalize.
     published = []
     try:
       for authz in order.authorizations:
         challenge = next(c for c in authz.body.challenges if isinstance(c.chall, challenges.DNS01))
         response, validation = challenge.chall.response_and_validation(account_key)
         record_name = challenge.chall.validation_domain_name(authz.body.identifier.value)
+        self.manager.cloudflare.delete_dns_records(record_name, type="TXT")
         self.manager.cloudflare.create_dns_record(
             name=record_name, content=validation, comment=CHALLENGE_COMMENT, type="TXT")
         published.append((record_name, validation, challenge, response))
 
-      time.sleep(DNS_PROPAGATION_SECONDS)
+      # Let's Encrypt validates a challenge the moment it is answered, so wait
+      # until every TXT is actually served before answering
+      self._wait_for_dns([(name, value) for name, value, _, _ in published])
 
       for _, _, challenge, response in published:
         acme_client.answer_challenge(challenge, response)
@@ -115,9 +125,9 @@ class Certs(Base):
       order = acme_client.poll_and_finalize(
           order, deadline=datetime.now() + timedelta(seconds=FINALIZE_TIMEOUT_SECONDS))
     finally:
-      for record_name, validation, *_ in published:
+      for record_name, *_ in published:
         try:
-          self.manager.cloudflare.delete_dns_record(record_name, validation)
+          self.manager.cloudflare.delete_dns_records(record_name, type="TXT")
         except Exception as e:
           logger.warning(f"Failed to remove ACME challenge record {record_name}: {e}")
 
@@ -125,6 +135,44 @@ class Certs(Base):
     self.key_path.write_bytes(cert_key_pem)
     self.key_path.chmod(0o600)
     logger.info(f"Issued wildcard certificate for {self.domain}; expires {self.expiry()}.")
+
+  def _wait_for_dns(self, records):
+    """Block until every (name, expected_value) TXT is served by the zone's
+    authoritative nameservers — the same place Let's Encrypt queries — so a
+    challenge is never answered before it can be seen. Raises on timeout."""
+    ns_ips = []
+    for ns in dns.resolver.resolve(self.domain, "NS"):
+      for record_type in ("A", "AAAA"):
+        try:
+          ns_ips.extend(ip.to_text() for ip in dns.resolver.resolve(ns.target, record_type))
+        except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN):
+          continue
+
+    resolver = dns.resolver.Resolver()
+    if ns_ips:
+      resolver = dns.resolver.Resolver(configure=False)
+      resolver.nameservers = ns_ips
+    resolver.lifetime = 10
+
+    deadline = time.time() + DNS_PROPAGATION_TIMEOUT
+    pending = list(records)
+    while pending:
+      remaining = []
+      for name, value in pending:
+        try:
+          answers = resolver.resolve(name, "TXT")
+          visible = any(value == txt.decode() for rdata in answers for txt in rdata.strings)
+        except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer, dns.exception.Timeout):
+          visible = False
+        if not visible:
+          remaining.append((name, value))
+      pending = remaining
+      if pending and time.time() >= deadline:
+        raise TimeoutError(
+            f"DNS-01 TXT records not visible on authoritative nameservers after "
+            f"{DNS_PROPAGATION_TIMEOUT}s: {[name for name, _ in pending]}")
+      if pending:
+        time.sleep(DNS_POLL_INTERVAL)
 
   def ensure(self):
     """Issue only when there is no valid cert or it is within the renewal
