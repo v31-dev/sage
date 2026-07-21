@@ -34,9 +34,12 @@ class S3(Base):
       self.s3_config = config if settings.is_valid("s3") else None
 
   def check_config(self, config: dict):
+    """Validate a candidate S3 config. It must be fully valid or fully empty"""
     try:
-      # S3 needs every declared field, so a new one is picked up here for free.
-      if not all(config.get(key) for key in SETTING_DEFINITIONS["s3"]):
+      provided = [config.get(key) for key in SETTING_DEFINITIONS["s3"]]
+      if not any(provided):
+        return True
+      if not all(provided):
         return False
 
       client_kwargs = self._get_client_kwargs(config)

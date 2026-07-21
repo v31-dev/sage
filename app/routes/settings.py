@@ -62,6 +62,11 @@ def update_setting(request: Request, setting_data: dict = Body(...)):
     S3().load()
 
   elif setting_key == "notifications":
+    if not Notifications().check_config(merged_setting_value):
+      raise HTTPException(
+          status_code=400,
+          detail="Invalid notifications configuration. A configured channel did not accept a test message.")
+
     Settings().set("notifications", merged_setting_value)
     Notifications().load_notifications_config()
 

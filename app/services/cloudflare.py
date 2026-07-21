@@ -3,7 +3,7 @@ import logging
 from cloudflare import Cloudflare as CloudflareClient
 
 from services.base import Base
-from services.settings import Settings
+from services.settings import SETTING_DEFINITIONS, Settings
 from services.tailscale import Tailscale
 from utils.common import dict_to_obj
 
@@ -49,32 +49,33 @@ class Cloudflare(Base):
     )
 
   def check_config(self, config: dict):
+    """Validate a Cloudflare config. Every field is mandatory."""
+    missing = [field for field in SETTING_DEFINITIONS["cloudflare"] if not config.get(field)]
+    if missing:
+      logger.warning(f"Cloudflare config is missing values for: {', '.join(missing)}")
+      return False
+
     domain = config["domain"]
-    account_id = config["account_id"]
-    client = CloudflareClient(api_token=config["api_token"])
     valid = True
 
-    # Validate the token
-    if client.user.tokens.verify().status != "active":
-      logger.warning("Invalid Cloudflare API token")
-      valid = False
+    try:
+      client = CloudflareClient(api_token=config["api_token"])
 
-    # Get Zone ID for the domain
-    zones = client.zones.list(name=domain).result
-    if not zones:
-      logger.warning(f"Cloudflare zone not found for domain {domain}")
-      valid = False
-
-    # Validate Cloudflare Account ID access to tunnels
-    if not account_id:
-      logger.warning("Cloudflare account ID is empty")
-      valid = False
-    else:
-      try:
-        client.zero_trust.tunnels.cloudflared.list(account_id=account_id)
-      except Exception as e:
-        logger.warning(f"Cloudflare account ID {account_id} cannot access tunnels: {e}")
+      # Validate the token
+      if client.user.tokens.verify().status != "active":
+        logger.warning("Invalid Cloudflare API token")
         valid = False
+
+      # Get Zone ID for the domain
+      if not client.zones.list(name=domain).result:
+        logger.warning(f"Cloudflare zone not found for domain {domain}")
+        valid = False
+
+      # Validate Cloudflare Account ID access to tunnels
+      client.zero_trust.tunnels.cloudflared.list(account_id=config["account_id"])
+    except Exception as e:
+      logger.warning(f"Cloudflare configuration check failed: {e}")
+      valid = False
 
     return valid
 
