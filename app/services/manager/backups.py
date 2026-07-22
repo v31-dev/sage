@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import re
 from datetime import datetime
 from pathlib import Path
 
@@ -10,7 +9,7 @@ from services.db import APPLICATION_BUSY_STATUSES, Application, Backup, Containe
 from utils.common import get_env
 from utils.logging import generate_task_id_token, task_id
 
-from ._common import app_dir
+from ._common import BACKUP_TIMESTAMP_FORMAT, app_dir
 
 logger = logging.getLogger(__name__)
 
@@ -105,41 +104,6 @@ class BackupsMixin:
       container.status = container_state["status"]
       container.save()
 
-  def _set_application_backup_status(self, application: Application):
-    application.status = "backup"
-    application.save()
-
-    for container in application.containers:
-      if container.status != "backup":
-        container.status = "backup"
-        container.save()
-
-  def _set_application_restore_status(self, application: Application, target_container: Container):
-    application.status = "restoring"
-    application.save()
-
-    if target_container.status != "restoring":
-      target_container.status = "restoring"
-      target_container.save()
-
-  def _build_application_backup_prefix(self, application: Application) -> str:
-    return (
-        f"{self.s3_backup_path_applications}/"
-        f"{application.project.name}/{application.name}"
-    )
-
-  def _build_application_volume_backup_key(
-      self,
-      application: Application,
-      container: Container,
-      volume: Volume,
-      timestamp: str,
-  ) -> str:
-    return (
-        f"{self._build_application_backup_prefix(application)}/"
-        f"{container.worker.hostname}/{volume.name}/{timestamp}.tar.gz.enc"
-    )
-
   def _get_application_backup_unit_label(
       self,
       application: Application,
@@ -150,25 +114,6 @@ class BackupsMixin:
         f"{application.qualified_name} "
         f"on worker {container.worker.hostname} volume {volume.name}"
     )
-
-  def _get_backup_timestamp_from_key(self, key: str) -> str | None:
-    filename = key.strip("/").split("/")[-1]
-    match = re.search(r"\d{8}_\d{6}", filename)
-    if not match:
-      return None
-    return match.group(0)
-
-  def _is_expired_backup_timestamp(self, timestamp_str: str, cutoff: datetime) -> bool:
-    try:
-      return datetime.strptime(timestamp_str, self.backup_timestamp_format) < cutoff
-    except Exception:
-      return False
-
-  def _is_expired_backup_key(self, key: str, cutoff: datetime) -> bool:
-    timestamp_str = self._get_backup_timestamp_from_key(key)
-    if not timestamp_str:
-      return False
-    return self._is_expired_backup_timestamp(timestamp_str, cutoff)
 
   async def _stop_container_for_backup(self, container: Container):
     if container.status != "active":
@@ -223,11 +168,9 @@ class BackupsMixin:
       timestamp: str,
   ):
     container_task_id = generate_task_id_token()
-    object_key = self._build_application_volume_backup_key(
-        application,
-        container,
-        volume,
-        timestamp,
+    object_key = (
+        f"{self.s3_backup_path_applications}/{application.project.name}/{application.name}/"
+        f"{container.worker.hostname}/{volume.name}/{timestamp}.tar.gz.enc"
     )
     archive_name = Path(object_key).name.removesuffix(".tar.gz.enc")
     upload_url = self.s3.create_presigned_upload_url(object_key)
@@ -288,7 +231,7 @@ class BackupsMixin:
       )
 
     snapshot = self._get_application_backup_snapshot(application)
-    timestamp = datetime.now().strftime(self.backup_timestamp_format)
+    timestamp = datetime.now().strftime(BACKUP_TIMESTAMP_FORMAT)
     if volume_ids is None:
       volumes = list(application.volumes)
     else:
@@ -318,7 +261,12 @@ class BackupsMixin:
     failed_backup_units = []
 
     try:
-      self._set_application_backup_status(application)
+      application.status = "backup"
+      application.save()
+      for container in application.containers:
+        if container.status != "backup":
+          container.status = "backup"
+          container.save()
 
       if snapshot["application_status"] == "active":
         await asyncio.gather(
@@ -434,7 +382,12 @@ class BackupsMixin:
     )
 
     try:
-      self._set_application_restore_status(application, target_container)
+      application.status = "restoring"
+      application.save()
+      if target_container.status != "restoring":
+        target_container.status = "restoring"
+        target_container.save()
+
       await self.tailscale.sync_file(
           target_container.worker.hostname,
           app_dir / "templates/worker/application/restore.sh",

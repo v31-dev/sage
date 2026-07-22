@@ -16,12 +16,11 @@ echo "Setting up development environment for SAGE at ${SAGE_HOME}"
 # Stop and remove any existing containers
 docker compose down --volumes --remove-orphans
 
-# Create directories (don't reset traefik since it may contain certs)
-mkdir -p "${SAGE_HOME}"
-find "${SAGE_HOME}" -mindepth 1 \
-  ! -path "${SAGE_HOME}/traefik" \
-  ! -path "${SAGE_HOME}/traefik/acme.json" \
-  -delete
+# Reset SAGE_HOME but keep the manager's cert dir (issued cert + ACME account
+# key) so a dev reset doesn't re-issue and burn Let's Encrypt rate limits.
+mkdir -p "${SAGE_HOME}/sage/certs"
+find "${SAGE_HOME}" -mindepth 1 -maxdepth 1 ! -name sage -exec rm -rf {} +
+find "${SAGE_HOME}/sage" -mindepth 1 -maxdepth 1 ! -name certs -exec rm -rf {} +
 
 # Update .env with the Tailscale info
 TS_IP=$(tailscale ip -4)

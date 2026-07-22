@@ -7,7 +7,7 @@ from utils.common import get_env
 from utils.executor import run_in_executor_with_context
 from utils.logging import TaskFailed
 
-from ._common import app_dir, content_hash, routing_input_hash
+from ._common import WORKER_INFRA_TEMPLATES, app_dir, content_hash, routing_input_hash
 
 logger = logging.getLogger(__name__)
 
@@ -80,9 +80,9 @@ class WorkersMixin:
     Computed from current truth on demand — the only stored copy is the
     worker-side `revisions/infra` stamp."""
     return content_hash({
+        "templates": WORKER_INFRA_TEMPLATES,
         "version": self.version,
         "domain": Settings().get("cloudflare", "domain"),
-        "admin_email": Settings().get("cloudflare", "admin_email"),
     })
 
   async def read_worker_revisions(self, hostname: str) -> dict:
@@ -201,7 +201,6 @@ class WorkersMixin:
       )
 
       if infra_stale:
-        admin_email = Settings().get("cloudflare", "admin_email")
         tunnel = await run_in_executor_with_context(self.cloudflare.get_tunnel_token)
 
         # Sync files
@@ -221,19 +220,22 @@ class WorkersMixin:
                 "TUNNEL_TOKEN": tunnel.token,
             },
         )
-        # Traefik restart on worker not required because admin_email is only used in the static config for ACME registration,
-        # which is only run on the manager.
         await self.tailscale.sync_file(
             worker.hostname,
             app_dir / "templates/worker/traefik/traefik.yml",
             f"{self.worker_home_dir}/traefik/traefik.yml",
-            {"ADMIN_EMAIL": admin_email},
         )
         await self.tailscale.sync_file(
             worker.hostname,
             app_dir / "templates/worker/traefik/config.yml",
             f"{self.worker_home_dir}/traefik/dynamic/config.yml",
             {"DOMAIN": domain, "HOSTNAME": worker.hostname},
+        )
+        # File-provider TLS config pointing at the PEM the manager syncs below.
+        await self.tailscale.sync_file(
+            worker.hostname,
+            app_dir / "templates/worker/traefik/certs.yml",
+            f"{self.worker_home_dir}/traefik/dynamic/certs.yml",
         )
         await self.tailscale.sync_file(
             worker.hostname,
@@ -242,11 +244,26 @@ class WorkersMixin:
             {"IP": self.tailscale.ip(), "HOSTNAME": worker.hostname},
         )
 
+      # Land the cert before any container start/restart below
+      repaired = []
+      if (self.certs.has_valid_certificates()
+              and revisions.get("certs") != self.certs.certificates_hash()):
+        await self.sync_certificates_to_worker(worker)
+        repaired.append("certificates")
+
+      if infra_stale:
         # Start containers
         await self.tailscale.exec_command(
             worker.hostname,
             f"docker compose -f {self.worker_home_dir}/docker-compose.yml up -d --wait --remove-orphans --quiet-pull --quiet-build",
             timeout=300,
+        )
+
+        # Restart traefik to pick up static config changes
+        await self.tailscale.exec_command(
+            worker.hostname,
+            f"docker compose -f {self.worker_home_dir}/docker-compose.yml restart traefik",
+            timeout=60,
         )
 
         # Restart vector to pick up config changes
@@ -258,12 +275,6 @@ class WorkersMixin:
 
       Worker.update(online=True).where(
           Worker.hostname == worker.hostname).execute()
-
-      repaired = []
-      if (self.traefik.has_valid_certificates()
-              and revisions.get("certs") != self.traefik.certificates_hash()):
-        await self.traefik.sync_certificates_to_worker(worker)
-        repaired.append("certificates")
 
       # Request a resync for exactly the applications whose routing stamp on
       # this worker is stale (covers hosted and mesh files alike).

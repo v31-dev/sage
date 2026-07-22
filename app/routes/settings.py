@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from playhouse.shortcuts import model_to_dict
 
+from services.certs import Certs
 from services.cloudflare import Cloudflare
 from services.db import Setting
 from services.manager import Manager
@@ -61,6 +62,11 @@ def update_setting(request: Request, setting_data: dict = Body(...)):
     S3().load()
 
   elif setting_key == "notifications":
+    if not Notifications().check_config(merged_setting_value):
+      raise HTTPException(
+          status_code=400,
+          detail="Invalid notifications configuration. A configured channel did not accept a test message.")
+
     Settings().set("notifications", merged_setting_value)
     Notifications().load_notifications_config()
 
@@ -71,7 +77,8 @@ def update_setting(request: Request, setting_data: dict = Body(...)):
     account_id_changed = "account_id" in new_setting_value and new_setting_value["account_id"] != old_setting_value.get("account_id")
     cloudflare_config_changed = api_token_changed or account_id_changed or domain_changed
     cloudflare_setting_changed = cloudflare_config_changed or admin_email_changed
-    traefik_refresh_needed = admin_email_changed or domain_changed or api_token_changed
+    certs_reload_needed = domain_changed or admin_email_changed
+    traefik_refresh_needed = certs_reload_needed or api_token_changed
 
     if domain_changed and not DOMAIN_RE.fullmatch(merged_setting_value["domain"]):
       raise HTTPException(status_code=400, detail="Invalid domain format in Cloudflare settings.")
@@ -95,17 +102,14 @@ def update_setting(request: Request, setting_data: dict = Body(...)):
     if cloudflare_config_changed:
       Cloudflare().load()
 
-    if traefik_refresh_needed:
-      # Manager Traefik static config / token file rewritten and container restarted;
-      # worker Traefik config resynced when email or domain change.
+    if certs_reload_needed:
+      Certs().load()
+
+    if domain_changed:
+      # New domain -> re-issue the wildcard cert and resync workers + routing.
       Manager().add_task(
           task=Manager().refresh_traefik,
           scopes={"platform", "app"},
-          params={
-              "admin_email_changed": admin_email_changed,
-              "domain_changed": domain_changed,
-              "api_token_changed": api_token_changed,
-          },
           executor="platform",
           task_id=request.state.task_id,
           on_conflict=OnConflict.QUEUE,
@@ -125,7 +129,6 @@ async def restart():
   Manager().cancel_all_tasks()
   Manager().add_task(
       task=Manager().restart,
-      params={"all": True},
       scopes={"platform", "app", "common", "metrics"},
       executor="platform",
       on_conflict=OnConflict.QUEUE,
@@ -137,17 +140,13 @@ async def restart():
 @router.post("/resync_traefik")
 async def resync_traefik(request: Request):
   """
-  Force a full Traefik state resync to manager and workers. Reuses the
-  refresh_traefik task with all change flags set; cert re-issuance is expected.
+  Force a full Traefik state resync to manager and workers via the
+  refresh_traefik task (re-pushes the current cert + configs; re-issues only if
+  the cert is missing or expiring).
   """
   if not Manager().add_task(
       task=Manager().refresh_traefik,
       scopes={"platform", "app"},
-      params={
-          "admin_email_changed": True,
-          "domain_changed": True,
-          "api_token_changed": True,
-      },
       executor="platform",
       task_id=request.state.task_id,
   ):

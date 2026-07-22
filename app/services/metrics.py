@@ -272,9 +272,6 @@ class Metrics(Base):
       except Exception:
         logger.warning("Manager metrics sample failed.", exc_info=True)
 
-  def stop_sampler(self):
-    self._sampler_stop.set()
-
   def collect_self(self):
     """Flush completed minutes of the manager's peak accumulator to its shard.
     The in-progress minute is left to keep accumulating; a minute with no samples

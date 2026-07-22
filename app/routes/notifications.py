@@ -2,7 +2,6 @@ import logging
 from datetime import datetime
 
 from fastapi import APIRouter, HTTPException
-from playhouse.shortcuts import model_to_dict
 
 from services.db import Notification
 

@@ -4,7 +4,7 @@ from services.base import Base
 from services.db import Setting
 
 # Format of -
-# "key": { "property": { "env": "<If it exists in the environment>", "required": bool } }
+# "key": { "property": { "env": "<If it exists in the environment>", "required": bool <checks only at boot time> } }
 SETTING_DEFINITIONS = {
     "s3": {
         "access_key": {"env": "S3_ACCESS_KEY", "required": False},
@@ -108,7 +108,7 @@ class Settings(Base):
 
     value = self.get(key)
 
-    for field, config in SETTING_DEFINITIONS[key].items():
+    for field in SETTING_DEFINITIONS[key]:
       field_value = value.get(field)
       if field_value is None or field_value == "":
         return False

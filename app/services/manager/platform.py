@@ -11,6 +11,8 @@ import docker
 from services.db import DB_PATH, Backup, Database, Event, Notification, Task, db
 from utils.queue import OnConflict
 
+from ._common import BACKUP_TIMESTAMP_FORMAT, is_expired_backup_key, timestamp_from_key
+
 logger = logging.getLogger(__name__)
 
 
@@ -44,13 +46,8 @@ class PlatformMixin:
       for s3_path in s3_backups:
         if s3_path not in existing_backups:
           try:
-            # Extract timestamp from S3 path (format: sage/backups/platform/TIMESTAMP.db)
-            # TIMESTAMP format: YYYYMMDD_HHMMSS
-            filename = s3_path.split('/')[-1]
-            timestamp_str = filename.split('.')[0]
-
-            # Parse timestamp to datetime (format: YYYYMMDD_HHMMSS)
-            backup_datetime = datetime.strptime(timestamp_str, self.backup_timestamp_format)
+            timestamp_str = timestamp_from_key(s3_path)
+            backup_datetime = datetime.strptime(timestamp_str, BACKUP_TIMESTAMP_FORMAT)
 
             # Create backup record with extracted timestamp as created_at
             Backup.create(s3_path=s3_path, type="platform", created_at=backup_datetime)
@@ -94,11 +91,7 @@ class PlatformMixin:
     db_file = Path(DB_PATH)
     removed = 0
     for path in db_file.parent.glob(f"{db_file.name}.backup.*"):
-      try:
-        stamp = datetime.strptime(path.name.rsplit(".", 1)[-1], self.backup_timestamp_format)
-      except ValueError:
-        continue
-      if stamp < cutoff:
+      if is_expired_backup_key(path.name, cutoff):
         path.unlink(missing_ok=True)
         removed += 1
     logger.info(f"Restore safety-copy cleanup: removed {removed} older than {days} days.")
@@ -107,7 +100,7 @@ class PlatformMixin:
     try:
       deleted_application_backups = await self.s3.delete_key(
           self.s3_backup_path_applications,
-          filter=partial(self._is_expired_backup_key, cutoff=cutoff),
+          filter=partial(is_expired_backup_key, cutoff=cutoff),
       )
       logger.info(
           f"Application backup cleanup: removed {len(deleted_application_backups)} backup files older than {days} days."
@@ -119,7 +112,7 @@ class PlatformMixin:
     try:
       deleted_platform_backups = await self.s3.delete_key(
           self.s3_backup_path_platform,
-          filter=partial(self._is_expired_backup_key, cutoff=cutoff),
+          filter=partial(is_expired_backup_key, cutoff=cutoff),
       )
       logger.info(
           f"Platform backup cleanup: removed {len(deleted_platform_backups)} backup files older than {days} days."
@@ -130,7 +123,7 @@ class PlatformMixin:
   async def backup_database_s3(self):
     # Create the backup
     with TemporaryDirectory() as temp_dir:
-      timestamp = datetime.now().strftime(self.backup_timestamp_format)
+      timestamp = datetime.now().strftime(BACKUP_TIMESTAMP_FORMAT)
       backup_file = f"{temp_dir}/{timestamp}.db"
 
       try:
@@ -152,14 +145,9 @@ class PlatformMixin:
         self.notify(f"Failed to create database backup: {e}", "error")
         raise Exception(f"Failed to create database backup: {e}")
 
-  def restart(self, all: bool = False, sage: bool = False, traefik: bool = False):
+  def restart(self):
     client = docker.from_env()
-
-    if all or traefik:
-      client.containers.get("traefik").restart()
-
-    if all or sage:
-      client.containers.get("sage").restart()
+    client.containers.get("sage").restart()
 
   async def restore_database_from_s3(self, s3_path: str):
     """
@@ -197,7 +185,7 @@ class PlatformMixin:
           raise Exception(f"Invalid SQLite database in backup: {e}")
 
         # Create safety backup of current database
-        timestamp = datetime.now().strftime(self.backup_timestamp_format)
+        timestamp = datetime.now().strftime(BACKUP_TIMESTAMP_FORMAT)
         safety_backup_path = f"{DB_PATH}.backup.{timestamp}"
         logger.info(f"Creating safety backup: {safety_backup_path}")
 

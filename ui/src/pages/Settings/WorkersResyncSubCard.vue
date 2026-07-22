@@ -50,8 +50,8 @@ async function onConfirmResync() {
             <FieldDescription>
               ⚠ Re-pushes compose, Traefik, and Vector templates to every online worker and restarts
               their base stack. Use when worker templates have drifted. Also re-pushes worker
-              Traefik config, but does not clear acme.json or re-issue certificates — use Resync
-              Traefik for that.
+              Traefik config, and repairs a stale certificate copy, but never re-issues the
+              certificate — use Resync Traefik for that.
             </FieldDescription>
           </Field>
         </FieldGroup>

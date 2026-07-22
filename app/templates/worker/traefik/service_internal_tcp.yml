@@ -15,16 +15,16 @@ tcp:
       tls:
         passthrough: true
 
-    # Final mesh hop: terminate TLS with the wildcard cert (already synced to the
-    # worker via acme.json) and forward plaintext to the local stock container.
-    # Distinguished from the edge by entrypoint, since TCP carries no X-Mesh-Hops.
+    # Final mesh hop: terminate TLS with the wildcard cert (synced to the worker
+    # as PEM, loaded via the file provider) and forward plaintext to the local
+    # stock container. Distinguished from the edge by entrypoint, since TCP
+    # carries no X-Mesh-Hops.
     ${SERVICE}_${SUBDOMAIN}_tcp_mesh_internal:
       rule: HostSNI(`${SUBDOMAIN}.int.${DOMAIN}`)
       entryPoints:
         - meshtcp
       service: ${SERVICE}_${SUBDOMAIN}_tcp_local_internal
       tls:
-        certResolver: cloudflare
         options: backend-tcp
 
   services:

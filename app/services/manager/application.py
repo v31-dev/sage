@@ -5,7 +5,7 @@ import re
 import shlex
 from datetime import datetime
 
-from services.db import APPLICATION_BUSY_STATUSES, Application, Container, DeployConfig, Event, Worker, db
+from services.db import APPLICATION_BUSY_STATUSES, Application, Container, DeployConfig, Event, db
 from utils.common import format_yaml, parse_multiline_kv
 from utils.logging import generate_task_id_token, task_id
 

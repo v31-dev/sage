@@ -10,6 +10,9 @@ httpx==0.28.1
 docker==7.1.0
 peewee==4.0.1
 cryptography==46.0.5
+acme==5.7.0
+josepy==2.2.0
+dnspython==2.8.0
 boto3==1.40.61
 aioboto3==15.5.0
 asyncssh==2.23.1

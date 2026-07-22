@@ -7,22 +7,24 @@ Sage is a manager-and-workers platform designed for Docker workloads connected t
 - The manager is the control plane.
 - Workers run application containers and edge components.
 - Cloudflare provides public DNS and tunnel integration.
-- Traefik provides ingress and certificate handling.
+- Traefik provides ingress on workers; the manager issues and owns the wildcard TLS certificate in-process (ACME DNS-01) and terminates its own `:443`.
 - Vector runs on workers and forwards their container logs to the manager; the manager captures its own logs in-process.
 - Glances runs on workers and exposes metrics endpoints the manager polls; the manager collects its own container metrics in-process.
 
 ## Manager Runtime
 
-The manager process starts three concurrent services from `app/main.py`:
+The manager process starts these concurrent services from `app/main.py`:
 
 1. Main FastAPI API on port `9000`
 2. Log/metric ingestion FastAPI API on port `9001` (receives workers' Vector log shipments)
-3. APScheduler (cron/interval) scheduler
+3. TLS server on port `443` (Tailscale-only) serving the app under `sage.core.<domain>` with the wildcard cert
+4. APScheduler (cron/interval) scheduler
 
 Startup is service-driven:
 
 - `Manager()` initializes the platform services.
 - `Manager.async_init()` performs async startup work, such as backup discovery.
+- The wildcard cert is provisioned (issued if missing/expiring) before `:443` binds; its `SSLContext` is handed to `Certs` so renewal swaps the cert in place with no restart.
 - If service initialization fails, the process exits.
 
 ## Worker Runtime
@@ -70,8 +72,8 @@ A `Domain` has a `type` that selects how Traefik routes it:
   The edge router is **passthrough** (so the SNI survives to the mesh hop) and
   load-balances across every active backing worker, exactly like the internal/public
   routers. The final hop on `meshtcp` (`:9003`, the TCP analog of `mesh:9002`)
-  **terminates** TLS with the `*.int` wildcard already in the worker's `acme.json`
-  and forwards plaintext to the local stock container — so the cert never leaves
+  **terminates** TLS with the `*.int` wildcard from the worker's synced PEM (loaded
+  via the Traefik file provider) and forwards plaintext to the local stock container — so the cert never leaves
   Traefik and backends need no TLS config. The separate `meshtcp` entrypoint stands
   in for the `X-Mesh-Hops` header that TCP cannot carry. `tcp` is Tailscale-only (no
   public variant) and has no `x-tag` pool variant, but multi-container load balancing
@@ -147,7 +149,7 @@ APScheduler is a pure cron/interval trigger: each scheduled coroutine only calls
 - metrics collection
 - platform backup scheduling
 - cleanup
-- certificate sync
+- certificate renewal
 
 All execution and mutual exclusion live in an in-memory operation queue on the `Manager` singleton (`app/utils/queue.py`). Routes (deploy, stop, delete, backup, restore, worker removal, restart) and the cron triggers above enqueue through the same `add_task` path; a single one-second dispatcher starts each pending task whose scope is free. See [backend.md](backend.md) for the queue model and execution semantics.
 

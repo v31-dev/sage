@@ -11,8 +11,7 @@ http:
         - mark-as-hopped
       priority: 300
       service: ${SERVICE}_${SUBDOMAIN}_internal_${POOL_TAG}
-      tls:
-        certResolver: cloudflare
+      tls: {}
 
   services:
     # Loadbalanced pool services

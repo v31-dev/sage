@@ -33,9 +33,3 @@ entryPoints:
     address: :8443
   meshtcp:
     address: :9003
-
-certificatesResolvers:
-  cloudflare:
-    acme:
-      email: ${ADMIN_EMAIL}
-      storage: /etc/traefik/acme.json
