@@ -104,41 +104,6 @@ class BackupsMixin:
       container.status = container_state["status"]
       container.save()
 
-  def _set_application_backup_status(self, application: Application):
-    application.status = "backup"
-    application.save()
-
-    for container in application.containers:
-      if container.status != "backup":
-        container.status = "backup"
-        container.save()
-
-  def _set_application_restore_status(self, application: Application, target_container: Container):
-    application.status = "restoring"
-    application.save()
-
-    if target_container.status != "restoring":
-      target_container.status = "restoring"
-      target_container.save()
-
-  def _build_application_backup_prefix(self, application: Application) -> str:
-    return (
-        f"{self.s3_backup_path_applications}/"
-        f"{application.project.name}/{application.name}"
-    )
-
-  def _build_application_volume_backup_key(
-      self,
-      application: Application,
-      container: Container,
-      volume: Volume,
-      timestamp: str,
-  ) -> str:
-    return (
-        f"{self._build_application_backup_prefix(application)}/"
-        f"{container.worker.hostname}/{volume.name}/{timestamp}.tar.gz.enc"
-    )
-
   def _get_application_backup_unit_label(
       self,
       application: Application,
@@ -203,11 +168,9 @@ class BackupsMixin:
       timestamp: str,
   ):
     container_task_id = generate_task_id_token()
-    object_key = self._build_application_volume_backup_key(
-        application,
-        container,
-        volume,
-        timestamp,
+    object_key = (
+        f"{self.s3_backup_path_applications}/{application.project.name}/{application.name}/"
+        f"{container.worker.hostname}/{volume.name}/{timestamp}.tar.gz.enc"
     )
     archive_name = Path(object_key).name.removesuffix(".tar.gz.enc")
     upload_url = self.s3.create_presigned_upload_url(object_key)
@@ -298,7 +261,12 @@ class BackupsMixin:
     failed_backup_units = []
 
     try:
-      self._set_application_backup_status(application)
+      application.status = "backup"
+      application.save()
+      for container in application.containers:
+        if container.status != "backup":
+          container.status = "backup"
+          container.save()
 
       if snapshot["application_status"] == "active":
         await asyncio.gather(
@@ -414,7 +382,12 @@ class BackupsMixin:
     )
 
     try:
-      self._set_application_restore_status(application, target_container)
+      application.status = "restoring"
+      application.save()
+      if target_container.status != "restoring":
+        target_container.status = "restoring"
+        target_container.save()
+
       await self.tailscale.sync_file(
           target_container.worker.hostname,
           app_dir / "templates/worker/application/restore.sh",
