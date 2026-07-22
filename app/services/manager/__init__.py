@@ -38,7 +38,6 @@ class Manager(
   worker_home_dir = "/opt/sage"
   s3_backup_path_platform = "/backups/platform"
   s3_backup_path_applications = "/backups/applications"
-  backup_timestamp_format = "%Y%m%d_%H%M%S"
 
   def __init__(self):
     super().__init__()

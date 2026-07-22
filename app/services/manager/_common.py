@@ -1,14 +1,35 @@
 import hashlib
 import json
+import re
+from datetime import datetime
 from pathlib import Path
 
 # This module lives at app/services/manager/_common.py, so three .parent hops
 # reach the app/ root. Defined here once so every mixin shares the same path.
 app_dir = Path(__file__).parent.parent.parent
 
+BACKUP_TIMESTAMP_FORMAT = "%Y%m%d_%H%M%S"
+
 
 def content_hash(payload) -> str:
   return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:16]
+
+
+def timestamp_from_key(key: str) -> str | None:
+  match = re.search(r"\d{8}_\d{6}", key.strip("/").split("/")[-1])
+  return match.group(0) if match else None
+
+
+def is_expired_timestamp(timestamp_str: str, cutoff: datetime) -> bool:
+  try:
+    return datetime.strptime(timestamp_str, BACKUP_TIMESTAMP_FORMAT) < cutoff
+  except Exception:
+    return False
+
+
+def is_expired_backup_key(key: str, cutoff: datetime) -> bool:
+  timestamp_str = timestamp_from_key(key)
+  return bool(timestamp_str) and is_expired_timestamp(timestamp_str, cutoff)
 
 
 def templates_digest(*relative_paths: str) -> str:

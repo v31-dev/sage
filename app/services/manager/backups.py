@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import re
 from datetime import datetime
 from pathlib import Path
 
@@ -10,7 +9,7 @@ from services.db import APPLICATION_BUSY_STATUSES, Application, Backup, Containe
 from utils.common import get_env
 from utils.logging import generate_task_id_token, task_id
 
-from ._common import app_dir
+from ._common import BACKUP_TIMESTAMP_FORMAT, app_dir
 
 logger = logging.getLogger(__name__)
 
@@ -151,25 +150,6 @@ class BackupsMixin:
         f"on worker {container.worker.hostname} volume {volume.name}"
     )
 
-  def _get_backup_timestamp_from_key(self, key: str) -> str | None:
-    filename = key.strip("/").split("/")[-1]
-    match = re.search(r"\d{8}_\d{6}", filename)
-    if not match:
-      return None
-    return match.group(0)
-
-  def _is_expired_backup_timestamp(self, timestamp_str: str, cutoff: datetime) -> bool:
-    try:
-      return datetime.strptime(timestamp_str, self.backup_timestamp_format) < cutoff
-    except Exception:
-      return False
-
-  def _is_expired_backup_key(self, key: str, cutoff: datetime) -> bool:
-    timestamp_str = self._get_backup_timestamp_from_key(key)
-    if not timestamp_str:
-      return False
-    return self._is_expired_backup_timestamp(timestamp_str, cutoff)
-
   async def _stop_container_for_backup(self, container: Container):
     if container.status != "active":
       return
@@ -288,7 +268,7 @@ class BackupsMixin:
       )
 
     snapshot = self._get_application_backup_snapshot(application)
-    timestamp = datetime.now().strftime(self.backup_timestamp_format)
+    timestamp = datetime.now().strftime(BACKUP_TIMESTAMP_FORMAT)
     if volume_ids is None:
       volumes = list(application.volumes)
     else:
