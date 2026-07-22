@@ -30,13 +30,21 @@ These scripts assume a fairly direct machine setup and should be reviewed before
 
 ## Running The Stack
 
+Docker Compose is the only supported deployment method. The in-UI self-upgrade
+(`POST /settings/upgrade`) launches a detached `docker:cli` updater container that
+runs `docker compose pull`/`up -d` against the manager's own compose file and
+`.env` — it discovers that host-side location from the running container's
+`com.docker.compose.*` labels, and refuses to run when they are absent (i.e. a
+standalone `docker run` deployment) or when `ENV=development` (the override builds
+from source rather than pulling).
+
 Production-style compose:
 
 ```bash
 docker compose up -d
 ```
 
-The production compose image requires `SAGE_IMAGE_TAG`. Keep `sample.env` aligned with `VERSION`; the publish workflow updates both together during a release.
+The production compose image requires `SAGE_IMAGE_TAG`. Keep `sample.env` aligned with `VERSION`; the publish workflow updates both together during a release. The updater rewrites `SAGE_IMAGE_TAG` in `.env` on a successful upgrade (and reverts it on a failed one).
 
 Development compose:
 

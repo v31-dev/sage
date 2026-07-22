@@ -180,7 +180,7 @@ Every queued operation, its scope, where it is enqueued from, its lane pool, and
 | `Metrics.collect` | metrics:`<worker>` | cron 1m | metrics | DEDUP |
 | `Metrics.collect_self` | metrics:`<manager>` | cron 1m | metrics | DEDUP |
 | `send_summary_notification` | common | cron daily 08:00 | common | REPLACE |
-| `get_latest_version` | common | cron 4h | common | REPLACE |
+| `refresh_latest_release` | common | cron 4h + once at boot (`async_init`) | common | REPLACE — caches latest-release detail (version + notes + `fetched_at`) served by `GET /info/release` |
 | `backup_database_s3` | platform, app | cron 6h | platform | REPLACE |
 | `Metrics.cleanup` | metrics | cron daily 04:00 | metrics | REPLACE |
 | `Logs.cleanup` | common | cron daily 04:00 | common | REPLACE |
@@ -203,6 +203,8 @@ Every queued operation, its scope, where it is enqueued from, its lane pool, and
 | `refresh_traefik` | platform, app | PUT /settings/cloudflare | platform | QUEUE |
 | `refresh_traefik` | platform, app | POST /settings/resync_traefik | platform | DEDUP |
 | `restart` | platform, app, common, metrics | POST /settings/restart | platform | QUEUE (+priority) |
+| `upgrade` | platform, app, common, metrics | POST /settings/upgrade | platform | QUEUE (+priority) — DB backup (aborts the upgrade on failure), then spawns a detached `docker:cli` compose updater (`templates/manager/upgrade.sh`: pull → `up -d --wait`, tag rollback on failed health check); updater logs kept under `docker logs sage-upgrade`. Refused in dev / when already latest / standalone (non-compose) |
+| `refresh_latest_release` | common | POST /info/release/refresh | common | REPLACE — on-demand version of the 4h refresh; UI polls `GET /info/release`'s `fetched_at` |
 | `sync_workers` | platform | POST /settings/resync_workers | platform | REPLACE |
 | `sync_application_traefik_domains_config` | app:`<qn>` | create/update/delete_domain, update-container tag change (via `request_application_traefik_sync`) | app | REPLACE |
 

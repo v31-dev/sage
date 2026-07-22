@@ -1,4 +1,5 @@
 import logging
+import re
 from datetime import datetime, timedelta
 
 import httpx
@@ -12,32 +13,62 @@ logger = logging.getLogger(__name__)
 
 LATEST_RELEASE_URL = "https://api.github.com/repos/v31-dev/sage/releases/latest"
 
+HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
+
 
 class CoreMixin:
-  def get_latest_version(self):
+  def _fetch_latest_release(self) -> dict:
+    """Fetch the latest GitHub release payload (raises on HTTP/network error)."""
+    with httpx.Client(timeout=10) as client:
+      response = client.get(
+          LATEST_RELEASE_URL,
+          headers={"Accept": "application/vnd.github+json"},
+      )
+      response.raise_for_status()
+      return response.json()
+
+  def refresh_latest_release(self):
     try:
-      with httpx.Client(timeout=10) as client:
-        response = client.get(
-            LATEST_RELEASE_URL,
-            headers={"Accept": "application/vnd.github+json"},
-        )
-        response.raise_for_status()
-        tag = (response.json().get("tag_name") or "").lstrip("v")
-      if tag:
-        self.latest_version = tag
+      release = self._fetch_latest_release()
     except Exception as e:
       logger.warning(f"Failed to fetch latest sage release: {e}")
-    return self.latest_version
+      return self.latest_release
+    version = (release.get("tag_name") or "").lstrip("v")
+    if version:
+      self.latest_version = version
+    body = release.get("body")
+    if body:
+      body = HTML_COMMENT_RE.sub("", body).strip()
+    self.latest_release = {
+        "version": version,
+        "name": release.get("name"),
+        "body": body,
+        "html_url": release.get("html_url"),
+        "published_at": release.get("published_at"),
+        "fetched_at": datetime.now().isoformat(),
+    }
+    return self.latest_release
+
+  def get_latest_release(self) -> dict:
+    if self.latest_release is not None:
+      return self.latest_release
+    return {
+        "version": self.latest_version,
+        "name": None,
+        "body": None,
+        "html_url": None,
+        "published_at": None,
+        "fetched_at": None,
+    }
 
   async def async_init(self):
     """
     Perform async initialization after Manager.__init__().
     - Discovers and reconciles S3 backups with the database.
+    - Fetches the latest release details.
     """
-    try:
-      await self.discover_s3_platform_backups()
-    except Exception as e:
-      logger.error(f"S3 backup discovery failed during startup: {e}")
+    await self.discover_s3_platform_backups()
+    self.refresh_latest_release()
 
   def notify(self, message: str, type: str = "info", link: str | None = None):
     # Python logging has no success level; treat it as info.

@@ -95,9 +95,9 @@ async def send_summary_notification():
   )
 
 
-async def refresh_latest_version():
+async def refresh_latest_release():
   Manager().add_task(
-      task=Manager().get_latest_version,
+      task=Manager().refresh_latest_release,
       scopes={"common"},
       executor="common",
       on_conflict=OnConflict.REPLACE,
@@ -155,7 +155,7 @@ _JOBS = [
     (schedule_application_backups, CronTrigger.from_crontab("* * * * *")),
     (reconcile_traefik_configs, CronTrigger.from_crontab("* * * * *")),
     (collect_metrics, CronTrigger.from_crontab("* * * * *")),
-    (refresh_latest_version, CronTrigger.from_crontab("0 */4 * * *")),
+    (refresh_latest_release, CronTrigger.from_crontab("0 */4 * * *")),
     (backup_database, CronTrigger.from_crontab("0 */6 * * *")),
     (send_summary_notification, CronTrigger.from_crontab("0 8 * * *")),
     (cleanup, CronTrigger.from_crontab("0 4 * * *")),

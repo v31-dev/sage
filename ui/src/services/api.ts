@@ -20,6 +20,15 @@ export interface AppInfo {
   start_time: string
 }
 
+export interface Release {
+  version: string
+  name: string | null
+  body: string | null
+  html_url: string | null
+  published_at: string | null
+  fetched_at: string | null
+}
+
 export interface Worker {
   hostname: string
   ip: string
@@ -121,6 +130,28 @@ export async function fetchAppInfo(): Promise<AppInfo> {
   } catch (error) {
     console.error('Error fetching app info:', error)
     throw error
+  }
+}
+
+// Cached release detail (version + notes + fetched_at), populated by the
+// scheduled/on-demand refresh job. Read when the upgrade popup opens; kept off the
+// polled app-info payload since the notes body is large.
+export async function fetchRelease(): Promise<Release> {
+  const response = await fetch(`${API_ROOT}/release`)
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}))
+    throw new Error(data.detail || 'Failed to fetch latest release')
+  }
+  return await response.json()
+}
+
+// Fire the refresh job (re-checks GitHub and updates the cache). Returns
+// immediately; poll fetchRelease() and watch `fetched_at` for the result.
+export async function refreshRelease(): Promise<void> {
+  const response = await fetch(`${API_ROOT}/release/refresh`, { method: 'POST' })
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}))
+    throw new Error(data.detail || 'Failed to refresh release')
   }
 }
 
