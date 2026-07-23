@@ -61,15 +61,6 @@ class CoreMixin:
         "fetched_at": None,
     }
 
-  async def async_init(self):
-    """
-    Perform async initialization after Manager.__init__().
-    - Discovers and reconciles S3 backups with the database.
-    - Fetches the latest release details.
-    """
-    await self.discover_s3_platform_backups()
-    self.refresh_latest_release()
-
   def notify(self, message: str, type: str = "info", link: str | None = None):
     # Python logging has no success level; treat it as info.
     log_method = logger.info if type == "success" else getattr(logger, type, logger.info)
