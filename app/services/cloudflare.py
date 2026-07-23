@@ -107,6 +107,10 @@ class Cloudflare(Base):
     Create a DNS record if it doesn't already exist.
     Criteria for existence can be based on name, content and optionally comment.
     """
+    # Only DNS-only A records get an explicit TTL
+    if kwargs.get("type") == "A":
+      kwargs.setdefault("ttl", 60)
+
     records = self.get_dns_records()
 
     if comment is not None:
