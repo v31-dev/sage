@@ -4,9 +4,17 @@ import MarkdownIt from 'markdown-it'
 import DOMPurify from 'dompurify'
 import { Icon } from '@iconify/vue'
 import { RefreshCw, TriangleAlert } from 'lucide-vue-next'
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Spinner } from '@/components/ui/spinner'
+import {
+  Card,
+  CardAction,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card'
 import {
   Dialog,
   DialogDescription,
@@ -16,15 +24,8 @@ import {
   DialogTitle,
   DialogTrigger,
 } from '@/components/ui/dialog'
-import {
-  Item,
-  ItemActions,
-  ItemContent,
-  ItemDescription,
-  ItemMedia,
-  ItemTitle,
-} from '@/components/ui/item'
-import { FieldError } from '@/components/ui/field'
+import { Skeleton } from '@/components/ui/skeleton'
+import { Spinner } from '@/components/ui/spinner'
 import { formatDate } from '@/lib/utils'
 import {
   fetchAppInfo,
@@ -68,10 +69,6 @@ const renderedNotes = computed(() => {
 
 const publishedDate = computed(() =>
   release.value?.published_at ? formatDate(release.value.published_at) : ''
-)
-
-const checkedAt = computed(() =>
-  release.value?.fetched_at ? formatDate(release.value.fetched_at) : ''
 )
 
 async function onRefresh() {
@@ -182,82 +179,82 @@ function sleep(ms: number) {
         </DialogDescription>
       </DialogHeader>
 
-      <Item size="sm" class="px-0">
-        <ItemContent>
-          <ItemDescription v-if="checkedAt">Last checked {{ checkedAt }}</ItemDescription>
-        </ItemContent>
-        <ItemActions>
-          <Button
-            variant="ghost"
-            size="sm"
-            :disabled="phase !== 'idle' || refreshing || notesLoading"
-            @click="onRefresh"
-          >
-            <RefreshCw :class="['h-3.5 w-3.5', refreshing && 'animate-spin']" />
-            {{ refreshing ? 'Checking…' : 'Check for updates' }}
-          </Button>
-        </ItemActions>
-      </Item>
+      <Card v-if="notesLoading">
+        <CardContent class="space-y-2">
+          <Skeleton class="h-4 w-1/3" />
+          <Skeleton class="h-4 w-full" />
+          <Skeleton class="h-4 w-5/6" />
+          <Skeleton class="h-4 w-2/3" />
+        </CardContent>
+      </Card>
+      <Alert v-else-if="notesError" variant="destructive">
+        <TriangleAlert />
+        <AlertTitle>Couldn't load release notes</AlertTitle>
+        <AlertDescription>{{ notesError }}</AlertDescription>
+      </Alert>
+      <Card v-else-if="release">
+        <CardHeader>
+          <CardTitle>
+            <Button
+              v-if="release.html_url"
+              as="a"
+              :href="release.html_url"
+              target="_blank"
+              rel="noreferrer"
+              variant="link"
+              class="h-auto p-0 text-base font-semibold"
+            >
+              {{ release.name || `v${release.version}` }}
+            </Button>
+            <template v-else>{{ release.name || `v${release.version}` }}</template>
+          </CardTitle>
+          <CardDescription v-if="publishedDate">{{ publishedDate }}</CardDescription>
+          <CardAction>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              title="Check for updates"
+              :disabled="phase !== 'idle' || refreshing"
+              @click="onRefresh"
+            >
+              <RefreshCw :class="['h-3.5 w-3.5', refreshing && 'animate-spin']" />
+            </Button>
+          </CardAction>
+        </CardHeader>
+        <CardContent>
+          <div class="release-notes text-sm text-muted-foreground" v-html="renderedNotes" />
+        </CardContent>
+      </Card>
 
-      <Item v-if="notesLoading" size="sm" class="px-0">
-        <ItemMedia>
-          <Spinner class="animate-spin" />
-        </ItemMedia>
-        <ItemContent>
-          <ItemDescription>Loading release notes…</ItemDescription>
-        </ItemContent>
-      </Item>
-      <FieldError v-else-if="notesError">{{ notesError }}</FieldError>
-      <template v-else-if="release">
-        <Item size="sm" class="px-0">
-          <ItemContent>
-            <ItemTitle>
-              <Button
-                v-if="release.html_url"
-                as="a"
-                :href="release.html_url"
-                target="_blank"
-                rel="noreferrer"
-                variant="link"
-                class="h-auto p-0 text-sm font-medium"
-              >
-                {{ release.name || `v${release.version}` }}
-              </Button>
-              <template v-else>{{ release.name || `v${release.version}` }}</template>
-            </ItemTitle>
-          </ItemContent>
-          <ItemActions>
-            <Badge v-if="publishedDate" variant="secondary">{{ publishedDate }}</Badge>
-          </ItemActions>
-        </Item>
-        <div class="release-notes text-sm text-muted-foreground" v-html="renderedNotes" />
-      </template>
+      <Alert>
+        <TriangleAlert />
+        <AlertTitle>What happens on upgrade</AlertTitle>
+        <AlertDescription>
+          <ul class="list-disc space-y-1">
+            <li>
+              In-flight operations (deploys, backups, syncs) finish first, then all queued tasks are
+              cancelled.
+            </li>
+            <li>
+              A database backup is taken, then the new image is pulled and the manager restarts.
+            </li>
+            <li>
+              If the new version fails its health check it is automatically rolled back to v{{
+                appStore.info?.version
+              }}.
+            </li>
+            <li>
+              This page will wait and reload once the manager is back — it can take a few minutes
+              while the image downloads.
+            </li>
+          </ul>
+        </AlertDescription>
+      </Alert>
 
-      <Item variant="muted" class="items-start">
-        <ItemMedia variant="icon">
-          <TriangleAlert class="h-4 w-4" />
-        </ItemMedia>
-        <ItemContent>
-          <ItemTitle>What happens on upgrade</ItemTitle>
-          <ItemDescription class="line-clamp-none">
-            In-flight operations (deploys, backups, syncs) finish first, then are paused.
-          </ItemDescription>
-          <ItemDescription class="line-clamp-none">
-            A database backup is taken, then the new image is pulled and the manager restarts.
-          </ItemDescription>
-          <ItemDescription class="line-clamp-none">
-            If the new version fails its health check it is automatically rolled back to v{{
-              appStore.info?.version
-            }}.
-          </ItemDescription>
-          <ItemDescription class="line-clamp-none">
-            This page will wait and reload once the manager is back — it can take a few minutes
-            while the image downloads. Don't close this tab.
-          </ItemDescription>
-        </ItemContent>
-      </Item>
-
-      <FieldError v-if="errorMessage">{{ errorMessage }}</FieldError>
+      <Alert v-if="errorMessage" variant="destructive">
+        <TriangleAlert />
+        <AlertDescription>{{ errorMessage }}</AlertDescription>
+      </Alert>
 
       <DialogFooter>
         <Button
