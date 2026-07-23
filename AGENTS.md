@@ -89,6 +89,12 @@ If this context may have been lost, reread this file plus the relevant `docs/` p
 - Logs are stored in per-container SQLite files with FTS5 search.
 - Preserve the existing lightweight storage approach unless the task explicitly requires otherwise.
 
+### Migrations And One-Off Changes
+
+- Do not add one-time migration/backfill/convergence code (DB rows, files, or external managed state like Cloudflare DNS records) just to bring existing deployments in line with a change. Prefer documenting the manual step in the summary/PR over shipping code that runs once and is then dead weight.
+- The one sanctioned automatic migration is additive DB schema evolution — missing columns are added at boot (see Database). Anything beyond that (data backfills, external-state rewrites) is a manual step unless the user says otherwise.
+- New writes should carry the new desired state going forward (e.g. a new default on create); reconciling what already exists is a documented manual action, not code.
+
 ### Operation Queue And Scheduler
 
 - APScheduler is a pure cron/interval trigger: each scheduled coroutine only calls `Manager().add_task(...)`. All execution and concurrency control live in the in-memory `TaskQueue` (`app/utils/queue.py`).
