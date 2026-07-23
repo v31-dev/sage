@@ -102,20 +102,15 @@ The production UI build currently injects `VITE_LOAD_DELAY=0`, while local front
 
 Current GitHub workflows:
 
-- `pr-check.yml`
-  - runs when a pull request targeting `main` is marked ready for review
-  - skips draft pull requests
-  - requires the pull request description to be present
-  - requires the PR to have at least one label
 - `release-pr.yml`
   - runs manually through `workflow_dispatch`
   - requires the workflow to be started from `main`
   - bumps the root `VERSION` file by `patch`, `minor`, or `major`
   - updates `sample.env` so `SAGE_IMAGE_TAG` matches the release version
   - creates a `release/v<VERSION>` branch with those file changes
-  - opens a draft release PR titled `v<VERSION>`
+  - opens a release PR titled `v<VERSION>`
   - fills the PR body with the generated GitHub release notes
-  - adds a draft-only compare link as a PR comment for reviewer use
+  - adds a changelog compare link as a PR comment for reviewer use
   - applies the combined labels from the merged PRs since the previous release
 - `publish.yml`
   - runs on pushes to `main` that change `VERSION` or `sample.env`
