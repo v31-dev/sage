@@ -155,12 +155,17 @@ function sleep(ms: number) {
 </script>
 
 <template>
-  <Dialog v-if="updateAvailable" v-model:open="dialogOpen" @update:open="onOpen">
+  <Dialog v-if="appStore.info" v-model:open="dialogOpen" @update:open="onOpen">
     <DialogTrigger as-child>
-      <Badge as="button" type="button" class="cursor-pointer">
-        <Icon icon="mdi:arrow-up-bold-circle-outline" />
-        v{{ appStore.info?.latest_version }}
-      </Badge>
+      <button type="button" class="inline-flex cursor-pointer items-center">
+        <Badge v-if="updateAvailable">
+          <Icon icon="mdi:arrow-up-bold-circle-outline" />
+          v{{ appStore.info?.latest_version }}
+        </Badge>
+        <span v-else class="text-xs text-muted-foreground transition-colors hover:text-foreground">
+          v{{ appStore.info?.version }}
+        </span>
+      </button>
     </DialogTrigger>
 
     <DialogScrollContent
@@ -171,11 +176,21 @@ function sleep(ms: number) {
     >
       <DialogHeader>
         <DialogTitle class="flex items-center gap-2">
-          <Icon icon="mdi:arrow-up-bold-circle-outline" class="h-4 w-4" />
-          Update available
+          <Icon
+            :icon="
+              updateAvailable ? 'mdi:arrow-up-bold-circle-outline' : 'mdi:check-circle-outline'
+            "
+            class="h-4 w-4"
+          />
+          {{ updateAvailable ? 'Update available' : 'Sage is up to date' }}
         </DialogTitle>
         <DialogDescription>
-          v{{ appStore.info?.version }} → v{{ appStore.info?.latest_version }}
+          <template v-if="updateAvailable">
+            v{{ appStore.info?.version }} → v{{ appStore.info?.latest_version }}
+          </template>
+          <template v-else>
+            You're on the latest version (v{{ appStore.info?.version }}).
+          </template>
         </DialogDescription>
       </DialogHeader>
 
@@ -226,7 +241,7 @@ function sleep(ms: number) {
         </CardContent>
       </Card>
 
-      <Alert>
+      <Alert v-if="updateAvailable">
         <TriangleAlert />
         <AlertTitle>What happens on upgrade</AlertTitle>
         <AlertDescription>
@@ -263,9 +278,10 @@ function sleep(ms: number) {
           :disabled="phase !== 'idle'"
           @click="dialogOpen = false"
         >
-          Cancel
+          Close
         </Button>
         <Button
+          v-if="updateAvailable"
           size="sm"
           :disabled="phase !== 'idle' || notesLoading || refreshing"
           @click="onConfirmUpgrade"
