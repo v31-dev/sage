@@ -9,11 +9,16 @@ from tempfile import TemporaryDirectory
 import docker
 
 from services.db import DB_PATH, Backup, Database, Event, Notification, Task, db
+from utils.executor import run_in_executor_with_context
 from utils.queue import OnConflict
 
-from ._common import BACKUP_TIMESTAMP_FORMAT, is_expired_backup_key, timestamp_from_key
+from ._common import BACKUP_TIMESTAMP_FORMAT, app_dir, is_expired_backup_key, timestamp_from_key
 
 logger = logging.getLogger(__name__)
+
+UPGRADER_IMAGE = "docker:28-cli"
+UPGRADER_NAME = "sage-upgrade"
+UPGRADE_SCRIPT = "templates/manager/upgrade.sh"
 
 
 class PlatformMixin:
@@ -148,6 +153,54 @@ class PlatformMixin:
   def restart(self):
     client = docker.from_env()
     client.containers.get("sage").restart()
+
+  async def upgrade(self, version: str):
+    """Back up the DB, then spawn the detached compose updater and return. Aborts if
+    the backup fails. The manager is replaced mid-flight, so the outcome isn't tracked
+    here; updater logs survive under `docker logs sage-upgrade`."""
+    await self.backup_database_s3()
+    await run_in_executor_with_context(self._spawn_upgrader, version)
+
+  def _spawn_upgrader(self, version: str):
+    """Launch the detached updater container. Self-upgrade is compose-only; refuse
+    (no-op + notify) when the manager wasn't started by Docker Compose."""
+    client = docker.from_env()
+    labels = client.containers.get("sage").labels
+
+    working_dir = labels.get("com.docker.compose.project.working_dir")
+    config_files = labels.get("com.docker.compose.project.config_files")
+    project = labels.get("com.docker.compose.project")
+    if not (working_dir and config_files and project):
+      self.notify(
+          "Upgrade aborted: this manager was not started with Docker Compose, so it "
+          "cannot self-upgrade. Pull the new image tag and recreate it manually.",
+          "error",
+      )
+      return
+
+    # Reap a previous updater so its name/logs don't block this run.
+    for stale in client.containers.list(all=True, filters={"name": UPGRADER_NAME}):
+      stale.remove(force=True)
+
+    client.containers.run(
+        image=UPGRADER_IMAGE,
+        command=["sh", "-c", (app_dir / UPGRADE_SCRIPT).read_text()],
+        environment={
+            "NEW_TAG": version,
+            "PROJECT_DIR": working_dir,
+            "PROJECT_NAME": project,
+            "CONFIG_FILES": config_files,
+        },
+        volumes={
+            "/var/run/docker.sock": {"bind": "/var/run/docker.sock", "mode": "rw"},
+            working_dir: {"bind": working_dir, "mode": "rw"},
+        },
+        working_dir=working_dir,
+        name=UPGRADER_NAME,
+        detach=True,
+        remove=False,
+    )
+    self.notify(f"Upgrade to v{version} started; the manager will restart.", "info")
 
   async def restore_database_from_s3(self, s3_path: str):
     """

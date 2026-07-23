@@ -50,7 +50,10 @@ For deeper architecture details, see [docs/architecture.md](docs/architecture.md
 
 ## Usage
 
-Sage is intended to be run with the provided `docker-compose.yml` and `sample.env`.
+Sage is deployed with the provided `docker-compose.yml` and `sample.env`. Docker
+Compose is the only supported deployment method — the in-UI self-upgrade drives
+`docker compose` against this file and `.env`, so a standalone `docker run`
+deployment cannot upgrade itself from the UI.
 
 1. Copy [`sample.env`](sample.env) into your environment file and fill in the required values for your installation.
 2. Set `SAGE_IMAGE_TAG` to the exact Sage release version you want to run.

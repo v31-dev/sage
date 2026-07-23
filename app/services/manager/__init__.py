@@ -48,6 +48,7 @@ class Manager(
       with open(app_dir / "VERSION") as f:
         self.version = f.read().strip()
       self.latest_version = self.version
+      self.latest_release = None
 
       # Single-dispatcher operation queue. Each scope root maps to an independent
       # lane pool (all defined in utils.executor).
