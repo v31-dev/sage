@@ -144,7 +144,7 @@ async def upgrade():
   container (pull -> up -d --wait, with tag rollback on a failed health check).
   """
   # No upgrade allowed in development
-  if get_env("ENV") == "development":
+  if get_env("ENV", "") == "development":
     raise HTTPException(
         status_code=400,
         detail="Self-upgrade is disabled in development.",

@@ -78,5 +78,14 @@ class Manager(
     except Exception as e:
       raise Exception(f"Manager setup failed : {e}.")
 
+  async def async_init(self):
+    """
+    Perform async initialization after Manager.__init__().
+    - Discovers and reconciles S3 backups with the database.
+    - Fetches the latest release details.
+    """
+    await self.discover_s3_platform_backups()
+    self.refresh_latest_release()
+
 
 __all__ = ["Manager"]
