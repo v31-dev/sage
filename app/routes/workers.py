@@ -87,6 +87,27 @@ def get_logs(hostname: str, container: str, search: str = "", from_ts: str = "",
     raise HTTPException(status_code=400, detail=f"Invalid search query: {str(e)}")
 
 
+@router.post("/{hostname}/reboot", dependencies=[Depends(inject_worker)])
+def reboot_worker(request: Request, hostname: str):
+  worker = request.state.models["worker"]
+
+  if not worker:
+    raise HTTPException(status_code=400, detail="Only a worker can be rebooted.")
+  if not worker.online:
+    raise HTTPException(status_code=409, detail="Worker is offline.")
+
+  Manager().add_task(
+      task=Manager().reboot_worker,
+      scopes={"platform", "app"},
+      params={"worker_hostname": worker.hostname},
+      executor="platform",
+      task_id=request.state.task_id,
+      on_conflict=OnConflict.QUEUE,
+  )
+
+  return {"status": "OK"}
+
+
 @router.delete("/{hostname}", dependencies=[Depends(inject_worker)])
 def delete_worker(request: Request, hostname: str):
   worker = request.state.models["worker"]

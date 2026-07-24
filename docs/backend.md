@@ -200,6 +200,7 @@ Every queued operation, its scope, where it is enqueued from, its lane pool, and
 | `restore_database_from_s3` | platform, app | POST /backups/{b}/restore | platform | DEDUP |
 | `delete_backup_s3` | common | DELETE /backups/{b} | common | QUEUE |
 | `remove_worker` | platform, app | DELETE /workers/{h} | platform | QUEUE |
+| `reboot_worker` | platform, app | POST /workers/{h}/reboot | platform | QUEUE — backgrounds a `reboot` over Tailscale SSH so the command returns before the host drops; won't run mid-deploy; status reconciler tracks the worker going offline/back |
 | `refresh_traefik` | platform, app | PUT /settings/cloudflare | platform | QUEUE |
 | `refresh_traefik` | platform, app | POST /settings/resync_traefik | platform | DEDUP |
 | `restart` | platform, app, common, metrics | POST /settings/restart | platform | QUEUE (+priority) |
