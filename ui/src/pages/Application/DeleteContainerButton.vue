@@ -1,10 +1,8 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { Trash } from 'lucide-vue-next'
-import { Button } from '@/components/ui/button'
-import { toast } from 'vue-sonner'
-import { Spinner } from '@/components/ui/spinner'
 
+import ConfirmationButton from '@/components/ConfirmationButton.vue'
 import { type Container, getContainerAPI } from '@/services/api'
 import { useAppStore } from '@/stores/app'
 
@@ -30,26 +28,28 @@ const deleteButtonSpinner = computed(() => {
     ['stopping'].includes(props.container?.status),
   ].includes(true)
 })
-async function onClickDeleteContainer() {
+
+async function onConfirmDeleteContainer() {
   appStore.updateApplicationDeployStatus('stopping')
   try {
     await props.containersAPI.delete(`${props.container.worker.hostname}`)
   } catch (err) {
     appStore.updateApplicationDeployStatus('error')
-    toast.error('Failed to delete container ' + (err instanceof Error ? err.message : ''))
+    throw err
   }
 }
 </script>
 
 <template>
-  <Button
-    variant="destructive"
-    size="sm"
-    @click="onClickDeleteContainer"
+  <ConfirmationButton
+    triggerText="Delete"
+    title="Delete Container"
+    body="Are you sure you want to delete this container? This action cannot be undone."
+    :description="`Worker: ${props.container.worker.hostname}`"
+    :icon="Trash"
+    destructive
     :disabled="deleteButtonDisabled"
-  >
-    <Spinner class="animate-spin" v-if="deleteButtonSpinner" />
-    <Trash />
-    Delete
-  </Button>
+    :loading="deleteButtonSpinner"
+    :onConfirm="onConfirmDeleteContainer"
+  />
 </template>

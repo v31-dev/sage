@@ -1,10 +1,8 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { toast } from 'vue-sonner'
-import { Button } from '@/components/ui/button'
-import { Spinner } from '@/components/ui/spinner'
 import { StopCircle } from 'lucide-vue-next'
 
+import ConfirmationButton from '@/components/ConfirmationButton.vue'
 import {
   APPLICATION_STOP_ELIGIBLE_STATUSES,
   type Application,
@@ -35,26 +33,28 @@ const stopButtonSpinner = computed(() => {
   ].includes(true)
 })
 
-async function onClickStopApplication() {
+async function onConfirmStop() {
   appStore.updateApplicationDeployStatus('stopping')
   try {
     await props.applicationAPI.action(`${props.application.name}/stop`)
   } catch (err) {
     appStore.updateApplicationDeployStatus('error')
-    toast.error('Failed to stop application ' + (err instanceof Error ? err.message : ''))
+    throw err
   }
 }
 </script>
 
 <template>
-  <Button
-    size="sm"
-    class="flex-1 md:flex-initial"
-    variant="destructive"
-    @click="onClickStopApplication"
+  <ConfirmationButton
+    triggerText="Stop"
+    title="Stop Application"
+    body="Are you sure you want to stop this application? Its containers will be stopped and it will go offline."
+    :description="props.application.name"
+    :icon="StopCircle"
+    destructive
     :disabled="stopButtonDisabled"
-  >
-    <Spinner class="animate-spin" v-if="stopButtonSpinner" />
-    <StopCircle />Stop
-  </Button>
+    :loading="stopButtonSpinner"
+    triggerClass="flex-1 md:flex-initial"
+    :onConfirm="onConfirmStop"
+  />
 </template>

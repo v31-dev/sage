@@ -22,11 +22,16 @@ interface Props {
   confirmText?: string
   destructive?: boolean
   icon?: LucideIcon
+  disabled?: boolean
+  loading?: boolean
+  triggerClass?: string
   onConfirm: () => Promise<void>
 }
 
 const props = withDefaults(defineProps<Props>(), {
   destructive: false,
+  disabled: false,
+  loading: false,
 })
 
 const confirmLabel = computed(() => props.confirmText ?? props.triggerText)
@@ -60,7 +65,14 @@ async function onClickConfirm() {
 <template>
   <Dialog v-model:open="isDialogOpen">
     <DialogTrigger asChild>
-      <Button @click="openDialog" :variant="destructive ? 'destructive' : 'outline'" size="sm">
+      <Button
+        @click="openDialog"
+        :variant="destructive ? 'destructive' : 'outline'"
+        size="sm"
+        :disabled="disabled"
+        :class="triggerClass"
+      >
+        <Spinner class="animate-spin" v-if="loading" />
         <component :is="icon" v-if="icon" />{{ triggerText }}
       </Button>
     </DialogTrigger>
