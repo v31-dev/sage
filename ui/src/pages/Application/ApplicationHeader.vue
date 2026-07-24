@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 import router from '@/router'
 import { toast } from 'vue-sonner'
-import { Logs, Activity, TriangleAlert } from 'lucide-vue-next'
+import { Logs, Activity, TriangleAlert, Trash } from 'lucide-vue-next'
 import {
   Card,
   CardAction,
@@ -97,9 +97,12 @@ const repoURL = computed(() => {
             :loadApplication="props.loadApplication"
           />
           <ConfirmationButton
-            title="Application"
-            mode="delete"
+            triggerText="Delete"
+            title="Delete Application"
+            body="Are you sure you want to delete this application? This action cannot be undone."
             :description="props.application.name"
+            :icon="Trash"
+            destructive
             :onConfirm="onConfirmDelete"
           />
         </ButtonGroup>
