@@ -12,42 +12,30 @@ import {
 import { Button } from '@/components/ui/button'
 import { Field, FieldGroup, FieldSet, FieldError } from '@/components/ui/field'
 import { Spinner } from '@/components/ui/spinner'
-import { Trash, Check, type LucideIcon } from 'lucide-vue-next'
+import { type LucideIcon } from 'lucide-vue-next'
 
 interface Props {
+  triggerText: string
   title: string
-  description: string
-  mode: 'delete' | 'info'
+  body: string
+  description?: string
+  confirmText?: string
+  destructive?: boolean
   icon?: LucideIcon
-  buttonText?: string
+  disabled?: boolean
+  loading?: boolean
+  triggerClass?: string
   onConfirm: () => Promise<void>
 }
 
-const props = withDefaults(defineProps<Props>(), {})
+const props = withDefaults(defineProps<Props>(), {
+  destructive: false,
+  disabled: false,
+  loading: false,
+})
 
-const modeText = computed(() => {
-  switch (props.mode) {
-    case 'delete':
-      return 'Delete'
-    case 'info':
-      return 'Confirm'
-    default:
-      return 'OK'
-  }
-})
-const modeIcon = computed(() => {
-  if (props.icon) {
-    return props.icon
-  }
-  switch (props.mode) {
-    case 'delete':
-      return Trash
-    case 'info':
-      return Check
-    default:
-      return null
-  }
-})
+const confirmLabel = computed(() => props.confirmText ?? props.triggerText)
+
 const isDialogOpen = ref(false)
 const isClickedConfirm = ref(false)
 const dialogErrorMessage = ref('')
@@ -67,8 +55,7 @@ async function onClickConfirm() {
     await props.onConfirm()
     isDialogOpen.value = false
   } catch (err) {
-    dialogErrorMessage.value =
-      err instanceof Error ? err.message : `Failed to delete ${props.title.toLowerCase()}`
+    dialogErrorMessage.value = err instanceof Error ? err.message : `${confirmLabel.value} failed`
   } finally {
     isClickedConfirm.value = false
   }
@@ -80,26 +67,26 @@ async function onClickConfirm() {
     <DialogTrigger asChild>
       <Button
         @click="openDialog"
-        :variant="props.mode === 'delete' ? 'destructive' : 'outline'"
+        :variant="destructive ? 'destructive' : 'outline'"
         size="sm"
+        :disabled="disabled"
+        :class="triggerClass"
       >
-        <component :is="modeIcon" />{{ props.buttonText || modeText }}
+        <Spinner class="animate-spin" v-if="loading" />
+        <component :is="icon" v-if="icon" />{{ triggerText }}
       </Button>
     </DialogTrigger>
     <DialogContent class="sm:max-w-[600px]">
       <DialogHeader>
-        <DialogTitle>{{ modeText }} {{ props.title }}</DialogTitle>
-        <DialogDescription>
-          {{ props.description }}
+        <DialogTitle>{{ title }}</DialogTitle>
+        <DialogDescription v-if="description">
+          {{ description }}
         </DialogDescription>
       </DialogHeader>
       <FieldSet>
         <FieldGroup>
           <Field>
-            <p class="text-sm text-muted-foreground">
-              Are you sure you want to {{ modeText.toLowerCase() }} this
-              {{ props.title.toLowerCase() }}? This action cannot be undone.
-            </p>
+            <p class="text-sm text-muted-foreground">{{ body }}</p>
           </Field>
           <Field>
             <FieldError v-if="dialogErrorMessage">{{ dialogErrorMessage }} </FieldError>
@@ -109,12 +96,12 @@ async function onClickConfirm() {
       <DialogFooter>
         <Button
           size="sm"
-          :variant="props.mode === 'delete' ? 'destructive' : 'default'"
+          :variant="destructive ? 'destructive' : 'default'"
           @click="onClickConfirm"
           :disabled="isClickedConfirm"
         >
           <Spinner class="animate-spin" v-if="isClickedConfirm" />
-          {{ modeText }}
+          {{ confirmLabel }}
         </Button>
       </DialogFooter>
     </DialogContent>

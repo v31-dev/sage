@@ -8,7 +8,7 @@ import {
   ItemDescription,
   ItemActions,
 } from '@/components/ui/item'
-import { ArchiveRestore } from 'lucide-vue-next'
+import { ArchiveRestore, Trash } from 'lucide-vue-next'
 import { toast } from 'vue-sonner'
 
 import { formatDate } from '@/lib/utils'
@@ -67,17 +67,20 @@ async function onConfirmRestoreBackup(backupId: string) {
     </ItemContent>
     <ItemActions class="gap-2">
       <ConfirmationButton
-        :title="'restore backup ' + formatDate(backup.created_at)"
-        mode="info"
+        triggerText="Restore"
+        :title="'Restore backup ' + formatDate(backup.created_at)"
+        body="Are you sure you want to restore this backup? This action cannot be undone."
         description="Restore Platform Backup"
-        buttonText="Restore"
         :icon="ArchiveRestore"
         :onConfirm="() => onConfirmRestoreBackup(String(backup.id))"
       />
       <ConfirmationButton
-        :title="'Backup ' + formatDate(backup.created_at)"
-        mode="delete"
+        triggerText="Delete"
+        :title="'Delete backup ' + formatDate(backup.created_at)"
+        body="Are you sure you want to delete this backup? This action cannot be undone."
         description="Platform Backup"
+        :icon="Trash"
+        destructive
         :onConfirm="() => onConfirmDeleteBackup(String(backup.id))"
       />
     </ItemActions>

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { useRouter } from 'vue-router'
 import { toast } from 'vue-sonner'
-import { Activity } from 'lucide-vue-next'
+import { Activity, RotateCw, Trash } from 'lucide-vue-next'
 import { Button } from '@/components/ui/button'
 import { ButtonGroup } from '@/components/ui/button-group'
 import {
@@ -35,6 +35,11 @@ async function onConfirmDelete() {
   toast.success(`Worker ${props.worker.hostname} deleted successfully`)
   router.push('/workers')
 }
+
+async function onConfirmRestart() {
+  await workersAPI.action(`${props.worker.hostname}/reboot`)
+  toast.success(`Worker ${props.worker.hostname} reboot triggered`)
+}
 </script>
 
 <template>
@@ -51,9 +56,20 @@ async function onConfirmDelete() {
       <CardAction>
         <ButtonGroup class="space-x-1">
           <ConfirmationButton
-            title="Worker"
-            mode="delete"
+            triggerText="Restart"
+            title="Restart Worker"
+            body="Are you sure you want to restart this worker? It will reboot and briefly go offline."
             :description="props.worker.hostname"
+            :icon="RotateCw"
+            :onConfirm="onConfirmRestart"
+          />
+          <ConfirmationButton
+            triggerText="Delete"
+            title="Delete Worker"
+            body="Are you sure you want to delete this worker? This action cannot be undone."
+            :description="props.worker.hostname"
+            :icon="Trash"
+            destructive
             :onConfirm="onConfirmDelete"
           />
         </ButtonGroup>

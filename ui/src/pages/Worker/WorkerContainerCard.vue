@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { ArrowRight } from 'lucide-vue-next'
+import { ArrowRight, Trash } from 'lucide-vue-next'
 import { RouterLink } from 'vue-router'
 import { Button } from '@/components/ui/button'
 import { toast } from 'vue-sonner'
@@ -61,10 +61,12 @@ async function onConfirmForceDelete() {
       </CardTitle>
       <CardAction v-if="showForceDelete">
         <ConfirmationButton
-          title="Container"
-          mode="delete"
-          buttonText="Force Delete"
+          triggerText="Force Delete"
+          title="Delete Container"
+          body="Are you sure you want to delete this container? This action cannot be undone."
           :description="`Force delete ${props.container.application.label} from offline worker ${props.worker.hostname}. Remote cleanup on the worker will be skipped.`"
+          :icon="Trash"
+          destructive
           :onConfirm="onConfirmForceDelete"
         />
       </CardAction>

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { toast } from 'vue-sonner'
-import { Edit } from 'lucide-vue-next'
+import { Edit, Trash } from 'lucide-vue-next'
 import {
   Card,
   CardHeader,
@@ -103,9 +103,12 @@ async function onClickConfirmDelete() {
             Edit
           </Button>
           <ConfirmationButton
-            title="Volume"
-            mode="delete"
+            triggerText="Delete"
+            title="Delete Volume"
+            body="Are you sure you want to delete this volume? This action cannot be undone."
             :description="props.volume.name"
+            :icon="Trash"
+            destructive
             :onConfirm="onClickConfirmDelete"
           />
         </ButtonGroup>

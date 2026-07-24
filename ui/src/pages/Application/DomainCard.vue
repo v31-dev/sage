@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import { toast } from 'vue-sonner'
-import { Edit, ExternalLink, CircleCheck } from 'lucide-vue-next'
+import { Edit, ExternalLink, CircleCheck, Trash } from 'lucide-vue-next'
 import { Card, CardHeader, CardTitle, CardAction, CardFooter } from '@/components/ui/card'
 import {
   Dialog,
@@ -125,9 +125,12 @@ async function onClickConfirmDelete() {
             Edit
           </Button>
           <ConfirmationButton
-            title="Domain"
-            mode="delete"
+            triggerText="Delete"
+            title="Delete Domain"
+            body="Are you sure you want to delete this domain? This action cannot be undone."
             :description="props.domain.name"
+            :icon="Trash"
+            destructive
             :onConfirm="onClickConfirmDelete"
           />
         </ButtonGroup>

@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import re
 
@@ -302,6 +303,28 @@ class WorkersMixin:
       if is_new:
         await run_in_executor_with_context(self.remove_worker, worker.hostname)
       raise Exception(f"Failed to {action} worker {worker.hostname} : {e}")
+
+  async def reboot_worker(self, worker_hostname: str):
+    """
+    Reboot a worker host over Tailscale SSH. The reboot is backgrounded so the
+    SSH command returns before the host network drops.
+    """
+    worker = Worker.get_or_none(Worker.hostname == worker_hostname)
+    if not worker:
+      return
+
+    try:
+      await self.tailscale.exec_command(
+          worker.hostname, "(sleep 2 && reboot) </dev/null >/dev/null 2>&1 &", timeout=30)
+    except Exception as e:
+      self.notify(f"Failed to reboot worker {worker.hostname}: {e}", "error")
+      raise Exception(f"Failed to reboot worker {worker.hostname}: {e}")
+
+    # Hold the scope past the backgrounded reboot's delay so a deploy can't grab a
+    # still-up worker in the gap between this task finishing and the host dropping.
+    await asyncio.sleep(3)
+
+    self.notify(f"Worker {worker.hostname} reboot triggered.")
 
   def remove_worker(self, worker_hostname: str):
     """
