@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { ChartConfig } from '@/components/ui/chart'
-import { VisArea, VisLine, VisAxis, VisXYContainer } from '@unovis/vue'
+import { VisArea, VisLine, VisStackedBar, VisAxis, VisXYContainer } from '@unovis/vue'
 import { CurveType } from '@unovis/ts'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import {
@@ -32,7 +32,7 @@ interface Props {
   unit: string
   yMax?: number
   height?: string
-  type: 'area' | 'line'
+  type: 'area' | 'line' | 'bar'
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -49,6 +49,19 @@ const chartConfig = computed(() => {
     }
   }
   return config
+})
+
+const barAccessors = computed(() =>
+  props.series.map(s => (d: ChartDataPoint) => (d[s.key] as number | null) ?? 0)
+)
+
+const barColors = computed(() => props.series.map(s => s.color))
+
+// Counts read badly on fractional ticks, so bars get integer ticks derived from yMax
+const yTickValues = computed(() => {
+  if (props.type !== 'bar' || !props.yMax) return undefined
+  const max = Math.ceil(props.yMax)
+  return [...new Set([0, Math.ceil(max / 2), max])]
 })
 
 const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
@@ -73,6 +86,10 @@ function formatDateForXAxis(d: number) {
   return `${hour12}:${minutes} ${ampm}`
 }
 
+function formatYAxis(d: number) {
+  return props.unit ? `${d.toFixed(0)} ${props.unit}` : d.toFixed(0)
+}
+
 function tooltipColor(_: any, i: number) {
   return props.series[i]?.color
 }
@@ -86,6 +103,17 @@ function tooltipColor(_: any, i: number) {
     <CardContent :style="{ height }">
       <ChartContainer :config="chartConfig">
         <VisXYContainer :data="data" :margin="{ top: 10, bottom: 10 }" :yDomain="[0, props.yMax]">
+          <VisStackedBar
+            v-if="props.type == 'bar'"
+            :x="(d: ChartDataPoint) => d.date"
+            :y="barAccessors"
+            :color="barColors"
+            :barPadding="0.25"
+            :roundedCorners="2"
+            :barMinHeight1Px="true"
+            :barMinHeightZeroValue="0"
+          />
+
           <template v-for="s in props.series" :key="s.key">
             <VisArea
               v-if="props.type == 'area'"
@@ -118,11 +146,7 @@ function tooltipColor(_: any, i: number) {
             :tick-format="formatDateForXAxis"
           />
 
-          <VisAxis
-            type="y"
-            :num-ticks="3"
-            :tick-format="(d: number) => `${d.toFixed(0)} ${props.unit}`"
-          />
+          <VisAxis type="y" :num-ticks="3" :tick-values="yTickValues" :tick-format="formatYAxis" />
 
           <ChartTooltip />
           <ChartCrosshair
