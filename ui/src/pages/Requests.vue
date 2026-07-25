@@ -9,11 +9,16 @@ function parseMessage(
   try {
     const m = JSON.parse(raw)
 
+    // Traefik logs Duration as a Go time.Duration, marshalled as nanoseconds
+    const durationMs = parseInt(m['Duration']) / 1e6
+    const duration =
+      durationMs < 1000 ? `${durationMs.toFixed(0)}ms` : `${(durationMs / 1000).toFixed(2)}s`
+
     return {
       ts: m['StartUTC'] ?? '',
       worker: entry['hostname'] ?? '',
       client: m['ClientHost'] ?? '',
-      message: `${m['RequestMethod']} ${m['RequestHost']}${m['RequestPath']} ${m['DownstreamStatus']} ${m['DownstreamContentSize']}B ${(parseInt(m['Duration']) / 10e6).toFixed(2)}s`,
+      message: `${m['RequestMethod']} ${m['RequestHost']}${m['RequestPath']} ${m['DownstreamStatus']} ${m['DownstreamContentSize']}B ${duration}`,
     }
   } catch {
     return { ts: '', message: raw }
