@@ -21,15 +21,11 @@ RUN npm run build
 # Stage 2: Python app with built UI
 FROM python:3.12-slim
 
-# Install dependencies (gdb: required by `memray attach` to inject into a live process)
-RUN apt-get update && apt-get -y upgrade && apt-get install -y --no-install-recommends \
-  gdb \
-  && rm -rf /var/lib/apt/lists/*
+# Security updates for the base image's packages. Live-profiling tools are dev-only
+# (app/Dockerfile).
+RUN apt-get update && apt-get -y upgrade && rm -rf /var/lib/apt/lists/*
 
 COPY --from=tailscale /usr/local/bin/tailscale /usr/local/bin/tailscaled /usr/local/bin/
-
-# Live-profiling tools (attach via `docker exec`; need SYS_PTRACE + gdb)
-RUN pip install --no-cache-dir py-spy==0.4.2 memray==1.19.3
 
 WORKDIR /app
 

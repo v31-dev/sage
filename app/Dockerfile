@@ -6,15 +6,13 @@ FROM python:3.12-slim
 
 ARG ENV=production
 
-# Install dependencies (gdb: required by `memray attach` to inject into a live process)
-RUN apt-get update && apt-get -y upgrade && apt-get install -y --no-install-recommends \
-  gdb \
-  && rm -rf /var/lib/apt/lists/*
+# Development only: gdb, which `memray attach` needs to inject into a live process. The
+# profilers themselves (py-spy, memray) are in requirements-dev.txt; see docs/profiling.md.
+RUN apt-get update && apt-get -y upgrade && \
+    if [ "$ENV" = "development" ]; then apt-get install -y --no-install-recommends gdb; fi && \
+    rm -rf /var/lib/apt/lists/*
 
 COPY --from=tailscale /usr/local/bin/tailscale /usr/local/bin/tailscaled /usr/local/bin/
-
-# Live-profiling tools (attach via `docker exec`; need SYS_PTRACE + gdb)
-RUN pip install --no-cache-dir py-spy==0.4.2 memray==1.19.3
 
 WORKDIR /app
 

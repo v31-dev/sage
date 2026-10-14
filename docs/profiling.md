@@ -1,14 +1,16 @@
 # Profiling A Live Sage Process
 
-Sage bakes in two live profilers so you can attach to the **running** manager via
+The development image bakes in two live profilers so you can attach to the **running** manager via
 `docker exec` — no restart, no code change. Use this to diagnose CPU spikes or memory
 growth in place.
 
 - **py-spy** — CPU sampling and thread stacks (read-only, very safe).
 - **memray** — memory allocation tracking (injects via `gdb`; slightly more invasive).
 
-Both are installed in the image. Attaching needs the `SYS_PTRACE` capability, which
-only the development compose file (`docker-compose.yml`) grants. The capability is
+Both, and `gdb`, are installed only in the development image (`app/Dockerfile` with
+`ENV=development`; the profilers come from `requirements-dev.txt`). The published image
+doesn't carry them. Attaching needs the `SYS_PTRACE` capability, which only the
+development compose file (`docker-compose.yml`) grants. The capability is
 set at container creation, so it must be present **before** the incident — you can't
 add it to a running container without recreating it (which would destroy the live state
 you want to capture).
