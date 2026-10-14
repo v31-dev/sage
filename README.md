@@ -107,10 +107,14 @@ see the GitHub releases) to control when you upgrade.
 Enable MagicDNS: the UI is reached as `http://<TS_NAME>`, and the manager reaches workers
 by name.
 
+**Sage has no login or access control of its own.** Anyone who can reach the manager over
+the tailnet can use the UI and API, including reading stored credentials (the Cloudflare
+token, S3 keys). The tailnet policy is the only gate: restrict who can reach the manager,
+and never expose it outside the tailnet (no published ports, no public URL).
+
 In the tailnet policy, give the manager and the workers their own tags (the examples use
 `tag:manager` and `tag:worker`) and allow the traffic Sage uses. Anything not allowed is
-unreachable, which is what keeps the manager private: tailnet traffic reaches every port
-the manager container listens on.
+unreachable; tailnet traffic reaches every port the manager container listens on.
 
 ```jsonc
 {
