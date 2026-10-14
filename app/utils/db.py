@@ -1,12 +1,19 @@
 import json
+import os
 import re
+from pathlib import Path
 
 from cryptography.fernet import Fernet
 from peewee import CharField, TextField
 
-from utils.common import get_env
-
-cipher = Fernet(get_env("ENCRYPTION_KEY"))
+# Encrypts sensitive fields. Generated on first boot and kept next to the database;
+# database backups are unreadable without it.
+KEY_PATH = Path("/app/data/encryption.key")
+if not KEY_PATH.exists():
+  KEY_PATH.parent.mkdir(parents=True, exist_ok=True)
+  with os.fdopen(os.open(KEY_PATH, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as key_file:
+    key_file.write(Fernet.generate_key())
+cipher = Fernet(KEY_PATH.read_bytes())
 
 
 def validate_multiline_kv(config: str, field_name: str = "config"):

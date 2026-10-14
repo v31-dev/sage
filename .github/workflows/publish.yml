@@ -6,7 +6,6 @@ on:
       - main
     paths:
       - 'VERSION'
-      - 'sample.env'
 
 permissions:
   contents: write
@@ -143,6 +142,7 @@ jobs:
           provenance: false
           tags: |
             ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }}
+            ghcr.io/${{ github.repository }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
           labels: |

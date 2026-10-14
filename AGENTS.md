@@ -148,11 +148,10 @@ npm run build
 npm run dev
 ```
 
-Compose commands:
+Local dev stack (`docker-compose.yml` is dev-only; deploying the image is in the README):
 
 ```bash
-docker compose up -d
-docker compose -f docker-compose.yml -f docker-compose.override.yml up -d
+docker compose up --build --watch
 ```
 
 ## Documentation Rules

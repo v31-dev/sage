@@ -7,24 +7,28 @@ Sage is a manager-and-workers platform designed for Docker workloads connected t
 - The manager is the control plane.
 - Workers run application containers and edge components.
 - Cloudflare provides public DNS and tunnel integration.
-- Traefik provides ingress on workers; the manager issues and owns the wildcard TLS certificate in-process (ACME DNS-01) and terminates its own `:443`.
+- Traefik provides ingress on workers; the manager issues the wildcard TLS certificate for them in-process (ACME DNS-01).
 - Vector runs on workers and forwards their container logs to the manager; the manager captures its own logs in-process.
 - Glances runs on workers and exposes metrics endpoints the manager polls; the manager collects its own container metrics in-process.
 
 ## Manager Runtime
 
+The container entrypoint (`app/entrypoint.sh`) first brings up the manager's own tailnet
+node — `tailscaled` in userspace networking mode, state under `/app/data/tailscale` — and
+then starts the manager process. Tailnet connections to the node's IP are delivered to
+the same port on the container's loopback, so `:80` and `:9001` need no published ports.
+
 The manager process starts these concurrent services from `app/main.py`:
 
-1. Main FastAPI API on port `9000`
+1. Main FastAPI API and UI on port `80`, plain HTTP — it is reached over the tailnet,
+   which WireGuard already encrypts
 2. Log/metric ingestion FastAPI API on port `9001` (receives workers' Vector log shipments)
-3. TLS server on port `443` (Tailscale-only) serving the app under `sage.core.<domain>` with the wildcard cert
-4. APScheduler (cron/interval) scheduler
+3. APScheduler (cron/interval) scheduler
 
 Startup is service-driven:
 
 - `Manager()` initializes the platform services.
 - `Manager.async_init()` performs async startup work, such as backup discovery.
-- The wildcard cert is provisioned (issued if missing/expiring) before `:443` binds; its `SSLContext` is handed to `Certs` so renewal swaps the cert in place with no restart.
 - If service initialization fails, the process exits.
 
 ## Worker Runtime

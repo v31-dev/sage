@@ -17,10 +17,10 @@ SETTING_DEFINITIONS = {
         "discord_webhook": {"env": "DISCORD_WEBHOOK", "required": False},
     },
     "cloudflare": {
-        "api_token": {"env": "CLOUDFLARE_API_TOKEN", "required": True},
-        "account_id": {"env": "CLOUDFLARE_ACCOUNT_ID", "required": True},
-        "domain": {"env": "DOMAIN", "required": True},
-        "admin_email": {"env": "ADMIN_EMAIL", "required": True},
+        "api_token": {"env": "CLOUDFLARE_API_TOKEN", "required": False},
+        "account_id": {"env": "CLOUDFLARE_ACCOUNT_ID", "required": False},
+        "domain": {"env": "DOMAIN", "required": False},
+        "admin_email": {"env": "ADMIN_EMAIL", "required": False},
 
     }
 }

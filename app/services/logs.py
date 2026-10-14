@@ -239,7 +239,7 @@ class _CaptureHandler(logging.Handler):
   def emit(self, record):
     try:
       self._queue.put({
-          "hostname": get_env("HOSTNAME"),
+          "hostname": get_env("TS_NAME"),
           "ts": datetime.fromtimestamp(record.created, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z",
           "stream": "stderr" if record.levelno >= logging.WARNING else "stdout",
           "message": self.format(record),

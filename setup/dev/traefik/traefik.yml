@@ -1,14 +1,9 @@
-# Dev-only Traefik. Terminates TLS on :443 with the wildcard cert sage issues
-# in-process (mounted PEM, file provider) and splits sage.core.<domain> between
-# the Vite HMR UI and the sage API via container labels (docker provider). Not
-# used in prod, where sage serves :443 itself.
-providers:
-  docker:
-    exposedByDefault: false
-  file:
-    directory: /etc/traefik/dynamic
-    watch: true
-
+# Dev-only Traefik, sharing the sage container's network namespace (docker-compose.yml),
+# so :80 here is the dev manager's tailnet address.
 entryPoints:
-  websecure:
-    address: :443
+  web:
+    address: :80
+
+providers:
+  file:
+    filename: /etc/traefik/dynamic.yml

@@ -1,8 +1,8 @@
 import logging
 
 from services.base import Base
-from services.certs import Certs
-from services.cloudflare import Cloudflare
+from services.certs import Certs  # noqa: F401  TODO(rework-02 step 4)
+from services.cloudflare import Cloudflare  # noqa: F401  TODO(rework-02 step 4)
 from services.db import Database
 from services.logs import Logs
 from services.metrics import Metrics
@@ -70,8 +70,10 @@ class Manager(
       Notifications()
       Metrics()
       self.tailscale = Tailscale()
-      self.cloudflare = Cloudflare()
-      self.certs = Certs()
+      # TODO(rework-02 step 4): Cloudflare and Certs need config that is no longer in
+      # env; re-enable once they are optional at boot.
+      # self.cloudflare = Cloudflare()
+      # self.certs = Certs()
       self.s3 = S3()
 
       self.notify("Manager started.")

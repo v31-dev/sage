@@ -1,0 +1,22 @@
+# /api goes to the dev manager (plain HTTP on :9000 in the shared network namespace);
+# everything else, including Vite's HMR WebSocket, goes to the Vite dev server.
+http:
+  routers:
+    api:
+      rule: PathPrefix(`/api`)
+      entryPoints: [web]
+      service: api
+    ui:
+      rule: PathPrefix(`/`)
+      entryPoints: [web]
+      service: ui
+
+  services:
+    api:
+      loadBalancer:
+        servers:
+          - url: http://localhost:9000
+    ui:
+      loadBalancer:
+        servers:
+          - url: http://ui:5173

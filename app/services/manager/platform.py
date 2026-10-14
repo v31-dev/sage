@@ -150,6 +150,8 @@ class PlatformMixin:
         self.notify(f"Failed to create database backup: {e}", "error")
         raise Exception(f"Failed to create database backup: {e}")
 
+  # TODO(rework-06): the Docker socket is no longer mounted, so restart and upgrade
+  # fail until they are removed.
   def restart(self):
     client = docker.from_env()
     client.containers.get("sage").restart()

@@ -70,7 +70,7 @@ async def collect_metrics():
   # The manager collects its own container metrics in-process (cgroup/statvfs);
   Manager().add_task(
       task=Metrics().collect_self,
-      scopes={f"metrics:{get_env('HOSTNAME')}"},
+      scopes={f"metrics:{get_env('TS_NAME')}"},
       executor="metrics",
       quiet=True,
   )
@@ -150,7 +150,8 @@ async def renew_certificates():
 # Job scheduling
 _JOBS = [
     (dispatch_tick, IntervalTrigger(seconds=1)),
-    (sync_workers, IntervalTrigger(seconds=30)),
+    # TODO(rework-02 step 2): the manager has no route to workers yet.
+    # (sync_workers, IntervalTrigger(seconds=30)),
     (sync_application_status, CronTrigger.from_crontab("* * * * *")),
     (schedule_application_backups, CronTrigger.from_crontab("* * * * *")),
     (reconcile_traefik_configs, CronTrigger.from_crontab("* * * * *")),
@@ -159,7 +160,8 @@ _JOBS = [
     (backup_database, CronTrigger.from_crontab("0 */6 * * *")),
     (send_summary_notification, CronTrigger.from_crontab("0 8 * * *")),
     (cleanup, CronTrigger.from_crontab("0 4 * * *")),
-    (renew_certificates, CronTrigger.from_crontab("0 3 * * *")),
+    # TODO(rework-02 step 4): Certs is disabled at boot.
+    # (renew_certificates, CronTrigger.from_crontab("0 3 * * *")),
 ]
 
 

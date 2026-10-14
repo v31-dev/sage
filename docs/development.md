@@ -11,61 +11,73 @@ The repo includes helper scripts in `setup/dev/`:
   - installs Node via `nvm`
   - installs UI dependencies
 - `env.sh`
-  - loads `.env`
-  - resets the local compose environment
-  - refreshes `HOSTNAME` and `TS_IP`
+  - resets the local compose environment: wipes the manager's `data` volume except its
+    Tailscale state and issued cert
 
 These scripts assume a fairly direct machine setup and should be reviewed before use on an existing environment.
 
 ## Environment
 
-`sample.env` shows the current expected variables. Important groups are:
+The manager takes two env vars, both required: `TS_AUTH_KEY` (a tagged, non-ephemeral
+Tailscale auth key, used only while the node has no tailnet identity) and `TS_NAME` (its
+tailnet machine name, also its name inside Sage). The encryption key is generated on first
+boot as `/app/data/encryption.key`; database backups are unreadable without it.
 
-- local runtime paths and host identity
-- Cloudflare credentials and domain metadata
-- encryption key
-- published Docker image tag selection through `SAGE_IMAGE_TAG`
-- optional notification settings
-- optional S3 backup settings
+For local development, copy [`sample.env`](../sample.env) to `.env`. It adds `SAGE_DATA`,
+the host directory mounted at `/app/data` (`./data-gitignore`, git-ignored).
 
 ## Running The Stack
 
-Docker Compose is the only supported deployment method. The in-UI self-upgrade
-(`POST /settings/upgrade`) launches a detached `docker:cli` updater container that
-runs `docker compose pull`/`up -d` against the manager's own compose file and
-`.env` — it discovers that host-side location from the running container's
-`com.docker.compose.*` labels, and refuses to run when they are absent (i.e. a
-standalone `docker run` deployment) or when `ENV=development` (the override builds
-from source rather than pulling).
-
-Production-style compose:
+The published image runs as a single container; deployment (`docker run`, Compose) is
+described in the [README](../README.md#usage). The repo's
+`docker-compose.yml` is for local development only:
 
 ```bash
-docker compose up -d
+docker compose up --build --watch
 ```
 
-The production compose image requires `SAGE_IMAGE_TAG`. Keep `sample.env` aligned with `VERSION`; the publish workflow updates both together during a release. The updater rewrites `SAGE_IMAGE_TAG` in `.env` on a successful upgrade (and reverts it on a failed one).
+- `--watch` syncs `ui/src` into the Vite container (`develop.watch`), which is what drives
+  hot reload.
+- `--build` rebuilds the images. The manager's code (`app/`) is deliberately not watched:
+  after a backend change, stop the stack and run the command again. The same applies to
+  the UI's `vite.config.ts` / `package.json`.
+- To debug the manager, run the stack and attach VS Code's "Attach to dev manager"
+  configuration (debugpy at `<TS_NAME>:5678`, see below).
 
-Development compose:
+It builds the manager from `app/Dockerfile` (`ENV=development`, debugpy on `:5678`,
+`SYS_PTRACE` for profiling) and adds the `ui` and dev `traefik` services described below.
 
-```bash
-docker compose -f docker-compose.yml -f docker-compose.override.yml up -d
-```
+The manager container runs the API/UI (plain HTTP on `:80`; tailnet traffic is already
+encrypted by WireGuard), metrics and log capture.
 
-The production compose stack runs a single manager container:
-
-- `sage` — the API/UI, the `:443` TLS endpoint, in-process ACME, metrics, and log capture
+The container joins the tailnet as its own node: `app/entrypoint.sh` starts `tailscaled`
+in userspace networking mode (state in `/app/data/tailscale`, `TS_DEBUG_MTU=1230`), logs in
+with `TS_AUTH_KEY` only when the node has no tailnet identity yet, then starts the Python
+process. The container exits when either process does. No host Tailscale socket, TUN
+device or published ports are needed; tailnet traffic to the node's ports reaches the
+container's listeners.
 
 Workers run their own edge stack (`cloudflared`, `traefik`, `vector`, `glances`), bootstrapped remotely.
 
 ### Dev routing
 
-The prod manager serves `:443` itself. In dev the override keeps the same URL (`https://sage.core.<domain>`) **and** Vite HMR by adding two more services and a dev-only Traefik:
+The dev manager is its own tailnet node too. Give it its own `TS_AUTH_KEY` (tagged, e.g.
+`tag:manager-dev`) and `TS_NAME`.
 
-- `ui` — the Vite dev server (`:5173`, HMR).
-- `traefik` (`sage-dev-traefik`) — terminates TLS on `:443` using the cert **sage still issues in-process** (mounted PEM, file provider; no ACME in Traefik) and routes by container labels: `Host(sage.core.<domain>) && PathPrefix(/api)` → `sage:9000`, everything else → `ui:5173`.
+Nothing is published on the host; everything is reached over the tailnet:
 
-To avoid a host `:443` conflict, the override replaces sage's port list (`ports: !override`) to drop sage's own `:443` mapping, and `app/main.py` skips its TLS server when `ENV=development` (the cert is still issued for Traefik to serve). HMR rides the same `:443` (`vite.config.ts` sets `server.hmr.clientPort = 443`).
+- `http://<TS_NAME>` — the UI with hot reload. The dev `traefik` service shares the `sage`
+  container's network namespace (`network_mode: service:sage`), so it owns the dev
+  manager's `:80`. It routes `/api` to the manager (plain HTTP on `:9000` in dev) and
+  everything else, including Vite's HMR WebSocket, to the `ui` service (Vite on `:5173`).
+  Config: `setup/dev/traefik/`. Compose restarts it whenever `sage` restarts, since it
+  loses its network with it.
+- `<TS_NAME>:5678` — debugpy. The VS Code "Attach to dev manager" configuration prompts
+  for the address. debugpy has no authentication, so only allow your own devices to reach
+  this port in the tailnet policy.
+
+The tailnet policy must let your devices reach the dev manager on `:80` (and `:5678` for
+debugging).
 
 ## Backend Commands
 
@@ -106,17 +118,16 @@ Current GitHub workflows:
   - runs manually through `workflow_dispatch`
   - requires the workflow to be started from `main`
   - bumps the root `VERSION` file by `patch`, `minor`, or `major`
-  - updates `sample.env` so `SAGE_IMAGE_TAG` matches the release version
-  - creates a `release/v<VERSION>` branch with those file changes
+  - creates a `release/v<VERSION>` branch with that change
   - opens a release PR titled `v<VERSION>`
   - fills the PR body with the generated GitHub release notes
   - adds a changelog compare link as a PR comment for reviewer use
   - applies the combined labels from the merged PRs since the previous release
 - `publish.yml`
-  - runs on pushes to `main` that change `VERSION` or `sample.env`
+  - runs on pushes to `main` that change `VERSION`
   - validates that the merged pull request associated with the pushed commit is titled `v<VERSION>`
   - builds and publishes a GHCR image from that exact version
-  - publishes only the exact `VERSION` image tag
+  - tags the image with the exact `VERSION` and moves `latest` to it
   - creates a GitHub release with generated release notes configured by `.github/release.yml`
   - uses the highest existing `vMAJOR.MINOR.PATCH` tag lower than the current release as the previous release-note boundary when available
   - generates release notes from the changes on `main` before the release PR merge commit so the release PR itself is not included as a changelog entry

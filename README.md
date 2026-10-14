@@ -50,25 +50,61 @@ For deeper architecture details, see [docs/architecture.md](docs/architecture.md
 
 ## Usage
 
-Sage is deployed with the provided `docker-compose.yml` and `sample.env`. Docker
-Compose is the only supported deployment method — the in-UI self-upgrade drives
-`docker compose` against this file and `.env`, so a standalone `docker run`
-deployment cannot upgrade itself from the UI.
+The manager is a single container image, `ghcr.io/v31-dev/sage`. It runs anywhere that
+runs a container with a persistent volume. It joins your tailnet as its own node, so it
+needs no published ports, public URL, host Tailscale or TUN device.
 
-1. Copy [`sample.env`](sample.env) into your environment file and fill in the required values for your installation.
-2. Set `SAGE_IMAGE_TAG` to the exact Sage release version you want to run.
-3. Start the stack with Docker Compose:
+It needs:
+
+- `TS_AUTH_KEY` — a Tailscale auth key for the manager's node. Create it **tagged** (the
+  tag becomes the manager's tag) and **not ephemeral**. It is only used while the node has
+  no tailnet identity yet (first boot, or after its state is lost).
+- `TS_NAME` — the manager's tailnet machine name, also its name inside Sage.
+- A persistent volume at `/app/data`.
+- Exactly one running instance.
+
+`.env`:
 
 ```bash
-docker compose up -d
+TS_AUTH_KEY=tskey-auth-...
+TS_NAME=sage
 ```
 
-The main runtime uses:
+Leave the values unquoted: `docker run --env-file` keeps quotes as part of the value.
 
-- [`docker-compose.yml`](docker-compose.yml) for the production-style stack
-- [`sample.env`](sample.env) as the reference for required configuration values
+With `docker run`:
 
-If you need implementation details, development workflow notes, or release automation details, use the docs below instead of this README.
+```bash
+docker run -d --name sage --restart unless-stopped \
+  --env-file .env \
+  -v sage-data:/app/data \
+  ghcr.io/v31-dev/sage:latest
+```
+
+With Docker Compose:
+
+```yaml
+services:
+  sage:
+    image: ghcr.io/v31-dev/sage:latest
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - sage-data:/app/data
+
+volumes:
+  sage-data:
+```
+
+`latest` follows the newest release. Pin a release tag (`ghcr.io/v31-dev/sage:<version>`,
+see the GitHub releases) to control when you upgrade.
+
+Once the node is up, the UI is at `http://<TS_NAME>` (MagicDNS). Your tailnet policy must
+let your devices reach the manager on port 80, and workers reach it on port 9001. To
+upgrade, run the newer image against the same volume.
+
+The repo's [`docker-compose.yml`](docker-compose.yml) and [`sample.env`](sample.env) are
+for local development; see [docs/development.md](docs/development.md).
 
 ## More Docs
 

@@ -276,7 +276,7 @@ class Metrics(Base):
     """Flush completed minutes of the manager's peak accumulator to its shard.
     The in-progress minute is left to keep accumulating; a minute with no samples
     (e.g. spanning a restart) simply gets no row."""
-    hostname = get_env("HOSTNAME")
+    hostname = get_env("TS_NAME")
     now_minute = datetime.now().replace(second=0, microsecond=0)
 
     with self.lock:
@@ -346,7 +346,7 @@ class Metrics(Base):
 
     # Drop shards for hosts that no longer exist (keyed by hostname -- manager
     # plus all workers, incl. offline).
-    live_hosts = {get_env("HOSTNAME")} | {worker.hostname for worker in Worker.select()}
+    live_hosts = {get_env("TS_NAME")} | {worker.hostname for worker in Worker.select()}
     dropped = self._prune_orphan_shards("metrics", live_hosts)
 
     # Delete rows past the retention window; freed pages are reused by later

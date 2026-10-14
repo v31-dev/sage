@@ -2,11 +2,11 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Python: Attach to Docker",
+      "name": "Python: Attach to dev manager",
       "type": "debugpy",
       "request": "attach",
       "connect": {
-        "host": "localhost",
+        "host": "${input:sageHost}",
         "port": 5678
       },
       "pathMappings": [
@@ -16,6 +16,14 @@
         }
       ],
       "justMyCode": true
+    }
+  ],
+  "inputs": [
+    {
+      "id": "sageHost",
+      "type": "promptString",
+      "description": "Dev manager address: its TS_NAME on the tailnet, or <TS_NAME>.<domain>",
+      "default": "sage-dev"
     }
   ]
 }

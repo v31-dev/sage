@@ -76,20 +76,6 @@ jobs:
           next_version = f"{major}.{minor}.{patch}"
           version_path.write_text(f"{next_version}\n")
 
-          sample_env_path = Path("sample.env")
-          sample_env = sample_env_path.read_text()
-          updated_sample_env, replacements = re.subn(
-              r"^SAGE_IMAGE_TAG=['\"]?[^'\"]*['\"]?$",
-              f"SAGE_IMAGE_TAG='{next_version}'",
-              sample_env,
-              count=1,
-              flags=re.MULTILINE,
-          )
-          if replacements != 1:
-              print("Could not update SAGE_IMAGE_TAG in sample.env")
-              sys.exit(1)
-          sample_env_path.write_text(updated_sample_env)
-
           github_output = Path(os.environ["GITHUB_OUTPUT"])
           with github_output.open("a", encoding="utf-8") as fh:
               fh.write(f"current_version={current_version}\n")
@@ -158,7 +144,7 @@ jobs:
           git switch -c "$BRANCH_NAME"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add VERSION sample.env
+          git add VERSION
           git commit -m "v$VERSION"
           git push origin "$BRANCH_NAME"
           echo "branch_name=$BRANCH_NAME" >> $GITHUB_OUTPUT
