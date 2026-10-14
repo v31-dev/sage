@@ -1,19 +1,17 @@
 import json
 import os
 import re
-from pathlib import Path
+import sys
 
 from cryptography.fernet import Fernet
 from peewee import CharField, TextField
 
-# Encrypts sensitive fields. Generated on first boot and kept next to the database;
-# database backups are unreadable without it.
-KEY_PATH = Path("/app/data/encryption.key")
-if not KEY_PATH.exists():
-  KEY_PATH.parent.mkdir(parents=True, exist_ok=True)
-  with os.fdopen(os.open(KEY_PATH, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as key_file:
-    key_file.write(Fernet.generate_key())
-cipher = Fernet(KEY_PATH.read_bytes())
+# Encrypts sensitive fields, platform backups and volume archives. The data and every
+# backup are unreadable without it, and it can't change after the first boot (main.py).
+try:
+  cipher = Fernet(os.getenv("ENCRYPTION_KEY", ""))
+except ValueError:
+  sys.exit("ENCRYPTION_KEY must be a key made with: openssl rand -base64 32 | tr '+/' '-_'")
 
 
 def validate_multiline_kv(config: str, field_name: str = "config"):

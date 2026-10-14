@@ -31,7 +31,7 @@ Agents must keep this context active throughout a task, including after summarie
 
 - Manager plus workers over Tailscale is the core architecture.
 - Access control is out of scope (rework sprint, 2026-10-15): the manager API/UI has no authentication and is reached only over the tailnet, whose policy is the only gate. Don't add login, secret masking or ingestion tokens unless asked, and keep the README stating this.
-- The manager is a single container with its own userspace Tailscale node (`app/entrypoint.sh`). Only `TS_AUTH_KEY` and `TS_NAME` come from env; everything else is configured in the UI (`Setting` table), and Cloudflare, certificates and S3 are optional — nothing external is required to start.
+- The manager is a single container with its own userspace Tailscale node (`app/entrypoint.sh`). Only `TS_AUTH_KEY`, `TS_NAME` and `ENCRYPTION_KEY` come from env (the key can't change after the first boot: startup refuses a different one); everything else is configured in the UI (`Setting` table), and Cloudflare, certificates and S3 are optional — nothing external is required to start.
 - Services are singleton-based and thread-aware.
 - Long or remote-touching operations run through the Manager's in-memory operation queue (`app/utils/queue.py`); entity CRUD is an instant route-side model write (only `delete_container` is queued — it does remote cleanup). APScheduler only fires cron/interval triggers that call `Manager().add_task(...)`.
 - `task_id` propagation through `ContextVar` is a core observability requirement.

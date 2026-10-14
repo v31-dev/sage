@@ -201,13 +201,13 @@ Every queued operation, its scope, where it is enqueued from, its lane pool, and
 | --- | --- | --- | --- | --- |
 | `sync_workers` | platform | interval 30s | platform | DEDUP |
 | `sync_application_status` | app:`<qn>` | cron 1m | app | DEDUP |
-| `backup_application_s3` | app:`<qn>` | cron 1m (due backups) | app | DEDUP |
+| `backup_application_s3` | app:`<qn>` | cron 1m (due backups; skipped when S3 isn't configured) | app | DEDUP — worker `backup.sh`: tar → `openssl enc` (ENCRYPTION_KEY) → HMAC-SHA256 appended (encrypt-then-MAC) → presigned PUT |
 | `reconcile_traefik_configs` | platform | cron 1m | platform | DEDUP |
 | `Metrics.collect` | metrics:`<worker>` | cron 1m | metrics | DEDUP |
 | `Metrics.collect_self` | metrics:`<manager>` | cron 1m | metrics | DEDUP |
 | `send_summary_notification` | common | cron daily 08:00 | common | REPLACE |
 | `refresh_latest_release` | common | cron 4h + once at startup | common | REPLACE — caches latest-release detail (version + notes + `fetched_at`) served by `GET /info/release` |
-| `backup_database_s3` | platform, app | cron 6h (skipped when S3 isn't configured) | platform | REPLACE |
+| `backup_database_s3` | platform, app | cron 12h (skipped when S3 isn't configured) | platform | REPLACE — SQLite snapshot, Fernet-encrypted as a whole (`<ts>.db.enc`) |
 | `Metrics.cleanup` | metrics | cron daily 04:00 | metrics | REPLACE |
 | `Logs.cleanup` | common | cron daily 04:00 | common | REPLACE |
 | `cleanup` | platform | cron daily 04:00 | platform | REPLACE |
@@ -222,9 +222,9 @@ Every queued operation, its scope, where it is enqueued from, its lane pool, and
 | `stop_application` | app:`<qn>` | POST …/stop | app | DEDUP |
 | `delete_container` | app:`<qn>` | DELETE …/containers/{c} | app | QUEUE (route rejects a duplicate delete of the same container via `has_task`, the params-aware pending/running check) |
 | `backup_application_s3` | app:`<qn>` | POST …/volumes/{v}/backups | app | DEDUP |
-| `restore_application_volume_from_s3` | app:`<qn>` | POST …/backups/{b}/restore | app | DEDUP |
-| `backup_database_s3` | platform, app | POST /backups (400 when S3 isn't configured) | platform | REPLACE |
-| `restore_database_from_s3` | platform, app | POST /backups/{b}/restore | platform | DEDUP — safety copy and restore through SQLite's backup API; then reloads the settings and the services built from them (S3, notifications, Cloudflare, certs). A backup made with another encryption key fails that reload and rolls back to the safety copy |
+| `restore_application_volume_from_s3` | app:`<qn>` | POST …/backups/{b}/restore | app | DEDUP — worker `restore.sh` checks the HMAC before decrypting |
+| `backup_database_s3` | platform, app | POST /backups | platform | REPLACE |
+| `restore_database_from_s3` | platform, app | POST /backups/{b}/restore | platform | DEDUP — decrypts first (another key or an unencrypted backup is refused before the live DB is touched); safety copy and restore through SQLite's backup API; then reloads the settings and the services built from them (S3, notifications, Cloudflare, certs). A settings reload failure still rolls back to the safety copy |
 | `delete_backup_s3` | common | DELETE /backups/{b} | common | QUEUE |
 | `remove_worker` | platform, app | DELETE /workers/{h} | platform | QUEUE |
 | `reboot_worker` | platform, app | POST /workers/{h}/reboot | platform | QUEUE — backgrounds a `reboot` over Tailscale SSH so the command returns before the host drops; won't run mid-deploy; status reconciler tracks the worker going offline/back |
@@ -233,6 +233,8 @@ Every queued operation, its scope, where it is enqueued from, its lane pool, and
 | `refresh_latest_release` | common | POST /info/release/refresh | common | REPLACE — on-demand version of the 4h refresh; UI polls `GET /info/release`'s `fetched_at` |
 | `sync_workers` | platform | POST /settings/resync_workers | platform | REPLACE |
 | `sync_application_traefik_domains_config` | app:`<qn>` | create/update/delete_domain, update-container tag change (via `request_application_traefik_sync`) | app | REPLACE |
+
+Backups live in S3, which is optional: every backup route (create, restore, delete) returns 400 until S3 is configured, and the backup triggers skip.
 
 Per-app tasks (status sync, the Traefik domains sync, backups, `delete_container`) re-fetch their target by id with `get_or_none` and treat a missing row as a **quiet no-op**: instant deletes are a legitimate interleaving with queued/scheduled work, so a task whose target vanished has nothing to do (the reconcile scan owns worker-side cleanup for deleted apps). `remove_worker` is the deliberate exception — its precondition re-check fails loudly because proceeding would destroy a worker that just gained containers.
 

@@ -55,9 +55,16 @@ def get_platform_backup_status(request: Request):
   return {"platform_backup_in_progress": Manager().is_task_running(Manager().backup_database_s3)}
 
 
+def require_s3():
+  """Every backup lives in S3, which is optional."""
+  if not Manager().s3.s3_config:
+    raise HTTPException(status_code=400, detail="S3 is not configured. Set it up in Settings first.")
+
+
 @router.post("/")
 def create_backup(request: Request):
   """Trigger backup - platform backup by default, or volume backup if nested under volume."""
+  require_s3()
   models = get_request_models(request)
   if "volume" in models:
     application = models["application"]
@@ -82,9 +89,6 @@ def create_backup(request: Request):
     ):
       raise HTTPException(status_code=409, detail="Application already has an operation in progress.")
   else:
-    if not Manager().s3.s3_config:
-      raise HTTPException(status_code=400, detail="S3 is not configured. Set it up in Settings first.")
-
     # REPLACE: never rejected. Supersedes a pending backup (latest wins) and waits
     # behind a running one, so the user's trigger captures changes made during the
     # in-flight backup, with at most one backup queued behind it.
@@ -102,6 +106,7 @@ def create_backup(request: Request):
 @router.delete("/{backup}", dependencies=[Depends(inject_backup)])
 def delete_backup(request: Request):
   """Delete backup - only platform backups for now."""
+  require_s3()
   backup = request.state.models["backup"]
 
   # Delete backup record from database
@@ -123,6 +128,7 @@ def delete_backup(request: Request):
 @router.post("/{backup}/restore", dependencies=[Depends(inject_backup)])
 async def restore_backup(request: Request, restore_data: dict = Body(default={})):
   """Restore backup."""
+  require_s3()
   models = get_request_models(request, ["backup"])
   backup = models["backup"]
 

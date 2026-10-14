@@ -132,8 +132,10 @@ Core entities:
 - `Backup`
 - `Task` (log of finished queue operations)
 
-The encryption key for its sensitive fields is generated on first boot as
-`/app/data/encryption.key`; database backups can't be read without it.
+Its sensitive fields are encrypted with `ENCRYPTION_KEY` (Fernet, `utils/db.py`), which
+also encrypts platform backups as a whole and volume archives. The key can't change after
+the first boot: the settings rows are written on the first boot and decrypted on every
+later one, so a different key stops startup (`main.py`).
 
 Relationships are centered on:
 

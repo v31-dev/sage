@@ -47,6 +47,8 @@ async def sync_application_status():
 
 
 async def schedule_application_backups():
+  if not Manager().s3.s3_config:
+    return
   now = datetime.now()
   for application, volumes in Manager().get_due_volume_backups(now):
     Manager().add_task(
@@ -170,7 +172,7 @@ _JOBS = [
     (reconcile_traefik_configs, CronTrigger.from_crontab("* * * * *")),
     (collect_metrics, CronTrigger.from_crontab("* * * * *")),
     (refresh_latest_release, CronTrigger.from_crontab("0 */4 * * *")),
-    (backup_database, CronTrigger.from_crontab("0 */6 * * *")),
+    (backup_database, CronTrigger.from_crontab("0 */12 * * *")),
     (send_summary_notification, CronTrigger.from_crontab("0 8 * * *")),
     (cleanup, CronTrigger.from_crontab("0 4 * * *")),
     (renew_certificates, CronTrigger.from_crontab("0 3 * * *")),

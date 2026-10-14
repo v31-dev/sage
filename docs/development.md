@@ -18,10 +18,11 @@ These scripts assume a fairly direct machine setup and should be reviewed before
 
 ## Environment
 
-The manager takes two env vars, both required: `TS_AUTH_KEY` (a tagged, non-ephemeral
-Tailscale auth key, used only while the node has no tailnet identity) and `TS_NAME` (its
-tailnet machine name, also its name inside Sage). The encryption key is generated on first
-boot as `/app/data/encryption.key`; database backups are unreadable without it.
+The manager takes three env vars, all required: `TS_AUTH_KEY` (a tagged, non-ephemeral
+Tailscale auth key, used only while the node has no tailnet identity), `TS_NAME` (its
+tailnet machine name, also its name inside Sage) and `ENCRYPTION_KEY` (encrypts database
+secrets and all backups; fixed after the first boot — Sage refuses to start with another
+key, so wipe `SAGE_DATA` to switch keys).
 
 For local development, copy [`sample.env`](../sample.env) to `.env`. It adds `SAGE_DATA`,
 the host directory mounted at `/app/data` (`./data-gitignore`, git-ignored).

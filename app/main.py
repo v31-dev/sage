@@ -5,6 +5,7 @@ import os
 import sys
 
 import uvicorn
+from cryptography.fernet import InvalidToken
 
 from api import app as app_fastapi
 from api_vector import app as app_fastapi_vector
@@ -18,10 +19,25 @@ setup_logger()
 logger = logging.getLogger(__name__)
 
 # Setup the Manager
+def caused_by(error: BaseException | None, kind: type) -> bool:
+  # Services re-raise setup errors as generic exceptions; the original is in the chain.
+  while error is not None:
+    if isinstance(error, kind):
+      return True
+    error = error.__cause__ or error.__context__
+  return False
+
+
 try:
   manager = Manager()
 except Exception as e:
-  logger.critical(f"Error during startup: {e}", exc_info=True)
+  if caused_by(e, InvalidToken):
+    # The settings, written on the first boot, don't decrypt: the key was changed since.
+    logger.critical(
+        "ENCRYPTION_KEY is not the key this data was written with. Set the original key, or "
+        "wipe the volume to start over with this one.")
+  else:
+    logger.critical(f"Error during startup: {e}", exc_info=True)
   sys.exit(1)
 
 

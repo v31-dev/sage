@@ -10,6 +10,7 @@ from cryptography.fernet import InvalidToken
 from services.db import DB_PATH, Backup, Database, Event, Notification, Task, db
 from services.notification import Notifications
 from services.settings import Settings
+from utils.db import cipher
 from utils.queue import OnConflict
 
 from ._common import BACKUP_TIMESTAMP_FORMAT, is_expired_backup_key, timestamp_from_key
@@ -128,20 +129,26 @@ class PlatformMixin:
     # Create the backup
     with TemporaryDirectory() as temp_dir:
       timestamp = datetime.now().strftime(BACKUP_TIMESTAMP_FORMAT)
-      backup_file = f"{temp_dir}/{timestamp}.db"
+      snapshot_file = Path(temp_dir) / f"{timestamp}.db"
+      backup_file = Path(temp_dir) / f"{timestamp}.db.enc"
 
       try:
         # Use SQLite's native backup API
         src_conn = db.connection()
-        backup_conn = sqlite3.connect(backup_file)
+        backup_conn = sqlite3.connect(snapshot_file)
         src_conn.backup(backup_conn)
         backup_conn.close()
+
+        # Encrypted as a whole with ENCRYPTION_KEY (Fernet, authenticated): the backup
+        # reveals nothing without the key, and a restore with another key fails before
+        # it touches the live database.
+        backup_file.write_bytes(cipher.encrypt(snapshot_file.read_bytes()))
 
         # Upload to S3
         await self.s3.upload_to_key(backup_file, self.s3_backup_path_platform)
 
         # Record backup in database
-        full_backup_path = f"{self.s3.get_full_path(self.s3_backup_path_platform)}/{timestamp}.db"
+        full_backup_path = f"{self.s3.get_full_path(self.s3_backup_path_platform)}/{backup_file.name}"
         Backup.create(s3_path=full_backup_path, type="platform")
 
         self.notify(f"Database backup created at {timestamp}.")
@@ -155,6 +162,7 @@ class PlatformMixin:
 
     Process:
     - Download backup file from S3 to temporary location
+    - Decrypt it (a backup made with another key fails here)
     - Validate it's a valid SQLite database
     - Create safety backup of current database
     - Restore into the live database using SQLite's online backup API
@@ -166,9 +174,19 @@ class PlatformMixin:
 
       with TemporaryDirectory() as temp_dir:
         # Download backup from S3
+        encrypted_backup = Path(temp_dir) / "restore_backup.db.enc"
         downloaded_backup = f"{temp_dir}/restore_backup.db"
         logger.info(f"Downloading backup from S3: {s3_path}")
-        await self.s3.download_key(s3_path, downloaded_backup, raw_path=True)
+        await self.s3.download_key(s3_path, str(encrypted_backup), raw_path=True)
+
+        logger.info("Decrypting downloaded backup")
+        encrypted = encrypted_backup.read_bytes()
+        if encrypted.startswith(b"SQLite format 3\x00"):
+          raise Exception("the backup isn't encrypted (made by an older version of Sage)")
+        try:
+          Path(downloaded_backup).write_bytes(cipher.decrypt(encrypted))
+        except InvalidToken:
+          raise Exception("the backup was made with a different encryption key")
 
         # Validate it's a valid SQLite database
         logger.info("Validating downloaded backup file")
@@ -247,8 +265,8 @@ class PlatformMixin:
           Database().reconcile_schema()
           logger.info("Schema reconciled successfully")
 
-          # Reload the cached settings from the restored database. Decrypting them is
-          # also the first check that the backup was written with this install's key.
+          # Reload the cached settings from the restored database (they must decrypt,
+          # or the restore rolls back).
           Settings().load_all()
         except Exception as e:
           logger.error(f"Restored database verification failed: {e}")

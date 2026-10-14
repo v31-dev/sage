@@ -63,6 +63,12 @@ It needs:
   tag becomes the manager's tag) and **not ephemeral**. It is only used while the node has
   no tailnet identity yet (first boot, or after its state is lost).
 - `TS_NAME` — the manager's tailnet machine name, also its name inside Sage.
+- `ENCRYPTION_KEY` — encrypts secrets in the database, platform backups and volume
+  backups. Generate one with `openssl rand -base64 32 | tr '+/' '-_'` and keep it with
+  your S3 credentials: backups can't be restored without it. It can't change after the
+  first boot: Sage refuses to start with a different key. To use another key, wipe the
+  volume and start again. Restoring a backup needs the key it was made with, so recovering
+  onto a new volume means starting with the original key.
 - A persistent volume at `/app/data`.
 - Exactly one running instance.
 - A stop grace period of a few minutes. On a stop signal Sage starts no new work and lets
@@ -74,6 +80,7 @@ It needs:
 ```bash
 TS_AUTH_KEY=tskey-auth-...
 TS_NAME=sage
+ENCRYPTION_KEY=...
 ```
 
 Leave the values unquoted: `docker run --env-file` keeps quotes as part of the value.
