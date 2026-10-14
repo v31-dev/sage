@@ -65,6 +65,9 @@ It needs:
 - `TS_NAME` — the manager's tailnet machine name, also its name inside Sage.
 - A persistent volume at `/app/data`.
 - Exactly one running instance.
+- A stop grace period of a few minutes. On a stop signal Sage starts no new work and lets
+  running tasks (a deploy, a backup) finish before it exits. Docker's default is 10 seconds
+  before it kills the container.
 
 `.env`:
 
@@ -78,7 +81,7 @@ Leave the values unquoted: `docker run --env-file` keeps quotes as part of the v
 With `docker run`:
 
 ```bash
-docker run -d --name sage --restart unless-stopped \
+docker run -d --name sage --restart unless-stopped --stop-timeout 300 \
   --env-file .env \
   -v sage-data:/app/data \
   ghcr.io/v31-dev/sage:latest
@@ -91,6 +94,7 @@ services:
   sage:
     image: ghcr.io/v31-dev/sage:latest
     restart: unless-stopped
+    stop_grace_period: 5m
     env_file: .env
     volumes:
       - sage-data:/app/data
@@ -159,8 +163,11 @@ Once the node is up, the UI is at `http://<TS_NAME>`. Everything else is configu
 UI: start with the worker tag. Cloudflare (app domains, public apps), S3 (backups) and
 notifications are optional.
 
-Changing `TS_NAME` later renames the manager's tailnet machine on the next start. To
-upgrade, run the newer image against the same volume.
+Changing `TS_NAME` later renames the manager's tailnet machine on the next start.
+
+Sage doesn't upgrade itself. The version in the footer opens Settings → Upgrade, with the
+release notes and the steps: pause Sage and wait until it is safe to stop, take a backup,
+then run the newer image against the same volume. Sage always starts unpaused.
 
 The repo's [`docker-compose.yml`](docker-compose.yml) and [`sample.env`](sample.env) are
 for local development; see [docs/development.md](docs/development.md).

@@ -8,6 +8,7 @@ import Application from '@/pages/Application'
 import ApplicationLogs from '@/pages/ApplicationLogs.vue'
 import ApplicationMetrics from '@/pages/ApplicationMetrics.vue'
 import Settings from '@/pages/Settings'
+import Upgrade from '@/pages/Settings/Upgrade.vue'
 import Worker from '@/pages/Worker'
 import Workers from '@/pages/Workers'
 import WorkerMetrics from '@/pages/WorkerMetrics.vue'
@@ -35,6 +36,7 @@ const routes = [
   { path: '/workers/:hostname/metrics', name: 'WorkerMetrics', component: WorkerMetrics },
   { path: '/backups', name: 'Backups', component: Backup },
   { path: '/settings', name: 'Settings', component: Settings },
+  { path: '/settings/upgrade', name: 'Upgrade', component: Upgrade },
 ]
 
 const router = createRouter({

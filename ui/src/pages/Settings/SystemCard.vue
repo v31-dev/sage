@@ -2,7 +2,6 @@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { TriangleAlert } from 'lucide-vue-next'
 
-import RestartSubCard from '@/pages/Settings/RestartSubCard.vue'
 import TraefikResyncSubCard from '@/pages/Settings/TraefikResyncSubCard.vue'
 import WorkersResyncSubCard from '@/pages/Settings/WorkersResyncSubCard.vue'
 </script>
@@ -20,7 +19,6 @@ import WorkersResyncSubCard from '@/pages/Settings/WorkersResyncSubCard.vue'
     <CardContent class="space-y-4">
       <TraefikResyncSubCard />
       <WorkersResyncSubCard />
-      <RestartSubCard />
     </CardContent>
   </Card>
 </template>

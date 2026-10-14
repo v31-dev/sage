@@ -108,9 +108,33 @@ The Manager owns a single in-memory `TaskQueue` (`app/utils/queue.py`). It is th
   - `DEDUP`/`REPLACE` identity is **name + scope, not params**. DEDUP rejecting a params-distinct call is safe (it returns `False`/409, nothing is lost); REPLACE would *silently* drop it, so params-identified work uses `QUEUE`.
 - **`priority`** (separate flag) — insert ahead of lower/equal work but behind dominating scopes.
 - **`quiet`** (separate flag) — record only on failure (see below).
-- **Persistence.** The queue calls a `record` hook (`Manager._persist_task`) at each terminal state. Only `completed`/`failed`/`cancelled` are written to the `Task` table; running and queued tasks live in memory and are exposed via `snapshot()` for the UI. `quiet=True` tasks skip the `completed` record so high-frequency reconcilers (metrics collection, per-app status/domain sync, the 30s worker sync) don't flood the table — failures still record. Status vocabulary: `cancelled` means the task **never started** (REPLACE supersession, the pre-restart drain); a task interrupted **mid-run** — the loop's shutdown cancels its coroutine — records as `failed` (started but did not complete).
+- **Persistence.** The queue calls a `record` hook (`Manager._persist_task`) at each terminal state. Only `completed`/`failed`/`cancelled` are written to the `Task` table; running and queued tasks live in memory and are exposed via `snapshot()` for the UI. `quiet=True` tasks skip the `completed` record so high-frequency reconcilers (metrics collection, per-app status/domain sync, the 30s worker sync) don't flood the table — failures still record. Status vocabulary: `cancelled` means the task **never started** (REPLACE supersession, the drain on stop); a task interrupted **mid-run** — the loop's shutdown cancels its coroutine — records as `failed` (started but did not complete). A forced stop (second signal, or the runtime's kill after its grace period) ends the process with the running task unrecorded.
 
 To make a deliberate user action coalesce with a recurring one, enqueue both with `on_conflict=OnConflict.REPLACE` (latest-wins; e.g. the platform backup and the worker force-resync); no per-operation locks or pending flags are needed.
+
+## Pause And Stop
+
+Sage never restarts or upgrades itself; the runtime stops and starts its container
+(Settings → Upgrade lists the manual steps). Two ways to quiesce it. Both are a state on
+the `TaskQueue` (`QueueState`: `running`, `paused`, `stopping`), exposed as
+`Manager().pause_tasks()` / `resume_tasks()` / `stop_tasks()` / `task_state()`:
+
+- **Pause** (`POST /settings/pause`, `/resume`; Settings → Upgrade, banner while paused).
+  `dispatch_tick` starts nothing: running tasks finish, queued tasks wait. Cron triggers
+  keep firing and their tasks queue as usual, so a pause behaves like one long task holding
+  every scope; DEDUP/REPLACE keep each recurring task to one pending copy, and they run on
+  resume. In memory only, so a restart comes back running.
+- **Stop signal** (`app/main.py`). The first SIGTERM/SIGINT shuts the scheduler down and
+  stops the queue: queued tasks, and any added later (e.g. a follow-up queued by a
+  finishing task), are recorded as `cancelled`; running ones finish, then the API server
+  stops. There is no cap in Sage: the runtime's stop grace period bounds it. A second
+  signal stops right away. The log-ingest server (`api_vector`) doesn't handle signals, so
+  worker logs keep arriving until the process exits.
+
+`GET /api` reports that `state`. While it isn't `running`,
+`api.py` refuses changes with 503: every method but GET/HEAD/OPTIONS, except pause/resume
+and the POST routes that only read (`_READ_ONLY_POSTS`). A new read-only POST route has to
+be added there.
 
 ## Execution Modes And Pools
 
@@ -118,7 +142,7 @@ Pools (lanes) are defined in `app/utils/executor.py`. The first four are queue l
 
 | Pool | Workers | Used by |
 | --- | --- | --- |
-| `PLATFORM_EXECUTOR` | 1 | `platform` lane — main-DB backup/restore, cleanup, restart |
+| `PLATFORM_EXECUTOR` | 1 | `platform` lane — main-DB backup/restore, cleanup |
 | `COMMON_EXECUTOR` | 1 | `common` lane — version refresh, daily summary, S3 delete |
 | `APP_EXECUTOR` | 6 | `app` lane — per-application deploy/stop/backup/restore |
 | `METRICS_EXECUTOR` | 2 | `metrics` lane — collection, metrics-store cleanup |
@@ -200,14 +224,12 @@ Every queued operation, its scope, where it is enqueued from, its lane pool, and
 | `backup_application_s3` | app:`<qn>` | POST …/volumes/{v}/backups | app | DEDUP |
 | `restore_application_volume_from_s3` | app:`<qn>` | POST …/backups/{b}/restore | app | DEDUP |
 | `backup_database_s3` | platform, app | POST /backups (400 when S3 isn't configured) | platform | REPLACE |
-| `restore_database_from_s3` | platform, app | POST /backups/{b}/restore | platform | DEDUP |
+| `restore_database_from_s3` | platform, app | POST /backups/{b}/restore | platform | DEDUP — safety copy and restore through SQLite's backup API; then reloads the settings and the services built from them (S3, notifications, Cloudflare, certs). A backup made with another encryption key fails that reload and rolls back to the safety copy |
 | `delete_backup_s3` | common | DELETE /backups/{b} | common | QUEUE |
 | `remove_worker` | platform, app | DELETE /workers/{h} | platform | QUEUE |
 | `reboot_worker` | platform, app | POST /workers/{h}/reboot | platform | QUEUE — backgrounds a `reboot` over Tailscale SSH so the command returns before the host drops; won't run mid-deploy; status reconciler tracks the worker going offline/back |
 | `refresh_traefik` | platform, app | PUT /settings/cloudflare | platform | QUEUE |
 | `refresh_traefik` | platform, app | POST /settings/resync_traefik | platform | DEDUP |
-| `restart` | platform, app, common, metrics | POST /settings/restart | platform | QUEUE (+priority) |
-| `upgrade` | platform, app, common, metrics | POST /settings/upgrade | platform | QUEUE (+priority) — DB backup (aborts the upgrade on failure), then spawns a detached `docker:cli` compose updater (`templates/manager/upgrade.sh`: pull → `up -d --wait`, tag rollback on failed health check); updater logs kept under `docker logs sage-upgrade`. Refused in dev / when already latest / standalone (non-compose) |
 | `refresh_latest_release` | common | POST /info/release/refresh | common | REPLACE — on-demand version of the 4h refresh; UI polls `GET /info/release`'s `fetched_at` |
 | `sync_workers` | platform | POST /settings/resync_workers | platform | REPLACE |
 | `sync_application_traefik_domains_config` | app:`<qn>` | create/update/delete_domain, update-container tag change (via `request_application_traefik_sync`) | app | REPLACE |
@@ -234,7 +256,7 @@ Not every periodic/background job is a queue task. Two service-owned daemon thre
 
 Cron cadence convention: **≤ 1m → `DEDUP`** (a high-frequency reconciler skips only if its own previous run is still in flight; the next tick retries), **> 1m → `REPLACE`** (a 6h/1d/10d task must not skip its whole cycle on a transient conflict; latest-wins keeps no backlog).
 
-`sync_workers` deliberately differs by source — cron uses `DEDUP`, while resync/restore use `REPLACE` with `{force: True}` to supersede a pending plain sync. That is why DEDUP/REPLACE identity is name + scope and not params. The full-stack `restart` cancels pending work and waits with priority for in-flight platform/app operations before replacing the process.
+`sync_workers` deliberately differs by source — cron uses `DEDUP`, while resync/restore use `REPLACE` with `{force: True}` to supersede a pending plain sync. That is why DEDUP/REPLACE identity is name + scope and not params.
 
 **Interrupted-operation recovery.** A busy status (`deploying`/`stopping`/`backup`/`restoring`) is only ever written by a task while it holds that app's scope — and `sync_application_status` holds that same scope while it runs, so by mutual exclusion any busy status it observes has no owning operation left: the mark of an interrupted task (crash, plain container restart, cancelled coroutine). Instead of skipping such apps, the sync resets the stuck app/containers to `error` (with a notification) and then converges them against real `docker ps` state in the same run. This is why no boot-time status reset exists: the minutely sync covers startup wedges and mid-flight loss with one mechanism. Detection defers while a broad `app`-scope task runs (the per-app syncs queue behind it) and resumes when it finishes. Deploy/stop container children additionally run their whole body inside their try block so an early failure can never kill the parent's gather and leave detached siblings running.
 

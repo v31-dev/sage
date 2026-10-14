@@ -18,6 +18,8 @@ export interface AppInfo {
   hostname: string
   ip: string
   start_time: string
+  // running, or paused (Settings > Upgrade), or stopping (draining after a stop signal)
+  state: 'running' | 'paused' | 'stopping'
 }
 
 export interface Release {

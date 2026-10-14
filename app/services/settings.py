@@ -15,6 +15,9 @@ class Settings(Base):
     super().__init__()
 
     self.values = {}
+    self.load_all()
+
+  def load_all(self):
     for key in SETTING_DEFINITIONS:
       self.load(key)
 

@@ -1,24 +1,20 @@
 import logging
-import shutil
 import sqlite3
 from datetime import datetime, timedelta
 from functools import partial
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-import docker
+from cryptography.fernet import InvalidToken
 
 from services.db import DB_PATH, Backup, Database, Event, Notification, Task, db
-from utils.executor import run_in_executor_with_context
+from services.notification import Notifications
+from services.settings import Settings
 from utils.queue import OnConflict
 
-from ._common import BACKUP_TIMESTAMP_FORMAT, app_dir, is_expired_backup_key, timestamp_from_key
+from ._common import BACKUP_TIMESTAMP_FORMAT, is_expired_backup_key, timestamp_from_key
 
 logger = logging.getLogger(__name__)
-
-UPGRADER_IMAGE = "docker:28-cli"
-UPGRADER_NAME = "sage-upgrade"
-UPGRADE_SCRIPT = "templates/manager/upgrade.sh"
 
 
 class PlatformMixin:
@@ -153,60 +149,6 @@ class PlatformMixin:
         self.notify(f"Failed to create database backup: {e}", "error")
         raise Exception(f"Failed to create database backup: {e}")
 
-  # TODO(rework-06): the Docker socket is no longer mounted, so restart and upgrade
-  # fail until they are removed.
-  def restart(self):
-    client = docker.from_env()
-    client.containers.get("sage").restart()
-
-  async def upgrade(self, version: str):
-    """Back up the DB, then spawn the detached compose updater and return. Aborts if
-    the backup fails. The manager is replaced mid-flight, so the outcome isn't tracked
-    here; updater logs survive under `docker logs sage-upgrade`."""
-    await self.backup_database_s3()
-    await run_in_executor_with_context(self._spawn_upgrader, version)
-
-  def _spawn_upgrader(self, version: str):
-    """Launch the detached updater container. Self-upgrade is compose-only; refuse
-    (no-op + notify) when the manager wasn't started by Docker Compose."""
-    client = docker.from_env()
-    labels = client.containers.get("sage").labels
-
-    working_dir = labels.get("com.docker.compose.project.working_dir")
-    config_files = labels.get("com.docker.compose.project.config_files")
-    project = labels.get("com.docker.compose.project")
-    if not (working_dir and config_files and project):
-      self.notify(
-          "Upgrade aborted: this manager was not started with Docker Compose, so it "
-          "cannot self-upgrade. Pull the new image tag and recreate it manually.",
-          "error",
-      )
-      return
-
-    # Reap a previous updater so its name/logs don't block this run.
-    for stale in client.containers.list(all=True, filters={"name": UPGRADER_NAME}):
-      stale.remove(force=True)
-
-    client.containers.run(
-        image=UPGRADER_IMAGE,
-        command=["sh", "-c", (app_dir / UPGRADE_SCRIPT).read_text()],
-        environment={
-            "NEW_TAG": version,
-            "PROJECT_DIR": working_dir,
-            "PROJECT_NAME": project,
-            "CONFIG_FILES": config_files,
-        },
-        volumes={
-            "/var/run/docker.sock": {"bind": "/var/run/docker.sock", "mode": "rw"},
-            working_dir: {"bind": working_dir, "mode": "rw"},
-        },
-        working_dir=working_dir,
-        name=UPGRADER_NAME,
-        detach=True,
-        remove=False,
-    )
-    self.notify(f"Upgrade to v{version} started; the manager will restart.", "info")
-
   async def restore_database_from_s3(self, s3_path: str):
     """
     Restore database from S3 backup.
@@ -248,7 +190,11 @@ class PlatformMixin:
         logger.info(f"Creating safety backup: {safety_backup_path}")
 
         try:
-          shutil.copy2(DB_PATH, safety_backup_path)
+          # Through SQLite, not a file copy: in WAL mode recent writes are only in the
+          # -wal file, which a copy of the main file would miss.
+          safety_conn = sqlite3.connect(safety_backup_path)
+          db.connection().backup(safety_conn)
+          safety_conn.close()
           logger.info(f"Safety backup created: {safety_backup_path}")
         except Exception as e:
           logger.error(f"Failed to create safety backup: {e}")
@@ -300,6 +246,10 @@ class PlatformMixin:
           logger.info("Reconciling restored schema with current models")
           Database().reconcile_schema()
           logger.info("Schema reconciled successfully")
+
+          # Reload the cached settings from the restored database. Decrypting them is
+          # also the first check that the backup was written with this install's key.
+          Settings().load_all()
         except Exception as e:
           logger.error(f"Restored database verification failed: {e}")
           # Rollback to safety backup
@@ -309,14 +259,22 @@ class PlatformMixin:
             live_conn = db.connection()
             rollback_conn.backup(live_conn)
             rollback_conn.close()
+            Settings().load_all()
+            reason = "it was made with a different encryption key" if isinstance(e, InvalidToken) else e
             self.notify(
-                "Platform restore completed with fallback to safety backup",
+                f"Platform restore from backup {s3_path} failed ({reason}); the previous database was kept.",
                 "warning"
             )
             return
           except Exception as rollback_err:
             logger.error(f"Failed to rollback to safety backup: {rollback_err}")
           raise Exception(f"Database verification failed and recovery unsuccessful: {e}")
+
+        # Services built from the settings pick up the restored values.
+        self.s3.load()
+        Notifications().load_notifications_config()
+        self.cloudflare.load()
+        self.certs.load()
 
         self.notify(f"Platform restored from backup {s3_path} successfully.", "success")
 

@@ -11,7 +11,7 @@ from services.notification import Notifications
 from services.s3 import S3
 from services.settings import Settings
 from utils.api import generic_get, generic_list, get_request_models, parse_api_data
-from utils.common import DOMAIN_RE, EMAIL_RE, get_env
+from utils.common import DOMAIN_RE, EMAIL_RE
 from utils.queue import OnConflict
 
 router = APIRouter()
@@ -128,52 +128,18 @@ def update_setting(request: Request, setting_data: dict = Body(...)):
   return generic_get(Setting, (Setting.key == setting_key))
 
 
-@router.post("/restart")
-async def restart():
-  """
-  Trigger a restart of the full compose stack via the Docker API socket. Pending
-  queued work is cancelled and the restart waits (with priority) for in-flight
-  platform/app operations to finish before the process is replaced. Progress is
-  not tracked once the restart fires.
-  """
-  Manager().cancel_all_tasks()
-  Manager().add_task(
-      task=Manager().restart,
-      scopes={"platform", "app", "common", "metrics"},
-      executor="platform",
-      on_conflict=OnConflict.QUEUE,
-      priority=True,
-  )
-  return {"message": "Restart initiated."}
+@router.post("/pause")
+def pause():
+  """Pause Sage before stopping it: queued tasks wait, running ones finish, and user
+  changes are refused until resume. Not remembered across restarts."""
+  Manager().pause_tasks()
+  return {"state": Manager().task_state()}
 
 
-@router.post("/upgrade")
-async def upgrade():
-  """
-  Upgrade the manager to the latest release via a detached compose updater
-  container (pull -> up -d --wait, with tag rollback on a failed health check).
-  """
-  # No upgrade allowed in development
-  if get_env("ENV", "") == "development":
-    raise HTTPException(
-        status_code=400,
-        detail="Self-upgrade is disabled in development.",
-    )
-
-  version = Manager().latest_version
-  if not version or version == Manager().version:
-    raise HTTPException(status_code=409, detail="Already on the latest version.")
-
-  Manager().cancel_all_tasks()
-  Manager().add_task(
-      task=Manager().upgrade,
-      params={"version": version},
-      scopes={"platform", "app", "common", "metrics"},
-      executor="platform",
-      on_conflict=OnConflict.QUEUE,
-      priority=True,
-  )
-  return {"message": "Upgrade initiated.", "version": version}
+@router.post("/resume")
+def resume():
+  Manager().resume_tasks()
+  return {"state": Manager().task_state()}
 
 
 @router.post("/resync_traefik")

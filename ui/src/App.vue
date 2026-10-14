@@ -3,6 +3,7 @@ import { ref, onMounted } from 'vue'
 import { useColorMode } from '@vueuse/core'
 import Header from './components/layout/Header.vue'
 import Footer from '@/components/layout/Footer.vue'
+import PausedBanner from '@/components/layout/PausedBanner.vue'
 import AppSidebar from '@/components/layout/AppSidebar.vue'
 import { SidebarInset, SidebarProvider } from '@/components/ui/sidebar'
 import {
@@ -77,6 +78,7 @@ onMounted(async () => {
         <AppSidebar />
         <SidebarInset class="h-screen overflow-hidden flex flex-col">
           <Header />
+          <PausedBanner />
           <router-view class="flex-1 overflow-auto" />
           <Footer />
         </SidebarInset>

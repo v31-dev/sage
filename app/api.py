@@ -12,10 +12,28 @@ from routes.projects import router as projects_router
 from routes.settings import router as settings_router
 from routes.tasks import router as tasks_router
 from routes.workers import router as workers_router
+from services.manager import Manager
 from utils.logging import fastapi_middleware
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, redirect_slashes=False)
 app.add_middleware(fastapi_middleware)
+
+# While Sage is paused or stopping, only reads are served: GETs, the POST routes that only
+# read, and pause/resume themselves.
+_ALLOWED_WHILE_PAUSED = ("/api/settings/pause", "/api/settings/resume")
+_READ_ONLY_POSTS = ("/get_available_workers", "/metrics", "/platform_backup_status")
+
+
+@app.middleware("http")
+async def refuse_changes_unless_running(request: Request, call_next):
+  state = Manager().task_state()
+  if (state != "running"
+          and request.method not in ("GET", "HEAD", "OPTIONS")
+          and request.url.path not in _ALLOWED_WHILE_PAUSED
+          and not request.url.path.endswith(_READ_ONLY_POSTS)):
+    detail = "Sage is paused; resume it first." if state == "paused" else "Sage is stopping."
+    return JSONResponse(status_code=503, content={"detail": detail})
+  return await call_next(request)
 
 
 @app.exception_handler(ValueError)
