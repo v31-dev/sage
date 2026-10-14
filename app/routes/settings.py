@@ -1,3 +1,5 @@
+import re
+
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from playhouse.shortcuts import model_to_dict
 
@@ -54,7 +56,15 @@ def update_setting(request: Request, setting_data: dict = Body(...)):
   merged_setting_value.update(new_setting_value)
 
   # Validate the settings before update
-  if setting_key == "s3":
+  if setting_key == "tailscale":
+    # Stored without the `tag:` prefix, which worker discovery adds back.
+    worker_tag = (merged_setting_value.get("worker_tag") or "").strip().removeprefix("tag:") or None
+    if worker_tag and not re.fullmatch(r"[A-Za-z0-9-]+", worker_tag):
+      raise HTTPException(status_code=400, detail="Invalid worker tag. Use letters, numbers and dashes, e.g. worker.")
+
+    Settings().set("tailscale", {"worker_tag": worker_tag})
+
+  elif setting_key == "s3":
     if not S3().check_config(merged_setting_value):
       raise HTTPException(status_code=400, detail="Invalid S3 configuration. Please verify the provided settings.")
 

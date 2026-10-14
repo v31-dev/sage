@@ -24,8 +24,6 @@ DNS_PROPAGATION_TIMEOUT = 180
 DNS_POLL_INTERVAL = 5
 FINALIZE_TIMEOUT_SECONDS = 180
 CHALLENGE_COMMENT = "sage-acme-challenge"
-# Exponential backoff between cold-start issuance attempts
-STARTUP_RETRY_DELAYS = (60, 240, 960)
 
 
 class Certs(Base):
@@ -47,37 +45,12 @@ class Certs(Base):
     # new cert, live connections keep theirs) without restarting the server.
     self.tls_context = None
 
+    # Issuance runs in the renew_certificates task (at startup and daily), never here.
     self.load()
-
-    # Sage cannot serve :443 without a certificate, so a cold start retries with
-    # backoff before giving up. An existing valid certificate means this was only
-    # a renewal, so a failure is logged and left to the daily renewal op rather
-    # than holding startup — or failing it — for a certificate that still works.
-    for delay in (*STARTUP_RETRY_DELAYS, None):
-      try:
-        self.ensure()
-        break
-      except Exception as e:
-        if self.has_valid_certificates():
-          logger.error(
-              f"Certificate renewal failed during startup: {e}. Continuing on the current "
-              f"certificate (expires {self.expiry()}); the daily renewal will retry.",
-              exc_info=True)
-          break
-        # Let's Encrypt's Retry-After for a rate limit is measured in hours, so
-        # further attempts this session would fail regardless.
-        if delay is None or (isinstance(e, messages.Error) and e.code == "rateLimited"):
-          raise
-        logger.warning(
-            f"Certificate issuance failed during startup: {e}. Retrying in {delay}s.")
-        time.sleep(delay)
 
   def load(self):
     self.domain = Settings().get("cloudflare", "domain")
     self.admin_email = Settings().get("cloudflare", "admin_email")
-
-    if not self.domain or not self.admin_email:
-      raise ValueError("Platform settings require non-empty domain and admin_email values.")
 
   def _domains(self):
     return [self.domain, f"*.core.{self.domain}", f"*.int.{self.domain}"]

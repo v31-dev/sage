@@ -37,10 +37,9 @@ class BackgroundServer(uvicorn.Server):
 
 
 async def main():
-  # Perform manager async initialization
-  await manager.async_init()
-
-  # Start the cron/interval scheduler on this running loop.
+  # Start the cron/interval scheduler on this running loop. Startup work that touches
+  # the network (release check, certificate renewal, backup discovery) is queued from
+  # here, so it runs while the servers below are already serving.
   scheduler.start()
 
   # Vector server for worker log ingestion

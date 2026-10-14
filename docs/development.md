@@ -57,7 +57,7 @@ process. The container exits when either process does. No host Tailscale socket,
 device or published ports are needed; tailnet traffic to the node's ports reaches the
 container's listeners.
 
-Workers run their own edge stack (`cloudflared`, `traefik`, `vector`, `glances`), bootstrapped remotely.
+Workers run their own edge stack (`traefik`, `vector`, `glances`, and `cloudflared` when Cloudflare is configured), bootstrapped remotely over Tailscale SSH.
 
 ### Dev routing
 

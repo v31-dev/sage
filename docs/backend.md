@@ -55,17 +55,19 @@ Most high-level backend behavior ultimately flows through this service, and almo
 - `services/db/`
   - Peewee models and database bootstrap
 - `services/settings.py`
-  - persistent settings state plus env fallback
+  - persistent settings state; every field is optional and set from the UI
 - `services/cloudflare.py`
-  - Cloudflare DNS and tunnel management
+  - Cloudflare DNS and tunnel management; optional (`configured` = the whole `cloudflare` setting group is set), connects to the API on first use and retries after a failure
 - `services/tailscale.py`
-  - Tailscale status, SSH command execution, file sync
+  - Tailscale status, SSH command execution and SFTP file sync to workers (asyncssh over `tailscale nc`, since the manager's tailscaled runs in userspace mode)
 - `services/certs.py`
-  - in-process ACME issuance (Let's Encrypt DNS-01), PEM ownership, the `:443` cert hot-reload, and cert sync to workers
+  - in-process ACME issuance (Let's Encrypt DNS-01) of the wildcard certificate for workers, and PEM ownership; issuance runs in the `renew_certificates` task, never at startup
 - `services/manager/traefik.py`
   - worker-side Traefik routing-config generation (mixin)
 - `services/metrics.py`
-  - metrics collection plus per-container log storage and search
+  - metrics collection (workers' Glances via tailscaled's outbound proxy; the manager's own container in-process)
+- `services/logs.py`
+  - per-container log storage and FTS search; the manager's own logs captured in-process
 - `services/s3.py`
   - S3 validation, upload, delete, and presigned URL support
 - `services/notification.py`
@@ -159,11 +161,11 @@ Additional storage:
 
 - metrics SQLite shards
 - log SQLite shards with FTS5 (worker containers via Vector ingestion; the manager's own logs written in-process by a logging handler)
-- Traefik runtime config written to a mounted directory
+- on each worker, Traefik config and revision stamps under `/opt/sage`
 
 ## Scheduler Notes
 
-`app/scheduler.py` holds async APScheduler triggers that act only as cron/interval triggers — each one calls `Manager().add_task(...)` and contains no execution logic. Sub-minute pumps (`dispatch_tick`, `sync_workers`) use `IntervalTrigger`; everything else uses `CronTrigger.from_crontab` and fires on exact wall-clock instants (never at boot). Note: APScheduler's `from_crontab` treats numeric day-of-week `0` as Monday (whereas the `croniter`-matched volume-backup crons use `0` = Sunday) — be explicit about the intended weekday. `dispatch_tick` must stay an `async def` (APScheduler runs coroutine jobs on the loop; a sync job would run in a worker thread where its `asyncio.create_task` has no running loop). Route handlers enqueue through the same `add_task` path, and a few tasks are enqueued internally from within another task.
+`app/scheduler.py` holds async APScheduler triggers that act only as cron/interval triggers — each one calls `Manager().add_task(...)` and contains no execution logic. Sub-minute pumps (`dispatch_tick`, `sync_workers`) use `IntervalTrigger`; everything else uses `CronTrigger.from_crontab` and fires on exact wall-clock instants. The triggers in `_AT_STARTUP` (`refresh_latest_release`, `renew_certificates`, `discover_platform_backups`) also run once right after startup, so startup network work happens in queued tasks while the servers are already serving. Triggers for optional services skip quietly when the service isn't configured: `backup_database` and `discover_platform_backups` need S3, `renew_certificates` needs Cloudflare. Note: APScheduler's `from_crontab` treats numeric day-of-week `0` as Monday (whereas the `croniter`-matched volume-backup crons use `0` = Sunday) — be explicit about the intended weekday. `dispatch_tick` must stay an `async def` (APScheduler runs coroutine jobs on the loop; a sync job would run in a worker thread where its `asyncio.create_task` has no running loop). Route handlers enqueue through the same `add_task` path, and a few tasks are enqueued internally from within another task.
 
 ## Task Catalog
 
@@ -180,12 +182,13 @@ Every queued operation, its scope, where it is enqueued from, its lane pool, and
 | `Metrics.collect` | metrics:`<worker>` | cron 1m | metrics | DEDUP |
 | `Metrics.collect_self` | metrics:`<manager>` | cron 1m | metrics | DEDUP |
 | `send_summary_notification` | common | cron daily 08:00 | common | REPLACE |
-| `refresh_latest_release` | common | cron 4h + once at boot (`async_init`) | common | REPLACE — caches latest-release detail (version + notes + `fetched_at`) served by `GET /info/release` |
-| `backup_database_s3` | platform, app | cron 6h | platform | REPLACE |
+| `refresh_latest_release` | common | cron 4h + once at startup | common | REPLACE — caches latest-release detail (version + notes + `fetched_at`) served by `GET /info/release` |
+| `backup_database_s3` | platform, app | cron 6h (skipped when S3 isn't configured) | platform | REPLACE |
 | `Metrics.cleanup` | metrics | cron daily 04:00 | metrics | REPLACE |
 | `Logs.cleanup` | common | cron daily 04:00 | common | REPLACE |
 | `cleanup` | platform | cron daily 04:00 | platform | REPLACE |
-| `renew_certificates` | platform, app | cron daily 03:00 | platform | REPLACE |
+| `renew_certificates` | platform, app | cron daily 03:00 + once at startup (skipped when Cloudflare isn't configured) | platform | REPLACE |
+| `discover_s3_platform_backups` | platform | once at startup (skipped when S3 isn't configured) | platform | DEDUP |
 
 **Route-driven (HTTP → `add_task`)**
 
@@ -196,7 +199,7 @@ Every queued operation, its scope, where it is enqueued from, its lane pool, and
 | `delete_container` | app:`<qn>` | DELETE …/containers/{c} | app | QUEUE (route rejects a duplicate delete of the same container via `has_task`, the params-aware pending/running check) |
 | `backup_application_s3` | app:`<qn>` | POST …/volumes/{v}/backups | app | DEDUP |
 | `restore_application_volume_from_s3` | app:`<qn>` | POST …/backups/{b}/restore | app | DEDUP |
-| `backup_database_s3` | platform, app | POST /backups | platform | REPLACE |
+| `backup_database_s3` | platform, app | POST /backups (400 when S3 isn't configured) | platform | REPLACE |
 | `restore_database_from_s3` | platform, app | POST /backups/{b}/restore | platform | DEDUP |
 | `delete_backup_s3` | common | DELETE /backups/{b} | common | QUEUE |
 | `remove_worker` | platform, app | DELETE /workers/{h} | platform | QUEUE |
@@ -350,8 +353,7 @@ hostnames are Tailscale's identity, not ours: the one remaining
 `ValueError` is the house convention for invalid user input — a global
 exception handler in `api.py` (plus the generic route handlers, whose broad
 `except` would otherwise swallow it) maps it to a 400 carrying the message, so
-routes call `clean`/`validate` bare; the container routes validate the tag at
-the route because the actual write happens later inside the queued task.
+routes call `clean`/`validate` bare.
 
 **`reconcile_traefik_configs`** (minutely, `platform` scope) is the declarative
 existence backstop for everything the change-triggers can miss (crash-dropped
@@ -376,14 +378,14 @@ affected apps and call the helper rather than bulk-setting the flag.
 
 ## Settings And Traefik Refresh
 
-Platform settings (`s3`, `notifications`, `cloudflare`) live in the `Setting` table. Env vars only seed empty fields on first boot.
+Platform settings (`tailscale`, `s3`, `notifications`, `cloudflare`) live in the `Setting` table. Every field is optional and set from the UI; nothing is read from env. The `tailscale` worker tag has no default, so worker discovery is off until one is set.
 
-UI updates in `routes/settings.py` follow the same pattern: validate the merged value, persist via `Settings().set(...)`, then reload the consuming service (`S3().load()`, `Notifications().load_notifications_config()`, `Cloudflare().load()`).
+UI updates in `routes/settings.py` follow the same pattern: validate the merged value, persist via `Settings().set(...)`, then reload the consuming service (`S3().load()`, `Notifications().load_notifications_config()`, `Cloudflare().load()`). `Cloudflare().load()` only picks up the new values; the API connection is made on next use.
 
 The manager owns ACME in-process (`Certs`), and the settings route reloads `Certs` (domain/admin_email) synchronously like the other singletons. Only a **domain** change enqueues the `refresh_traefik` operation (in `services/manager/traefik.py`) — email/token changes are fully handled by the synchronous reloads:
 
 - `admin_email` change — `Certs().load()` picks it up; the new contact applies on the next natural renewal (no re-issuance, no worker churn, no task).
-- `domain` change — the new SAN set means a new cert: `Certs` re-issues via ACME DNS-01, the local `:443` cert is hot-reloaded in place, the PEM is synced to workers, worker `config.yml` + DNS records are updated (file-provider reload, no worker traefik restart), and every app's routing is resynced.
+- `domain` change — the new SAN set means a new cert: `Certs` re-issues via ACME DNS-01, the PEM is synced to workers, worker `config.yml` + DNS records are updated (file-provider reload, no worker traefik restart), and every app's routing is resynced.
 - `api_token` change — the manager's `Cloudflare` client (used for the DNS-01 challenge and DNS records) is reloaded by the settings route; nothing else to do (workers never held the token).
 
 ## Templates

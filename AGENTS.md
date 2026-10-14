@@ -23,19 +23,20 @@ This is a living project-context file for AI coding agents. Keep it concise, cur
 
 ## Project Summary
 
-Sage is a lightweight manager-and-workers micro-PaaS that uses Tailscale for node connectivity, Cloudflare for DNS and tunnels, Traefik for ingress, Vector for worker logs (the manager logs itself in-process via a SQLite logging handler), Glances for worker metrics (the manager self-collects its own container metrics in-process), SQLite for persistence, APScheduler as a cron/interval trigger feeding an in-memory operation queue, and Vue 3 for the UI.
+Sage is a lightweight manager-and-workers micro-PaaS that uses Tailscale for node connectivity, Cloudflare (optional) for app domains, DNS and tunnels, Traefik for ingress, Vector for worker logs (the manager logs itself in-process via a SQLite logging handler), Glances for worker metrics (the manager self-collects its own container metrics in-process), SQLite for persistence, APScheduler as a cron/interval trigger feeding an in-memory operation queue, and Vue 3 for the UI.
 
 ## Core Context To Preserve
 
 Agents must keep this context active throughout a task, including after summaries, compaction, handoff, or long-running work:
 
 - Manager plus workers over Tailscale is the core architecture.
+- The manager is a single container with its own userspace Tailscale node (`app/entrypoint.sh`). Only `TS_AUTH_KEY` and `TS_NAME` come from env; everything else is configured in the UI (`Setting` table), and Cloudflare, certificates and S3 are optional — nothing external is required to start.
 - Services are singleton-based and thread-aware.
 - Long or remote-touching operations run through the Manager's in-memory operation queue (`app/utils/queue.py`); entity CRUD is an instant route-side model write (only `delete_container` is queued — it does remote cleanup). APScheduler only fires cron/interval triggers that call `Manager().add_task(...)`.
 - `task_id` propagation through `ContextVar` is a core observability requirement.
 - Blocking network or remote I/O is offloaded onto the lane pools in `app/utils/executor.py` — `run_in_executor_with_context(...)` (awaited) or `submit_with_context(...)` (fire-and-forget).
 - Local SQLite/Peewee work runs inline and relies on WAL mode.
-- The scheduler is a thin APScheduler layer (`app/scheduler.py`) that only enqueues; cron jobs fire on wall-clock instants (never at boot).
+- The scheduler is a thin APScheduler layer (`app/scheduler.py`) that only enqueues; cron jobs fire on wall-clock instants, and a short `_AT_STARTUP` list (release check, certificate renewal, S3 backup discovery) also runs once right after startup.
 
 If this context may have been lost, reread this file plus the relevant `docs/` page before continuing.
 
@@ -43,6 +44,7 @@ If this context may have been lost, reread this file plus the relevant `docs/` p
 
 | Path | Purpose |
 | --- | --- |
+| `app/entrypoint.sh` | Container entrypoint: starts the manager's userspace `tailscaled`, then the manager process |
 | `app/main.py` | Starts the main API, vector ingestion API, and APScheduler scheduler |
 | `app/api.py` | Main FastAPI application |
 | `app/api_vector.py` | Metrics/log ingestion FastAPI application |
@@ -59,6 +61,12 @@ If this context may have been lost, reread this file plus the relevant `docs/` p
 | `docs/` | Human-facing project docs |
 
 ## Non-Negotiable Patterns
+
+### Manager Networking (userspace Tailscale)
+
+- Inbound tailnet traffic to the manager is delivered to `127.0.0.1:<port>` inside the container, so anything listening there (on `0.0.0.0` or `127.0.0.1`) is reachable from the tailnet wherever the tailnet policy allows. Never put an internal-only listener on `127.0.0.1`; use `127.0.0.2` (as tailscaled's outbound proxy does) or a unix socket.
+- The container has no route into the tailnet: SSH to workers goes through `tailscale nc` (asyncssh `proxy_command`), HTTP to workers through `TAILNET_HTTP_PROXY`. Internet calls (Cloudflare, S3, ACME, GitHub) go direct.
+- Optional services (Cloudflare `configured`, S3 `s3_config`) are checked before use: scheduled triggers skip quietly when unconfigured, user actions get a clear 4xx.
 
 ### Services
 

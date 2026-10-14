@@ -1,8 +1,8 @@
 import logging
 
 from services.base import Base
-from services.certs import Certs  # noqa: F401  TODO(rework-02 step 4)
-from services.cloudflare import Cloudflare  # noqa: F401  TODO(rework-02 step 4)
+from services.certs import Certs
+from services.cloudflare import Cloudflare
 from services.db import Database
 from services.logs import Logs
 from services.metrics import Metrics
@@ -70,24 +70,13 @@ class Manager(
       Notifications()
       Metrics()
       self.tailscale = Tailscale()
-      # TODO(rework-02 step 4): Cloudflare and Certs need config that is no longer in
-      # env; re-enable once they are optional at boot.
-      # self.cloudflare = Cloudflare()
-      # self.certs = Certs()
+      self.cloudflare = Cloudflare()
+      self.certs = Certs()
       self.s3 = S3()
 
       self.notify("Manager started.")
     except Exception as e:
       raise Exception(f"Manager setup failed : {e}.")
-
-  async def async_init(self):
-    """
-    Perform async initialization after Manager.__init__().
-    - Discovers and reconciles S3 backups with the database.
-    - Fetches the latest release details.
-    """
-    await self.discover_s3_platform_backups()
-    self.refresh_latest_release()
 
 
 __all__ = ["Manager"]

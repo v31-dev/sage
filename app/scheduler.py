@@ -105,6 +105,8 @@ async def refresh_latest_release():
 
 
 async def backup_database():
+  if not Manager().s3.s3_config:
+    return
   Manager().add_task(
       task=Manager().backup_database_s3,
       scopes={"platform", "app"},
@@ -139,6 +141,8 @@ async def cleanup():
 
 
 async def renew_certificates():
+  if not Manager().cloudflare.configured:
+    return
   Manager().add_task(
       task=Manager().renew_certificates,
       scopes={"platform", "app"},
@@ -147,11 +151,20 @@ async def renew_certificates():
   )
 
 
+async def discover_platform_backups():
+  if not Manager().s3.s3_config:
+    return
+  Manager().add_task(
+      task=Manager().discover_s3_platform_backups,
+      scopes={"platform"},
+      executor="platform",
+  )
+
+
 # Job scheduling
 _JOBS = [
     (dispatch_tick, IntervalTrigger(seconds=1)),
-    # TODO(rework-02 step 2): the manager has no route to workers yet.
-    # (sync_workers, IntervalTrigger(seconds=30)),
+    (sync_workers, IntervalTrigger(seconds=30)),
     (sync_application_status, CronTrigger.from_crontab("* * * * *")),
     (schedule_application_backups, CronTrigger.from_crontab("* * * * *")),
     (reconcile_traefik_configs, CronTrigger.from_crontab("* * * * *")),
@@ -160,9 +173,12 @@ _JOBS = [
     (backup_database, CronTrigger.from_crontab("0 */6 * * *")),
     (send_summary_notification, CronTrigger.from_crontab("0 8 * * *")),
     (cleanup, CronTrigger.from_crontab("0 4 * * *")),
-    # TODO(rework-02 step 4): Certs is disabled at boot.
-    # (renew_certificates, CronTrigger.from_crontab("0 3 * * *")),
+    (renew_certificates, CronTrigger.from_crontab("0 3 * * *")),
 ]
+
+# Run once right after startup (as queued tasks, so the servers are already up), then on
+# their cron schedule where they have one.
+_AT_STARTUP = [refresh_latest_release, renew_certificates, discover_platform_backups]
 
 
 def start():
@@ -170,6 +186,8 @@ def start():
   running event loop (AsyncIOScheduler binds to the loop on start)."""
   for fn, trigger in _JOBS:
     _scheduler.add_job(fn, trigger, id=fn.__name__, name=fn.__name__, replace_existing=True)
+  for fn in _AT_STARTUP:
+    _scheduler.add_job(fn, id=f"{fn.__name__}_at_startup", name=f"{fn.__name__}_at_startup")
   _scheduler.start()
 
 

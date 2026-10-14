@@ -14,7 +14,13 @@ mkdir -p "$state_dir" /var/run/tailscale
 # large transfers then stall while small ones succeed.
 export TS_DEBUG_MTU=1230
 
-tailscaled --tun=userspace-networking --statedir="$state_dir" &
+# The manager's outbound HTTP into the tailnet goes through this proxy. It listens on
+# 127.0.0.2 because tailscaled hands inbound tailnet connections to 127.0.0.1:<port>;
+# on 127.0.0.1 any tailnet peer allowed to reach the manager could use it.
+export TAILNET_HTTP_PROXY=http://127.0.0.2:1055
+
+tailscaled --tun=userspace-networking --statedir="$state_dir" \
+  --outbound-http-proxy-listen="${TAILNET_HTTP_PROXY#http://}" &
 tailscaled_pid=$!
 
 backend_state=""
@@ -34,6 +40,11 @@ if [ "$backend_state" = "NeedsLogin" ]; then
   tailscale up --auth-key="$TS_AUTH_KEY" --hostname="$TS_NAME" --timeout=120s \
     || echo "entrypoint: tailscale up failed; provide a valid TS_AUTH_KEY" >&2
 fi
+
+# TS_NAME names the machine on every boot, so changing it renames the node — unless
+# auto-generating the name is turned off for it in the Tailscale admin console.
+tailscale set --hostname="$TS_NAME" \
+  || echo "entrypoint: could not set the tailnet machine name to TS_NAME" >&2
 
 "$@" &
 app_pid=$!

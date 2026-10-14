@@ -6,8 +6,8 @@ Sage is a manager-and-workers platform designed for Docker workloads connected t
 
 - The manager is the control plane.
 - Workers run application containers and edge components.
-- Cloudflare provides public DNS and tunnel integration.
-- Traefik provides ingress on workers; the manager issues the wildcard TLS certificate for them in-process (ACME DNS-01).
+- Cloudflare (optional) provides app domains: DNS records, the tunnel for public apps, and the DNS-01 challenge for the workers' wildcard certificate. Without it, workers and apps run but have no domain routing.
+- Traefik provides ingress on workers; with a domain configured, the manager issues the wildcard TLS certificate for them in-process (ACME DNS-01).
 - Vector runs on workers and forwards their container logs to the manager; the manager captures its own logs in-process.
 - Glances runs on workers and exposes metrics endpoints the manager polls; the manager collects its own container metrics in-process.
 
@@ -16,7 +16,15 @@ Sage is a manager-and-workers platform designed for Docker workloads connected t
 The container entrypoint (`app/entrypoint.sh`) first brings up the manager's own tailnet
 node — `tailscaled` in userspace networking mode, state under `/app/data/tailscale` — and
 then starts the manager process. Tailnet connections to the node's IP are delivered to
-the same port on the container's loopback, so `:80` and `:9001` need no published ports.
+the same port on `127.0.0.1` inside the container, so `:80` and `:9001` need no published
+ports — and anything listening there is reachable from the tailnet wherever the tailnet
+policy allows.
+
+In userspace mode the container has no route into the tailnet, so outbound traffic goes
+through `tailscaled`: SSH to workers uses asyncssh's `proxy_command` with
+`tailscale nc <worker> 22`, and HTTP to workers (Glances) uses tailscaled's outbound HTTP
+proxy on `127.0.0.2:1055` (`TAILNET_HTTP_PROXY`). The proxy deliberately avoids
+`127.0.0.1`, where tailnet peers could reach it and use the manager's identity.
 
 The manager process starts these concurrent services from `app/main.py`:
 
@@ -28,7 +36,7 @@ The manager process starts these concurrent services from `app/main.py`:
 Startup is service-driven:
 
 - `Manager()` initializes the platform services.
-- `Manager.async_init()` performs async startup work, such as backup discovery.
+- Nothing external is needed to start: Cloudflare, certificates and S3 are optional. Startup work that touches the network (release check, certificate renewal, S3 backup discovery) runs as queued tasks once the servers are up.
 - If service initialization fails, the process exits.
 
 ## Worker Runtime
@@ -42,20 +50,20 @@ Workers are bootstrapped remotely over Tailscale SSH (asyncssh): the manager run
 
 The worker stack currently includes:
 
-- `cloudflared`
 - `traefik`
 - `vector`
 - `glances`
+- `cloudflared`, only with a Cloudflare tunnel: the manager starts the worker stack with an explicit service list and includes `cloudflared` only when there is a tunnel token
 
 Applications themselves are also deployed onto workers as Docker workloads.
 
 ## Traffic Model
 
-Current traffic and naming patterns are driven by Cloudflare, Traefik, and Tailscale:
+Current traffic and naming patterns are driven by Cloudflare (when configured), Traefik, and Tailscale:
 
+- The manager UI and API are at `http://<TS_NAME>` on the tailnet. With a domain configured, the manager also keeps a `*.core.<domain>` record pointing at its tailnet IP.
 - Public traffic uses Cloudflare-managed domains and tunnels.
 - Internal routing uses Tailscale IPs and `*.int.<domain>` style records.
-- Manager UI and API are exposed under the `*.core.<domain>` naming convention.
 
 The manager keeps DNS and Traefik state in sync as workers and application domains change.
 
@@ -122,6 +130,10 @@ Core entities:
 - `Event`
 - `Notification`
 - `Backup`
+- `Task` (log of finished queue operations)
+
+The encryption key for its sensitive fields is generated on first boot as
+`/app/data/encryption.key`; database backups can't be read without it.
 
 Relationships are centered on:
 

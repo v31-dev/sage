@@ -45,6 +45,9 @@ class TraefikMixin:
     the `*.int` DNS records, and app routing. Triggered by a domain change or a
     manual resync; email/token changes are handled by the settings route's
     synchronous `Certs().load()` / `Cloudflare().load()` and need no task."""
+    if not self.cloudflare.configured:
+      logger.info("Cloudflare is not configured; no domain routing to refresh.")
+      return
     try:
       # A domain change makes the old cert stale (new domain isn't in its SANs)
       if await run_in_executor_with_context(self.certs.ensure):
@@ -135,6 +138,10 @@ class TraefikMixin:
     if application is None:
       # The reconcile scan owns file cleanup for deleted applications.
       logger.info(f"Application {application_id} deleted before Traefik sync; nothing to do.")
+      return
+    # App domains (public, internal, tcp) all live under the Cloudflare-managed domain.
+    if not self.cloudflare.configured:
+      logger.info(f"Cloudflare is not configured; no routing for application {application_id}.")
       return
     domain_name = Settings().get("cloudflare", "domain")
     containers = list(application.containers)
@@ -307,6 +314,8 @@ class TraefikMixin:
     applications left domains_synced=False (e.g. a restart dropped their queued
     sync) are re-enqueued here.
     """
+    if not self.cloudflare.configured:
+      return
     online_workers = list(Worker.select().where(Worker.online))
     worker_files = {}
     for worker in online_workers:

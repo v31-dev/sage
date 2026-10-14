@@ -1,28 +1,12 @@
-import os
-
 from services.base import Base
 from services.db import Setting
 
-# Format of -
-# "key": { "property": { "env": "<If it exists in the environment>", "required": bool <checks only at boot time> } }
+# Setting key -> its fields. Every field is optional and is set from the UI.
 SETTING_DEFINITIONS = {
-    "s3": {
-        "access_key": {"env": "S3_ACCESS_KEY", "required": False},
-        "secret_key": {"env": "S3_SECRET_KEY", "required": False},
-        "bucket": {"env": "S3_BUCKET", "required": False},
-        "endpoint": {"env": "S3_ENDPOINT", "required": False},
-        "path": {"env": "S3_PATH", "required": False},
-    },
-    "notifications": {
-        "discord_webhook": {"env": "DISCORD_WEBHOOK", "required": False},
-    },
-    "cloudflare": {
-        "api_token": {"env": "CLOUDFLARE_API_TOKEN", "required": False},
-        "account_id": {"env": "CLOUDFLARE_ACCOUNT_ID", "required": False},
-        "domain": {"env": "DOMAIN", "required": False},
-        "admin_email": {"env": "ADMIN_EMAIL", "required": False},
-
-    }
+    "tailscale": ("worker_tag",),
+    "s3": ("access_key", "secret_key", "bucket", "endpoint", "path"),
+    "notifications": ("discord_webhook",),
+    "cloudflare": ("api_token", "account_id", "domain", "admin_email"),
 }
 
 
@@ -41,17 +25,10 @@ class Settings(Base):
       current_value = setting.value or {}
       needs_save = False
 
-      for field, config in SETTING_DEFINITIONS[key].items():
+      for field in SETTING_DEFINITIONS[key]:
         if field not in current_value:
           current_value[field] = None
           needs_save = True
-        if current_value[field] is None or current_value[field] == "":
-          env_value = os.environ.get(config["env"])
-          if config["required"] and (env_value is None or env_value == ""):
-            raise ValueError(f"Missing required setting for {key} - {field}. Please set it in the environment variable {config['env']}.")
-          elif env_value is not None and env_value != "":
-            current_value[field] = env_value
-            needs_save = True
 
       if needs_save:
         setting.value = current_value
@@ -87,7 +64,7 @@ class Settings(Base):
       raise KeyError(f"Unknown setting key: {key}")
 
     if not isinstance(value, dict):
-      raise ValueError(f"Value for key {key} must be a dict with fields from: {list(SETTING_DEFINITIONS[key].keys())}")
+      raise ValueError(f"Value for key {key} must be a dict with fields from: {list(SETTING_DEFINITIONS[key])}")
 
     subset_value = {k: v for k, v in value.items() if k in SETTING_DEFINITIONS[key]}
 

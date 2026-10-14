@@ -40,8 +40,9 @@ class Metrics(Base):
 
     self._dbs = {"metrics": {}}
 
-    # Reused across collects which also pools connections.
-    self._http = httpx.Client(timeout=10)
+    # Reused across collects which also pools connections. Workers' Glances is reached
+    # through tailscaled's outbound proxy (set by the container entrypoint).
+    self._http = httpx.Client(timeout=10, proxy=os.getenv("TAILNET_HTTP_PROXY"))
 
     # In-memory per-minute peak accumulator for the manager's own metrics: the
     # background sampler folds samples in, the minutely flush drains completed

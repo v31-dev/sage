@@ -101,6 +101,9 @@ class PlatformMixin:
         removed += 1
     logger.info(f"Restore safety-copy cleanup: removed {removed} older than {days} days.")
 
+    if not self.s3.s3_config:
+      return
+
     # Cleanup application backups from S3
     try:
       deleted_application_backups = await self.s3.delete_key(

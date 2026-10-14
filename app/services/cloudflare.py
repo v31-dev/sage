@@ -16,37 +16,51 @@ class Cloudflare(Base):
     self.load()
 
   def load(self):
-    config = Settings().get("cloudflare")
+    """Pick up the current settings. The API connection is made on first use."""
+    with self.lock:
+      self.config = Settings().get("cloudflare")
+      self.domain = self.config["domain"]
+      self.account_id = self.config["account_id"]
+      self.client = None
+      self.zone_id = None
+      self.tunnel_id = None
 
-    self.host_ip = Tailscale().ip()
-    self.domain = config["domain"]
-    self.account_id = config["account_id"]
-    self.client = CloudflareClient(api_token=config["api_token"])
+  @property
+  def configured(self):
+    return Settings().is_valid("cloudflare")
 
-    # Validate the token
-    if self.client.user.tokens.verify().status != "active":
-      raise Exception("Invalid Cloudflare API token")
+  def connect(self):
+    """Connect on first use: verify the token, find the zone, and make sure the tunnel
+    and the manager's DNS record exist. Raises when Cloudflare isn't configured or the
+    API fails, leaving it unconnected so the next use retries."""
+    with self.lock:
+      if self.client is not None:
+        return
+      if not self.configured:
+        raise Exception("Cloudflare is not configured.")
 
-    # Get Zone ID for the domain
-    zones = self.client.zones.list(name=self.domain).result
-    if not zones:
-      raise Exception(f"Cloudflare zone not found for domain {self.domain}")
-    self.zone_id = zones[0].id
+      client = CloudflareClient(api_token=self.config["api_token"])
+      if client.user.tokens.verify().status != "active":
+        raise Exception("Invalid Cloudflare API token")
+      zones = client.zones.list(name=self.domain).result
+      if not zones:
+        raise Exception(f"Cloudflare zone not found for domain {self.domain}")
 
-    # Create a tunnel
-    self.tunnel_id = self.create_tunnel(f"{self.domain}-sage")
+      self.client, self.zone_id = client, zones[0].id
+      try:
+        self.tunnel_id = self.create_tunnel(f"{self.domain}-sage")
+        # DNS record for core internal apps
+        self.create_dns_record(
+            name=f"*.core.{self.domain}",
+            content=Tailscale().ip(),
+            comment="sage-manager",
+            type="A",
+        )
+      except Exception:
+        self.client = None
+        raise
 
-    # Create a DNS record for core internal apps
-    self.create_dns_record(
-        name=f"*.core.{self.domain}",
-        content=self.host_ip,
-        comment="sage-manager",
-        type="A",
-    )
-
-    logger.info(
-        f"Cloudflare initialized for domain: {self.domain} with zone ID: {self.zone_id}"
-    )
+      logger.info(f"Cloudflare connected for domain: {self.domain} with zone ID: {self.zone_id}")
 
   def check_config(self, config: dict):
     """Validate a Cloudflare config. Every field is mandatory."""
@@ -80,6 +94,7 @@ class Cloudflare(Base):
     return valid
 
   def get_dns_records(self):
+    self.connect()
     return self.client.dns.records.list(zone_id=self.zone_id).result
 
   def delete_dns_record(self, name, content):
@@ -150,6 +165,7 @@ class Cloudflare(Base):
       logger.info(f"DNS record for {name} created with content {content}.")
 
   def get_tunnels(self):
+    self.connect()
     return self.client.zero_trust.tunnels.cloudflared.list(account_id=self.account_id).result
 
   def create_tunnel(self, name):
@@ -188,6 +204,7 @@ class Cloudflare(Base):
     return tunnel.id
 
   def get_tunnel_token(self, tunnel_id=None):
+    self.connect()
     if tunnel_id is None:
       tunnel_id = self.tunnel_id
     return dict_to_obj(

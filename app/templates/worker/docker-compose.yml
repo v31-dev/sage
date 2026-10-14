@@ -1,3 +1,7 @@
+# Managed by the Sage manager, which renders this file and starts the services each
+# worker needs (`docker compose up ... <services>`): cloudflared only when a Cloudflare
+# tunnel is configured. Don't run `docker compose up` here without a service list - it
+# would start every service, including cloudflared without a tunnel token.
 name: sage
 
 services:

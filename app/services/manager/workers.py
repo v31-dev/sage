@@ -4,7 +4,6 @@ import re
 
 from services.db import Application, Container, Worker
 from services.settings import Settings
-from utils.common import get_env
 from utils.executor import run_in_executor_with_context
 from utils.logging import TaskFailed
 
@@ -23,9 +22,14 @@ class WorkersMixin:
     - Recently online workers (previously offline but now back online)
     - Offline workers (in db but not in tailscale)
     """
+    worker_tag = Settings().get("tailscale", "worker_tag")
+    if not worker_tag:
+      logger.info("No worker tag set; worker discovery is off.")
+      return
+
     existing_workers = list(Worker.select())
     tailscale_workers = await run_in_executor_with_context(
-        self.tailscale.get_by_tag, get_env("WORKER_TAILSCALE_TAG"))
+        self.tailscale.get_by_tag, worker_tag)
 
     logger.info(
         f"Existing workers: {[(w.hostname, w.ip, 'online' if w.online else 'offline') for w in existing_workers]}")
@@ -193,16 +197,20 @@ class WorkersMixin:
           conflict_target=[Worker.hostname], preserve=[Worker.ip]
       ).execute()
       # Always: the offline transition deleted the DNS record.
-      await run_in_executor_with_context(
-          self.cloudflare.create_dns_record,
-          name=f"*.int.{domain}",
-          content=worker.ip,
-          comment=f"sage-worker-{worker.hostname}",
-          type="A",
-      )
+      if self.cloudflare.configured:
+        await run_in_executor_with_context(
+            self.cloudflare.create_dns_record,
+            name=f"*.int.{domain}",
+            content=worker.ip,
+            comment=f"sage-worker-{worker.hostname}",
+            type="A",
+        )
 
       if infra_stale:
-        tunnel = await run_in_executor_with_context(self.cloudflare.get_tunnel_token)
+        # Without Cloudflare there is no tunnel, and cloudflared is not started.
+        tunnel_token = ""
+        if self.cloudflare.configured:
+          tunnel_token = (await run_in_executor_with_context(self.cloudflare.get_tunnel_token)).token
 
         # Sync files
         await self.tailscale.sync_file(
@@ -218,7 +226,7 @@ class WorkersMixin:
                 "SAGE_HOME": self.worker_home_dir,
                 "TS_IP": worker.ip,
                 "TS_HOSTNAME": worker.hostname,
-                "TUNNEL_TOKEN": tunnel.token,
+                "TUNNEL_TOKEN": tunnel_token,
             },
         )
         await self.tailscale.sync_file(
@@ -230,7 +238,7 @@ class WorkersMixin:
             worker.hostname,
             app_dir / "templates/worker/traefik/config.yml",
             f"{self.worker_home_dir}/traefik/dynamic/config.yml",
-            {"DOMAIN": domain, "HOSTNAME": worker.hostname},
+            {"DOMAIN": domain or "", "HOSTNAME": worker.hostname},
         )
         # File-provider TLS config pointing at the PEM the manager syncs below.
         await self.tailscale.sync_file(
@@ -256,7 +264,8 @@ class WorkersMixin:
         # Start containers
         await self.tailscale.exec_command(
             worker.hostname,
-            f"docker compose -f {self.worker_home_dir}/docker-compose.yml up -d --wait --remove-orphans --quiet-pull --quiet-build",
+            f"docker compose -f {self.worker_home_dir}/docker-compose.yml up -d --wait --remove-orphans --quiet-pull --quiet-build "
+            f"traefik vector glances{' cloudflared' if tunnel_token else ''}",
             timeout=300,
         )
 
@@ -346,10 +355,11 @@ class WorkersMixin:
 
     logger.info(f"Removing worker {worker.hostname} from manager.")
     Worker.delete().where(Worker.hostname == worker.hostname).execute()
-    self.cloudflare.delete_dns_record(
-        name=f"*.int.{Settings().get('cloudflare', 'domain')}",
-        content=worker.ip,
-    )
+    if self.cloudflare.configured:
+      self.cloudflare.delete_dns_record(
+          name=f"*.int.{Settings().get('cloudflare', 'domain')}",
+          content=worker.ip,
+      )
     logger.info(f"Worker {worker.hostname} removed from manager.")
 
   def set_worker_offline(self, worker):
@@ -361,8 +371,9 @@ class WorkersMixin:
     """
     logger.info(f"Setting worker {worker.hostname} offline.")
     Worker.update(online=False).where(Worker.hostname == worker.hostname).execute()
-    self.cloudflare.delete_dns_record(
-        name=f"*.int.{Settings().get('cloudflare', 'domain')}",
-        content=worker.ip,
-    )
+    if self.cloudflare.configured:
+      self.cloudflare.delete_dns_record(
+          name=f"*.int.{Settings().get('cloudflare', 'domain')}",
+          content=worker.ip,
+      )
     self.notify(f"Worker {worker.hostname} is offline.", "error")

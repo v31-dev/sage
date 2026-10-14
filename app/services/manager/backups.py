@@ -197,6 +197,8 @@ class BackupsMixin:
               "APP_NAME": application.qualified_name,
               "VOLUME_NAME": volume.name,
               "ARCHIVE_NAME": archive_name,
+              # TODO(rework): ENCRYPTION_KEY is no longer an env var, so app volume
+              # backups fail; volumes and their backups are being removed.
               "ENCRYPTION_KEY": get_env("ENCRYPTION_KEY"),
               "UPLOAD_URL": upload_url,
           })
@@ -396,6 +398,7 @@ class BackupsMixin:
               "WORKER_HOME_DIR": self.worker_home_dir,
               "APP_NAME": application.qualified_name,
               "VOLUME_NAME": volume.name,
+              # TODO(rework): see the backup path above.
               "ENCRYPTION_KEY": get_env("ENCRYPTION_KEY"),
               "DOWNLOAD_URL": download_url,
           },

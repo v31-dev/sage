@@ -82,6 +82,9 @@ def create_backup(request: Request):
     ):
       raise HTTPException(status_code=409, detail="Application already has an operation in progress.")
   else:
+    if not Manager().s3.s3_config:
+      raise HTTPException(status_code=400, detail="S3 is not configured. Set it up in Settings first.")
+
     # REPLACE: never rejected. Supersedes a pending backup (latest wins) and waits
     # behind a running one, so the user's trigger captures changes made during the
     # in-flight backup, with at most one backup queued behind it.
