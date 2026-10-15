@@ -15,7 +15,7 @@ start_time = datetime.now()
 
 
 @router.get("")
-async def get():
+def get():
   return {
       "version": Manager().version,
       "latest_version": Manager().latest_version,

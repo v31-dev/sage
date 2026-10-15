@@ -31,6 +31,9 @@ class TraefikMixin:
     """Before Sage serves: connect to Cloudflare (zone, tunnel, the manager's record) and
     make sure the manager has its certificate, retrying a cold start before giving up.
     Blocking; raises when the domain can't be set up."""
+    logger.info(
+        f"Setting up {self.cloudflare.manager_hostname}: Cloudflare (zone, tunnel, DNS record), then the "
+        "manager's certificate. The UI starts once this is done; a first start can take a few minutes.")
     for delay in (*STARTUP_RETRY_DELAYS, None):
       try:
         self.cloudflare.connect()

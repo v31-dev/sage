@@ -12,6 +12,7 @@ from services.notification import Notifications
 from services.settings import Settings
 from utils.common import RETENTION_DAYS
 from utils.db import cipher
+from utils.executor import run_in_executor_with_context
 from utils.queue import OnConflict
 
 from ._common import BACKUP_TIMESTAMP_FORMAT, is_expired_backup_key, timestamp_from_key
@@ -142,8 +143,9 @@ class PlatformMixin:
 
         # Encrypted as a whole with ENCRYPTION_KEY (Fernet, authenticated): the backup
         # reveals nothing without the key, and a restore with another key fails before
-        # it touches the live database.
-        backup_file.write_bytes(cipher.encrypt(snapshot_file.read_bytes()))
+        # it touches the live database. CPU work on the whole file, so off the loop.
+        await run_in_executor_with_context(
+            lambda: backup_file.write_bytes(cipher.encrypt(snapshot_file.read_bytes())))
 
         # Upload to S3
         await self.s3.upload_to_key(backup_file, self.s3_backup_path_platform)
@@ -181,13 +183,18 @@ class PlatformMixin:
         await self.s3.download_key(s3_path, str(encrypted_backup), raw_path=True)
 
         logger.info("Decrypting downloaded backup")
-        encrypted = encrypted_backup.read_bytes()
-        if encrypted.startswith(b"SQLite format 3\x00"):
-          raise Exception("the backup isn't encrypted (made by an older version of Sage)")
-        try:
-          Path(downloaded_backup).write_bytes(cipher.decrypt(encrypted))
-        except InvalidToken:
-          raise Exception("the backup was made with a different encryption key")
+
+        def decrypt_backup():
+          encrypted = encrypted_backup.read_bytes()
+          if encrypted.startswith(b"SQLite format 3\x00"):
+            raise Exception("the backup isn't encrypted (made by an older version of Sage)")
+          try:
+            Path(downloaded_backup).write_bytes(cipher.decrypt(encrypted))
+          except InvalidToken:
+            raise Exception("the backup was made with a different encryption key")
+
+        # CPU work on the whole file, so off the loop.
+        await run_in_executor_with_context(decrypt_backup)
 
         # Validate it's a valid SQLite database
         logger.info("Validating downloaded backup file")

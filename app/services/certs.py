@@ -151,11 +151,13 @@ class Certs(Base):
 
       # Let's Encrypt validates a challenge the moment it is answered, so wait
       # until every TXT is actually served before answering
+      logger.info(f"Waiting for the DNS-01 records to appear on the zone's nameservers (up to {DNS_PROPAGATION_TIMEOUT}s).")
       self._wait_for_dns([(name, value) for name, value, _, _ in published])
 
       for _, _, challenge, response in published:
         acme_client.answer_challenge(challenge, response)
 
+      logger.info(f"Let's Encrypt is validating the DNS-01 challenge (up to {FINALIZE_TIMEOUT_SECONDS}s).")
       order = acme_client.poll_and_finalize(
           order, deadline=datetime.now() + timedelta(seconds=FINALIZE_TIMEOUT_SECONDS))
     finally:
@@ -222,6 +224,7 @@ class Certs(Base):
     window. Returns True if a new cert was written. Blocking — offload."""
     if certificate.is_valid() and not certificate.needs_renewal():
       return False
+    logger.info(f"Requesting a certificate for {', '.join(certificate.names)} from Let's Encrypt.")
     self.issue(certificate)
     return True
 
