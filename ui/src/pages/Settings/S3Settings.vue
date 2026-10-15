@@ -1,32 +1,23 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import { ChevronDown } from 'lucide-vue-next'
-import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
+import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import CustomInput from '@/components/CustomInput.vue'
-import { useAppStore } from '@/stores/app'
 import SettingField from './SettingField.vue'
 import SettingsSection from './SettingsSection.vue'
 import { useSettingForm } from './useSettingForm'
 
-const appStore = useAppStore()
 const form = useSettingForm('s3', ['access_key', 'secret_key', 'bucket', 'endpoint', 'path'], 'S3')
 const { fields, isLoading, saving, testing, error, dirty, leaveOpen } = form
 
-const fernetDecrypt =
-  "import os,sys; from cryptography.fernet import Fernet; sys.stdout.buffer.write(Fernet(os.environ['ENCRYPTION_KEY']).decrypt(sys.stdin.buffer.read()))"
+const fernetDecrypt = `
+  import os,sys; 
+  from cryptography.fernet import Fernet; 
+  sys.stdout.buffer.write(Fernet(os.environ['ENCRYPTION_KEY']).decrypt(sys.stdin.buffer.read()))`
 
 const volumeCommand = `head -c -32 <timestamp>.tar.gz.enc \\
-  | openssl enc -d -aes-256-cbc -pbkdf2 -pass env:ENCRYPTION_KEY \\
+  | openssl enc -d -aes-256-cbc -pbkdf2 -pass $ENCRYPTION_KEY \\
   | tar -xz`
 const platformPythonCommand = `python3 -c "${fernetDecrypt}" < <timestamp>.db.enc > data.db`
-const platformDockerCommand = computed(
-  () => `docker run --rm -i -e ENCRYPTION_KEY --entrypoint python \\
-  ghcr.io/v31-dev/sage:${appStore.info?.version ?? '<version>'} \\
-  -c "${fernetDecrypt}" < <timestamp>.db.enc > data.db`
-)
 </script>
 
 <template>
@@ -93,55 +84,35 @@ const platformDockerCommand = computed(
         placeholder="e.g. sage"
       />
     </SettingField>
-
     <template #after>
       <Card>
-        <Collapsible>
-          <CardHeader>
-            <CollapsibleTrigger as-child>
-              <Button
-                variant="ghost"
-                class="h-auto w-full justify-between p-0 has-[>svg]:px-0 hover:bg-transparent"
-              >
-                <CardTitle>Decrypting a backup by hand</CardTitle>
-                <ChevronDown class="size-4" />
-              </Button>
-            </CollapsibleTrigger>
-            <CardDescription>
-              Backups are encrypted with the <code>ENCRYPTION_KEY</code> Sage runs with. Export it
-              in your shell first: <code>export ENCRYPTION_KEY=...</code>
-            </CardDescription>
-          </CardHeader>
-          <CollapsibleContent>
-            <CardContent class="space-y-4 pt-4 text-sm">
-              <div class="space-y-2">
-                <p class="font-medium">Volume backup (<code>&lt;timestamp&gt;.tar.gz.enc</code>)</p>
-                <p class="text-muted-foreground">
-                  Extracts the volume's files into the current directory. The last 32 bytes are an
-                  integrity check (HMAC-SHA256) that this command skips; Sage's own restore verifies
-                  it.
-                </p>
-                <pre
-                  class="overflow-x-auto rounded-md bg-muted p-3 text-xs"
-                ><code>{{ volumeCommand }}</code></pre>
-              </div>
-              <div class="space-y-2">
-                <p class="font-medium">Platform backup (<code>&lt;timestamp&gt;.db.enc</code>)</p>
-                <p class="text-muted-foreground">
-                  Writes the SQLite database as <code>data.db</code>. With Python and the
-                  <code>cryptography</code> package:
-                </p>
-                <pre
-                  class="overflow-x-auto rounded-md bg-muted p-3 text-xs"
-                ><code>{{ platformPythonCommand }}</code></pre>
-                <p class="text-muted-foreground">Or with only Docker, inside the Sage image:</p>
-                <pre
-                  class="overflow-x-auto rounded-md bg-muted p-3 text-xs"
-                ><code>{{ platformDockerCommand }}</code></pre>
-              </div>
-            </CardContent>
-          </CollapsibleContent>
-        </Collapsible>
+        <CardContent class="space-y-4 pt-4 text-sm">
+          <div class="space-y-2">
+            <p class="text-muted-foreground">
+              Backups are encrypted with the <code>ENCRYPTION_KEY</code> env.
+            </p>
+          </div>
+          <div class="space-y-2">
+            <p class="font-medium">Volume backup (<code>&lt;timestamp&gt;.tar.gz.enc</code>)</p>
+            <p class="text-muted-foreground">
+              Extract the volume's files into the current directory. The last 32 bytes are an
+              integrity check (HMAC-SHA256).
+            </p>
+            <pre
+              class="overflow-x-auto rounded-md bg-muted p-3 text-xs"
+            ><code>{{ volumeCommand }}</code></pre>
+          </div>
+          <div class="space-y-2">
+            <p class="font-medium">Platform backup (<code>&lt;timestamp&gt;.db.enc</code>)</p>
+            <p class="text-muted-foreground">
+              Writes the SQLite database as <code>data.db</code> with Python and the
+              <code>cryptography</code> package:
+            </p>
+            <pre
+              class="overflow-x-auto rounded-md bg-muted p-3 text-xs"
+            ><code>{{ platformPythonCommand }}</code></pre>
+          </div>
+        </CardContent>
       </Card>
     </template>
   </SettingsSection>
