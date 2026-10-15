@@ -10,6 +10,7 @@ from cryptography.fernet import InvalidToken
 from services.db import DB_PATH, Backup, Database, Event, Notification, Task, db
 from services.notification import Notifications
 from services.settings import Settings
+from utils.common import RETENTION_DAYS
 from utils.db import cipher
 from utils.queue import OnConflict
 
@@ -67,7 +68,7 @@ class PlatformMixin:
     except Exception as e:
       self.notify(f"S3 backup discovery failed: {e}", "error")
 
-  async def cleanup(self, days: int = 7):
+  async def cleanup(self, days: int = RETENTION_DAYS):
     cutoff = datetime.now() - timedelta(days=days)
 
     # Cleanup events

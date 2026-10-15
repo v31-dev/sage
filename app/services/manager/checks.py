@@ -2,9 +2,10 @@ import logging
 from datetime import datetime
 
 import botocore.exceptions
-import cloudflare
+import httpx
 import requests
 
+from services.cloudflare import CloudflareError
 from services.notification import Notifications, webhook_error
 from services.settings import SETTING_DEFINITIONS, Settings
 from utils.executor import run_in_executor_with_context
@@ -19,9 +20,7 @@ TRANSIENT_ERRORS = (
     requests.Timeout,
     botocore.exceptions.ConnectionError,
     botocore.exceptions.ReadTimeoutError,
-    cloudflare.APIConnectionError,
-    cloudflare.InternalServerError,
-    cloudflare.RateLimitError,
+    httpx.TransportError,
 )
 
 # While one of these is queued or running, its section shows as applying. sync_workers
@@ -85,10 +84,10 @@ class ChecksMixin:
       message = webhook_error(error, "Discord")
     elif isinstance(error, botocore.exceptions.ClientError):
       transient = error.response.get("ResponseMetadata", {}).get("HTTPStatusCode", 0) >= 500
-    elif isinstance(error, cloudflare.APIStatusError):
-      errors = error.body.get("errors", []) if isinstance(error.body, dict) else []
-      reasons = "; ".join(e.get("message", "") for e in errors if isinstance(e, dict))
-      message = f"Cloudflare answered HTTP {error.status_code}" + (f": {reasons}" if reasons else "")
+    elif isinstance(error, CloudflareError):
+      transient = error.transient
+    elif isinstance(error, httpx.TransportError):
+      message = "could not reach Cloudflare"
     return message, transient
 
   def section_configured(self, key: str) -> bool:

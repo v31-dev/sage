@@ -6,10 +6,9 @@
 - FastAPI
 - APScheduler + croniter
 - Peewee + SQLite
-- httpx
-- Cloudflare SDK
+- httpx (also the Cloudflare API, called directly)
 - Tailscale CLI
-- boto3 + aioboto3
+- boto3 (sync, offloaded to the task's pool)
 
 ## API Surface
 
@@ -211,7 +210,7 @@ Every queued operation, its scope, where it is enqueued from, its lane pool, and
 | `refresh_latest_release` | common | cron 4h + once at startup | common | REPLACE — caches latest-release detail (version + notes + `fetched_at`) served by `GET /info/release` |
 | `check_<section>` (`check_setting`) | common:`<section>` | cron 5m + once at startup, per configured section (quiet) | common | REPLACE — checks the saved settings against the provider without side effects and records the result for `GET /settings/status` (`services/manager/checks.py`) |
 | `backup_database_s3` | platform, app | cron 12h (skipped when S3 isn't configured) | platform | REPLACE — SQLite snapshot, Fernet-encrypted as a whole (`<ts>.db.enc`) |
-| `Metrics.cleanup` | metrics | cron daily 04:00 | metrics | REPLACE |
+| `Metrics.cleanup` | metrics | cron daily 04:00 | metrics | REPLACE — everything past `RETENTION_DAYS` (14, `utils/common.py`), like the two below |
 | `Logs.cleanup` | common | cron daily 04:00 | common | REPLACE |
 | `cleanup` | platform | cron daily 04:00 | platform | REPLACE |
 | `renew_certificates` | platform, app | cron daily 03:00 + once at startup | platform | REPLACE — both certificates; reloads the manager's `:443` in place and syncs the workers' to stale workers |

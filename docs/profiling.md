@@ -70,7 +70,7 @@ every minute per host, each rebuilding an SSL context and reloading the whole CA
 bundle (~1.9M allocations, all freed) — `--leaks` showed almost nothing, but
 `stats` showed the churn. The fix was reusing one client (see `self._http`). The
 general pattern: **don't recreate expensive clients/sessions on hot paths**
-(httpx, `aioboto3.Session`, SSH connections) — build once and reuse.
+(httpx, boto3 clients, SSH connections) — build once and reuse.
 
 ## Fragmentation mitigations (already applied)
 

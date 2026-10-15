@@ -11,7 +11,7 @@ from peewee import CharField, CompositeKey, DateTimeField, FloatField, IntegerFi
 
 from services.base import Base
 from services.db import Worker
-from utils.common import get_env
+from utils.common import RETENTION_DAYS, get_env
 
 logger = logging.getLogger(__name__)
 
@@ -342,7 +342,7 @@ class Metrics(Base):
       logger.info(f"Removed orphaned {kind} shard '{key}'.")
     return len(orphans)
 
-  def cleanup(self, days: int = 7):
+  def cleanup(self, days: int = RETENTION_DAYS):
     cutoff = datetime.now() - timedelta(days=days)
 
     # Drop shards for hosts that no longer exist (keyed by hostname -- manager
