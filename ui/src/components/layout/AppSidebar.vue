@@ -150,7 +150,7 @@ watch(
         <Building class="size-5 shrink-0" />
         <div class="grid flex-1 text-left text-sm leading-tight">
           <span class="truncate font-semibold">
-            {{ appStore.info?.domain }}
+            {{ appStore.info?.name }}
           </span>
         </div>
       </div>

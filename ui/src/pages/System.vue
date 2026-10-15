@@ -6,5 +6,5 @@ const store = useAppStore()
 </script>
 
 <template>
-  <SystemMetric v-if="store.info" :hostname="store.info.hostname" />
+  <SystemMetric v-if="store.info" :hostname="store.info.name" />
 </template>

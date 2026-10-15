@@ -21,7 +21,7 @@ async def get():
       "version": Manager().version,
       "latest_version": Manager().latest_version,
       "domain": Settings().get("cloudflare", "domain"),
-      "hostname": get_env("TS_NAME"),
+      "name": get_env("TS_NAME"),
       "ip": Tailscale().ip(),
       "start_time": start_time.isoformat(),
       "state": Manager().task_state(),

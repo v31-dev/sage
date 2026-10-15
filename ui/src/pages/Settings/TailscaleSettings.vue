@@ -28,7 +28,7 @@ async function onConfirmSave() {
 <template>
   <SettingsSection
     title="Tailscale"
-    :description="`Worker discovery: machines on your tailnet that carry the worker tag become workers. This manager is ${appStore.info?.hostname} (${appStore.info?.ip}).`"
+    :description="`Worker discovery: machines on your tailnet that carry the worker tag become workers. This manager is ${appStore.info?.name} (${appStore.info?.ip}).`"
     section="tailscale"
     test-label="Test tag"
     :loading="isLoading"
@@ -51,7 +51,7 @@ async function onConfirmSave() {
         id="tailscale-worker-tag"
         :model-value="fields.worker_tag"
         @update:model-value="value => form.updateField('worker_tag', value)"
-        placeholder="worker"
+        placeholder="e.g. worker"
       />
     </SettingField>
 

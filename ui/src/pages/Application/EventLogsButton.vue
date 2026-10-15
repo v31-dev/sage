@@ -129,7 +129,7 @@ const eventLogsPollCondition = computed(() =>
         <LogViewer
           v-if="selectedEventId"
           :key="selectedEventId"
-          :hostname="appStore.info?.hostname ?? ''"
+          :hostname="appStore.info?.name ?? ''"
           container="sage"
           :search="selectedEventId"
           :parseMessage="parseManagerLog"

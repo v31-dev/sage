@@ -35,7 +35,7 @@ const { fields, isLoading, saving, testing, error, dirty, leaveOpen } = form
         secret
         :model-value="fields.discord_webhook"
         @update:model-value="value => form.updateField('discord_webhook', value)"
-        placeholder="https://discord.com/api/webhooks/..."
+        placeholder="e.g. https://discord.com/api/webhooks/..."
       />
     </SettingField>
   </SettingsSection>

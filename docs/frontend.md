@@ -56,6 +56,15 @@ Routes in `ui/src/router/index.ts` currently cover:
 - Backups and restore flows
 - Settings: one page per section, listed under a "Settings" group in the sidebar
 
+## Forms
+
+- Placeholders are only examples, written "e.g. …". They never stand in for a label, a
+  hint or a default (they vanish on typing and read as a filled-in value).
+- A field with a default is prefilled with the actual value.
+- Optional fields say "(optional)" in the label; required is the unmarked default.
+- Search boxes and select prompts ("Search logs…", "Select backup") are prompts, not
+  values, and are fine.
+
 ## Settings Pages
 
 Each section page is `SettingsSection.vue` (layout, status badge, Save / Test / Reset,

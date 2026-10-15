@@ -151,18 +151,22 @@ async function onClickConfirmDelete() {
         <FieldGroup>
           <Field>
             <FieldLabel for="edit-volume-name"> Name </FieldLabel>
-            <Input id="edit-volume-name" v-model="volume.name" placeholder="volume name" />
+            <Input id="edit-volume-name" v-model="volume.name" placeholder="e.g. data" />
           </Field>
           <Field>
             <FieldLabel for="edit-volume-type"> Type </FieldLabel>
-            <Input id="edit-volume-path" v-model="volume.path" placeholder="container path" />
+            <Input
+              id="edit-volume-path"
+              v-model="volume.path"
+              placeholder="e.g. /var/lib/postgresql/data"
+            />
           </Field>
           <Field>
-            <FieldLabel for="edit-volume-backup-cron"> Backup Schedule </FieldLabel>
+            <FieldLabel for="edit-volume-backup-cron"> Backup Schedule (optional) </FieldLabel>
             <Input
               id="edit-volume-backup-cron"
               v-model="volume.backup_cron"
-              placeholder="optional, e.g. 0 3 * * *"
+              placeholder="e.g. 0 3 * * *"
             />
           </Field>
           <Field>

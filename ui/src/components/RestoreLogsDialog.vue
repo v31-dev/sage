@@ -76,7 +76,7 @@ const columns = [
       <div class="flex flex-col max-h-[60vh]">
         <LogViewer
           :key="props.taskId"
-          :hostname="appStore.info?.hostname ?? ''"
+          :hostname="appStore.info?.name ?? ''"
           container="sage"
           :search="props.taskId"
           :parseMessage="parseManagerLog"

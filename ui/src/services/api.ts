@@ -15,7 +15,8 @@ export interface AppInfo {
   version: string
   latest_version: string | null
   domain: string
-  hostname: string
+  // The manager's name (TS_NAME): its tailnet machine name.
+  name: string
   ip: string
   start_time: string
   // running, or paused (Settings > Upgrade), or stopping (draining after a stop signal)

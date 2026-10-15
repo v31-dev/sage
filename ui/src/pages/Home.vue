@@ -182,7 +182,7 @@ onUnmounted(() => {
               <CardDescription>
                 <div class="flex items-center gap-2 text-sm text-muted-foreground">
                   <Server class="size-4" />
-                  <span>{{ appStore.info?.hostname ?? 'manager' }}</span>
+                  <span>{{ appStore.info?.name ?? 'manager' }}</span>
                   <span v-if="appStore.info?.ip">• {{ appStore.info.ip }}</span>
                 </div>
               </CardDescription>

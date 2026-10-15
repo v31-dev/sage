@@ -49,7 +49,7 @@ const { fields, isLoading, saving, testing, error, dirty, leaveOpen } = form
         id="cloudflare-domain"
         :model-value="fields.domain"
         @update:model-value="value => form.updateField('domain', value)"
-        placeholder="example.com"
+        placeholder="e.g. example.com"
       />
     </SettingField>
     <SettingField
@@ -62,7 +62,7 @@ const { fields, isLoading, saving, testing, error, dirty, leaveOpen } = form
         :model-value="fields.admin_email"
         @update:model-value="value => form.updateField('admin_email', value)"
         type="email"
-        placeholder="admin@example.com"
+        placeholder="e.g. admin@example.com"
       />
     </SettingField>
     <SettingField
@@ -75,7 +75,6 @@ const { fields, isLoading, saving, testing, error, dirty, leaveOpen } = form
         secret
         :model-value="fields.api_token"
         @update:model-value="value => form.updateField('api_token', value)"
-        placeholder="Cloudflare API token"
       />
     </SettingField>
     <SettingField
@@ -87,7 +86,6 @@ const { fields, isLoading, saving, testing, error, dirty, leaveOpen } = form
         id="cloudflare-account-id"
         :model-value="fields.account_id"
         @update:model-value="value => form.updateField('account_id', value)"
-        placeholder="Cloudflare account id"
       />
     </SettingField>
 

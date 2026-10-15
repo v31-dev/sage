@@ -50,7 +50,6 @@ const platformDockerCommand = computed(
         id="s3-access-key"
         :model-value="fields.access_key"
         @update:model-value="value => form.updateField('access_key', value)"
-        placeholder="S3 access key"
       />
     </SettingField>
     <SettingField id="s3-secret-key" label="Secret Key">
@@ -59,7 +58,6 @@ const platformDockerCommand = computed(
         secret
         :model-value="fields.secret_key"
         @update:model-value="value => form.updateField('secret_key', value)"
-        placeholder="S3 secret key"
       />
     </SettingField>
     <SettingField id="s3-bucket" label="Bucket">
@@ -67,7 +65,7 @@ const platformDockerCommand = computed(
         id="s3-bucket"
         :model-value="fields.bucket"
         @update:model-value="value => form.updateField('bucket', value)"
-        placeholder="sage-backups"
+        placeholder="e.g. sage-backups"
       />
     </SettingField>
     <SettingField
@@ -80,7 +78,7 @@ const platformDockerCommand = computed(
         :model-value="fields.endpoint"
         @update:model-value="value => form.updateField('endpoint', value)"
         type="url"
-        placeholder="https://..."
+        placeholder="e.g. https://s3.eu-central-1.amazonaws.com"
       />
     </SettingField>
     <SettingField
@@ -92,7 +90,7 @@ const platformDockerCommand = computed(
         id="s3-path"
         :model-value="fields.path"
         @update:model-value="value => form.updateField('path', value)"
-        placeholder="/sage"
+        placeholder="e.g. sage"
       />
     </SettingField>
 

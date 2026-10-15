@@ -80,20 +80,15 @@ async function handleUpdateProject() {
       <FieldSet>
         <FieldGroup>
           <Field>
-            <FieldLabel for="label"> Name </FieldLabel>
-            <Input id="label" v-model="editFormData.label" placeholder="optional" />
+            <FieldLabel for="label"> Name (optional) </FieldLabel>
+            <Input id="label" v-model="editFormData.label" />
           </Field>
           <Field>
-            <FieldLabel for="description"> Description </FieldLabel>
-            <Textarea
-              id="description"
-              v-model="editFormData.description"
-              class="resize-none"
-              placeholder="optional"
-            />
+            <FieldLabel for="description"> Description (optional) </FieldLabel>
+            <Textarea id="description" v-model="editFormData.description" class="resize-none" />
           </Field>
           <Field>
-            <FieldLabel for="env"> Environment Variables </FieldLabel>
+            <FieldLabel for="env"> Environment Variables (optional) </FieldLabel>
             <CustomInput
               id="env"
               type="textarea"
@@ -101,7 +96,6 @@ async function handleUpdateProject() {
               secret
               v-model="editFormData.env"
               class="resize-none"
-              placeholder="optional"
             />
           </Field>
           <Field>
