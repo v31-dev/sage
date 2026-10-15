@@ -99,7 +99,10 @@ const status = computed(() => statusStore.status?.[props.section])
           </Alert>
         </CardContent>
 
-        <CardFooter v-if="!readonly" class="flex flex-wrap gap-2">
+        <CardFooter v-if="readonly && $slots.links" class="flex flex-wrap gap-2">
+          <slot name="links" />
+        </CardFooter>
+        <CardFooter v-else-if="!readonly" class="flex flex-wrap gap-2">
           <slot name="save">
             <Button :disabled="saving || loading" @click="$emit('save')">
               <Spinner v-if="saving" class="animate-spin" />

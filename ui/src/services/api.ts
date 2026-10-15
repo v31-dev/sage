@@ -223,6 +223,8 @@ export interface SettingSectionStatus {
   message: string | null
   task_id: string | null
   checked_at: string | null
+  // Cloudflare: account_id, tunnel_id, tunnel_status, *_certificate_expiry.
+  details: Record<string, string | null> | null
 }
 
 export type SettingsStatus = Record<SettingSection, SettingSectionStatus>

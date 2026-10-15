@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { ExternalLink } from 'lucide-vue-next'
+import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { useAppStore } from '@/stores/app'
 import SettingField from './SettingField.vue'
@@ -29,6 +31,19 @@ const appStore = useAppStore()
         readonly
       />
     </SettingField>
+
+    <template #links>
+      <Button
+        as="a"
+        variant="outline"
+        :href="`https://console.tailscale.com/admin/machines/${appStore.info?.ip}`"
+        target="_blank"
+        rel="noreferrer"
+      >
+        <ExternalLink />
+        This manager in Tailscale
+      </Button>
+    </template>
 
     <template #after>
       <WorkersResyncSubCard />

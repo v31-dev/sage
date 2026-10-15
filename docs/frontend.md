@@ -65,9 +65,15 @@ Routes in `ui/src/router/index.ts` currently cover:
 - Search boxes and select prompts ("Search logs…", "Select backup") are prompts, not
   values, and are fine.
 
+## Dates
+
+Every date shown goes through `formatDate` or `formatDateStringAgo` (`lib/utils.ts`), never
+raw. Both parse with `parseDate`: backend timestamps without a timezone are UTC; ones with
+`Z` or an offset are read as given.
+
 ## Settings Pages
 
-Tailscale and Cloudflare are env vars, so their pages use `SettingsSection` with `readonly` (status, values, resync actions). S3 and notifications are editable: each section page is `SettingsSection.vue` (layout, status badge, Save / Test / Reset,
+Tailscale and Cloudflare are env vars, so their pages use `SettingsSection` with `readonly` (status, values, resync actions, and a `links` slot for their dashboards: the manager's machine in the Tailscale console; the tunnel and DNS records in Cloudflare). S3 and notifications are editable: each section page is `SettingsSection.vue` (layout, status badge, Save / Test / Reset,
 inline error, unsaved-changes dialog) around `useSettingForm` (load, save, test the
 current values, reset, leave guard). Errors show inline; successes as toasts. The sidebar
 and the pages read one status store (`stores/settingsStatus.ts`) that polls

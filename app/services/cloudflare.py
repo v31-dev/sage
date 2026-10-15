@@ -41,6 +41,8 @@ class Cloudflare(Base):
     self.http = httpx.Client(base_url=API_URL, timeout=15)
     self.zone_id = None
     self.tunnel_id = None
+    # healthy, degraded, down or inactive; refreshed by the periodic settings check.
+    self.tunnel_status = None
 
   def request(self, method: str, path: str, token: str | None = None, **kwargs) -> dict:
     """One API call; returns the response body. Retries network errors, rate limits and

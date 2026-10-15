@@ -52,7 +52,11 @@ class ChecksMixin:
 
     if key == "cloudflare":
       self.cloudflare.check_config(self.cloudflare.config)
-      return f"API token, zone {self.cloudflare.domain} and account verified."
+      self.cloudflare.connect()
+      tunnel = self.cloudflare.request(
+          "GET", f"/accounts/{self.cloudflare.account_id}/cfd_tunnel/{self.cloudflare.tunnel_id}")["result"]
+      self.cloudflare.tunnel_status = tunnel["status"]
+      return f"API token, zone {self.cloudflare.domain} and account verified; tunnel {tunnel['status']}."
 
     if key == "s3":
       if not Settings().is_valid("s3", value):
@@ -114,7 +118,7 @@ class ChecksMixin:
     for key in SETTING_SECTIONS:
       check = self.setting_checks.get(key) or {}
       entry = {"state": check.get("state"), "message": check.get("message"), "task_id": None,
-               "checked_at": check.get("checked_at")}
+               "checked_at": check.get("checked_at"), "details": None}
       applying = next((t for t in active if t["name"] in APPLYING_TASKS[key]
                        and (t["name"] != "sync_workers" or t["params"].get("force") or t["params"].get("check_stamps"))),
                       None)
@@ -135,5 +139,14 @@ class ChecksMixin:
         else:
           expiry = min(certificate.expiry() for certificate in certificates)
           entry["message"] += f" Certificates valid until {expiry:%Y-%m-%d}."
+      if key == "cloudflare":
+        manager_expiry, workers_expiry = self.certs.manager.expiry(), self.certs.workers.expiry()
+        entry["details"] = {
+            "account_id": self.cloudflare.account_id,
+            "tunnel_id": self.cloudflare.tunnel_id,
+            "tunnel_status": self.cloudflare.tunnel_status,
+            "manager_certificate_expiry": manager_expiry.isoformat() if manager_expiry else None,
+            "workers_certificate_expiry": workers_expiry.isoformat() if workers_expiry else None,
+        }
       status[key] = entry
     return status
