@@ -61,7 +61,7 @@ Applications themselves are also deployed onto workers as Docker workloads.
 
 Current traffic and naming patterns are driven by Cloudflare, Traefik, and Tailscale:
 
-- The manager UI and API are only at `https://<TS_NAME>.core.<domain>`: a DNS-only record pointing at its tailnet IP, served with the manager's own certificate on `:443`. Plain HTTP (`:80`) only redirects there. `.core` is a namespace apps never use, and workers hold no certificate for it.
+- The manager UI and API are only at `https://<TS_NAME>.core.<domain>`: a DNS-only record pointing at its tailnet IP, served with the manager's own certificate on `:443`. Plain HTTP (`:80`) only redirects there, and so does `:443` for any other hostname (the tailnet name or IP); in dev the dev Traefik enforces the same by matching the hostname. `.core` is a namespace apps never use, and workers hold no certificate for it.
 - Public traffic uses Cloudflare-managed domains and tunnels.
 - Internal routing uses Tailscale IPs and `*.int.<domain>` style records.
 

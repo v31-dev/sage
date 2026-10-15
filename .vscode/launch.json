@@ -23,7 +23,7 @@
       "id": "sageHost",
       "type": "promptString",
       "description": "Dev manager address: its TS_NAME on the tailnet, or <TS_NAME>.<domain>",
-      "default": "sage-dev"
+      "default": "sage"
     }
   ]
 }

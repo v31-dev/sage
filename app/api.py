@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -82,3 +83,12 @@ async def redirect_to_manager(request: Request):
 
 # Plain HTTP only sends browsers to the manager's address.
 redirect_app = Starlette(routes=[Route("/{path:path}", redirect_to_manager)])
+
+# In production the UI and API answer only at the manager's address https://TS_NAME.core.domain
+# Other names for it redirect (the tailnet name or IP, after a certificate warning)
+if os.getenv("ENV") != "development":
+  @app.middleware("http")
+  async def only_manager_address(request: Request, call_next):
+    if (request.url.hostname or "").lower() != Cloudflare().manager_hostname.lower():
+      return await redirect_to_manager(request)
+    return await call_next(request)
