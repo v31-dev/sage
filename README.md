@@ -194,6 +194,11 @@ them up over SSH.
 Once Sage is up, the UI is at `https://<TS_NAME>.core.<DOMAIN>`. S3 (backups) and
 notifications are optional and set in the UI.
 
+Sage lists the backups already in the S3 bucket and path when you save the S3 settings,
+at startup and from Discover backups on the Backups page. To recover onto a new volume,
+start with the original `ENCRYPTION_KEY`, set S3, then restore a platform backup; volume
+backups are listed once their application is back.
+
 To change `TS_NAME`, `TS_WORKER_TAG` or the Cloudflare details, edit the env and restart:
 Sage brings the workers in line on start. A new `TS_NAME` renames the manager's tailnet
 machine. Records and tunnels of a previous domain, account or name stay in Cloudflare

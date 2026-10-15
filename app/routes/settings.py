@@ -67,6 +67,12 @@ def update_setting(request: Request, setting_data: dict = Body(...)):
 
     Settings().set("s3", merged_setting_value)
     S3().load()
+    # The bucket or path may hold backups this manager hasn't listed yet.
+    Manager().add_task(
+        task=Manager().discover_s3_backups,
+        scopes={"platform", "app"},
+        executor="platform",
+    )
 
   elif setting_key == "notifications":
     try:

@@ -7,7 +7,7 @@ from tempfile import TemporaryDirectory
 
 from cryptography.fernet import InvalidToken
 
-from services.db import DB_PATH, Backup, Database, Event, Notification, Task, db
+from services.db import DB_PATH, Application, Backup, Database, Event, Notification, Task, db
 from services.notification import Notifications
 from services.settings import Settings
 from utils.common import RETENTION_DAYS
@@ -21,53 +21,72 @@ logger = logging.getLogger(__name__)
 
 
 class PlatformMixin:
-  async def discover_s3_platform_backups(self):
+  async def discover_s3_backups(self):
     """
-    Discover backups in S3 and reconcile with database.
+    Make the Backup table match what's in S3 under the configured path: record the
+    platform backups and volume archives found there, and drop records whose object is
+    gone. A fresh manager pointed at an existing bucket then lists its backups.
 
-    Finds all backup files in S3 and creates Backup records in the database
-    for any backups that exist in S3 but not yet in the Backup table.
-
-    This is useful for fresh installs with existing S3 backups.
+    A volume archive is recorded only while its application exists here, matched by
+    the project and application names in its key.
     """
     try:
-      logger.info("Starting S3 backup discovery...")
-
-      # Get all backup keys from S3
-      s3_backups = await self.s3.get_keys(self.s3_backup_path_platform)
-
-      if not s3_backups:
-        logger.info("No backups found in S3")
-        return
-
-      logger.info(f"Found {len(s3_backups)} backup(s) in S3")
-
-      # Get all existing backups from database
-      existing_backups = list(backup.s3_path for backup in Backup.select().where(Backup.type == "platform"))
-
-      # Create records for any missing backups
-      new_backups = []
-      for s3_path in s3_backups:
-        if s3_path not in existing_backups:
-          try:
-            timestamp_str = timestamp_from_key(s3_path)
-            backup_datetime = datetime.strptime(timestamp_str, BACKUP_TIMESTAMP_FORMAT)
-
-            # Create backup record with extracted timestamp as created_at
-            Backup.create(s3_path=s3_path, type="platform", created_at=backup_datetime)
-            new_backups.append((s3_path, timestamp_str))
-            logger.info(f"Created backup record for S3 backup: {s3_path}")
-          except Exception as e:
-            logger.error(f"Failed to create backup record for {s3_path}: {e}")
-
-      if new_backups:
-        self.notify(
-            f"S3 backup discovery: recovered {len(new_backups)} existing backup(s) from S3")
-      else:
-        logger.info("S3 backup discovery: all backups already in database")
-
+      platform_keys = set(await self.s3.get_keys(self.s3_backup_path_platform))
+      volume_keys = set(await self.s3.get_keys(self.s3_backup_path_applications))
     except Exception as e:
-      self.notify(f"S3 backup discovery failed: {e}", "error")
+      self.notify(f"Backup discovery failed: {e}", "error")
+      return
+
+    recorded = {backup.s3_path: backup for backup in Backup.select()}
+    volume_prefix = self.s3.get_full_path(self.s3_backup_path_applications) + "/"
+    applications = {
+        (application.project_id, application.name): application
+        for application in Application.select()
+    }
+
+    added = {"platform": 0, "application": 0}
+    unmatched = 0
+    for key in sorted(platform_keys | volume_keys):
+      if key in recorded:
+        continue
+      timestamp = timestamp_from_key(key)
+      if not timestamp:
+        continue
+      created_at = datetime.strptime(timestamp, BACKUP_TIMESTAMP_FORMAT)
+      if key in platform_keys:
+        Backup.create(s3_path=key, type="platform", created_at=created_at)
+        added["platform"] += 1
+        continue
+      # <project>/<application>/<worker>/<volume>/<timestamp>.tar.gz.enc
+      parts = key.removeprefix(volume_prefix).split("/")
+      if len(parts) != 5 or not key.endswith(".tar.gz.enc"):
+        continue
+      application = applications.get((parts[0], parts[1]))
+      if not application:
+        unmatched += 1
+        continue
+      Backup.create(
+          s3_path=key,
+          type="application",
+          application=application,
+          source_volume_name=parts[3],
+          created_at=created_at,
+      )
+      added["application"] += 1
+
+    present = platform_keys | volume_keys
+    gone = [backup.id for s3_path, backup in recorded.items() if s3_path not in present]
+    removed = Backup.delete().where(Backup.id.in_(gone)).execute() if gone else 0
+
+    logger.info(
+        f"Backup discovery: {len(platform_keys)} platform and {len(volume_keys)} volume backup(s) in S3; "
+        f"added {added['platform']} platform and {added['application']} volume record(s), "
+        f"removed {removed} whose object is gone, skipped {unmatched} for applications not on this manager."
+    )
+    found = [f"{count} {kind} backup(s)" for kind, count in
+             (("platform", added["platform"]), ("volume", added["application"])) if count]
+    if found:
+      self.notify(f"Backup discovery listed {' and '.join(found)} found in S3.")
 
   async def cleanup(self, days: int = RETENTION_DAYS):
     cutoff = datetime.now() - timedelta(days=days)
@@ -311,6 +330,12 @@ class PlatformMixin:
             params={"force": True},
             executor="platform",
             on_conflict=OnConflict.REPLACE,
+        )
+        # The backup records are the snapshot's too; match them to the bucket again.
+        self.add_task(
+            task=self.discover_s3_backups,
+            scopes={"platform", "app"},
+            executor="platform",
         )
 
     except Exception as e:

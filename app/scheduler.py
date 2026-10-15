@@ -164,12 +164,12 @@ async def renew_certificates():
   )
 
 
-async def discover_platform_backups():
+async def discover_backups():
   if not Manager().s3.s3_config:
     return
   Manager().add_task(
-      task=Manager().discover_s3_platform_backups,
-      scopes={"platform"},
+      task=Manager().discover_s3_backups,
+      scopes={"platform", "app"},
       executor="platform",
   )
 
@@ -206,7 +206,7 @@ _JOBS = [
 
 # Run once right after startup (as queued tasks, so the servers are already up), then on
 # their cron schedule where they have one.
-_AT_STARTUP = [refresh_latest_release, renew_certificates, discover_platform_backups, check_settings, check_worker_stamps]
+_AT_STARTUP = [refresh_latest_release, renew_certificates, discover_backups, check_settings, check_worker_stamps]
 
 
 def start():

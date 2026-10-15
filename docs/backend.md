@@ -190,7 +190,7 @@ Additional storage:
 
 ## Scheduler Notes
 
-`app/scheduler.py` holds async APScheduler triggers that act only as cron/interval triggers — each one calls `Manager().add_task(...)` and contains no execution logic. Sub-minute pumps (`dispatch_tick`, `sync_workers`) use `IntervalTrigger`; everything else uses `CronTrigger.from_crontab` and fires on exact wall-clock instants. The triggers in `_AT_STARTUP` (`refresh_latest_release`, `renew_certificates`, `discover_platform_backups`) also run once right after startup, so startup network work happens in queued tasks while the servers are already serving. Triggers for optional services skip quietly when the service isn't configured: `backup_database` and `discover_platform_backups` need S3, `renew_certificates` needs Cloudflare. Note: APScheduler's `from_crontab` treats numeric day-of-week `0` as Monday (whereas the `croniter`-matched volume-backup crons use `0` = Sunday) — be explicit about the intended weekday. `dispatch_tick` must stay an `async def` (APScheduler runs coroutine jobs on the loop; a sync job would run in a worker thread where its `asyncio.create_task` has no running loop). Route handlers enqueue through the same `add_task` path, and a few tasks are enqueued internally from within another task.
+`app/scheduler.py` holds async APScheduler triggers that act only as cron/interval triggers — each one calls `Manager().add_task(...)` and contains no execution logic. Sub-minute pumps (`dispatch_tick`, `sync_workers`) use `IntervalTrigger`; everything else uses `CronTrigger.from_crontab` and fires on exact wall-clock instants. The triggers in `_AT_STARTUP` (`refresh_latest_release`, `renew_certificates`, `discover_backups`, `check_settings`, `check_worker_stamps`) also run once right after startup, so startup network work happens in queued tasks while the servers are already serving. Triggers for optional services skip quietly when the service isn't configured: `backup_database` and `discover_backups` need S3, `renew_certificates` needs Cloudflare. Note: APScheduler's `from_crontab` treats numeric day-of-week `0` as Monday (whereas the `croniter`-matched volume-backup crons use `0` = Sunday) — be explicit about the intended weekday. `dispatch_tick` must stay an `async def` (APScheduler runs coroutine jobs on the loop; a sync job would run in a worker thread where its `asyncio.create_task` has no running loop). Route handlers enqueue through the same `add_task` path, and a few tasks are enqueued internally from within another task.
 
 ## Task Catalog
 
@@ -215,7 +215,7 @@ Every queued operation, its scope, where it is enqueued from, its lane pool, and
 | `cleanup` | platform | cron daily 04:00 | platform | REPLACE |
 | `renew_certificates` | platform, app | cron daily 03:00 + once at startup | platform | REPLACE — both certificates; reloads the manager's `:443` in place and syncs the workers' to stale workers |
 | `sync_workers` (`check_stamps`) | platform | once at startup | platform | REPLACE — also sets up workers that stayed online, letting their stamps (domain, tunnel, certificate, app routing) decide what to redo, since the env may have changed while Sage was stopped |
-| `discover_s3_platform_backups` | platform | once at startup (skipped when S3 isn't configured) | platform | DEDUP |
+| `discover_s3_backups` | platform, app | once at startup (skipped when S3 isn't configured) | platform | DEDUP — makes the Backup table match the bucket under the configured path: records the platform backups and the volume archives whose application exists here (by the project and application names in the key), and drops records whose object is gone |
 
 **Route-driven (HTTP → `add_task`)**
 
@@ -229,6 +229,7 @@ Every queued operation, its scope, where it is enqueued from, its lane pool, and
 | `backup_database_s3` | platform, app | POST /backups | platform | REPLACE |
 | `restore_database_from_s3` | platform, app | POST /backups/{b}/restore | platform | DEDUP — decrypts first (another key or an unencrypted backup is refused before the live DB is touched); safety copy and restore through SQLite's backup API; then reloads the settings and the services built from them (S3, notifications, Cloudflare, certs). A settings reload failure still rolls back to the safety copy |
 | `delete_backup_s3` | common | DELETE /backups/{b} | common | QUEUE |
+| `discover_s3_backups` | platform, app | POST /backups/discover; PUT /settings/s3 | platform | DEDUP |
 | `remove_worker` | platform, app | DELETE /workers/{h} | platform | QUEUE |
 | `reboot_worker` | platform, app | POST /workers/{h}/reboot | platform | QUEUE — backgrounds a `reboot` over Tailscale SSH so the command returns before the host drops; won't run mid-deploy; status reconciler tracks the worker going offline/back |
 | `refresh_traefik` | platform, app | POST /settings/resync_traefik | platform | DEDUP |
@@ -239,7 +240,7 @@ Every queued operation, its scope, where it is enqueued from, its lane pool, and
 
 **Settings status.** `GET /settings/status` gives each section (tailscale, cloudflare, s3, notifications) a state: `not_configured`, `applying` (a check or apply task is queued or running; its `task_id` is included), `ok`, `retrying` (the last check failed in a way that clears on its own — network, timeout, 5xx/429; the 5-minute check retries) or `error` (needs the user — bad credentials, missing bucket or zone). Cloudflare is also `error` without a valid certificate, and its entry carries `details` for the read-only page: account and tunnel ids (dashboard links), the tunnel's health from the 5-minute check (`healthy`, `degraded`, `down`, `inactive`) and both certificates' expiry. Tailscale and Cloudflare are env vars, so they're always configured and checked as set. `POST /settings/{s3|notifications}/test` checks the values in the request (saved or not) with side effects: the S3 test writes and deletes a marker object, the notifications test sends a message. Check failures never include a webhook URL (it holds the token).
 
-Backups live in S3, which is optional: every backup route (create, restore, delete) returns 400 until S3 is configured, and the backup triggers skip.
+Backups live in S3, which is optional: every backup route (create, restore, delete, discover) returns 400 until S3 is configured, and the backup triggers skip.
 
 Per-app tasks (status sync, the Traefik domains sync, backups, `delete_container`) re-fetch their target by id with `get_or_none` and treat a missing row as a **quiet no-op**: instant deletes are a legitimate interleaving with queued/scheduled work, so a task whose target vanished has nothing to do (the reconcile scan owns worker-side cleanup for deleted apps). `remove_worker` is the deliberate exception — its precondition re-check fails loudly because proceeding would destroy a worker that just gained containers.
 
@@ -254,6 +255,7 @@ Container create and tag-update are **instant route-side model writes**, like ev
 | Task | Scope | Source | Lane | on_conflict |
 | --- | --- | --- | --- | --- |
 | `sync_workers` | platform | `restore_database_from_s3` | platform | REPLACE |
+| `discover_s3_backups` | platform, app | `restore_database_from_s3` (the restored Backup table is the snapshot's) | platform | DEDUP |
 | `sync_application_traefik_domains_config` | app:`<qn>` | deploy/stop, delete-container, `sync_application_status`, `sync_workers`, `refresh_traefik`, `reconcile_traefik_configs` missing-file check (via `request_application_traefik_sync`) | app | REPLACE |
 | `sync_application_traefik_domains_config` | app:`<qn>` | `reconcile_traefik_configs` `domains_synced=False` backstop | app | DEDUP |
 
