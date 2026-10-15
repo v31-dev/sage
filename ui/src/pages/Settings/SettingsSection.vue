@@ -25,7 +25,6 @@ import {
 import { FieldGroup, FieldSet } from '@/components/ui/field'
 import { Spinner } from '@/components/ui/spinner'
 import SettingStateIndicator from '@/components/SettingStateIndicator.vue'
-import TaskLogsButton from '@/pages/Tasks/TaskLogsButton.vue'
 import type { SettingSection } from '@/services/api'
 import { useSettingsStatusStore } from '@/stores/settingsStatus'
 
@@ -75,12 +74,8 @@ const status = computed(() => statusStore.status?.[props.section])
         </CardHeader>
 
         <CardContent class="space-y-6">
-          <p
-            v-if="status?.message || status?.task_id"
-            class="flex flex-wrap items-center gap-2 text-sm text-muted-foreground"
-          >
-            <span v-if="status.message">{{ status.message }}</span>
-            <TaskLogsButton v-if="status.task_id" :task-id="status.task_id" />
+          <p v-if="status?.message" class="text-sm text-muted-foreground">
+            {{ status.message }}
           </p>
 
           <div v-if="loading" class="flex items-center gap-3 py-8 text-sm text-muted-foreground">
