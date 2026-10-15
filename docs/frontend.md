@@ -43,7 +43,7 @@ Routes in `ui/src/router/index.ts` currently cover:
 - `/workers/:hostname`
 - `/workers/:hostname/metrics`
 - `/backups`
-- `/settings`
+- `/tailscale`, `/cloudflare`, `/s3`, `/notifications`, `/upgrade` (the settings pages, grouped under "Settings" in the sidebar)
 
 ## Main Feature Areas
 
@@ -54,7 +54,16 @@ Routes in `ui/src/router/index.ts` currently cover:
 - Worker inventory and worker metrics
 - Global logs view
 - Backups and restore flows
-- Platform settings
+- Settings: one page per section, listed under a "Settings" group in the sidebar
+
+## Settings Pages
+
+Each section page is `SettingsSection.vue` (layout, status badge, Save / Test / Reset,
+inline error, unsaved-changes dialog) around `useSettingForm` (load, save, test the
+current values, reset, leave guard). Errors show inline; successes as toasts. The sidebar
+and the pages read one status store (`stores/settingsStatus.ts`) that polls
+`GET /api/settings/status`: every 3 s while a section is applying, otherwise every 30 s
+and on window focus. States and their icons are in `lib/settingState.ts`.
 
 ## API Layer
 

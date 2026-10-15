@@ -46,7 +46,7 @@ onUnmounted(() => {
     <AlertDescription class="flex flex-wrap items-center gap-3">
       <template v-if="state === 'paused'">
         Queued tasks wait and changes are refused until you resume.
-        <RouterLink to="/settings/upgrade" class="underline">Details</RouterLink>
+        <RouterLink to="/upgrade" class="underline">Details</RouterLink>
         <Button size="sm" :disabled="resuming" @click="onResume">
           <Spinner v-if="resuming" class="animate-spin" />
           Resume

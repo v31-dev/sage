@@ -21,7 +21,7 @@ app.add_middleware(fastapi_middleware)
 # While Sage is paused or stopping, only reads are served: GETs, the POST routes that only
 # read, and pause/resume themselves.
 _ALLOWED_WHILE_PAUSED = ("/api/settings/pause", "/api/settings/resume")
-_READ_ONLY_POSTS = ("/get_available_workers", "/metrics", "/platform_backup_status")
+_READ_ONLY_POSTS = ("/get_available_workers", "/metrics", "/platform_backup_status", "/test")
 
 
 @app.middleware("http")

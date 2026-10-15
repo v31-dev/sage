@@ -82,11 +82,13 @@ class Settings(Base):
       setting.save()
       self.values[key] = setting.value
 
-  def is_valid(self, key: str):
+  def is_valid(self, key: str, value: dict | None = None):
+    """Whether every field is set, in the stored value or the one given."""
     if key not in SETTING_DEFINITIONS:
       raise KeyError(f"Unknown setting key: {key}")
 
-    value = self.get(key)
+    if value is None:
+      value = self.get(key)
 
     for field in SETTING_DEFINITIONS[key]:
       field_value = value.get(field)

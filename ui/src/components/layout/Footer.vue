@@ -14,7 +14,7 @@ const updateAvailable = computed(() => {
 
 <template>
   <footer class="w-full h-10 flex items-center justify-end gap-4 border-t border-border px-4">
-    <RouterLink to="/settings/upgrade" class="inline-flex items-center">
+    <RouterLink to="/upgrade" class="inline-flex items-center">
       <Badge v-if="updateAvailable">
         <Icon icon="mdi:arrow-up-bold-circle-outline" />
         v{{ appStore.info?.latest_version }}

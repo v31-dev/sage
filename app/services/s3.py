@@ -33,26 +33,25 @@ class S3(Base):
       config = settings.get("s3")
       self.s3_config = config if settings.is_valid("s3") else None
 
-  def check_config(self, config: dict):
-    """Validate a candidate S3 config. It must be fully valid or fully empty"""
-    try:
-      provided = [config.get(key) for key in SETTING_DEFINITIONS["s3"]]
-      if not any(provided):
-        return True
-      if not all(provided):
-        return False
+  def check_config(self, config: dict, write: bool = False):
+    """Check a candidate S3 config against its bucket; raises with the reason. A config with
+    no values at all is valid (S3 off). With write, also writes and deletes a marker object."""
+    provided = [config.get(key) for key in SETTING_DEFINITIONS["s3"]]
+    if not any(provided):
+      return
+    if not all(provided):
+      raise ValueError("Fill in every S3 field, or leave them all empty.")
 
-      client_kwargs = self._get_client_kwargs(config)
-      client = boto3.client('s3', **client_kwargs)
-      client.list_objects_v2(
-          Bucket=config["bucket"],
-          Prefix=config["path"].strip('/'),
-          MaxKeys=1,
-      )
-    except Exception:
-      return False
-
-    return True
+    client_kwargs = self._get_client_kwargs(config)
+    client_kwargs["config"] = Config(signature_version='s3v4', connect_timeout=5, read_timeout=10,
+                                     retries={"max_attempts": 2})
+    client = boto3.client('s3', **client_kwargs)
+    prefix = config["path"].strip('/')
+    client.list_objects_v2(Bucket=config["bucket"], Prefix=prefix, MaxKeys=1)
+    if write:
+      marker = f"{prefix}/.sage-check"
+      client.put_object(Bucket=config["bucket"], Key=marker, Body=b"")
+      client.delete_object(Bucket=config["bucket"], Key=marker)
 
   def check_config_exists(self):
     if not self.s3_config:

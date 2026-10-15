@@ -212,6 +212,26 @@ export interface Setting {
   updated_at: Date
 }
 
+export type SettingSection = 'tailscale' | 'cloudflare' | 's3' | 'notifications'
+export type SettingState = 'not_configured' | 'applying' | 'ok' | 'retrying' | 'error'
+
+export interface SettingSectionStatus {
+  state: SettingState
+  message: string | null
+  task_id: string | null
+  checked_at: string | null
+}
+
+export type SettingsStatus = Record<SettingSection, SettingSectionStatus>
+
+export async function fetchSettingsStatus(): Promise<SettingsStatus> {
+  const response = await fetch(`${API_ROOT}/settings/status`)
+  if (!response.ok) {
+    throw new Error('Failed to fetch settings status')
+  }
+  return await response.json()
+}
+
 export const settingsAPI = new CRUDAPI({
   name: 'Settings',
   path: `${API_ROOT}/settings`,

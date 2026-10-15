@@ -1,17 +1,21 @@
 <script setup lang="ts">
 import type { SidebarProps } from '@/components/ui/sidebar'
 import { useRoute } from 'vue-router'
-import { watch } from 'vue'
+import { onMounted, watch } from 'vue'
 import {
   Activity,
+  Bell,
   Briefcase,
   Building,
+  CircleArrowUp,
+  Cloud,
   ExternalLink,
+  HardDrive,
   Home,
   ListTodo,
   Logs,
+  Network,
   Server,
-  Settings2,
   CloudBackup,
 } from 'lucide-vue-next'
 import {
@@ -25,11 +29,16 @@ import {
   SidebarGroupLabel,
   useSidebar,
 } from '@/components/ui/sidebar'
+import SettingStateIndicator from '@/components/SettingStateIndicator.vue'
+import { SETTING_STATES } from '@/lib/settingState'
+import type { SettingSection } from '@/services/api'
 import { useAppStore } from '@/stores/app'
+import { useSettingsStatusStore } from '@/stores/settingsStatus'
 
 const route = useRoute()
 const appStore = useAppStore()
-const { isMobile, setOpenMobile } = useSidebar()
+const settingsStatus = useSettingsStatusStore()
+const { isMobile, setOpenMobile, state: sidebarState } = useSidebar()
 
 const props = withDefaults(defineProps<SidebarProps>(), {
   collapsible: 'icon',
@@ -40,6 +49,7 @@ interface MenuInterface {
   path?: string
   url?: string
   icon?: any
+  section?: SettingSection
   children?: MenuInterface[]
 }
 
@@ -92,14 +102,35 @@ const menu: MenuInterface[] = [
         path: '/backups',
         icon: CloudBackup,
       },
+    ],
+  },
+  {
+    name: 'Settings',
+    children: [
+      { name: 'Tailscale', path: '/tailscale', icon: Network, section: 'tailscale' },
+      { name: 'Cloudflare', path: '/cloudflare', icon: Cloud, section: 'cloudflare' },
+      { name: 'S3', path: '/s3', icon: HardDrive, section: 's3' },
       {
-        name: 'Settings',
-        path: '/settings',
-        icon: Settings2,
+        name: 'Notifications',
+        path: '/notifications',
+        icon: Bell,
+        section: 'notifications',
       },
+      { name: 'Upgrade', path: '/upgrade', icon: CircleArrowUp },
     ],
   },
 ]
+
+function sectionState(item: MenuInterface) {
+  return item.section ? settingsStatus.status?.[item.section]?.state : undefined
+}
+
+function tooltip(item: MenuInterface) {
+  const state = sectionState(item)
+  return state ? `${item.name}: ${SETTING_STATES[state].label}` : item.name
+}
+
+onMounted(() => settingsStatus.start())
 
 // Close sidebar on mobile when route changes
 watch(
@@ -135,17 +166,32 @@ watch(
             <SidebarMenuButton
               v-if="'path' in child"
               as-child
+              :tooltip="tooltip(child)"
               :isActive="
                 route.path === child.path ||
                 (child.path !== '/' && route.path.startsWith(child.path + '/'))
               "
             >
               <RouterLink :to="child.path!">
-                <component :is="child.icon" />
+                <span class="relative flex">
+                  <component :is="child.icon" class="size-4" />
+                  <span
+                    v-if="sidebarState === 'collapsed' && sectionState(child)"
+                    :class="[
+                      'absolute -top-0.5 -right-0.5 size-1.5 rounded-full',
+                      SETTING_STATES[sectionState(child)!].dot,
+                    ]"
+                  />
+                </span>
                 <span>{{ child.name }}</span>
+                <SettingStateIndicator
+                  v-if="sectionState(child)"
+                  :state="sectionState(child)!"
+                  class="ml-auto"
+                />
               </RouterLink>
             </SidebarMenuButton>
-            <SidebarMenuButton v-else-if="'url' in child" as-child>
+            <SidebarMenuButton v-else-if="'url' in child" as-child :tooltip="child.name">
               <a
                 :href="child.url"
                 :target="child.url?.startsWith('http') ? '_blank' : undefined"

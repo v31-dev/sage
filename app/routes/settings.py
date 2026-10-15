@@ -31,9 +31,22 @@ def inject_setting(request: Request):
   return None
 
 
+def normalized_worker_tag(value: dict) -> str | None:
+  """Stored without the `tag:` prefix, which worker discovery adds back."""
+  worker_tag = (value.get("worker_tag") or "").strip().removeprefix("tag:") or None
+  if worker_tag and not re.fullmatch(r"[A-Za-z0-9-]+", worker_tag):
+    raise HTTPException(status_code=400, detail="Invalid worker tag. Use letters, numbers and dashes, e.g. worker.")
+  return worker_tag
+
+
 @router.get("/")
 def get():
   return generic_list(Setting)
+
+
+@router.get("/status")
+def get_status():
+  return Manager().settings_status()
 
 
 @router.get("/{setting}", dependencies=[Depends(inject_setting)])
@@ -57,25 +70,22 @@ def update_setting(request: Request, setting_data: dict = Body(...)):
 
   # Validate the settings before update
   if setting_key == "tailscale":
-    # Stored without the `tag:` prefix, which worker discovery adds back.
-    worker_tag = (merged_setting_value.get("worker_tag") or "").strip().removeprefix("tag:") or None
-    if worker_tag and not re.fullmatch(r"[A-Za-z0-9-]+", worker_tag):
-      raise HTTPException(status_code=400, detail="Invalid worker tag. Use letters, numbers and dashes, e.g. worker.")
-
-    Settings().set("tailscale", {"worker_tag": worker_tag})
+    Settings().set("tailscale", {"worker_tag": normalized_worker_tag(merged_setting_value)})
 
   elif setting_key == "s3":
-    if not S3().check_config(merged_setting_value):
-      raise HTTPException(status_code=400, detail="Invalid S3 configuration. Please verify the provided settings.")
+    try:
+      S3().check_config(merged_setting_value)
+    except Exception as e:
+      raise HTTPException(status_code=400, detail=f"S3 check failed: {Manager().describe_check_error(e)[0]}")
 
     Settings().set("s3", merged_setting_value)
     S3().load()
 
   elif setting_key == "notifications":
-    if not Notifications().check_config(merged_setting_value):
-      raise HTTPException(
-          status_code=400,
-          detail="Invalid notifications configuration. A configured channel did not accept a test message.")
+    try:
+      Notifications().check_config(merged_setting_value)
+    except Exception as e:
+      raise HTTPException(status_code=400, detail=Manager().describe_check_error(e)[0])
 
     Settings().set("notifications", merged_setting_value)
     Notifications().load_notifications_config()
@@ -96,9 +106,11 @@ def update_setting(request: Request, setting_data: dict = Body(...)):
     if admin_email_changed and not EMAIL_RE.fullmatch(merged_setting_value["admin_email"]):
       raise HTTPException(status_code=400, detail="Invalid email format in Cloudflare settings.")
 
-    # Validate Cloudflare and trigger changes if needed
-    if cloudflare_config_changed and not Cloudflare().check_config(merged_setting_value):
-      raise HTTPException(status_code=400, detail="Invalid Cloudflare configuration. Please verify the API token, account ID, and domain.")
+    if cloudflare_config_changed:
+      try:
+        Cloudflare().check_config(merged_setting_value)
+      except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Cloudflare check failed: {Manager().describe_check_error(e)[0]}")
 
     if traefik_refresh_needed and Manager().is_busy({"platform", "app"}):
       raise HTTPException(
@@ -125,7 +137,32 @@ def update_setting(request: Request, setting_data: dict = Body(...)):
           on_conflict=OnConflict.QUEUE,
       )
 
+  if Settings().is_valid(setting_key):
+    Manager().add_task(
+        task=Manager().check_setting,
+        name=f"check_{setting_key}",
+        params={"key": setting_key},
+        scopes={f"common:{setting_key}"},
+        executor="common",
+        on_conflict=OnConflict.REPLACE,
+    )
+
   return generic_get(Setting, (Setting.key == setting_key))
+
+
+@router.post("/{setting}/test", dependencies=[Depends(inject_setting)])
+def test_setting(request: Request, setting_data: dict = Body(...)):
+  """Check the given values (saved or not) against the provider, without saving them."""
+  setting_model = request.state.models["setting"]
+  value = dict(setting_model.value)
+  value.update(parse_api_data(setting_data, ["value"]).get("value") or {})
+  if setting_model.key == "tailscale":
+    value["worker_tag"] = normalized_worker_tag(value)
+
+  try:
+    return {"message": Manager().test_setting(setting_model.key, value)}
+  except Exception as e:
+    raise HTTPException(status_code=400, detail=Manager().describe_check_error(e)[0])
 
 
 @router.post("/pause")

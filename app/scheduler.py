@@ -8,7 +8,9 @@ from apscheduler.triggers.interval import IntervalTrigger
 from services.db import Application, Project, Worker
 from services.logs import Logs
 from services.manager import Manager
+from services.manager.checks import SETTING_SECTIONS
 from services.metrics import Metrics
+from services.settings import Settings
 from utils.common import get_env
 from utils.queue import OnConflict
 
@@ -163,6 +165,20 @@ async def discover_platform_backups():
   )
 
 
+async def check_settings():
+  for key in SETTING_SECTIONS:
+    if Settings().is_valid(key):
+      Manager().add_task(
+          task=Manager().check_setting,
+          name=f"check_{key}",
+          params={"key": key},
+          scopes={f"common:{key}"},
+          executor="common",
+          on_conflict=OnConflict.REPLACE,
+          quiet=True,
+      )
+
+
 # Job scheduling
 _JOBS = [
     (dispatch_tick, IntervalTrigger(seconds=1)),
@@ -176,11 +192,12 @@ _JOBS = [
     (send_summary_notification, CronTrigger.from_crontab("0 8 * * *")),
     (cleanup, CronTrigger.from_crontab("0 4 * * *")),
     (renew_certificates, CronTrigger.from_crontab("0 3 * * *")),
+    (check_settings, CronTrigger.from_crontab("*/5 * * * *")),
 ]
 
 # Run once right after startup (as queued tasks, so the servers are already up), then on
 # their cron schedule where they have one.
-_AT_STARTUP = [refresh_latest_release, renew_certificates, discover_platform_backups]
+_AT_STARTUP = [refresh_latest_release, renew_certificates, discover_platform_backups, check_settings]
 
 
 def start():

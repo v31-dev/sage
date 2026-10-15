@@ -207,6 +207,7 @@ Every queued operation, its scope, where it is enqueued from, its lane pool, and
 | `Metrics.collect_self` | metrics:`<manager>` | cron 1m | metrics | DEDUP |
 | `send_summary_notification` | common | cron daily 08:00 | common | REPLACE |
 | `refresh_latest_release` | common | cron 4h + once at startup | common | REPLACE — caches latest-release detail (version + notes + `fetched_at`) served by `GET /info/release` |
+| `check_<section>` (`check_setting`) | common:`<section>` | cron 5m + once at startup, per configured section (quiet) | common | REPLACE — checks the saved settings against the provider without side effects and records the result for `GET /settings/status` (`services/manager/checks.py`) |
 | `backup_database_s3` | platform, app | cron 12h (skipped when S3 isn't configured) | platform | REPLACE — SQLite snapshot, Fernet-encrypted as a whole (`<ts>.db.enc`) |
 | `Metrics.cleanup` | metrics | cron daily 04:00 | metrics | REPLACE |
 | `Logs.cleanup` | common | cron daily 04:00 | common | REPLACE |
@@ -231,8 +232,11 @@ Every queued operation, its scope, where it is enqueued from, its lane pool, and
 | `refresh_traefik` | platform, app | PUT /settings/cloudflare | platform | QUEUE |
 | `refresh_traefik` | platform, app | POST /settings/resync_traefik | platform | DEDUP |
 | `refresh_latest_release` | common | POST /info/release/refresh | common | REPLACE — on-demand version of the 4h refresh; UI polls `GET /info/release`'s `fetched_at` |
+| `check_<section>` (`check_setting`) | common:`<section>` | PUT /settings/{section} (after a save, when complete) | common | REPLACE |
 | `sync_workers` | platform | POST /settings/resync_workers | platform | REPLACE |
 | `sync_application_traefik_domains_config` | app:`<qn>` | create/update/delete_domain, update-container tag change (via `request_application_traefik_sync`) | app | REPLACE |
+
+**Settings status.** `GET /settings/status` gives each section (tailscale, cloudflare, s3, notifications) a state: `not_configured`, `applying` (a check or apply task is queued or running; its `task_id` is included), `ok`, `retrying` (the last check failed in a way that clears on its own — network, timeout, 5xx/429; the 5-minute check retries) or `error` (needs the user — bad credentials, missing bucket or zone). Cloudflare is also `error` without a valid certificate. `POST /settings/{section}/test` checks the values in the request (saved or not) with side effects: the S3 test writes and deletes a marker object, the notifications test sends a message. Check failures never include a webhook URL (it holds the token).
 
 Backups live in S3, which is optional: every backup route (create, restore, delete) returns 400 until S3 is configured, and the backup triggers skip.
 
