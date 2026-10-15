@@ -38,19 +38,17 @@ const _tsFormatter = new Intl.DateTimeFormat(undefined, {
   hour12: true,
 })
 
+// Backend timestamps without a timezone are UTC; ones with `Z` or an offset
+// ('2027-01-13T09:10:59+00:00') are read as given.
+export function parseDate(value: string | Date): Date {
+  if (typeof value !== 'string') return value
+  return new Date(/([zZ]|[+-]\d{2}:?\d{2})$/.test(value) ? value : `${value}Z`)
+}
+
 // dateObj like '2026-03-19T16:12:42.759325367Z' or Date object
 export function formatDate(dateObj: string | Date): string {
   try {
-    let date
-    if (typeof dateObj === 'string') {
-      if (!dateObj.endsWith('Z')) {
-        dateObj += 'Z'
-      }
-      date = new Date(dateObj)
-    } else {
-      date = dateObj
-    }
-    return _tsFormatter.format(date).replace(',', '')
+    return _tsFormatter.format(parseDate(dateObj)).replace(',', '')
   } catch {
     return typeof dateObj === 'string' ? dateObj : dateObj.toISOString()
   }
@@ -66,15 +64,7 @@ export function levelClass(level: string): string {
 
 export function formatDateStringAgo(dateObj: string | Date): string {
   const now = new Date()
-  let date
-  if (typeof dateObj === 'string') {
-    if (!dateObj.endsWith('Z')) {
-      dateObj += 'Z'
-    }
-    date = new Date(dateObj)
-  } else {
-    date = dateObj
-  }
+  const date = parseDate(dateObj)
   const diffMs = now.getTime() - date.getTime()
   const diffMins = Math.floor(diffMs / 60000)
   const diffHours = Math.floor(diffMs / 3600000)

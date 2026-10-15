@@ -80,15 +80,14 @@ async function onClickCreateAppConfirm() {
           <Field />
           <Field>
             <FieldLabel for="app-name"> Name </FieldLabel>
-            <Input id="app-name" v-model="createAppFormData.label" placeholder="required" />
+            <Input id="app-name" v-model="createAppFormData.label" />
           </Field>
           <Field>
-            <FieldLabel for="app-description"> Description </FieldLabel>
+            <FieldLabel for="app-description"> Description (optional) </FieldLabel>
             <Textarea
               id="app-description"
               v-model="createAppFormData.description"
               class="resize-none"
-              placeholder="optional"
             />
           </Field>
           <Field>

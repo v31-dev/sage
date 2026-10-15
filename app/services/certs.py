@@ -14,7 +14,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 
 from services.base import Base
 from services.cloudflare import Cloudflare
-from services.settings import Settings
+from utils.common import get_env
 
 logger = logging.getLogger(__name__)
 
@@ -24,63 +24,77 @@ DNS_PROPAGATION_TIMEOUT = 180
 DNS_POLL_INTERVAL = 5
 FINALIZE_TIMEOUT_SECONDS = 180
 CHALLENGE_COMMENT = "sage-acme-challenge"
-# Exponential backoff between cold-start issuance attempts
+# A cold start without a certificate retries before giving up (seconds).
 STARTUP_RETRY_DELAYS = (60, 240, 960)
 
 
+class Certificate:
+  """One issued certificate: the names it must cover and its PEM files."""
+
+  def __init__(self, directory: Path, names: list[str]):
+    directory.mkdir(parents=True, exist_ok=True)
+    self.names = names
+    self.fullchain_path = directory / "fullchain.pem"
+    self.key_path = directory / "key.pem"
+
+  def _leaf(self):
+    if not self.fullchain_path.exists():
+      return None
+    try:
+      return x509.load_pem_x509_certificate(self.fullchain_path.read_bytes())
+    except Exception:
+      return None
+
+  def expiry(self):
+    cert = self._leaf()
+    return cert.not_valid_after_utc if cert else None
+
+  def is_valid(self):
+    """Unexpired and covering every name (so a domain change makes it stale)."""
+    cert = self._leaf()
+    if cert is None or cert.not_valid_after_utc <= datetime.now(timezone.utc):
+      return False
+    try:
+      sans = cert.extensions.get_extension_for_class(
+          x509.SubjectAlternativeName).value.get_values_for_type(x509.DNSName)
+    except x509.ExtensionNotFound:
+      return False
+    return all(name in sans for name in self.names)
+
+  def needs_renewal(self, days: int = RENEWAL_THRESHOLD_DAYS):
+    cert = self._leaf()
+    if cert is None:
+      return True
+    return cert.not_valid_after_utc <= datetime.now(timezone.utc) + timedelta(days=days)
+
+  def hash(self):
+    """Content hash of the chain (None when absent); compared against a worker's
+    `revisions/certs` stamp to detect missed rotations."""
+    if not self.fullchain_path.exists():
+      return None
+    return hashlib.sha256(self.fullchain_path.read_bytes()).hexdigest()[:16]
+
+
 class Certs(Base):
-  """Owns the wildcard TLS certificate: in-process ACME issuance (Let's Encrypt
-  DNS-01 via the Cloudflare client), PEM storage sage owns directly, renewal,
-  and the :443 in-place cert hot-reload."""
+  """Owns Sage's two TLS certificates — in-process ACME issuance (Let's Encrypt
+  DNS-01 via the Cloudflare client), PEM storage, renewal, and the :443 in-place
+  reload. The manager's certificate covers only its own address and never leaves the
+  manager; the workers' covers `*.int.<domain>` and is synced to every worker."""
 
   def __init__(self):
     super().__init__()
 
-    self.cert_dir = Path("/app/data/certs")
-    self.cert_dir.mkdir(parents=True, exist_ok=True)
-    self.fullchain_path = self.cert_dir / "fullchain.pem"
-    self.key_path = self.cert_dir / "key.pem"
-    self.account_key_path = self.cert_dir / "account.key"
+    cert_dir = Path("/app/data/certs")
+    cert_dir.mkdir(parents=True, exist_ok=True)
+    self.account_key_path = cert_dir / "account.key"
+    self.domain = get_env("DOMAIN")
+    self.manager = Certificate(cert_dir / "manager", [Cloudflare().manager_hostname])
+    self.workers = Certificate(cert_dir / "workers", [f"*.int.{self.domain}"])
 
     # The uvicorn :443 SSLContext, set by main once the server is built. Holding
     # the reference lets renewal swap the cert in place (new handshakes get the
     # new cert, live connections keep theirs) without restarting the server.
     self.tls_context = None
-
-    self.load()
-
-    # Sage cannot serve :443 without a certificate, so a cold start retries with
-    # backoff before giving up. An existing valid certificate means this was only
-    # a renewal, so a failure is logged and left to the daily renewal op rather
-    # than holding startup — or failing it — for a certificate that still works.
-    for delay in (*STARTUP_RETRY_DELAYS, None):
-      try:
-        self.ensure()
-        break
-      except Exception as e:
-        if self.has_valid_certificates():
-          logger.error(
-              f"Certificate renewal failed during startup: {e}. Continuing on the current "
-              f"certificate (expires {self.expiry()}); the daily renewal will retry.",
-              exc_info=True)
-          break
-        # Let's Encrypt's Retry-After for a rate limit is measured in hours, so
-        # further attempts this session would fail regardless.
-        if delay is None or (isinstance(e, messages.Error) and e.code == "rateLimited"):
-          raise
-        logger.warning(
-            f"Certificate issuance failed during startup: {e}. Retrying in {delay}s.")
-        time.sleep(delay)
-
-  def load(self):
-    self.domain = Settings().get("cloudflare", "domain")
-    self.admin_email = Settings().get("cloudflare", "admin_email")
-
-    if not self.domain or not self.admin_email:
-      raise ValueError("Platform settings require non-empty domain and admin_email values.")
-
-  def _domains(self):
-    return [self.domain, f"*.core.{self.domain}", f"*.int.{self.domain}"]
 
   def _account_key(self):
     if self.account_key_path.exists():
@@ -97,8 +111,8 @@ class Certs(Base):
       self.account_key_path.chmod(0o600)
     return jose.JWKRSA(key=key)
 
-  def issue(self):
-    """Run one ACME DNS-01 order for the wildcard SAN set and persist the PEM
+  def issue(self, certificate: Certificate):
+    """Run one ACME DNS-01 order for the certificate's names and persist the PEM
     cert + key. Blocking (network I/O plus a DNS propagation wait) — offload to
     an executor lane, never call on the event loop."""
     account_key = self._account_key()
@@ -106,9 +120,8 @@ class Certs(Base):
     directory = client.ClientV2.get_directory(ACME_DIRECTORY, net)
     acme_client = client.ClientV2(directory, net=net)
     try:
-      acme_client.new_account(
-          messages.NewRegistration.from_data(email=self.admin_email, terms_of_service_agreed=True)
-      )
+      # No contact email: Let's Encrypt no longer sends expiry mail.
+      acme_client.new_account(messages.NewRegistration.from_data(terms_of_service_agreed=True))
     except errors.ConflictError as e:
       # The account key is already registered
       acme_client.net.account = messages.RegistrationResource(
@@ -120,7 +133,7 @@ class Certs(Base):
         serialization.PrivateFormat.PKCS8,
         serialization.NoEncryption(),
     )
-    order = acme_client.new_order(crypto_util.make_csr(cert_key_pem, self._domains()))
+    order = acme_client.new_order(crypto_util.make_csr(cert_key_pem, certificate.names))
 
     # One DNS-01 authorization per identifier: clear any stale record, publish
     # the TXT, wait for it to be visible on the authoritative nameservers, then
@@ -138,11 +151,13 @@ class Certs(Base):
 
       # Let's Encrypt validates a challenge the moment it is answered, so wait
       # until every TXT is actually served before answering
+      logger.info(f"Waiting for the DNS-01 records to appear on the zone's nameservers (up to {DNS_PROPAGATION_TIMEOUT}s).")
       self._wait_for_dns([(name, value) for name, value, _, _ in published])
 
       for _, _, challenge, response in published:
         acme_client.answer_challenge(challenge, response)
 
+      logger.info(f"Let's Encrypt is validating the DNS-01 challenge (up to {FINALIZE_TIMEOUT_SECONDS}s).")
       order = acme_client.poll_and_finalize(
           order, deadline=datetime.now() + timedelta(seconds=FINALIZE_TIMEOUT_SECONDS))
     finally:
@@ -152,10 +167,10 @@ class Certs(Base):
         except Exception as e:
           logger.warning(f"Failed to remove ACME challenge record {record_name}: {e}")
 
-    self.fullchain_path.write_text(order.fullchain_pem)
-    self.key_path.write_bytes(cert_key_pem)
-    self.key_path.chmod(0o600)
-    logger.info(f"Issued wildcard certificate for {self.domain}; expires {self.expiry()}.")
+    certificate.fullchain_path.write_text(order.fullchain_pem)
+    certificate.key_path.write_bytes(cert_key_pem)
+    certificate.key_path.chmod(0o600)
+    logger.info(f"Issued certificate for {', '.join(certificate.names)}; expires {certificate.expiry()}.")
 
   def _wait_for_dns(self, records):
     """Block until every (name, expected_value) TXT is served by the zone's
@@ -204,54 +219,42 @@ class Certs(Base):
       if pending:
         time.sleep(DNS_POLL_INTERVAL)
 
-  def ensure(self):
+  def ensure(self, certificate: Certificate):
     """Issue only when there is no valid cert or it is within the renewal
     window. Returns True if a new cert was written. Blocking — offload."""
-    if self.has_valid_certificates() and not self.needs_renewal():
+    if certificate.is_valid() and not certificate.needs_renewal():
       return False
-    self.issue()
+    logger.info(f"Requesting a certificate for {', '.join(certificate.names)} from Let's Encrypt.")
+    self.issue(certificate)
     return True
 
-  def _leaf_cert(self):
-    if not self.fullchain_path.exists():
-      return None
-    try:
-      return x509.load_pem_x509_certificate(self.fullchain_path.read_bytes())
-    except Exception:
-      return None
-
-  def expiry(self):
-    cert = self._leaf_cert()
-    return cert.not_valid_after_utc if cert else None
-
-  def has_valid_certificates(self):
-    cert = self._leaf_cert()
-    if cert is None or cert.not_valid_after_utc <= datetime.now(timezone.utc):
-      return False
-    try:
-      sans = cert.extensions.get_extension_for_class(
-          x509.SubjectAlternativeName).value.get_values_for_type(x509.DNSName)
-    except x509.ExtensionNotFound:
-      return False
-    return self.domain in sans
-
-  def needs_renewal(self, days: int = RENEWAL_THRESHOLD_DAYS):
-    cert = self._leaf_cert()
-    if cert is None:
-      return True
-    return cert.not_valid_after_utc <= datetime.now(timezone.utc) + timedelta(days=days)
-
-  def certificates_hash(self):
-    """Content hash of the issued cert chain (None when absent); compared
-    against a worker's `revisions/certs` stamp to detect missed rotations."""
-    if not self.fullchain_path.exists():
-      return None
-    return hashlib.sha256(self.fullchain_path.read_bytes()).hexdigest()[:16]
+  def ensure_manager_at_startup(self):
+    """Sage serves only on the manager's certificate, so a cold start retries with
+    backoff before giving up. An existing valid certificate means this was only a
+    renewal: a failure is logged and left to the daily renewal task rather than
+    holding startup for a certificate that still works."""
+    for delay in (*STARTUP_RETRY_DELAYS, None):
+      try:
+        self.ensure(self.manager)
+        return
+      except Exception as e:
+        if self.manager.is_valid():
+          logger.error(
+              f"Certificate renewal failed during startup: {e}. Continuing on the current "
+              f"certificate (expires {self.manager.expiry()}); the daily renewal will retry.",
+              exc_info=True)
+          return
+        # Let's Encrypt's Retry-After for a rate limit is measured in hours, so
+        # further attempts this session would fail regardless.
+        if delay is None or (isinstance(e, messages.Error) and e.code == "rateLimited"):
+          raise
+        logger.warning(f"Certificate issuance failed during startup: {e}. Retrying in {delay}s.")
+        time.sleep(delay)
 
   def reload_local_tls(self):
     """Swap the :443 cert in place on the live SSLContext. Call on the event
     loop (same thread that serves the TLS handshakes)."""
     if self.tls_context is None:
       return
-    self.tls_context.load_cert_chain(self.fullchain_path, self.key_path)
+    self.tls_context.load_cert_chain(self.manager.fullchain_path, self.manager.key_path)
     logger.info("Reloaded :443 TLS certificate in place.")

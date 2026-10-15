@@ -15,9 +15,14 @@ export interface AppInfo {
   version: string
   latest_version: string | null
   domain: string
-  hostname: string
+  // The manager's name (TS_NAME): its tailnet machine name.
+  name: string
+  // Tailscale tag of the workers (TS_WORKER_TAG).
+  worker_tag: string
   ip: string
   start_time: string
+  // running, or paused (Settings > Upgrade), or stopping (draining after a stop signal)
+  state: 'running' | 'paused' | 'stopping'
 }
 
 export interface Release {
@@ -208,6 +213,28 @@ export interface Setting {
   value: Record<string, unknown> | null
   created_at: Date
   updated_at: Date
+}
+
+export type SettingSection = 'tailscale' | 'cloudflare' | 's3' | 'notifications'
+export type SettingState = 'not_configured' | 'applying' | 'ok' | 'retrying' | 'error'
+
+export interface SettingSectionStatus {
+  state: SettingState
+  message: string | null
+  task_id: string | null
+  checked_at: string | null
+  // Cloudflare: account_id, tunnel_id, tunnel_status, *_certificate_expiry.
+  details: Record<string, string | null> | null
+}
+
+export type SettingsStatus = Record<SettingSection, SettingSectionStatus>
+
+export async function fetchSettingsStatus(): Promise<SettingsStatus> {
+  const response = await fetch(`${API_ROOT}/settings/status`)
+  if (!response.ok) {
+    throw new Error('Failed to fetch settings status')
+  }
+  return await response.json()
 }
 
 export const settingsAPI = new CRUDAPI({

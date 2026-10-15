@@ -16,6 +16,9 @@ interface Props {
   type?: 'input' | 'textarea'
 }
 
+// Attributes (id, placeholder, class…) belong on the inner input, not the group wrapper.
+defineOptions({ inheritAttrs: false })
+
 const props = withDefaults(defineProps<Props>(), {
   secret: false,
   tooltip: '',

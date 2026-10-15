@@ -29,7 +29,7 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { Spinner } from '@/components/ui/spinner'
 import MetricChart from '@/components/MetricChart.vue'
 import { fetchHomeSummary, type HomeSummary, type Notification } from '@/services/api'
-import { formatDateStringAgo } from '@/lib/utils'
+import { formatDateStringAgo, parseDate } from '@/lib/utils'
 import { useAppStore } from '@/stores/app'
 
 const HOUR_MS = 3_600_000
@@ -86,7 +86,7 @@ const timelineData = computed(() => {
   }
 
   for (const event of events.value) {
-    const ts = parseTimestamp(event.created_at)
+    const ts = parseDate(event.created_at)
     const bucket = buckets.get(
       new Date(ts.getFullYear(), ts.getMonth(), ts.getDate(), ts.getHours()).getTime()
     )
@@ -117,11 +117,6 @@ async function loadSummary() {
   } finally {
     isLoading.value = false
   }
-}
-
-// Stored naive UTC, so it needs the zone marker before parsing
-function parseTimestamp(value: string) {
-  return new Date(value.endsWith('Z') ? value : `${value}Z`)
 }
 
 function ratio(part: number, total: number) {
@@ -182,7 +177,7 @@ onUnmounted(() => {
               <CardDescription>
                 <div class="flex items-center gap-2 text-sm text-muted-foreground">
                   <Server class="size-4" />
-                  <span>{{ appStore.info?.hostname ?? 'manager' }}</span>
+                  <span>{{ appStore.info?.name ?? 'manager' }}</span>
                   <span v-if="appStore.info?.ip">• {{ appStore.info.ip }}</span>
                 </div>
               </CardDescription>

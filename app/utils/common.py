@@ -1,6 +1,5 @@
 import logging
 import os
-import re
 from types import SimpleNamespace
 
 import yaml
@@ -14,11 +13,9 @@ def format_yaml(content: str) -> str:
   return yaml.safe_dump(yaml.safe_load(content), sort_keys=False, default_flow_style=False)
 
 
-DOMAIN_RE = re.compile(
-    r"^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$",
-    re.IGNORECASE,
-)
-EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+# How long history is kept: logs, metrics, events, notifications, task history, restore
+# safety copies, and S3 platform and volume backups (the daily cleanup).
+RETENTION_DAYS = 14
 
 
 def dict_to_obj(data):

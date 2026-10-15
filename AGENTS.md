@@ -23,19 +23,22 @@ This is a living project-context file for AI coding agents. Keep it concise, cur
 
 ## Project Summary
 
-Sage is a lightweight manager-and-workers micro-PaaS that uses Tailscale for node connectivity, Cloudflare for DNS and tunnels, Traefik for ingress, Vector for worker logs (the manager logs itself in-process via a SQLite logging handler), Glances for worker metrics (the manager self-collects its own container metrics in-process), SQLite for persistence, APScheduler as a cron/interval trigger feeding an in-memory operation queue, and Vue 3 for the UI.
+Sage is a lightweight manager-and-workers micro-PaaS that uses Tailscale for node connectivity, Cloudflare (required) for the domain, DNS and tunnels, Traefik for ingress, Vector for worker logs (the manager logs itself in-process via a SQLite logging handler), Glances for worker metrics (the manager self-collects its own container metrics in-process), SQLite for persistence, APScheduler as a cron/interval trigger feeding an in-memory operation queue, and Vue 3 for the UI.
 
 ## Core Context To Preserve
 
 Agents must keep this context active throughout a task, including after summaries, compaction, handoff, or long-running work:
 
 - Manager plus workers over Tailscale is the core architecture.
+- Access control is out of scope (rework sprint, 2026-10-15): the manager API/UI has no authentication and is reached only over the tailnet, whose policy is the only gate. Don't add login, secret masking or ingestion tokens unless asked, and keep the README stating this.
+- The manager is a single container with its own userspace Tailscale node (`app/entrypoint.sh`). Required env vars: `TS_AUTH_KEY`, `TS_NAME`, `TS_WORKER_TAG`, `ENCRYPTION_KEY` (can't change after the first boot: startup refuses a different one), `DOMAIN`, `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`; changing them is a restart, and startup converges workers by stamp. S3 and notifications are optional UI settings (`Setting` table). Startup sets up the domain and the manager's certificate before serving (retries, then exits); the UI is only at `https://<TS_NAME>.core.<DOMAIN>`.
+- Configuration split: required env vars are cold config the core depends on (Tailscale, Cloudflare, `ENCRYPTION_KEY`) — changing one is a restart. Optional services that don't break the core when missing or wrong (S3, notifications) are hot config, edited in the UI and applied at runtime.
 - Services are singleton-based and thread-aware.
 - Long or remote-touching operations run through the Manager's in-memory operation queue (`app/utils/queue.py`); entity CRUD is an instant route-side model write (only `delete_container` is queued — it does remote cleanup). APScheduler only fires cron/interval triggers that call `Manager().add_task(...)`.
 - `task_id` propagation through `ContextVar` is a core observability requirement.
 - Blocking network or remote I/O is offloaded onto the lane pools in `app/utils/executor.py` — `run_in_executor_with_context(...)` (awaited) or `submit_with_context(...)` (fire-and-forget).
 - Local SQLite/Peewee work runs inline and relies on WAL mode.
-- The scheduler is a thin APScheduler layer (`app/scheduler.py`) that only enqueues; cron jobs fire on wall-clock instants (never at boot).
+- The scheduler is a thin APScheduler layer (`app/scheduler.py`) that only enqueues; cron jobs fire on wall-clock instants, and a short `_AT_STARTUP` list (release check, certificate renewal, S3 backup discovery) also runs once right after startup.
 
 If this context may have been lost, reread this file plus the relevant `docs/` page before continuing.
 
@@ -43,6 +46,7 @@ If this context may have been lost, reread this file plus the relevant `docs/` p
 
 | Path | Purpose |
 | --- | --- |
+| `app/entrypoint.sh` | Container entrypoint: starts the manager's userspace `tailscaled`, then the manager process |
 | `app/main.py` | Starts the main API, vector ingestion API, and APScheduler scheduler |
 | `app/api.py` | Main FastAPI application |
 | `app/api_vector.py` | Metrics/log ingestion FastAPI application |
@@ -59,6 +63,12 @@ If this context may have been lost, reread this file plus the relevant `docs/` p
 | `docs/` | Human-facing project docs |
 
 ## Non-Negotiable Patterns
+
+### Manager Networking (userspace Tailscale)
+
+- Inbound tailnet traffic to the manager is delivered to `127.0.0.1:<port>` inside the container, so anything listening there (on `0.0.0.0` or `127.0.0.1`) is reachable from the tailnet wherever the tailnet policy allows. Never put an internal-only listener on `127.0.0.1`; use `127.0.0.2` (as tailscaled's outbound proxy does) or a unix socket.
+- The container has no route into the tailnet: SSH to workers goes through `tailscale nc` (asyncssh `proxy_command`), HTTP to workers through `TAILNET_HTTP_PROXY`. Internet calls (Cloudflare, S3, ACME, GitHub) go direct.
+- Optional services (S3 `s3_config`, notifications) are checked before use: scheduled triggers skip quietly when unconfigured, user actions get a clear 4xx. Cloudflare is always configured; don't add checks for it.
 
 ### Services
 
@@ -103,6 +113,7 @@ If this context may have been lost, reread this file plus the relevant `docs/` p
 - Task shape: one async task that `asyncio.gather`s its offloaded leaves (independent work in one operation, shared scope), per-entity fan-out (one `add_task` per entity, each with its own scope/lifecycle/DEDUP), or sequential `await`s (ordered/dependent steps). A fan-out parent must be async — never a sync task blocking on its own lane.
 - When adding or changing a task, declare its `scopes`, `executor`, and `on_conflict` at the single `add_task` call site and **add/update its row in the Task Catalog** in [docs/backend.md](docs/backend.md). Worker convergence (`sync_workers`/`setup_worker`) holds `{platform}` only — app tasks treat workers as unreliable and fast-fail on offline-flagged ones, so worker churn never barriers app work; `remove_worker`, `refresh_traefik`, and the cert sync keep the broad `{platform, app}` barrier. There is deliberately no per-worker scope dimension — don't add one.
 - Scheduler cadence lives in `app/scheduler.py` (`AsyncIOScheduler`): sub-minute pumps use `IntervalTrigger`, everything else uses `CronTrigger.from_crontab`. Gotcha: APScheduler's `from_crontab` treats numeric day-of-week `0` as **Monday**, while the `croniter`-matched per-app volume-backup crons use standard `0` = Sunday — be explicit about the intended weekday. `dispatch_tick` must stay `async` (coroutine jobs run on the loop; a sync job runs in a worker thread where its `asyncio.create_task` has no running loop).
+- Sage never restarts or upgrades itself. Pause and stop are a `TaskQueue` state (`Manager().pause_tasks()` etc.): paused, nothing starts but cron work still queues (DEDUP/REPLACE keep one copy each); a stop signal drains (queued and later-added tasks cancelled, running ones finish). Routes use the Manager, not `scheduler` — only `main.py` imports it. While not running, `app/api.py` refuses changes with 503: a new POST route that only reads must be added to `_READ_ONLY_POSTS` there. See "Pause And Stop" in [docs/backend.md](docs/backend.md).
 
 ## Working Rules
 
@@ -118,6 +129,7 @@ If this context may have been lost, reread this file plus the relevant `docs/` p
 10. Don't extract a named helper used in only one place. A single logical piece of work should read top-to-bottom in one place — fragmenting it into single-use helpers forces the reader to jump around (scroll context switching) to follow one flow. Inline short snippets; if two call sites share small behavior, reuse or extend an existing method (e.g. add a flag param) rather than adding a single-use private wrapper.
 11. Keep comments minimal — default to none, and add one only when the *why* is non-obvious from the code itself. Comments are change-agnostic: they describe the current state of the code as if it had always been written that way, and never justify or explain the fix being applied (e.g. "everything runs inside the try so an early failure can no longer kill the parent" is fix justification — it belongs in the chat, PR, or commit message, like any why-a-behaviour-changed rationale, migration/recovery scenario, or cross-reference). Don't restate the code, don't pad. When in doubt, leave it out.
 12. Simplicity means removing incidental complexity, never dropping functionality. A simpler design that loses a capability is not acceptable. Choosing a lighter mechanism for the same behavior is good (e.g. an in-memory queue instead of Redis); removing a behavior because it is fiddly to implement is not (e.g. dropping coalescing/dedup, or rejecting a valid user action, to avoid the work). Preserve the behavior; simplify the mechanism.
+13. UI: build from the existing component library (shadcn-vue under `ui/src/components/ui`, add more of its components as needed) rather than hand-rolled HTML and CSS. Don't add a new UI framework or library for one small component. Forms: a placeholder is only ever an example, written "e.g. …"; a field with a default is prefilled with it; optional fields say "(optional)" in the label. Dates are always shown through `formatDate` / `formatDateStringAgo` (`ui/src/lib/utils.ts`), never raw.
 
 ## Token And Context Budget
 
@@ -148,11 +160,10 @@ npm run build
 npm run dev
 ```
 
-Compose commands:
+Local dev stack (`docker-compose.yml` is dev-only; deploying the image is in the README):
 
 ```bash
-docker compose up -d
-docker compose -f docker-compose.yml -f docker-compose.override.yml up -d
+docker compose up --build --watch
 ```
 
 ## Documentation Rules

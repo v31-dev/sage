@@ -51,13 +51,24 @@ def list_backups(request: Request):
 
 @router.post("/platform_backup_status")
 def get_platform_backup_status(request: Request):
-  """Get current platformbackup status."""
-  return {"platform_backup_in_progress": Manager().is_task_running(Manager().backup_database_s3)}
+  """Get current platform backup and discovery status."""
+  return {
+      "platform_backup_in_progress": Manager().is_task_running(Manager().backup_database_s3),
+      # Queued counts too: discovery waits behind running app work.
+      "discovery_in_progress": Manager().has_task(Manager().discover_s3_backups),
+  }
+
+
+def require_s3():
+  """Every backup lives in S3, which is optional."""
+  if not Manager().s3.s3_config:
+    raise HTTPException(status_code=400, detail="S3 is not configured. Set it up in Settings first.")
 
 
 @router.post("/")
 def create_backup(request: Request):
   """Trigger backup - platform backup by default, or volume backup if nested under volume."""
+  require_s3()
   models = get_request_models(request)
   if "volume" in models:
     application = models["application"]
@@ -96,9 +107,23 @@ def create_backup(request: Request):
   return {"status": "OK"}
 
 
+@router.post("/discover")
+def discover_backups(request: Request):
+  """List the platform backups and volume archives in S3 that aren't listed yet."""
+  require_s3()
+  Manager().add_task(
+      task=Manager().discover_s3_backups,
+      scopes={"platform", "app"},
+      executor="platform",
+      task_id=request.state.task_id,
+  )
+  return {"status": "OK"}
+
+
 @router.delete("/{backup}", dependencies=[Depends(inject_backup)])
 def delete_backup(request: Request):
   """Delete backup - only platform backups for now."""
+  require_s3()
   backup = request.state.models["backup"]
 
   # Delete backup record from database
@@ -120,6 +145,7 @@ def delete_backup(request: Request):
 @router.post("/{backup}/restore", dependencies=[Depends(inject_backup)])
 async def restore_backup(request: Request, restore_data: dict = Body(default={})):
   """Restore backup."""
+  require_s3()
   models = get_request_models(request, ["backup"])
   backup = models["backup"]
 

@@ -99,8 +99,8 @@ async function onClickAddDomainConfirm() {
       <FieldSet>
         <FieldGroup>
           <Field>
-            <FieldLabel for="domain-name"> Name </FieldLabel>
-            <Input id="domain-name" v-model="domain.name" placeholder="subdomain" />
+            <FieldLabel for="domain-name"> Subdomain </FieldLabel>
+            <Input id="domain-name" v-model="domain.name" placeholder="e.g. app" />
           </Field>
           <Field>
             <FieldLabel for="domain-type"> Type </FieldLabel>

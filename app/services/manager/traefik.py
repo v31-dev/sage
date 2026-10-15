@@ -2,9 +2,10 @@ import asyncio
 import json
 import logging
 import re
+import time
 
+from services.certs import STARTUP_RETRY_DELAYS
 from services.db import Application, Domain, Project, Worker
-from services.settings import Settings
 from utils.executor import run_in_executor_with_context
 from utils.queue import OnConflict
 
@@ -26,31 +27,49 @@ class TraefikMixin:
         quiet=True,
     )
 
+  def setup_domain(self):
+    """Before Sage serves: connect to Cloudflare (zone, tunnel, the manager's record) and
+    make sure the manager has its certificate, retrying a cold start before giving up.
+    Blocking; raises when the domain can't be set up."""
+    logger.info(
+        f"Setting up {self.cloudflare.manager_hostname}: Cloudflare (zone, tunnel, DNS record), then the "
+        "manager's certificate. The UI starts once this is done; a first start can take a few minutes.")
+    for delay in (*STARTUP_RETRY_DELAYS, None):
+      try:
+        self.cloudflare.connect()
+        break
+      except Exception as e:
+        # With a certificate that still works, serve now; Cloudflare is retried on use.
+        if self.certs.manager.is_valid():
+          logger.error(f"Cloudflare setup failed during startup: {e}. Continuing on the current certificate.")
+          return
+        if delay is None:
+          raise
+        logger.warning(f"Cloudflare setup failed during startup: {e}. Retrying in {delay}s.")
+        time.sleep(delay)
+    self.certs.ensure_manager_at_startup()
+
   async def renew_certificates(self):
-    """Issue the wildcard cert if it is missing or within the renewal window,
-    hot-reload the local :443 server in place, then push the cert to any worker
+    """Issue each certificate that is missing or within its renewal window, hot-reload
+    the manager's :443 server in place, then push the workers' certificate to any worker
     whose stamp is stale."""
-    reissued = await run_in_executor_with_context(self.certs.ensure)
-    if reissued:
+    if await run_in_executor_with_context(self.certs.ensure, self.certs.manager):
       self.certs.reload_local_tls()
-      self.notify(
-          f"Renewed wildcard certificate for {self.certs.domain}; expires {self.certs.expiry()}.",
-          "success")
+      self.notify(f"Renewed the manager's certificate; expires {self.certs.manager.expiry()}.", "success")
+    if await run_in_executor_with_context(self.certs.ensure, self.certs.workers):
+      self.notify(f"Renewed the workers' certificate; expires {self.certs.workers.expiry()}.", "success")
     await self.sync_certificates_to_workers()
 
   async def refresh_traefik(self):
-    """Ensure the wildcard cert covers the current domain (re-issuing when a
-    domain change left the existing cert stale) and resync everything that
-    depends on it — the local :443 server, each worker's PEM + Traefik config,
-    the `*.int` DNS records, and app routing. Triggered by a domain change or a
-    manual resync; email/token changes are handled by the settings route's
-    synchronous `Certs().load()` / `Cloudflare().load()` and need no task."""
+    """Ensure both certificates are valid and resync everything that depends on them —
+    the manager's :443 server, each worker's PEM + Traefik config, the `*.int` DNS
+    records, and app routing. Triggered by Resync Traefik."""
     try:
-      # A domain change makes the old cert stale (new domain isn't in its SANs)
-      if await run_in_executor_with_context(self.certs.ensure):
+      if await run_in_executor_with_context(self.certs.ensure, self.certs.manager):
         self.certs.reload_local_tls()
+      await run_in_executor_with_context(self.certs.ensure, self.certs.workers)
 
-      domain = Settings().get("cloudflare", "domain")
+      domain = self.cloudflare.domain
       await self.sync_certificates_to_workers(force=True)
 
       # Worker Traefik picks up config.yml from its watched dynamic dir (file
@@ -75,22 +94,22 @@ class TraefikMixin:
         self.request_application_traefik_sync(application)
     except Exception as e:
       self.notify(
-          f"Traefik refresh failed part-way: {e}. Run 'Resync Traefik' in Settings "
+          f"Traefik refresh failed part-way: {e}. Run Resync Traefik on the Cloudflare settings page "
           "to bring the manager and workers back in sync.",
           "error")
       raise
 
   async def sync_certificates_to_workers(self, force: bool = False):
-    """Push the wildcard cert to every online worker whose stamp is stale, or to
-    all of them when forced."""
-    if not self.certs.has_valid_certificates():
+    """Push the workers' certificate to every online worker whose stamp is stale, or
+    to all of them when forced."""
+    if not self.certs.workers.is_valid():
       self.notify(
           "No valid certificate available; skipping certificate sync to workers.",
           type="error",
       )
       return
 
-    cert_hash = self.certs.certificates_hash()
+    cert_hash = self.certs.workers.hash()
     workers = list(Worker.select().where(Worker.online))
     if force:
       targets = workers
@@ -112,9 +131,9 @@ class TraefikMixin:
   async def sync_certificates_to_worker(self, worker: Worker):
     traefik_dir = f"{self.worker_home_dir}/traefik"
     await self.tailscale.sync_file(
-        worker.hostname, self.certs.fullchain_path, f"{traefik_dir}/certs/fullchain.pem")
+        worker.hostname, self.certs.workers.fullchain_path, f"{traefik_dir}/certs/fullchain.pem")
     await self.tailscale.sync_file(
-        worker.hostname, self.certs.key_path, f"{traefik_dir}/certs/key.pem")
+        worker.hostname, self.certs.workers.key_path, f"{traefik_dir}/certs/key.pem")
     # Re-write the watched dynamic cert config so Traefik's file-provider watch
     # fires and reloads the new PEM; overwriting only the cert files is not a
     # reliable reload trigger.
@@ -123,7 +142,7 @@ class TraefikMixin:
         app_dir / "templates/worker/traefik/certs.yml",
         f"{traefik_dir}/dynamic/certs.yml")
     await self.write_worker_revision(
-        worker.hostname, "certs", self.certs.certificates_hash() or "")
+        worker.hostname, "certs", self.certs.workers.hash() or "")
     logger.info(f"Synced certificate to worker {worker.hostname}.")
 
   async def sync_application_traefik_domains_config(self, application_id: int):
@@ -136,7 +155,7 @@ class TraefikMixin:
       # The reconcile scan owns file cleanup for deleted applications.
       logger.info(f"Application {application_id} deleted before Traefik sync; nothing to do.")
       return
-    domain_name = Settings().get("cloudflare", "domain")
+    domain_name = self.cloudflare.domain
     containers = list(application.containers)
     application_domains = list(application.domains)
     workers = list(Worker.select())
@@ -361,7 +380,7 @@ class TraefikMixin:
             ";".join(f"rm -f {self.worker_home_dir}/revisions/{key}" for key in stale_keys),
         )
 
-    domain_name = Settings().get("cloudflare", "domain")
+    domain_name = self.cloudflare.domain
     for application in applications:
       if not application.domains_synced:
         self.add_task(

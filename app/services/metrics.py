@@ -11,7 +11,7 @@ from peewee import CharField, CompositeKey, DateTimeField, FloatField, IntegerFi
 
 from services.base import Base
 from services.db import Worker
-from utils.common import get_env
+from utils.common import RETENTION_DAYS, get_env
 
 logger = logging.getLogger(__name__)
 
@@ -40,8 +40,9 @@ class Metrics(Base):
 
     self._dbs = {"metrics": {}}
 
-    # Reused across collects which also pools connections.
-    self._http = httpx.Client(timeout=10)
+    # Reused across collects which also pools connections. Workers' Glances is reached
+    # through tailscaled's outbound proxy (set by the container entrypoint).
+    self._http = httpx.Client(timeout=10, proxy=os.getenv("TAILNET_HTTP_PROXY"))
 
     # In-memory per-minute peak accumulator for the manager's own metrics: the
     # background sampler folds samples in, the minutely flush drains completed
@@ -276,7 +277,7 @@ class Metrics(Base):
     """Flush completed minutes of the manager's peak accumulator to its shard.
     The in-progress minute is left to keep accumulating; a minute with no samples
     (e.g. spanning a restart) simply gets no row."""
-    hostname = get_env("HOSTNAME")
+    hostname = get_env("TS_NAME")
     now_minute = datetime.now().replace(second=0, microsecond=0)
 
     with self.lock:
@@ -341,12 +342,12 @@ class Metrics(Base):
       logger.info(f"Removed orphaned {kind} shard '{key}'.")
     return len(orphans)
 
-  def cleanup(self, days: int = 7):
+  def cleanup(self, days: int = RETENTION_DAYS):
     cutoff = datetime.now() - timedelta(days=days)
 
     # Drop shards for hosts that no longer exist (keyed by hostname -- manager
     # plus all workers, incl. offline).
-    live_hosts = {get_env("HOSTNAME")} | {worker.hostname for worker in Worker.select()}
+    live_hosts = {get_env("TS_NAME")} | {worker.hostname for worker in Worker.select()}
     dropped = self._prune_orphan_shards("metrics", live_hosts)
 
     # Delete rows past the retention window; freed pages are reused by later

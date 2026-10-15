@@ -1,20 +1,29 @@
 # Profiling A Live Sage Process
 
-Sage bakes in two live profilers and grants the `SYS_PTRACE` capability so you
-can attach to the **running** process via `docker exec` — no restart, no code
-change. Use this to diagnose CPU spikes or memory growth in place.
+The development image bakes in two live profilers so you can attach to the **running** manager via
+`docker exec` — no restart, no code change. Use this to diagnose CPU spikes or memory
+growth in place.
 
 - **py-spy** — CPU sampling and thread stacks (read-only, very safe).
 - **memray** — memory allocation tracking (injects via `gdb`; slightly more invasive).
 
-Both are installed in the image; `cap_add: ["SYS_PTRACE"]` on the `sage` service
-enables attaching. The capability is set at container creation, so it must be
-present **before** the incident — you can't add it to a running container without
-recreating it (which would destroy the live state you want to capture).
+Both, and `gdb`, are installed only in the development image (`app/Dockerfile` with
+`ENV=development`; the profilers come from `requirements-dev.txt`). The published image
+doesn't carry them. Attaching needs the `SYS_PTRACE` capability, which only the
+development compose file (`docker-compose.yml`) grants. The capability is
+set at container creation, so it must be present **before** the incident — you can't
+add it to a running container without recreating it (which would destroy the live state
+you want to capture).
 
-The container's main process is PID `1` (`python main.py`). Write outputs under
-`/app/data` — it's the mounted data volume, so files appear on the host at
-`${SAGE_HOME}/sage/…` with no `docker cp`.
+PID `1` is the container entrypoint (`app/entrypoint.sh`); the manager is its child.
+Look up the manager's PID first:
+
+```bash
+PID=$(docker exec sage pgrep -of '^python.*main\.py')
+```
+
+Write outputs under `/app/data` (the `data` volume) and copy them out with
+`docker cp sage:/app/data/<file> .`.
 
 ## Memory: what is leaking? (memray)
 
@@ -23,15 +32,15 @@ Capture allocations for a window while memory is climbing, then render a
 
 ```bash
 # Attach, auto-detach after 20 min, trace Python-object allocations.
-docker exec sage memray attach 1 -o /app/data/mem.bin \
+docker exec sage memray attach "$PID" -o /app/data/mem.bin \
   --duration 1200 --trace-python-allocators --force
 
 # Render the leak flamegraph once the capture finishes.
 docker exec sage memray flamegraph --leaks /app/data/mem.bin \
   -o /app/data/mem-leaks.html --force
+docker cp sage:/app/data/mem-leaks.html .
 ```
 
-Open `${SAGE_HOME}/sage/mem-leaks.html` (or `docker cp sage:/app/data/mem-leaks.html .`).
 The widest frames are the leaking call sites. Text alternatives:
 
 ```bash
@@ -61,7 +70,7 @@ every minute per host, each rebuilding an SSL context and reloading the whole CA
 bundle (~1.9M allocations, all freed) — `--leaks` showed almost nothing, but
 `stats` showed the churn. The fix was reusing one client (see `self._http`). The
 general pattern: **don't recreate expensive clients/sessions on hot paths**
-(httpx, `aioboto3.Session`, SSH connections) — build once and reuse.
+(httpx, boto3 clients, SSH connections) — build once and reuse.
 
 ## Fragmentation mitigations (already applied)
 
@@ -73,9 +82,9 @@ general pattern: **don't recreate expensive clients/sessions on hot paths**
 ## CPU: what is it doing? (py-spy)
 
 ```bash
-docker exec sage py-spy dump --pid 1                              # all thread stacks, now
-docker exec sage py-spy top  --pid 1                              # live hot functions
-docker exec sage py-spy record --pid 1 --duration 60 -o /app/data/cpu.svg  # flamegraph
+docker exec sage py-spy dump --pid "$PID"                             # all thread stacks, now
+docker exec sage py-spy top  --pid "$PID"                             # live hot functions
+docker exec sage py-spy record --pid "$PID" --duration 60 -o /app/data/cpu.svg  # flamegraph
 ```
 
 `dump` is the fastest "what is it stuck on"; `record` gives an aggregated
@@ -86,7 +95,6 @@ flamegraph of where CPU time went.
 - Nothing here opens a network port; the only trigger is `docker exec`, reachable
   only by someone who can already exec into the container.
 - `SYS_PTRACE` is scoped to sage's own PID namespace (it can't reach the host or
-  other containers). The incremental risk is negligible because the container
-  already mounts the Docker socket.
+  other containers).
 - If `memray attach` fails to inject, confirm `gdb` is present and the capability
   is set (`docker inspect sage --format '{{.HostConfig.CapAdd}}'`).

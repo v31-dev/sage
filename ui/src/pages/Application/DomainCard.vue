@@ -161,7 +161,7 @@ async function onClickConfirmDelete() {
       <FieldSet>
         <FieldGroup>
           <Field>
-            <FieldLabel for="edit-domain-name"> Name </FieldLabel>
+            <FieldLabel for="edit-domain-name"> Subdomain </FieldLabel>
             <InputGroup>
               <InputGroupAddon>
                 <InputGroupText>{{ domain.type == 'tcp' ? '' : 'https://' }}</InputGroupText>
@@ -169,7 +169,7 @@ async function onClickConfirmDelete() {
               <InputGroupInput
                 id="edit-domain-name"
                 v-model="domain.name"
-                placeholder="subdomain"
+                placeholder="e.g. app"
                 class="!pl-0.5"
               />
               <InputGroupAddon align="inline-end">
@@ -198,7 +198,12 @@ async function onClickConfirmDelete() {
           </Field>
           <Field>
             <FieldLabel for="edit-domain-port"> Port </FieldLabel>
-            <Input id="edit-domain-port" v-model="domain.port" type="number" placeholder="80" />
+            <Input
+              id="edit-domain-port"
+              v-model="domain.port"
+              type="number"
+              placeholder="e.g. 80"
+            />
           </Field>
           <Field>
             <FieldError v-if="editDomainErrorMessage">{{ editDomainErrorMessage }}</FieldError>

@@ -7,7 +7,11 @@ import Logs from '@/pages/Logs.vue'
 import Application from '@/pages/Application'
 import ApplicationLogs from '@/pages/ApplicationLogs.vue'
 import ApplicationMetrics from '@/pages/ApplicationMetrics.vue'
-import Settings from '@/pages/Settings'
+import CloudflareSettings from '@/pages/Settings/CloudflareSettings.vue'
+import NotificationsSettings from '@/pages/Settings/NotificationsSettings.vue'
+import S3Settings from '@/pages/Settings/S3Settings.vue'
+import TailscaleSettings from '@/pages/Settings/TailscaleSettings.vue'
+import Upgrade from '@/pages/Settings/Upgrade.vue'
 import Worker from '@/pages/Worker'
 import Workers from '@/pages/Workers'
 import WorkerMetrics from '@/pages/WorkerMetrics.vue'
@@ -34,7 +38,15 @@ const routes = [
   { path: '/workers/:hostname', name: 'Worker', component: Worker },
   { path: '/workers/:hostname/metrics', name: 'WorkerMetrics', component: WorkerMetrics },
   { path: '/backups', name: 'Backups', component: Backup },
-  { path: '/settings', name: 'Settings', component: Settings },
+  { path: '/tailscale', name: 'TailscaleSettings', component: TailscaleSettings },
+  { path: '/cloudflare', name: 'CloudflareSettings', component: CloudflareSettings },
+  { path: '/s3', name: 'S3Settings', component: S3Settings },
+  {
+    path: '/notifications',
+    name: 'NotificationsSettings',
+    component: NotificationsSettings,
+  },
+  { path: '/upgrade', name: 'Upgrade', component: Upgrade },
 ]
 
 const router = createRouter({

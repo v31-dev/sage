@@ -43,7 +43,7 @@ Routes in `ui/src/router/index.ts` currently cover:
 - `/workers/:hostname`
 - `/workers/:hostname/metrics`
 - `/backups`
-- `/settings`
+- `/tailscale`, `/cloudflare`, `/s3`, `/notifications`, `/upgrade` (the settings pages, grouped under "Settings" in the sidebar)
 
 ## Main Feature Areas
 
@@ -54,7 +54,31 @@ Routes in `ui/src/router/index.ts` currently cover:
 - Worker inventory and worker metrics
 - Global logs view
 - Backups and restore flows
-- Platform settings
+- Settings: one page per section, listed under a "Settings" group in the sidebar
+
+## Forms
+
+- Placeholders are only examples, written "e.g. …". They never stand in for a label, a
+  hint or a default (they vanish on typing and read as a filled-in value).
+- A field with a default is prefilled with the actual value.
+- Optional fields say "(optional)" in the label; required is the unmarked default.
+- Search boxes and select prompts ("Search logs…", "Select backup") are prompts, not
+  values, and are fine.
+
+## Dates
+
+Every date shown goes through `formatDate` or `formatDateStringAgo` (`lib/utils.ts`), never
+raw. Both parse with `parseDate`: backend timestamps without a timezone are UTC; ones with
+`Z` or an offset are read as given.
+
+## Settings Pages
+
+Tailscale and Cloudflare are env vars, so their pages use `SettingsSection` with `readonly` (status, values, resync actions, and a `links` slot for their dashboards: the manager's machine in the Tailscale console; the tunnel and DNS records in Cloudflare). S3 and notifications are editable: each section page is `SettingsSection.vue` (layout, status badge, Save / Test / Reset,
+inline error, unsaved-changes dialog) around `useSettingForm` (load, save, test the
+current values, reset, leave guard). Errors show inline; successes as toasts. The sidebar
+and the pages read one status store (`stores/settingsStatus.ts`) that polls
+`GET /api/settings/status`: every 3 s while a section is applying, otherwise every 30 s
+and on window focus. States and their icons are in `lib/settingState.ts`.
 
 ## API Layer
 

@@ -8,7 +8,7 @@ import subprocess
 import asyncssh
 
 from services.base import Base
-from utils.common import dict_to_obj
+from utils.common import dict_to_obj, get_env
 
 logger = logging.getLogger(__name__)
 
@@ -20,12 +20,11 @@ class Tailscale(Base):
     super().__init__()
 
     self.uds = "/var/run/tailscale/tailscaled.sock"
+    # Machines carrying this tag are workers (TS_WORKER_TAG, with or without `tag:`).
+    self.worker_tag = get_env("TS_WORKER_TAG").strip().removeprefix("tag:")
     # Pooled SSH connections per worker
     self._conns: dict[str, asyncssh.SSHClientConnection] = {}
     self._conn_locks: dict[str, asyncio.Lock] = {}
-    # validate connection on startup
-    self.ip()
-    logger.info("Connected to Tailscale.")
 
   async def _get_conn(self, hostname):
     """Return a live pooled SSH connection to `hostname`, connecting if needed."""
@@ -40,9 +39,12 @@ class Tailscale(Base):
       # keepalive: ping every 30s, drop after ~90s of silence, so a silently
       # dead pooled connection is detected (is_closed) and reconnected instead
       # of hanging the next command, and idle connections stay NAT/firewall-warm.
+      # tailscaled runs in userspace mode, so there is no route into the tailnet;
+      # `tailscale nc` carries the connection through tailscaled instead.
       conn = await asyncssh.connect(
           hostname, username=SSH_USER, known_hosts=None, connect_timeout=30,
-          keepalive_interval=30, keepalive_count_max=3)
+          keepalive_interval=30, keepalive_count_max=3,
+          proxy_command=["tailscale", "nc", hostname, "22"])
       self._conns[hostname] = conn
       return conn
 

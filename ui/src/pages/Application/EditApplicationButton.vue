@@ -37,7 +37,7 @@ const props = withDefaults(defineProps<Props>(), {})
 
 const commonTooltip =
   'KEY=VALUE pairs, one per line\nComments with # are allowed\nVALUE can be string quoted\n' +
-  '${SAGE_WORKER_HOSTNAME} can be used for worker hostname\n${KEY} resolves to project env values\n'
+  '${SAGE_WORKER_HOSTNAME} resolves to the worker name\n${KEY} resolves to project env values\n'
 const envTooltip = commonTooltip
 const commandTooltip =
   "Overrides the image's default command, e.g. python -m http.server 8000\n" +
@@ -119,20 +119,15 @@ async function handleUpdateApplication() {
           <Field />
           <Field>
             <FieldLabel for="label"> Name </FieldLabel>
-            <Input id="label" v-model="editFormData.label" placeholder="required" />
+            <Input id="label" v-model="editFormData.label" />
           </Field>
           <Field>
-            <FieldLabel for="description"> Description </FieldLabel>
-            <Textarea
-              id="description"
-              v-model="editFormData.description"
-              class="resize-none"
-              placeholder="optional"
-            />
+            <FieldLabel for="description"> Description (optional) </FieldLabel>
+            <Textarea id="description" v-model="editFormData.description" class="resize-none" />
           </Field>
           <Field>
             <FieldLabel for="type"> Type </FieldLabel>
-            <Select id="type" v-model="editFormData.type" placeholder="required">
+            <Select id="type" v-model="editFormData.type">
               <SelectTrigger>
                 <SelectValue />
               </SelectTrigger>
@@ -144,37 +139,26 @@ async function handleUpdateApplication() {
           </Field>
           <Field v-if="editFormData.type == 'docker'">
             <FieldLabel for="image"> Image </FieldLabel>
-            <Input id="image" v-model="editFormData.image" placeholder="required" />
+            <Input id="image" v-model="editFormData.image" />
           </Field>
           <Field v-if="editFormData.type == 'git'">
             <FieldLabel for="repo"> Repository </FieldLabel>
             <CustomInput
               id="repo"
               v-model="editFormData.repo"
-              placeholder="required"
               tooltip="https://github.com/user/repo.git<?#branch><?:sub-directory>"
             />
           </Field>
           <Field v-if="editFormData.type == 'git'">
             <FieldLabel for="path"> Path </FieldLabel>
-            <CustomInput
-              id="path"
-              v-model="editFormData.path"
-              placeholder="required"
-              tooltip="Dockerfile"
-            />
+            <CustomInput id="path" v-model="editFormData.path" tooltip="Dockerfile" />
           </Field>
           <Field>
-            <FieldLabel for="command"> Command </FieldLabel>
-            <CustomInput
-              id="command"
-              v-model="editFormData.command"
-              :tooltip="commandTooltip"
-              placeholder="optional"
-            />
+            <FieldLabel for="command"> Command (optional) </FieldLabel>
+            <CustomInput id="command" v-model="editFormData.command" :tooltip="commandTooltip" />
           </Field>
           <Field>
-            <FieldLabel for="env"> Environment Variables </FieldLabel>
+            <FieldLabel for="env"> Environment Variables (optional) </FieldLabel>
             <CustomInput
               id="env"
               type="textarea"
@@ -182,11 +166,10 @@ async function handleUpdateApplication() {
               secret
               v-model="editFormData.env"
               class="resize-none"
-              placeholder="optional"
             />
           </Field>
           <Field v-if="editFormData.type == 'git'">
-            <FieldLabel for="args"> Build Arguments </FieldLabel>
+            <FieldLabel for="args"> Build Arguments (optional) </FieldLabel>
             <CustomInput
               id="args"
               type="textarea"
@@ -194,11 +177,10 @@ async function handleUpdateApplication() {
               secret
               v-model="editFormData.args"
               class="resize-none"
-              placeholder="optional"
             />
           </Field>
           <Field v-if="editFormData.type == 'git'">
-            <FieldLabel for="build_secrets"> Build Secrets </FieldLabel>
+            <FieldLabel for="build_secrets"> Build Secrets (optional) </FieldLabel>
             <CustomInput
               id="build_secrets"
               type="textarea"
@@ -206,7 +188,6 @@ async function handleUpdateApplication() {
               secret
               v-model="editFormData.build_secrets"
               class="resize-none"
-              placeholder="optional"
             />
           </Field>
           <Field>

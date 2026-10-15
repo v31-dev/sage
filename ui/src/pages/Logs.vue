@@ -45,7 +45,7 @@ const columns = [
 
 <template>
   <LogViewer
-    :hostname="appStore.info?.hostname ?? ''"
+    :hostname="appStore.info?.name ?? ''"
     container="sage"
     :parseMessage="parseManagerLog"
     :columns="columns"
