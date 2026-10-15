@@ -8,7 +8,7 @@ import subprocess
 import asyncssh
 
 from services.base import Base
-from utils.common import dict_to_obj
+from utils.common import dict_to_obj, get_env
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +20,8 @@ class Tailscale(Base):
     super().__init__()
 
     self.uds = "/var/run/tailscale/tailscaled.sock"
+    # Machines carrying this tag are workers (TS_WORKER_TAG, with or without `tag:`).
+    self.worker_tag = get_env("TS_WORKER_TAG").strip().removeprefix("tag:")
     # Pooled SSH connections per worker
     self._conns: dict[str, asyncssh.SSHClientConnection] = {}
     self._conn_locks: dict[str, asyncio.Lock] = {}

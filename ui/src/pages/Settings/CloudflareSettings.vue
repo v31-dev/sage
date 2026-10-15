@@ -1,92 +1,36 @@
 <script setup lang="ts">
-import { TriangleAlert } from 'lucide-vue-next'
-import { Alert, AlertDescription } from '@/components/ui/alert'
+import { computed } from 'vue'
 import { Input } from '@/components/ui/input'
-import CustomInput from '@/components/CustomInput.vue'
+import { useAppStore } from '@/stores/app'
 import SettingField from './SettingField.vue'
 import SettingsSection from './SettingsSection.vue'
 import TraefikResyncSubCard from './TraefikResyncSubCard.vue'
-import { useSettingForm } from './useSettingForm'
 
-const form = useSettingForm(
-  'cloudflare',
-  ['domain', 'admin_email', 'api_token', 'account_id'],
-  'Cloudflare'
+const appStore = useAppStore()
+const managerAddress = computed(
+  () => `https://${appStore.info?.name}.core.${appStore.info?.domain}`
 )
-const { fields, isLoading, saving, testing, error, dirty, leaveOpen } = form
 </script>
 
 <template>
   <SettingsSection
     title="Cloudflare"
-    description="Domain, tunnels and the wildcard certificate for apps. Optional: without it, apps are reached over the tailnet only. All four values are checked together."
+    description="Domain, tunnel and certificates. Set by environment variables: change them and restart Sage. Records and tunnels of a previous domain or account stay in Cloudflare until you remove them."
     section="cloudflare"
-    :loading="isLoading"
-    :saving="saving"
-    :testing="testing"
-    :dirty="dirty"
-    :error="error"
-    :leave-open="leaveOpen"
-    @save="form.save"
-    @test="form.test"
-    @reset="form.reset"
-    @leave="form.resolveLeave"
+    readonly
   >
-    <Alert>
-      <TriangleAlert />
-      <AlertDescription>
-        Changing these updates certificates, DNS records and the Cloudflare tunnel. Existing
-        connections can be disrupted until DNS updates propagate. Records for an old domain have to
-        be removed in Cloudflare by hand.
-      </AlertDescription>
-    </Alert>
-    <SettingField
-      id="cloudflare-domain"
-      label="Base Domain"
-      description="Root domain for application and manager addresses."
-    >
-      <Input
-        id="cloudflare-domain"
-        :model-value="fields.domain"
-        @update:model-value="value => form.updateField('domain', value)"
-        placeholder="e.g. example.com"
-      />
+    <SettingField id="cloudflare-domain" label="Domain" description="DOMAIN">
+      <Input id="cloudflare-domain" :model-value="appStore.info?.domain" readonly />
     </SettingField>
     <SettingField
-      id="cloudflare-admin-email"
-      label="Admin Email"
-      description="Contact email for the certificate's ACME registration."
+      id="cloudflare-manager-address"
+      label="Manager Address"
+      description="The only address the UI is served at"
     >
-      <Input
-        id="cloudflare-admin-email"
-        :model-value="fields.admin_email"
-        @update:model-value="value => form.updateField('admin_email', value)"
-        type="email"
-        placeholder="e.g. admin@example.com"
-      />
+      <Input id="cloudflare-manager-address" :model-value="managerAddress" readonly />
     </SettingField>
-    <SettingField
-      id="cloudflare-api-token"
-      label="API Token"
-      description="Used to check the zone, manage the tunnel and write DNS records."
-    >
-      <CustomInput
-        id="cloudflare-api-token"
-        secret
-        :model-value="fields.api_token"
-        @update:model-value="value => form.updateField('api_token', value)"
-      />
-    </SettingField>
-    <SettingField
-      id="cloudflare-account-id"
-      label="Account ID"
-      description="The account the tunnel is created in."
-    >
-      <Input
-        id="cloudflare-account-id"
-        :model-value="fields.account_id"
-        @update:model-value="value => form.updateField('account_id', value)"
-      />
+    <SettingField id="cloudflare-tunnel" label="Tunnel" description="Carries public app traffic">
+      <Input id="cloudflare-tunnel" :model-value="`${appStore.info?.domain}-sage`" readonly />
     </SettingField>
 
     <template #after>

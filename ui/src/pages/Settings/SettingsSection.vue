@@ -34,15 +34,26 @@ const props = withDefaults(
     title: string
     description: string
     section: SettingSection
-    loading: boolean
-    saving: boolean
-    testing: boolean
-    dirty: boolean
-    error: string
-    leaveOpen: boolean
+    // Configured by env vars: shows status and values only, no form buttons.
+    readonly?: boolean
+    loading?: boolean
+    saving?: boolean
+    testing?: boolean
+    dirty?: boolean
+    error?: string
+    leaveOpen?: boolean
     testLabel?: string
   }>(),
-  { testLabel: 'Test' }
+  {
+    readonly: false,
+    loading: false,
+    saving: false,
+    testing: false,
+    dirty: false,
+    error: '',
+    leaveOpen: false,
+    testLabel: 'Test',
+  }
 )
 
 defineEmits<{ save: []; test: []; reset: []; leave: [leave: boolean] }>()
@@ -88,7 +99,7 @@ const status = computed(() => statusStore.status?.[props.section])
           </Alert>
         </CardContent>
 
-        <CardFooter class="flex flex-wrap gap-2">
+        <CardFooter v-if="!readonly" class="flex flex-wrap gap-2">
           <slot name="save">
             <Button :disabled="saving || loading" @click="$emit('save')">
               <Spinner v-if="saving" class="animate-spin" />
@@ -109,7 +120,7 @@ const status = computed(() => statusStore.status?.[props.section])
       <slot name="after" />
     </div>
 
-    <AlertDialog :open="leaveOpen">
+    <AlertDialog v-if="!readonly" :open="leaveOpen">
       <AlertDialogContent>
         <AlertDialogHeader>
           <AlertDialogTitle>Discard unsaved changes?</AlertDialogTitle>

@@ -10,7 +10,6 @@ from services.logs import Logs
 from services.manager import Manager
 from services.manager.checks import SETTING_SECTIONS
 from services.metrics import Metrics
-from services.settings import Settings
 from utils.common import get_env
 from utils.queue import OnConflict
 
@@ -34,6 +33,18 @@ async def sync_workers():
       scopes={"platform"},
       executor="platform",
       quiet=True,
+  )
+
+
+async def check_worker_stamps():
+  # The env (domain, Cloudflare account) may have changed while Sage was stopped, so
+  # workers that stayed online are checked against their stamps too.
+  Manager().add_task(
+      task=Manager().sync_workers,
+      scopes={"platform"},
+      params={"check_stamps": True},
+      executor="platform",
+      on_conflict=OnConflict.REPLACE,
   )
 
 
@@ -145,8 +156,6 @@ async def cleanup():
 
 
 async def renew_certificates():
-  if not Manager().cloudflare.configured:
-    return
   Manager().add_task(
       task=Manager().renew_certificates,
       scopes={"platform", "app"},
@@ -167,7 +176,7 @@ async def discover_platform_backups():
 
 async def check_settings():
   for key in SETTING_SECTIONS:
-    if Settings().is_valid(key):
+    if Manager().section_configured(key):
       Manager().add_task(
           task=Manager().check_setting,
           name=f"check_{key}",
@@ -197,7 +206,7 @@ _JOBS = [
 
 # Run once right after startup (as queued tasks, so the servers are already up), then on
 # their cron schedule where they have one.
-_AT_STARTUP = [refresh_latest_release, renew_certificates, discover_platform_backups, check_settings]
+_AT_STARTUP = [refresh_latest_release, renew_certificates, discover_platform_backups, check_settings, check_worker_stamps]
 
 
 def start():

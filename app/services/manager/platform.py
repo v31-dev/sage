@@ -291,8 +291,6 @@ class PlatformMixin:
         # Services built from the settings pick up the restored values.
         self.s3.load()
         Notifications().load_notifications_config()
-        self.cloudflare.load()
-        self.certs.load()
 
         self.notify(f"Platform restored from backup {s3_path} successfully.", "success")
 

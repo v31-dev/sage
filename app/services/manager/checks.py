@@ -6,7 +6,7 @@ import cloudflare
 import requests
 
 from services.notification import Notifications, webhook_error
-from services.settings import Settings
+from services.settings import SETTING_DEFINITIONS, Settings
 from utils.executor import run_in_executor_with_context
 
 logger = logging.getLogger(__name__)
@@ -42,19 +42,18 @@ class ChecksMixin:
     """Check a section's values; returns what was verified, raises with the reason
     otherwise. With side_effects, S3 also writes to the bucket and notifications send a
     test message; the periodic check runs without them."""
+    # Tailscale and Cloudflare are env vars, so they are checked as configured.
     if key == "tailscale":
       backend_state = self.tailscale.status().get("BackendState")
       if backend_state != "Running":
         raise ValueError(f"The manager's tailnet node is not running ({backend_state}).")
-      if not value.get("worker_tag"):
-        raise ValueError("Set a worker tag first.")
-      machines = self.tailscale.get_by_tag(value["worker_tag"])
+      machines = self.tailscale.get_by_tag(self.tailscale.worker_tag)
       online = sum(machine.online for machine in machines)
-      return f"{len(machines)} machine(s) tagged tag:{value['worker_tag']}, {online} online."
+      return f"{len(machines)} machine(s) tagged tag:{self.tailscale.worker_tag}, {online} online."
 
     if key == "cloudflare":
-      self.cloudflare.check_config(value)
-      return f"API token, zone {value['domain']} and account verified."
+      self.cloudflare.check_config(self.cloudflare.config)
+      return f"API token, zone {self.cloudflare.domain} and account verified."
 
     if key == "s3":
       if not Settings().is_valid("s3", value):
@@ -92,10 +91,15 @@ class ChecksMixin:
       message = f"Cloudflare answered HTTP {error.status_code}" + (f": {reasons}" if reasons else "")
     return message, transient
 
+  def section_configured(self, key: str) -> bool:
+    """Tailscale and Cloudflare always are (required env vars); settings when complete."""
+    return key not in SETTING_DEFINITIONS or Settings().is_valid(key)
+
   async def check_setting(self, key: str):
-    """Check a section's saved settings and record the result for its status."""
+    """Check a section's configuration and record the result for its status."""
+    value = Settings().get(key) if key in SETTING_DEFINITIONS else {}
     try:
-      message = await run_in_executor_with_context(self.test_setting, key, Settings().get(key), False)
+      message = await run_in_executor_with_context(self.test_setting, key, value, False)
       state = "ok"
     except Exception as e:
       message, transient = self.describe_check_error(e)
@@ -113,20 +117,24 @@ class ChecksMixin:
       entry = {"state": check.get("state"), "message": check.get("message"), "task_id": None,
                "checked_at": check.get("checked_at")}
       applying = next((t for t in active if t["name"] in APPLYING_TASKS[key]
-                       and (t["name"] != "sync_workers" or t["params"].get("force"))), None)
+                       and (t["name"] != "sync_workers" or t["params"].get("force") or t["params"].get("check_stamps"))),
+                      None)
 
-      if not Settings().is_valid(key):
+      if not self.section_configured(key):
         entry.update(state="not_configured", message=None)
       elif applying:
         entry.update(state="applying", task_id=applying["task_id"])
       elif not check:
-        # Checked at startup and after every save; this is the moment before that runs.
+        # Checked at startup, every 5 minutes and after a save; this is before the first.
         entry.update(state="applying", message="Checking…")
       elif key == "cloudflare" and check["state"] == "ok":
-        if self.certs.has_valid_certificates():
-          entry["message"] += f" Certificate valid until {self.certs.expiry():%Y-%m-%d}."
-        else:
+        certificates = (self.certs.manager, self.certs.workers)
+        invalid = [name for certificate in certificates if not certificate.is_valid() for name in certificate.names]
+        if invalid:
           entry.update(state="error",
-                       message=f"No valid certificate for {self.certs.domain}. Resync Traefik to issue one.")
+                       message=f"No valid certificate for {', '.join(invalid)}. Resync Traefik to issue it.")
+        else:
+          expiry = min(certificate.expiry() for certificate in certificates)
+          entry["message"] += f" Certificates valid until {expiry:%Y-%m-%d}."
       status[key] = entry
     return status

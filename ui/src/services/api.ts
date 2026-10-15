@@ -17,6 +17,8 @@ export interface AppInfo {
   domain: string
   // The manager's name (TS_NAME): its tailnet machine name.
   name: string
+  // Tailscale tag of the workers (TS_WORKER_TAG).
+  worker_tag: string
   ip: string
   start_time: string
   // running, or paused (Settings > Upgrade), or stopping (draining after a stop signal)

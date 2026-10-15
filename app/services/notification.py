@@ -5,6 +5,7 @@ import requests
 
 from services.base import Base
 from services.settings import Settings
+from utils.common import get_env
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +84,7 @@ class Notifications(Base):
         content="Test notification — this channel is configured correctly.",
         link=None,
     )
-    domain = Settings().get("cloudflare", "domain", "")
+    domain = get_env("DOMAIN")
 
     failed = []
     for field, channel in CHANNELS.items():
@@ -102,7 +103,7 @@ class Notifications(Base):
                                  content=instance["content"],
                                  link=instance.get("link"),)
 
-    domain = Settings().get("cloudflare", "domain", "")
+    domain = get_env("DOMAIN")
 
     for field, channel in CHANNELS.items():
       webhook_url = self.get_notification_value(field)

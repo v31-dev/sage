@@ -1,8 +1,10 @@
 from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
+from starlette.applications import Starlette
 from starlette.exceptions import HTTPException
+from starlette.routing import Route
 from starlette.staticfiles import StaticFiles
 
 from routes.backups import router as backup_router
@@ -12,6 +14,7 @@ from routes.projects import router as projects_router
 from routes.settings import router as settings_router
 from routes.tasks import router as tasks_router
 from routes.workers import router as workers_router
+from services.cloudflare import Cloudflare
 from services.manager import Manager
 from utils.logging import fastapi_middleware
 
@@ -71,3 +74,11 @@ else:
   @app.get("/")
   def health():
     return {"status": "ok"}
+
+
+async def redirect_to_manager(request: Request):
+  return RedirectResponse(
+      str(request.url.replace(scheme="https", netloc=Cloudflare().manager_hostname)), status_code=308)
+
+# Plain HTTP only sends browsers to the manager's address.
+redirect_app = Starlette(routes=[Route("/{path:path}", redirect_to_manager)])

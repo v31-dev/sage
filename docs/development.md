@@ -18,11 +18,11 @@ These scripts assume a fairly direct machine setup and should be reviewed before
 
 ## Environment
 
-The manager takes three env vars, all required: `TS_AUTH_KEY` (a tagged, non-ephemeral
-Tailscale auth key, used only while the node has no tailnet identity), `TS_NAME` (its
-tailnet machine name, also its name inside Sage) and `ENCRYPTION_KEY` (encrypts database
-secrets and all backups; fixed after the first boot — Sage refuses to start with another
-key, so wipe `SAGE_DATA` to switch keys).
+The manager's env vars are all required (see the README): `TS_AUTH_KEY`, `TS_NAME`,
+`TS_WORKER_TAG`, `ENCRYPTION_KEY` (fixed after the first boot — wipe `SAGE_DATA` to switch
+keys) and the Cloudflare details `DOMAIN`, `CLOUDFLARE_ACCOUNT_ID` and
+`CLOUDFLARE_API_TOKEN`. Use a domain only the dev manager uses: two managers on one domain
+share its tunnel and records.
 
 For local development, copy [`sample.env`](../sample.env) to `.env`. It adds `SAGE_DATA`,
 the host directory mounted at `/app/data` (`./data-gitignore`, git-ignored).
@@ -58,7 +58,7 @@ process. The container exits when either process does. No host Tailscale socket,
 device or published ports are needed; tailnet traffic to the node's ports reaches the
 container's listeners.
 
-Workers run their own edge stack (`traefik`, `vector`, `glances`, and `cloudflared` when Cloudflare is configured), bootstrapped remotely over Tailscale SSH.
+Workers run their own edge stack (`traefik`, `vector`, `glances` and `cloudflared`), bootstrapped remotely over Tailscale SSH.
 
 ### Dev routing
 
@@ -67,17 +67,20 @@ The dev manager is its own tailnet node too. Give it its own `TS_AUTH_KEY` (tagg
 
 Nothing is published on the host; everything is reached over the tailnet:
 
-- `http://<TS_NAME>` — the UI with hot reload. The dev `traefik` service shares the `sage`
-  container's network namespace (`network_mode: service:sage`), so it owns the dev
-  manager's `:80`. It routes `/api` to the manager (plain HTTP on `:9000` in dev) and
-  everything else, including Vite's HMR WebSocket, to the `ui` service (Vite on `:5173`).
-  Config: `setup/dev/traefik/`. Compose restarts it whenever `sage` restarts, since it
-  loses its network with it.
+- `https://<TS_NAME>.core.<DOMAIN>` — the UI with hot reload. The dev `traefik` service
+  shares the `sage` container's network namespace (`network_mode: service:sage`), so it
+  owns the dev manager's `:80` and `:443`. It serves the manager's certificate (from
+  `SAGE_DATA/certs/manager`), routes `/api` to the manager (plain HTTP on `:9000` in dev)
+  and everything else, including Vite's HMR WebSocket, to the `ui` service (Vite on
+  `:5173`); `:80` and other hostnames don't serve the UI. Config: `setup/dev/traefik/`
+  (templated with `TS_NAME` and `DOMAIN`). Compose restarts it whenever `sage` restarts,
+  since it loses its network with it. It doesn't watch the certificate files: after the
+  manager's certificate renews (about every 60 days), run `docker compose restart traefik`.
 - `<TS_NAME>:5678` — debugpy. The VS Code "Attach to dev manager" configuration prompts
   for the address. debugpy has no authentication, so only allow your own devices to reach
   this port in the tailnet policy.
 
-The tailnet policy must let your devices reach the dev manager on `:80` (and `:5678` for
+The tailnet policy must let your devices reach the dev manager on `:80` and `:443` (and `:5678` for
 debugging).
 
 ## Backend Commands

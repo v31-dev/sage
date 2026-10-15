@@ -23,7 +23,7 @@ This is a living project-context file for AI coding agents. Keep it concise, cur
 
 ## Project Summary
 
-Sage is a lightweight manager-and-workers micro-PaaS that uses Tailscale for node connectivity, Cloudflare (optional) for app domains, DNS and tunnels, Traefik for ingress, Vector for worker logs (the manager logs itself in-process via a SQLite logging handler), Glances for worker metrics (the manager self-collects its own container metrics in-process), SQLite for persistence, APScheduler as a cron/interval trigger feeding an in-memory operation queue, and Vue 3 for the UI.
+Sage is a lightweight manager-and-workers micro-PaaS that uses Tailscale for node connectivity, Cloudflare (required) for the domain, DNS and tunnels, Traefik for ingress, Vector for worker logs (the manager logs itself in-process via a SQLite logging handler), Glances for worker metrics (the manager self-collects its own container metrics in-process), SQLite for persistence, APScheduler as a cron/interval trigger feeding an in-memory operation queue, and Vue 3 for the UI.
 
 ## Core Context To Preserve
 
@@ -31,7 +31,7 @@ Agents must keep this context active throughout a task, including after summarie
 
 - Manager plus workers over Tailscale is the core architecture.
 - Access control is out of scope (rework sprint, 2026-10-15): the manager API/UI has no authentication and is reached only over the tailnet, whose policy is the only gate. Don't add login, secret masking or ingestion tokens unless asked, and keep the README stating this.
-- The manager is a single container with its own userspace Tailscale node (`app/entrypoint.sh`). Only `TS_AUTH_KEY`, `TS_NAME` and `ENCRYPTION_KEY` come from env (the key can't change after the first boot: startup refuses a different one); everything else is configured in the UI (`Setting` table), and Cloudflare, certificates and S3 are optional — nothing external is required to start.
+- The manager is a single container with its own userspace Tailscale node (`app/entrypoint.sh`). Required env vars: `TS_AUTH_KEY`, `TS_NAME`, `TS_WORKER_TAG`, `ENCRYPTION_KEY` (can't change after the first boot: startup refuses a different one), `DOMAIN`, `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`; changing them is a restart, and startup converges workers by stamp. S3 and notifications are optional UI settings (`Setting` table). Startup sets up the domain and the manager's certificate before serving (retries, then exits); the UI is only at `https://<TS_NAME>.core.<DOMAIN>`.
 - Services are singleton-based and thread-aware.
 - Long or remote-touching operations run through the Manager's in-memory operation queue (`app/utils/queue.py`); entity CRUD is an instant route-side model write (only `delete_container` is queued — it does remote cleanup). APScheduler only fires cron/interval triggers that call `Manager().add_task(...)`.
 - `task_id` propagation through `ContextVar` is a core observability requirement.
@@ -67,7 +67,7 @@ If this context may have been lost, reread this file plus the relevant `docs/` p
 
 - Inbound tailnet traffic to the manager is delivered to `127.0.0.1:<port>` inside the container, so anything listening there (on `0.0.0.0` or `127.0.0.1`) is reachable from the tailnet wherever the tailnet policy allows. Never put an internal-only listener on `127.0.0.1`; use `127.0.0.2` (as tailscaled's outbound proxy does) or a unix socket.
 - The container has no route into the tailnet: SSH to workers goes through `tailscale nc` (asyncssh `proxy_command`), HTTP to workers through `TAILNET_HTTP_PROXY`. Internet calls (Cloudflare, S3, ACME, GitHub) go direct.
-- Optional services (Cloudflare `configured`, S3 `s3_config`) are checked before use: scheduled triggers skip quietly when unconfigured, user actions get a clear 4xx.
+- Optional services (S3 `s3_config`, notifications) are checked before use: scheduled triggers skip quietly when unconfigured, user actions get a clear 4xx. Cloudflare is always configured; don't add checks for it.
 
 ### Services
 

@@ -8,6 +8,7 @@ import uvicorn
 from cryptography.fernet import InvalidToken
 
 from api import app as app_fastapi
+from api import redirect_app
 from api_vector import app as app_fastapi_vector
 from scheduler import shutdown as shutdown_scheduler
 from scheduler import start as start_scheduler
@@ -18,7 +19,7 @@ setup_logger()
 
 logger = logging.getLogger(__name__)
 
-# Setup the Manager
+
 def caused_by(error: BaseException | None, kind: type) -> bool:
   # Services re-raise setup errors as generic exceptions; the original is in the chain.
   while error is not None:
@@ -38,6 +39,15 @@ except Exception as e:
         "wipe the volume to start over with this one.")
   else:
     logger.critical(f"Error during startup: {e}", exc_info=True)
+  sys.exit(1)
+
+# Cloudflare is part of the platform: Sage serves only once its domain is set up.
+try:
+  manager.setup_domain()
+except Exception as e:
+  logger.critical(
+      f"Could not set up {manager.cloudflare.manager_hostname}: {e}. Check CLOUDFLARE_API_TOKEN, "
+      "CLOUDFLARE_ACCOUNT_ID and DOMAIN.", exc_info=True)
   sys.exit(1)
 
 
@@ -95,25 +105,33 @@ async def main():
       )
   )
 
-  # API server. Plain HTTP: it is reached over the tailnet, which WireGuard already
-  # encrypts.
-  # TODO(rework-03): serve https://<TS_NAME>.<domain> once a domain is configured, then
-  # redirect this listener to it.
-  api_server = Server(
-      config=uvicorn.Config(
-          app_fastapi,
-          host="0.0.0.0",
-          port=int(os.getenv("PORT", 80)),
-          workers=1,
-          loop="asyncio",
-          log_config=None,
-      )
-  )
+  if os.getenv("ENV") == "development":
+    # The dev Traefik terminates TLS for the manager's address and proxies here.
+    servers = [Server(config=uvicorn.Config(
+        app_fastapi, host="0.0.0.0", port=int(os.getenv("PORT", 9000)), workers=1, loop="asyncio",
+        log_config=None))]
+  else:
+    # The UI and API only at https://<TS_NAME>.core.<DOMAIN>; plain HTTP redirects there.
+    api_config = uvicorn.Config(
+        app_fastapi,
+        host="0.0.0.0",
+        port=int(os.getenv("HTTPS_PORT", 443)),
+        workers=1,
+        loop="asyncio",
+        log_config=None,
+        ssl_certfile=str(manager.certs.manager.fullchain_path),
+        ssl_keyfile=str(manager.certs.manager.key_path),
+    )
+    api_config.load()
+    manager.certs.tls_context = api_config.ssl
+    servers = [
+        Server(api_config),
+        BackgroundServer(config=uvicorn.Config(
+            redirect_app, host="0.0.0.0", port=int(os.getenv("PORT", 80)), workers=1, loop="asyncio",
+            log_config=None)),
+    ]
 
-  tasks = [
-      asyncio.create_task(api_server.serve()),
-      asyncio.create_task(vector_server.serve()),
-  ]
+  tasks = [asyncio.create_task(server.serve()) for server in (*servers, vector_server)]
 
   await asyncio.wait(tasks)
 

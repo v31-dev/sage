@@ -6,8 +6,8 @@ Sage is a manager-and-workers platform designed for Docker workloads connected t
 
 - The manager is the control plane.
 - Workers run application containers and edge components.
-- Cloudflare (optional) provides app domains: DNS records, the tunnel for public apps, and the DNS-01 challenge for the workers' wildcard certificate. Without it, workers and apps run but have no domain routing.
-- Traefik provides ingress on workers; with a domain configured, the manager issues the wildcard TLS certificate for them in-process (ACME DNS-01).
+- Cloudflare is required (env vars): DNS records, the tunnel for public apps, and the DNS-01 challenge for Sage's certificates.
+- Traefik provides ingress on workers. The manager issues two certificates in-process (ACME DNS-01): its own for `<TS_NAME>.core.<domain>`, whose key never leaves it, and the workers' `*.int.<domain>` wildcard, synced to every worker.
 - Vector runs on workers and forwards their container logs to the manager; the manager captures its own logs in-process.
 - Glances runs on workers and exposes metrics endpoints the manager polls; the manager collects its own container metrics in-process.
 
@@ -36,7 +36,7 @@ The manager process starts these concurrent services from `app/main.py`:
 Startup is service-driven:
 
 - `Manager()` initializes the platform services.
-- Nothing external is needed to start: Cloudflare, certificates and S3 are optional. Startup work that touches the network (release check, certificate renewal, S3 backup discovery) runs as queued tasks once the servers are up.
+- Before serving, startup sets up the domain (`Manager.setup_domain`): connect to Cloudflare (zone, tunnel, the manager's record) and get the manager's certificate, retrying after 1, 4 and 16 minutes and then exiting; a rate limit exits at once, and a still-valid certificate lets startup continue. Other startup work that touches the network (release check, the workers' certificate, S3 backup discovery, settings checks, re-checking online workers against their stamps) runs as queued tasks once the servers are up. S3 and notifications are optional.
 - If service initialization fails, the process exits.
 
 ## Worker Runtime
@@ -53,15 +53,15 @@ The worker stack currently includes:
 - `traefik`
 - `vector`
 - `glances`
-- `cloudflared`, only with a Cloudflare tunnel: the manager starts the worker stack with an explicit service list and includes `cloudflared` only when there is a tunnel token
+- `cloudflared`, connecting the worker to the manager's tunnel
 
 Applications themselves are also deployed onto workers as Docker workloads.
 
 ## Traffic Model
 
-Current traffic and naming patterns are driven by Cloudflare (when configured), Traefik, and Tailscale:
+Current traffic and naming patterns are driven by Cloudflare, Traefik, and Tailscale:
 
-- The manager UI and API are at `http://<TS_NAME>` on the tailnet. With a domain configured, the manager also keeps a `*.core.<domain>` record pointing at its tailnet IP.
+- The manager UI and API are only at `https://<TS_NAME>.core.<domain>`: a DNS-only record pointing at its tailnet IP, served with the manager's own certificate on `:443`. Plain HTTP (`:80`) only redirects there. `.core` is a namespace apps never use, and workers hold no certificate for it.
 - Public traffic uses Cloudflare-managed domains and tunnels.
 - Internal routing uses Tailscale IPs and `*.int.<domain>` style records.
 

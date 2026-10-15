@@ -1,5 +1,5 @@
 # Local development stack: the manager built from source, the Vite dev server, and a dev
-# Traefik that serves both on the manager's tailnet address (http://<TS_NAME>).
+# Traefik that serves both at https://<TS_NAME>.core.<DOMAIN>.
 # Deploying the published image is described in the README.
 name: sage
 
@@ -15,8 +15,12 @@ services:
       - TS_AUTH_KEY=${TS_AUTH_KEY:?Set TS_AUTH_KEY to a tagged, non-ephemeral Tailscale auth key}
       - TS_NAME=${TS_NAME:?Set TS_NAME to the manager's tailnet machine name}
       - ENCRYPTION_KEY=${ENCRYPTION_KEY:?Set ENCRYPTION_KEY (openssl rand -base64 32 | tr '+/' '-_')}
+      - TS_WORKER_TAG=${TS_WORKER_TAG:?Set TS_WORKER_TAG to the dev workers' Tailscale tag}
+      - CLOUDFLARE_API_TOKEN=${CLOUDFLARE_API_TOKEN:?Set CLOUDFLARE_API_TOKEN}
+      - CLOUDFLARE_ACCOUNT_ID=${CLOUDFLARE_ACCOUNT_ID:?Set CLOUDFLARE_ACCOUNT_ID}
+      - DOMAIN=${DOMAIN:?Set DOMAIN to the dev Cloudflare domain}
       - ENV=development
-      # The dev Traefik owns :80 and routes /api here.
+      # The dev Traefik owns :80/:443 and routes /api here.
       - PORT=9000
     volumes:
       - ${SAGE_DATA:?Set SAGE_DATA to the host directory for the manager's data}:/app/data
@@ -27,7 +31,9 @@ services:
     cap_add: ["SYS_PTRACE"]
     healthcheck:
       test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:9000/api\").getcode() == 200 or exit(1)'"]
-      start_period: 10s
+      # Sage answers only once its certificate is issued, which can take minutes on a
+      # first start; failures during start_period don't count.
+      start_period: 5m
       interval: 10s
       retries: 6
     # debugpy is reached over the tailnet at <TS_NAME>:5678 (no host port).
@@ -53,14 +59,20 @@ services:
       sage:
         condition: service_healthy
 
-  # Shares sage's network namespace, so tailnet traffic to the dev manager's :80 reaches
-  # it. Routes /api to the manager and everything else, incl. the HMR WebSocket, to Vite.
+  # Shares sage's network namespace, so tailnet traffic to the dev manager's :80/:443
+  # reaches it. Serves https://<TS_NAME>.core.<DOMAIN> with the manager's certificate:
+  # /api to the manager, everything else (incl. the HMR WebSocket) to Vite. Restart it
+  # after the certificate renews (about every 60 days); it doesn't watch the PEM files.
   traefik:
     image: traefik:v3.6.7
     container_name: sage-dev-traefik
     network_mode: service:sage
+    environment:
+      - TS_NAME=${TS_NAME}
+      - DOMAIN=${DOMAIN}
     volumes:
       - ./setup/dev/traefik:/etc/traefik:ro
+      - ${SAGE_DATA}/certs/manager:/certs:ro
     depends_on:
       sage:
         condition: service_healthy

@@ -1,17 +1,12 @@
-import re
-
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from playhouse.shortcuts import model_to_dict
 
-from services.certs import Certs
-from services.cloudflare import Cloudflare
 from services.db import Setting
 from services.manager import Manager
 from services.notification import Notifications
 from services.s3 import S3
-from services.settings import Settings
+from services.settings import SETTING_DEFINITIONS, Settings
 from utils.api import generic_get, generic_list, get_request_models, parse_api_data
-from utils.common import DOMAIN_RE, EMAIL_RE
 from utils.queue import OnConflict
 
 router = APIRouter()
@@ -20,8 +15,11 @@ router = APIRouter()
 def inject_setting(request: Request):
   models = get_request_models(request)
 
-  # Fetch and store setting
+  # Fetch and store setting. Older databases also hold rows for settings that are env
+  # vars now; those are not settings any more.
   setting_name = request.path_params.get("setting")
+  if setting_name not in SETTING_DEFINITIONS:
+    raise HTTPException(status_code=404, detail=f"Unknown setting: {setting_name}")
   models["setting"] = generic_get(
       Setting,
       (Setting.key == setting_name),
@@ -31,17 +29,9 @@ def inject_setting(request: Request):
   return None
 
 
-def normalized_worker_tag(value: dict) -> str | None:
-  """Stored without the `tag:` prefix, which worker discovery adds back."""
-  worker_tag = (value.get("worker_tag") or "").strip().removeprefix("tag:") or None
-  if worker_tag and not re.fullmatch(r"[A-Za-z0-9-]+", worker_tag):
-    raise HTTPException(status_code=400, detail="Invalid worker tag. Use letters, numbers and dashes, e.g. worker.")
-  return worker_tag
-
-
 @router.get("/")
 def get():
-  return generic_list(Setting)
+  return generic_list(Setting, Setting.key.in_(list(SETTING_DEFINITIONS)))
 
 
 @router.get("/status")
@@ -69,10 +59,7 @@ def update_setting(request: Request, setting_data: dict = Body(...)):
   merged_setting_value.update(new_setting_value)
 
   # Validate the settings before update
-  if setting_key == "tailscale":
-    Settings().set("tailscale", {"worker_tag": normalized_worker_tag(merged_setting_value)})
-
-  elif setting_key == "s3":
+  if setting_key == "s3":
     try:
       S3().check_config(merged_setting_value)
     except Exception as e:
@@ -89,53 +76,6 @@ def update_setting(request: Request, setting_data: dict = Body(...)):
 
     Settings().set("notifications", merged_setting_value)
     Notifications().load_notifications_config()
-
-  elif setting_key == "cloudflare":
-    domain_changed = "domain" in new_setting_value and new_setting_value["domain"] != old_setting_value.get("domain")
-    admin_email_changed = "admin_email" in new_setting_value and new_setting_value["admin_email"] != old_setting_value.get("admin_email")
-    api_token_changed = "api_token" in new_setting_value and new_setting_value["api_token"] != old_setting_value.get("api_token")
-    account_id_changed = "account_id" in new_setting_value and new_setting_value["account_id"] != old_setting_value.get("account_id")
-    cloudflare_config_changed = api_token_changed or account_id_changed or domain_changed
-    cloudflare_setting_changed = cloudflare_config_changed or admin_email_changed
-    certs_reload_needed = domain_changed or admin_email_changed
-    traefik_refresh_needed = certs_reload_needed or api_token_changed
-
-    if domain_changed and not DOMAIN_RE.fullmatch(merged_setting_value["domain"]):
-      raise HTTPException(status_code=400, detail="Invalid domain format in Cloudflare settings.")
-
-    if admin_email_changed and not EMAIL_RE.fullmatch(merged_setting_value["admin_email"]):
-      raise HTTPException(status_code=400, detail="Invalid email format in Cloudflare settings.")
-
-    if cloudflare_config_changed:
-      try:
-        Cloudflare().check_config(merged_setting_value)
-      except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Cloudflare check failed: {Manager().describe_check_error(e)[0]}")
-
-    if traefik_refresh_needed and Manager().is_busy({"platform", "app"}):
-      raise HTTPException(
-          status_code=409,
-          detail="A platform operation is already in progress. Wait for it to finish before changing the Cloudflare domain, admin email, or API token again.",
-      )
-
-    if cloudflare_setting_changed:
-      Settings().set("cloudflare", merged_setting_value)
-
-    if cloudflare_config_changed:
-      Cloudflare().load()
-
-    if certs_reload_needed:
-      Certs().load()
-
-    if domain_changed:
-      # New domain -> re-issue the wildcard cert and resync workers + routing.
-      Manager().add_task(
-          task=Manager().refresh_traefik,
-          scopes={"platform", "app"},
-          executor="platform",
-          task_id=request.state.task_id,
-          on_conflict=OnConflict.QUEUE,
-      )
 
   if Settings().is_valid(setting_key):
     Manager().add_task(
@@ -156,8 +96,6 @@ def test_setting(request: Request, setting_data: dict = Body(...)):
   setting_model = request.state.models["setting"]
   value = dict(setting_model.value)
   value.update(parse_api_data(setting_data, ["value"]).get("value") or {})
-  if setting_model.key == "tailscale":
-    value["worker_tag"] = normalized_worker_tag(value)
 
   try:
     return {"message": Manager().test_setting(setting_model.key, value)}

@@ -3,41 +3,38 @@ import logging
 from cloudflare import Cloudflare as CloudflareClient
 
 from services.base import Base
-from services.settings import SETTING_DEFINITIONS, Settings
 from services.tailscale import Tailscale
-from utils.common import dict_to_obj
+from utils.common import dict_to_obj, get_env
 
 logger = logging.getLogger(__name__)
 
 
 class Cloudflare(Base):
+  """Cloudflare is part of the platform: its token, account and domain are required env
+  vars, so changing them is a restart."""
+
   def __init__(self):
     super().__init__()
-    self.load()
-
-  def load(self):
-    """Pick up the current settings. The API connection is made on first use."""
-    with self.lock:
-      self.config = Settings().get("cloudflare")
-      self.domain = self.config["domain"]
-      self.account_id = self.config["account_id"]
-      self.client = None
-      self.zone_id = None
-      self.tunnel_id = None
-
-  @property
-  def configured(self):
-    return Settings().is_valid("cloudflare")
+    self.config = {
+        "api_token": get_env("CLOUDFLARE_API_TOKEN"),
+        "account_id": get_env("CLOUDFLARE_ACCOUNT_ID"),
+        "domain": get_env("DOMAIN"),
+    }
+    self.domain = self.config["domain"]
+    self.account_id = self.config["account_id"]
+    # The manager's only address; its DNS-only record points at the tailnet IP.
+    self.manager_hostname = f"{get_env('TS_NAME')}.core.{self.domain}"
+    self.client = None
+    self.zone_id = None
+    self.tunnel_id = None
 
   def connect(self):
-    """Connect on first use: verify the token, find the zone, and make sure the tunnel
-    and the manager's DNS record exist. Raises when Cloudflare isn't configured or the
-    API fails, leaving it unconnected so the next use retries."""
+    """Verify the token, find the zone, and make sure the tunnel and the manager's DNS
+    record exist. Runs at startup and again on use if that failed; raises when the API
+    fails, leaving it unconnected so the next use retries."""
     with self.lock:
       if self.client is not None:
         return
-      if not self.configured:
-        raise Exception("Cloudflare is not configured.")
 
       client = CloudflareClient(api_token=self.config["api_token"])
       if client.user.tokens.verify().status != "active":
@@ -49,9 +46,8 @@ class Cloudflare(Base):
       self.client, self.zone_id = client, zones[0].id
       try:
         self.tunnel_id = self.create_tunnel(f"{self.domain}-sage")
-        # DNS record for core internal apps
         self.create_dns_record(
-            name=f"*.core.{self.domain}",
+            name=self.manager_hostname,
             content=Tailscale().ip(),
             comment="sage-manager",
             type="A",
@@ -65,7 +61,7 @@ class Cloudflare(Base):
   def check_config(self, config: dict):
     """Check a Cloudflare config against the API; raises with the reason. Every field is
     mandatory."""
-    missing = [field for field in SETTING_DEFINITIONS["cloudflare"] if not config.get(field)]
+    missing = [field for field in ("api_token", "account_id", "domain") if not config.get(field)]
     if missing:
       raise ValueError(f"Missing values for: {', '.join(missing)}.")
 

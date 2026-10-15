@@ -3,7 +3,6 @@ import logging
 import re
 
 from services.db import Application, Container, Worker
-from services.settings import Settings
 from utils.executor import run_in_executor_with_context
 from utils.logging import TaskFailed
 
@@ -13,20 +12,18 @@ logger = logging.getLogger(__name__)
 
 
 class WorkersMixin:
-  async def sync_workers(self, force: bool = False):
+  async def sync_workers(self, force: bool = False, check_stamps: bool = False):
     """
-    Check for worker changes.
+    Check for worker changes. `check_stamps` also sets up workers that stayed online,
+    letting their stamps decide what to redo (at startup, since the env may have changed
+    while Sage was stopped).
     - New workers (not in db but in tailscale)
     - Offline workers (in db but tailscale says offline)
     - Updated workers (IPs have changed)
     - Recently online workers (previously offline but now back online)
     - Offline workers (in db but not in tailscale)
     """
-    worker_tag = Settings().get("tailscale", "worker_tag")
-    if not worker_tag:
-      logger.info("No worker tag set; worker discovery is off.")
-      return
-
+    worker_tag = self.tailscale.worker_tag
     existing_workers = list(Worker.select())
     tailscale_workers = await run_in_executor_with_context(
         self.tailscale.get_by_tag, worker_tag)
@@ -62,6 +59,8 @@ class WorkersMixin:
             # Force re-sync: distrust every stamp and converge from scratch.
             logger.info(f"Force syncing worker {worker.hostname}.")
             await self.setup_worker(worker, force=True)
+          elif check_stamps and worker.online:
+            await self.setup_worker(worker)
         else:
           # new worker
           logger.info(f"New worker {worker.hostname} detected.")
@@ -87,7 +86,9 @@ class WorkersMixin:
     return content_hash({
         "templates": WORKER_INFRA_TEMPLATES,
         "version": self.version,
-        "domain": Settings().get("cloudflare", "domain"),
+        "domain": self.cloudflare.domain,
+        # A new account means a new tunnel, so workers need its token.
+        "tunnel": self.cloudflare.tunnel_id,
     })
 
   async def read_worker_revisions(self, hostname: str) -> dict:
@@ -182,7 +183,10 @@ class WorkersMixin:
     is_new = existing is None
     logger.info(f"{'Adding' if is_new else 'Converging'} worker {worker.hostname}.")
     try:
-      domain = Settings().get("cloudflare", "domain")
+      # Connected at startup; this retries if that failed, and sets the tunnel the
+      # infra stamp includes.
+      await run_in_executor_with_context(self.cloudflare.connect)
+      domain = self.cloudflare.domain
 
       if force:
         await self.tailscale.exec_command(
@@ -197,20 +201,16 @@ class WorkersMixin:
           conflict_target=[Worker.hostname], preserve=[Worker.ip]
       ).execute()
       # Always: the offline transition deleted the DNS record.
-      if self.cloudflare.configured:
-        await run_in_executor_with_context(
-            self.cloudflare.create_dns_record,
-            name=f"*.int.{domain}",
-            content=worker.ip,
-            comment=f"sage-worker-{worker.hostname}",
-            type="A",
-        )
+      await run_in_executor_with_context(
+          self.cloudflare.create_dns_record,
+          name=f"*.int.{domain}",
+          content=worker.ip,
+          comment=f"sage-worker-{worker.hostname}",
+          type="A",
+      )
 
       if infra_stale:
-        # Without Cloudflare there is no tunnel, and cloudflared is not started.
-        tunnel_token = ""
-        if self.cloudflare.configured:
-          tunnel_token = (await run_in_executor_with_context(self.cloudflare.get_tunnel_token)).token
+        tunnel_token = (await run_in_executor_with_context(self.cloudflare.get_tunnel_token)).token
 
         # Sync files
         await self.tailscale.sync_file(
@@ -255,8 +255,8 @@ class WorkersMixin:
 
       # Land the cert before any container start/restart below
       repaired = []
-      if (self.certs.has_valid_certificates()
-              and revisions.get("certs") != self.certs.certificates_hash()):
+      if (self.certs.workers.is_valid()
+              and revisions.get("certs") != self.certs.workers.hash()):
         await self.sync_certificates_to_worker(worker)
         repaired.append("certificates")
 
@@ -265,7 +265,7 @@ class WorkersMixin:
         await self.tailscale.exec_command(
             worker.hostname,
             f"docker compose -f {self.worker_home_dir}/docker-compose.yml up -d --wait --remove-orphans --quiet-pull --quiet-build "
-            f"traefik vector glances{' cloudflared' if tunnel_token else ''}",
+            "traefik vector glances cloudflared",
             timeout=300,
         )
 
@@ -355,11 +355,7 @@ class WorkersMixin:
 
     logger.info(f"Removing worker {worker.hostname} from manager.")
     Worker.delete().where(Worker.hostname == worker.hostname).execute()
-    if self.cloudflare.configured:
-      self.cloudflare.delete_dns_record(
-          name=f"*.int.{Settings().get('cloudflare', 'domain')}",
-          content=worker.ip,
-      )
+    self.cloudflare.delete_dns_record(name=f"*.int.{self.cloudflare.domain}", content=worker.ip)
     logger.info(f"Worker {worker.hostname} removed from manager.")
 
   def set_worker_offline(self, worker):
@@ -371,9 +367,5 @@ class WorkersMixin:
     """
     logger.info(f"Setting worker {worker.hostname} offline.")
     Worker.update(online=False).where(Worker.hostname == worker.hostname).execute()
-    if self.cloudflare.configured:
-      self.cloudflare.delete_dns_record(
-          name=f"*.int.{Settings().get('cloudflare', 'domain')}",
-          content=worker.ip,
-      )
+    self.cloudflare.delete_dns_record(name=f"*.int.{self.cloudflare.domain}", content=worker.ip)
     self.notify(f"Worker {worker.hostname} is offline.", "error")

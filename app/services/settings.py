@@ -1,12 +1,11 @@
 from services.base import Base
 from services.db import Setting
 
-# Setting key -> its fields. Every field is optional and is set from the UI.
+# Setting key -> its fields. Every field is optional and is set from the UI. Tailscale
+# and Cloudflare are required env vars instead (entrypoint.sh).
 SETTING_DEFINITIONS = {
-    "tailscale": ("worker_tag",),
     "s3": ("access_key", "secret_key", "bucket", "endpoint", "path"),
     "notifications": ("discord_webhook",),
-    "cloudflare": ("api_token", "account_id", "domain", "admin_email"),
 }
 
 

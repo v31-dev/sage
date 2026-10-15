@@ -67,7 +67,7 @@ Routes in `ui/src/router/index.ts` currently cover:
 
 ## Settings Pages
 
-Each section page is `SettingsSection.vue` (layout, status badge, Save / Test / Reset,
+Tailscale and Cloudflare are env vars, so their pages use `SettingsSection` with `readonly` (status, values, resync actions). S3 and notifications are editable: each section page is `SettingsSection.vue` (layout, status badge, Save / Test / Reset,
 inline error, unsaved-changes dialog) around `useSettingForm` (load, save, test the
 current values, reset, leave guard). Errors show inline; successes as toasts. The sidebar
 and the pages read one status store (`stores/settingsStatus.ts`) that polls

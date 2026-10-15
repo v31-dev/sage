@@ -55,9 +55,11 @@ Most high-level backend behavior ultimately flows through this service, and almo
 - `services/db/`
   - Peewee models and database bootstrap
 - `services/settings.py`
-  - persistent settings state; every field is optional and set from the UI
+  - persistent settings state for S3 and notifications; every field is optional and set from the UI
 - `services/cloudflare.py`
-  - Cloudflare DNS and tunnel management; optional (`configured` = the whole `cloudflare` setting group is set), connects to the API on first use and retries after a failure
+  - Cloudflare DNS and tunnel management, configured from env (`DOMAIN`, `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`); connects at startup and again on use if that failed
+- `services/certs.py`
+  - the manager's certificate (`<TS_NAME>.core.<domain>`, never leaves the manager) and the workers' (`*.int.<domain>`): ACME DNS-01 issuance, renewal, the startup retry and the `:443` in-place reload
 - `services/tailscale.py`
   - Tailscale status, SSH command execution and SFTP file sync to workers (asyncssh over `tailscale nc`, since the manager's tailscaled runs in userspace mode)
 - `services/certs.py`
@@ -212,7 +214,8 @@ Every queued operation, its scope, where it is enqueued from, its lane pool, and
 | `Metrics.cleanup` | metrics | cron daily 04:00 | metrics | REPLACE |
 | `Logs.cleanup` | common | cron daily 04:00 | common | REPLACE |
 | `cleanup` | platform | cron daily 04:00 | platform | REPLACE |
-| `renew_certificates` | platform, app | cron daily 03:00 + once at startup (skipped when Cloudflare isn't configured) | platform | REPLACE |
+| `renew_certificates` | platform, app | cron daily 03:00 + once at startup | platform | REPLACE — both certificates; reloads the manager's `:443` in place and syncs the workers' to stale workers |
+| `sync_workers` (`check_stamps`) | platform | once at startup | platform | REPLACE — also sets up workers that stayed online, letting their stamps (domain, tunnel, certificate, app routing) decide what to redo, since the env may have changed while Sage was stopped |
 | `discover_s3_platform_backups` | platform | once at startup (skipped when S3 isn't configured) | platform | DEDUP |
 
 **Route-driven (HTTP → `add_task`)**
@@ -229,14 +232,13 @@ Every queued operation, its scope, where it is enqueued from, its lane pool, and
 | `delete_backup_s3` | common | DELETE /backups/{b} | common | QUEUE |
 | `remove_worker` | platform, app | DELETE /workers/{h} | platform | QUEUE |
 | `reboot_worker` | platform, app | POST /workers/{h}/reboot | platform | QUEUE — backgrounds a `reboot` over Tailscale SSH so the command returns before the host drops; won't run mid-deploy; status reconciler tracks the worker going offline/back |
-| `refresh_traefik` | platform, app | PUT /settings/cloudflare | platform | QUEUE |
 | `refresh_traefik` | platform, app | POST /settings/resync_traefik | platform | DEDUP |
 | `refresh_latest_release` | common | POST /info/release/refresh | common | REPLACE — on-demand version of the 4h refresh; UI polls `GET /info/release`'s `fetched_at` |
 | `check_<section>` (`check_setting`) | common:`<section>` | PUT /settings/{section} (after a save, when complete) | common | REPLACE |
 | `sync_workers` | platform | POST /settings/resync_workers | platform | REPLACE |
 | `sync_application_traefik_domains_config` | app:`<qn>` | create/update/delete_domain, update-container tag change (via `request_application_traefik_sync`) | app | REPLACE |
 
-**Settings status.** `GET /settings/status` gives each section (tailscale, cloudflare, s3, notifications) a state: `not_configured`, `applying` (a check or apply task is queued or running; its `task_id` is included), `ok`, `retrying` (the last check failed in a way that clears on its own — network, timeout, 5xx/429; the 5-minute check retries) or `error` (needs the user — bad credentials, missing bucket or zone). Cloudflare is also `error` without a valid certificate. `POST /settings/{section}/test` checks the values in the request (saved or not) with side effects: the S3 test writes and deletes a marker object, the notifications test sends a message. Check failures never include a webhook URL (it holds the token).
+**Settings status.** `GET /settings/status` gives each section (tailscale, cloudflare, s3, notifications) a state: `not_configured`, `applying` (a check or apply task is queued or running; its `task_id` is included), `ok`, `retrying` (the last check failed in a way that clears on its own — network, timeout, 5xx/429; the 5-minute check retries) or `error` (needs the user — bad credentials, missing bucket or zone). Cloudflare is also `error` without a valid certificate. Tailscale and Cloudflare are env vars, so they're always configured and checked as set. `POST /settings/{s3|notifications}/test` checks the values in the request (saved or not) with side effects: the S3 test writes and deletes a marker object, the notifications test sends a message. Check failures never include a webhook URL (it holds the token).
 
 Backups live in S3, which is optional: every backup route (create, restore, delete) returns 400 until S3 is configured, and the backup triggers skip.
 
@@ -288,7 +290,7 @@ The single change-trigger is `Manager().request_application_traefik_sync(applica
 with `REPLACE` (coalesces bursts; the app scope serializes it after any in-flight
 app op, so it re-reads committed state). It is called wherever the **active routing
 set** changes — domain CRUD, deploy/stop, delete/tag-update of an **active**
-container, `sync_application_status` health flips, and Cloudflare domain change.
+container, `sync_application_status` health flips, and Resync Traefik.
 It is deliberately **not** called when routing is unaffected: adding a container
 (inactive until deployed), or editing/deleting an inactive one.
 
@@ -406,15 +408,24 @@ affected apps and call the helper rather than bulk-setting the flag.
 
 ## Settings And Traefik Refresh
 
-Platform settings (`tailscale`, `s3`, `notifications`, `cloudflare`) live in the `Setting` table. Every field is optional and set from the UI; nothing is read from env. The `tailscale` worker tag has no default, so worker discovery is off until one is set.
+Cloudflare and Tailscale are configured by required env vars (`DOMAIN`,
+`CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`, `TS_WORKER_TAG`), so changing them is a
+restart. On start, `setup_domain` sets up the new domain (zone, tunnel, the manager's
+record, the manager's certificate) before serving, the `renew_certificates` startup run
+issues the workers' certificate for a new domain, and the `check_stamps` worker sync
+converges online workers: the `infra` stamp includes the domain and the tunnel id (a new
+account means a new tunnel), the `certs` stamp follows the workers' certificate, and each
+app's routing stamp includes the domain. Resources of a previous domain or account stay
+in Cloudflare.
 
-UI updates in `routes/settings.py` follow the same pattern: validate the merged value, persist via `Settings().set(...)`, then reload the consuming service (`S3().load()`, `Notifications().load_notifications_config()`, `Cloudflare().load()`). `Cloudflare().load()` only picks up the new values; the API connection is made on next use.
+The `Setting` table holds S3 and notifications only; every field is optional and set from
+the UI. Rows for settings that became env vars may remain in older databases and are
+ignored (`routes/settings.py` only serves defined keys). UI updates follow one pattern:
+validate the merged value, persist via `Settings().set(...)`, reload the consuming service
+(`S3().load()`, `Notifications().load_notifications_config()`), then queue a check.
 
-The manager owns ACME in-process (`Certs`), and the settings route reloads `Certs` (domain/admin_email) synchronously like the other singletons. Only a **domain** change enqueues the `refresh_traefik` operation (in `services/manager/traefik.py`) — email/token changes are fully handled by the synchronous reloads:
-
-- `admin_email` change — `Certs().load()` picks it up; the new contact applies on the next natural renewal (no re-issuance, no worker churn, no task).
-- `domain` change — the new SAN set means a new cert: `Certs` re-issues via ACME DNS-01, the PEM is synced to workers, worker `config.yml` + DNS records are updated (file-provider reload, no worker traefik restart), and every app's routing is resynced.
-- `api_token` change — the manager's `Cloudflare` client (used for the DNS-01 challenge and DNS records) is reloaded by the settings route; nothing else to do (workers never held the token).
+`refresh_traefik` (Resync Traefik) re-ensures both certificates, re-pushes the workers'
+certificate and Traefik config, the `*.int` records and every app's routing.
 
 ## Templates
 

@@ -1,8 +1,10 @@
 # Dev-only Traefik, sharing the sage container's network namespace (docker-compose.yml),
-# so :80 here is the dev manager's tailnet address.
+# so :80 and :443 here are the dev manager's tailnet address.
 entryPoints:
   web:
     address: :80
+  websecure:
+    address: :443
 
 providers:
   file:

@@ -4,7 +4,6 @@ from datetime import datetime
 from fastapi import APIRouter
 
 from services.manager import Manager
-from services.settings import Settings
 from services.tailscale import Tailscale
 from utils.common import get_env
 from utils.queue import OnConflict
@@ -20,8 +19,9 @@ async def get():
   return {
       "version": Manager().version,
       "latest_version": Manager().latest_version,
-      "domain": Settings().get("cloudflare", "domain"),
+      "domain": get_env("DOMAIN"),
       "name": get_env("TS_NAME"),
+      "worker_tag": Tailscale().worker_tag,
       "ip": Tailscale().ip(),
       "start_time": start_time.isoformat(),
       "state": Manager().task_state(),
