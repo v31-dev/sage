@@ -1,6 +1,6 @@
 # sage
 
-Sage is a lightweight single-user micro-PaaS for running and managing Docker-based applications across a small set of machines. It uses Tailscale for node connectivity, Traefik for ingress, optionally Cloudflare for domains and public apps, and a web UI for day-to-day operations.
+Sage is a lightweight single-user micro-PaaS for running and managing Docker-based applications across a small set of machines. It uses Tailscale for node connectivity, Cloudflare for domains, DNS and public apps, Traefik for ingress, and a web UI for day-to-day operations.
 
 Detailed technical and development-oriented material lives in [`docs/`](docs/).
 

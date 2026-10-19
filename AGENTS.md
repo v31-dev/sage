@@ -166,6 +166,12 @@ Local dev stack (`docker-compose.yml` is dev-only; deploying the image is in the
 docker compose up --build --watch
 ```
 
+## Release Notes
+
+- The release notes are the GitHub release body. Settings → Upgrade shows them as Markdown, after removing HTML comments.
+- For every release, generate technical release notes against the previous release: list the files changed since its tag (`git diff <previous tag> --stat`), then read the diffs. Cover config and env vars, startup order, endpoints added and removed, data and file formats (backups, S3 keys), the task queue, the Cloudflare and Tailscale resources Sage creates, the image and CI, and what was tested live and what wasn't. Give names, constants and formats exactly, so a reviewer can check each against the code.
+- Put them at the end of the release notes in a collapsible block (`<details><summary>Technical notes</summary> … </details>`). The user-facing notes above it stay short.
+
 ## Documentation Rules
 
 - Keep `README.md` as the simple top-level entrypoint.
