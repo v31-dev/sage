@@ -73,9 +73,7 @@ raw. Both parse with `parseDate`: backend timestamps without a timezone are UTC;
 
 ## Settings Pages
 
-Tailscale and Cloudflare are env vars, so their pages use `SettingsSection` with `readonly` (status, values, resync actions, and a `links` slot for their dashboards: the manager's machine in the Tailscale console; the tunnel and DNS records in Cloudflare). S3 and notifications are editable: each section page is `SettingsSection.vue` (layout, status badge, Save / Test / Reset,
-inline error, unsaved-changes dialog) around `useSettingForm` (load, save, test the
-current values, reset, leave guard). Errors show inline; successes as toasts. The sidebar
+Tailscale and Cloudflare are env vars, so their pages use `SettingsSection` with `readonly` (status, values, resync actions, and a `links` slot for their dashboards: the manager's machine in the Tailscale console; the tunnel and DNS records in Cloudflare). S3 and notifications are editable: a page passes `SettingsSection.vue` its `field-keys`, and the section does the rest end to end (layout, status badge, load, Save / Test / Reset, inline error, unsaved-changes dialog and route-leave guard). The page's fields go in the default slot, which receives `fields` (the current values) and `updateField`. Errors show inline; successes as toasts. The sidebar
 and the pages read one status store (`stores/settingsStatus.ts`) that polls
 `GET /api/settings/status`: every 3 s while a section is applying, otherwise every 30 s
 and on window focus. States and their icons are in `lib/settingState.ts`.

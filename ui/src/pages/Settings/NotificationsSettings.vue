@@ -4,10 +4,8 @@ import CustomInput from '@/components/CustomInput.vue'
 import { useSettingsStatusStore } from '@/stores/settingsStatus'
 import SettingField from './SettingField.vue'
 import SettingsSection from './SettingsSection.vue'
-import { useSettingForm } from './useSettingForm'
 
-const form = useSettingForm('notifications', ['discord_webhook'], 'Notifications')
-const { fields, isLoading, saving, testing, error, dirty, leaveOpen } = form
+const fieldKeys = ['discord_webhook']
 
 // Why each channel that failed its last check failed.
 const statusStore = useSettingsStatusStore()
@@ -20,30 +18,23 @@ const failures = computed(() => statusStore.status?.notifications.channels ?? {}
     description="Messages for operational events: deploys, backups, failures and the daily summary. Optional; every channel you set receives them."
     section="notifications"
     test-label="Send test message"
-    :loading="isLoading"
-    :saving="saving"
-    :testing="testing"
-    :dirty="dirty"
-    :error="error"
-    :leave-open="leaveOpen"
-    @save="form.save"
-    @test="form.test"
-    @reset="form.reset"
-    @leave="form.resolveLeave"
+    :field-keys="fieldKeys"
   >
-    <SettingField
-      id="notifications-discord-webhook"
-      label="Discord Webhook"
-      description="Saving sends a test message; leave empty to turn this channel off."
-      :error="failures.discord_webhook"
-    >
-      <CustomInput
+    <template #default="{ fields, updateField }">
+      <SettingField
         id="notifications-discord-webhook"
-        secret
-        :model-value="fields.discord_webhook"
-        @update:model-value="value => form.updateField('discord_webhook', value)"
-        placeholder="e.g. https://discord.com/api/webhooks/..."
-      />
-    </SettingField>
+        label="Discord Webhook"
+        description="Saving sends a test message; leave empty to turn this channel off."
+        :error="failures.discord_webhook"
+      >
+        <CustomInput
+          id="notifications-discord-webhook"
+          secret
+          :model-value="fields.discord_webhook"
+          @update:model-value="value => updateField('discord_webhook', value)"
+          placeholder="e.g. https://discord.com/api/webhooks/..."
+        />
+      </SettingField>
+    </template>
   </SettingsSection>
 </template>
