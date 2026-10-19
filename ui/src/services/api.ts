@@ -15,16 +15,11 @@ export interface AppInfo {
   version: string
   latest_version: string | null
   domain: string
-  // The manager's name (TS_NAME): its tailnet machine name.
   name: string
-  // Tailscale tag of the workers (TS_WORKER_TAG).
   worker_tag: string
   ip: string
   start_time: string
-  // running, paused (Settings > Upgrade), restoring (a platform restore is in progress), or
-  // stopping (draining after a stop signal)
   state: 'running' | 'paused' | 'restoring' | 'stopping'
-  // When the backup being restored was made, while restoring
   restoring_from: string | null
 }
 

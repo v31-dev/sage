@@ -59,10 +59,8 @@ services:
       sage:
         condition: service_healthy
 
-  # Shares sage's network namespace, so tailnet traffic to the dev manager's :80/:443
-  # reaches it. Serves https://<TS_NAME>.core.<DOMAIN> with the manager's certificate:
-  # /api to the manager, everything else (incl. the HMR WebSocket) to Vite. Restart it
-  # after the certificate renews (about every 60 days); it doesn't watch the PEM files.
+  # Serves https://<TS_NAME>.core.<DOMAIN> with the manager's certificate:
+  # /api to the manager, everything else (incl. the HMR WebSocket) to Vite.
   traefik:
     image: traefik:v3.6.7
     container_name: sage-dev-traefik

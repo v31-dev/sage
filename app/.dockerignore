@@ -1,9 +1,6 @@
 .git
 .env
 
-# "**/" so the patterns also match inside app/ and ui/ (a bare pattern only matches at
-# the context root).
-
 # Node
 **/node_modules
 

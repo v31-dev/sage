@@ -32,14 +32,15 @@ ARCHIVE_PATH="$TMP_DIR/restore.tar.gz"
 DOWNLOADED_PATH="$TMP_DIR/restore.tar.gz.enc.mac"
 ENCRYPTED_PATH="$TMP_DIR/restore.tar.gz.enc"
 PASSPHRASE_PATH="$TMP_DIR/passphrase"
-DOWNLOAD_URL_PATH="$TMP_DIR/download_url"
+DOWNLOAD_CONFIG_PATH="$TMP_DIR/download.curl"
 
 cat <<'__SAGE_RESTORE_KEY__' > "$PASSPHRASE_PATH"
 ${ENCRYPTION_KEY}
 __SAGE_RESTORE_KEY__
 
-cat <<'__SAGE_DOWNLOAD_URL__' > "$DOWNLOAD_URL_PATH"
-${DOWNLOAD_URL}
+# The link is a curl config file, so it stays out of curl's command line (visible to ps).
+cat <<'__SAGE_DOWNLOAD_URL__' > "$DOWNLOAD_CONFIG_PATH"
+url = "${DOWNLOAD_URL}"
 __SAGE_DOWNLOAD_URL__
 
 HTTP_STATUS="$(
@@ -49,7 +50,7 @@ HTTP_STATUS="$(
     --output "$DOWNLOADED_PATH" \
     --write-out "%{http_code}" \
     --request GET \
-    "$(cat "$DOWNLOAD_URL_PATH")"
+    --config "$DOWNLOAD_CONFIG_PATH"
 )"
 
 case "$HTTP_STATUS" in
@@ -64,7 +65,7 @@ esac
 # The last 32 bytes are an HMAC-SHA256 of the rest (see backup.sh). Check it before
 # decrypting, so a corrupted or altered archive is refused.
 # The MAC key is derived from the passphrase over stdin, so the passphrase never appears
-# in a command line. (The derived key does, briefly; it can't decrypt anything.)
+# in a command line.
 MAC_KEY="$({ printf 'sage-archive-mac:'; cat "$PASSPHRASE_PATH"; } \
   | openssl dgst -sha256 -binary | od -An -tx1 | tr -d ' \n')"
 SIZE="$(wc -c < "$DOWNLOADED_PATH")"

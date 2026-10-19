@@ -20,7 +20,6 @@ class Tailscale(Base):
     super().__init__()
 
     self.uds = "/var/run/tailscale/tailscaled.sock"
-    # Machines carrying this tag are workers (TS_WORKER_TAG, with or without `tag:`).
     self.worker_tag = get_env("TS_WORKER_TAG").strip().removeprefix("tag:")
     # Pooled SSH connections per worker
     self._conns: dict[str, asyncssh.SSHClientConnection] = {}
@@ -67,7 +66,6 @@ class Tailscale(Base):
     return json.loads(result.stdout)
 
   def ip(self):
-    # Only a found address is kept, so a lookup before the node is up is tried again.
     if not getattr(self, "_ip", ""):
       try:
         result = subprocess.run(

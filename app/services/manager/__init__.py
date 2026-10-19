@@ -16,10 +16,10 @@ from utils.queue import TaskQueue
 from ._common import app_dir
 from .application import ApplicationMixin
 from .backups import BackupsMixin
-from .checks import ChecksMixin
 from .core import CoreMixin
 from .platform import PlatformMixin
 from .queue import QueueMixin
+from .settings import SettingsMixin
 from .traefik import TraefikMixin
 from .workers import WorkersMixin
 
@@ -33,7 +33,7 @@ class Manager(
     ApplicationMixin,
     BackupsMixin,
     PlatformMixin,
-    ChecksMixin,
+    SettingsMixin,
     QueueMixin,
     Base,
 ):
@@ -52,7 +52,7 @@ class Manager(
       self.latest_version = self.version
       self.latest_release = None
 
-      # Last check result per settings section (services/manager/checks.py).
+      # Last check result per settings section (services/manager/settings.py).
       self.setting_checks = {}
 
       # Single-dispatcher operation queue. Each scope root maps to an independent

@@ -5,16 +5,13 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Request
 
 from services.db import Backup
 from services.manager import Manager
+from services.s3 import BROWSER_LINK_SECONDS
 from utils.api import generic_delete, generic_get, generic_list, get_request_models
 from utils.queue import OnConflict
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-
-# How long a download link works. S3 checks it when a request starts, so a download that
-# has begun is not cut off when it passes.
-DOWNLOAD_LINK_SECONDS = 60
 
 
 def inject_backup(request: Request):
@@ -59,7 +56,6 @@ def get_platform_backup_status(request: Request):
   """Get current platform backup and discovery status."""
   return {
       "platform_backup_in_progress": Manager().is_task_running(Manager().backup_database_s3),
-      # Queued counts too: discovery waits behind running app work.
       "discovery_in_progress": Manager().has_task(Manager().discover_s3_backups),
   }
 
@@ -134,8 +130,7 @@ def download_filename(backup: Backup) -> str:
 
 @router.post("/{backup}/download", dependencies=[Depends(inject_backup)])
 def download_backup(request: Request):
-  """A short-lived link that downloads the backup file straight from S3. The link is made
-  when asked for and not stored; the file is encrypted with ENCRYPTION_KEY either way."""
+  """A short-lived link that downloads the backup file straight from S3."""
   require_s3()
   backup = request.state.models["backup"]
 
@@ -143,10 +138,10 @@ def download_backup(request: Request):
     raise HTTPException(status_code=404, detail="The backup file is no longer in S3.")
 
   url = Manager().s3.create_presigned_download_url(
-      backup.s3_path, expires_in=DOWNLOAD_LINK_SECONDS, raw_path=True,
+      backup.s3_path, expires_in=BROWSER_LINK_SECONDS, raw_path=True,
       filename=download_filename(backup))
-  logger.info(f"Download link for backup {backup.id} ({backup.s3_path}) valid for {DOWNLOAD_LINK_SECONDS}s.")
-  return {"url": url, "expires_in": DOWNLOAD_LINK_SECONDS}
+  logger.info(f"Download link for backup {backup.id} ({backup.s3_path}) valid for {BROWSER_LINK_SECONDS}s.")
+  return {"url": url, "expires_in": BROWSER_LINK_SECONDS}
 
 
 @router.delete("/{backup}", dependencies=[Depends(inject_backup)])

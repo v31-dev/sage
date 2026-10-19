@@ -13,6 +13,11 @@ from utils.executor import run_in_executor_with_context
 
 logger = logging.getLogger(__name__)
 
+# UI download presigned link expiry
+BROWSER_LINK_SECONDS = 60
+# A worker's upload or download presigned link expiry
+WORKER_LINK_SECONDS = 1200
+
 
 class S3(Base):
   def __init__(self):
@@ -31,8 +36,6 @@ class S3(Base):
       settings = Settings()
       config = settings.get("s3")
       self.s3_config = config if settings.is_valid("s3") else None
-      # boto3 clients are thread-safe (sessions aren't), so one client serves every lane;
-      # blocking calls are offloaded to the calling task's pool.
       self._client = (boto3.session.Session().client('s3', **self._get_client_kwargs())
                       if self.s3_config else None)
 
@@ -93,7 +96,7 @@ class S3(Base):
 
     return client_kwargs
 
-  def create_presigned_upload_url(self, s3_path, expires_in=3600, raw_path=False):
+  def create_presigned_upload_url(self, s3_path, expires_in, raw_path=False):
     """
     Create a presigned PUT URL for direct uploads.
     """
@@ -115,7 +118,7 @@ class S3(Base):
         HttpMethod='PUT',
     )
 
-  def create_presigned_download_url(self, s3_path, expires_in=3600, raw_path=False, filename=None):
+  def create_presigned_download_url(self, s3_path, expires_in, raw_path=False, filename=None):
     """
     Create a presigned GET URL for direct downloads. With a filename, the response asks
     the browser to save the file under that name.

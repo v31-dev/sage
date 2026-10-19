@@ -23,17 +23,32 @@ TRANSIENT_ERRORS = (
     httpx.TransportError,
 )
 
-# While one of these is queued or running, its section shows as applying. sync_workers
-# counts only when forced (Resync workers); the 30 s sync runs all the time.
+
+def task(name: str, **params) -> tuple[str, dict]:
+  """A task whose run makes its section apply. With params, only a run whose params include
+  them counts."""
+  return name, params
+
+
+# While one of these is queued or running, its section shows as applying. The worker sync
+# runs every 30 s, so only a forced or stamp-checking run of it counts.
 APPLYING_TASKS = {
-    "tailscale": ("check_tailscale", "sync_workers"),
-    "cloudflare": ("check_cloudflare", "refresh_traefik", "renew_certificates"),
-    "s3": ("check_s3",),
-    "notifications": ("check_notifications",),
+    "tailscale": (task("check_tailscale"), task("sync_workers", force=True),
+                  task("sync_workers", check_stamps=True)),
+    "cloudflare": (task("check_cloudflare"), task("refresh_traefik"), task("renew_certificates")),
+    "s3": (task("check_s3"),),
+    "notifications": (task("check_notifications"),),
 }
 
 
-class ChecksMixin:
+def _is_applying(queued: dict, key: str) -> bool:
+  """Whether a queued or running task (as in task_snapshot) makes the section apply."""
+  return any(
+      queued["name"] == name and all(queued["params"].get(k) == v for k, v in params.items())
+      for name, params in APPLYING_TASKS[key])
+
+
+class SettingsMixin:
   """Live checks of the settings sections against their providers, and the status the
   settings pages show."""
 
@@ -41,40 +56,49 @@ class ChecksMixin:
     """Check a section's values; returns what was verified, raises with the reason
     otherwise. With side_effects, S3 also writes to the bucket and notifications send a
     test message; the periodic check runs without them."""
-    # Tailscale and Cloudflare are env vars, so they are checked as configured.
-    if key == "tailscale":
-      backend_state = self.tailscale.status().get("BackendState")
-      if backend_state != "Running":
-        raise ValueError(f"The manager's tailnet node is not running ({backend_state}).")
-      machines = self.tailscale.get_by_tag(self.tailscale.worker_tag)
-      online = sum(machine.online for machine in machines)
-      return f"{len(machines)} machine(s) tagged tag:{self.tailscale.worker_tag}, {online} online."
+    tests = {
+        "tailscale": self._test_tailscale,
+        "cloudflare": self._test_cloudflare,
+        "s3": self._test_s3,
+        "notifications": self._test_notifications,
+    }
+    if key not in tests:
+      raise KeyError(f"Unknown settings section: {key}")
+    return tests[key](value, side_effects)
 
-    if key == "cloudflare":
-      self.cloudflare.check_config(self.cloudflare.config)
-      self.cloudflare.connect()
-      tunnel = self.cloudflare.request(
-          "GET", f"/accounts/{self.cloudflare.account_id}/cfd_tunnel/{self.cloudflare.tunnel_id}")["result"]
-      self.cloudflare.tunnel_status = tunnel["status"]
-      return f"API token, zone {self.cloudflare.domain} and account verified; tunnel {tunnel['status']}."
+  def _test_tailscale(self, value: dict, side_effects: bool) -> str:
+    """Env vars, so checked as configured: the node is up and the workers are visible."""
+    backend_state = self.tailscale.status().get("BackendState")
+    if backend_state != "Running":
+      raise ValueError(f"The manager's tailnet node is not running ({backend_state}).")
+    machines = self.tailscale.get_by_tag(self.tailscale.worker_tag)
+    online = sum(machine.online for machine in machines)
+    return f"{len(machines)} machine(s) tagged tag:{self.tailscale.worker_tag}, {online} online."
 
-    if key == "s3":
-      if not Settings().is_valid("s3", value):
-        raise ValueError("Fill in every S3 field first.")
-      self.s3.check_config(value, write=side_effects)
-      return "Bucket reachable and writable." if side_effects else "Bucket reachable."
+  def _test_cloudflare(self, value: dict, side_effects: bool) -> str:
+    """Env vars, so checked as configured: token, zone and account, and the tunnel's health."""
+    self.cloudflare.check_config(self.cloudflare.config)
+    self.cloudflare.connect()
+    tunnel = self.cloudflare.request(
+        "GET", f"/accounts/{self.cloudflare.account_id}/cfd_tunnel/{self.cloudflare.tunnel_id}")["result"]
+    self.cloudflare.tunnel_status = tunnel["status"]
+    return f"API token, zone {self.cloudflare.domain} and account verified; tunnel {tunnel['status']}."
 
-    if key == "notifications":
-      if not value.get("discord_webhook"):
-        raise ValueError("Set a Discord webhook first.")
-      if side_effects:
-        Notifications().check_config(value)
-        return "Test message sent to Discord."
-      # Reads the webhook's details without posting to the channel.
-      requests.get(value["discord_webhook"], timeout=5).raise_for_status()
-      return "Discord webhook is valid."
+  def _test_s3(self, value: dict, side_effects: bool) -> str:
+    if not Settings().is_valid("s3", value):
+      raise ValueError("Fill in every S3 field first.")
+    self.s3.check_config(value, write=side_effects)
+    return "Bucket reachable and writable." if side_effects else "Bucket reachable."
 
-    raise KeyError(f"Unknown settings section: {key}")
+  def _test_notifications(self, value: dict, side_effects: bool) -> str:
+    if not value.get("discord_webhook"):
+      raise ValueError("Set a Discord webhook first.")
+    if side_effects:
+      Notifications().check_config(value)
+      return "Test message sent to Discord."
+    # Reads the webhook's details without posting to the channel.
+    requests.get(value["discord_webhook"], timeout=5).raise_for_status()
+    return "Discord webhook is valid."
 
   @staticmethod
   def describe_check_error(error: Exception) -> tuple[str, bool]:
@@ -119,9 +143,7 @@ class ChecksMixin:
       check = self.setting_checks.get(key) or {}
       entry = {"state": check.get("state"), "message": check.get("message"), "task_id": None,
                "checked_at": check.get("checked_at"), "details": None}
-      applying = next((t for t in active if t["name"] in APPLYING_TASKS[key]
-                       and (t["name"] != "sync_workers" or t["params"].get("force") or t["params"].get("check_stamps"))),
-                      None)
+      applying = next((t for t in active if _is_applying(t, key)), None)
 
       if not self.section_configured(key):
         entry.update(state="not_configured", message=None)

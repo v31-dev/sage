@@ -8,7 +8,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 from services.db import Application, Project, Worker
 from services.logs import Logs
 from services.manager import Manager
-from services.manager.checks import SETTING_SECTIONS
+from services.manager.settings import SETTING_SECTIONS
 from services.metrics import Metrics
 from utils.common import get_env
 from utils.queue import OnConflict
