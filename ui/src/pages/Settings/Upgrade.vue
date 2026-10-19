@@ -220,8 +220,7 @@ onUnmounted(() => {
             <li>
               Take a backup on the
               <RouterLink to="/backups" class="underline">Backups</RouterLink> page and wait for it
-              to appear in the list. A paused Sage refuses changes and starts no tasks, so this
-              comes first.
+              to appear in the list.
             </li>
             <li>Pause Sage (below) and wait until it shows it's safe to stop.</li>
             <li>Stop the Sage container.</li>
