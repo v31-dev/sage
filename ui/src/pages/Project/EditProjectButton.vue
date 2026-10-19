@@ -18,6 +18,7 @@ import { Spinner } from '@/components/ui/spinner'
 
 import { type Project } from '@/services/api'
 import CustomInput from '@/components/CustomInput.vue'
+import FieldLabelHelp from '@/components/FieldLabelHelp.vue'
 
 interface Props {
   project: Project
@@ -28,6 +29,9 @@ interface Props {
 const props = withDefaults(defineProps<Props>(), {})
 
 const isEditDialogOpen = ref(false)
+
+const envHelp =
+  'KEY=VALUE pairs, one per line\nComments with # are allowed\nVALUE can be string quoted'
 const editFormData = ref({
   label: '',
   description: '',
@@ -88,11 +92,12 @@ async function handleUpdateProject() {
             <Textarea id="description" v-model="editFormData.description" class="resize-none" />
           </Field>
           <Field>
-            <FieldLabel for="env"> Environment Variables (optional) </FieldLabel>
+            <FieldLabelHelp for="env" :help="envHelp"
+              >Environment Variables (optional)</FieldLabelHelp
+            >
             <CustomInput
               id="env"
               type="textarea"
-              tooltip="KEY=VALUE pairs, one per line\nComments with # are allowed\nVALUE can be string quoted"
               secret
               v-model="editFormData.env"
               class="resize-none"

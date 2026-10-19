@@ -2,11 +2,9 @@
 import { computed } from 'vue'
 import { ExternalLink } from 'lucide-vue-next'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
 import { formatDate } from '@/lib/utils'
 import { useAppStore } from '@/stores/app'
 import { useSettingsStatusStore } from '@/stores/settingsStatus'
-import SettingField from './SettingField.vue'
 import SettingsSection from './SettingsSection.vue'
 import TraefikResyncSubCard from './TraefikResyncSubCard.vue'
 
@@ -35,6 +33,38 @@ const dnsUrl = computed(() =>
     ? `https://dash.cloudflare.com/${details.value.account_id}/${domain.value}/dns/records`
     : null
 )
+
+const fields = computed(() => [
+  { key: 'domain', label: 'Domain', description: 'DOMAIN', readonly: true, value: domain.value },
+  {
+    key: 'manager_address',
+    label: 'Manager Address',
+    description: 'The only address the UI is served at',
+    readonly: true,
+    value: managerAddress.value,
+  },
+  {
+    key: 'tunnel',
+    label: 'Tunnel',
+    description: 'Carries public app traffic',
+    readonly: true,
+    value: tunnel.value,
+  },
+  {
+    key: 'manager_certificate',
+    label: 'Manager Certificate',
+    description: 'For the manager address; never leaves the manager',
+    readonly: true,
+    value: expiry(details.value?.manager_certificate_expiry),
+  },
+  {
+    key: 'workers_certificate',
+    label: "Workers' Certificate",
+    description: 'For internal app domains (*.int), copied to every worker',
+    readonly: true,
+    value: expiry(details.value?.workers_certificate_expiry),
+  },
+])
 </script>
 
 <template>
@@ -42,44 +72,8 @@ const dnsUrl = computed(() =>
     title="Cloudflare"
     description="Domain, tunnel and certificates. Set by environment variables: change them and restart Sage. Records and tunnels of a previous domain or account stay in Cloudflare until you remove them."
     section="cloudflare"
-    readonly
+    :fields="fields"
   >
-    <SettingField id="cloudflare-domain" label="Domain" description="DOMAIN">
-      <Input id="cloudflare-domain" :model-value="domain" readonly />
-    </SettingField>
-    <SettingField
-      id="cloudflare-manager-address"
-      label="Manager Address"
-      description="The only address the UI is served at"
-    >
-      <Input id="cloudflare-manager-address" :model-value="managerAddress" readonly />
-    </SettingField>
-    <SettingField id="cloudflare-tunnel" label="Tunnel" description="Carries public app traffic">
-      <Input id="cloudflare-tunnel" :model-value="tunnel" readonly />
-    </SettingField>
-    <SettingField
-      id="cloudflare-manager-certificate"
-      label="Manager Certificate"
-      description="For the manager address; never leaves the manager"
-    >
-      <Input
-        id="cloudflare-manager-certificate"
-        :model-value="expiry(details?.manager_certificate_expiry)"
-        readonly
-      />
-    </SettingField>
-    <SettingField
-      id="cloudflare-workers-certificate"
-      label="Workers' Certificate"
-      description="For internal app domains (*.int), copied to every worker"
-    >
-      <Input
-        id="cloudflare-workers-certificate"
-        :model-value="expiry(details?.workers_certificate_expiry)"
-        readonly
-      />
-    </SettingField>
-
     <template #links>
       <Button
         as="a"

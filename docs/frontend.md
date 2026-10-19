@@ -64,6 +64,10 @@ Routes in `ui/src/router/index.ts` currently cover:
 - Optional fields say "(optional)" in the label; required is the unmarked default.
 - Search boxes and select prompts ("Search logs…", "Select backup") are prompts, not
   values, and are fine.
+- Help for a field is an info icon beside its label (`FieldLabelHelp`), never inside the
+  input. Inside an input, a leading icon marks a state (a lock on a read-only field) and
+  trailing icons are actions on the value: at most two (copy, reveal, clear), reveal
+  outermost.
 
 ## Dates
 
@@ -73,7 +77,7 @@ raw. Both parse with `parseDate`: backend timestamps without a timezone are UTC;
 
 ## Settings Pages
 
-Tailscale and Cloudflare are env vars, so their pages use `SettingsSection` with `readonly` (status, values, resync actions, and a `links` slot for their dashboards: the manager's machine in the Tailscale console; the tunnel and DNS records in Cloudflare). S3 and notifications are editable: a page passes `SettingsSection.vue` its `field-keys`, and the section does the rest end to end (layout, status badge, load, Save / Test / Reset, inline error, unsaved-changes dialog and route-leave guard). The page's fields go in the default slot, which receives `fields` (the current values) and `updateField`. Errors show inline; successes as toasts. The sidebar
+Every settings page is a `SettingsSection.vue` given a `fields` list (`key`, `label`, and optionally `description`, `placeholder`, `type`, `secret`, `readonly`, `value`). A `readonly` field shows its `value` and is never loaded or saved. Tailscale and Cloudflare are env vars, so all their fields are read-only: the section then shows no Save / Test / Reset, and the page adds its dashboard links (`links` slot: the manager's machine in the Tailscale console; the tunnel and DNS records in Cloudflare) and its resync actions (`after` slot). S3 and notifications have editable fields: for those the section draws the inputs, loads, saves, tests and resets the values, shows a failing field's reason from the status under it, and handles the unsaved-changes dialog and the route-leave guard. Errors show inline; successes as toasts. The sidebar
 and the pages read one status store (`stores/settingsStatus.ts`) that polls
 `GET /api/settings/status`: every 3 s while a section is applying, otherwise every 30 s
 and on window focus. States and their icons are in `lib/settingState.ts`.

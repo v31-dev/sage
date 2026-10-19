@@ -1,12 +1,26 @@
 <script setup lang="ts">
 import { Card, CardContent } from '@/components/ui/card'
-import { Input } from '@/components/ui/input'
 import CodeBlock from '@/components/CodeBlock.vue'
-import CustomInput from '@/components/CustomInput.vue'
-import SettingField from './SettingField.vue'
 import SettingsSection from './SettingsSection.vue'
 
-const fieldKeys = ['access_key', 'secret_key', 'bucket', 'endpoint', 'path']
+const fields = [
+  { key: 'access_key', label: 'Access Key' },
+  { key: 'secret_key', label: 'Secret Key', secret: true },
+  { key: 'bucket', label: 'Bucket', placeholder: 'e.g. sage-backups' },
+  {
+    key: 'endpoint',
+    label: 'Endpoint',
+    description: 'URL of the S3 or S3-compatible service.',
+    type: 'url',
+    placeholder: 'e.g. https://s3.eu-central-1.amazonaws.com',
+  },
+  {
+    key: 'path',
+    label: 'Base Path',
+    description: "Prefix inside the bucket for all of Sage's backups.",
+    placeholder: 'e.g. /sage',
+  },
+]
 
 // Every backup has one format: AES-256 by openssl, then a 32-byte HMAC-SHA256 trailer.
 // The key comes from the ENCRYPTION_KEY environment variable.
@@ -25,58 +39,8 @@ const platformCommand = `head -c -32 <timestamp>.db.enc \\
     title="S3"
     description="Storage for platform and volume backups, on any S3-compatible service. Optional: without it, backups are off. Testing writes and deletes a small marker object."
     section="s3"
-    :field-keys="fieldKeys"
+    :fields="fields"
   >
-    <template #default="{ fields, updateField }">
-      <SettingField id="s3-access-key" label="Access Key">
-        <Input
-          id="s3-access-key"
-          :model-value="fields.access_key"
-          @update:model-value="value => updateField('access_key', value)"
-        />
-      </SettingField>
-      <SettingField id="s3-secret-key" label="Secret Key">
-        <CustomInput
-          id="s3-secret-key"
-          secret
-          :model-value="fields.secret_key"
-          @update:model-value="value => updateField('secret_key', value)"
-        />
-      </SettingField>
-      <SettingField id="s3-bucket" label="Bucket">
-        <Input
-          id="s3-bucket"
-          :model-value="fields.bucket"
-          @update:model-value="value => updateField('bucket', value)"
-          placeholder="e.g. sage-backups"
-        />
-      </SettingField>
-      <SettingField
-        id="s3-endpoint"
-        label="Endpoint"
-        description="URL of the S3 or S3-compatible service."
-      >
-        <Input
-          id="s3-endpoint"
-          :model-value="fields.endpoint"
-          @update:model-value="value => updateField('endpoint', value)"
-          type="url"
-          placeholder="e.g. https://s3.eu-central-1.amazonaws.com"
-        />
-      </SettingField>
-      <SettingField
-        id="s3-path"
-        label="Base Path"
-        description="Prefix inside the bucket for all of Sage's backups."
-      >
-        <Input
-          id="s3-path"
-          :model-value="fields.path"
-          @update:model-value="value => updateField('path', value)"
-          placeholder="e.g. /sage"
-        />
-      </SettingField>
-    </template>
     <template #after>
       <Card>
         <CardContent class="space-y-4 pt-4 text-sm">

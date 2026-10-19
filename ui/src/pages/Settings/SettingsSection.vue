@@ -2,7 +2,7 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { onBeforeRouteLeave } from 'vue-router'
 import { toast } from 'vue-sonner'
-import { OctagonX, Undo2 } from 'lucide-vue-next'
+import { Lock, OctagonX, Undo2 } from 'lucide-vue-next'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import {
   AlertDialog,
@@ -25,34 +25,45 @@ import {
   CardTitle,
 } from '@/components/ui/card'
 import { FieldGroup, FieldSet } from '@/components/ui/field'
+import { Input } from '@/components/ui/input'
+import { InputGroup, InputGroupAddon, InputGroupInput } from '@/components/ui/input-group'
 import { Spinner } from '@/components/ui/spinner'
+import CopyButton from '@/components/CopyButton.vue'
+import CustomInput from '@/components/CustomInput.vue'
 import SettingStateIndicator from '@/components/SettingStateIndicator.vue'
+import SettingField from './SettingField.vue'
 import { settingsAPI, type Setting, type SettingSection } from '@/services/api'
 import { useSettingsStatusStore } from '@/stores/settingsStatus'
 
-type SettingFields = Record<string, string>
+type SettingValues = Record<string, string>
+
+interface FieldDefinition {
+  key: string
+  label: string
+  description?: string
+  placeholder?: string
+  type?: string
+  secret?: boolean
+  // Shown as-is and never loaded or saved; `value` is what it shows.
+  readonly?: boolean
+  value?: string
+}
 
 const props = withDefaults(
   defineProps<{
     title: string
     description: string
     section: SettingSection
-    fieldKeys?: readonly string[]
-    readonly?: boolean
+    fields?: readonly FieldDefinition[]
     testLabel?: string
   }>(),
   {
-    fieldKeys: () => [],
-    readonly: false,
+    fields: () => [],
     testLabel: 'Test',
   }
 )
 
 defineSlots<{
-  default(props: {
-    fields: SettingFields
-    updateField: (key: string, value: string | number | undefined) => void
-  }): unknown
   save(): unknown
   links(): unknown
   after(): unknown
@@ -61,39 +72,46 @@ defineSlots<{
 const statusStore = useSettingsStatusStore()
 const status = computed(() => statusStore.status?.[props.section])
 
-function fieldsFromValue(value: Setting['value']) {
-  const values: SettingFields = {}
-  props.fieldKeys.forEach(key => {
+const keys = computed(() => props.fields.filter(field => !field.readonly).map(field => field.key))
+const editable = computed(() => keys.value.length > 0)
+
+function fieldId(key: string) {
+  return `${props.section}-${key.replace(/_/g, '-')}`
+}
+
+function valuesFrom(value: Setting['value']) {
+  const result: SettingValues = {}
+  keys.value.forEach(key => {
     const entry = value?.[key]
-    values[key] = entry == null ? '' : String(entry)
+    result[key] = entry == null ? '' : String(entry)
   })
-  return values
+  return result
 }
 
 function errorMessage(err: unknown, fallback: string) {
   return err instanceof Error ? err.message : fallback
 }
 
-const fields = ref<SettingFields>(fieldsFromValue(null))
-const saved = ref<SettingFields>(fieldsFromValue(null))
-const isLoading = ref(!props.readonly)
+const values = ref<SettingValues>(valuesFrom(null))
+const saved = ref<SettingValues>(valuesFrom(null))
+const isLoading = ref(editable.value)
 const saving = ref(false)
 const testing = ref(false)
 const error = ref('')
-const dirty = computed(() => props.fieldKeys.some(key => fields.value[key] !== saved.value[key]))
+const dirty = computed(() => keys.value.some(key => values.value[key] !== saved.value[key]))
 
 // Empty fields are sent as null.
 const outgoingValue = computed(() => {
   const value: Record<string, string | null> = {}
-  props.fieldKeys.forEach(key => {
-    const trimmed = (fields.value[key] ?? '').trim()
+  keys.value.forEach(key => {
+    const trimmed = (values.value[key] ?? '').trim()
     value[key] = trimmed === '' ? null : trimmed
   })
   return value
 })
 
 function updateField(key: string, value: string | number | undefined) {
-  fields.value[key] = value == null ? '' : String(value)
+  values.value[key] = value == null ? '' : String(value)
   error.value = ''
 }
 
@@ -102,8 +120,8 @@ async function load() {
   error.value = ''
   try {
     const data = (await settingsAPI.fetchOne(props.section)) as Setting
-    saved.value = fieldsFromValue(data.value)
-    fields.value = { ...saved.value }
+    saved.value = valuesFrom(data.value)
+    values.value = { ...saved.value }
   } catch (err) {
     error.value = errorMessage(err, `Failed to load ${props.title} settings`)
   } finally {
@@ -118,8 +136,8 @@ async function save() {
     const data = (await settingsAPI.update(props.section, {
       value: outgoingValue.value,
     })) as Setting
-    saved.value = fieldsFromValue(data.value)
-    fields.value = { ...saved.value }
+    saved.value = valuesFrom(data.value)
+    values.value = { ...saved.value }
     toast.success(`${props.title} settings saved`)
     statusStore.refresh()
   } catch (err) {
@@ -145,7 +163,7 @@ async function test() {
 }
 
 function reset() {
-  fields.value = { ...saved.value }
+  values.value = { ...saved.value }
   error.value = ''
 }
 
@@ -171,7 +189,7 @@ function onBeforeUnload(event: BeforeUnloadEvent) {
 }
 
 onMounted(() => {
-  if (props.readonly) return
+  if (!editable.value) return
   load()
   window.addEventListener('beforeunload', onBeforeUnload)
 })
@@ -201,7 +219,38 @@ onUnmounted(() => window.removeEventListener('beforeunload', onBeforeUnload))
           </div>
           <FieldSet v-else :disabled="saving">
             <FieldGroup>
-              <slot :fields="fields" :updateField="updateField" />
+              <SettingField
+                v-for="field in fields"
+                :key="field.key"
+                :id="fieldId(field.key)"
+                :label="field.label"
+                :description="field.description"
+                :error="status?.channels?.[field.key]"
+              >
+                <InputGroup v-if="field.readonly">
+                  <InputGroupAddon><Lock /></InputGroupAddon>
+                  <InputGroupInput :id="fieldId(field.key)" :model-value="field.value" readonly />
+                  <InputGroupAddon v-if="field.value" align="inline-end">
+                    <CopyButton compact :text="field.value" />
+                  </InputGroupAddon>
+                </InputGroup>
+                <CustomInput
+                  v-else-if="field.secret"
+                  secret
+                  :id="fieldId(field.key)"
+                  :model-value="values[field.key]"
+                  @update:model-value="value => updateField(field.key, value)"
+                  :placeholder="field.placeholder"
+                />
+                <Input
+                  v-else
+                  :id="fieldId(field.key)"
+                  :type="field.type"
+                  :model-value="values[field.key]"
+                  @update:model-value="value => updateField(field.key, value)"
+                  :placeholder="field.placeholder"
+                />
+              </SettingField>
             </FieldGroup>
           </FieldSet>
 
@@ -211,31 +260,31 @@ onUnmounted(() => window.removeEventListener('beforeunload', onBeforeUnload))
           </Alert>
         </CardContent>
 
-        <CardFooter v-if="readonly && $slots.links" class="flex flex-wrap gap-2">
-          <slot name="links" />
-        </CardFooter>
-        <CardFooter v-else-if="!readonly" class="flex flex-wrap gap-2">
-          <slot name="save">
-            <Button :disabled="saving || isLoading" @click="save()">
-              <Spinner v-if="saving" class="animate-spin" />
-              Save changes
+        <CardFooter v-if="editable || $slots.links" class="flex flex-wrap gap-2">
+          <template v-if="editable">
+            <slot name="save">
+              <Button :disabled="saving || isLoading" @click="save()">
+                <Spinner v-if="saving" class="animate-spin" />
+                Save changes
+              </Button>
+            </slot>
+            <Button variant="outline" :disabled="testing || isLoading" @click="test()">
+              <Spinner v-if="testing" class="animate-spin" />
+              {{ testLabel }}
             </Button>
-          </slot>
-          <Button variant="outline" :disabled="testing || isLoading" @click="test()">
-            <Spinner v-if="testing" class="animate-spin" />
-            {{ testLabel }}
-          </Button>
-          <Button v-if="dirty" variant="ghost" :disabled="saving" @click="reset()">
-            <Undo2 />
-            Reset
-          </Button>
+            <Button v-if="dirty" variant="ghost" :disabled="saving" @click="reset()">
+              <Undo2 />
+              Reset
+            </Button>
+          </template>
+          <slot name="links" />
         </CardFooter>
       </Card>
 
       <slot name="after" />
     </div>
 
-    <AlertDialog v-if="!readonly" :open="leaveOpen">
+    <AlertDialog v-if="editable" :open="leaveOpen">
       <AlertDialogContent>
         <AlertDialogHeader>
           <AlertDialogTitle>Discard unsaved changes?</AlertDialogTitle>
