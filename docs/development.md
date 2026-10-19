@@ -54,7 +54,9 @@ encrypted by WireGuard), metrics and log capture.
 The container joins the tailnet as its own node: `app/entrypoint.sh` starts `tailscaled`
 in userspace networking mode (state in `/app/data/tailscale`, `TS_DEBUG_MTU=1230`), logs in
 with `TS_AUTH_KEY` only when the node has no tailnet identity yet, then starts the Python
-process. The container exits when either process does. No host Tailscale socket, TUN
+process. A node that can't join the tailnet (a bad key, or no address after 30 seconds)
+stops the container with a `[CRITICAL]` line in Sage's log format, after stopping
+`tailscaled` so that its output doesn't bury it. The container exits when either process does. No host Tailscale socket, TUN
 device or published ports are needed; tailnet traffic to the node's ports reaches the
 container's listeners.
 

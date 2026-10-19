@@ -217,11 +217,13 @@ onUnmounted(() => {
         </CardHeader>
         <CardContent>
           <ol class="list-decimal space-y-1 pl-5 text-sm">
-            <li>Pause Sage (below) and wait until it shows it's safe to stop.</li>
             <li>
               Take a backup on the
-              <RouterLink to="/backups" class="underline">Backups</RouterLink> page.
+              <RouterLink to="/backups" class="underline">Backups</RouterLink> page and wait for it
+              to appear in the list. A paused Sage refuses changes and starts no tasks, so this
+              comes first.
             </li>
+            <li>Pause Sage (below) and wait until it shows it's safe to stop.</li>
             <li>Stop the Sage container.</li>
             <li>
               Change its image tag to the new version:

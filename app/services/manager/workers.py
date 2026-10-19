@@ -301,10 +301,11 @@ class WorkersMixin:
         # Success commit marker
         await self.write_worker_revision(worker.hostname, "infra", self.infra_hash())
         self.notify(f"Worker {worker.hostname} {'added' if is_new else 'synced'}.")
-      else:
+      elif repaired:
         self.notify(
-            f"Worker {worker.hostname} converged with infra unchanged"
-            + (f"; repaired: {', '.join(repaired)}." if repaired else "; nothing stale."))
+            f"Worker {worker.hostname} converged with infra unchanged; repaired: {', '.join(repaired)}.")
+      else:
+        logger.info(f"Worker {worker.hostname} converged with infra unchanged; nothing stale.")
     except Exception as e:
       action = "setup" if is_new else "sync"
       self.notify(f"Failed to {action} worker {worker.hostname} : {e}", "error")

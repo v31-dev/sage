@@ -28,11 +28,14 @@ class QueueMixin:
   def resume_tasks(self):
     self.task_queue.resume()
 
+  def end_restore(self, restored: bool, follow_ups: list[dict] = ()):
+    self.task_queue.end_restore(restored, follow_ups)
+
   def stop_tasks(self):
     self.task_queue.stop()
 
   def task_state(self) -> str:
-    """running, paused or stopping."""
+    """running, paused, restoring or stopping."""
     return self.task_queue.state.value
 
   def dispatch_tick(self):

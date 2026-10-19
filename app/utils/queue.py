@@ -55,10 +55,13 @@ class OnConflict(Enum):
 class QueueState(Enum):
   """Whether the dispatcher starts tasks. Paused is like one long task holding every
   scope: tasks still queue (admission is unchanged, so DEDUP/REPLACE keep recurring work
-  to one pending copy) and start on resume. Stopping is final: nothing new starts or
-  queues. In memory only, so a restart comes back running."""
+  to one pending copy) and start on resume. Restoring is paused except for the restore
+  itself, which starts once the running tasks have finished (see `end_restore`). Stopping
+  is final: nothing new starts or queues. In memory only, so a restart comes back
+  running."""
   RUNNING = "running"
   PAUSED = "paused"
+  RESTORING = "restoring"
   STOPPING = "stopping"
 
 
@@ -71,6 +74,7 @@ class QueuedTask:
   executor: str                 # key into TaskQueue executors
   task_id: str | None = None
   quiet: bool = False           # persist only on failure (high-frequency housekeeping)
+  restore: bool = False         # the platform restore: the one task that starts while restoring
 
 
 class TaskQueue:
@@ -106,9 +110,11 @@ class TaskQueue:
                name: str | None = None, params: dict | None = None,
                task_id: str | None = None,
                on_conflict: OnConflict = OnConflict.DEDUP,
-               priority: bool = False, quiet: bool = False) -> bool:
+               priority: bool = False, quiet: bool = False,
+               restore: bool = False) -> bool:
     """Add a task; return False if it was dropped (DEDUP when an identical op is
-    already pending or running, or the queue is stopping).
+    already pending or running, the queue is stopping, or a restore is added while
+    the queue isn't running).
 
     ### Parameters
     - task: the callable to run (sync or async).
@@ -129,6 +135,9 @@ class TaskQueue:
       tasks but not over other platform tasks.
     - quiet: persist this task to the record store only when it fails, so
       high-frequency housekeeping (e.g. metrics) does not flood it.
+    - restore: this is the platform restore. Adding it puts the queue in the
+      restoring state, where only it starts (once the running tasks it conflicts
+      with have finished); the task ends that state with `end_restore`.
     """
     name = name or task.__name__
     scopes = frozenset(scopes)
@@ -136,11 +145,13 @@ class TaskQueue:
     task_id = task_id or generate_task_id_token()
     new_task = QueuedTask(name=name, scopes=scopes, task=task,
                           params=params or {}, executor=executor, task_id=task_id,
-                          quiet=quiet)
+                          quiet=quiet, restore=restore)
     cancelled: list[QueuedTask] = []
     with self._lock:
       stopping = self._state == QueueState.STOPPING
-      if stopping:
+      if restore and self._state != QueueState.RUNNING:
+        return False
+      elif stopping:
         # Nothing new runs once stopping (e.g. a follow-up queued by a task that is
         # still finishing): record it as never started instead of losing it on exit.
         cancelled = [new_task]
@@ -172,6 +183,9 @@ class TaskQueue:
           position = len(self._queue)
 
         self._queue.insert(position, new_task)
+        if restore:
+          self._state = QueueState.RESTORING
+          logger.info("Restoring: nothing else starts until the restore has finished.")
 
     # Persist cancellations outside the lock: _record does a DB write, which must
     # stay off the critical section so the event loop never blocks on it.
@@ -239,6 +253,30 @@ class TaskQueue:
       self._state = QueueState.RUNNING
     logger.info("Resumed.")
 
+  def end_restore(self, restored: bool, follow_ups: list[dict] = ()):
+    """Leave the restoring state, called by the restore task when it ends.
+
+    After a restore that took effect, the tasks still waiting were queued against the
+    previous data, so they are cancelled, and `follow_ups` (add_task arguments) are
+    queued ahead of anything added since. After a restore that failed or was rolled
+    back nothing changed, and the waiting tasks run as usual."""
+    with self._lock:
+      cancelled = []
+      if restored and self._state == QueueState.RESTORING:
+        cancelled = list(self._queue)
+        self._queue.clear()
+    self._record_cancelled(cancelled)
+
+    # Still restoring here, so nothing starts before the follow-ups are queued.
+    if restored:
+      for follow_up in follow_ups:
+        self.add_task(**follow_up, priority=True)
+
+    with self._lock:
+      if self._state == QueueState.RESTORING:
+        self._state = QueueState.RUNNING
+    logger.info("Restore finished.")
+
   def stop(self):
     """Stop for good when Sage exits: pending tasks, and any added later, are recorded
     as cancelled instead of silently lost. Running tasks are left to finish."""
@@ -281,14 +319,16 @@ class TaskQueue:
   def dispatch_tick(self):
     """Start every pending task whose scopes do not conflict with running work."""
     with self._lock:
-      if self._state != QueueState.RUNNING:
+      if self._state not in (QueueState.RUNNING, QueueState.RESTORING):
         return
       counter = 0
       while counter < len(self._queue):
         task = self._queue[counter]
         # only_running=True: a dispatched task joins _running immediately, so
         # same-scope tasks later in this scan correctly see it as held.
-        if self.has_task_scopes(task.scopes, only_running=True):
+        if self._state == QueueState.RESTORING and not task.restore:
+          counter += 1
+        elif self.has_task_scopes(task.scopes, only_running=True):
           counter += 1
         else:
           task = self._queue.pop(counter)

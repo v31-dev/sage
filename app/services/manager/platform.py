@@ -10,8 +10,8 @@ from cryptography.fernet import InvalidToken
 from services.db import DB_PATH, Application, Backup, Database, Event, Notification, Task, db
 from services.notification import Notifications
 from services.settings import Settings
+from utils.archive import BackupDecryptError, decrypt_file, encrypt_file
 from utils.common import RETENTION_DAYS
-from utils.db import cipher
 from utils.executor import run_in_executor_with_context
 from utils.queue import OnConflict
 
@@ -88,6 +88,18 @@ class PlatformMixin:
     if found:
       self.notify(f"Backup discovery listed {' and '.join(found)} found in S3.")
 
+  def restoring_from(self) -> str | None:
+    """When the backup being restored was made (taken from its key), while restoring."""
+    if self.task_state() != "restoring":
+      return None
+    snapshot = self.task_snapshot()
+    for task in (*snapshot["running"], *snapshot["queued"]):
+      if task["name"] == self.restore_database_from_s3.__name__:
+        timestamp = timestamp_from_key(task["params"]["s3_path"])
+        if timestamp:
+          return datetime.strptime(timestamp, BACKUP_TIMESTAMP_FORMAT).isoformat()
+    return None
+
   async def cleanup(self, days: int = RETENTION_DAYS):
     cutoff = datetime.now() - timedelta(days=days)
 
@@ -160,11 +172,11 @@ class PlatformMixin:
         src_conn.backup(backup_conn)
         backup_conn.close()
 
-        # Encrypted as a whole with ENCRYPTION_KEY (Fernet, authenticated): the backup
-        # reveals nothing without the key, and a restore with another key fails before
-        # it touches the live database. CPU work on the whole file, so off the loop.
-        await run_in_executor_with_context(
-            lambda: backup_file.write_bytes(cipher.encrypt(snapshot_file.read_bytes())))
+        # Encrypted as a whole with ENCRYPTION_KEY, in the format of the volume archives
+        # (utils/archive.py): the backup reveals nothing without the key, and a restore
+        # with another key fails before it touches the live database. Streams through
+        # openssl, so off the loop but flat in memory.
+        await run_in_executor_with_context(encrypt_file, snapshot_file, backup_file)
 
         # Upload to S3
         await self.s3.upload_to_key(backup_file, self.s3_backup_path_platform)
@@ -184,13 +196,18 @@ class PlatformMixin:
 
     Process:
     - Download backup file from S3 to temporary location
-    - Decrypt it (a backup made with another key fails here)
+    - Check and decrypt it (a backup made with another key fails here)
     - Validate it's a valid SQLite database
     - Create safety backup of current database
     - Restore into the live database using SQLite's online backup API
     - Verify database integrity
     - Re-sync workers
+
+    Runs while the queue is restoring (see TaskQueue): nothing else starts and the UI is
+    blocked. The task ends that state, discarding the tasks queued against the old data
+    when the restore took effect.
     """
+    restored = False
     try:
       logger.info(f"Starting database restore from {s3_path}")
 
@@ -204,15 +221,12 @@ class PlatformMixin:
         logger.info("Decrypting downloaded backup")
 
         def decrypt_backup():
-          encrypted = encrypted_backup.read_bytes()
-          if encrypted.startswith(b"SQLite format 3\x00"):
-            raise Exception("the backup isn't encrypted (made by an older version of Sage)")
           try:
-            Path(downloaded_backup).write_bytes(cipher.decrypt(encrypted))
-          except InvalidToken:
-            raise Exception("the backup was made with a different encryption key")
+            decrypt_file(encrypted_backup, Path(downloaded_backup))
+          except BackupDecryptError as e:
+            raise Exception(f"the backup {e}")
 
-        # CPU work on the whole file, so off the loop.
+        # Streams through openssl, so off the loop but flat in memory.
         await run_in_executor_with_context(decrypt_backup)
 
         # Validate it's a valid SQLite database
@@ -320,24 +334,16 @@ class PlatformMixin:
         Notifications().load_notifications_config()
 
         self.notify(f"Platform restored from backup {s3_path} successfully.", "success")
-
-        # The restore rewrote worker state in the DB; queue a force-resync.
-        # REPLACE supersedes a pending sync and waits behind this restore, whose
-        # scopes cover the sync's platform scope.
-        self.add_task(
-            task=self.sync_workers,
-            scopes={"platform"},
-            params={"force": True},
-            executor="platform",
-            on_conflict=OnConflict.REPLACE,
-        )
-        # The backup records are the snapshot's too; match them to the bucket again.
-        self.add_task(
-            task=self.discover_s3_backups,
-            scopes={"platform", "app"},
-            executor="platform",
-        )
+        restored = True
 
     except Exception as e:
       self.notify(f"Platform restore failed: {e}", "error")
       raise
+    finally:
+      self.end_restore(restored, follow_ups=[
+          # The restore rewrote worker state in the DB; force-resync the workers.
+          dict(task=self.sync_workers, scopes={"platform"}, params={"force": True},
+               executor="platform", on_conflict=OnConflict.REPLACE),
+          # The backup records are the snapshot's too; match them to the bucket again.
+          dict(task=self.discover_s3_backups, scopes={"platform", "app"}, executor="platform"),
+      ])

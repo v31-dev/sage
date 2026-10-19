@@ -8,13 +8,16 @@ import {
   ItemDescription,
   ItemActions,
 } from '@/components/ui/item'
-import { ArchiveRestore, Trash } from 'lucide-vue-next'
+import { ArchiveRestore, Download, Trash } from 'lucide-vue-next'
 import { toast } from 'vue-sonner'
 
+import { downloadBackup } from '@/lib/download'
 import { formatDate } from '@/lib/utils'
+import { Button } from '@/components/ui/button'
 import ConfirmationButton from '@/components/ConfirmationButton.vue'
 import { type Backup, backupAPI as backupAPIClass } from '@/services/api'
 import RestoreLogsDialog from '@/components/RestoreLogsDialog.vue'
+import { useAppStore } from '@/stores/app'
 
 interface Props {
   backup: Backup
@@ -24,7 +27,16 @@ interface Props {
 
 const props = withDefaults(defineProps<Props>(), {})
 
+const appStore = useAppStore()
 const restoreDialogTaskId = ref<string>('')
+
+async function onClickDownload() {
+  try {
+    await downloadBackup(props.backupAPI, props.backup.id)
+  } catch (err) {
+    toast.error(err instanceof Error ? err.message : 'Failed to download backup')
+  }
+}
 
 async function onConfirmDeleteBackup(backupId: string) {
   try {
@@ -40,7 +52,8 @@ async function onConfirmRestoreBackup(backupId: string) {
   try {
     await props.backupAPI.action(`${backupId}/restore`)
     toast.success('Backup restore initiated successfully')
-    await props.loadBackups()
+    // Shows the restore overlay without waiting for the next poll.
+    await appStore.init()
   } catch (err) {
     // Extract task_id from error response headers and open logs dialog
     const taskId = (err as any)?.response?.headers?.get('X-Task-Id') || ''
@@ -66,6 +79,7 @@ async function onConfirmRestoreBackup(backupId: string) {
       <ItemDescription>{{ backup.s3_path }}</ItemDescription>
     </ItemContent>
     <ItemActions class="gap-2">
+      <Button variant="outline" @click="onClickDownload"><Download />Download</Button>
       <ConfirmationButton
         triggerText="Restore"
         :title="'Restore backup ' + formatDate(backup.created_at)"

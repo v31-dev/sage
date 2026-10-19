@@ -22,10 +22,10 @@ from utils.logging import fastapi_middleware
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, redirect_slashes=False)
 app.add_middleware(fastapi_middleware)
 
-# While Sage is paused or stopping, only reads are served: GETs, the POST routes that only
+# While Sage is paused, restoring or stopping, only reads are served: GETs, the POST routes that only
 # read, and pause/resume themselves.
 _ALLOWED_WHILE_PAUSED = ("/api/settings/pause", "/api/settings/resume")
-_READ_ONLY_POSTS = ("/get_available_workers", "/metrics", "/platform_backup_status", "/test")
+_READ_ONLY_POSTS = ("/get_available_workers", "/metrics", "/platform_backup_status", "/download", "/test")
 
 
 @app.middleware("http")
@@ -35,7 +35,10 @@ async def refuse_changes_unless_running(request: Request, call_next):
           and request.method not in ("GET", "HEAD", "OPTIONS")
           and request.url.path not in _ALLOWED_WHILE_PAUSED
           and not request.url.path.endswith(_READ_ONLY_POSTS)):
-    detail = "Sage is paused; resume it first." if state == "paused" else "Sage is stopping."
+    detail = {
+        "paused": "Sage is paused; resume it first.",
+        "restoring": "Sage is restoring a backup; wait for it to finish.",
+    }.get(state, "Sage is stopping.")
     return JSONResponse(status_code=503, content={"detail": detail})
   return await call_next(request)
 

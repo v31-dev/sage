@@ -67,7 +67,8 @@ class Tailscale(Base):
     return json.loads(result.stdout)
 
   def ip(self):
-    if not hasattr(self, "_ip"):
+    # Only a found address is kept, so a lookup before the node is up is tried again.
+    if not getattr(self, "_ip", ""):
       try:
         result = subprocess.run(
             ["tailscale", "ip", "-4"],
@@ -75,9 +76,10 @@ class Tailscale(Base):
         )
       except subprocess.TimeoutExpired:
         raise Exception("Tailscale ip timed out after 10s (tailscaled unresponsive?).")
-      self._ip = str(result.stdout).strip()
-      if self._ip == "":
+      ip = str(result.stdout).strip()
+      if ip == "":
         raise Exception("Failed to get Tailscale IP address.")
+      self._ip = ip
       logger.info(f"Tailscale IP address: {self._ip}")
     return self._ip
 

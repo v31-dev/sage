@@ -15,8 +15,7 @@ router = APIRouter()
 def inject_setting(request: Request):
   models = get_request_models(request)
 
-  # Fetch and store setting. Older databases also hold rows for settings that are env
-  # vars now; those are not settings any more.
+  # Fetch and store the setting; only the defined keys exist.
   setting_name = request.path_params.get("setting")
   if setting_name not in SETTING_DEFINITIONS:
     raise HTTPException(status_code=404, detail=f"Unknown setting: {setting_name}")

@@ -1,5 +1,9 @@
+import logging
+
 from services.base import Base
 from services.db import Setting
+
+logger = logging.getLogger(__name__)
 
 # Setting key -> its fields. Every field is optional and is set from the UI. Tailscale
 # and Cloudflare are required env vars instead (entrypoint.sh).
@@ -17,6 +21,13 @@ class Settings(Base):
     self.load_all()
 
   def load_all(self):
+    # A database, or a restored backup, can hold rows for settings that aren't defined here.
+    # They are unused, and dropped without being read: they may be encrypted with a key
+    # that is gone.
+    removed = Setting.delete().where(Setting.key.not_in(list(SETTING_DEFINITIONS))).execute()
+    if removed:
+      logger.info(f"Removed {removed} unused settings row(s).")
+
     for key in SETTING_DEFINITIONS:
       self.load(key)
 

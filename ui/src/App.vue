@@ -4,6 +4,7 @@ import { useColorMode } from '@vueuse/core'
 import Header from './components/layout/Header.vue'
 import Footer from '@/components/layout/Footer.vue'
 import PausedBanner from '@/components/layout/PausedBanner.vue'
+import RestoreOverlay from '@/components/layout/RestoreOverlay.vue'
 import AppSidebar from '@/components/layout/AppSidebar.vue'
 import { SidebarInset, SidebarProvider } from '@/components/ui/sidebar'
 import {
@@ -84,6 +85,9 @@ onMounted(async () => {
         </SidebarInset>
       </SidebarProvider>
     </div>
+
+    <!-- Blocks the app while a platform restore is in progress -->
+    <RestoreOverlay v-if="!isLoading && !showError" />
 
     <!-- Toast Notifications -->
     <Toaster />

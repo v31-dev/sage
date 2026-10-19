@@ -116,8 +116,8 @@ To make a deliberate user action coalesce with a recurring one, enqueue both wit
 ## Pause And Stop
 
 Sage never restarts or upgrades itself; the runtime stops and starts its container
-(Settings → Upgrade lists the manual steps). Two ways to quiesce it. Both are a state on
-the `TaskQueue` (`QueueState`: `running`, `paused`, `stopping`), exposed as
+(Settings → Upgrade lists the manual steps). Three states quiesce it. All are a state on
+the `TaskQueue` (`QueueState`: `running`, `paused`, `restoring`, `stopping`), exposed as
 `Manager().pause_tasks()` / `resume_tasks()` / `stop_tasks()` / `task_state()`:
 
 - **Pause** (`POST /settings/pause`, `/resume`; Settings → Upgrade, banner while paused).
@@ -125,6 +125,17 @@ the `TaskQueue` (`QueueState`: `running`, `paused`, `stopping`), exposed as
   keep firing and their tasks queue as usual, so a pause behaves like one long task holding
   every scope; DEDUP/REPLACE keep each recurring task to one pending copy, and they run on
   resume. In memory only, so a restart comes back running.
+- **Restoring** (a platform restore). Queuing the restore (`add_task(..., restore=True)`,
+  refused unless the queue is running) sets the state at once: it behaves like a pause
+  except that the restore itself starts, as soon as the running platform and app tasks have
+  finished. The UI shows a blocking overlay (`RestoreOverlay`) from `GET /api` — the state
+  and `restoring_from`, the backup's timestamp — so a refreshed page shows the same. The
+  restore task ends the state with `Manager().end_restore(restored, follow_ups)` in a
+  `finally`: when the restore took effect, the tasks still waiting (queued against the old
+  data) are recorded as `cancelled`, the follow-ups (worker force-resync, backup discovery)
+  are queued ahead of anything added since, and the UI reloads; after a failure or a
+  rollback the waiting tasks simply run. A stop signal cancels a restore that hasn't
+  started; one that is running finishes first.
 - **Stop signal** (`app/main.py`). The first SIGTERM/SIGINT shuts the scheduler down and
   stops the queue: queued tasks, and any added later (e.g. a follow-up queued by a
   finishing task), are recorded as `cancelled`; running ones finish, then the API server
@@ -209,7 +220,7 @@ Every queued operation, its scope, where it is enqueued from, its lane pool, and
 | `send_summary_notification` | common | cron daily 08:00 | common | REPLACE |
 | `refresh_latest_release` | common | cron 4h + once at startup | common | REPLACE — caches latest-release detail (version + notes + `fetched_at`) served by `GET /info/release` |
 | `check_<section>` (`check_setting`) | common:`<section>` | cron 5m + once at startup, per configured section (quiet) | common | REPLACE — checks the saved settings against the provider without side effects and records the result for `GET /settings/status` (`services/manager/checks.py`) |
-| `backup_database_s3` | platform, app | cron 12h (skipped when S3 isn't configured) | platform | REPLACE — SQLite snapshot, Fernet-encrypted as a whole (`<ts>.db.enc`) |
+| `backup_database_s3` | platform, app | cron 12h (skipped when S3 isn't configured) | platform | REPLACE — SQLite snapshot, encrypted as a whole in the volume-archive format (`<ts>.db.enc`; `utils/archive.py`: `openssl enc`, then an HMAC-SHA256 trailer; streamed, so memory stays flat) |
 | `Metrics.cleanup` | metrics | cron daily 04:00 | metrics | REPLACE — everything past `RETENTION_DAYS` (14, `utils/common.py`), like the two below |
 | `Logs.cleanup` | common | cron daily 04:00 | common | REPLACE |
 | `cleanup` | platform | cron daily 04:00 | platform | REPLACE |
@@ -227,7 +238,7 @@ Every queued operation, its scope, where it is enqueued from, its lane pool, and
 | `backup_application_s3` | app:`<qn>` | POST …/volumes/{v}/backups | app | DEDUP |
 | `restore_application_volume_from_s3` | app:`<qn>` | POST …/backups/{b}/restore | app | DEDUP — worker `restore.sh` checks the HMAC before decrypting |
 | `backup_database_s3` | platform, app | POST /backups | platform | REPLACE |
-| `restore_database_from_s3` | platform, app | POST /backups/{b}/restore | platform | DEDUP — decrypts first (another key or an unencrypted backup is refused before the live DB is touched); safety copy and restore through SQLite's backup API; then reloads the settings and the services built from them (S3, notifications, Cloudflare, certs). A settings reload failure still rolls back to the safety copy |
+| `restore_database_from_s3` | platform, app | POST /backups/{b}/restore | platform | DEDUP, `restore=True` (see Pause And Stop: the queue is `restoring` from the request until the task ends) — decrypts first (another key or an unencrypted backup is refused before the live DB is touched); safety copy and restore through SQLite's backup API; then reloads the settings and the services built from them (S3, notifications, Cloudflare, certs). A settings reload failure still rolls back to the safety copy |
 | `delete_backup_s3` | common | DELETE /backups/{b} | common | QUEUE |
 | `discover_s3_backups` | platform, app | POST /backups/discover; PUT /settings/s3 | platform | DEDUP |
 | `remove_worker` | platform, app | DELETE /workers/{h} | platform | QUEUE |
@@ -240,7 +251,9 @@ Every queued operation, its scope, where it is enqueued from, its lane pool, and
 
 **Settings status.** `GET /settings/status` gives each section (tailscale, cloudflare, s3, notifications) a state: `not_configured`, `applying` (a check or apply task is queued or running; its `task_id` is included), `ok`, `retrying` (the last check failed in a way that clears on its own — network, timeout, 5xx/429; the 5-minute check retries) or `error` (needs the user — bad credentials, missing bucket or zone). Cloudflare is also `error` without a valid certificate, and its entry carries `details` for the read-only page: account and tunnel ids (dashboard links), the tunnel's health from the 5-minute check (`healthy`, `degraded`, `down`, `inactive`) and both certificates' expiry. Tailscale and Cloudflare are env vars, so they're always configured and checked as set. `POST /settings/{s3|notifications}/test` checks the values in the request (saved or not) with side effects: the S3 test writes and deletes a marker object, the notifications test sends a message. Check failures never include a webhook URL (it holds the token).
 
-Backups live in S3, which is optional: every backup route (create, restore, delete, discover) returns 400 until S3 is configured, and the backup triggers skip.
+Backups live in S3, which is optional: every backup route (create, restore, delete, discover, download) returns 400 until S3 is configured, and the backup triggers skip.
+
+**Downloading a backup** (`POST /backups/{b}/download`, also nested under a volume): the manager checks the object is still in S3 and answers with a presigned GET link that expires after 60 seconds (`DOWNLOAD_LINK_SECONDS`) and asks for the file as an attachment with a name that says which volume it is from. The browser then fetches the file from S3 directly, so no backup passes through the manager. The link is made when asked for, never stored or listed, and S3 checks its expiry when a request starts, so a download already under way isn't cut off. Whoever has a link can read the file until it expires, but the file is encrypted and authenticated with `ENCRYPTION_KEY` (see Settings → S3 for the `openssl` command that opens it). Who may ask for a link is the same as for every other route: whoever the tailnet policy lets reach the manager. The route is a read-only POST (`_READ_ONLY_POSTS`), so it also works while Sage is paused or restoring. The S3 endpoint has to be reachable from the browser, and over https (a browser may refuse to save a file from a plain-http endpoint opened from an https page).
 
 Per-app tasks (status sync, the Traefik domains sync, backups, `delete_container`) re-fetch their target by id with `get_or_none` and treat a missing row as a **quiet no-op**: instant deletes are a legitimate interleaving with queued/scheduled work, so a task whose target vanished has nothing to do (the reconcile scan owns worker-side cleanup for deleted apps). `remove_worker` is the deliberate exception — its precondition re-check fails loudly because proceeding would destroy a worker that just gained containers.
 
@@ -254,8 +267,8 @@ Container create and tag-update are **instant route-side model writes**, like ev
 
 | Task | Scope | Source | Lane | on_conflict |
 | --- | --- | --- | --- | --- |
-| `sync_workers` | platform | `restore_database_from_s3` | platform | REPLACE |
-| `discover_s3_backups` | platform, app | `restore_database_from_s3` (the restored Backup table is the snapshot's) | platform | DEDUP |
+| `sync_workers` | platform | `restore_database_from_s3` (via `end_restore`, priority) | platform | REPLACE |
+| `discover_s3_backups` | platform, app | `restore_database_from_s3` (via `end_restore`, priority; the restored Backup table is the snapshot's) | platform | DEDUP |
 | `sync_application_traefik_domains_config` | app:`<qn>` | deploy/stop, delete-container, `sync_application_status`, `sync_workers`, `refresh_traefik`, `reconcile_traefik_configs` missing-file check (via `request_application_traefik_sync`) | app | REPLACE |
 | `sync_application_traefik_domains_config` | app:`<qn>` | `reconcile_traefik_configs` `domains_synced=False` backstop | app | DEDUP |
 
@@ -420,8 +433,9 @@ app's routing stamp includes the domain. Resources of a previous domain or accou
 in Cloudflare.
 
 The `Setting` table holds S3 and notifications only; every field is optional and set from
-the UI. Rows for settings that became env vars may remain in older databases and are
-ignored (`routes/settings.py` only serves defined keys). UI updates follow one pattern:
+the UI. A database, or a restored backup, can hold rows for keys that aren't defined; they
+are dropped whenever the settings load (`Settings.load_all`), and `routes/settings.py` only
+serves defined keys. UI updates follow one pattern:
 validate the merged value, persist via `Settings().set(...)`, reload the consuming service
 (`S3().load()`, `Notifications().load_notifications_config()`), then queue a check.
 

@@ -25,6 +25,7 @@ def get():
       "ip": Tailscale().ip(),
       "start_time": start_time.isoformat(),
       "state": Manager().task_state(),
+      "restoring_from": Manager().restoring_from(),
   }
 
 

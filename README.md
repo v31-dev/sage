@@ -61,7 +61,9 @@ It needs:
 
 - `TS_AUTH_KEY` — a Tailscale auth key for the manager's node. Create it **tagged** (the
   tag becomes the manager's tag) and **not ephemeral**. It is only used while the node has
-  no tailnet identity yet (first boot, or after its state is lost).
+  no tailnet identity yet (first boot, or after its state is lost). If the node can't join
+  the tailnet with it (an invalid or expired key), the container exits at once with a
+  `[CRITICAL]` line.
 - `TS_NAME` — the manager's tailnet machine name, also its name inside Sage.
 - `TS_WORKER_TAG` — the Tailscale tag that marks worker machines (with or without the
   `tag:` prefix).
@@ -197,7 +199,9 @@ notifications are optional and set in the UI.
 Sage lists the backups already in the S3 bucket and path when you save the S3 settings,
 at startup and from Discover backups on the Backups page. To recover onto a new volume,
 start with the original `ENCRYPTION_KEY`, set S3, then restore a platform backup; volume
-backups are listed once their application is back.
+backups are listed once their application is back. Each backup can also be downloaded
+from the Backups page (platform) or a volume's Restore dialog (volume): a link that works
+for a minute, straight from S3. The files are encrypted; Settings → S3 shows how to open one.
 
 To change `TS_NAME`, `TS_WORKER_TAG` or the Cloudflare details, edit the env and restart:
 Sage brings the workers in line on start. A new `TS_NAME` renames the manager's tailnet
@@ -205,8 +209,9 @@ machine. Records and tunnels of a previous domain, account or name stay in Cloud
 until you delete them.
 
 Sage doesn't upgrade itself. The version in the footer opens Settings → Upgrade, with the
-release notes and the steps: pause Sage and wait until it is safe to stop, take a backup,
-then run the newer image against the same volume. Sage always starts unpaused.
+release notes and the steps: take a backup, pause Sage and wait until it is safe to stop,
+then run the newer image against the same volume. Sage always starts unpaused. The backup
+comes first because a paused Sage refuses changes and starts no tasks.
 
 The repo's [`docker-compose.yml`](docker-compose.yml) and [`sample.env`](sample.env) are
 for local development; see [docs/development.md](docs/development.md).

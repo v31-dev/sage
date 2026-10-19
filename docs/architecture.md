@@ -132,9 +132,12 @@ Core entities:
 - `Backup`
 - `Task` (log of finished queue operations)
 
-Its sensitive fields are encrypted with `ENCRYPTION_KEY` (Fernet, `utils/db.py`), which
-also encrypts platform backups as a whole and volume archives. The key can't change after
-the first boot: the settings rows are written on the first boot and decrypted on every
+Its sensitive fields are encrypted with `ENCRYPTION_KEY` (Fernet, `utils/db.py`). The
+same key encrypts every backup, platform and volume alike, in one format (`utils/archive.py`
+on the manager, `backup.sh` and `restore.sh` on workers): `openssl enc -aes-256-cbc
+-pbkdf2`, then a 32-byte HMAC-SHA256 trailer that is checked before anything is decrypted.
+Files stream through the `openssl` in the image, so memory stays flat however large a
+backup is. The key can't change after the first boot: the settings rows are written on the first boot and decrypted on every
 later one, so a different key stops startup (`main.py`).
 
 Relationships are centered on:

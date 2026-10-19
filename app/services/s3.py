@@ -115,9 +115,10 @@ class S3(Base):
         HttpMethod='PUT',
     )
 
-  def create_presigned_download_url(self, s3_path, expires_in=3600, raw_path=False):
+  def create_presigned_download_url(self, s3_path, expires_in=3600, raw_path=False, filename=None):
     """
-    Create a presigned GET URL for direct downloads.
+    Create a presigned GET URL for direct downloads. With a filename, the response asks
+    the browser to save the file under that name.
     """
     self.check_config_exists()
 
@@ -126,15 +127,32 @@ class S3(Base):
     else:
       s3_key = self.get_full_path(s3_path)
 
+    params = {
+        'Bucket': self.s3_config['bucket'],
+        'Key': s3_key,
+    }
+    if filename:
+      params['ResponseContentDisposition'] = f'attachment; filename="{filename}"'
+
     return self._client.generate_presigned_url(
         'get_object',
-        Params={
-            'Bucket': self.s3_config['bucket'],
-            'Key': s3_key,
-        },
+        Params=params,
         ExpiresIn=expires_in,
         HttpMethod='GET',
     )
+
+  def key_exists(self, s3_path, raw_path=False) -> bool:
+    """True if the object is in the bucket. Blocking."""
+    self.check_config_exists()
+
+    s3_key = s3_path.strip('/') if raw_path else self.get_full_path(s3_path)
+    try:
+      self._client.head_object(Bucket=self.s3_config['bucket'], Key=s3_key)
+      return True
+    except ClientError as e:
+      if e.response.get('Error', {}).get('Code') in ('404', 'NoSuchKey', 'NotFound'):
+        return False
+      raise
 
   async def delete_key(self, s3_path, filter=None, max_retries=3, raw_path=False):
     """

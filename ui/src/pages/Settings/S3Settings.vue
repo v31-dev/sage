@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
+import CodeBlock from '@/components/CodeBlock.vue'
 import CustomInput from '@/components/CustomInput.vue'
 import SettingField from './SettingField.vue'
 import SettingsSection from './SettingsSection.vue'
@@ -9,15 +10,16 @@ import { useSettingForm } from './useSettingForm'
 const form = useSettingForm('s3', ['access_key', 'secret_key', 'bucket', 'endpoint', 'path'], 'S3')
 const { fields, isLoading, saving, testing, error, dirty, leaveOpen } = form
 
-const fernetDecrypt = `
-  import os,sys; 
-  from cryptography.fernet import Fernet; 
-  sys.stdout.buffer.write(Fernet(os.environ['ENCRYPTION_KEY']).decrypt(sys.stdin.buffer.read()))`
-
-const volumeCommand = `head -c -32 <timestamp>.tar.gz.enc \\
-  | openssl enc -d -aes-256-cbc -pbkdf2 -pass $ENCRYPTION_KEY \\
-  | tar -xz`
-const platformPythonCommand = `python3 -c "${fernetDecrypt}" < <timestamp>.db.enc > data.db`
+// Every backup has one format: AES-256 by openssl, then a 32-byte HMAC-SHA256 trailer.
+// The key comes from the ENCRYPTION_KEY environment variable.
+const exportCommand = `export ENCRYPTION_KEY='<key>'`
+const volumeCommand = `mkdir -p restore
+head -c -32 <timestamp>.tar.gz.enc \\
+  | openssl enc -d -aes-256-cbc -pbkdf2 -pass env:ENCRYPTION_KEY \\
+  | tar -xz -C restore`
+const platformCommand = `head -c -32 <timestamp>.db.enc \\
+  | openssl enc -d -aes-256-cbc -pbkdf2 -pass env:ENCRYPTION_KEY \\
+  > data.db`
 </script>
 
 <template>
@@ -81,7 +83,7 @@ const platformPythonCommand = `python3 -c "${fernetDecrypt}" < <timestamp>.db.en
         id="s3-path"
         :model-value="fields.path"
         @update:model-value="value => form.updateField('path', value)"
-        placeholder="e.g. sage"
+        placeholder="e.g. /sage"
       />
     </SettingField>
     <template #after>
@@ -89,28 +91,25 @@ const platformPythonCommand = `python3 -c "${fernetDecrypt}" < <timestamp>.db.en
         <CardContent class="space-y-4 pt-4 text-sm">
           <div class="space-y-2">
             <p class="text-muted-foreground">
-              Backups are encrypted with the <code>ENCRYPTION_KEY</code> env.
+              Backups are encrypted with the <code>ENCRYPTION_KEY</code> env, in one format: AES-256
+              with <code>openssl</code>, then a 32-byte integrity check (HMAC-SHA256) at the end.
+              Export the key in your shell before running these commands (a plain
+              <code>ENCRYPTION_KEY=...</code> isn't visible to <code>openssl</code>):
             </p>
+            <CodeBlock :code="exportCommand" />
           </div>
           <div class="space-y-2">
             <p class="font-medium">Volume backup (<code>&lt;timestamp&gt;.tar.gz.enc</code>)</p>
             <p class="text-muted-foreground">
-              Extract the volume's files into the current directory. The last 32 bytes are an
-              integrity check (HMAC-SHA256).
+              Extracts the volume's files into a <code>restore</code> folder, in a folder named
+              after the volume. <code>head</code> drops the integrity check.
             </p>
-            <pre
-              class="overflow-x-auto rounded-md bg-muted p-3 text-xs"
-            ><code>{{ volumeCommand }}</code></pre>
+            <CodeBlock :code="volumeCommand" />
           </div>
           <div class="space-y-2">
             <p class="font-medium">Platform backup (<code>&lt;timestamp&gt;.db.enc</code>)</p>
-            <p class="text-muted-foreground">
-              Writes the SQLite database as <code>data.db</code> with Python and the
-              <code>cryptography</code> package:
-            </p>
-            <pre
-              class="overflow-x-auto rounded-md bg-muted p-3 text-xs"
-            ><code>{{ platformPythonCommand }}</code></pre>
+            <p class="text-muted-foreground">Writes the SQLite database as <code>data.db</code>:</p>
+            <CodeBlock :code="platformCommand" />
           </div>
         </CardContent>
       </Card>

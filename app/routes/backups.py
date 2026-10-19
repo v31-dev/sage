@@ -1,4 +1,5 @@
 import logging
+import re
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 
@@ -10,6 +11,10 @@ from utils.queue import OnConflict
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+# How long a download link works. S3 checks it when a request starts, so a download that
+# has begun is not cut off when it passes.
+DOWNLOAD_LINK_SECONDS = 60
 
 
 def inject_backup(request: Request):
@@ -120,6 +125,30 @@ def discover_backups(request: Request):
   return {"status": "OK"}
 
 
+def download_filename(backup: Backup) -> str:
+  """A name for the saved file: a volume backup's path says which volume it is from."""
+  parts = backup.s3_path.strip("/").split("/")
+  name = "-".join(parts[-5:]) if backup.type == "application" else parts[-1]
+  return re.sub(r"[^A-Za-z0-9._-]", "_", name)
+
+
+@router.post("/{backup}/download", dependencies=[Depends(inject_backup)])
+def download_backup(request: Request):
+  """A short-lived link that downloads the backup file straight from S3. The link is made
+  when asked for and not stored; the file is encrypted with ENCRYPTION_KEY either way."""
+  require_s3()
+  backup = request.state.models["backup"]
+
+  if not Manager().s3.key_exists(backup.s3_path, raw_path=True):
+    raise HTTPException(status_code=404, detail="The backup file is no longer in S3.")
+
+  url = Manager().s3.create_presigned_download_url(
+      backup.s3_path, expires_in=DOWNLOAD_LINK_SECONDS, raw_path=True,
+      filename=download_filename(backup))
+  logger.info(f"Download link for backup {backup.id} ({backup.s3_path}) valid for {DOWNLOAD_LINK_SECONDS}s.")
+  return {"url": url, "expires_in": DOWNLOAD_LINK_SECONDS}
+
+
 @router.delete("/{backup}", dependencies=[Depends(inject_backup)])
 def delete_backup(request: Request):
   """Delete backup - only platform backups for now."""
@@ -182,12 +211,14 @@ async def restore_backup(request: Request, restore_data: dict = Body(default={})
   if backup.type != "platform":
     raise HTTPException(status_code=400, detail="Only platform backups can be restored")
 
+  # Blocks Sage (restoring state) until the restore has finished.
   if not Manager().add_task(
       task=Manager().restore_database_from_s3,
       scopes={"platform", "app"},
       params={"s3_path": backup.s3_path},
       executor="platform",
       task_id=request.state.task_id,
+      restore=True,
   ):
     raise HTTPException(status_code=409, detail="A platform operation is already in progress.")
 

@@ -21,8 +21,11 @@ export interface AppInfo {
   worker_tag: string
   ip: string
   start_time: string
-  // running, or paused (Settings > Upgrade), or stopping (draining after a stop signal)
-  state: 'running' | 'paused' | 'stopping'
+  // running, paused (Settings > Upgrade), restoring (a platform restore is in progress), or
+  // stopping (draining after a stop signal)
+  state: 'running' | 'paused' | 'restoring' | 'stopping'
+  // When the backup being restored was made, while restoring
+  restoring_from: string | null
 }
 
 export interface Release {

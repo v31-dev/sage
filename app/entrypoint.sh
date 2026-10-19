@@ -28,6 +28,21 @@ tailscaled --tun=userspace-networking --statedir="$state_dir" \
   --outbound-http-proxy-listen="${TAILNET_HTTP_PROXY#http://}" &
 tailscaled_pid=$!
 
+# Sage's log line format, for the messages that come before Sage's own logger starts.
+critical() {
+  printf '[%s] [CRITICAL] [%-19s] [] %s\n' "$(date '+%Y-%m-%d %H:%M:%S,%3N')" entrypoint "$1" >&2
+}
+
+# Nothing works without the tailnet (the workers, the manager's DNS record), so a node that
+# can't join stops the container at once. tailscaled is stopped first so that its output
+# doesn't bury the message.
+fail_tailnet() {
+  kill -TERM "$tailscaled_pid" 2>/dev/null || true
+  wait "$tailscaled_pid" 2>/dev/null || true
+  critical "$1"
+  exit 1
+}
+
 backend_state=""
 for _ in $(seq 1 30); do
   backend_state=$(tailscale status --json 2>/dev/null \
@@ -39,12 +54,21 @@ for _ in $(seq 1 30); do
 done
 
 # The auth key is only used when the node has no tailnet identity yet (first boot,
-# lost state, or the machine was removed from the tailnet); a used or expired key
-# never blocks a restart. The node's tags come from the key.
+# lost state, or the machine was removed from the tailnet); on a restart of a node that is
+# already logged in, a used or expired key is never looked at. The node's tags come from
+# the key.
 if [ "$backend_state" = "NeedsLogin" ]; then
   tailscale up --auth-key="$TS_AUTH_KEY" --hostname="$TS_NAME" --timeout=120s \
-    || echo "entrypoint: tailscale up failed; provide a valid TS_AUTH_KEY" >&2
+    || fail_tailnet "Could not join the tailnet with TS_AUTH_KEY. Check that the key is valid, not expired and tagged, and that the machine doesn't wait for approval in the Tailscale admin console."
 fi
+
+tailnet_ip=""
+for _ in $(seq 1 30); do
+  tailnet_ip=$(tailscale ip -4 2>/dev/null) && [ -n "$tailnet_ip" ] && break
+  sleep 1
+done
+[ -n "$tailnet_ip" ] \
+  || fail_tailnet "This node is not on the tailnet (state: ${backend_state:-unknown}). Check TS_AUTH_KEY, and that tailscaled can reach Tailscale."
 
 # TS_NAME names the machine on every boot, so changing it renames the node — unless
 # auto-generating the name is turned off for it in the Tailscale admin console.

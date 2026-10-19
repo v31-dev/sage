@@ -37,7 +37,7 @@ onUnmounted(() => {
 
 <template>
   <Alert
-    v-if="state !== 'running'"
+    v-if="state === 'paused' || state === 'stopping'"
     variant="destructive"
     class="rounded-none border-x-0 border-t-0"
   >

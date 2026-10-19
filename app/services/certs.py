@@ -120,7 +120,7 @@ class Certs(Base):
     directory = client.ClientV2.get_directory(ACME_DIRECTORY, net)
     acme_client = client.ClientV2(directory, net=net)
     try:
-      # No contact email: Let's Encrypt no longer sends expiry mail.
+      # No contact email: Let's Encrypt doesn't send expiry mail.
       acme_client.new_account(messages.NewRegistration.from_data(terms_of_service_agreed=True))
     except errors.ConflictError as e:
       # The account key is already registered

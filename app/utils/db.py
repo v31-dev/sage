@@ -9,8 +9,9 @@ from peewee import CharField, TextField
 
 from utils.logging import LOG_FORMAT
 
-# Encrypts sensitive fields, platform backups and volume archives. The data and every
-# backup are unreadable without it, and it can't change after the first boot (main.py).
+# Encrypts sensitive fields. The same key encrypts every backup (through openssl, see
+# utils/archive.py), so the data and its backups are unreadable without it, and it can't
+# change after the first boot (main.py).
 try:
   cipher = Fernet(os.getenv("ENCRYPTION_KEY", ""))
 except ValueError:
