@@ -174,8 +174,7 @@ class PlatformMixin:
 
         # Encrypted as a whole with ENCRYPTION_KEY, in the format of the volume archives
         # (utils/archive.py): the backup reveals nothing without the key, and a restore
-        # with another key fails before it touches the live database. Streams through
-        # openssl, so off the loop but flat in memory.
+        # with another key fails before it touches the live database.
         await run_in_executor_with_context(encrypt_file, snapshot_file, backup_file)
 
         # Upload to S3
@@ -226,7 +225,6 @@ class PlatformMixin:
           except BackupDecryptError as e:
             raise Exception(f"the backup {e}")
 
-        # Streams through openssl, so off the loop but flat in memory.
         await run_in_executor_with_context(decrypt_backup)
 
         # Validate it's a valid SQLite database

@@ -97,7 +97,6 @@ class WorkersMixin:
         "templates": WORKER_INFRA_TEMPLATES,
         "version": self.version,
         "domain": self.cloudflare.domain,
-        # A new account means a new tunnel, so workers need its token.
         "tunnel": self.cloudflare.tunnel_id,
     })
 
