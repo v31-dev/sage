@@ -79,3 +79,12 @@ export function formatDateStringAgo(dateObj: string | Date): string {
 
   return dateStr
 }
+
+// Starts a browser download of a link.
+export function startDownload(url: string) {
+  const link = document.createElement('a')
+  link.href = url
+  link.target = '_blank'
+  link.rel = 'noopener'
+  link.click()
+}

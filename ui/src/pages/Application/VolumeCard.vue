@@ -158,7 +158,7 @@ async function onClickConfirmDelete() {
             <Input
               id="edit-volume-path"
               v-model="volume.path"
-              placeholder="e.g. /var/lib/postgresql/data"
+              placeholder="e.g. /var/lib/postgresql"
             />
           </Field>
           <Field>

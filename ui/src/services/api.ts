@@ -1,4 +1,5 @@
 import { CRUDAPI } from '@/lib/api'
+import { startDownload } from '@/lib/utils'
 
 const API_ROOT = '/api'
 
@@ -475,6 +476,14 @@ export const backupAPI = new CRUDAPI({
   path: `${API_ROOT}/backups`,
   load_delay: LOAD_DELAY,
 })
+
+export async function downloadBackup(
+  api: { action: (action: string) => Promise<unknown> },
+  backupId: number | string
+) {
+  const { url } = (await api.action(`${backupId}/download`)) as { url: string }
+  startDownload(url)
+}
 
 export function getVolumeBackupAPI(
   projectName: string,

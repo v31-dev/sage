@@ -11,11 +11,10 @@ import {
 import { ArchiveRestore, Download, Trash } from 'lucide-vue-next'
 import { toast } from 'vue-sonner'
 
-import { downloadBackup } from '@/lib/download'
 import { formatDate } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import ConfirmationButton from '@/components/ConfirmationButton.vue'
-import { type Backup, backupAPI as backupAPIClass } from '@/services/api'
+import { type Backup, backupAPI as backupAPIClass, downloadBackup } from '@/services/api'
 import RestoreLogsDialog from '@/components/RestoreLogsDialog.vue'
 import { useAppStore } from '@/stores/app'
 

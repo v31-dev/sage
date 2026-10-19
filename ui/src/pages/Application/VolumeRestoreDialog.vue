@@ -22,10 +22,15 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Spinner } from '@/components/ui/spinner'
-import { type Application, type Backup, getVolumeBackupAPI, type Volume } from '@/services/api'
+import {
+  type Application,
+  type Backup,
+  downloadBackup,
+  getVolumeBackupAPI,
+  type Volume,
+} from '@/services/api'
 import { useAppStore } from '@/stores/app'
 import RestoreLogsDialog from '@/components/RestoreLogsDialog.vue'
-import { downloadBackup } from '@/lib/download'
 import { formatDate } from '@/lib/utils'
 
 interface Props {
