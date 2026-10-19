@@ -26,7 +26,7 @@ import { ButtonGroup } from '@/components/ui/button-group'
 import { Label } from '@/components/ui/label'
 
 import { type Volume, getVolumeAPI, type Application } from '@/services/api'
-import TitleStatus from '@/components/TitleStatus.vue'
+import SectionTitle from '@/components/SectionTitle.vue'
 import ConfirmationButton from '@/components/ConfirmationButton.vue'
 import VolumeBackupButton from './VolumeBackupButton.vue'
 import VolumeRestoreDialog from './VolumeRestoreDialog.vue'
@@ -94,7 +94,7 @@ async function onClickConfirmDelete() {
   <Card>
     <CardHeader class="flex items-center justify-between border-b">
       <CardTitle>
-        <TitleStatus :title="props.volume.name" />
+        <SectionTitle :title="props.volume.name" />
       </CardTitle>
       <CardAction>
         <ButtonGroup class="space-x-1">

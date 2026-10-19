@@ -1,37 +1,23 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { type LucideIcon } from 'lucide-vue-next'
-import Button from '@/components/ui/button/Button.vue'
-import { Spinner } from '@/components/ui/spinner'
 import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from '@/components/ui/tooltip'
 import { InputGroupButton } from '@/components/ui/input-group'
 import { InfoIcon } from 'lucide-vue-next'
 
+// A heading with an optional info tip. The default slot is for the state shown beside it.
 interface Props {
   title?: string
-  loading?: boolean
-  status?: 'success' | 'warning' | 'error' | 'default'
-  statusText?: string
-  icon?: LucideIcon
   tooltip?: string
   size?: 1 | 2 | 3 | 4 | 5 | 6
 }
 
 const props = withDefaults(defineProps<Props>(), {
   title: '',
-  loading: false,
-  status: 'default',
-  statusText: '',
   tooltip: '',
   size: 6,
 })
 
 const isTooltipOpen = ref(false)
-
-const statusVariant = computed(() => {
-  if (props.status === 'error') return 'destructive'
-  else return 'ghost'
-})
 
 const headingSize = computed(() => {
   const sizes: Record<number, string> = {
@@ -47,26 +33,14 @@ const headingSize = computed(() => {
 </script>
 
 <template>
-  <div class="flex w-fit items-center">
-    <div
-      v-if="props.title"
-      class="font-semibold inline-flex items-center"
-      :class="[headingSize, props.statusText == '' ? 'pr-0' : 'pr-2']"
-    >
+  <div class="flex w-fit items-center" :class="headingSize">
+    <div v-if="props.title" class="font-semibold inline-flex items-center">
       {{ props.title }}
     </div>
-    <Button
-      v-if="props.statusText !== '' || props.loading === true || props.icon !== undefined"
-      :variant="statusVariant"
-      disabled
-      size="sm"
-      class="uppercase"
-      :class="props.status"
-    >
-      <Spinner v-if="props.loading" class="animate-spin" />
-      <component :is="props.icon" v-if="props.icon" />
-      {{ props.statusText }}
-    </Button>
+    <!-- Centred on the lowercase body of the title, which sits below its cap-height centre. -->
+    <div v-if="$slots.default" class="ml-2 flex translate-y-[0.09em] items-center">
+      <slot />
+    </div>
     <TooltipProvider v-if="props.tooltip">
       <Tooltip :open="isTooltipOpen" @update:open="isTooltipOpen = $event">
         <TooltipTrigger as-child>

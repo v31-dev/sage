@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardHeader, CardTitle, CardContent, CardAction } from '@/components/ui/card'
 
-import { type Application, type Project, statusBadge } from '@/services/api'
-import TitleStatus from '@/components/TitleStatus.vue'
+import { type Application, type Project } from '@/services/api'
+import SectionTitle from '@/components/SectionTitle.vue'
+import StateIndicator from '@/components/StateIndicator.vue'
+import { useAppStore } from '@/stores/app'
 
 const router = useRouter()
 
@@ -14,13 +15,13 @@ interface Props {
   application: Application
 }
 
+const appStore = useAppStore()
+
 const props = withDefaults(defineProps<Props>(), {})
 
 function goToApplication(application: Application) {
   router.push(`/projects/${props.project.name}/${application.name}`)
 }
-
-const applicationStatusClass = computed(() => statusBadge(props.application.status))
 </script>
 
 <template>
@@ -30,12 +31,12 @@ const applicationStatusClass = computed(() => statusBadge(props.application.stat
   >
     <CardHeader>
       <CardTitle class="line-clamp-2">
-        <TitleStatus
-          :title="props.application.label"
-          :status="applicationStatusClass"
-          :loading="['deploying', 'stopping'].includes(props.application.status)"
-          :statusText="props.application.status"
-        />
+        <SectionTitle :title="props.application.label">
+          <StateIndicator
+            v-bind="appStore.applicationIndicator(props.application.status)"
+            show-label
+          />
+        </SectionTitle>
       </CardTitle>
       <CardAction>
         <Badge class="h-5 min-w-5 rounded-full px-1 font-mono tabular-nums">

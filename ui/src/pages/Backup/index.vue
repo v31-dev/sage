@@ -9,7 +9,7 @@ import BackupsItem from './BackupsItem.vue'
 import { type Backup } from '@/services/api'
 import CreateBackupButton from './CreateBackupButton.vue'
 import DiscoverBackupsButton from './DiscoverBackupsButton.vue'
-import TitleStatus from '@/components/TitleStatus.vue'
+import SectionTitle from '@/components/SectionTitle.vue'
 
 const backups = ref<Backup[]>([])
 const isLoading = ref(false)
@@ -52,7 +52,7 @@ onMounted(async () => {
         <!-- Header Card -->
         <Card>
           <CardContent class="flex flex-wrap justify-between items-center gap-2">
-            <TitleStatus title="Available Backups" :size="4" />
+            <SectionTitle title="Available Backups" :size="4" />
             <div class="flex flex-wrap gap-2">
               <DiscoverBackupsButton :backupAPI="backupAPI" :loadBackups="loadBackups" />
               <CreateBackupButton :backupAPI="backupAPI" :loadBackups="loadBackups" />

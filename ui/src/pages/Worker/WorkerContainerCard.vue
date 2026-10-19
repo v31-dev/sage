@@ -7,14 +7,10 @@ import { toast } from 'vue-sonner'
 import { Card, CardAction, CardHeader, CardTitle } from '@/components/ui/card'
 
 import ConfirmationButton from '@/components/ConfirmationButton.vue'
-import {
-  APPLICATION_BUSY_STATUSES,
-  type Container,
-  type Worker,
-  getContainerAPI,
-  statusBadge,
-} from '@/services/api'
-import TitleStatus from '@/components/TitleStatus.vue'
+import { type Container, type Worker, getContainerAPI } from '@/services/api'
+import SectionTitle from '@/components/SectionTitle.vue'
+import StateIndicator from '@/components/StateIndicator.vue'
+import { useAppStore } from '@/stores/app'
 import CardFooter from '@/components/ui/card/CardFooter.vue'
 
 interface Props {
@@ -23,16 +19,15 @@ interface Props {
   loadWorker: () => Promise<void>
 }
 
+const appStore = useAppStore()
+
 const props = withDefaults(defineProps<Props>(), {})
 
-const isContainerBusy = computed(() => APPLICATION_BUSY_STATUSES.includes(props.container.status))
 const showForceDelete = computed(() => !props.worker.online)
 const containersAPI = getContainerAPI(
   props.container.application.project.name,
   props.container.application.name
 )
-
-const containerStatusClass = computed(() => statusBadge(props.container.status))
 
 async function onConfirmForceDelete() {
   await containersAPI.delete(props.worker.hostname, { force: true })
@@ -44,16 +39,18 @@ async function onConfirmForceDelete() {
 
 <template>
   <Card>
-    <CardHeader>
+    <CardHeader class="flex items-center justify-between">
       <CardTitle>
-        <TitleStatus
+        <SectionTitle
           :title="
             props.container.application.project.name + '-' + props.container.application.label
           "
-          :status="containerStatusClass"
-          :loading="isContainerBusy"
-          :statusText="props.container.status"
-        />
+        >
+          <StateIndicator
+            v-bind="appStore.applicationIndicator(props.container.status)"
+            show-label
+          />
+        </SectionTitle>
       </CardTitle>
       <CardAction v-if="showForceDelete">
         <ConfirmationButton

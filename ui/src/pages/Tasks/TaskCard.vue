@@ -3,8 +3,11 @@ import { Card, CardContent } from '@/components/ui/card'
 import StateIndicator from '@/components/StateIndicator.vue'
 import { Label } from '@/components/ui/label'
 import TaskLogsButton from './TaskLogsButton.vue'
-import { type QueueTask, type CompletedTask, taskIndicator } from '@/services/api'
+import { type QueueTask, type CompletedTask } from '@/services/api'
+import { useAppStore } from '@/stores/app'
 import { formatDate } from '@/lib/utils'
+
+const appStore = useAppStore()
 
 const props = withDefaults(
   defineProps<{
@@ -28,7 +31,7 @@ function asCompleted(t: QueueTask | CompletedTask) {
           <TaskLogsButton :taskId="props.task.task_id" />
           <StateIndicator
             v-if="props.showTimestamps"
-            v-bind="taskIndicator(props.task.status)"
+            v-bind="appStore.taskIndicator(props.task.status)"
             show-label
           />
         </div>

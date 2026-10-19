@@ -46,7 +46,8 @@ async function onClickDeployApplication() {
 <template>
   <Button
     size="sm"
-    class="flex-1 md:flex-initial success"
+    variant="success"
+    class="flex-1 md:flex-initial"
     @click="onClickDeployApplication"
     :disabled="deployButtonDisabled"
   >

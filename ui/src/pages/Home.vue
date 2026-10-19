@@ -37,7 +37,8 @@ const HOUR_MS = 3_600_000
 const ERROR_COLOR = '#ef4444'
 const WARNING_COLOR = '#f59e0b'
 const OK_CHIP = TONES.success.chip
-const BUSY_CHIP = TONES.warning.chip
+const BUSY_CHIP = TONES.info.chip
+const WARNING_CHIP = TONES.warning.chip
 
 const appStore = useAppStore()
 const summary = ref<HomeSummary | null>(null)
@@ -126,7 +127,7 @@ function ratio(part: number, total: number) {
 
 function healthBarClass(errorCount: number, transitionCount: number) {
   if (errorCount > 0) return TONES.error.bar
-  if (transitionCount > 0) return TONES.warning.bar
+  if (transitionCount > 0) return TONES.info.bar
   return TONES.success.bar
 }
 
@@ -393,7 +394,7 @@ onUnmounted(() => {
                   <Badge variant="destructive">
                     {{ summary.critical_error_count_last_24h }} errors
                   </Badge>
-                  <Badge variant="outline" :class="BUSY_CHIP">
+                  <Badge variant="outline" :class="WARNING_CHIP">
                     {{ summary.critical_warning_count_last_24h }} warnings
                   </Badge>
                 </div>

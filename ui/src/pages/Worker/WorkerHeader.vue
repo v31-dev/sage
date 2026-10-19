@@ -16,7 +16,9 @@ import { Label } from '@/components/ui/label'
 
 import ConfirmationButton from '@/components/ConfirmationButton.vue'
 import { workersAPI, type Worker, type WorkerMetricsResponse } from '@/services/api'
-import TitleStatus from '@/components/TitleStatus.vue'
+import SectionTitle from '@/components/SectionTitle.vue'
+import StateIndicator from '@/components/StateIndicator.vue'
+import { useAppStore } from '@/stores/app'
 
 interface Props {
   worker: Worker
@@ -24,6 +26,8 @@ interface Props {
 }
 
 const router = useRouter()
+const appStore = useAppStore()
+
 const props = withDefaults(defineProps<Props>(), {})
 
 function goToMetrics() {
@@ -46,12 +50,9 @@ async function onConfirmRestart() {
   <Card>
     <CardHeader class="border-b">
       <CardTitle>
-        <TitleStatus
-          :title="props.worker.hostname"
-          :status="props.worker.online ? 'success' : 'error'"
-          :statusText="props.worker.online ? 'online' : 'offline'"
-          :size="3"
-        />
+        <SectionTitle :title="props.worker.hostname" :size="3">
+          <StateIndicator v-bind="appStore.workerIndicator(props.worker.online)" show-label />
+        </SectionTitle>
       </CardTitle>
       <CardAction>
         <ButtonGroup class="space-x-1">

@@ -6,7 +6,7 @@ import { Label } from '@/components/ui/label'
 import { type Project } from '@/services/api'
 import EditProjectButton from './EditProjectButton.vue'
 import DeleteProjectButton from './DeleteProjectButton.vue'
-import TitleStatus from '@/components/TitleStatus.vue'
+import SectionTitle from '@/components/SectionTitle.vue'
 
 interface Props {
   project: Project
@@ -21,7 +21,7 @@ const props = withDefaults(defineProps<Props>(), {})
 <template>
   <Card>
     <CardHeader class="border-b">
-      <CardTitle><TitleStatus :title="project.label" :size="3" /></CardTitle>
+      <CardTitle><SectionTitle :title="project.label" :size="3" /></CardTitle>
       <CardAction>
         <ButtonGroup class="space-x-1">
           <EditProjectButton

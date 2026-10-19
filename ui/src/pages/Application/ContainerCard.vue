@@ -14,16 +14,11 @@ import { Button } from '@/components/ui/button'
 import { ButtonGroup } from '@/components/ui/button-group'
 import { Label } from '@/components/ui/label'
 
-import TitleStatus from '@/components/TitleStatus.vue'
+import { useAppStore } from '@/stores/app'
 import EventLogsButton from './EventLogsButton.vue'
 import EditContainerButton from './EditContainerButton.vue'
 import DeleteContainerButton from './DeleteContainerButton.vue'
-import {
-  APPLICATION_BUSY_STATUSES,
-  type Container,
-  getContainerAPI,
-  statusBadge,
-} from '@/services/api'
+import { type Container, getContainerAPI } from '@/services/api'
 import StateIndicator from '@/components/StateIndicator.vue'
 
 interface Props {
@@ -32,22 +27,21 @@ interface Props {
   loadApplication: () => Promise<void>
 }
 
+const appStore = useAppStore()
+
 const props = withDefaults(defineProps<Props>(), {})
 
-const isContainerBusy = computed(() => APPLICATION_BUSY_STATUSES.includes(props.container.status))
-
-const containerStatusClass = computed(() => statusBadge(props.container.status))
+const workerIndicator = computed(() => appStore.workerIndicator(props.container.worker.online))
 </script>
 
 <template>
   <Card>
-    <CardHeader class="border-b">
+    <CardHeader class="flex items-center justify-between border-b">
       <CardTitle>
         <div class="flex w-full flex-wrap gap-2">
-          <TitleStatus
-            :status="containerStatusClass"
-            :loading="isContainerBusy"
-            :statusText="props.container.status"
+          <StateIndicator
+            v-bind="appStore.applicationIndicator(props.container.status)"
+            show-label
           />
         </div>
       </CardTitle>
@@ -84,8 +78,8 @@ const containerStatusClass = computed(() => statusBadge(props.container.status))
           <StateIndicator
             dot
             class="size-2"
-            :state="props.container.worker.online ? 'ok' : 'error'"
-            :label="props.container.worker.online ? 'Worker online' : 'Worker offline'"
+            :state="workerIndicator.state"
+            :label="`Worker ${workerIndicator.label}`"
           />
           <span class="block truncate">Worker: {{ props.container.worker.hostname }}</span>
           <ArrowRight />

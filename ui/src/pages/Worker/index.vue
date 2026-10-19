@@ -12,7 +12,7 @@ import {
   type Worker,
   type WorkerMetricsResponse,
 } from '@/services/api'
-import TitleStatus from '@/components/TitleStatus.vue'
+import SectionTitle from '@/components/SectionTitle.vue'
 import WorkerContainerCard from './WorkerContainerCard.vue'
 import WorkerHeader from './WorkerHeader.vue'
 
@@ -80,7 +80,7 @@ function goBack() {
 
         <div class="space-y-4">
           <div class="flex items-center justify-between">
-            <TitleStatus title="Application Containers" :size="4" />
+            <SectionTitle title="Application Containers" :size="4" />
           </div>
 
           <div v-if="worker.containers.length === 0" class="flex items-center justify-center py-8">

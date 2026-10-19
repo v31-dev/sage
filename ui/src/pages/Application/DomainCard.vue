@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import { toast } from 'vue-sonner'
-import { Edit, ExternalLink, CircleCheck, Trash } from 'lucide-vue-next'
+import { Edit, ExternalLink, Trash } from 'lucide-vue-next'
 import { Card, CardHeader, CardTitle, CardAction, CardFooter } from '@/components/ui/card'
 import {
   Dialog,
@@ -39,7 +39,8 @@ import { ButtonGroup } from '@/components/ui/button-group'
 import { useAppStore } from '@/stores/app'
 
 import { type Domain, getDomainAPI, type Application } from '@/services/api'
-import TitleStatus from '@/components/TitleStatus.vue'
+import SectionTitle from '@/components/SectionTitle.vue'
+import StateIndicator from '@/components/StateIndicator.vue'
 import ConfirmationButton from '@/components/ConfirmationButton.vue'
 
 interface Props {
@@ -112,11 +113,9 @@ async function onClickConfirmDelete() {
   <Card>
     <CardHeader class="flex items-center justify-between">
       <CardTitle>
-        <TitleStatus
-          :title="props.domain.name"
-          :loading="!props.application.domains_synced"
-          :icon="props.application.domains_synced ? CircleCheck : undefined"
-        />
+        <SectionTitle :title="props.domain.name">
+          <StateIndicator v-bind="appStore.domainIndicator(props.application.domains_synced)" />
+        </SectionTitle>
       </CardTitle>
       <CardAction>
         <ButtonGroup class="space-x-1">

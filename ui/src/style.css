@@ -177,38 +177,3 @@ input[type='week'] {
   color-scheme: dark;
 }
 /* datetime-local, date, time, month, week theme styling */
-
-/* Solid status badges (TitleStatus), filled from the status tokens */
-.success {
-  background-color: var(--success);
-  color: white;
-}
-
-.success:hover {
-  background-color: color-mix(in oklab, var(--success) 85%, black);
-}
-
-.dark .success {
-  background-color: color-mix(in oklab, var(--success) 60%, black);
-}
-
-.dark .success:hover {
-  background-color: color-mix(in oklab, var(--success) 50%, black);
-}
-
-.warning {
-  background-color: var(--warning);
-  color: white;
-}
-
-.warning:hover {
-  background-color: color-mix(in oklab, var(--warning) 85%, black);
-}
-
-.dark .warning {
-  background-color: color-mix(in oklab, var(--warning) 60%, black);
-}
-
-.dark .warning:hover {
-  background-color: color-mix(in oklab, var(--warning) 50%, black);
-}

@@ -10,8 +10,11 @@ import {
 } from '@/components/ui/table'
 import StateIndicator from '@/components/StateIndicator.vue'
 import TaskLogsButton from './TaskLogsButton.vue'
-import { type QueueTask, type CompletedTask, taskIndicator } from '@/services/api'
+import { type QueueTask, type CompletedTask } from '@/services/api'
+import { useAppStore } from '@/stores/app'
 import { formatDate } from '@/lib/utils'
+
+const appStore = useAppStore()
 
 const props = withDefaults(
   defineProps<{
@@ -56,7 +59,7 @@ function asCompleted(t: QueueTask | CompletedTask) {
         <TableCell class="text-xs">{{ t.executor }}</TableCell>
         <template v-if="props.showTimestamps">
           <TableCell>
-            <StateIndicator v-bind="taskIndicator(t.status)" show-label />
+            <StateIndicator v-bind="appStore.taskIndicator(t.status)" show-label />
           </TableCell>
           <TableCell class="text-xs whitespace-nowrap">{{
             formatDate(asCompleted(t).created_at)

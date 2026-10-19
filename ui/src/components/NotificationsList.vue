@@ -15,7 +15,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 
 import { fetchNotifications, type Notification } from '@/services/api'
 import { formatDateStringAgo } from '@/lib/utils'
-import TitleStatus from './TitleStatus.vue'
+import SectionTitle from './SectionTitle.vue'
 import { TONES } from '@/lib/tone'
 
 const notifications = ref<Notification[]>([])
@@ -137,10 +137,13 @@ onUnmounted(() => {
     </PopoverTrigger>
     <PopoverContent class="w-[calc(100vw-2rem)] sm:w-80 md:w-2xl max-h-96 overflow-y-auto">
       <div class="space-y-2 no-scrollbar">
-        <TitleStatus title="Notifications" :size="4" />
+        <SectionTitle title="Notifications" :size="4" />
         <Spinner v-if="isLoading" class="animate-spin" />
 
-        <div v-else-if="notifications.length === 0" class="text-center text-sm text-gray-500">
+        <div
+          v-else-if="notifications.length === 0"
+          class="text-center text-sm text-muted-foreground"
+        >
           No notifications
         </div>
 
@@ -149,7 +152,7 @@ onUnmounted(() => {
             v-for="notification in notifications"
             :key="notification.id"
             variant="outline"
-            :class="[notification.link && 'cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800']"
+            :class="[notification.link && 'cursor-pointer hover:bg-muted/50']"
             @click="notification.link && handleNotificationClick(notification)"
           >
             <ItemMedia>

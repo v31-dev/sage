@@ -32,7 +32,7 @@ import CopyButton from '@/components/CopyButton.vue'
 import CustomInput from '@/components/CustomInput.vue'
 import StateIndicator from '@/components/StateIndicator.vue'
 import SettingField from './SettingField.vue'
-import { settingIndicator, settingsAPI, type Setting, type SettingSection } from '@/services/api'
+import { settingsAPI, type Setting, type SettingSection } from '@/services/api'
 import { useAppStore } from '@/stores/app'
 
 type SettingValues = Record<string, string>
@@ -71,6 +71,7 @@ defineSlots<{
 
 const appStore = useAppStore()
 const status = computed(() => appStore.info?.settings?.[props.section])
+const indicator = computed(() => appStore.sectionIndicator(props.section))
 
 const keys = computed(() => props.fields.filter(field => !field.readonly).map(field => field.key))
 const editable = computed(() => keys.value.length > 0)
@@ -204,8 +205,8 @@ onUnmounted(() => window.removeEventListener('beforeunload', onBeforeUnload))
         <CardHeader>
           <CardTitle>{{ title }}</CardTitle>
           <CardDescription>{{ description }}</CardDescription>
-          <CardAction v-if="status">
-            <StateIndicator v-bind="settingIndicator(status.state)" show-label />
+          <CardAction v-if="indicator">
+            <StateIndicator v-bind="indicator" show-label />
           </CardAction>
         </CardHeader>
 

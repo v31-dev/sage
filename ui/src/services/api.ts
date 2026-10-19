@@ -22,6 +22,13 @@ export interface AppInfo {
   start_time: string
   state: 'running' | 'paused' | 'restoring' | 'stopping'
   restoring_from: string | null
+  workers: WorkerSummary | null
+  settings: SettingsStatus | null
+}
+
+export interface WorkerSummary {
+  total: number
+  online: number
 }
 
 export interface Release {
@@ -85,16 +92,6 @@ export const APPLICATION_BUSY_STATUSES: Application['status'][] = [
   'backup',
   'restoring',
 ]
-
-// How an application's or container's status shows in a TitleStatus badge.
-export function statusBadge(
-  status: Application['status']
-): 'success' | 'warning' | 'error' | 'default' {
-  if (status === 'active') return 'success'
-  if (APPLICATION_BUSY_STATUSES.includes(status)) return 'warning'
-  if (status === 'error') return 'error'
-  return 'default'
-}
 
 export const APPLICATION_STOP_ELIGIBLE_STATUSES: Application['status'][] = ['active', 'error']
 
@@ -227,6 +224,13 @@ export interface Setting {
 export type SettingSection = 'tailscale' | 'cloudflare' | 's3' | 'notifications'
 export type SettingState = 'not_configured' | 'applying' | 'ok' | 'retrying' | 'error'
 
+// What a StateIndicator can show, whatever it describes.
+export type IndicatorState = 'idle' | 'busy' | 'ok' | 'warning' | 'error'
+export interface Indicator {
+  state: IndicatorState
+  label: string
+}
+
 export interface SettingSectionStatus {
   state: SettingState
   message: string | null
@@ -239,14 +243,6 @@ export interface SettingSectionStatus {
 }
 
 export type SettingsStatus = Record<SettingSection, SettingSectionStatus>
-
-export async function fetchSettingsStatus(): Promise<SettingsStatus> {
-  const response = await fetch(`${API_ROOT}/settings/status`)
-  if (!response.ok) {
-    throw new Error('Failed to fetch settings status')
-  }
-  return await response.json()
-}
 
 export const settingsAPI = new CRUDAPI({
   name: 'Settings',

@@ -77,9 +77,11 @@ next to the shadcn tokens, and available as `text-success`, `bg-warning/10`,
 `border-info/30`…). `lib/tone.ts` maps a meaning (`success`, `warning`, `error`, `info`,
 `neutral`) to the class sets the UI needs: `text`, `chip`, `soft`, `dot` and `bar`. A place that
 shows a state maps its own value to a tone: log levels
-(`levelClass`), notification types, health bars and chips on the home page, and an
-application's or container's status (`statusBadge` in `services/api.ts`, for `TitleStatus`).
-New states and new places use a tone; no `text-green-600`, `bg-red-500` and the like.
+(`levelClass`), notification types, and health bars and chips on the home page. In progress is
+`info` (blue) everywhere, including applications in transition; `warning` (amber) is for
+warnings. A solid green or red button is a button variant (`success`, `destructive`), not a
+class of its own. New states and new places use a tone; no `text-green-600`, `bg-red-500`,
+`text-gray-500` and the like.
 
 ## State Indicators
 
@@ -87,12 +89,12 @@ New states and new places use a tone; no `text-green-600`, `bg-red-500` and the 
 so colour is never the only cue: `idle`, `busy`, `ok`, `warning` or `error`, each with a label
 that is also its accessible name. It is an icon, an icon with the label in a badge
 (`show-label`), or a small dot (`dot`, sized and placed by the caller). A place that has its
-own states maps them to one of these with a function next to its data in `services/api.ts`
-(`settingIndicator`, `taskIndicator`, `workerIndicator` for the Workers menu item, whose
-summary comes with `GET /api`), or builds the `{ state, label }` itself: a container's worker
-dot. Used by the settings badge and
-sidebar, the Workers menu item, the task status, and the worker dot in a container card.
-Application, container and worker badges (`TitleStatus`) are still solid badges.
+own states maps them to one of these in the app store (`sectionIndicator` for a settings
+section, `workersIndicator` for the Workers menu item, `applicationIndicator` for an
+application or container, `workerIndicator`, `domainIndicator`, `taskIndicator`). Used by the
+settings badge and sidebar, the Workers menu item, the application, container, worker and
+task statuses, a domain's sync state and the worker dot in a container card. A title with a
+state beside it is a `SectionTitle` with the indicator in its slot.
 
 ## Dates
 

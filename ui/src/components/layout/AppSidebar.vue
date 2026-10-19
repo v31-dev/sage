@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { SidebarProps } from '@/components/ui/sidebar'
 import { useRoute } from 'vue-router'
-import { onMounted, watch } from 'vue'
+import { computed, watch } from 'vue'
 import {
   Activity,
   Bell,
@@ -29,15 +29,12 @@ import {
   SidebarGroupLabel,
   useSidebar,
 } from '@/components/ui/sidebar'
-import SettingStateIndicator from '@/components/SettingStateIndicator.vue'
-import { SETTING_STATES } from '@/lib/settingState'
-import type { SettingSection } from '@/services/api'
+import StateIndicator from '@/components/StateIndicator.vue'
+import type { Indicator } from '@/services/api'
 import { useAppStore } from '@/stores/app'
-import { useSettingsStatusStore } from '@/stores/settingsStatus'
 
 const route = useRoute()
 const appStore = useAppStore()
-const settingsStatus = useSettingsStatusStore()
 const { isMobile, setOpenMobile, state: sidebarState } = useSidebar()
 
 const props = withDefaults(defineProps<SidebarProps>(), {
@@ -49,11 +46,11 @@ interface MenuInterface {
   path?: string
   url?: string
   icon?: any
-  section?: SettingSection
+  indicator?: Indicator
   children?: MenuInterface[]
 }
 
-const menu: MenuInterface[] = [
+const menu = computed<MenuInterface[]>(() => [
   {
     name: 'Home',
     path: '/',
@@ -81,6 +78,7 @@ const menu: MenuInterface[] = [
         name: 'Workers',
         path: '/workers',
         icon: Server,
+        indicator: appStore.workersIndicator,
       },
       {
         name: 'System',
@@ -107,30 +105,33 @@ const menu: MenuInterface[] = [
   {
     name: 'Settings',
     children: [
-      { name: 'Tailscale', path: '/tailscale', icon: Network, section: 'tailscale' },
-      { name: 'Cloudflare', path: '/cloudflare', icon: Cloud, section: 'cloudflare' },
-      { name: 'S3', path: '/s3', icon: HardDrive, section: 's3' },
+      {
+        name: 'Tailscale',
+        path: '/tailscale',
+        icon: Network,
+        indicator: appStore.sectionIndicator('tailscale'),
+      },
+      {
+        name: 'Cloudflare',
+        path: '/cloudflare',
+        icon: Cloud,
+        indicator: appStore.sectionIndicator('cloudflare'),
+      },
+      { name: 'S3', path: '/s3', icon: HardDrive, indicator: appStore.sectionIndicator('s3') },
       {
         name: 'Notifications',
         path: '/notifications',
         icon: Bell,
-        section: 'notifications',
+        indicator: appStore.sectionIndicator('notifications'),
       },
       { name: 'Upgrade', path: '/upgrade', icon: CircleArrowUp },
     ],
   },
-]
-
-function sectionState(item: MenuInterface) {
-  return item.section ? settingsStatus.status?.[item.section]?.state : undefined
-}
+])
 
 function tooltip(item: MenuInterface) {
-  const state = sectionState(item)
-  return state ? `${item.name}: ${SETTING_STATES[state].label}` : item.name
+  return item.indicator ? `${item.name}: ${item.indicator.label}` : item.name
 }
-
-onMounted(() => settingsStatus.start())
 
 // Close sidebar on mobile when route changes
 watch(
@@ -175,20 +176,15 @@ watch(
               <RouterLink :to="child.path!">
                 <span class="relative flex">
                   <component :is="child.icon" class="size-4" />
-                  <span
-                    v-if="sidebarState === 'collapsed' && sectionState(child)"
-                    :class="[
-                      'absolute -top-0.5 -right-0.5 size-1.5 rounded-full',
-                      SETTING_STATES[sectionState(child)!].dot,
-                    ]"
+                  <StateIndicator
+                    v-if="sidebarState === 'collapsed' && child.indicator"
+                    v-bind="child.indicator"
+                    dot
+                    class="absolute -top-0.5 -right-0.5 size-1.5"
                   />
                 </span>
                 <span>{{ child.name }}</span>
-                <SettingStateIndicator
-                  v-if="sectionState(child)"
-                  :state="sectionState(child)!"
-                  class="ml-auto"
-                />
+                <StateIndicator v-if="child.indicator" v-bind="child.indicator" class="ml-auto" />
               </RouterLink>
             </SidebarMenuButton>
             <SidebarMenuButton v-else-if="'url' in child" as-child :tooltip="child.name">

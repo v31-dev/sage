@@ -20,13 +20,10 @@ import DeployApplicationButton from './DeployApplicationButton.vue'
 import StopApplicationButton from './StopApplicationButton.vue'
 import EditApplicationButton from './EditApplicationButton.vue'
 import ConfirmationButton from '@/components/ConfirmationButton.vue'
-import {
-  APPLICATION_BUSY_STATUSES,
-  type Application,
-  getApplicationAPI,
-  statusBadge,
-} from '@/services/api'
-import TitleStatus from '@/components/TitleStatus.vue'
+import { type Application, getApplicationAPI } from '@/services/api'
+import SectionTitle from '@/components/SectionTitle.vue'
+import StateIndicator from '@/components/StateIndicator.vue'
+import { useAppStore } from '@/stores/app'
 import { formatDateStringAgo } from '@/lib/utils'
 import { TONES } from '@/lib/tone'
 
@@ -36,11 +33,9 @@ interface Props {
   loadApplication: () => Promise<void>
 }
 
-const props = withDefaults(defineProps<Props>(), {})
+const appStore = useAppStore()
 
-const isApplicationBusy = computed(() =>
-  APPLICATION_BUSY_STATUSES.includes(props.application.status)
-)
+const props = withDefaults(defineProps<Props>(), {})
 
 function onClickLogs() {
   router.push(`/projects/${props.application.project.name}/${props.application.name}/logs`)
@@ -55,8 +50,6 @@ async function onConfirmDelete() {
   toast.success(`Application ${props.application.name} deleted successfully`)
   router.push(`/projects/${props.application.project.name}`)
 }
-
-const applicationStatusClass = computed(() => statusBadge(props.application.status))
 
 const repoURL = computed(() => {
   const repo = props.application.repo
@@ -82,13 +75,12 @@ const repoURL = computed(() => {
   <Card>
     <CardHeader class="border-b">
       <CardTitle>
-        <TitleStatus
-          :title="props.application.label"
-          :status="applicationStatusClass"
-          :loading="isApplicationBusy"
-          :statusText="props.application.status"
-          :size="3"
-        />
+        <SectionTitle :title="props.application.label" :size="3">
+          <StateIndicator
+            v-bind="appStore.applicationIndicator(props.application.status)"
+            show-label
+          />
+        </SectionTitle>
       </CardTitle>
       <CardAction>
         <ButtonGroup class="space-x-1">

@@ -6,7 +6,9 @@ import { Label } from '@/components/ui/label'
 
 import { type Worker, type WorkerMetricSummary } from '@/services/api'
 import PercentageBar from '@/components/PercentageBar.vue'
-import TitleStatus from '@/components/TitleStatus.vue'
+import SectionTitle from '@/components/SectionTitle.vue'
+import StateIndicator from '@/components/StateIndicator.vue'
+import { useAppStore } from '@/stores/app'
 import { TONES } from '@/lib/tone'
 
 interface Props {
@@ -15,6 +17,8 @@ interface Props {
 }
 
 const router = useRouter()
+const appStore = useAppStore()
+
 const props = withDefaults(defineProps<Props>(), {})
 
 const emptyMetrics: WorkerMetricSummary = {
@@ -43,11 +47,9 @@ function goToMetrics(hostname: string) {
   >
     <CardHeader class="border-b">
       <CardTitle>
-        <TitleStatus
-          :title="props.worker.hostname"
-          :status="props.worker.online ? 'success' : 'error'"
-          :statusText="props.worker.online ? 'online' : 'offline'"
-        />
+        <SectionTitle :title="props.worker.hostname">
+          <StateIndicator v-bind="appStore.workerIndicator(props.worker.online)" show-label />
+        </SectionTitle>
       </CardTitle>
     </CardHeader>
 
