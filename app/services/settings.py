@@ -12,6 +12,10 @@ SETTING_DEFINITIONS = {
     "notifications": ("discord_webhook",),
 }
 
+# Sections of independent optional channels: configured once any one field is set. In the
+# others the fields belong together, and all of them must be set.
+INDEPENDENT_FIELD_SECTIONS = ("notifications",)
+
 
 class Settings(Base):
   def __init__(self):
@@ -21,9 +25,7 @@ class Settings(Base):
     self.load_all()
 
   def load_all(self):
-    # A database, or a restored backup, can hold rows for settings that aren't defined here.
-    # They are unused, and dropped without being read: they may be encrypted with a key
-    # that is gone.
+    # Clean up any settings rows that are no longer defined in SETTING_DEFINITIONS.
     removed = Setting.delete().where(Setting.key.not_in(list(SETTING_DEFINITIONS))).execute()
     if removed:
       logger.info(f"Removed {removed} unused settings row(s).")
@@ -42,6 +44,11 @@ class Settings(Base):
         if field not in current_value:
           current_value[field] = None
           needs_save = True
+
+      # Fields that aren't defined are unused; they are dropped like undefined rows.
+      for field in [field for field in current_value if field not in SETTING_DEFINITIONS[key]]:
+        del current_value[field]
+        needs_save = True
 
       if needs_save:
         setting.value = current_value
@@ -106,3 +113,14 @@ class Settings(Base):
         return False
 
     return True
+
+  def is_configured(self, key: str, value: dict | None = None):
+    """Whether the section has what it needs: every field set, or for a section of
+    independent channels, at least one."""
+    if key not in INDEPENDENT_FIELD_SECTIONS:
+      return self.is_valid(key, value)
+
+    if value is None:
+      value = self.get(key)
+
+    return any(value.get(field) not in (None, "") for field in SETTING_DEFINITIONS[key])

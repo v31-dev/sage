@@ -82,7 +82,7 @@ def update_setting(request: Request, setting_data: dict = Body(...)):
     Settings().set("notifications", merged_setting_value)
     Notifications().load_notifications_config()
 
-  if Settings().is_valid(setting_key):
+  if Settings().is_configured(setting_key):
     Manager().add_task(
         task=Manager().check_setting,
         name=f"check_{setting_key}",

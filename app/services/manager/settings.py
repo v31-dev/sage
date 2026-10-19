@@ -3,10 +3,9 @@ from datetime import datetime
 
 import botocore.exceptions
 import httpx
-import requests
 
 from services.cloudflare import CloudflareError
-from services.notification import Notifications, webhook_error
+from services.notification import ChannelCheckFailed, Notifications
 from services.settings import SETTING_DEFINITIONS, Settings
 from utils.executor import run_in_executor_with_context
 
@@ -16,8 +15,6 @@ SETTING_SECTIONS = ("tailscale", "cloudflare", "s3", "notifications")
 
 # Failures expected to clear on their own; the periodic check retries them.
 TRANSIENT_ERRORS = (
-    requests.ConnectionError,
-    requests.Timeout,
     botocore.exceptions.ConnectionError,
     botocore.exceptions.ReadTimeoutError,
     httpx.TransportError,
@@ -91,14 +88,11 @@ class SettingsMixin:
     return "Bucket reachable and writable." if side_effects else "Bucket reachable."
 
   def _test_notifications(self, value: dict, side_effects: bool) -> str:
-    if not value.get("discord_webhook"):
-      raise ValueError("Set a Discord webhook first.")
-    if side_effects:
-      Notifications().check_config(value)
-      return "Test message sent to Discord."
-    # Reads the webhook's details without posting to the channel.
-    requests.get(value["discord_webhook"], timeout=5).raise_for_status()
-    return "Discord webhook is valid."
+    """Every configured channel is checked; one failing fails the section."""
+    if not Settings().is_configured("notifications", value):
+      raise ValueError("Set a webhook first.")
+    names = ", ".join(Notifications().check_config(value, send=side_effects))
+    return f"Test message sent to {names}." if side_effects else f"Webhook valid: {names}."
 
   @staticmethod
   def describe_check_error(error: Exception) -> tuple[str, bool]:
@@ -106,10 +100,8 @@ class SettingsMixin:
     whether the failure is transient."""
     transient = isinstance(error, TRANSIENT_ERRORS)
     message = str(error)
-    if isinstance(error, requests.RequestException):
-      status = error.response.status_code if error.response is not None else 0
-      transient = transient or status >= 500 or status == 429
-      message = webhook_error(error, "Discord")
+    if isinstance(error, ChannelCheckFailed):
+      transient = error.transient
     elif isinstance(error, botocore.exceptions.ClientError):
       transient = error.response.get("ResponseMetadata", {}).get("HTTPStatusCode", 0) >= 500
     elif isinstance(error, CloudflareError):
@@ -120,19 +112,22 @@ class SettingsMixin:
 
   def section_configured(self, key: str) -> bool:
     """Tailscale and Cloudflare always are (required env vars); settings when complete."""
-    return key not in SETTING_DEFINITIONS or Settings().is_valid(key)
+    return key not in SETTING_DEFINITIONS or Settings().is_configured(key)
 
   async def check_setting(self, key: str):
     """Check a section's configuration and record the result for its status."""
     value = Settings().get(key) if key in SETTING_DEFINITIONS else {}
+    channels = None
     try:
       message = await run_in_executor_with_context(self.test_setting, key, value, False)
       state = "ok"
     except Exception as e:
       message, transient = self.describe_check_error(e)
       state = "retrying" if transient else "error"
+      channels = e.channels if isinstance(e, ChannelCheckFailed) else None
       logger.warning(f"{key} check failed: {message}")
-    self.setting_checks[key] = {"state": state, "message": message, "checked_at": datetime.now().isoformat()}
+    self.setting_checks[key] = {"state": state, "message": message, "channels": channels,
+                                "checked_at": datetime.now().isoformat()}
 
   def settings_status(self) -> dict:
     """Per section: not_configured, applying (with the task), ok, retrying or error."""
@@ -142,11 +137,13 @@ class SettingsMixin:
     for key in SETTING_SECTIONS:
       check = self.setting_checks.get(key) or {}
       entry = {"state": check.get("state"), "message": check.get("message"), "task_id": None,
-               "checked_at": check.get("checked_at"), "details": None}
+               "checked_at": check.get("checked_at"), "details": None,
+               # Why each failing channel failed, by settings field (a section of channels).
+               "channels": check.get("channels")}
       applying = next((t for t in active if _is_applying(t, key)), None)
 
       if not self.section_configured(key):
-        entry.update(state="not_configured", message=None)
+        entry.update(state="not_configured", message=None, channels=None)
       elif applying:
         entry.update(state="applying", task_id=applying["task_id"])
       elif not check:

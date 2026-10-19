@@ -1,7 +1,13 @@
 <script setup lang="ts">
-import { Field, FieldContent, FieldDescription, FieldLabel } from '@/components/ui/field'
+import {
+  Field,
+  FieldContent,
+  FieldDescription,
+  FieldError,
+  FieldLabel,
+} from '@/components/ui/field'
 
-defineProps<{ id: string; label: string; description?: string }>()
+defineProps<{ id: string; label: string; description?: string; error?: string }>()
 </script>
 
 <template>
@@ -11,6 +17,7 @@ defineProps<{ id: string; label: string; description?: string }>()
     <FieldContent>
       <FieldLabel :for="id">{{ label }}</FieldLabel>
       <FieldDescription v-if="description">{{ description }}</FieldDescription>
+      <FieldError v-if="error" :errors="[error]" />
     </FieldContent>
     <slot />
   </Field>

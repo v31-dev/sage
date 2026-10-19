@@ -8,6 +8,7 @@ import {
   InputGroupInput,
   InputGroupTextarea,
 } from '@/components/ui/input-group'
+import CopyButton from '@/components/CopyButton.vue'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 
 interface Props {
@@ -57,6 +58,8 @@ const revealed = ref<boolean>(!props.secret || false)
           </TooltipContent>
         </Tooltip>
       </TooltipProvider>
+      <!-- The masking is only painted, so selecting the text and copying it takes the bullets. -->
+      <CopyButton v-if="props.secret && modelValue" compact :text="String(modelValue)" />
       <InputGroupButton v-if="props.secret" size="icon-xs" @click="revealed = !revealed">
         <Eye v-if="!revealed" />
         <EyeOff v-else />

@@ -223,6 +223,8 @@ export interface SettingSectionStatus {
   checked_at: string | null
   // Cloudflare: account_id, tunnel_id, tunnel_status, *_certificate_expiry.
   details: Record<string, string | null> | null
+  // Notifications: why each failing channel failed, by settings field.
+  channels: Record<string, string> | null
 }
 
 export type SettingsStatus = Record<SettingSection, SettingSectionStatus>
