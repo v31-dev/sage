@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onUnmounted, ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import {
   AlertDialog,
   AlertDialogContent,
@@ -18,36 +18,29 @@ const restoringFrom = computed(() => appStore.info?.restoring_from)
 
 // The restore itself is among the running tasks; it is not what the restore waits for.
 const waitingFor = ref(0)
-let timer: ReturnType<typeof setInterval> | null = null
 
-async function poll() {
+async function loadWaitingFor() {
   try {
-    await appStore.init()
     const tasks = (await tasksAPI.fetchAll()) as unknown as TasksResponse
     waitingFor.value = tasks.running.filter(task => task.name !== 'restore_database_from_s3').length
   } catch (err) {
-    console.error('Failed to poll the restore:', err)
+    console.error('Failed to load the running tasks:', err)
   }
 }
 
-// The state is held by the manager, so a refreshed page shows the same overlay. When the
-// restore ends the data under every page has changed: reload them all.
+// The state is held by the manager, so a refreshed page shows the same overlay. The app
+// store polls every 2 s while restoring, and each of its updates refreshes the count.
 watch(
-  restoring,
-  (now, before) => {
-    if (now) {
-      timer = setInterval(poll, 2000)
-    } else if (timer) {
-      clearInterval(timer)
-      timer = null
-    }
-    if (before && !now) location.reload()
+  () => appStore.info,
+  () => {
+    if (restoring.value) loadWaitingFor()
   },
   { immediate: true }
 )
 
-onUnmounted(() => {
-  if (timer) clearInterval(timer)
+// When the restore ends the data under every page has changed: reload them all.
+watch(restoring, (now, before) => {
+  if (before && !now) location.reload()
 })
 </script>
 

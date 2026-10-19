@@ -17,6 +17,7 @@ import ConfirmationButton from '@/components/ConfirmationButton.vue'
 import { type Backup, backupAPI as backupAPIClass, downloadBackup } from '@/services/api'
 import RestoreLogsDialog from '@/components/RestoreLogsDialog.vue'
 import { useAppStore } from '@/stores/app'
+import { TONES } from '@/lib/tone'
 
 interface Props {
   backup: Backup
@@ -52,7 +53,7 @@ async function onConfirmRestoreBackup(backupId: string) {
     await props.backupAPI.action(`${backupId}/restore`)
     toast.success('Backup restore initiated successfully')
     // Shows the restore overlay without waiting for the next poll.
-    await appStore.init()
+    await appStore.refresh()
   } catch (err) {
     // Extract task_id from error response headers and open logs dialog
     const taskId = (err as any)?.response?.headers?.get('X-Task-Id') || ''
@@ -67,10 +68,8 @@ async function onConfirmRestoreBackup(backupId: string) {
 <template>
   <Item variant="outline">
     <ItemMedia>
-      <div
-        class="size-8 rounded-full flex items-center justify-center bg-blue-100 dark:bg-blue-900"
-      >
-        <ArchiveRestore class="size-4 text-blue-600 dark:text-blue-300" />
+      <div :class="['size-8 rounded-full flex items-center justify-center', TONES.info.soft]">
+        <ArchiveRestore class="size-4" />
       </div>
     </ItemMedia>
     <ItemContent>

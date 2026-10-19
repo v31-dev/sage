@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, ref } from 'vue'
 import { PauseCircle } from 'lucide-vue-next'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
@@ -10,29 +10,18 @@ import { useAppStore } from '@/stores/app'
 const appStore = useAppStore()
 const state = computed(() => appStore.info?.state ?? 'running')
 const resuming = ref(false)
-let timer: ReturnType<typeof setInterval> | null = null
 
 async function onResume() {
   resuming.value = true
   try {
     await settingsAPI.action('resume')
-    await appStore.init()
+    appStore.setState('running')
   } catch (err) {
     console.error('Failed to resume:', err)
   } finally {
     resuming.value = false
   }
 }
-
-onMounted(() => {
-  // Keeps the shared app info (and with it this banner) current, also when another tab or
-  // a stop signal changes the state.
-  timer = setInterval(() => appStore.init().catch(() => {}), 5000)
-})
-
-onUnmounted(() => {
-  if (timer) clearInterval(timer)
-})
 </script>
 
 <template>

@@ -7,6 +7,7 @@ import { Label } from '@/components/ui/label'
 import { type Worker, type WorkerMetricSummary } from '@/services/api'
 import PercentageBar from '@/components/PercentageBar.vue'
 import TitleStatus from '@/components/TitleStatus.vue'
+import { TONES } from '@/lib/tone'
 
 interface Props {
   worker: Worker
@@ -97,7 +98,7 @@ function goToMetrics(hostname: string) {
           <Label>Network</Label>
           <div class="space-y-0.5 text-sm">
             <p class="font-mono text-muted-foreground">
-              <span class="text-blue-600 dark:text-blue-400">↓</span>
+              <span :class="TONES.info.text">↓</span>
               {{ metrics.netRx !== null ? metrics.netRx : '-' }} Mbps
             </p>
             <p class="font-mono text-muted-foreground">

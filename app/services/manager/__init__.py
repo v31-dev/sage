@@ -54,6 +54,8 @@ class Manager(
 
       # Last check result per settings section (services/manager/settings.py).
       self.setting_checks = {}
+      # Worker counts as of the last sync
+      self.worker_summary = None
 
       # Single-dispatcher operation queue. Each scope root maps to an independent
       # lane pool (all defined in utils.executor).
@@ -78,6 +80,7 @@ class Manager(
       self.cloudflare = Cloudflare()
       self.certs = Certs()
       self.s3 = S3()
+      self.refresh_worker_summary()
 
       self.notify("Manager started.")
     except Exception as e:

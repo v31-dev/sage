@@ -79,6 +79,16 @@ class WorkersMixin:
       except Exception as e:
         logger.error(f"sync_workers offline-check failed for {existing_worker.hostname}: {e}")
 
+    self.refresh_worker_summary()
+
+  def refresh_worker_summary(self):
+    """Record how many workers there are and how many are online. Every change to the
+    worker table happens in a sync or a removal, which call this."""
+    self.worker_summary = {
+        "total": Worker.select().count(),
+        "online": Worker.select().where(Worker.online).count(),
+    }
+
   def infra_hash(self) -> str:
     """Hash of every input `setup_worker` renders into worker infra files.
     Computed from current truth on demand — the only stored copy is the
@@ -356,6 +366,7 @@ class WorkersMixin:
 
     logger.info(f"Removing worker {worker.hostname} from manager.")
     Worker.delete().where(Worker.hostname == worker.hostname).execute()
+    self.refresh_worker_summary()
     self.cloudflare.delete_dns_record(name=f"*.int.{self.cloudflare.domain}", content=worker.ip)
     logger.info(f"Worker {worker.hostname} removed from manager.")
 

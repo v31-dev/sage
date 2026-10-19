@@ -14,6 +14,14 @@ router = APIRouter()
 start_time = datetime.now()
 
 
+def settings_status():
+  try:
+    return Manager().settings_status()
+  except Exception as e:
+    logger.error(f"Failed to build the settings status: {e}")
+    return None
+
+
 @router.get("")
 def get():
   return {
@@ -26,6 +34,8 @@ def get():
       "start_time": start_time.isoformat(),
       "state": Manager().task_state(),
       "restoring_from": Manager().restoring_from(),
+      "workers": Manager().worker_summary,
+      "settings": settings_status(),
   }
 
 

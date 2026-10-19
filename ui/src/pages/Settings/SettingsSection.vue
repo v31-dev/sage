@@ -30,10 +30,10 @@ import { InputGroup, InputGroupAddon, InputGroupInput } from '@/components/ui/in
 import { Spinner } from '@/components/ui/spinner'
 import CopyButton from '@/components/CopyButton.vue'
 import CustomInput from '@/components/CustomInput.vue'
-import SettingStateIndicator from '@/components/SettingStateIndicator.vue'
+import StateIndicator from '@/components/StateIndicator.vue'
 import SettingField from './SettingField.vue'
-import { settingsAPI, type Setting, type SettingSection } from '@/services/api'
-import { useSettingsStatusStore } from '@/stores/settingsStatus'
+import { settingIndicator, settingsAPI, type Setting, type SettingSection } from '@/services/api'
+import { useAppStore } from '@/stores/app'
 
 type SettingValues = Record<string, string>
 
@@ -69,8 +69,8 @@ defineSlots<{
   after(): unknown
 }>()
 
-const statusStore = useSettingsStatusStore()
-const status = computed(() => statusStore.status?.[props.section])
+const appStore = useAppStore()
+const status = computed(() => appStore.info?.settings?.[props.section])
 
 const keys = computed(() => props.fields.filter(field => !field.readonly).map(field => field.key))
 const editable = computed(() => keys.value.length > 0)
@@ -139,7 +139,8 @@ async function save() {
     saved.value = valuesFrom(data.value)
     values.value = { ...saved.value }
     toast.success(`${props.title} settings saved`)
-    statusStore.refresh()
+    // A saved section is checked again, unless it was emptied.
+    if (keys.value.some(key => saved.value[key] !== '')) appStore.setSettingApplying(props.section)
   } catch (err) {
     error.value = errorMessage(err, `Failed to save ${props.title} settings`)
   } finally {
@@ -204,7 +205,7 @@ onUnmounted(() => window.removeEventListener('beforeunload', onBeforeUnload))
           <CardTitle>{{ title }}</CardTitle>
           <CardDescription>{{ description }}</CardDescription>
           <CardAction v-if="status">
-            <SettingStateIndicator :state="status.state" show-label />
+            <StateIndicator v-bind="settingIndicator(status.state)" show-label />
           </CardAction>
         </CardHeader>
 

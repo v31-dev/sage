@@ -1,6 +1,7 @@
 import type { ClassValue } from 'clsx'
 import { clsx } from 'clsx'
 import { twMerge } from 'tailwind-merge'
+import { TONES } from './tone'
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
@@ -56,10 +57,10 @@ export function formatDate(dateObj: string | Date): string {
 
 export function levelClass(level: string): string {
   const l = level.toUpperCase()
-  if (l.startsWith('ERROR') || l.startsWith('CRIT')) return 'text-red-500 font-semibold'
-  if (l.startsWith('WARN')) return 'text-yellow-500 font-semibold'
-  if (l.startsWith('DEBUG')) return 'text-muted-foreground'
-  return 'text-sky-600 dark:text-sky-400'
+  if (l.startsWith('ERROR') || l.startsWith('CRIT')) return `${TONES.error.text} font-semibold`
+  if (l.startsWith('WARN')) return `${TONES.warning.text} font-semibold`
+  if (l.startsWith('DEBUG')) return TONES.neutral.text
+  return TONES.info.text
 }
 
 export function formatDateStringAgo(dateObj: string | Date): string {

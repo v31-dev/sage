@@ -33,11 +33,6 @@ def get():
   return generic_list(Setting, Setting.key.in_(list(SETTING_DEFINITIONS)))
 
 
-@router.get("/status")
-def get_status():
-  return Manager().settings_status()
-
-
 @router.get("/{setting}", dependencies=[Depends(inject_setting)])
 def get_setting(request: Request):
   return model_to_dict(request.state.models["setting"])

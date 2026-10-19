@@ -26,6 +26,7 @@ import {
   type TasksResponse,
 } from '@/services/api'
 import { useAppStore } from '@/stores/app'
+import { TONES } from '@/lib/tone'
 
 const appStore = useAppStore()
 
@@ -82,7 +83,7 @@ async function onRefresh() {
       const latest = await fetchRelease()
       if (latest.fetched_at && latest.fetched_at !== before) {
         release.value = latest
-        await appStore.init()
+        await appStore.refresh()
         return
       }
     }
@@ -117,8 +118,10 @@ async function onToggle() {
   toggling.value = true
   pauseError.value = ''
   try {
-    await settingsAPI.action(state.value === 'paused' ? 'resume' : 'pause')
-    await Promise.all([appStore.init(), loadTasks()])
+    const next = state.value === 'paused' ? 'running' : 'paused'
+    await settingsAPI.action(next === 'running' ? 'resume' : 'pause')
+    appStore.setState(next)
+    await loadTasks()
   } catch (err) {
     pauseError.value = err instanceof Error ? err.message : 'Failed to change state'
   } finally {
@@ -129,10 +132,7 @@ async function onToggle() {
 onMounted(() => {
   loadNotes()
   loadTasks()
-  tasksTimer = setInterval(() => {
-    loadTasks()
-    appStore.init()
-  }, 2000)
+  tasksTimer = setInterval(loadTasks, 2000)
 })
 
 onUnmounted(() => {
@@ -267,7 +267,7 @@ onUnmounted(() => {
           <p v-else-if="state === 'stopping'" class="text-muted-foreground">Sage is stopping.</p>
           <template v-else>
             <p v-if="safeToStop" class="flex items-center gap-2 font-medium">
-              <CircleCheck class="h-4 w-4 text-green-600" />
+              <CircleCheck :class="['h-4 w-4', TONES.success.text]" />
               Safe to stop.
               <span v-if="queuedCount" class="font-normal text-muted-foreground">
                 {{ queuedCount }} queued task(s) will be cancelled when Sage stops.

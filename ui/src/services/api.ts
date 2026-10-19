@@ -86,6 +86,16 @@ export const APPLICATION_BUSY_STATUSES: Application['status'][] = [
   'restoring',
 ]
 
+// How an application's or container's status shows in a TitleStatus badge.
+export function statusBadge(
+  status: Application['status']
+): 'success' | 'warning' | 'error' | 'default' {
+  if (status === 'active') return 'success'
+  if (APPLICATION_BUSY_STATUSES.includes(status)) return 'warning'
+  if (status === 'error') return 'error'
+  return 'default'
+}
+
 export const APPLICATION_STOP_ELIGIBLE_STATUSES: Application['status'][] = ['active', 'error']
 
 export interface Domain {

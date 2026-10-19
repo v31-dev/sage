@@ -18,7 +18,13 @@ import TitleStatus from '@/components/TitleStatus.vue'
 import EventLogsButton from './EventLogsButton.vue'
 import EditContainerButton from './EditContainerButton.vue'
 import DeleteContainerButton from './DeleteContainerButton.vue'
-import { APPLICATION_BUSY_STATUSES, type Container, getContainerAPI } from '@/services/api'
+import {
+  APPLICATION_BUSY_STATUSES,
+  type Container,
+  getContainerAPI,
+  statusBadge,
+} from '@/services/api'
+import StateIndicator from '@/components/StateIndicator.vue'
 
 interface Props {
   container: Container
@@ -30,16 +36,7 @@ const props = withDefaults(defineProps<Props>(), {})
 
 const isContainerBusy = computed(() => APPLICATION_BUSY_STATUSES.includes(props.container.status))
 
-const containerStatusClass = computed(() => {
-  if (props.container.status === 'active') return 'success'
-  else if (isContainerBusy.value) return 'warning'
-  else if (props.container.status === 'error') return 'error'
-  else return 'default'
-})
-
-const workerStatusDotClass = computed(() => {
-  return props.container.worker.online ? 'bg-green-500' : 'bg-red-500'
-})
+const containerStatusClass = computed(() => statusBadge(props.container.status))
 </script>
 
 <template>
@@ -84,10 +81,11 @@ const workerStatusDotClass = computed(() => {
           :to="`/workers/${props.container.worker.hostname}`"
           :title="`Worker: ${props.container.worker.hostname}`"
         >
-          <span
-            aria-hidden="true"
-            class="size-2 rounded-full shrink-0"
-            :class="workerStatusDotClass"
+          <StateIndicator
+            dot
+            class="size-2"
+            :state="props.container.worker.online ? 'ok' : 'error'"
+            :label="props.container.worker.online ? 'Worker online' : 'Worker offline'"
           />
           <span class="block truncate">Worker: {{ props.container.worker.hostname }}</span>
           <ArrowRight />

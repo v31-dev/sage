@@ -36,22 +36,26 @@ class Certificate:
     self.names = names
     self.fullchain_path = directory / "fullchain.pem"
     self.key_path = directory / "key.pem"
+    self._cert = None
+    self.load()
 
-  def _leaf(self):
+  def load(self):
+    """Read the certificate into memory, so checks and the status never touch the disk.
+    At start, and after every write of the PEM file."""
+    self._cert = None
     if not self.fullchain_path.exists():
-      return None
+      return
     try:
-      return x509.load_pem_x509_certificate(self.fullchain_path.read_bytes())
+      self._cert = x509.load_pem_x509_certificate(self.fullchain_path.read_bytes())
     except Exception:
-      return None
+      pass
 
   def expiry(self):
-    cert = self._leaf()
-    return cert.not_valid_after_utc if cert else None
+    return self._cert.not_valid_after_utc if self._cert else None
 
   def is_valid(self):
     """Unexpired and covering every name (so a domain change makes it stale)."""
-    cert = self._leaf()
+    cert = self._cert
     if cert is None or cert.not_valid_after_utc <= datetime.now(timezone.utc):
       return False
     try:
@@ -62,10 +66,9 @@ class Certificate:
     return all(name in sans for name in self.names)
 
   def needs_renewal(self, days: int = RENEWAL_THRESHOLD_DAYS):
-    cert = self._leaf()
-    if cert is None:
+    if self._cert is None:
       return True
-    return cert.not_valid_after_utc <= datetime.now(timezone.utc) + timedelta(days=days)
+    return self._cert.not_valid_after_utc <= datetime.now(timezone.utc) + timedelta(days=days)
 
   def hash(self):
     """Content hash of the chain (None when absent); compared against a worker's
@@ -170,6 +173,7 @@ class Certs(Base):
     certificate.fullchain_path.write_text(order.fullchain_pem)
     certificate.key_path.write_bytes(cert_key_pem)
     certificate.key_path.chmod(0o600)
+    certificate.load()
     logger.info(f"Issued certificate for {', '.join(certificate.names)}; expires {certificate.expiry()}.")
 
   def _wait_for_dns(self, records):

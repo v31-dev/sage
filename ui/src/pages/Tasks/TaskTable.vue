@@ -8,9 +8,9 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { Badge } from '@/components/ui/badge'
+import StateIndicator from '@/components/StateIndicator.vue'
 import TaskLogsButton from './TaskLogsButton.vue'
-import { type QueueTask, type CompletedTask } from '@/services/api'
+import { type QueueTask, type CompletedTask, taskIndicator } from '@/services/api'
 import { formatDate } from '@/lib/utils'
 
 const props = withDefaults(
@@ -21,12 +21,6 @@ const props = withDefaults(
   }>(),
   { showTimestamps: false }
 )
-
-function statusVariant(status: string) {
-  if (status === 'completed') return 'default'
-  if (status === 'failed') return 'destructive'
-  return 'secondary'
-}
 
 function asCompleted(t: QueueTask | CompletedTask) {
   return t as CompletedTask
@@ -62,11 +56,7 @@ function asCompleted(t: QueueTask | CompletedTask) {
         <TableCell class="text-xs">{{ t.executor }}</TableCell>
         <template v-if="props.showTimestamps">
           <TableCell>
-            <Badge
-              :variant="statusVariant(t.status)"
-              :class="{ warning: t.status === 'cancelled' }"
-              >{{ t.status }}</Badge
-            >
+            <StateIndicator v-bind="taskIndicator(t.status)" show-label />
           </TableCell>
           <TableCell class="text-xs whitespace-nowrap">{{
             formatDate(asCompleted(t).created_at)

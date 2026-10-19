@@ -24,7 +24,7 @@ The shell is assembled in `ui/src/App.vue`:
 - reload dialog on initialization failure
 - toast notifications
 
-Initial app boot currently fetches platform info through the Pinia store in `ui/src/stores/app.ts`.
+Initial app boot fetches `GET /api` through the Pinia store in `ui/src/stores/app.ts`. That store owns the manager's status and its one poll: the version, the queue state (the pause banner and the restore overlay), the worker summary and the settings status (the sidebar indicators and the settings pages). It refreshes every 30 s and on window focus, or every 2 s while a restore runs. After an action the page updates the store at once (`setState` for pause and resume, `setSettingApplying` after a save) and the next poll confirms it, as with `applicationDeployStatus`; `refresh()` fetches right away. A part the manager couldn't build comes as `null` and the store keeps the last value. Pages poll their own data (tasks, application status, metrics) only while they are open.
 
 ## Main Pages
 
@@ -69,6 +69,31 @@ Routes in `ui/src/router/index.ts` currently cover:
   trailing icons are actions on the value: at most two (copy, reveal, clear), reveal
   outermost.
 
+## Status Colours
+
+A state's look is chosen by its meaning, never by a palette colour. The theme tokens
+`--success`, `--warning`, `--info` and `--destructive` are in `src/style.css` (light and dark,
+next to the shadcn tokens, and available as `text-success`, `bg-warning/10`,
+`border-info/30`…). `lib/tone.ts` maps a meaning (`success`, `warning`, `error`, `info`,
+`neutral`) to the class sets the UI needs: `text`, `chip`, `soft`, `dot` and `bar`. A place that
+shows a state maps its own value to a tone: log levels
+(`levelClass`), notification types, health bars and chips on the home page, and an
+application's or container's status (`statusBadge` in `services/api.ts`, for `TitleStatus`).
+New states and new places use a tone; no `text-green-600`, `bg-red-500` and the like.
+
+## State Indicators
+
+`components/StateIndicator.vue` draws a state with its own icon shape as well as a colour,
+so colour is never the only cue: `idle`, `busy`, `ok`, `warning` or `error`, each with a label
+that is also its accessible name. It is an icon, an icon with the label in a badge
+(`show-label`), or a small dot (`dot`, sized and placed by the caller). A place that has its
+own states maps them to one of these with a function next to its data in `services/api.ts`
+(`settingIndicator`, `taskIndicator`, `workerIndicator` for the Workers menu item, whose
+summary comes with `GET /api`), or builds the `{ state, label }` itself: a container's worker
+dot. Used by the settings badge and
+sidebar, the Workers menu item, the task status, and the worker dot in a container card.
+Application, container and worker badges (`TitleStatus`) are still solid badges.
+
 ## Dates
 
 Every date shown goes through `formatDate` or `formatDateStringAgo` (`lib/utils.ts`), never
@@ -78,9 +103,8 @@ raw. Both parse with `parseDate`: backend timestamps without a timezone are UTC;
 ## Settings Pages
 
 Every settings page is a `SettingsSection.vue` given a `fields` list (`key`, `label`, and optionally `description`, `placeholder`, `type`, `secret`, `readonly`, `value`). A `readonly` field shows its `value` and is never loaded or saved. Tailscale and Cloudflare are env vars, so all their fields are read-only: the section then shows no Save / Test / Reset, and the page adds its dashboard links (`links` slot: the manager's machine in the Tailscale console; the tunnel and DNS records in Cloudflare) and its resync actions (`after` slot). S3 and notifications have editable fields: for those the section draws the inputs, loads, saves, tests and resets the values, shows a failing field's reason from the status under it, and handles the unsaved-changes dialog and the route-leave guard. Errors show inline; successes as toasts. The sidebar
-and the pages read one status store (`stores/settingsStatus.ts`) that polls
-`GET /api/settings/status`: every 3 s while a section is applying, otherwise every 30 s
-and on window focus. States and their icons are in `lib/settingState.ts`.
+and the pages read each section's status from the app store (`info.settings`). States are
+drawn by `components/StateIndicator.vue` (see State Indicators).
 
 ## API Layer
 

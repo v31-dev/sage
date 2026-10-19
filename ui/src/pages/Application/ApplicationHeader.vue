@@ -20,9 +20,15 @@ import DeployApplicationButton from './DeployApplicationButton.vue'
 import StopApplicationButton from './StopApplicationButton.vue'
 import EditApplicationButton from './EditApplicationButton.vue'
 import ConfirmationButton from '@/components/ConfirmationButton.vue'
-import { APPLICATION_BUSY_STATUSES, type Application, getApplicationAPI } from '@/services/api'
+import {
+  APPLICATION_BUSY_STATUSES,
+  type Application,
+  getApplicationAPI,
+  statusBadge,
+} from '@/services/api'
 import TitleStatus from '@/components/TitleStatus.vue'
 import { formatDateStringAgo } from '@/lib/utils'
+import { TONES } from '@/lib/tone'
 
 interface Props {
   application: Application
@@ -50,12 +56,7 @@ async function onConfirmDelete() {
   router.push(`/projects/${props.application.project.name}`)
 }
 
-const applicationStatusClass = computed(() => {
-  if (props.application.status === 'active') return 'success'
-  else if (isApplicationBusy.value) return 'warning'
-  else if (props.application.status === 'error') return 'error'
-  else return 'default'
-})
+const applicationStatusClass = computed(() => statusBadge(props.application.status))
 
 const repoURL = computed(() => {
   const repo = props.application.repo
@@ -165,7 +166,7 @@ const repoURL = computed(() => {
       </div>
       <div
         v-if="props.application.config_dirty"
-        class="flex items-center gap-1.5 text-sm text-amber-600 dark:text-amber-500"
+        :class="['flex items-center gap-1.5 text-sm', TONES.warning.text]"
       >
         <TriangleAlert class="w-4 h-4 shrink-0" />
         Configuration changed since last deploy — redeploy to apply.

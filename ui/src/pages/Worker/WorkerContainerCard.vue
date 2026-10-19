@@ -12,6 +12,7 @@ import {
   type Container,
   type Worker,
   getContainerAPI,
+  statusBadge,
 } from '@/services/api'
 import TitleStatus from '@/components/TitleStatus.vue'
 import CardFooter from '@/components/ui/card/CardFooter.vue'
@@ -31,12 +32,7 @@ const containersAPI = getContainerAPI(
   props.container.application.name
 )
 
-const containerStatusClass = computed(() => {
-  if (props.container.status === 'active') return 'success'
-  if (isContainerBusy.value) return 'warning'
-  if (props.container.status === 'error') return 'error'
-  return 'default'
-})
+const containerStatusClass = computed(() => statusBadge(props.container.status))
 
 async function onConfirmForceDelete() {
   await containersAPI.delete(props.worker.hostname, { force: true })

@@ -4,13 +4,11 @@ import { ExternalLink } from 'lucide-vue-next'
 import { Button } from '@/components/ui/button'
 import { formatDate } from '@/lib/utils'
 import { useAppStore } from '@/stores/app'
-import { useSettingsStatusStore } from '@/stores/settingsStatus'
 import SettingsSection from './SettingsSection.vue'
 import TraefikResyncSubCard from './TraefikResyncSubCard.vue'
 
 const appStore = useAppStore()
-const statusStore = useSettingsStatusStore()
-const details = computed(() => statusStore.status?.cloudflare.details ?? null)
+const details = computed(() => appStore.info?.settings?.cloudflare.details ?? null)
 
 const domain = computed(() => appStore.info?.domain)
 const managerAddress = computed(() => `https://${appStore.info?.name}.core.${domain.value}`)

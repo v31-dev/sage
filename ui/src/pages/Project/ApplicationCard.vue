@@ -4,7 +4,7 @@ import { useRouter } from 'vue-router'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardHeader, CardTitle, CardContent, CardAction } from '@/components/ui/card'
 
-import { type Application, type Project } from '@/services/api'
+import { type Application, type Project, statusBadge } from '@/services/api'
 import TitleStatus from '@/components/TitleStatus.vue'
 
 const router = useRouter()
@@ -20,12 +20,7 @@ function goToApplication(application: Application) {
   router.push(`/projects/${props.project.name}/${application.name}`)
 }
 
-const applicationStatusClass = computed(() => {
-  if (props.application.status === 'active') return 'success'
-  else if (['deploying', 'stopping'].includes(props.application.status)) return 'warning'
-  else if (props.application.status === 'error') return 'error'
-  else return 'default'
-})
+const applicationStatusClass = computed(() => statusBadge(props.application.status))
 </script>
 
 <template>

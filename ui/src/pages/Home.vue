@@ -14,6 +14,7 @@ import {
 } from 'lucide-vue-next'
 
 import { Badge } from '@/components/ui/badge'
+import { TONES } from '@/lib/tone'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import {
@@ -35,8 +36,8 @@ import { useAppStore } from '@/stores/app'
 const HOUR_MS = 3_600_000
 const ERROR_COLOR = '#ef4444'
 const WARNING_COLOR = '#f59e0b'
-const OK_CHIP = 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400'
-const BUSY_CHIP = 'border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-400'
+const OK_CHIP = TONES.success.chip
+const BUSY_CHIP = TONES.warning.chip
 
 const appStore = useAppStore()
 const summary = ref<HomeSummary | null>(null)
@@ -124,15 +125,13 @@ function ratio(part: number, total: number) {
 }
 
 function healthBarClass(errorCount: number, transitionCount: number) {
-  if (errorCount > 0) return '[&>div]:bg-red-500'
-  if (transitionCount > 0) return '[&>div]:bg-amber-500'
-  return '[&>div]:bg-emerald-500'
+  if (errorCount > 0) return TONES.error.bar
+  if (transitionCount > 0) return TONES.warning.bar
+  return TONES.success.bar
 }
 
 function eventIconClass(notificationType: Notification['type']) {
-  return notificationType === 'error'
-    ? 'bg-red-500/10 text-red-600 dark:text-red-400'
-    : 'bg-amber-500/10 text-amber-600 dark:text-amber-400'
+  return notificationType === 'error' ? TONES.error.soft : TONES.warning.soft
 }
 
 onMounted(async () => {
