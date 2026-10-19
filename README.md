@@ -124,7 +124,7 @@ volumes:
 ```
 
 `latest` follows the newest release. Pin a release tag (`ghcr.io/v31-dev/sage:<version>`,
-see the GitHub releases) to control when you upgrade.
+see the [GitHub releases](https://github.com/v31-dev/sage/releases)) to control when you upgrade.
 
 On start, before serving anything, Sage sets up Cloudflare (the tunnel and the manager's
 DNS record) and gets the manager's certificate from Let's Encrypt. A first start can take

@@ -30,7 +30,7 @@ Sage is a lightweight manager-and-workers micro-PaaS that uses Tailscale for nod
 Agents must keep this context active throughout a task, including after summaries, compaction, handoff, or long-running work:
 
 - Manager plus workers over Tailscale is the core architecture.
-- Access control is out of scope (rework sprint, 2026-10-15): the manager API/UI has no authentication and is reached only over the tailnet, whose policy is the only gate. Don't add login, secret masking or ingestion tokens unless asked, and keep the README stating this.
+- Access control is out of scope: the manager API/UI has no authentication and is reached only over the tailnet, whose policy is the only gate. Don't add login, secret masking or ingestion tokens unless asked, and keep the README stating this.
 - The manager is a single container with its own userspace Tailscale node (`app/entrypoint.sh`). Required env vars: `TS_AUTH_KEY`, `TS_NAME`, `TS_WORKER_TAG`, `ENCRYPTION_KEY` (can't change after the first boot: startup refuses a different one), `DOMAIN`, `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`; changing them is a restart, and startup converges workers by stamp. S3 and notifications are optional UI settings (`Setting` table). Startup sets up the domain and the manager's certificate before serving (retries, then exits); the UI is only at `https://<TS_NAME>.core.<DOMAIN>`.
 - Configuration split: required env vars are cold config the core depends on (Tailscale, Cloudflare, `ENCRYPTION_KEY`) — changing one is a restart. Optional services that don't break the core when missing or wrong (S3, notifications) are hot config, edited in the UI and applied at runtime.
 - Services are singleton-based and thread-aware.
