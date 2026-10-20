@@ -101,6 +101,7 @@ export const useAppStore = defineStore('app', () => {
     } catch (err) {
       console.error('Failed to refresh the app info:', err)
     }
+    if (timer) clearTimeout(timer)
     timer = setTimeout(
       refresh,
       info.value?.state === 'restoring' ? RESTORING_POLL_MS : IDLE_POLL_MS

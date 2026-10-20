@@ -302,6 +302,7 @@ class TaskQueue:
         "scopes": sorted(task.scopes),
         "params": task.params,
         "executor": task.executor,
+        "quiet": task.quiet,
         "status": status,
     }
 
@@ -344,7 +345,8 @@ class TaskQueue:
     the tasks from the queue under the lock, then hand them here."""
     for task in tasks:
       logger.info(f"{task.name}: cancelled")
-      self._record(task, "cancelled")
+      if not task.quiet:
+        self._record(task, "cancelled")
 
   async def run_task(self, task: QueuedTask):
     token = task_id.set(task.task_id)

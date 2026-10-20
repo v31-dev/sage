@@ -6,6 +6,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from cryptography.fernet import InvalidToken
+from peewee import chunked
 
 from services.db import DB_PATH, Application, Backup, Database, Event, Notification, Task, db
 from services.notification import Notifications
@@ -37,46 +38,50 @@ class PlatformMixin:
       self.notify(f"Backup discovery failed: {e}", "error")
       return
 
-    recorded = {backup.s3_path: backup for backup in Backup.select()}
     volume_prefix = self.s3.get_full_path(self.s3_backup_path_applications) + "/"
-    applications = {
-        (application.project_id, application.name): application
-        for application in Application.select()
-    }
 
-    added = {"platform": 0, "application": 0}
-    unmatched = 0
-    for key in sorted(platform_keys | volume_keys):
-      if key in recorded:
-        continue
-      timestamp = timestamp_from_key(key)
-      if not timestamp:
-        continue
-      created_at = datetime.strptime(timestamp, BACKUP_TIMESTAMP_FORMAT)
-      if key in platform_keys:
-        Backup.create(s3_path=key, type="platform", created_at=created_at)
-        added["platform"] += 1
-        continue
-      # <project>/<application>/<worker>/<volume>/<timestamp>.tar.gz.enc
-      parts = key.removeprefix(volume_prefix).split("/")
-      if len(parts) != 5 or not key.endswith(".tar.gz.enc"):
-        continue
-      application = applications.get((parts[0], parts[1]))
-      if not application:
-        unmatched += 1
-        continue
-      Backup.create(
-          s3_path=key,
-          type="application",
-          application=application,
-          source_volume_name=parts[3],
-          created_at=created_at,
-      )
-      added["application"] += 1
+    def reconcile():
+      recorded = {backup.s3_path: backup.id for backup in Backup.select(Backup.id, Backup.s3_path)}
+      applications = {
+          (application.project_id, application.name): application
+          for application in Application.select()
+      }
 
-    present = platform_keys | volume_keys
-    gone = [backup.id for s3_path, backup in recorded.items() if s3_path not in present]
-    removed = Backup.delete().where(Backup.id.in_(gone)).execute() if gone else 0
+      rows = []
+      added = {"platform": 0, "application": 0}
+      unmatched = 0
+      for key in sorted(platform_keys | volume_keys):
+        if key in recorded:
+          continue
+        timestamp = timestamp_from_key(key)
+        if not timestamp:
+          continue
+        created_at = datetime.strptime(timestamp, BACKUP_TIMESTAMP_FORMAT)
+        if key in platform_keys:
+          rows.append(dict(s3_path=key, type="platform", created_at=created_at))
+          added["platform"] += 1
+          continue
+        # <project>/<application>/<worker>/<volume>/<timestamp>.tar.gz.enc
+        parts = key.removeprefix(volume_prefix).split("/")
+        if len(parts) != 5 or not key.endswith(".tar.gz.enc"):
+          continue
+        application = applications.get((parts[0], parts[1]))
+        if not application:
+          unmatched += 1
+          continue
+        rows.append(dict(s3_path=key, type="application", application=application,
+                         source_volume_name=parts[3], created_at=created_at))
+        added["application"] += 1
+
+      present = platform_keys | volume_keys
+      gone = [backup_id for s3_path, backup_id in recorded.items() if s3_path not in present]
+      with db.atomic():
+        for batch in chunked(rows, 100):
+          Backup.insert_many(batch).execute()
+        removed = Backup.delete().where(Backup.id.in_(gone)).execute() if gone else 0
+      return added, removed, unmatched
+
+    added, removed, unmatched = await run_in_executor_with_context(reconcile)
 
     logger.info(
         f"Backup discovery: {len(platform_keys)} platform and {len(volume_keys)} volume backup(s) in S3; "
@@ -200,6 +205,7 @@ class PlatformMixin:
     - Create safety backup of current database
     - Restore into the live database using SQLite's online backup API
     - Verify database integrity
+    - Keep this manager's own S3 settings (a restore never changes them)
     - Re-sync workers
 
     Runs while the queue is restoring (see TaskQueue): nothing else starts and the UI is
@@ -209,6 +215,7 @@ class PlatformMixin:
     restored = False
     try:
       logger.info(f"Starting database restore from {s3_path}")
+      s3_settings = Settings().get("s3")
 
       with TemporaryDirectory() as temp_dir:
         # Download backup from S3
@@ -307,6 +314,7 @@ class PlatformMixin:
           # Reload the cached settings from the restored database (they must decrypt,
           # or the restore rolls back).
           Settings().load_all()
+          Settings().set("s3", s3_settings)
         except Exception as e:
           logger.error(f"Restored database verification failed: {e}")
           # Rollback to safety backup
@@ -330,6 +338,7 @@ class PlatformMixin:
         # Services built from the settings pick up the restored values.
         self.s3.load()
         Notifications().load_notifications_config()
+        self.refresh_worker_summary()
 
         self.notify(f"Platform restored from backup {s3_path} successfully.", "success")
         restored = True
@@ -338,10 +347,10 @@ class PlatformMixin:
       self.notify(f"Platform restore failed: {e}", "error")
       raise
     finally:
-      self.end_restore(restored, follow_ups=[
-          # The restore rewrote worker state in the DB; force-resync the workers.
-          dict(task=self.sync_workers, scopes={"platform"}, params={"force": True},
-               executor="platform", on_conflict=OnConflict.REPLACE),
-          # The backup records are the snapshot's too; match them to the bucket again.
-          dict(task=self.discover_s3_backups, scopes={"platform", "app"}, executor="platform"),
-      ])
+      # The restore rewrote worker state in the DB; force-resync the workers.
+      follow_ups = [dict(task=self.sync_workers, scopes={"platform"}, params={"force": True},
+                         executor="platform", on_conflict=OnConflict.REPLACE)]
+      if self.s3.s3_config:
+        # The backup records are the snapshot's too; match them to the bucket again.
+        follow_ups.append(dict(task=self.discover_s3_backups, scopes={"platform", "app"}, executor="platform"))
+      self.end_restore(restored, follow_ups=follow_ups)

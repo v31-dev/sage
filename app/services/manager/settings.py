@@ -130,9 +130,10 @@ class SettingsMixin:
                                 "checked_at": datetime.now().isoformat()}
 
   def settings_status(self) -> dict:
-    """Per section: not_configured, applying (with the task), ok, retrying or error."""
+    """Per section: not_configured, applying (with the task), ok, retrying or error. A quiet
+    task is scheduled housekeeping and never makes a section applying."""
     snapshot = self.task_snapshot()
-    active = [*snapshot["running"], *snapshot["queued"]]
+    active = [task for task in (*snapshot["running"], *snapshot["queued"]) if not task["quiet"]]
     status = {}
     for key in SETTING_SECTIONS:
       check = self.setting_checks.get(key) or {}
