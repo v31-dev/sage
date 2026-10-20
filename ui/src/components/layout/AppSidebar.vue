@@ -1,17 +1,21 @@
 <script setup lang="ts">
 import type { SidebarProps } from '@/components/ui/sidebar'
 import { useRoute } from 'vue-router'
-import { watch } from 'vue'
+import { computed, watch } from 'vue'
 import {
   Activity,
+  Bell,
   Briefcase,
   Building,
+  CircleArrowUp,
+  Cloud,
   ExternalLink,
+  HardDrive,
   Home,
   ListTodo,
   Logs,
+  Network,
   Server,
-  Settings2,
   CloudBackup,
 } from 'lucide-vue-next'
 import {
@@ -25,11 +29,13 @@ import {
   SidebarGroupLabel,
   useSidebar,
 } from '@/components/ui/sidebar'
+import StateIndicator from '@/components/StateIndicator.vue'
+import type { Indicator } from '@/services/api'
 import { useAppStore } from '@/stores/app'
 
 const route = useRoute()
 const appStore = useAppStore()
-const { isMobile, setOpenMobile } = useSidebar()
+const { isMobile, setOpenMobile, state: sidebarState } = useSidebar()
 
 const props = withDefaults(defineProps<SidebarProps>(), {
   collapsible: 'icon',
@@ -40,10 +46,11 @@ interface MenuInterface {
   path?: string
   url?: string
   icon?: any
+  indicator?: Indicator
   children?: MenuInterface[]
 }
 
-const menu: MenuInterface[] = [
+const menu = computed<MenuInterface[]>(() => [
   {
     name: 'Home',
     path: '/',
@@ -71,6 +78,7 @@ const menu: MenuInterface[] = [
         name: 'Workers',
         path: '/workers',
         icon: Server,
+        indicator: appStore.workersIndicator,
       },
       {
         name: 'System',
@@ -92,14 +100,38 @@ const menu: MenuInterface[] = [
         path: '/backups',
         icon: CloudBackup,
       },
-      {
-        name: 'Settings',
-        path: '/settings',
-        icon: Settings2,
-      },
     ],
   },
-]
+  {
+    name: 'Settings',
+    children: [
+      {
+        name: 'Tailscale',
+        path: '/tailscale',
+        icon: Network,
+        indicator: appStore.sectionIndicator('tailscale'),
+      },
+      {
+        name: 'Cloudflare',
+        path: '/cloudflare',
+        icon: Cloud,
+        indicator: appStore.sectionIndicator('cloudflare'),
+      },
+      { name: 'S3', path: '/s3', icon: HardDrive, indicator: appStore.sectionIndicator('s3') },
+      {
+        name: 'Notifications',
+        path: '/notifications',
+        icon: Bell,
+        indicator: appStore.sectionIndicator('notifications'),
+      },
+      { name: 'Upgrade', path: '/upgrade', icon: CircleArrowUp },
+    ],
+  },
+])
+
+function tooltip(item: MenuInterface) {
+  return item.indicator ? `${item.name}: ${item.indicator.label}` : item.name
+}
 
 // Close sidebar on mobile when route changes
 watch(
@@ -119,7 +151,7 @@ watch(
         <Building class="size-5 shrink-0" />
         <div class="grid flex-1 text-left text-sm leading-tight">
           <span class="truncate font-semibold">
-            {{ appStore.info?.domain }}
+            {{ appStore.info?.name }}
           </span>
         </div>
       </div>
@@ -135,17 +167,27 @@ watch(
             <SidebarMenuButton
               v-if="'path' in child"
               as-child
+              :tooltip="tooltip(child)"
               :isActive="
                 route.path === child.path ||
                 (child.path !== '/' && route.path.startsWith(child.path + '/'))
               "
             >
               <RouterLink :to="child.path!">
-                <component :is="child.icon" />
+                <span class="relative flex">
+                  <component :is="child.icon" class="size-4" />
+                  <StateIndicator
+                    v-if="sidebarState === 'collapsed' && child.indicator"
+                    v-bind="child.indicator"
+                    dot
+                    class="absolute -top-0.5 -right-0.5 size-1.5"
+                  />
+                </span>
                 <span>{{ child.name }}</span>
+                <StateIndicator v-if="child.indicator" v-bind="child.indicator" class="ml-auto" />
               </RouterLink>
             </SidebarMenuButton>
-            <SidebarMenuButton v-else-if="'url' in child" as-child>
+            <SidebarMenuButton v-else-if="'url' in child" as-child :tooltip="child.name">
               <a
                 :href="child.url"
                 :target="child.url?.startsWith('http') ? '_blank' : undefined"

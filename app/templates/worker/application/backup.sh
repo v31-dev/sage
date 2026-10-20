@@ -38,14 +38,15 @@ fi
 ARCHIVE_PATH="$TMP_DIR/${ARCHIVE_NAME}.tar.gz"
 ENCRYPTED_PATH="$TMP_DIR/${ARCHIVE_NAME}.tar.gz.enc"
 PASSPHRASE_PATH="$TMP_DIR/passphrase"
-UPLOAD_URL_PATH="$TMP_DIR/upload_url"
+UPLOAD_CONFIG_PATH="$TMP_DIR/upload.curl"
 
 cat <<'__SAGE_BACKUP_KEY__' > "$PASSPHRASE_PATH"
 ${ENCRYPTION_KEY}
 __SAGE_BACKUP_KEY__
 
-cat <<'__SAGE_UPLOAD_URL__' > "$UPLOAD_URL_PATH"
-${UPLOAD_URL}
+# The link is a curl config file, so it stays out of curl's command line (visible to ps).
+cat <<'__SAGE_UPLOAD_URL__' > "$UPLOAD_CONFIG_PATH"
+url = "${UPLOAD_URL}"
 __SAGE_UPLOAD_URL__
 
 tar -C "$APP_DIR/volumes" -czf "$ARCHIVE_PATH" "$VOLUME_NAME"
@@ -54,6 +55,16 @@ openssl enc -aes-256-cbc -pbkdf2 -salt \
   -in "$ARCHIVE_PATH" \
   -out "$ENCRYPTED_PATH" \
   -pass file:"$PASSPHRASE_PATH"
+
+# openssl enc has no integrity check, so append an HMAC-SHA256 of the ciphertext
+# (encrypt-then-MAC). restore.sh checks it before decrypting.
+# The MAC key is derived from the passphrase over stdin, so the passphrase never appears
+# in a command line.
+MAC_KEY="$({ printf 'sage-archive-mac:'; cat "$PASSPHRASE_PATH"; } \
+  | openssl dgst -sha256 -binary | od -An -tx1 | tr -d ' \n')"
+openssl dgst -sha256 -mac HMAC -macopt hexkey:"$MAC_KEY" -binary \
+  -out "$TMP_DIR/mac" "$ENCRYPTED_PATH"
+cat "$TMP_DIR/mac" >> "$ENCRYPTED_PATH"
 
 HTTP_STATUS="$(
   curl \
@@ -64,7 +75,7 @@ HTTP_STATUS="$(
     --request PUT \
     --header "Content-Type: application/octet-stream" \
     --upload-file "$ENCRYPTED_PATH" \
-    "$(cat "$UPLOAD_URL_PATH")"
+    --config "$UPLOAD_CONFIG_PATH"
 )"
 
 case "$HTTP_STATUS" in

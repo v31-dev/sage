@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -12,7 +12,7 @@ import {
   type Worker,
   type WorkerMetricsResponse,
 } from '@/services/api'
-import TitleStatus from '@/components/TitleStatus.vue'
+import SectionTitle from '@/components/SectionTitle.vue'
 import WorkerContainerCard from './WorkerContainerCard.vue'
 import WorkerHeader from './WorkerHeader.vue'
 
@@ -25,9 +25,16 @@ const workerMetrics = ref<WorkerMetricsResponse | null>(null)
 const isLoading = ref(true)
 const loadError = ref('')
 const isNotFound = ref(false)
+let pollInterval: ReturnType<typeof setInterval> | null = null
 
 onMounted(async () => {
   await loadWorker()
+  if (worker.value) {
+    pollInterval = setInterval(loadWorkerStatus, 10_000)
+  }
+})
+onUnmounted(() => {
+  if (pollInterval) clearInterval(pollInterval)
 })
 
 async function loadWorker() {
@@ -50,6 +57,14 @@ async function loadWorker() {
     }
   } finally {
     isLoading.value = false
+  }
+}
+
+async function loadWorkerStatus() {
+  try {
+    worker.value = (await workersAPI.fetchOne(hostname)) as Worker
+  } catch (err) {
+    console.error('Failed to load worker status:', err)
   }
 }
 
@@ -80,7 +95,7 @@ function goBack() {
 
         <div class="space-y-4">
           <div class="flex items-center justify-between">
-            <TitleStatus title="Application Containers" :size="4" />
+            <SectionTitle title="Application Containers" :size="4" />
           </div>
 
           <div v-if="worker.containers.length === 0" class="flex items-center justify-center py-8">
@@ -97,7 +112,7 @@ function goBack() {
               :key="`${container.application.project.name}-${container.application.name}`"
               :container="container"
               :worker="worker"
-              :loadWorker="loadWorker"
+              :loadWorkerStatus="loadWorkerStatus"
             />
           </div>
         </div>

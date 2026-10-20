@@ -1,10 +1,13 @@
 <script setup lang="ts">
 import { Card, CardContent } from '@/components/ui/card'
-import { Badge } from '@/components/ui/badge'
+import StateIndicator from '@/components/StateIndicator.vue'
 import { Label } from '@/components/ui/label'
 import TaskLogsButton from './TaskLogsButton.vue'
 import { type QueueTask, type CompletedTask } from '@/services/api'
+import { useAppStore } from '@/stores/app'
 import { formatDate } from '@/lib/utils'
+
+const appStore = useAppStore()
 
 const props = withDefaults(
   defineProps<{
@@ -13,12 +16,6 @@ const props = withDefaults(
   }>(),
   { showTimestamps: false }
 )
-
-function statusVariant(status: string) {
-  if (status === 'completed') return 'default'
-  if (status === 'failed') return 'destructive'
-  return 'secondary'
-}
 
 function asCompleted(t: QueueTask | CompletedTask) {
   return t as CompletedTask
@@ -32,13 +29,11 @@ function asCompleted(t: QueueTask | CompletedTask) {
         <Label class="text-muted-foreground text-xs">Task ID</Label>
         <div class="flex items-center justify-between gap-2">
           <TaskLogsButton :taskId="props.task.task_id" />
-          <Badge
+          <StateIndicator
             v-if="props.showTimestamps"
-            :variant="statusVariant(props.task.status)"
-            :class="{ warning: props.task.status === 'cancelled' }"
-          >
-            {{ props.task.status }}
-          </Badge>
+            v-bind="appStore.taskIndicator(props.task.status)"
+            show-label
+          />
         </div>
       </div>
 

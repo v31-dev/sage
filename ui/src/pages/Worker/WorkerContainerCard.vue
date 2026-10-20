@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { ArrowRight, Trash } from 'lucide-vue-next'
 import { RouterLink } from 'vue-router'
 import { Button } from '@/components/ui/button'
@@ -7,57 +7,63 @@ import { toast } from 'vue-sonner'
 import { Card, CardAction, CardHeader, CardTitle } from '@/components/ui/card'
 
 import ConfirmationButton from '@/components/ConfirmationButton.vue'
-import {
-  APPLICATION_BUSY_STATUSES,
-  type Container,
-  type Worker,
-  getContainerAPI,
-} from '@/services/api'
-import TitleStatus from '@/components/TitleStatus.vue'
+import { type Container, type Worker, getContainerAPI } from '@/services/api'
+import SectionTitle from '@/components/SectionTitle.vue'
+import StateIndicator from '@/components/StateIndicator.vue'
+import { useAppStore } from '@/stores/app'
 import CardFooter from '@/components/ui/card/CardFooter.vue'
 
 interface Props {
   worker: Worker
   container: Container
-  loadWorker: () => Promise<void>
+  loadWorkerStatus: () => Promise<void>
 }
+
+const appStore = useAppStore()
 
 const props = withDefaults(defineProps<Props>(), {})
 
-const isContainerBusy = computed(() => APPLICATION_BUSY_STATUSES.includes(props.container.status))
 const showForceDelete = computed(() => !props.worker.online)
+
+// Until the container's status changes, a force delete shows as stopping.
+const forceDeleting = ref(false)
+watch(
+  () => props.container.status,
+  () => {
+    forceDeleting.value = false
+  }
+)
+const status = computed(() => (forceDeleting.value ? 'stopping' : props.container.status))
 const containersAPI = getContainerAPI(
   props.container.application.project.name,
   props.container.application.name
 )
 
-const containerStatusClass = computed(() => {
-  if (props.container.status === 'active') return 'success'
-  if (isContainerBusy.value) return 'warning'
-  if (props.container.status === 'error') return 'error'
-  return 'default'
-})
-
 async function onConfirmForceDelete() {
-  await containersAPI.delete(props.worker.hostname, { force: true })
+  forceDeleting.value = true
+  try {
+    await containersAPI.delete(props.worker.hostname, { force: true })
+  } catch (err) {
+    forceDeleting.value = false
+    throw err
+  }
 
   toast.success(`Force delete initiated for ${props.container.application.label}`)
-  await props.loadWorker()
+  await props.loadWorkerStatus()
 }
 </script>
 
 <template>
   <Card>
-    <CardHeader>
+    <CardHeader class="flex items-center justify-between">
       <CardTitle>
-        <TitleStatus
+        <SectionTitle
           :title="
             props.container.application.project.name + '-' + props.container.application.label
           "
-          :status="containerStatusClass"
-          :loading="isContainerBusy"
-          :statusText="props.container.status"
-        />
+        >
+          <StateIndicator v-bind="appStore.applicationIndicator(status)" show-label />
+        </SectionTitle>
       </CardTitle>
       <CardAction v-if="showForceDelete">
         <ConfirmationButton

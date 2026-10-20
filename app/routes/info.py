@@ -4,7 +4,6 @@ from datetime import datetime
 from fastapi import APIRouter
 
 from services.manager import Manager
-from services.settings import Settings
 from services.tailscale import Tailscale
 from utils.common import get_env
 from utils.queue import OnConflict
@@ -15,15 +14,28 @@ router = APIRouter()
 start_time = datetime.now()
 
 
+def settings_status():
+  try:
+    return Manager().settings_status()
+  except Exception as e:
+    logger.error(f"Failed to build the settings status: {e}")
+    return None
+
+
 @router.get("")
-async def get():
+def get():
   return {
       "version": Manager().version,
       "latest_version": Manager().latest_version,
-      "domain": Settings().get("cloudflare", "domain"),
-      "hostname": get_env("HOSTNAME"),
+      "domain": get_env("DOMAIN"),
+      "name": get_env("TS_NAME"),
+      "worker_tag": Tailscale().worker_tag,
       "ip": Tailscale().ip(),
       "start_time": start_time.isoformat(),
+      "state": Manager().task_state(),
+      "restoring_from": Manager().restoring_from(),
+      "workers": Manager().worker_summary,
+      "settings": settings_status(),
   }
 
 

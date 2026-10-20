@@ -1,13 +1,17 @@
 import asyncio
+import contextlib
 import logging
 import os
 import sys
 
 import uvicorn
+from cryptography.fernet import InvalidToken
 
-import scheduler
 from api import app as app_fastapi
+from api import redirect_app
 from api_vector import app as app_fastapi_vector
+from scheduler import shutdown as shutdown_scheduler
+from scheduler import start as start_scheduler
 from services.manager import Manager
 from utils.logging import setup_logger
 
@@ -15,33 +19,79 @@ setup_logger()
 
 logger = logging.getLogger(__name__)
 
-# Setup the Manager
+
+def caused_by(error: BaseException | None, kind: type) -> bool:
+  # Services re-raise setup errors as generic exceptions; the original is in the chain.
+  while error is not None:
+    if isinstance(error, kind):
+      return True
+    error = error.__cause__ or error.__context__
+  return False
+
+
 try:
   manager = Manager()
 except Exception as e:
-  logger.critical(f"Error during startup: {e}", exc_info=True)
+  if caused_by(e, InvalidToken):
+    # The settings, written on the first boot, don't decrypt: the key was changed since.
+    logger.critical(
+        "ENCRYPTION_KEY is not the key this data was written with. Set the original key, or "
+        "wipe the volume to start over with this one.")
+  else:
+    logger.critical(f"Error during startup: {e}", exc_info=True)
+  sys.exit(1)
+
+# Cloudflare is part of the platform: Sage serves only once its domain is set up.
+try:
+  manager.setup_domain()
+except Exception as e:
+  logger.critical(
+      f"Could not set up {manager.cloudflare.manager_hostname}: {e}. Check CLOUDFLARE_API_TOKEN, "
+      "CLOUDFLARE_ACCOUNT_ID and DOMAIN.", exc_info=True)
   sys.exit(1)
 
 
 # Start the FastAPI server and the scheduler
 class Server(uvicorn.Server):
+  draining = False
+
   def handle_exit(self, sig: int, frame) -> None:
-    scheduler.shutdown()
-    return super().handle_exit(sig, frame)
+    # A second signal stops right away.
+    if self.draining:
+      return super().handle_exit(sig, frame)
+
+    # The first one drains: no new triggers or user changes, pending tasks (and any
+    # queued later) are recorded as cancelled, and running tasks finish before the
+    # servers stop. How long that may take is the runtime's stop grace period.
+    self.draining = True
+    shutdown_scheduler()
+    loop = asyncio.get_running_loop()
+    loop.call_soon_threadsafe(loop.create_task, self.drain(sig))
+
+  async def drain(self, sig: int):
+    manager.stop_tasks()
+    running = manager.task_snapshot()["running"]
+    if running:
+      logger.info(f"Stopping: waiting for {len(running)} running task(s) to finish.")
+    while manager.task_snapshot()["running"]:
+      await asyncio.sleep(0.5)
+    logger.info("Stopping: no tasks running.")
+    super().handle_exit(sig, None)
 
 
 class BackgroundServer(uvicorn.Server):
-  def handle_exit(self, sig: int, frame) -> None:
-    self.should_exit = True
-    return super().handle_exit(sig, frame)
+  # Only the API server handles stop signals, so worker logs keep arriving while it
+  # drains; this one stops when the process exits.
+  @contextlib.contextmanager
+  def capture_signals(self):
+    yield
 
 
 async def main():
-  # Perform manager async initialization
-  await manager.async_init()
-
-  # Start the cron/interval scheduler on this running loop.
-  scheduler.start()
+  # Start the cron/interval scheduler on this running loop. Startup work that touches
+  # the network (release check, certificate renewal, backup discovery) is queued from
+  # here, so it runs while the servers below are already serving.
+  start_scheduler()
 
   # Vector server for worker log ingestion
   vector_server = BackgroundServer(
@@ -54,45 +104,34 @@ async def main():
           log_config=None,
       )
   )
-  vector_server.install_signal_handlers = False
 
-  # API server
-  api_server = Server(
-      config=uvicorn.Config(
-          app_fastapi,
-          host="0.0.0.0",
-          port=int(os.getenv("PORT", 9000)),
-          workers=1,
-          loop="asyncio",
-          log_config=None,
-      )
-  )
-
-  tasks = [
-      asyncio.create_task(api_server.serve()),
-      asyncio.create_task(vector_server.serve()),
-  ]
-
-  # In prod sage terminates its own TLS on :443 (sage.core.<domain>). In dev a
-  # Traefik sidecar owns :443 — reusing the same issued cert — and proxies to the
-  # Vite HMR UI + this API, so skip the TLS server here (the cert is still issued
-  # by Certs at startup for Traefik to serve).
-  if os.getenv("ENV") != "development":
-    tls_config = uvicorn.Config(
+  if os.getenv("ENV") == "development":
+    # The dev Traefik terminates TLS for the manager's address and proxies here.
+    servers = [Server(config=uvicorn.Config(
+        app_fastapi, host="0.0.0.0", port=int(os.getenv("PORT", 9000)), workers=1, loop="asyncio",
+        log_config=None))]
+  else:
+    # The UI and API only at https://<TS_NAME>.core.<DOMAIN>; plain HTTP redirects there.
+    api_config = uvicorn.Config(
         app_fastapi,
         host="0.0.0.0",
         port=int(os.getenv("HTTPS_PORT", 443)),
         workers=1,
         loop="asyncio",
         log_config=None,
-        ssl_certfile=str(manager.certs.fullchain_path),
-        ssl_keyfile=str(manager.certs.key_path),
+        ssl_certfile=str(manager.certs.manager.fullchain_path),
+        ssl_keyfile=str(manager.certs.manager.key_path),
     )
-    tls_config.load()
-    manager.certs.tls_context = tls_config.ssl
-    tls_server = BackgroundServer(tls_config)
-    tls_server.install_signal_handlers = False
-    tasks.append(asyncio.create_task(tls_server.serve()))
+    api_config.load()
+    manager.certs.tls_context = api_config.ssl
+    servers = [
+        Server(api_config),
+        BackgroundServer(config=uvicorn.Config(
+            redirect_app, host="0.0.0.0", port=int(os.getenv("PORT", 80)), workers=1, loop="asyncio",
+            log_config=None)),
+    ]
+
+  tasks = [asyncio.create_task(server.serve()) for server in (*servers, vector_server)]
 
   await asyncio.wait(tasks)
 

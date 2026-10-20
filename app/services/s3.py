@@ -3,15 +3,20 @@ import logging
 from pathlib import Path
 from urllib.parse import urlparse
 
-import aioboto3
 import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError, NoCredentialsError
 
 from services.base import Base
 from services.settings import SETTING_DEFINITIONS, Settings
+from utils.executor import run_in_executor_with_context
 
 logger = logging.getLogger(__name__)
+
+# UI download presigned link expiry
+BROWSER_LINK_SECONDS = 60
+# A worker's upload or download presigned link expiry
+WORKER_LINK_SECONDS = 1200
 
 
 class S3(Base):
@@ -19,8 +24,7 @@ class S3(Base):
     super().__init__()
 
     self.s3_config = None
-
-    self._session = aioboto3.Session()
+    self._client = None
 
     self.load()
 
@@ -32,27 +36,28 @@ class S3(Base):
       settings = Settings()
       config = settings.get("s3")
       self.s3_config = config if settings.is_valid("s3") else None
+      self._client = (boto3.session.Session().client('s3', **self._get_client_kwargs())
+                      if self.s3_config else None)
 
-  def check_config(self, config: dict):
-    """Validate a candidate S3 config. It must be fully valid or fully empty"""
-    try:
-      provided = [config.get(key) for key in SETTING_DEFINITIONS["s3"]]
-      if not any(provided):
-        return True
-      if not all(provided):
-        return False
+  def check_config(self, config: dict, write: bool = False):
+    """Check a candidate S3 config against its bucket; raises with the reason. A config with
+    no values at all is valid (S3 off). With write, also writes and deletes a marker object."""
+    provided = [config.get(key) for key in SETTING_DEFINITIONS["s3"]]
+    if not any(provided):
+      return
+    if not all(provided):
+      raise ValueError("Fill in every S3 field, or leave them all empty.")
 
-      client_kwargs = self._get_client_kwargs(config)
-      client = boto3.client('s3', **client_kwargs)
-      client.list_objects_v2(
-          Bucket=config["bucket"],
-          Prefix=config["path"].strip('/'),
-          MaxKeys=1,
-      )
-    except Exception:
-      return False
-
-    return True
+    client_kwargs = self._get_client_kwargs(config)
+    client_kwargs["config"] = Config(signature_version='s3v4', connect_timeout=5, read_timeout=10,
+                                     retries={"max_attempts": 2})
+    client = boto3.session.Session().client('s3', **client_kwargs)
+    prefix = config["path"].strip('/')
+    client.list_objects_v2(Bucket=config["bucket"], Prefix=prefix, MaxKeys=1)
+    if write:
+      marker = f"{prefix}/.sage-check"
+      client.put_object(Bucket=config["bucket"], Key=marker, Body=b"")
+      client.delete_object(Bucket=config["bucket"], Key=marker)
 
   def check_config_exists(self):
     if not self.s3_config:
@@ -91,20 +96,18 @@ class S3(Base):
 
     return client_kwargs
 
-  def create_presigned_upload_url(self, s3_path, expires_in=3600, raw_path=False):
+  def create_presigned_upload_url(self, s3_path, expires_in, raw_path=False):
     """
     Create a presigned PUT URL for direct uploads.
     """
     self.check_config_exists()
-
-    client = boto3.client('s3', **self._get_client_kwargs())
 
     if raw_path:
       s3_key = s3_path.strip('/')
     else:
       s3_key = self.get_full_path(s3_path)
 
-    return client.generate_presigned_url(
+    return self._client.generate_presigned_url(
         'put_object',
         Params={
             'Bucket': self.s3_config['bucket'],
@@ -115,28 +118,44 @@ class S3(Base):
         HttpMethod='PUT',
     )
 
-  def create_presigned_download_url(self, s3_path, expires_in=3600, raw_path=False):
+  def create_presigned_download_url(self, s3_path, expires_in, raw_path=False, filename=None):
     """
-    Create a presigned GET URL for direct downloads.
+    Create a presigned GET URL for direct downloads. With a filename, the response asks
+    the browser to save the file under that name.
     """
     self.check_config_exists()
-
-    client = boto3.client('s3', **self._get_client_kwargs())
 
     if raw_path:
       s3_key = s3_path.strip('/')
     else:
       s3_key = self.get_full_path(s3_path)
 
-    return client.generate_presigned_url(
+    params = {
+        'Bucket': self.s3_config['bucket'],
+        'Key': s3_key,
+    }
+    if filename:
+      params['ResponseContentDisposition'] = f'attachment; filename="{filename}"'
+
+    return self._client.generate_presigned_url(
         'get_object',
-        Params={
-            'Bucket': self.s3_config['bucket'],
-            'Key': s3_key,
-        },
+        Params=params,
         ExpiresIn=expires_in,
         HttpMethod='GET',
     )
+
+  def key_exists(self, s3_path, raw_path=False) -> bool:
+    """True if the object is in the bucket. Blocking."""
+    self.check_config_exists()
+
+    s3_key = s3_path.strip('/') if raw_path else self.get_full_path(s3_path)
+    try:
+      self._client.head_object(Bucket=self.s3_config['bucket'], Key=s3_key)
+      return True
+    except ClientError as e:
+      if e.response.get('Error', {}).get('Code') in ('404', 'NoSuchKey', 'NotFound'):
+        return False
+      raise
 
   async def delete_key(self, s3_path, filter=None, max_retries=3, raw_path=False):
     """
@@ -156,57 +175,35 @@ class S3(Base):
     """
     self.check_config_exists()
 
-    session = self._session
-
     for attempt in range(max_retries):
       try:
-        async with session.client('s3', **self._get_client_kwargs()) as s3_client:
-          bucket_name = self.s3_config['bucket']
-          deleted_paths = []
+        bucket_name = self.s3_config['bucket']
+        deleted_paths = []
 
-          # List all objects at the given prefix
-          if raw_path:
-            prefix = s3_path.strip('/')
-          else:
-            prefix = self.get_full_path(s3_path)
-          paginator = s3_client.get_paginator('list_objects_v2')
-          pages = paginator.paginate(Bucket=bucket_name, Prefix=prefix)
+        # List all objects at the given prefix
+        if raw_path:
+          prefix = s3_path.strip('/')
+        else:
+          prefix = self.get_full_path(s3_path)
+        keys = await run_in_executor_with_context(self._list_keys, prefix)
 
-          objects_to_delete = []
-          async for page in pages:
-            if 'Contents' not in page:
-              continue
+        # Apply filter function if provided
+        objects_to_delete = [{'Key': key} for key in keys if filter is None or filter(key)]
 
-            for obj in page['Contents']:
-              # Skip if it's a "directory" marker
-              if obj['Key'].endswith('/'):
-                continue
+        # S3 delete_objects is limited to 1000 objects per request
+        for i in range(0, len(objects_to_delete), 1000):
+          batch = objects_to_delete[i:i + 1000]
+          response = await run_in_executor_with_context(
+              self._client.delete_objects, Bucket=bucket_name, Delete={'Objects': batch})
 
-              # Apply filter function if provided
-              if filter is None or filter(obj['Key']):
-                objects_to_delete.append({'Key': obj['Key']})
+          # Track deleted paths
+          for deleted_obj in response.get('Deleted', []):
+            deleted_paths.append(deleted_obj['Key'])
 
-          # Delete all matching objects
-          if objects_to_delete:
-            # S3 delete_objects is limited to 1000 objects per request
-            for i in range(0, len(objects_to_delete), 1000):
-              batch = objects_to_delete[i:i + 1000]
-              response = await s3_client.delete_objects(
-                  Bucket=bucket_name,
-                  Delete={'Objects': batch}
-              )
+          for error_obj in response.get('Errors', []):
+            raise Exception(f"Failed to delete {error_obj['Key']}: {error_obj['Message']}")
 
-              # Track deleted paths
-              if 'Deleted' in response:
-                for deleted_obj in response['Deleted']:
-                  deleted_paths.append(deleted_obj['Key'])
-
-              # Log any errors
-              if 'Errors' in response:
-                for error_obj in response['Errors']:
-                  raise Exception(f"Failed to delete {error_obj['Key']}: {error_obj['Message']}")
-
-          return deleted_paths
+        return deleted_paths
 
       except NoCredentialsError:
         raise Exception("S3 credentials are not valid.")
@@ -235,35 +232,32 @@ class S3(Base):
     """
     self.check_config_exists()
 
-    session = self._session
-
     try:
-      async with session.client('s3', **self._get_client_kwargs()) as s3_client:
-        bucket_name = self.s3_config['bucket']
-        # Combine base path with s3_path using explicit / separator
-        base_s3_path = self.get_full_path(s3_path)
-        local_path = Path(file_path)
+      bucket_name = self.s3_config['bucket']
+      # Combine base path with s3_path using explicit / separator
+      base_s3_path = self.get_full_path(s3_path)
+      local_path = Path(file_path)
 
-        if not local_path.exists():
-          raise FileNotFoundError(f"The file or directory {file_path} was not found.")
+      if not local_path.exists():
+        raise FileNotFoundError(f"The file or directory {file_path} was not found.")
 
-        if local_path.is_file():
-          # Single file upload
-          s3_path = f"{base_s3_path}/{local_path.name}"
-          await s3_client.upload_file(str(local_path), bucket_name, s3_path)
-          return s3_path
+      if local_path.is_file():
+        # Single file upload
+        s3_path = f"{base_s3_path}/{local_path.name}"
+        await run_in_executor_with_context(self._client.upload_file, str(local_path), bucket_name, s3_path)
+        return s3_path
 
-        elif local_path.is_dir():
-          # Directory upload - recursively upload all files
-          uploaded_files = []
-          for file in local_path.rglob('*'):
-            if file.is_file():
-              relative_path = file.relative_to(local_path)
-              s3_path = f"{base_s3_path}/{local_path.name}/{relative_path}"
-              await s3_client.upload_file(str(file), bucket_name, s3_path)
-              uploaded_files.append(s3_path)
+      elif local_path.is_dir():
+        # Directory upload - recursively upload all files
+        uploaded_files = []
+        for file in local_path.rglob('*'):
+          if file.is_file():
+            relative_path = file.relative_to(local_path)
+            s3_path = f"{base_s3_path}/{local_path.name}/{relative_path}"
+            await run_in_executor_with_context(self._client.upload_file, str(file), bucket_name, s3_path)
+            uploaded_files.append(s3_path)
 
-          return uploaded_files  # Return list of uploaded file paths
+        return uploaded_files  # Return list of uploaded file paths
 
     except FileNotFoundError as e:
       raise Exception(str(e))
@@ -286,8 +280,6 @@ class S3(Base):
     """
     self.check_config_exists()
 
-    session = self._session
-
     try:
       # Use the provided s3_path as-is (should already be the full key from Backup record)
       bucket_name = self.s3_config['bucket']
@@ -296,14 +288,11 @@ class S3(Base):
       if not raw_path:
         s3_key = self.get_full_path(s3_key)
 
-      async with session.client('s3', **self._get_client_kwargs()) as s3_client:
-        # Ensure local directory exists
-        Path(local_path).parent.mkdir(parents=True, exist_ok=True)
+      # Ensure local directory exists
+      Path(local_path).parent.mkdir(parents=True, exist_ok=True)
 
-        # Download file
-        await s3_client.download_file(bucket_name, s3_key, local_path)
-
-        return local_path
+      await run_in_executor_with_context(self._client.download_file, bucket_name, s3_key, local_path)
+      return local_path
 
     except NoCredentialsError:
       raise Exception("S3 credentials are not valid.")
@@ -311,6 +300,16 @@ class S3(Base):
       raise Exception(f"Failed to download from S3: {e}")
     except Exception as e:
       raise Exception(f"Failed to download from S3: {e}")
+
+  def _list_keys(self, full_prefix: str) -> list[str]:
+    """Every object key under a full prefix, skipping directory markers. Blocking."""
+    paginator = self._client.get_paginator('list_objects_v2')
+    return [
+        obj['Key']
+        for page in paginator.paginate(Bucket=self.s3_config['bucket'], Prefix=full_prefix)
+        for obj in page.get('Contents', [])
+        if not obj['Key'].endswith('/')
+    ]
 
   async def get_keys(self, prefix):
     """
@@ -324,34 +323,8 @@ class S3(Base):
     """
     self.check_config_exists()
 
-    session = self._session
-    keys = []
-
     try:
-      async with session.client('s3', **self._get_client_kwargs()) as s3_client:
-        bucket_name = self.s3_config['bucket']
-
-        # Get the full S3 prefix (combine base path with provided prefix)
-        full_prefix = self.get_full_path(prefix)
-
-        # List all objects at the prefix
-        paginator = s3_client.get_paginator('list_objects_v2')
-        pages = paginator.paginate(Bucket=bucket_name, Prefix=full_prefix)
-
-        async for page in pages:
-          if 'Contents' not in page:
-            continue
-
-          for obj in page['Contents']:
-            # Skip directory markers
-            if obj['Key'].endswith('/'):
-              continue
-
-            # Add the full S3 key to our list
-            keys.append(obj['Key'])
-
-        return keys
-
+      return await run_in_executor_with_context(self._list_keys, self.get_full_path(prefix))
     except NoCredentialsError:
       raise Exception("S3 credentials are not valid.")
     except ClientError as e:

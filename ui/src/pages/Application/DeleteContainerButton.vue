@@ -18,23 +18,24 @@ const appStore = useAppStore()
 const deleteButtonDisabled = computed(() => {
   return [
     ['stopping', 'deploying'].includes(appStore.applicationDeployStatus),
-    ['stopping', 'deploying'].includes(props.container?.status),
+    ['stopping', 'deploying'].includes(appStore.containerStatus(props.container)),
   ].includes(true)
 })
 
 const deleteButtonSpinner = computed(() => {
   return [
     ['stopping'].includes(appStore.applicationDeployStatus),
-    ['stopping'].includes(props.container?.status),
+    ['stopping'].includes(appStore.containerStatus(props.container)),
   ].includes(true)
 })
 
 async function onConfirmDeleteContainer() {
-  appStore.updateApplicationDeployStatus('stopping')
+  const hostname = props.container.worker.hostname
+  appStore.updateContainerStatus(hostname, 'stopping')
   try {
-    await props.containersAPI.delete(`${props.container.worker.hostname}`)
+    await props.containersAPI.delete(hostname)
   } catch (err) {
-    appStore.updateApplicationDeployStatus('error')
+    appStore.updateContainerStatus(hostname, props.container.status)
     throw err
   }
 }

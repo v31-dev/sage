@@ -1,76 +1,111 @@
 import logging
-import shutil
 import sqlite3
 from datetime import datetime, timedelta
 from functools import partial
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-import docker
+from cryptography.fernet import InvalidToken
+from peewee import chunked
 
-from services.db import DB_PATH, Backup, Database, Event, Notification, Task, db
+from services.db import DB_PATH, Application, Backup, Database, Event, Notification, Task, db
+from services.notification import Notifications
+from services.settings import Settings
+from utils.archive import BackupDecryptError, decrypt_file, encrypt_file
+from utils.common import RETENTION_DAYS
 from utils.executor import run_in_executor_with_context
 from utils.queue import OnConflict
 
-from ._common import BACKUP_TIMESTAMP_FORMAT, app_dir, is_expired_backup_key, timestamp_from_key
+from ._common import BACKUP_TIMESTAMP_FORMAT, is_expired_backup_key, timestamp_from_key
 
 logger = logging.getLogger(__name__)
 
-UPGRADER_IMAGE = "docker:28-cli"
-UPGRADER_NAME = "sage-upgrade"
-UPGRADE_SCRIPT = "templates/manager/upgrade.sh"
-
 
 class PlatformMixin:
-  async def discover_s3_platform_backups(self):
+  async def discover_s3_backups(self):
     """
-    Discover backups in S3 and reconcile with database.
+    Make the Backup table match what's in S3 under the configured path: record the
+    platform backups and volume archives found there, and drop records whose object is
+    gone. A fresh manager pointed at an existing bucket then lists its backups.
 
-    Finds all backup files in S3 and creates Backup records in the database
-    for any backups that exist in S3 but not yet in the Backup table.
-
-    This is useful for fresh installs with existing S3 backups.
+    A volume archive is recorded only while its application exists here, matched by
+    the project and application names in its key.
     """
     try:
-      logger.info("Starting S3 backup discovery...")
-
-      # Get all backup keys from S3
-      s3_backups = await self.s3.get_keys(self.s3_backup_path_platform)
-
-      if not s3_backups:
-        logger.info("No backups found in S3")
-        return
-
-      logger.info(f"Found {len(s3_backups)} backup(s) in S3")
-
-      # Get all existing backups from database
-      existing_backups = list(backup.s3_path for backup in Backup.select().where(Backup.type == "platform"))
-
-      # Create records for any missing backups
-      new_backups = []
-      for s3_path in s3_backups:
-        if s3_path not in existing_backups:
-          try:
-            timestamp_str = timestamp_from_key(s3_path)
-            backup_datetime = datetime.strptime(timestamp_str, BACKUP_TIMESTAMP_FORMAT)
-
-            # Create backup record with extracted timestamp as created_at
-            Backup.create(s3_path=s3_path, type="platform", created_at=backup_datetime)
-            new_backups.append((s3_path, timestamp_str))
-            logger.info(f"Created backup record for S3 backup: {s3_path}")
-          except Exception as e:
-            logger.error(f"Failed to create backup record for {s3_path}: {e}")
-
-      if new_backups:
-        self.notify(
-            f"S3 backup discovery: recovered {len(new_backups)} existing backup(s) from S3")
-      else:
-        logger.info("S3 backup discovery: all backups already in database")
-
+      platform_keys = set(await self.s3.get_keys(self.s3_backup_path_platform))
+      volume_keys = set(await self.s3.get_keys(self.s3_backup_path_applications))
     except Exception as e:
-      self.notify(f"S3 backup discovery failed: {e}", "error")
+      self.notify(f"Backup discovery failed: {e}", "error")
+      return
 
-  async def cleanup(self, days: int = 7):
+    volume_prefix = self.s3.get_full_path(self.s3_backup_path_applications) + "/"
+
+    def reconcile():
+      recorded = {backup.s3_path: backup.id for backup in Backup.select(Backup.id, Backup.s3_path)}
+      applications = {
+          (application.project_id, application.name): application
+          for application in Application.select()
+      }
+
+      rows = []
+      added = {"platform": 0, "application": 0}
+      unmatched = 0
+      for key in sorted(platform_keys | volume_keys):
+        if key in recorded:
+          continue
+        timestamp = timestamp_from_key(key)
+        if not timestamp:
+          continue
+        created_at = datetime.strptime(timestamp, BACKUP_TIMESTAMP_FORMAT)
+        if key in platform_keys:
+          rows.append(dict(s3_path=key, type="platform", created_at=created_at))
+          added["platform"] += 1
+          continue
+        # <project>/<application>/<worker>/<volume>/<timestamp>.tar.gz.enc
+        parts = key.removeprefix(volume_prefix).split("/")
+        if len(parts) != 5 or not key.endswith(".tar.gz.enc"):
+          continue
+        application = applications.get((parts[0], parts[1]))
+        if not application:
+          unmatched += 1
+          continue
+        rows.append(dict(s3_path=key, type="application", application=application,
+                         source_volume_name=parts[3], created_at=created_at))
+        added["application"] += 1
+
+      present = platform_keys | volume_keys
+      gone = [backup_id for s3_path, backup_id in recorded.items() if s3_path not in present]
+      with db.atomic():
+        for batch in chunked(rows, 100):
+          Backup.insert_many(batch).execute()
+        removed = Backup.delete().where(Backup.id.in_(gone)).execute() if gone else 0
+      return added, removed, unmatched
+
+    added, removed, unmatched = await run_in_executor_with_context(reconcile)
+
+    logger.info(
+        f"Backup discovery: {len(platform_keys)} platform and {len(volume_keys)} volume backup(s) in S3; "
+        f"added {added['platform']} platform and {added['application']} volume record(s), "
+        f"removed {removed} whose object is gone, skipped {unmatched} for applications not on this manager."
+    )
+    found = [f"{count} {kind} backup(s)" for kind, count in
+             (("platform", added["platform"]), ("volume", added["application"])) if count]
+    if found:
+      self.notify(f"Backup discovery listed {' and '.join(found)} found in S3.")
+
+  def restoring_from(self) -> str | None:
+    """When the backup being restored was made (taken from its key), while restoring."""
+    if self.task_state() != "restoring":
+      return None
+    snapshot = self.task_snapshot()
+    for task in (*snapshot["running"], *snapshot["queued"]):
+      if task["name"] == self.restore_database_from_s3.__name__:
+        timestamp = timestamp_from_key(task["params"]["s3_path"])
+        if timestamp:
+          return datetime.strptime(timestamp, BACKUP_TIMESTAMP_FORMAT).isoformat()
+    return None
+
+  async def cleanup(self, days: int = RETENTION_DAYS):
     cutoff = datetime.now() - timedelta(days=days)
 
     # Cleanup events
@@ -101,6 +136,9 @@ class PlatformMixin:
         removed += 1
     logger.info(f"Restore safety-copy cleanup: removed {removed} older than {days} days.")
 
+    if not self.s3.s3_config:
+      return
+
     # Cleanup application backups from S3
     try:
       deleted_application_backups = await self.s3.delete_key(
@@ -129,20 +167,26 @@ class PlatformMixin:
     # Create the backup
     with TemporaryDirectory() as temp_dir:
       timestamp = datetime.now().strftime(BACKUP_TIMESTAMP_FORMAT)
-      backup_file = f"{temp_dir}/{timestamp}.db"
+      snapshot_file = Path(temp_dir) / f"{timestamp}.db"
+      backup_file = Path(temp_dir) / f"{timestamp}.db.enc"
 
       try:
         # Use SQLite's native backup API
         src_conn = db.connection()
-        backup_conn = sqlite3.connect(backup_file)
+        backup_conn = sqlite3.connect(snapshot_file)
         src_conn.backup(backup_conn)
         backup_conn.close()
+
+        # Encrypted as a whole with ENCRYPTION_KEY, in the format of the volume archives
+        # (utils/archive.py): the backup reveals nothing without the key, and a restore
+        # with another key fails before it touches the live database.
+        await run_in_executor_with_context(encrypt_file, snapshot_file, backup_file)
 
         # Upload to S3
         await self.s3.upload_to_key(backup_file, self.s3_backup_path_platform)
 
         # Record backup in database
-        full_backup_path = f"{self.s3.get_full_path(self.s3_backup_path_platform)}/{timestamp}.db"
+        full_backup_path = f"{self.s3.get_full_path(self.s3_backup_path_platform)}/{backup_file.name}"
         Backup.create(s3_path=full_backup_path, type="platform")
 
         self.notify(f"Database backup created at {timestamp}.")
@@ -150,78 +194,45 @@ class PlatformMixin:
         self.notify(f"Failed to create database backup: {e}", "error")
         raise Exception(f"Failed to create database backup: {e}")
 
-  def restart(self):
-    client = docker.from_env()
-    client.containers.get("sage").restart()
-
-  async def upgrade(self, version: str):
-    """Back up the DB, then spawn the detached compose updater and return. Aborts if
-    the backup fails. The manager is replaced mid-flight, so the outcome isn't tracked
-    here; updater logs survive under `docker logs sage-upgrade`."""
-    await self.backup_database_s3()
-    await run_in_executor_with_context(self._spawn_upgrader, version)
-
-  def _spawn_upgrader(self, version: str):
-    """Launch the detached updater container. Self-upgrade is compose-only; refuse
-    (no-op + notify) when the manager wasn't started by Docker Compose."""
-    client = docker.from_env()
-    labels = client.containers.get("sage").labels
-
-    working_dir = labels.get("com.docker.compose.project.working_dir")
-    config_files = labels.get("com.docker.compose.project.config_files")
-    project = labels.get("com.docker.compose.project")
-    if not (working_dir and config_files and project):
-      self.notify(
-          "Upgrade aborted: this manager was not started with Docker Compose, so it "
-          "cannot self-upgrade. Pull the new image tag and recreate it manually.",
-          "error",
-      )
-      return
-
-    # Reap a previous updater so its name/logs don't block this run.
-    for stale in client.containers.list(all=True, filters={"name": UPGRADER_NAME}):
-      stale.remove(force=True)
-
-    client.containers.run(
-        image=UPGRADER_IMAGE,
-        command=["sh", "-c", (app_dir / UPGRADE_SCRIPT).read_text()],
-        environment={
-            "NEW_TAG": version,
-            "PROJECT_DIR": working_dir,
-            "PROJECT_NAME": project,
-            "CONFIG_FILES": config_files,
-        },
-        volumes={
-            "/var/run/docker.sock": {"bind": "/var/run/docker.sock", "mode": "rw"},
-            working_dir: {"bind": working_dir, "mode": "rw"},
-        },
-        working_dir=working_dir,
-        name=UPGRADER_NAME,
-        detach=True,
-        remove=False,
-    )
-    self.notify(f"Upgrade to v{version} started; the manager will restart.", "info")
-
   async def restore_database_from_s3(self, s3_path: str):
     """
     Restore database from S3 backup.
 
     Process:
     - Download backup file from S3 to temporary location
+    - Check and decrypt it (a backup made with another key fails here)
     - Validate it's a valid SQLite database
     - Create safety backup of current database
     - Restore into the live database using SQLite's online backup API
     - Verify database integrity
+    - Keep this manager's own S3 settings (a restore never changes them)
     - Re-sync workers
+
+    Runs while the queue is restoring (see TaskQueue): nothing else starts and the UI is
+    blocked. The task ends that state, discarding the tasks queued against the old data
+    when the restore took effect.
     """
+    restored = False
     try:
       logger.info(f"Starting database restore from {s3_path}")
+      s3_settings = Settings().get("s3")
 
       with TemporaryDirectory() as temp_dir:
         # Download backup from S3
+        encrypted_backup = Path(temp_dir) / "restore_backup.db.enc"
         downloaded_backup = f"{temp_dir}/restore_backup.db"
         logger.info(f"Downloading backup from S3: {s3_path}")
-        await self.s3.download_key(s3_path, downloaded_backup, raw_path=True)
+        await self.s3.download_key(s3_path, str(encrypted_backup), raw_path=True)
+
+        logger.info("Decrypting downloaded backup")
+
+        def decrypt_backup():
+          try:
+            decrypt_file(encrypted_backup, Path(downloaded_backup))
+          except BackupDecryptError as e:
+            raise Exception(f"the backup {e}")
+
+        await run_in_executor_with_context(decrypt_backup)
 
         # Validate it's a valid SQLite database
         logger.info("Validating downloaded backup file")
@@ -243,7 +254,11 @@ class PlatformMixin:
         logger.info(f"Creating safety backup: {safety_backup_path}")
 
         try:
-          shutil.copy2(DB_PATH, safety_backup_path)
+          # Through SQLite, not a file copy: in WAL mode recent writes are only in the
+          # -wal file, which a copy of the main file would miss.
+          safety_conn = sqlite3.connect(safety_backup_path)
+          db.connection().backup(safety_conn)
+          safety_conn.close()
           logger.info(f"Safety backup created: {safety_backup_path}")
         except Exception as e:
           logger.error(f"Failed to create safety backup: {e}")
@@ -295,6 +310,11 @@ class PlatformMixin:
           logger.info("Reconciling restored schema with current models")
           Database().reconcile_schema()
           logger.info("Schema reconciled successfully")
+
+          # Reload the cached settings from the restored database (they must decrypt,
+          # or the restore rolls back).
+          Settings().load_all()
+          Settings().set("s3", s3_settings)
         except Exception as e:
           logger.error(f"Restored database verification failed: {e}")
           # Rollback to safety backup
@@ -304,8 +324,10 @@ class PlatformMixin:
             live_conn = db.connection()
             rollback_conn.backup(live_conn)
             rollback_conn.close()
+            Settings().load_all()
+            reason = "it was made with a different encryption key" if isinstance(e, InvalidToken) else e
             self.notify(
-                "Platform restore completed with fallback to safety backup",
+                f"Platform restore from backup {s3_path} failed ({reason}); the previous database was kept.",
                 "warning"
             )
             return
@@ -313,19 +335,22 @@ class PlatformMixin:
             logger.error(f"Failed to rollback to safety backup: {rollback_err}")
           raise Exception(f"Database verification failed and recovery unsuccessful: {e}")
 
-        self.notify(f"Platform restored from backup {s3_path} successfully.", "success")
+        # Services built from the settings pick up the restored values.
+        self.s3.load()
+        Notifications().load_notifications_config()
+        self.refresh_worker_summary()
 
-        # The restore rewrote worker state in the DB; queue a force-resync.
-        # REPLACE supersedes a pending sync and waits behind this restore, whose
-        # scopes cover the sync's platform scope.
-        self.add_task(
-            task=self.sync_workers,
-            scopes={"platform"},
-            params={"force": True},
-            executor="platform",
-            on_conflict=OnConflict.REPLACE,
-        )
+        self.notify(f"Platform restored from backup {s3_path} successfully.", "success")
+        restored = True
 
     except Exception as e:
       self.notify(f"Platform restore failed: {e}", "error")
       raise
+    finally:
+      # The restore rewrote worker state in the DB; force-resync the workers.
+      follow_ups = [dict(task=self.sync_workers, scopes={"platform"}, params={"force": True},
+                         executor="platform", on_conflict=OnConflict.REPLACE)]
+      if self.s3.s3_config:
+        # The backup records are the snapshot's too; match them to the bucket again.
+        follow_ups.append(dict(task=self.discover_s3_backups, scopes={"platform", "app"}, executor="platform"))
+      self.end_restore(restored, follow_ups=follow_ups)

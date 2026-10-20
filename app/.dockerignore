@@ -2,11 +2,12 @@
 .env
 
 # Node
-node_modules
+**/node_modules
 
 # Python
-__pycache__
-*-venv
+**/__pycache__
+**/.ruff_cache
+**/*-venv
 
 # Ignore marked files
-*-gitignore
+**/*-gitignore

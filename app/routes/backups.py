@@ -1,9 +1,11 @@
 import logging
+import re
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 
 from services.db import Backup
 from services.manager import Manager
+from services.s3 import BROWSER_LINK_SECONDS
 from utils.api import generic_delete, generic_get, generic_list, get_request_models
 from utils.queue import OnConflict
 
@@ -51,13 +53,23 @@ def list_backups(request: Request):
 
 @router.post("/platform_backup_status")
 def get_platform_backup_status(request: Request):
-  """Get current platformbackup status."""
-  return {"platform_backup_in_progress": Manager().is_task_running(Manager().backup_database_s3)}
+  """Get current platform backup and discovery status."""
+  return {
+      "platform_backup_in_progress": Manager().is_task_running(Manager().backup_database_s3),
+      "discovery_in_progress": Manager().has_task(Manager().discover_s3_backups),
+  }
+
+
+def require_s3():
+  """Every backup lives in S3, which is optional."""
+  if not Manager().s3.s3_config:
+    raise HTTPException(status_code=400, detail="S3 is not configured. Set it up in Settings first.")
 
 
 @router.post("/")
 def create_backup(request: Request):
   """Trigger backup - platform backup by default, or volume backup if nested under volume."""
+  require_s3()
   models = get_request_models(request)
   if "volume" in models:
     application = models["application"]
@@ -96,9 +108,46 @@ def create_backup(request: Request):
   return {"status": "OK"}
 
 
+@router.post("/discover")
+def discover_backups(request: Request):
+  """List the platform backups and volume archives in S3 that aren't listed yet."""
+  require_s3()
+  Manager().add_task(
+      task=Manager().discover_s3_backups,
+      scopes={"platform", "app"},
+      executor="platform",
+      task_id=request.state.task_id,
+  )
+  return {"status": "OK"}
+
+
+def download_filename(backup: Backup) -> str:
+  """A name for the saved file: a volume backup's path says which volume it is from."""
+  parts = backup.s3_path.strip("/").split("/")
+  name = "-".join(parts[-5:]) if backup.type == "application" else parts[-1]
+  return re.sub(r"[^A-Za-z0-9._-]", "_", name)
+
+
+@router.post("/{backup}/download", dependencies=[Depends(inject_backup)])
+def download_backup(request: Request):
+  """A short-lived link that downloads the backup file straight from S3."""
+  require_s3()
+  backup = request.state.models["backup"]
+
+  if not Manager().s3.key_exists(backup.s3_path, raw_path=True):
+    raise HTTPException(status_code=404, detail="The backup file is no longer in S3.")
+
+  url = Manager().s3.create_presigned_download_url(
+      backup.s3_path, expires_in=BROWSER_LINK_SECONDS, raw_path=True,
+      filename=download_filename(backup))
+  logger.info(f"Download link for backup {backup.id} ({backup.s3_path}) valid for {BROWSER_LINK_SECONDS}s.")
+  return {"url": url, "expires_in": BROWSER_LINK_SECONDS}
+
+
 @router.delete("/{backup}", dependencies=[Depends(inject_backup)])
 def delete_backup(request: Request):
   """Delete backup - only platform backups for now."""
+  require_s3()
   backup = request.state.models["backup"]
 
   # Delete backup record from database
@@ -120,6 +169,7 @@ def delete_backup(request: Request):
 @router.post("/{backup}/restore", dependencies=[Depends(inject_backup)])
 async def restore_backup(request: Request, restore_data: dict = Body(default={})):
   """Restore backup."""
+  require_s3()
   models = get_request_models(request, ["backup"])
   backup = models["backup"]
 
@@ -156,12 +206,14 @@ async def restore_backup(request: Request, restore_data: dict = Body(default={})
   if backup.type != "platform":
     raise HTTPException(status_code=400, detail="Only platform backups can be restored")
 
+  # Blocks Sage (restoring state) until the restore has finished.
   if not Manager().add_task(
       task=Manager().restore_database_from_s3,
       scopes={"platform", "app"},
       params={"s3_path": backup.s3_path},
       executor="platform",
       task_id=request.state.task_id,
+      restore=True,
   ):
     raise HTTPException(status_code=409, detail="A platform operation is already in progress.")
 

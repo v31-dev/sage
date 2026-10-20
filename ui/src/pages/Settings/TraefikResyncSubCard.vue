@@ -15,7 +15,9 @@ import { Field, FieldDescription, FieldGroup, FieldLabel, FieldSet } from '@/com
 import { Spinner } from '@/components/ui/spinner'
 import { RotateCw, TriangleAlert } from 'lucide-vue-next'
 import { settingsAPI } from '@/services/api'
+import { useAppStore } from '@/stores/app'
 
+const appStore = useAppStore()
 const submitting = ref(false)
 const dialogOpen = ref(false)
 const errorMessage = ref('')
@@ -31,6 +33,7 @@ async function onConfirmResync() {
 
   try {
     await settingsAPI.action('resync_traefik')
+    appStore.setSettingApplying('cloudflare')
     dialogOpen.value = false
   } catch (err) {
     errorMessage.value = err instanceof Error ? err.message : 'Failed to initiate Traefik resync'
@@ -48,9 +51,8 @@ async function onConfirmResync() {
           <Field>
             <FieldLabel>Resync Traefik</FieldLabel>
             <FieldDescription>
-              ⚠ Rewrites all Traefik config on the manager and online workers, restarts Traefik
-              containers, and forces certificate re-issuance. Use when TLS certs are broken, ACME
-              state is corrupt, or you've rotated the Cloudflare API token outside of settings.
+              ⚠ Re-checks the certificates and resyncs routing on every online worker. Use when a
+              certificate is broken or routing on the workers has drifted.
             </FieldDescription>
           </Field>
         </FieldGroup>
@@ -77,30 +79,17 @@ async function onConfirmResync() {
               Resync Traefik
             </DialogTitle>
             <DialogDescription>
-              This rebuilds Traefik state across the platform — manager config, ACME certs, and
-              worker Traefik. Use for cert/ACME failures or Cloudflare API token rotation, not for
-              general worker drift.
+              Use this for certificate problems or routing drift, not for general worker drift.
             </DialogDescription>
           </DialogHeader>
 
           <div class="space-y-3 py-2 text-sm text-muted-foreground">
             <p>The following will happen:</p>
             <ul class="ml-4 list-disc space-y-1 text-xs">
-              <li>Manager Traefik config files and DNS API token file are rewritten.</li>
-              <li>Manager Traefik is restarted; existing certificates are re-issued via ACME.</li>
-              <li>
-                Worker Traefik static and dynamic config is resynced; worker Traefik restarted.
-              </li>
-              <li>
-                Every application is flagged for domain config resync on the next scheduler tick.
-              </li>
+              <li>Certificates that are missing or about to expire are renewed.</li>
+              <li>Every online worker gets the current certificate and routing configuration.</li>
+              <li>Every application's routing is resynced.</li>
             </ul>
-            <p
-              class="rounded border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs text-destructive"
-            >
-              <strong>Brief downtime expected.</strong> Public traffic to all apps may drop for a
-              few seconds during Traefik restarts.
-            </p>
           </div>
 
           <p v-if="errorMessage" class="text-xs text-destructive">{{ errorMessage }}</p>

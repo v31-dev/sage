@@ -15,7 +15,8 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 
 import { fetchNotifications, type Notification } from '@/services/api'
 import { formatDateStringAgo } from '@/lib/utils'
-import TitleStatus from './TitleStatus.vue'
+import SectionTitle from './SectionTitle.vue'
+import { TONES } from '@/lib/tone'
 
 const notifications = ref<Notification[]>([])
 const isLoading = ref(true)
@@ -34,10 +35,10 @@ const unreadNotifications = computed(() => {
 })
 
 const typeConfig = {
-  info: { icon: 'radix-icons:info-circled', color: 'bg-blue-100 dark:bg-blue-900' },
-  success: { icon: 'radix-icons:check-circled', color: 'bg-green-100 dark:bg-green-900' },
-  warning: { icon: 'radix-icons:exclamation-triangle', color: 'bg-yellow-100 dark:bg-yellow-900' },
-  error: { icon: 'radix-icons:cross-circled', color: 'bg-red-100 dark:bg-red-900' },
+  info: { icon: 'radix-icons:info-circled', color: TONES.info.soft },
+  success: { icon: 'radix-icons:check-circled', color: TONES.success.soft },
+  warning: { icon: 'radix-icons:exclamation-triangle', color: TONES.warning.soft },
+  error: { icon: 'radix-icons:cross-circled', color: TONES.error.soft },
 }
 
 function getLastSeenNotificationTimestamp(): string | null {
@@ -126,17 +127,23 @@ onUnmounted(() => {
         <Icon icon="radix-icons:bell" class="h-[1rem] w-[1rem]" />
         <span
           v-if="unreadNotifications"
-          class="absolute top-1 right-0 w-3 h-3 bg-red-500 text-white text-xs rounded-full flex items-center justify-center font-bold"
+          :class="[
+            'absolute top-1 right-0 w-3 h-3 text-white text-xs rounded-full flex items-center justify-center font-bold',
+            TONES.error.dot,
+          ]"
         >
         </span>
       </Button>
     </PopoverTrigger>
     <PopoverContent class="w-[calc(100vw-2rem)] sm:w-80 md:w-2xl max-h-96 overflow-y-auto">
       <div class="space-y-2 no-scrollbar">
-        <TitleStatus title="Notifications" :size="4" />
+        <SectionTitle title="Notifications" :size="4" />
         <Spinner v-if="isLoading" class="animate-spin" />
 
-        <div v-else-if="notifications.length === 0" class="text-center text-sm text-gray-500">
+        <div
+          v-else-if="notifications.length === 0"
+          class="text-center text-sm text-muted-foreground"
+        >
           No notifications
         </div>
 
@@ -145,7 +152,7 @@ onUnmounted(() => {
             v-for="notification in notifications"
             :key="notification.id"
             variant="outline"
-            :class="[notification.link && 'cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800']"
+            :class="[notification.link && 'cursor-pointer hover:bg-muted/50']"
             @click="notification.link && handleNotificationClick(notification)"
           >
             <ItemMedia>

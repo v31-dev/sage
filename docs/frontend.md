@@ -24,7 +24,7 @@ The shell is assembled in `ui/src/App.vue`:
 - reload dialog on initialization failure
 - toast notifications
 
-Initial app boot currently fetches platform info through the Pinia store in `ui/src/stores/app.ts`.
+Initial app boot fetches `GET /api` through the Pinia store in `ui/src/stores/app.ts`. That store owns the manager's status and its one poll: the version, the queue state (the pause banner and the restore overlay), the worker summary and the settings status (the sidebar indicators and the settings pages). It refreshes every 30 s and on window focus, or every 2 s while a restore runs. After an action the page updates the store at once (`setState` for pause and resume, `setSettingApplying` after a save) and the next poll confirms it, as with `applicationDeployStatus`, which the deploy, stop, backup and restore buttons set together with the statuses of the containers they touch (`containerStatus` for a card), and which the application header shows; deleting a container sets only that container (`updateContainerStatus`); `refresh()` fetches right away. A part the manager couldn't build comes as `null` and the store keeps the last value. Pages poll their own data (tasks, application status, metrics) only while they are open.
 
 ## Main Pages
 
@@ -43,7 +43,7 @@ Routes in `ui/src/router/index.ts` currently cover:
 - `/workers/:hostname`
 - `/workers/:hostname/metrics`
 - `/backups`
-- `/settings`
+- `/tailscale`, `/cloudflare`, `/s3`, `/notifications`, `/upgrade` (the settings pages, grouped under "Settings" in the sidebar)
 
 ## Main Feature Areas
 
@@ -54,7 +54,59 @@ Routes in `ui/src/router/index.ts` currently cover:
 - Worker inventory and worker metrics
 - Global logs view
 - Backups and restore flows
-- Platform settings
+- Settings: one page per section, listed under a "Settings" group in the sidebar
+
+## Forms
+
+- Placeholders are only examples, written "e.g. …". They never stand in for a label, a
+  hint or a default (they vanish on typing and read as a filled-in value).
+- A field with a default is prefilled with the actual value.
+- Optional fields say "(optional)" in the label; required is the unmarked default.
+- Search boxes and select prompts ("Search logs…", "Select backup") are prompts, not
+  values, and are fine.
+- Help for a field is an info icon beside its label (`FieldLabelHelp`), never inside the
+  input. Inside an input, a leading icon marks a state (a lock on a read-only field) and
+  trailing icons are actions on the value: at most two (copy, reveal, clear), reveal
+  outermost.
+
+## Status Colours
+
+A state's look is chosen by its meaning, never by a palette colour. The theme tokens
+`--success`, `--warning`, `--info` and `--destructive` are in `src/style.css` (light and dark,
+next to the shadcn tokens, and available as `text-success`, `bg-warning/10`,
+`border-info/30`…). `lib/tone.ts` maps a meaning (`success`, `warning`, `error`, `info`,
+`neutral`) to the class sets the UI needs: `text`, `chip`, `soft`, `dot` and `bar`. A place that
+shows a state maps its own value to a tone: log levels
+(`levelClass`), notification types, and health bars and chips on the home page. In progress is
+`info` (blue) everywhere, including applications in transition; `warning` (amber) is for
+warnings. A solid green or red button is a button variant (`success`, `destructive`), not a
+class of its own. New states and new places use a tone; no `text-green-600`, `bg-red-500`,
+`text-gray-500` and the like.
+
+## State Indicators
+
+`components/StateIndicator.vue` draws a state with its own icon shape as well as a colour,
+so colour is never the only cue: `idle`, `busy`, `ok`, `warning` or `error`, each with a label
+that is also its accessible name. It is an icon, an icon with the label in a badge
+(`show-label`), or a small dot (`dot`, sized and placed by the caller). A place that has its
+own states maps them to one of these in the app store (`sectionIndicator` for a settings
+section, `workersIndicator` for the Workers menu item, `applicationIndicator` for an
+application or container, `workerIndicator`, `domainIndicator`, `taskIndicator`). Used by the
+settings badge and sidebar, the Workers menu item, the application, container, worker and
+task statuses, a domain's sync state and the worker dot in a container card. A title with a
+state beside it is a `SectionTitle` with the indicator in its slot.
+
+## Dates
+
+Every date shown goes through `formatDate` or `formatDateStringAgo` (`lib/utils.ts`), never
+raw. Both parse with `parseDate`: backend timestamps without a timezone are UTC; ones with
+`Z` or an offset are read as given.
+
+## Settings Pages
+
+Every settings page is a `SettingsSection.vue` given a `fields` list (`key`, `label`, and optionally `description`, `placeholder`, `type`, `secret`, `readonly`, `value`). A `readonly` field shows its `value` and is never loaded or saved. Tailscale and Cloudflare are env vars, so all their fields are read-only: the section then shows no Save / Test / Reset, and the page adds its dashboard links (`links` slot: the manager's machine in the Tailscale console; the tunnel and DNS records in Cloudflare) and its resync actions (`after` slot). S3 and notifications have editable fields: for those the section draws the inputs, loads, saves, tests and resets the values, shows a failing field's reason from the status under it, and handles the unsaved-changes dialog and the route-leave guard. Errors show inline; successes as toasts. The sidebar
+and the pages read each section's status from the app store (`info.settings`). States are
+drawn by `components/StateIndicator.vue` (see State Indicators).
 
 ## API Layer
 

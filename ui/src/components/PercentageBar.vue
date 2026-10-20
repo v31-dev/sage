@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { Progress } from '@/components/ui/progress'
+import { TONES } from '@/lib/tone'
 
 interface Props {
   value: number
@@ -14,15 +15,15 @@ const barValue = computed(() =>
 )
 
 function getStatusColor(percent: number) {
-  if (percent < 50) return '[&>div]:bg-green-500'
-  if (percent < 70) return '[&>div]:bg-yellow-500'
-  return '[&>div]:bg-red-500'
+  if (percent < 50) return TONES.success.bar
+  if (percent < 70) return TONES.warning.bar
+  return TONES.error.bar
 }
 
 function getStatusTextColor(percent: number) {
-  if (percent < 50) return 'text-green-600'
-  if (percent < 70) return 'text-yellow-600'
-  return 'text-red-600'
+  if (percent < 50) return TONES.success.text
+  if (percent < 70) return TONES.warning.text
+  return TONES.error.text
 }
 </script>
 

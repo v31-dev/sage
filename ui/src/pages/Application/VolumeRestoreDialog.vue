@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { toast } from 'vue-sonner'
-import { ArchiveRestore } from 'lucide-vue-next'
+import { ArchiveRestore, Download } from 'lucide-vue-next'
 
 import {
   Dialog,
@@ -22,7 +22,13 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Spinner } from '@/components/ui/spinner'
-import { type Application, type Backup, getVolumeBackupAPI, type Volume } from '@/services/api'
+import {
+  type Application,
+  type Backup,
+  downloadBackup,
+  getVolumeBackupAPI,
+  type Volume,
+} from '@/services/api'
 import { useAppStore } from '@/stores/app'
 import RestoreLogsDialog from '@/components/RestoreLogsDialog.vue'
 import { formatDate } from '@/lib/utils'
@@ -104,12 +110,22 @@ async function loadBackups() {
   }
 }
 
+async function onClickDownload() {
+  if (!selectedBackup.value) return
+
+  try {
+    await downloadBackup(volumeBackupAPI, selectedBackup.value.id)
+  } catch (err) {
+    toast.error(err instanceof Error ? err.message : 'Failed to download backup')
+  }
+}
+
 async function onClickRestore() {
   if (!selectedBackup.value || !selectedTargetWorker.value) return
 
   const previousStatus = appStore.applicationDeployStatus
   isRestoring.value = true
-  appStore.updateApplicationDeployStatus('restoring')
+  appStore.updateApplicationDeployStatus('restoring', [selectedTargetWorker.value])
 
   try {
     await volumeBackupAPI.action(`${selectedBackup.value.id}/restore`, {
@@ -216,6 +232,15 @@ watch(isOpen, async open => {
 
       <DialogFooter>
         <Button size="sm" type="button" variant="outline" @click="isOpen = false">Close</Button>
+        <Button
+          size="sm"
+          type="button"
+          variant="outline"
+          :disabled="!selectedBackup"
+          @click="onClickDownload"
+        >
+          <Download />Download
+        </Button>
         <Button size="sm" :disabled="canStartRestore" @click="onClickRestore">
           <Spinner class="animate-spin" v-if="isRestoring" />
           <ArchiveRestore v-else />Restore

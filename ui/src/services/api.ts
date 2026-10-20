@@ -1,4 +1,5 @@
 import { CRUDAPI } from '@/lib/api'
+import { startDownload } from '@/lib/utils'
 
 const API_ROOT = '/api'
 
@@ -15,9 +16,19 @@ export interface AppInfo {
   version: string
   latest_version: string | null
   domain: string
-  hostname: string
+  name: string
+  worker_tag: string
   ip: string
   start_time: string
+  state: 'running' | 'paused' | 'restoring' | 'stopping'
+  restoring_from: string | null
+  workers: WorkerSummary | null
+  settings: SettingsStatus | null
+}
+
+export interface WorkerSummary {
+  total: number
+  online: number
 }
 
 export interface Release {
@@ -209,6 +220,29 @@ export interface Setting {
   created_at: Date
   updated_at: Date
 }
+
+export type SettingSection = 'tailscale' | 'cloudflare' | 's3' | 'notifications'
+export type SettingState = 'not_configured' | 'applying' | 'ok' | 'retrying' | 'error'
+
+// What a StateIndicator can show, whatever it describes.
+export type IndicatorState = 'idle' | 'busy' | 'ok' | 'warning' | 'error'
+export interface Indicator {
+  state: IndicatorState
+  label: string
+}
+
+export interface SettingSectionStatus {
+  state: SettingState
+  message: string | null
+  task_id: string | null
+  checked_at: string | null
+  // Cloudflare: account_id, tunnel_id, tunnel_status, *_certificate_expiry.
+  details: Record<string, string | null> | null
+  // Notifications: why each failing channel failed, by settings field.
+  channels: Record<string, string> | null
+}
+
+export type SettingsStatus = Record<SettingSection, SettingSectionStatus>
 
 export const settingsAPI = new CRUDAPI({
   name: 'Settings',
@@ -448,6 +482,14 @@ export const backupAPI = new CRUDAPI({
   path: `${API_ROOT}/backups`,
   load_delay: LOAD_DELAY,
 })
+
+export async function downloadBackup(
+  api: { action: (action: string) => Promise<unknown> },
+  backupId: number | string
+) {
+  const { url } = (await api.action(`${backupId}/download`)) as { url: string }
+  startDownload(url)
+}
 
 export function getVolumeBackupAPI(
   projectName: string,

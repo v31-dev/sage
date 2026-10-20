@@ -1,12 +1,24 @@
 import json
+import logging
+import os
 import re
+import sys
 
 from cryptography.fernet import Fernet
 from peewee import CharField, TextField
 
-from utils.common import get_env
+from utils.logging import LOG_FORMAT
 
-cipher = Fernet(get_env("ENCRYPTION_KEY"))
+# Encrypts sensitive fields. The same key encrypts every backup (through openssl, see
+# utils/archive.py), so the data and its backups are unreadable without it, and it can't
+# change after the first boot (main.py).
+try:
+  cipher = Fernet(os.getenv("ENCRYPTION_KEY", ""))
+except ValueError:
+  # Checked at import, before main.py sets up logging, so formatted here like a log line.
+  sys.exit(logging.Formatter(LOG_FORMAT).format(logging.makeLogRecord({
+      "name": __name__, "levelname": "CRITICAL", "levelno": logging.CRITICAL, "task_id": "",
+      "msg": "ENCRYPTION_KEY must be a key made with: openssl rand -base64 32 | tr '+/' '-_'"})))
 
 
 def validate_multiline_kv(config: str, field_name: str = "config"):

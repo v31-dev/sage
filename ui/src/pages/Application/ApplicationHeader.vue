@@ -20,9 +20,12 @@ import DeployApplicationButton from './DeployApplicationButton.vue'
 import StopApplicationButton from './StopApplicationButton.vue'
 import EditApplicationButton from './EditApplicationButton.vue'
 import ConfirmationButton from '@/components/ConfirmationButton.vue'
-import { APPLICATION_BUSY_STATUSES, type Application, getApplicationAPI } from '@/services/api'
-import TitleStatus from '@/components/TitleStatus.vue'
+import { type Application, getApplicationAPI } from '@/services/api'
+import SectionTitle from '@/components/SectionTitle.vue'
+import StateIndicator from '@/components/StateIndicator.vue'
+import { useAppStore } from '@/stores/app'
 import { formatDateStringAgo } from '@/lib/utils'
+import { TONES } from '@/lib/tone'
 
 interface Props {
   application: Application
@@ -30,11 +33,9 @@ interface Props {
   loadApplication: () => Promise<void>
 }
 
-const props = withDefaults(defineProps<Props>(), {})
+const appStore = useAppStore()
 
-const isApplicationBusy = computed(() =>
-  APPLICATION_BUSY_STATUSES.includes(props.application.status)
-)
+const props = withDefaults(defineProps<Props>(), {})
 
 function onClickLogs() {
   router.push(`/projects/${props.application.project.name}/${props.application.name}/logs`)
@@ -49,13 +50,6 @@ async function onConfirmDelete() {
   toast.success(`Application ${props.application.name} deleted successfully`)
   router.push(`/projects/${props.application.project.name}`)
 }
-
-const applicationStatusClass = computed(() => {
-  if (props.application.status === 'active') return 'success'
-  else if (isApplicationBusy.value) return 'warning'
-  else if (props.application.status === 'error') return 'error'
-  else return 'default'
-})
 
 const repoURL = computed(() => {
   const repo = props.application.repo
@@ -81,13 +75,12 @@ const repoURL = computed(() => {
   <Card>
     <CardHeader class="border-b">
       <CardTitle>
-        <TitleStatus
-          :title="props.application.label"
-          :status="applicationStatusClass"
-          :loading="isApplicationBusy"
-          :statusText="props.application.status"
-          :size="3"
-        />
+        <SectionTitle :title="props.application.label" :size="3">
+          <StateIndicator
+            v-bind="appStore.applicationIndicator(appStore.applicationDeployStatus)"
+            show-label
+          />
+        </SectionTitle>
       </CardTitle>
       <CardAction>
         <ButtonGroup class="space-x-1">
@@ -165,7 +158,7 @@ const repoURL = computed(() => {
       </div>
       <div
         v-if="props.application.config_dirty"
-        class="flex items-center gap-1.5 text-sm text-amber-600 dark:text-amber-500"
+        :class="['flex items-center gap-1.5 text-sm', TONES.warning.text]"
       >
         <TriangleAlert class="w-4 h-4 shrink-0" />
         Configuration changed since last deploy — redeploy to apply.

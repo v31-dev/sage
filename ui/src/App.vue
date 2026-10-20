@@ -3,6 +3,8 @@ import { ref, onMounted } from 'vue'
 import { useColorMode } from '@vueuse/core'
 import Header from './components/layout/Header.vue'
 import Footer from '@/components/layout/Footer.vue'
+import PausedBanner from '@/components/layout/PausedBanner.vue'
+import RestoreOverlay from '@/components/layout/RestoreOverlay.vue'
 import AppSidebar from '@/components/layout/AppSidebar.vue'
 import { SidebarInset, SidebarProvider } from '@/components/ui/sidebar'
 import {
@@ -77,11 +79,15 @@ onMounted(async () => {
         <AppSidebar />
         <SidebarInset class="h-screen overflow-hidden flex flex-col">
           <Header />
+          <PausedBanner />
           <router-view class="flex-1 overflow-auto" />
           <Footer />
         </SidebarInset>
       </SidebarProvider>
     </div>
+
+    <!-- Blocks the app while a platform restore is in progress -->
+    <RestoreOverlay v-if="!isLoading && !showError" />
 
     <!-- Toast Notifications -->
     <Toaster />

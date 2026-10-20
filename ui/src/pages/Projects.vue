@@ -114,15 +114,14 @@ function goToProject(projectName: string) {
                     <FieldGroup>
                       <Field>
                         <FieldLabel for="label"> Project Label </FieldLabel>
-                        <Input id="label" v-model="formData.label" placeholder="required" />
+                        <Input id="label" v-model="formData.label" />
                       </Field>
                       <Field>
-                        <FieldLabel for="description"> Description </FieldLabel>
+                        <FieldLabel for="description"> Description (optional) </FieldLabel>
                         <Textarea
                           id="description"
                           v-model="formData.description"
                           class="resize-none"
-                          placeholder="optional"
                         />
                       </Field>
                       <Field>

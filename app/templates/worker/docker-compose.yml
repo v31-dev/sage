@@ -1,3 +1,5 @@
+# Managed by the Sage manager, which renders this file and starts its services. Changes
+# made here are overwritten on the next sync.
 name: sage
 
 services:

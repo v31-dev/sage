@@ -21,7 +21,7 @@ def inject_worker(request: Request):
 
   hostname = request.path_params.get("hostname")
 
-  if hostname == get_env("HOSTNAME") or hostname == "*":
+  if hostname == get_env("TS_NAME") or hostname == "*":
     models["worker"] = None
   else:
     # Fetch and store worker
@@ -68,7 +68,7 @@ def get_metrics(request: Request, hostname: str, period: Literal["1h", "24h", "1
 
   if worker:
     data["meta"]["ip"] = worker.ip
-  elif hostname == get_env("HOSTNAME"):
+  elif hostname == get_env("TS_NAME"):
     data["meta"]["ip"] = Tailscale().ip()
 
   return data

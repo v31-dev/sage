@@ -1,29 +1,20 @@
-import os
+import logging
 
 from services.base import Base
 from services.db import Setting
 
-# Format of -
-# "key": { "property": { "env": "<If it exists in the environment>", "required": bool <checks only at boot time> } }
-SETTING_DEFINITIONS = {
-    "s3": {
-        "access_key": {"env": "S3_ACCESS_KEY", "required": False},
-        "secret_key": {"env": "S3_SECRET_KEY", "required": False},
-        "bucket": {"env": "S3_BUCKET", "required": False},
-        "endpoint": {"env": "S3_ENDPOINT", "required": False},
-        "path": {"env": "S3_PATH", "required": False},
-    },
-    "notifications": {
-        "discord_webhook": {"env": "DISCORD_WEBHOOK", "required": False},
-    },
-    "cloudflare": {
-        "api_token": {"env": "CLOUDFLARE_API_TOKEN", "required": True},
-        "account_id": {"env": "CLOUDFLARE_ACCOUNT_ID", "required": True},
-        "domain": {"env": "DOMAIN", "required": True},
-        "admin_email": {"env": "ADMIN_EMAIL", "required": True},
+logger = logging.getLogger(__name__)
 
-    }
+# Setting key -> its fields. Every field is optional and is set from the UI. Tailscale
+# and Cloudflare are required env vars instead (entrypoint.sh).
+SETTING_DEFINITIONS = {
+    "s3": ("access_key", "secret_key", "bucket", "endpoint", "path"),
+    "notifications": ("discord_webhook",),
 }
+
+# Sections of independent optional channels: configured once any one field is set. In the
+# others the fields belong together, and all of them must be set.
+INDEPENDENT_FIELD_SECTIONS = ("notifications",)
 
 
 class Settings(Base):
@@ -31,6 +22,14 @@ class Settings(Base):
     super().__init__()
 
     self.values = {}
+    self.load_all()
+
+  def load_all(self):
+    # Clean up any settings rows that are no longer defined in SETTING_DEFINITIONS.
+    removed = Setting.delete().where(Setting.key.not_in(list(SETTING_DEFINITIONS))).execute()
+    if removed:
+      logger.info(f"Removed {removed} unused settings row(s).")
+
     for key in SETTING_DEFINITIONS:
       self.load(key)
 
@@ -41,17 +40,15 @@ class Settings(Base):
       current_value = setting.value or {}
       needs_save = False
 
-      for field, config in SETTING_DEFINITIONS[key].items():
+      for field in SETTING_DEFINITIONS[key]:
         if field not in current_value:
           current_value[field] = None
           needs_save = True
-        if current_value[field] is None or current_value[field] == "":
-          env_value = os.environ.get(config["env"])
-          if config["required"] and (env_value is None or env_value == ""):
-            raise ValueError(f"Missing required setting for {key} - {field}. Please set it in the environment variable {config['env']}.")
-          elif env_value is not None and env_value != "":
-            current_value[field] = env_value
-            needs_save = True
+
+      # Fields that aren't defined are unused; they are dropped like undefined rows.
+      for field in [field for field in current_value if field not in SETTING_DEFINITIONS[key]]:
+        del current_value[field]
+        needs_save = True
 
       if needs_save:
         setting.value = current_value
@@ -87,7 +84,7 @@ class Settings(Base):
       raise KeyError(f"Unknown setting key: {key}")
 
     if not isinstance(value, dict):
-      raise ValueError(f"Value for key {key} must be a dict with fields from: {list(SETTING_DEFINITIONS[key].keys())}")
+      raise ValueError(f"Value for key {key} must be a dict with fields from: {list(SETTING_DEFINITIONS[key])}")
 
     subset_value = {k: v for k, v in value.items() if k in SETTING_DEFINITIONS[key]}
 
@@ -102,11 +99,13 @@ class Settings(Base):
       setting.save()
       self.values[key] = setting.value
 
-  def is_valid(self, key: str):
+  def is_valid(self, key: str, value: dict | None = None):
+    """Whether every field is set, in the stored value or the one given."""
     if key not in SETTING_DEFINITIONS:
       raise KeyError(f"Unknown setting key: {key}")
 
-    value = self.get(key)
+    if value is None:
+      value = self.get(key)
 
     for field in SETTING_DEFINITIONS[key]:
       field_value = value.get(field)
@@ -114,3 +113,14 @@ class Settings(Base):
         return False
 
     return True
+
+  def is_configured(self, key: str, value: dict | None = None):
+    """Whether the section has what it needs: every field set, or for a section of
+    independent channels, at least one."""
+    if key not in INDEPENDENT_FIELD_SECTIONS:
+      return self.is_valid(key, value)
+
+    if value is None:
+      value = self.get(key)
+
+    return any(value.get(field) not in (None, "") for field in SETTING_DEFINITIONS[key])

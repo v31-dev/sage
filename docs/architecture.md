@@ -6,25 +6,37 @@ Sage is a manager-and-workers platform designed for Docker workloads connected t
 
 - The manager is the control plane.
 - Workers run application containers and edge components.
-- Cloudflare provides public DNS and tunnel integration.
-- Traefik provides ingress on workers; the manager issues and owns the wildcard TLS certificate in-process (ACME DNS-01) and terminates its own `:443`.
+- Cloudflare is required (env vars): DNS records, the tunnel for public apps, and the DNS-01 challenge for Sage's certificates.
+- Traefik provides ingress on workers. The manager issues two certificates in-process (ACME DNS-01): its own for `<TS_NAME>.core.<domain>`, whose key never leaves it, and the workers' `*.int.<domain>` wildcard, synced to every worker.
 - Vector runs on workers and forwards their container logs to the manager; the manager captures its own logs in-process.
 - Glances runs on workers and exposes metrics endpoints the manager polls; the manager collects its own container metrics in-process.
 
 ## Manager Runtime
 
+The container entrypoint (`app/entrypoint.sh`) first brings up the manager's own tailnet
+node — `tailscaled` in userspace networking mode, state under `/app/data/tailscale` — and
+then starts the manager process. Tailnet connections to the node's IP are delivered to
+the same port on `127.0.0.1` inside the container, so `:80` and `:9001` need no published
+ports — and anything listening there is reachable from the tailnet wherever the tailnet
+policy allows.
+
+In userspace mode the container has no route into the tailnet, so outbound traffic goes
+through `tailscaled`: SSH to workers uses asyncssh's `proxy_command` with
+`tailscale nc <worker> 22`, and HTTP to workers (Glances) uses tailscaled's outbound HTTP
+proxy on `127.0.0.2:1055` (`TAILNET_HTTP_PROXY`). The proxy deliberately avoids
+`127.0.0.1`, where tailnet peers could reach it and use the manager's identity.
+
 The manager process starts these concurrent services from `app/main.py`:
 
-1. Main FastAPI API on port `9000`
+1. Main FastAPI API and UI on port `80`, plain HTTP — it is reached over the tailnet,
+   which WireGuard already encrypts
 2. Log/metric ingestion FastAPI API on port `9001` (receives workers' Vector log shipments)
-3. TLS server on port `443` (Tailscale-only) serving the app under `sage.core.<domain>` with the wildcard cert
-4. APScheduler (cron/interval) scheduler
+3. APScheduler (cron/interval) scheduler
 
 Startup is service-driven:
 
 - `Manager()` initializes the platform services.
-- `Manager.async_init()` performs async startup work, such as backup discovery.
-- The wildcard cert is provisioned (issued if missing/expiring) before `:443` binds; its `SSLContext` is handed to `Certs` so renewal swaps the cert in place with no restart.
+- Before serving, startup sets up the domain (`Manager.setup_domain`): connect to Cloudflare (zone, tunnel, the manager's record) and get the manager's certificate, retrying after 1, 4 and 16 minutes and then exiting; a rate limit exits at once, and a still-valid certificate lets startup continue. Other startup work that touches the network (release check, the workers' certificate, S3 backup discovery, settings checks, re-checking online workers against their stamps) runs as queued tasks once the servers are up. S3 and notifications are optional.
 - If service initialization fails, the process exits.
 
 ## Worker Runtime
@@ -38,10 +50,10 @@ Workers are bootstrapped remotely over Tailscale SSH (asyncssh): the manager run
 
 The worker stack currently includes:
 
-- `cloudflared`
 - `traefik`
 - `vector`
 - `glances`
+- `cloudflared`, connecting the worker to the manager's tunnel
 
 Applications themselves are also deployed onto workers as Docker workloads.
 
@@ -49,9 +61,9 @@ Applications themselves are also deployed onto workers as Docker workloads.
 
 Current traffic and naming patterns are driven by Cloudflare, Traefik, and Tailscale:
 
+- The manager UI and API are only at `https://<TS_NAME>.core.<domain>`: a DNS-only record pointing at its tailnet IP, served with the manager's own certificate on `:443`. Plain HTTP (`:80`) only redirects there, and so does `:443` for any other hostname (the tailnet name or IP); in dev the dev Traefik enforces the same by matching the hostname. `.core` is a namespace apps never use, and workers hold no certificate for it.
 - Public traffic uses Cloudflare-managed domains and tunnels.
 - Internal routing uses Tailscale IPs and `*.int.<domain>` style records.
-- Manager UI and API are exposed under the `*.core.<domain>` naming convention.
 
 The manager keeps DNS and Traefik state in sync as workers and application domains change.
 
@@ -118,6 +130,15 @@ Core entities:
 - `Event`
 - `Notification`
 - `Backup`
+- `Task` (log of finished queue operations)
+
+Its sensitive fields are encrypted with `ENCRYPTION_KEY` (Fernet, `utils/db.py`). The
+same key encrypts every backup, platform and volume alike, in one format (`utils/archive.py`
+on the manager, `backup.sh` and `restore.sh` on workers): `openssl enc -aes-256-cbc
+-pbkdf2`, then a 32-byte HMAC-SHA256 trailer that is checked before anything is decrypted.
+Files stream through the `openssl` in the image, so memory stays flat however large a
+backup is. The key can't change after the first boot: the settings rows are written on the first boot and decrypted on every
+later one, so a different key stops startup (`main.py`).
 
 Relationships are centered on:
 
@@ -151,7 +172,7 @@ APScheduler is a pure cron/interval trigger: each scheduled coroutine only calls
 - cleanup
 - certificate renewal
 
-All execution and mutual exclusion live in an in-memory operation queue on the `Manager` singleton (`app/utils/queue.py`). Routes (deploy, stop, delete, backup, restore, worker removal, restart) and the cron triggers above enqueue through the same `add_task` path; a single one-second dispatcher starts each pending task whose scope is free. See [backend.md](backend.md) for the queue model and execution semantics.
+All execution and mutual exclusion live in an in-memory operation queue on the `Manager` singleton (`app/utils/queue.py`). Routes (deploy, stop, delete, backup, restore, worker removal and reboot) and the cron triggers above enqueue through the same `add_task` path; a single one-second dispatcher starts each pending task whose scope is free. See [backend.md](backend.md) for the queue model and execution semantics.
 
 ## Service Pattern
 

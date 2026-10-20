@@ -19,6 +19,7 @@ from .backups import BackupsMixin
 from .core import CoreMixin
 from .platform import PlatformMixin
 from .queue import QueueMixin
+from .settings import SettingsMixin
 from .traefik import TraefikMixin
 from .workers import WorkersMixin
 
@@ -32,6 +33,7 @@ class Manager(
     ApplicationMixin,
     BackupsMixin,
     PlatformMixin,
+    SettingsMixin,
     QueueMixin,
     Base,
 ):
@@ -49,6 +51,11 @@ class Manager(
         self.version = f.read().strip()
       self.latest_version = self.version
       self.latest_release = None
+
+      # Last check result per settings section (services/manager/settings.py).
+      self.setting_checks = {}
+      # Worker counts as of the last sync
+      self.worker_summary = None
 
       # Single-dispatcher operation queue. Each scope root maps to an independent
       # lane pool (all defined in utils.executor).
@@ -73,19 +80,11 @@ class Manager(
       self.cloudflare = Cloudflare()
       self.certs = Certs()
       self.s3 = S3()
+      self.refresh_worker_summary()
 
       self.notify("Manager started.")
     except Exception as e:
       raise Exception(f"Manager setup failed : {e}.")
-
-  async def async_init(self):
-    """
-    Perform async initialization after Manager.__init__().
-    - Discovers and reconciles S3 backups with the database.
-    - Fetches the latest release details.
-    """
-    await self.discover_s3_platform_backups()
-    self.refresh_latest_release()
 
 
 __all__ = ["Manager"]

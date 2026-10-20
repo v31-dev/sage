@@ -52,6 +52,19 @@ class OnConflict(Enum):
   REPLACE = "replace"  # cancel a pending duplicate (latest wins); then enqueue
 
 
+class QueueState(Enum):
+  """Whether the dispatcher starts tasks. Paused is like one long task holding every
+  scope: tasks still queue (admission is unchanged, so DEDUP/REPLACE keep recurring work
+  to one pending copy) and start on resume. Restoring is paused except for the restore
+  itself, which starts once the running tasks have finished (see `end_restore`). Stopping
+  is final: nothing new starts or queues. In memory only, so a restart comes back
+  running."""
+  RUNNING = "running"
+  PAUSED = "paused"
+  RESTORING = "restoring"
+  STOPPING = "stopping"
+
+
 @dataclass(frozen=True)
 class QueuedTask:
   name: str
@@ -61,6 +74,7 @@ class QueuedTask:
   executor: str                 # key into TaskQueue executors
   task_id: str | None = None
   quiet: bool = False           # persist only on failure (high-frequency housekeeping)
+  restore: bool = False         # the platform restore: the one task that starts while restoring
 
 
 class TaskQueue:
@@ -87,6 +101,7 @@ class TaskQueue:
     self._record = record or (lambda *_: None)
 
     self._lock = Lock()
+    self._state = QueueState.RUNNING
     self._queue: list[QueuedTask] = []
     self._running: list[QueuedTask] = []
     self._tasks: set[asyncio.Task] = set()
@@ -95,9 +110,11 @@ class TaskQueue:
                name: str | None = None, params: dict | None = None,
                task_id: str | None = None,
                on_conflict: OnConflict = OnConflict.DEDUP,
-               priority: bool = False, quiet: bool = False) -> bool:
+               priority: bool = False, quiet: bool = False,
+               restore: bool = False) -> bool:
     """Add a task; return False if it was dropped (DEDUP when an identical op is
-    already pending or running).
+    already pending or running, the queue is stopping, or a restore is added while
+    the queue isn't running).
 
     ### Parameters
     - task: the callable to run (sync or async).
@@ -118,50 +135,62 @@ class TaskQueue:
       tasks but not over other platform tasks.
     - quiet: persist this task to the record store only when it fails, so
       high-frequency housekeeping (e.g. metrics) does not flood it.
+    - restore: this is the platform restore. Adding it puts the queue in the
+      restoring state, where only it starts (once the running tasks it conflicts
+      with have finished); the task ends that state with `end_restore`.
     """
     name = name or task.__name__
     scopes = frozenset(scopes)
     self._validate(scopes, executor)
     task_id = task_id or generate_task_id_token()
+    new_task = QueuedTask(name=name, scopes=scopes, task=task,
+                          params=params or {}, executor=executor, task_id=task_id,
+                          quiet=quiet, restore=restore)
     cancelled: list[QueuedTask] = []
     with self._lock:
-      if on_conflict == OnConflict.REPLACE:
-        # Duplicate = same operation on the same exact scope (identity = name +
-        # scope; params are not part of identity). Supersede the pending one;
-        # persist the cancellation after the lock (see below).
-        cancelled = [t for t in self._queue if t.name == name and t.scopes == scopes]
-        for pending in cancelled:
-          self._queue.remove(pending)
-      elif on_conflict == OnConflict.DEDUP:
+      stopping = self._state == QueueState.STOPPING
+      if restore and self._state != QueueState.RUNNING:
+        return False
+      elif stopping:
+        # Nothing new runs once stopping (e.g. a follow-up queued by a task that is
+        # still finishing): record it as never started instead of losing it on exit.
+        cancelled = [new_task]
+      elif on_conflict == OnConflict.DEDUP and any(
+              t.name == name and t.scopes == scopes for t in (*self._running, *self._queue)):
         # Skip if an identical op (name + exact scope) is already pending or
         # running -- pile-up / double-trigger prevention. A *different* op on a
         # conflicting scope is not dropped here; it enqueues and the dispatcher
         # serializes it by scope.
-        if any(t.name == name and t.scopes == scopes
-               for t in (*self._running, *self._queue)):
-          return False
-      # OnConflict.QUEUE: always enqueue and wait for the scope to free.
-
-      new_task = QueuedTask(name=name, scopes=scopes, task=task,
-                            params=params or {}, executor=executor, task_id=task_id,
-                            quiet=quiet)
-
-      if priority:
-        position = 0
-        for queued_task in self._queue:
-          if _dominates(queued_task.scopes, scopes):
-            position += 1            # stay behind same/higher tasks
-          else:
-            break                    # jump ahead of the rest
+        return False
       else:
-        position = len(self._queue)
+        if on_conflict == OnConflict.REPLACE:
+          # Duplicate = same operation on the same exact scope (identity = name +
+          # scope; params are not part of identity). Supersede the pending one;
+          # persist the cancellation after the lock (see below).
+          cancelled = [t for t in self._queue if t.name == name and t.scopes == scopes]
+          for pending in cancelled:
+            self._queue.remove(pending)
+        # OnConflict.QUEUE: always enqueue and wait for the scope to free.
 
-      self._queue.insert(position, new_task)
+        if priority:
+          position = 0
+          for queued_task in self._queue:
+            if _dominates(queued_task.scopes, scopes):
+              position += 1            # stay behind same/higher tasks
+            else:
+              break                    # jump ahead of the rest
+        else:
+          position = len(self._queue)
+
+        self._queue.insert(position, new_task)
+        if restore:
+          self._state = QueueState.RESTORING
+          logger.info("Restoring: nothing else starts until the restore has finished.")
 
     # Persist cancellations outside the lock: _record does a DB write, which must
     # stay off the critical section so the event loop never blocks on it.
     self._record_cancelled(cancelled)
-    return True
+    return not stopping
 
   def has_task_scopes(self, scopes: frozenset[str], only_running: bool = True) -> bool:
     """True if a running (and, when only_running is False, also pending) task
@@ -205,11 +234,54 @@ class TaskQueue:
           for t in (*self._running, *self._queue)
       )
 
-  def cancel_all(self):
-    """Cancel every pending (not yet running) task; running tasks are left to
-    finish. Used before a restart so queued work is recorded as cancelled
-    instead of silently lost when the process exits."""
+  @property
+  def state(self) -> QueueState:
+    return self._state
+
+  def pause(self):
+    """Start no new tasks until resume(); running tasks finish. No-op unless running."""
     with self._lock:
+      if self._state != QueueState.RUNNING:
+        return
+      self._state = QueueState.PAUSED
+    logger.info("Paused: no new tasks start until resumed.")
+
+  def resume(self):
+    with self._lock:
+      if self._state != QueueState.PAUSED:
+        return
+      self._state = QueueState.RUNNING
+    logger.info("Resumed.")
+
+  def end_restore(self, restored: bool, follow_ups: list[dict] = ()):
+    """Leave the restoring state, called by the restore task when it ends.
+
+    After a restore that took effect, the tasks still waiting were queued against the
+    previous data, so they are cancelled, and `follow_ups` (add_task arguments) are
+    queued ahead of anything added since. After a restore that failed or was rolled
+    back nothing changed, and the waiting tasks run as usual."""
+    with self._lock:
+      cancelled = []
+      if restored and self._state == QueueState.RESTORING:
+        cancelled = list(self._queue)
+        self._queue.clear()
+    self._record_cancelled(cancelled)
+
+    # Still restoring here, so nothing starts before the follow-ups are queued.
+    if restored:
+      for follow_up in follow_ups:
+        self.add_task(**follow_up, priority=True)
+
+    with self._lock:
+      if self._state == QueueState.RESTORING:
+        self._state = QueueState.RUNNING
+    logger.info("Restore finished.")
+
+  def stop(self):
+    """Stop for good when Sage exits: pending tasks, and any added later, are recorded
+    as cancelled instead of silently lost. Running tasks are left to finish."""
+    with self._lock:
+      self._state = QueueState.STOPPING
       cancelled = list(self._queue)
       self._queue.clear()
     self._record_cancelled(cancelled)
@@ -230,6 +302,7 @@ class TaskQueue:
         "scopes": sorted(task.scopes),
         "params": task.params,
         "executor": task.executor,
+        "quiet": task.quiet,
         "status": status,
     }
 
@@ -247,12 +320,16 @@ class TaskQueue:
   def dispatch_tick(self):
     """Start every pending task whose scopes do not conflict with running work."""
     with self._lock:
+      if self._state not in (QueueState.RUNNING, QueueState.RESTORING):
+        return
       counter = 0
       while counter < len(self._queue):
         task = self._queue[counter]
         # only_running=True: a dispatched task joins _running immediately, so
         # same-scope tasks later in this scan correctly see it as held.
-        if self.has_task_scopes(task.scopes, only_running=True):
+        if self._state == QueueState.RESTORING and not task.restore:
+          counter += 1
+        elif self.has_task_scopes(task.scopes, only_running=True):
           counter += 1
         else:
           task = self._queue.pop(counter)
@@ -264,11 +341,12 @@ class TaskQueue:
   def _record_cancelled(self, tasks: list[QueuedTask]):
     """Log and persist already-removed pending tasks as cancelled. Call this
     OUTSIDE the lock -- `_record` writes to the DB, which must not run inside the
-    critical section. Callers (REPLACE admission, the pre-restart drain) remove
+    critical section. Callers (REPLACE admission, stop()) remove
     the tasks from the queue under the lock, then hand them here."""
     for task in tasks:
       logger.info(f"{task.name}: cancelled")
-      self._record(task, "cancelled")
+      if not task.quiet:
+        self._record(task, "cancelled")
 
   async def run_task(self, task: QueuedTask):
     token = task_id.set(task.task_id)

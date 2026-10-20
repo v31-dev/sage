@@ -1,6 +1,7 @@
 import type { ClassValue } from 'clsx'
 import { clsx } from 'clsx'
 import { twMerge } from 'tailwind-merge'
+import { TONES } from './tone'
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
@@ -38,19 +39,17 @@ const _tsFormatter = new Intl.DateTimeFormat(undefined, {
   hour12: true,
 })
 
+// Backend timestamps without a timezone are UTC; ones with `Z` or an offset
+// ('2027-01-13T09:10:59+00:00') are read as given.
+export function parseDate(value: string | Date): Date {
+  if (typeof value !== 'string') return value
+  return new Date(/([zZ]|[+-]\d{2}:?\d{2})$/.test(value) ? value : `${value}Z`)
+}
+
 // dateObj like '2026-03-19T16:12:42.759325367Z' or Date object
 export function formatDate(dateObj: string | Date): string {
   try {
-    let date
-    if (typeof dateObj === 'string') {
-      if (!dateObj.endsWith('Z')) {
-        dateObj += 'Z'
-      }
-      date = new Date(dateObj)
-    } else {
-      date = dateObj
-    }
-    return _tsFormatter.format(date).replace(',', '')
+    return _tsFormatter.format(parseDate(dateObj)).replace(',', '')
   } catch {
     return typeof dateObj === 'string' ? dateObj : dateObj.toISOString()
   }
@@ -58,23 +57,15 @@ export function formatDate(dateObj: string | Date): string {
 
 export function levelClass(level: string): string {
   const l = level.toUpperCase()
-  if (l.startsWith('ERROR') || l.startsWith('CRIT')) return 'text-red-500 font-semibold'
-  if (l.startsWith('WARN')) return 'text-yellow-500 font-semibold'
-  if (l.startsWith('DEBUG')) return 'text-muted-foreground'
-  return 'text-sky-600 dark:text-sky-400'
+  if (l.startsWith('ERROR') || l.startsWith('CRIT')) return `${TONES.error.text} font-semibold`
+  if (l.startsWith('WARN')) return `${TONES.warning.text} font-semibold`
+  if (l.startsWith('DEBUG')) return TONES.neutral.text
+  return TONES.info.text
 }
 
 export function formatDateStringAgo(dateObj: string | Date): string {
   const now = new Date()
-  let date
-  if (typeof dateObj === 'string') {
-    if (!dateObj.endsWith('Z')) {
-      dateObj += 'Z'
-    }
-    date = new Date(dateObj)
-  } else {
-    date = dateObj
-  }
+  const date = parseDate(dateObj)
   const diffMs = now.getTime() - date.getTime()
   const diffMins = Math.floor(diffMs / 60000)
   const diffHours = Math.floor(diffMs / 3600000)
@@ -88,4 +79,13 @@ export function formatDateStringAgo(dateObj: string | Date): string {
   if (diffDays < 7) return `${diffDays}d ago (${dateStr})`
 
   return dateStr
+}
+
+// Starts a browser download of a link.
+export function startDownload(url: string) {
+  const link = document.createElement('a')
+  link.href = url
+  link.target = '_blank'
+  link.rel = 'noopener'
+  link.click()
 }

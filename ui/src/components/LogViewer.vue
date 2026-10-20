@@ -361,7 +361,7 @@ onUnmounted(() => {
                     :key="entry.id"
                     :class="
                       entry.stream === 'stderr'
-                        ? 'bg-red-50 dark:bg-red-950/30 hover:bg-red-100 dark:hover:bg-red-950/50 align-top'
+                        ? 'bg-destructive/5 hover:bg-destructive/10 align-top'
                         : 'hover:bg-muted/30 align-top'
                     "
                   >
@@ -403,11 +403,7 @@ onUnmounted(() => {
             <Card
               v-for="{ entry, parsed } in parsedLogs"
               :key="entry.id"
-              :class="
-                entry.stream === 'stderr'
-                  ? 'border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-950/30'
-                  : ''
-              "
+              :class="entry.stream === 'stderr' ? 'border-destructive/40 bg-destructive/5' : ''"
             >
               <CardContent class="px-3 py-2 space-y-2">
                 <div class="grid grid-cols-2 gap-4 text-xs">

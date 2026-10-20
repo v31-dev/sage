@@ -8,6 +8,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 from services.db import Application, Project, Worker
 from services.logs import Logs
 from services.manager import Manager
+from services.manager.settings import SETTING_SECTIONS
 from services.metrics import Metrics
 from utils.common import get_env
 from utils.queue import OnConflict
@@ -35,6 +36,18 @@ async def sync_workers():
   )
 
 
+async def check_worker_stamps():
+  # The env (domain, Cloudflare account) may have changed while Sage was stopped, so
+  # workers that stayed online are checked against their stamps too.
+  Manager().add_task(
+      task=Manager().sync_workers,
+      scopes={"platform"},
+      params={"check_stamps": True},
+      executor="platform",
+      on_conflict=OnConflict.REPLACE,
+  )
+
+
 async def sync_application_status():
   for application in Application.select(Application, Project).join(Project):
     Manager().add_task(
@@ -47,6 +60,8 @@ async def sync_application_status():
 
 
 async def schedule_application_backups():
+  if not Manager().s3.s3_config:
+    return
   now = datetime.now()
   for application, volumes in Manager().get_due_volume_backups(now):
     Manager().add_task(
@@ -70,7 +85,7 @@ async def collect_metrics():
   # The manager collects its own container metrics in-process (cgroup/statvfs);
   Manager().add_task(
       task=Metrics().collect_self,
-      scopes={f"metrics:{get_env('HOSTNAME')}"},
+      scopes={f"metrics:{get_env('TS_NAME')}"},
       executor="metrics",
       quiet=True,
   )
@@ -105,6 +120,8 @@ async def refresh_latest_release():
 
 
 async def backup_database():
+  if not Manager().s3.s3_config:
+    return
   Manager().add_task(
       task=Manager().backup_database_s3,
       scopes={"platform", "app"},
@@ -147,6 +164,30 @@ async def renew_certificates():
   )
 
 
+async def discover_backups():
+  if not Manager().s3.s3_config:
+    return
+  Manager().add_task(
+      task=Manager().discover_s3_backups,
+      scopes={"platform", "app"},
+      executor="platform",
+  )
+
+
+async def check_settings():
+  for key in SETTING_SECTIONS:
+    if Manager().section_configured(key):
+      Manager().add_task(
+          task=Manager().check_setting,
+          name=f"check_{key}",
+          params={"key": key},
+          scopes={f"common:{key}"},
+          executor="common",
+          on_conflict=OnConflict.REPLACE,
+          quiet=True,
+      )
+
+
 # Job scheduling
 _JOBS = [
     (dispatch_tick, IntervalTrigger(seconds=1)),
@@ -156,11 +197,16 @@ _JOBS = [
     (reconcile_traefik_configs, CronTrigger.from_crontab("* * * * *")),
     (collect_metrics, CronTrigger.from_crontab("* * * * *")),
     (refresh_latest_release, CronTrigger.from_crontab("0 */4 * * *")),
-    (backup_database, CronTrigger.from_crontab("0 */6 * * *")),
+    (backup_database, CronTrigger.from_crontab("0 */12 * * *")),
     (send_summary_notification, CronTrigger.from_crontab("0 8 * * *")),
     (cleanup, CronTrigger.from_crontab("0 4 * * *")),
     (renew_certificates, CronTrigger.from_crontab("0 3 * * *")),
+    (check_settings, CronTrigger.from_crontab("*/5 * * * *")),
 ]
+
+# Run once right after startup (as queued tasks, so the servers are already up), then on
+# their cron schedule where they have one.
+_AT_STARTUP = [refresh_latest_release, renew_certificates, discover_backups, check_settings, check_worker_stamps]
 
 
 def start():
@@ -168,6 +214,8 @@ def start():
   running event loop (AsyncIOScheduler binds to the loop on start)."""
   for fn, trigger in _JOBS:
     _scheduler.add_job(fn, trigger, id=fn.__name__, name=fn.__name__, replace_existing=True)
+  for fn in _AT_STARTUP:
+    _scheduler.add_job(fn, id=f"{fn.__name__}_at_startup", name=f"{fn.__name__}_at_startup")
   _scheduler.start()
 
 

@@ -1,0 +1,45 @@
+# Rendered as a Go template by Traefik's file provider: `env` reads this container's
+# environment (TS_NAME and DOMAIN, from docker-compose.yml).
+#
+# Only https://<TS_NAME>.core.<DOMAIN> serves: /api goes to the dev manager (plain HTTP on
+# :9000 in the shared network namespace), everything else, including Vite's HMR
+# WebSocket, to the Vite dev server. Plain HTTP redirects there.
+http:
+  routers:
+    redirect:
+      rule: PathPrefix(`/`)
+      entryPoints: [web]
+      middlewares: [to-manager]
+      service: noop@internal
+    api:
+      rule: Host(`{{ env "TS_NAME" }}.core.{{ env "DOMAIN" }}`) && PathPrefix(`/api`)
+      entryPoints: [websecure]
+      service: api
+      tls: {}
+    ui:
+      rule: Host(`{{ env "TS_NAME" }}.core.{{ env "DOMAIN" }}`)
+      entryPoints: [websecure]
+      service: ui
+      tls: {}
+
+  middlewares:
+    to-manager:
+      redirectRegex:
+        regex: ^http://[^/]+(.*)
+        replacement: https://{{ env "TS_NAME" }}.core.{{ env "DOMAIN" }}${1}
+        permanent: true
+
+  services:
+    api:
+      loadBalancer:
+        servers:
+          - url: http://localhost:9000
+    ui:
+      loadBalancer:
+        servers:
+          - url: http://ui:5173
+
+tls:
+  certificates:
+    - certFile: /certs/fullchain.pem
+      keyFile: /certs/key.pem

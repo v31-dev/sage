@@ -32,7 +32,10 @@ const deployButtonSpinner = computed(() => {
 })
 
 async function onClickDeployApplication() {
-  appStore.updateApplicationDeployStatus('deploying')
+  appStore.updateApplicationDeployStatus(
+    'deploying',
+    props.application.containers.map(container => container.worker.hostname)
+  )
   try {
     await props.applicationAPI.action(`${props.application.name}/deploy`)
   } catch (err) {
@@ -46,7 +49,8 @@ async function onClickDeployApplication() {
 <template>
   <Button
     size="sm"
-    class="flex-1 md:flex-initial success"
+    variant="success"
+    class="flex-1 md:flex-initial"
     @click="onClickDeployApplication"
     :disabled="deployButtonDisabled"
   >

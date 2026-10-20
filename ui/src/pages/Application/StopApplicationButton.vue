@@ -34,7 +34,10 @@ const stopButtonSpinner = computed(() => {
 })
 
 async function onConfirmStop() {
-  appStore.updateApplicationDeployStatus('stopping')
+  appStore.updateApplicationDeployStatus(
+    'stopping',
+    props.application.containers.map(container => container.worker.hostname)
+  )
   try {
     await props.applicationAPI.action(`${props.application.name}/stop`)
   } catch (err) {

@@ -23,6 +23,9 @@
   --color-accent: var(--accent);
   --color-accent-foreground: var(--accent-foreground);
   --color-destructive: var(--destructive);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-info: var(--info);
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
@@ -58,6 +61,9 @@
   --accent: oklch(0.968 0.007 247.896);
   --accent-foreground: oklch(0.208 0.042 265.755);
   --destructive: oklch(0.577 0.245 27.325);
+  --success: oklch(0.527 0.154 150.069);
+  --warning: oklch(0.555 0.163 48.998);
+  --info: oklch(0.488 0.243 264.376);
   --border: oklch(0.929 0.013 255.508);
   --input: oklch(0.929 0.013 255.508);
   --ring: oklch(0.704 0.04 256.788);
@@ -92,6 +98,9 @@
   --accent: oklch(0.3 0 0);
   --accent-foreground: oklch(0.98 0 0);
   --destructive: oklch(0.704 0.191 22.216);
+  --success: oklch(0.792 0.209 151.711);
+  --warning: oklch(0.828 0.189 84.429);
+  --info: oklch(0.707 0.165 254.624);
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
   --ring: oklch(0.55 0 0);
@@ -168,56 +177,3 @@ input[type='week'] {
   color-scheme: dark;
 }
 /* datetime-local, date, time, month, week theme styling */
-
-/* Button & Badge styling */
-.success {
-  background-color: oklch(0.6 0.15 142);
-  color: white;
-}
-
-.success:hover {
-  background-color: oklch(0.5 0.15 142);
-}
-
-.dark .success {
-  background-color: oklch(0.65 0.15 142);
-}
-
-.dark .success:hover {
-  background-color: oklch(0.55 0.15 142);
-}
-
-.neutral {
-  background-color: oklch(0.6 0.15 260);
-  color: white;
-}
-
-.neutral:hover {
-  background-color: oklch(0.5 0.15 260);
-}
-
-.dark .neutral {
-  background-color: oklch(0.65 0.15 260);
-}
-
-.dark .neutral:hover {
-  background-color: oklch(0.55 0.15 260);
-}
-
-.warning {
-  background-color: oklch(0.6 0.15 100);
-  color: white;
-}
-
-.warning:hover {
-  background-color: oklch(0.5 0.15 100);
-}
-
-.dark .warning {
-  background-color: oklch(0.65 0.15 100);
-}
-
-.dark .warning:hover {
-  background-color: oklch(0.55 0.15 100);
-}
-/* Button & Badge styling */

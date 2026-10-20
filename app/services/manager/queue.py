@@ -22,8 +22,21 @@ class QueueMixin:
   def has_task(self, task: Callable | str, params: dict | None = None) -> bool:
     return self.task_queue.has_task(task, params)
 
-  def cancel_all_tasks(self):
-    self.task_queue.cancel_all()
+  def pause_tasks(self):
+    self.task_queue.pause()
+
+  def resume_tasks(self):
+    self.task_queue.resume()
+
+  def end_restore(self, restored: bool, follow_ups: list[dict] = ()):
+    self.task_queue.end_restore(restored, follow_ups)
+
+  def stop_tasks(self):
+    self.task_queue.stop()
+
+  def task_state(self) -> str:
+    """running, paused, restoring or stopping."""
+    return self.task_queue.state.value
 
   def dispatch_tick(self):
     self.task_queue.dispatch_tick()

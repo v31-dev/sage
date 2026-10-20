@@ -10,7 +10,7 @@ import { projectAPI, getApplicationAPI, type Project } from '@/services/api'
 import ApplicationCard from './ApplicationCard.vue'
 import ProjectHeader from './ProjectHeader.vue'
 import AddApplicationButton from './AddApplicationButton.vue'
-import TitleStatus from '@/components/TitleStatus.vue'
+import SectionTitle from '@/components/SectionTitle.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -81,7 +81,7 @@ function goBack() {
         <!-- Applications -->
         <div class="space-y-4">
           <div class="flex justify-between items-center">
-            <TitleStatus title="Applications" :size="4" />
+            <SectionTitle title="Applications" :size="4" />
             <AddApplicationButton :applicationAPI="applicationAPI" :loadProject="loadProject" />
           </div>
 

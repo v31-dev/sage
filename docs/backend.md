@@ -6,10 +6,9 @@
 - FastAPI
 - APScheduler + croniter
 - Peewee + SQLite
-- httpx
-- Cloudflare SDK
+- httpx (also the Cloudflare API, called directly)
 - Tailscale CLI
-- boto3 + aioboto3
+- boto3 (sync, offloaded to the task's pool)
 
 ## API Surface
 
@@ -55,17 +54,21 @@ Most high-level backend behavior ultimately flows through this service, and almo
 - `services/db/`
   - Peewee models and database bootstrap
 - `services/settings.py`
-  - persistent settings state plus env fallback
+  - persistent settings state for S3 and notifications; every field is optional and set from the UI
 - `services/cloudflare.py`
-  - Cloudflare DNS and tunnel management
-- `services/tailscale.py`
-  - Tailscale status, SSH command execution, file sync
+  - Cloudflare DNS and tunnel management, configured from env (`DOMAIN`, `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`); connects at startup and again on use if that failed
 - `services/certs.py`
-  - in-process ACME issuance (Let's Encrypt DNS-01), PEM ownership, the `:443` cert hot-reload, and cert sync to workers
+  - the manager's certificate (`<TS_NAME>.core.<domain>`, never leaves the manager) and the workers' (`*.int.<domain>`): ACME DNS-01 issuance, renewal, the startup retry and the `:443` in-place reload
+- `services/tailscale.py`
+  - Tailscale status, SSH command execution and SFTP file sync to workers (asyncssh over `tailscale nc`, since the manager's tailscaled runs in userspace mode)
+- `services/certs.py`
+  - in-process ACME issuance (Let's Encrypt DNS-01) of the wildcard certificate for workers, and PEM ownership; issuance runs in the `renew_certificates` task, never at startup
 - `services/manager/traefik.py`
   - worker-side Traefik routing-config generation (mixin)
 - `services/metrics.py`
-  - metrics collection plus per-container log storage and search
+  - metrics collection (workers' Glances via tailscaled's outbound proxy; the manager's own container in-process)
+- `services/logs.py`
+  - per-container log storage and FTS search; the manager's own logs captured in-process
 - `services/s3.py`
   - S3 validation, upload, delete, and presigned URL support
 - `services/notification.py`
@@ -106,9 +109,44 @@ The Manager owns a single in-memory `TaskQueue` (`app/utils/queue.py`). It is th
   - `DEDUP`/`REPLACE` identity is **name + scope, not params**. DEDUP rejecting a params-distinct call is safe (it returns `False`/409, nothing is lost); REPLACE would *silently* drop it, so params-identified work uses `QUEUE`.
 - **`priority`** (separate flag) — insert ahead of lower/equal work but behind dominating scopes.
 - **`quiet`** (separate flag) — record only on failure (see below).
-- **Persistence.** The queue calls a `record` hook (`Manager._persist_task`) at each terminal state. Only `completed`/`failed`/`cancelled` are written to the `Task` table; running and queued tasks live in memory and are exposed via `snapshot()` for the UI. `quiet=True` tasks skip the `completed` record so high-frequency reconcilers (metrics collection, per-app status/domain sync, the 30s worker sync) don't flood the table — failures still record. Status vocabulary: `cancelled` means the task **never started** (REPLACE supersession, the pre-restart drain); a task interrupted **mid-run** — the loop's shutdown cancels its coroutine — records as `failed` (started but did not complete).
+- **Persistence.** The queue calls a `record` hook (`Manager._persist_task`) at each terminal state. Only `completed`/`failed`/`cancelled` are written to the `Task` table; running and queued tasks live in memory and are exposed via `snapshot()` for the UI. `quiet=True` tasks skip the `completed` record, and the `cancelled` record when superseded or drained while queued, so scheduled housekeeping (metrics collection, per-app status/domain sync, the 30s worker sync, the settings checks) doesn't flood the table — failures still record. The table is the history of operations worth debugging. A quiet task also never makes a settings section show as applying. Status vocabulary: `cancelled` means the task **never started** (REPLACE supersession, the drain on stop); a task interrupted **mid-run** — the loop's shutdown cancels its coroutine — records as `failed` (started but did not complete). A forced stop (second signal, or the runtime's kill after its grace period) ends the process with the running task unrecorded.
 
 To make a deliberate user action coalesce with a recurring one, enqueue both with `on_conflict=OnConflict.REPLACE` (latest-wins; e.g. the platform backup and the worker force-resync); no per-operation locks or pending flags are needed.
+
+## Pause And Stop
+
+Sage never restarts or upgrades itself; the runtime stops and starts its container
+(Settings → Upgrade lists the manual steps). Three states quiesce it. All are a state on
+the `TaskQueue` (`QueueState`: `running`, `paused`, `restoring`, `stopping`), exposed as
+`Manager().pause_tasks()` / `resume_tasks()` / `stop_tasks()` / `task_state()`:
+
+- **Pause** (`POST /settings/pause`, `/resume`; Settings → Upgrade, banner while paused).
+  `dispatch_tick` starts nothing: running tasks finish, queued tasks wait. Cron triggers
+  keep firing and their tasks queue as usual, so a pause behaves like one long task holding
+  every scope; DEDUP/REPLACE keep each recurring task to one pending copy, and they run on
+  resume. In memory only, so a restart comes back running.
+- **Restoring** (a platform restore). Queuing the restore (`add_task(..., restore=True)`,
+  refused unless the queue is running) sets the state at once: it behaves like a pause
+  except that the restore itself starts, as soon as the running platform and app tasks have
+  finished. The UI shows a blocking overlay (`RestoreOverlay`) from `GET /api` — the state
+  and `restoring_from`, the backup's timestamp — so a refreshed page shows the same. The
+  restore task ends the state with `Manager().end_restore(restored, follow_ups)` in a
+  `finally`: when the restore took effect, the tasks still waiting (queued against the old
+  data) are recorded as `cancelled`, the follow-ups (worker force-resync, backup discovery)
+  are queued ahead of anything added since, and the UI reloads; after a failure or a
+  rollback the waiting tasks simply run. A stop signal cancels a restore that hasn't
+  started; one that is running finishes first.
+- **Stop signal** (`app/main.py`). The first SIGTERM/SIGINT shuts the scheduler down and
+  stops the queue: queued tasks, and any added later (e.g. a follow-up queued by a
+  finishing task), are recorded as `cancelled`; running ones finish, then the API server
+  stops. There is no cap in Sage: the runtime's stop grace period bounds it. A second
+  signal stops right away. The log-ingest server (`api_vector`) doesn't handle signals, so
+  worker logs keep arriving until the process exits.
+
+`GET /api` reports that `state`, the `workers` summary (`total` and `online`, kept in memory by `refresh_worker_summary` after each `sync_workers` run, worker removal and restore, and read from the database once at startup) and the `settings` status. It reads memory only (the certificate expiry too: `Certificate.load` reads the PEM at startup and after each write), because the pause banner and the restore overlay depend on it while the database is being replaced; if building the settings status fails, that part is `null` and the rest is still returned. While it isn't `running`,
+`api.py` refuses changes with 503: every method but GET/HEAD/OPTIONS, except pause/resume
+and the POST routes that only read (`_READ_ONLY_POSTS`). A new read-only POST route has to
+be added there.
 
 ## Execution Modes And Pools
 
@@ -116,14 +154,14 @@ Pools (lanes) are defined in `app/utils/executor.py`. The first four are queue l
 
 | Pool | Workers | Used by |
 | --- | --- | --- |
-| `PLATFORM_EXECUTOR` | 1 | `platform` lane — main-DB backup/restore, cleanup, restart |
+| `PLATFORM_EXECUTOR` | 1 | `platform` lane — main-DB backup/restore, cleanup |
 | `COMMON_EXECUTOR` | 1 | `common` lane — version refresh, daily summary, S3 delete |
 | `APP_EXECUTOR` | 6 | `app` lane — per-application deploy/stop/backup/restore |
 | `METRICS_EXECUTOR` | 2 | `metrics` lane — collection, metrics-store cleanup |
 | `NOTIFICATIONS_EXECUTOR` | 1 | `Manager.notify` webhook sends (off-queue, fire-and-forget) |
 | `LOGS_EXECUTOR` | 1 | Workers' Vector log ingestion (off-queue, request-path; single SQLite writer) |
 
-Worker counts are **fixed I/O-concurrency limits, not derived from `os.cpu_count()`** — these lanes run blocking network I/O (Tailscale, S3, httpx), so the manager's core count doesn't gate them, and in a CPU-limited container `os.cpu_count()` reports host cores rather than the container's allowance. `platform`/`common` have no child scopes (their tasks never run concurrently) so they stay at 1; `app`/`metrics` are sized for the realistic ceiling (≤10 workers, ≤50 apps, a couple of parallel deploys). Concurrent DB writes from `app`-lane threads are safe: Peewee keeps per-thread SQLite connections and the DB runs WAL + `busy_timeout`.
+Worker counts are **fixed I/O-concurrency limits, not derived from `os.cpu_count()`** — these lanes run blocking network I/O (Tailscale, S3, httpx), so the manager's core count doesn't gate them, and in a CPU-limited container `os.cpu_count()` reports host cores rather than the container's allowance. `platform` has no child scopes (its tasks never run concurrently) so it stays at 1; `common` is the low-priority lane (settings checks, log cleanup, release refresh) and stays at 1 too, so its tasks run one at a time even where their scopes (`common:<section>`) would allow more; `app`/`metrics` are sized for the realistic ceiling (≤10 workers, ≤50 apps, a couple of parallel deploys). Concurrent DB writes from `app`-lane threads are safe: Peewee keeps per-thread SQLite connections and the DB runs WAL + `busy_timeout`.
 
 A task callable is sync or async, and `run_task` handles both:
 
@@ -159,11 +197,11 @@ Additional storage:
 
 - metrics SQLite shards
 - log SQLite shards with FTS5 (worker containers via Vector ingestion; the manager's own logs written in-process by a logging handler)
-- Traefik runtime config written to a mounted directory
+- on each worker, Traefik config and revision stamps under `/opt/sage`
 
 ## Scheduler Notes
 
-`app/scheduler.py` holds async APScheduler triggers that act only as cron/interval triggers — each one calls `Manager().add_task(...)` and contains no execution logic. Sub-minute pumps (`dispatch_tick`, `sync_workers`) use `IntervalTrigger`; everything else uses `CronTrigger.from_crontab` and fires on exact wall-clock instants (never at boot). Note: APScheduler's `from_crontab` treats numeric day-of-week `0` as Monday (whereas the `croniter`-matched volume-backup crons use `0` = Sunday) — be explicit about the intended weekday. `dispatch_tick` must stay an `async def` (APScheduler runs coroutine jobs on the loop; a sync job would run in a worker thread where its `asyncio.create_task` has no running loop). Route handlers enqueue through the same `add_task` path, and a few tasks are enqueued internally from within another task.
+`app/scheduler.py` holds async APScheduler triggers that act only as cron/interval triggers — each one calls `Manager().add_task(...)` and contains no execution logic. Sub-minute pumps (`dispatch_tick`, `sync_workers`) use `IntervalTrigger`; everything else uses `CronTrigger.from_crontab` and fires on exact wall-clock instants. The triggers in `_AT_STARTUP` (`refresh_latest_release`, `renew_certificates`, `discover_backups`, `check_settings`, `check_worker_stamps`) also run once right after startup, so startup network work happens in queued tasks while the servers are already serving. Triggers for optional services skip quietly when the service isn't configured: `backup_database` and `discover_backups` need S3, `renew_certificates` needs Cloudflare. Note: APScheduler's `from_crontab` treats numeric day-of-week `0` as Monday (whereas the `croniter`-matched volume-backup crons use `0` = Sunday) — be explicit about the intended weekday. `dispatch_tick` must stay an `async def` (APScheduler runs coroutine jobs on the loop; a sync job would run in a worker thread where its `asyncio.create_task` has no running loop). Route handlers enqueue through the same `add_task` path, and a few tasks are enqueued internally from within another task.
 
 ## Task Catalog
 
@@ -175,17 +213,20 @@ Every queued operation, its scope, where it is enqueued from, its lane pool, and
 | --- | --- | --- | --- | --- |
 | `sync_workers` | platform | interval 30s | platform | DEDUP |
 | `sync_application_status` | app:`<qn>` | cron 1m | app | DEDUP |
-| `backup_application_s3` | app:`<qn>` | cron 1m (due backups) | app | DEDUP |
+| `backup_application_s3` | app:`<qn>` | cron 1m (due backups; skipped when S3 isn't configured) | app | DEDUP — worker `backup.sh`: tar → `openssl enc` (ENCRYPTION_KEY) → HMAC-SHA256 appended (encrypt-then-MAC) → presigned PUT |
 | `reconcile_traefik_configs` | platform | cron 1m | platform | DEDUP |
 | `Metrics.collect` | metrics:`<worker>` | cron 1m | metrics | DEDUP |
 | `Metrics.collect_self` | metrics:`<manager>` | cron 1m | metrics | DEDUP |
 | `send_summary_notification` | common | cron daily 08:00 | common | REPLACE |
-| `refresh_latest_release` | common | cron 4h + once at boot (`async_init`) | common | REPLACE — caches latest-release detail (version + notes + `fetched_at`) served by `GET /info/release` |
-| `backup_database_s3` | platform, app | cron 6h | platform | REPLACE |
-| `Metrics.cleanup` | metrics | cron daily 04:00 | metrics | REPLACE |
+| `refresh_latest_release` | common | cron 4h + once at startup | common | REPLACE — caches latest-release detail (version + notes + `fetched_at`) served by `GET /info/release` |
+| `check_<section>` (`check_setting`) | common:`<section>` | cron 5m + once at startup, per configured section (quiet) | common | REPLACE — checks the saved settings against the provider without side effects and records the result for the `settings` status in `GET /api` (`services/manager/settings.py`) |
+| `backup_database_s3` | platform, app | cron 12h (skipped when S3 isn't configured) | platform | REPLACE — SQLite snapshot, encrypted as a whole in the volume-archive format (`<ts>.db.enc`; `utils/archive.py`: `openssl enc`, then an HMAC-SHA256 trailer; streamed, so memory stays flat) |
+| `Metrics.cleanup` | metrics | cron daily 04:00 | metrics | REPLACE — everything past `RETENTION_DAYS` (14, `utils/common.py`), like the two below |
 | `Logs.cleanup` | common | cron daily 04:00 | common | REPLACE |
 | `cleanup` | platform | cron daily 04:00 | platform | REPLACE |
-| `renew_certificates` | platform, app | cron daily 03:00 | platform | REPLACE |
+| `renew_certificates` | platform, app | cron daily 03:00 + once at startup | platform | REPLACE — both certificates; reloads the manager's `:443` in place and syncs the workers' to stale workers |
+| `sync_workers` (`check_stamps`) | platform | once at startup | platform | REPLACE — also sets up workers that stayed online, letting their stamps (domain, tunnel, certificate, app routing) decide what to redo, since the env may have changed while Sage was stopped |
+| `discover_s3_backups` | platform, app | once at startup (skipped when S3 isn't configured) | platform | DEDUP — makes the Backup table match the bucket under the configured path: records the platform backups and the volume archives whose application exists here (by the project and application names in the key), and drops records whose object is gone |
 
 **Route-driven (HTTP → `add_task`)**
 
@@ -195,19 +236,24 @@ Every queued operation, its scope, where it is enqueued from, its lane pool, and
 | `stop_application` | app:`<qn>` | POST …/stop | app | DEDUP |
 | `delete_container` | app:`<qn>` | DELETE …/containers/{c} | app | QUEUE (route rejects a duplicate delete of the same container via `has_task`, the params-aware pending/running check) |
 | `backup_application_s3` | app:`<qn>` | POST …/volumes/{v}/backups | app | DEDUP |
-| `restore_application_volume_from_s3` | app:`<qn>` | POST …/backups/{b}/restore | app | DEDUP |
+| `restore_application_volume_from_s3` | app:`<qn>` | POST …/backups/{b}/restore | app | DEDUP — worker `restore.sh` checks the HMAC before decrypting |
 | `backup_database_s3` | platform, app | POST /backups | platform | REPLACE |
-| `restore_database_from_s3` | platform, app | POST /backups/{b}/restore | platform | DEDUP |
+| `restore_database_from_s3` | platform, app | POST /backups/{b}/restore | platform | DEDUP, `restore=True` (see Pause And Stop: the queue is `restoring` from the request until the task ends) — decrypts first (another key or an unencrypted backup is refused before the live DB is touched); safety copy and restore through SQLite's backup API; then reloads the settings and the services built from them (S3, notifications, Cloudflare, certs). The S3 settings are written back to their values from before the restore: they are how this manager reaches its backups, so a backup never changes them. A settings reload failure still rolls back to the safety copy |
 | `delete_backup_s3` | common | DELETE /backups/{b} | common | QUEUE |
+| `discover_s3_backups` | platform, app | POST /backups/discover; PUT /settings/s3 | platform | DEDUP |
 | `remove_worker` | platform, app | DELETE /workers/{h} | platform | QUEUE |
 | `reboot_worker` | platform, app | POST /workers/{h}/reboot | platform | QUEUE — backgrounds a `reboot` over Tailscale SSH so the command returns before the host drops; won't run mid-deploy; status reconciler tracks the worker going offline/back |
-| `refresh_traefik` | platform, app | PUT /settings/cloudflare | platform | QUEUE |
 | `refresh_traefik` | platform, app | POST /settings/resync_traefik | platform | DEDUP |
-| `restart` | platform, app, common, metrics | POST /settings/restart | platform | QUEUE (+priority) |
-| `upgrade` | platform, app, common, metrics | POST /settings/upgrade | platform | QUEUE (+priority) — DB backup (aborts the upgrade on failure), then spawns a detached `docker:cli` compose updater (`templates/manager/upgrade.sh`: pull → `up -d --wait`, tag rollback on failed health check); updater logs kept under `docker logs sage-upgrade`. Refused in dev / when already latest / standalone (non-compose) |
 | `refresh_latest_release` | common | POST /info/release/refresh | common | REPLACE — on-demand version of the 4h refresh; UI polls `GET /info/release`'s `fetched_at` |
+| `check_<section>` (`check_setting`) | common:`<section>` | PUT /settings/{section} (after a save, when complete) | common | REPLACE |
 | `sync_workers` | platform | POST /settings/resync_workers | platform | REPLACE |
 | `sync_application_traefik_domains_config` | app:`<qn>` | create/update/delete_domain, update-container tag change (via `request_application_traefik_sync`) | app | REPLACE |
+
+**Settings status.** The `settings` part of `GET /api` gives each section (tailscale, cloudflare, s3, notifications) a state: `not_configured`, `applying` (a check or apply task is queued or running, except a quiet one such as the scheduled 5-minute check; its `task_id` is included; which tasks count, and with which params, is `APPLYING_TASKS` in `services/manager/settings.py`, written with `task(name, **params)`, e.g. `task("sync_workers", force=True)`), `ok`, `retrying` (the last check failed in a way that clears on its own — network, timeout, 5xx/429; the 5-minute check retries) or `error` (needs the user — bad credentials, missing bucket or zone). Cloudflare is also `error` without a valid certificate, and its entry carries `details` for the read-only page: account and tunnel ids (dashboard links), the tunnel's health from the 5-minute check (`healthy`, `degraded`, `down`, `inactive`) and both certificates' expiry. Tailscale and Cloudflare are env vars, so they're always configured and checked as set. Notifications are independent channels (`CHANNELS` in `services/notification.py`, one settings field each): the section is configured once any channel is set, and its check covers every configured channel, reading each webhook without posting. One failing channel fails the section as `error` (`retrying` only when every channel failed in a way that clears by itself), the message names the failing channels, and the status entry's `channels` maps each failing field to its reason so the page can show it beside the field. `POST /settings/{s3|notifications}/test` checks the values in the request (saved or not) with side effects: the S3 test writes and deletes a marker object, the notifications test sends a message. Check failures never include a webhook URL (it holds the token).
+
+Backups live in S3, which is optional: every backup route (create, restore, delete, discover, download) returns 400 until S3 is configured, and the backup triggers skip.
+
+**Downloading a backup** (`POST /backups/{b}/download`, also nested under a volume): the manager checks the object is still in S3 and answers with a presigned GET link that expires after 60 seconds (`BROWSER_LINK_SECONDS` in `services/s3.py`) and asks for the file as an attachment with a name that says which volume it is from. The browser then fetches the file from S3 directly, so no backup passes through the manager. The link is made when asked for, never stored or listed, and S3 checks its expiry when a request starts, so a download already under way isn't cut off. Whoever has a link can read the file until it expires, but the file is encrypted and authenticated with `ENCRYPTION_KEY` (see Settings → S3 for the `openssl` command that opens it). Who may ask for a link is the same as for every other route: whoever the tailnet policy lets reach the manager. Every presigned link states its validity: the links handed to workers for volume backup and restore use `WORKER_LINK_SECONDS` (1200 s; the upload starts after the archive is built, which the script's 900 s command timeout bounds) and reach `curl` through a `--config` file, so they stay out of its command line. The download route is a read-only POST (`_READ_ONLY_POSTS`), so it also works while Sage is paused or restoring. The S3 endpoint has to be reachable from the browser, and over https (a browser may refuse to save a file from a plain-http endpoint opened from an https page).
 
 Per-app tasks (status sync, the Traefik domains sync, backups, `delete_container`) re-fetch their target by id with `get_or_none` and treat a missing row as a **quiet no-op**: instant deletes are a legitimate interleaving with queued/scheduled work, so a task whose target vanished has nothing to do (the reconcile scan owns worker-side cleanup for deleted apps). `remove_worker` is the deliberate exception — its precondition re-check fails loudly because proceeding would destroy a worker that just gained containers.
 
@@ -221,7 +267,8 @@ Container create and tag-update are **instant route-side model writes**, like ev
 
 | Task | Scope | Source | Lane | on_conflict |
 | --- | --- | --- | --- | --- |
-| `sync_workers` | platform | `restore_database_from_s3` | platform | REPLACE |
+| `sync_workers` | platform | `restore_database_from_s3` (via `end_restore`, priority) | platform | REPLACE |
+| `discover_s3_backups` | platform, app | `restore_database_from_s3` (via `end_restore`, priority; the restored Backup table is the snapshot's) | platform | DEDUP |
 | `sync_application_traefik_domains_config` | app:`<qn>` | deploy/stop, delete-container, `sync_application_status`, `sync_workers`, `refresh_traefik`, `reconcile_traefik_configs` missing-file check (via `request_application_traefik_sync`) | app | REPLACE |
 | `sync_application_traefik_domains_config` | app:`<qn>` | `reconcile_traefik_configs` `domains_synced=False` backstop | app | DEDUP |
 
@@ -231,7 +278,7 @@ Not every periodic/background job is a queue task. Two service-owned daemon thre
 
 Cron cadence convention: **≤ 1m → `DEDUP`** (a high-frequency reconciler skips only if its own previous run is still in flight; the next tick retries), **> 1m → `REPLACE`** (a 6h/1d/10d task must not skip its whole cycle on a transient conflict; latest-wins keeps no backlog).
 
-`sync_workers` deliberately differs by source — cron uses `DEDUP`, while resync/restore use `REPLACE` with `{force: True}` to supersede a pending plain sync. That is why DEDUP/REPLACE identity is name + scope and not params. The full-stack `restart` cancels pending work and waits with priority for in-flight platform/app operations before replacing the process.
+`sync_workers` deliberately differs by source — cron uses `DEDUP`, while resync/restore use `REPLACE` with `{force: True}` to supersede a pending plain sync. That is why DEDUP/REPLACE identity is name + scope and not params.
 
 **Interrupted-operation recovery.** A busy status (`deploying`/`stopping`/`backup`/`restoring`) is only ever written by a task while it holds that app's scope — and `sync_application_status` holds that same scope while it runs, so by mutual exclusion any busy status it observes has no owning operation left: the mark of an interrupted task (crash, plain container restart, cancelled coroutine). Instead of skipping such apps, the sync resets the stuck app/containers to `error` (with a notification) and then converges them against real `docker ps` state in the same run. This is why no boot-time status reset exists: the minutely sync covers startup wedges and mid-flight loss with one mechanism. Detection defers while a broad `app`-scope task runs (the per-app syncs queue behind it) and resumes when it finishes. Deploy/stop container children additionally run their whole body inside their try block so an early failure can never kill the parent's gather and leave detached siblings running.
 
@@ -257,7 +304,7 @@ The single change-trigger is `Manager().request_application_traefik_sync(applica
 with `REPLACE` (coalesces bursts; the app scope serializes it after any in-flight
 app op, so it re-reads committed state). It is called wherever the **active routing
 set** changes — domain CRUD, deploy/stop, delete/tag-update of an **active**
-container, `sync_application_status` health flips, and Cloudflare domain change.
+container, `sync_application_status` health flips, and Resync Traefik.
 It is deliberately **not** called when routing is unaffected: adding a container
 (inactive until deployed), or editing/deleting an inactive one.
 
@@ -324,7 +371,7 @@ deploy materializes its app dir, so a dir captured on the worker whose row is
 being created concurrently is present in the later read and never reaped
 mid-deploy.
 
-`refresh_traefik` (domain/admin-email change) rewrites each online worker's
+`refresh_traefik` (Resync Traefik) rewrites each online worker's
 traefik files directly but deliberately does **not** advance their `infra`
 stamps — the stamp vouches for every infra file (compose, `.env`, vector),
 and refresh only touched the traefik ones; advancing it could falsely certify
@@ -350,8 +397,7 @@ hostnames are Tailscale's identity, not ours: the one remaining
 `ValueError` is the house convention for invalid user input — a global
 exception handler in `api.py` (plus the generic route handlers, whose broad
 `except` would otherwise swallow it) maps it to a 400 carrying the message, so
-routes call `clean`/`validate` bare; the container routes validate the tag at
-the route because the actual write happens later inside the queued task.
+routes call `clean`/`validate` bare.
 
 **`reconcile_traefik_configs`** (minutely, `platform` scope) is the declarative
 existence backstop for everything the change-triggers can miss (crash-dropped
@@ -376,15 +422,25 @@ affected apps and call the helper rather than bulk-setting the flag.
 
 ## Settings And Traefik Refresh
 
-Platform settings (`s3`, `notifications`, `cloudflare`) live in the `Setting` table. Env vars only seed empty fields on first boot.
+Cloudflare and Tailscale are configured by required env vars (`DOMAIN`,
+`CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`, `TS_WORKER_TAG`), so changing them is a
+restart. On start, `setup_domain` sets up the new domain (zone, tunnel, the manager's
+record, the manager's certificate) before serving, the `renew_certificates` startup run
+issues the workers' certificate for a new domain, and the `check_stamps` worker sync
+converges online workers: the `infra` stamp includes the domain and the tunnel id (a new
+account means a new tunnel), the `certs` stamp follows the workers' certificate, and each
+app's routing stamp includes the domain. Resources of a previous domain or account stay
+in Cloudflare.
 
-UI updates in `routes/settings.py` follow the same pattern: validate the merged value, persist via `Settings().set(...)`, then reload the consuming service (`S3().load()`, `Notifications().load_notifications_config()`, `Cloudflare().load()`).
+The `Setting` table holds S3 and notifications only; every field is optional and set from
+the UI. A database, or a restored backup, can hold rows for keys that aren't defined; they
+are dropped whenever the settings load (`Settings.load_all`), and `routes/settings.py` only
+serves defined keys. UI updates follow one pattern:
+validate the merged value, persist via `Settings().set(...)`, reload the consuming service
+(`S3().load()`, `Notifications().load_notifications_config()`), then queue a check.
 
-The manager owns ACME in-process (`Certs`), and the settings route reloads `Certs` (domain/admin_email) synchronously like the other singletons. Only a **domain** change enqueues the `refresh_traefik` operation (in `services/manager/traefik.py`) — email/token changes are fully handled by the synchronous reloads:
-
-- `admin_email` change — `Certs().load()` picks it up; the new contact applies on the next natural renewal (no re-issuance, no worker churn, no task).
-- `domain` change — the new SAN set means a new cert: `Certs` re-issues via ACME DNS-01, the local `:443` cert is hot-reloaded in place, the PEM is synced to workers, worker `config.yml` + DNS records are updated (file-provider reload, no worker traefik restart), and every app's routing is resynced.
-- `api_token` change — the manager's `Cloudflare` client (used for the DNS-01 challenge and DNS records) is reloaded by the settings route; nothing else to do (workers never held the token).
+`refresh_traefik` (Resync Traefik) re-ensures both certificates, re-pushes the workers'
+certificate and Traefik config, the `*.int` records and every app's routing.
 
 ## Templates
 

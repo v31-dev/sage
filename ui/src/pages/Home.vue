@@ -14,6 +14,7 @@ import {
 } from 'lucide-vue-next'
 
 import { Badge } from '@/components/ui/badge'
+import { TONES } from '@/lib/tone'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import {
@@ -29,14 +30,15 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { Spinner } from '@/components/ui/spinner'
 import MetricChart from '@/components/MetricChart.vue'
 import { fetchHomeSummary, type HomeSummary, type Notification } from '@/services/api'
-import { formatDateStringAgo } from '@/lib/utils'
+import { formatDateStringAgo, parseDate } from '@/lib/utils'
 import { useAppStore } from '@/stores/app'
 
 const HOUR_MS = 3_600_000
 const ERROR_COLOR = '#ef4444'
 const WARNING_COLOR = '#f59e0b'
-const OK_CHIP = 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400'
-const BUSY_CHIP = 'border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-400'
+const OK_CHIP = TONES.success.chip
+const BUSY_CHIP = TONES.info.chip
+const WARNING_CHIP = TONES.warning.chip
 
 const appStore = useAppStore()
 const summary = ref<HomeSummary | null>(null)
@@ -86,7 +88,7 @@ const timelineData = computed(() => {
   }
 
   for (const event of events.value) {
-    const ts = parseTimestamp(event.created_at)
+    const ts = parseDate(event.created_at)
     const bucket = buckets.get(
       new Date(ts.getFullYear(), ts.getMonth(), ts.getDate(), ts.getHours()).getTime()
     )
@@ -119,25 +121,18 @@ async function loadSummary() {
   }
 }
 
-// Stored naive UTC, so it needs the zone marker before parsing
-function parseTimestamp(value: string) {
-  return new Date(value.endsWith('Z') ? value : `${value}Z`)
-}
-
 function ratio(part: number, total: number) {
   return total > 0 ? (part / total) * 100 : 0
 }
 
 function healthBarClass(errorCount: number, transitionCount: number) {
-  if (errorCount > 0) return '[&>div]:bg-red-500'
-  if (transitionCount > 0) return '[&>div]:bg-amber-500'
-  return '[&>div]:bg-emerald-500'
+  if (errorCount > 0) return TONES.error.bar
+  if (transitionCount > 0) return TONES.info.bar
+  return TONES.success.bar
 }
 
 function eventIconClass(notificationType: Notification['type']) {
-  return notificationType === 'error'
-    ? 'bg-red-500/10 text-red-600 dark:text-red-400'
-    : 'bg-amber-500/10 text-amber-600 dark:text-amber-400'
+  return notificationType === 'error' ? TONES.error.soft : TONES.warning.soft
 }
 
 onMounted(async () => {
@@ -182,7 +177,7 @@ onUnmounted(() => {
               <CardDescription>
                 <div class="flex items-center gap-2 text-sm text-muted-foreground">
                   <Server class="size-4" />
-                  <span>{{ appStore.info?.hostname ?? 'manager' }}</span>
+                  <span>{{ appStore.info?.name ?? 'manager' }}</span>
                   <span v-if="appStore.info?.ip">• {{ appStore.info.ip }}</span>
                 </div>
               </CardDescription>
@@ -399,7 +394,7 @@ onUnmounted(() => {
                   <Badge variant="destructive">
                     {{ summary.critical_error_count_last_24h }} errors
                   </Badge>
-                  <Badge variant="outline" :class="BUSY_CHIP">
+                  <Badge variant="outline" :class="WARNING_CHIP">
                     {{ summary.critical_warning_count_last_24h }} warnings
                   </Badge>
                 </div>

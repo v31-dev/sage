@@ -21,7 +21,7 @@ import AddDomainButton from './AddDomainButton.vue'
 import DomainCard from './DomainCard.vue'
 import AddVolumeButton from './AddVolumeButton.vue'
 import VolumeCard from './VolumeCard.vue'
-import TitleStatus from '@/components/TitleStatus.vue'
+import SectionTitle from '@/components/SectionTitle.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -123,7 +123,7 @@ function goBack() {
         <!-- Volumes -->
         <div class="space-y-4">
           <div class="flex justify-between items-center">
-            <TitleStatus
+            <SectionTitle
               title="Volumes"
               :size="4"
               tooltip="Application needs to be deployed again if Volume configuration is modified."
@@ -164,7 +164,7 @@ function goBack() {
         <!-- Domains -->
         <div class="space-y-4">
           <div class="flex justify-between items-center">
-            <TitleStatus
+            <SectionTitle
               title="Domains"
               :size="4"
               tooltip="Domain configurations are automatically synced."
@@ -205,7 +205,7 @@ function goBack() {
         <!-- Containers -->
         <div class="space-y-4">
           <div class="flex justify-between items-center">
-            <TitleStatus
+            <SectionTitle
               title="Containers"
               :size="4"
               tooltip="Application needs to be deployed again if configuration is modified."

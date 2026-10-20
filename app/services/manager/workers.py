@@ -3,8 +3,6 @@ import logging
 import re
 
 from services.db import Application, Container, Worker
-from services.settings import Settings
-from utils.common import get_env
 from utils.executor import run_in_executor_with_context
 from utils.logging import TaskFailed
 
@@ -14,18 +12,21 @@ logger = logging.getLogger(__name__)
 
 
 class WorkersMixin:
-  async def sync_workers(self, force: bool = False):
+  async def sync_workers(self, force: bool = False, check_stamps: bool = False):
     """
-    Check for worker changes.
+    Check for worker changes. `check_stamps` also sets up workers that stayed online,
+    letting their stamps decide what to redo (at startup, since the env may have changed
+    while Sage was stopped).
     - New workers (not in db but in tailscale)
     - Offline workers (in db but tailscale says offline)
     - Updated workers (IPs have changed)
     - Recently online workers (previously offline but now back online)
     - Offline workers (in db but not in tailscale)
     """
+    worker_tag = self.tailscale.worker_tag
     existing_workers = list(Worker.select())
     tailscale_workers = await run_in_executor_with_context(
-        self.tailscale.get_by_tag, get_env("WORKER_TAILSCALE_TAG"))
+        self.tailscale.get_by_tag, worker_tag)
 
     logger.info(
         f"Existing workers: {[(w.hostname, w.ip, 'online' if w.online else 'offline') for w in existing_workers]}")
@@ -58,6 +59,8 @@ class WorkersMixin:
             # Force re-sync: distrust every stamp and converge from scratch.
             logger.info(f"Force syncing worker {worker.hostname}.")
             await self.setup_worker(worker, force=True)
+          elif check_stamps and worker.online:
+            await self.setup_worker(worker)
         else:
           # new worker
           logger.info(f"New worker {worker.hostname} detected.")
@@ -76,6 +79,16 @@ class WorkersMixin:
       except Exception as e:
         logger.error(f"sync_workers offline-check failed for {existing_worker.hostname}: {e}")
 
+    self.refresh_worker_summary()
+
+  def refresh_worker_summary(self):
+    """Record how many workers there are and how many are online. Every change to the
+    worker table happens in a sync or a removal, which call this."""
+    self.worker_summary = {
+        "total": Worker.select().count(),
+        "online": Worker.select().where(Worker.online).count(),
+    }
+
   def infra_hash(self) -> str:
     """Hash of every input `setup_worker` renders into worker infra files.
     Computed from current truth on demand — the only stored copy is the
@@ -83,7 +96,8 @@ class WorkersMixin:
     return content_hash({
         "templates": WORKER_INFRA_TEMPLATES,
         "version": self.version,
-        "domain": Settings().get("cloudflare", "domain"),
+        "domain": self.cloudflare.domain,
+        "tunnel": self.cloudflare.tunnel_id,
     })
 
   async def read_worker_revisions(self, hostname: str) -> dict:
@@ -178,7 +192,10 @@ class WorkersMixin:
     is_new = existing is None
     logger.info(f"{'Adding' if is_new else 'Converging'} worker {worker.hostname}.")
     try:
-      domain = Settings().get("cloudflare", "domain")
+      # Connected at startup; this retries if that failed, and sets the tunnel the
+      # infra stamp includes.
+      await run_in_executor_with_context(self.cloudflare.connect)
+      domain = self.cloudflare.domain
 
       if force:
         await self.tailscale.exec_command(
@@ -202,7 +219,7 @@ class WorkersMixin:
       )
 
       if infra_stale:
-        tunnel = await run_in_executor_with_context(self.cloudflare.get_tunnel_token)
+        tunnel_token = (await run_in_executor_with_context(self.cloudflare.get_tunnel_token)).token
 
         # Sync files
         await self.tailscale.sync_file(
@@ -218,7 +235,7 @@ class WorkersMixin:
                 "SAGE_HOME": self.worker_home_dir,
                 "TS_IP": worker.ip,
                 "TS_HOSTNAME": worker.hostname,
-                "TUNNEL_TOKEN": tunnel.token,
+                "TUNNEL_TOKEN": tunnel_token,
             },
         )
         await self.tailscale.sync_file(
@@ -230,7 +247,7 @@ class WorkersMixin:
             worker.hostname,
             app_dir / "templates/worker/traefik/config.yml",
             f"{self.worker_home_dir}/traefik/dynamic/config.yml",
-            {"DOMAIN": domain, "HOSTNAME": worker.hostname},
+            {"DOMAIN": domain or "", "HOSTNAME": worker.hostname},
         )
         # File-provider TLS config pointing at the PEM the manager syncs below.
         await self.tailscale.sync_file(
@@ -247,8 +264,8 @@ class WorkersMixin:
 
       # Land the cert before any container start/restart below
       repaired = []
-      if (self.certs.has_valid_certificates()
-              and revisions.get("certs") != self.certs.certificates_hash()):
+      if (self.certs.workers.is_valid()
+              and revisions.get("certs") != self.certs.workers.hash()):
         await self.sync_certificates_to_worker(worker)
         repaired.append("certificates")
 
@@ -256,7 +273,8 @@ class WorkersMixin:
         # Start containers
         await self.tailscale.exec_command(
             worker.hostname,
-            f"docker compose -f {self.worker_home_dir}/docker-compose.yml up -d --wait --remove-orphans --quiet-pull --quiet-build",
+            f"docker compose -f {self.worker_home_dir}/docker-compose.yml up -d --wait --remove-orphans --quiet-pull --quiet-build "
+            "traefik vector glances cloudflared",
             timeout=300,
         )
 
@@ -292,10 +310,11 @@ class WorkersMixin:
         # Success commit marker
         await self.write_worker_revision(worker.hostname, "infra", self.infra_hash())
         self.notify(f"Worker {worker.hostname} {'added' if is_new else 'synced'}.")
-      else:
+      elif repaired:
         self.notify(
-            f"Worker {worker.hostname} converged with infra unchanged"
-            + (f"; repaired: {', '.join(repaired)}." if repaired else "; nothing stale."))
+            f"Worker {worker.hostname} converged with infra unchanged; repaired: {', '.join(repaired)}.")
+      else:
+        logger.info(f"Worker {worker.hostname} converged with infra unchanged; nothing stale.")
     except Exception as e:
       action = "setup" if is_new else "sync"
       self.notify(f"Failed to {action} worker {worker.hostname} : {e}", "error")
@@ -346,10 +365,8 @@ class WorkersMixin:
 
     logger.info(f"Removing worker {worker.hostname} from manager.")
     Worker.delete().where(Worker.hostname == worker.hostname).execute()
-    self.cloudflare.delete_dns_record(
-        name=f"*.int.{Settings().get('cloudflare', 'domain')}",
-        content=worker.ip,
-    )
+    self.refresh_worker_summary()
+    self.cloudflare.delete_dns_record(name=f"*.int.{self.cloudflare.domain}", content=worker.ip)
     logger.info(f"Worker {worker.hostname} removed from manager.")
 
   def set_worker_offline(self, worker):
@@ -361,8 +378,5 @@ class WorkersMixin:
     """
     logger.info(f"Setting worker {worker.hostname} offline.")
     Worker.update(online=False).where(Worker.hostname == worker.hostname).execute()
-    self.cloudflare.delete_dns_record(
-        name=f"*.int.{Settings().get('cloudflare', 'domain')}",
-        content=worker.ip,
-    )
+    self.cloudflare.delete_dns_record(name=f"*.int.{self.cloudflare.domain}", content=worker.ip)
     self.notify(f"Worker {worker.hostname} is offline.", "error")

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import { Eye, EyeOff, InfoIcon } from 'lucide-vue-next'
+import { Eye, EyeOff } from 'lucide-vue-next'
 import {
   InputGroup,
   InputGroupAddon,
@@ -8,17 +8,17 @@ import {
   InputGroupInput,
   InputGroupTextarea,
 } from '@/components/ui/input-group'
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
+import CopyButton from '@/components/CopyButton.vue'
 
 interface Props {
   secret?: boolean
-  tooltip?: string
   type?: 'input' | 'textarea'
 }
 
+defineOptions({ inheritAttrs: false })
+
 const props = withDefaults(defineProps<Props>(), {
   secret: false,
-  tooltip: '',
   type: 'input',
 })
 
@@ -42,18 +42,8 @@ const revealed = ref<boolean>(!props.secret || false)
       :style="!revealed ? { '-webkit-text-security': 'disc', textSecurity: 'disc' } : {}"
     />
     <InputGroupAddon align="inline-end">
-      <TooltipProvider v-if="props.tooltip !== ''">
-        <Tooltip>
-          <TooltipTrigger as-child>
-            <InputGroupButton class="rounded-full" size="icon-xs">
-              <InfoIcon />
-            </InputGroupButton>
-          </TooltipTrigger>
-          <TooltipContent>
-            {{ props.tooltip }}
-          </TooltipContent>
-        </Tooltip>
-      </TooltipProvider>
+      <!-- The masking is only painted, so selecting the text and copying it takes the bullets. -->
+      <CopyButton v-if="props.secret && modelValue" compact :text="String(modelValue)" />
       <InputGroupButton v-if="props.secret" size="icon-xs" @click="revealed = !revealed">
         <Eye v-if="!revealed" />
         <EyeOff v-else />

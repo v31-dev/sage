@@ -26,7 +26,7 @@ import { ButtonGroup } from '@/components/ui/button-group'
 import { Label } from '@/components/ui/label'
 
 import { type Volume, getVolumeAPI, type Application } from '@/services/api'
-import TitleStatus from '@/components/TitleStatus.vue'
+import SectionTitle from '@/components/SectionTitle.vue'
 import ConfirmationButton from '@/components/ConfirmationButton.vue'
 import VolumeBackupButton from './VolumeBackupButton.vue'
 import VolumeRestoreDialog from './VolumeRestoreDialog.vue'
@@ -94,7 +94,7 @@ async function onClickConfirmDelete() {
   <Card>
     <CardHeader class="flex items-center justify-between border-b">
       <CardTitle>
-        <TitleStatus :title="props.volume.name" />
+        <SectionTitle :title="props.volume.name" />
       </CardTitle>
       <CardAction>
         <ButtonGroup class="space-x-1">
@@ -151,18 +151,22 @@ async function onClickConfirmDelete() {
         <FieldGroup>
           <Field>
             <FieldLabel for="edit-volume-name"> Name </FieldLabel>
-            <Input id="edit-volume-name" v-model="volume.name" placeholder="volume name" />
+            <Input id="edit-volume-name" v-model="volume.name" placeholder="e.g. data" />
           </Field>
           <Field>
             <FieldLabel for="edit-volume-type"> Type </FieldLabel>
-            <Input id="edit-volume-path" v-model="volume.path" placeholder="container path" />
+            <Input
+              id="edit-volume-path"
+              v-model="volume.path"
+              placeholder="e.g. /var/lib/postgresql"
+            />
           </Field>
           <Field>
-            <FieldLabel for="edit-volume-backup-cron"> Backup Schedule </FieldLabel>
+            <FieldLabel for="edit-volume-backup-cron"> Backup Schedule (optional) </FieldLabel>
             <Input
               id="edit-volume-backup-cron"
               v-model="volume.backup_cron"
-              placeholder="optional, e.g. 0 3 * * *"
+              placeholder="e.g. 0 3 * * *"
             />
           </Field>
           <Field>

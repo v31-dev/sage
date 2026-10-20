@@ -1,15 +1,12 @@
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from playhouse.shortcuts import model_to_dict
 
-from services.certs import Certs
-from services.cloudflare import Cloudflare
 from services.db import Setting
 from services.manager import Manager
 from services.notification import Notifications
 from services.s3 import S3
-from services.settings import Settings
+from services.settings import SETTING_DEFINITIONS, Settings
 from utils.api import generic_get, generic_list, get_request_models, parse_api_data
-from utils.common import DOMAIN_RE, EMAIL_RE, get_env
 from utils.queue import OnConflict
 
 router = APIRouter()
@@ -18,8 +15,10 @@ router = APIRouter()
 def inject_setting(request: Request):
   models = get_request_models(request)
 
-  # Fetch and store setting
+  # Fetch and store the setting; only the defined keys exist.
   setting_name = request.path_params.get("setting")
+  if setting_name not in SETTING_DEFINITIONS:
+    raise HTTPException(status_code=404, detail=f"Unknown setting: {setting_name}")
   models["setting"] = generic_get(
       Setting,
       (Setting.key == setting_name),
@@ -31,7 +30,7 @@ def inject_setting(request: Request):
 
 @router.get("/")
 def get():
-  return generic_list(Setting)
+  return generic_list(Setting, Setting.key.in_(list(SETTING_DEFINITIONS)))
 
 
 @router.get("/{setting}", dependencies=[Depends(inject_setting)])
@@ -55,115 +54,67 @@ def update_setting(request: Request, setting_data: dict = Body(...)):
 
   # Validate the settings before update
   if setting_key == "s3":
-    if not S3().check_config(merged_setting_value):
-      raise HTTPException(status_code=400, detail="Invalid S3 configuration. Please verify the provided settings.")
+    try:
+      S3().check_config(merged_setting_value)
+    except Exception as e:
+      raise HTTPException(status_code=400, detail=f"S3 check failed: {Manager().describe_check_error(e)[0]}")
 
     Settings().set("s3", merged_setting_value)
     S3().load()
+    # The bucket or path may hold backups this manager hasn't listed yet.
+    Manager().add_task(
+        task=Manager().discover_s3_backups,
+        scopes={"platform", "app"},
+        executor="platform",
+    )
 
   elif setting_key == "notifications":
-    if not Notifications().check_config(merged_setting_value):
-      raise HTTPException(
-          status_code=400,
-          detail="Invalid notifications configuration. A configured channel did not accept a test message.")
+    try:
+      Notifications().check_config(merged_setting_value)
+    except Exception as e:
+      raise HTTPException(status_code=400, detail=Manager().describe_check_error(e)[0])
 
     Settings().set("notifications", merged_setting_value)
     Notifications().load_notifications_config()
 
-  elif setting_key == "cloudflare":
-    domain_changed = "domain" in new_setting_value and new_setting_value["domain"] != old_setting_value.get("domain")
-    admin_email_changed = "admin_email" in new_setting_value and new_setting_value["admin_email"] != old_setting_value.get("admin_email")
-    api_token_changed = "api_token" in new_setting_value and new_setting_value["api_token"] != old_setting_value.get("api_token")
-    account_id_changed = "account_id" in new_setting_value and new_setting_value["account_id"] != old_setting_value.get("account_id")
-    cloudflare_config_changed = api_token_changed or account_id_changed or domain_changed
-    cloudflare_setting_changed = cloudflare_config_changed or admin_email_changed
-    certs_reload_needed = domain_changed or admin_email_changed
-    traefik_refresh_needed = certs_reload_needed or api_token_changed
-
-    if domain_changed and not DOMAIN_RE.fullmatch(merged_setting_value["domain"]):
-      raise HTTPException(status_code=400, detail="Invalid domain format in Cloudflare settings.")
-
-    if admin_email_changed and not EMAIL_RE.fullmatch(merged_setting_value["admin_email"]):
-      raise HTTPException(status_code=400, detail="Invalid email format in Cloudflare settings.")
-
-    # Validate Cloudflare and trigger changes if needed
-    if cloudflare_config_changed and not Cloudflare().check_config(merged_setting_value):
-      raise HTTPException(status_code=400, detail="Invalid Cloudflare configuration. Please verify the API token, account ID, and domain.")
-
-    if traefik_refresh_needed and Manager().is_busy({"platform", "app"}):
-      raise HTTPException(
-          status_code=409,
-          detail="A platform operation is already in progress. Wait for it to finish before changing the Cloudflare domain, admin email, or API token again.",
-      )
-
-    if cloudflare_setting_changed:
-      Settings().set("cloudflare", merged_setting_value)
-
-    if cloudflare_config_changed:
-      Cloudflare().load()
-
-    if certs_reload_needed:
-      Certs().load()
-
-    if domain_changed:
-      # New domain -> re-issue the wildcard cert and resync workers + routing.
-      Manager().add_task(
-          task=Manager().refresh_traefik,
-          scopes={"platform", "app"},
-          executor="platform",
-          task_id=request.state.task_id,
-          on_conflict=OnConflict.QUEUE,
-      )
+  if Settings().is_configured(setting_key):
+    Manager().add_task(
+        task=Manager().check_setting,
+        name=f"check_{setting_key}",
+        params={"key": setting_key},
+        scopes={f"common:{setting_key}"},
+        executor="common",
+        on_conflict=OnConflict.REPLACE,
+    )
 
   return generic_get(Setting, (Setting.key == setting_key))
 
 
-@router.post("/restart")
-async def restart():
-  """
-  Trigger a restart of the full compose stack via the Docker API socket. Pending
-  queued work is cancelled and the restart waits (with priority) for in-flight
-  platform/app operations to finish before the process is replaced. Progress is
-  not tracked once the restart fires.
-  """
-  Manager().cancel_all_tasks()
-  Manager().add_task(
-      task=Manager().restart,
-      scopes={"platform", "app", "common", "metrics"},
-      executor="platform",
-      on_conflict=OnConflict.QUEUE,
-      priority=True,
-  )
-  return {"message": "Restart initiated."}
+@router.post("/{setting}/test", dependencies=[Depends(inject_setting)])
+def test_setting(request: Request, setting_data: dict = Body(...)):
+  """Check the given values (saved or not) against the provider, without saving them."""
+  setting_model = request.state.models["setting"]
+  value = dict(setting_model.value)
+  value.update(parse_api_data(setting_data, ["value"]).get("value") or {})
+
+  try:
+    return {"message": Manager().test_setting(setting_model.key, value)}
+  except Exception as e:
+    raise HTTPException(status_code=400, detail=Manager().describe_check_error(e)[0])
 
 
-@router.post("/upgrade")
-async def upgrade():
-  """
-  Upgrade the manager to the latest release via a detached compose updater
-  container (pull -> up -d --wait, with tag rollback on a failed health check).
-  """
-  # No upgrade allowed in development
-  if get_env("ENV", "") == "development":
-    raise HTTPException(
-        status_code=400,
-        detail="Self-upgrade is disabled in development.",
-    )
+@router.post("/pause")
+def pause():
+  """Pause Sage before stopping it: queued tasks wait, running ones finish, and user
+  changes are refused until resume. Not remembered across restarts."""
+  Manager().pause_tasks()
+  return {"state": Manager().task_state()}
 
-  version = Manager().latest_version
-  if not version or version == Manager().version:
-    raise HTTPException(status_code=409, detail="Already on the latest version.")
 
-  Manager().cancel_all_tasks()
-  Manager().add_task(
-      task=Manager().upgrade,
-      params={"version": version},
-      scopes={"platform", "app", "common", "metrics"},
-      executor="platform",
-      on_conflict=OnConflict.QUEUE,
-      priority=True,
-  )
-  return {"message": "Upgrade initiated.", "version": version}
+@router.post("/resume")
+def resume():
+  Manager().resume_tasks()
+  return {"state": Manager().task_state()}
 
 
 @router.post("/resync_traefik")

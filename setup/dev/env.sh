@@ -2,27 +2,14 @@
 
 set -e
 
-# Load environment variables from .env file
-if [ -f .env ]; then
-  set -a
-  source .env
-  set +a
-fi
+echo "Resetting the SAGE development environment"
 
-: "${SAGE_HOME:?SAGE_HOME is not set}"
+# Stop and remove the containers.
+docker compose down --remove-orphans
 
-echo "Setting up development environment for SAGE at ${SAGE_HOME}"
-
-# Stop and remove any existing containers
-docker compose down --volumes --remove-orphans
-
-# Reset SAGE_HOME but keep the manager's cert dir (issued cert + ACME account
-# key) so a dev reset doesn't re-issue and burn Let's Encrypt rate limits.
-mkdir -p "${SAGE_HOME}/sage/certs"
-find "${SAGE_HOME}" -mindepth 1 -maxdepth 1 ! -name sage -exec rm -rf {} +
-find "${SAGE_HOME}/sage" -mindepth 1 -maxdepth 1 ! -name certs -exec rm -rf {} +
-
-# Update .env with the Tailscale info
-TS_IP=$(tailscale ip -4)
-grep -q "^HOSTNAME=" .env && sed -i "s/^HOSTNAME=.*/HOSTNAME=$(hostname)/" .env || echo "HOSTNAME=$(hostname)" >> .env
-grep -q "^TS_IP=" .env && sed -i "s/^TS_IP=.*/TS_IP=${TS_IP}/" .env || echo "TS_IP=${TS_IP}" >> .env
+# Wipe the manager's data directory (SAGE_DATA) except its Tailscale state and issued
+# cert, so a reset neither registers a new tailnet node (one-off auth keys) nor
+# re-issues the cert (Let's Encrypt rate limits). Runs inside the container because
+# the files are root-owned.
+docker compose run --rm --no-deps --entrypoint sh sage -c \
+  'find /app/data -mindepth 1 -maxdepth 1 ! -name tailscale ! -name certs -exec rm -rf {} +'

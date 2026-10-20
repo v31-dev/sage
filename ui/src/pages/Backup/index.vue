@@ -8,7 +8,8 @@ import { backupAPI } from '@/services/api'
 import BackupsItem from './BackupsItem.vue'
 import { type Backup } from '@/services/api'
 import CreateBackupButton from './CreateBackupButton.vue'
-import TitleStatus from '@/components/TitleStatus.vue'
+import DiscoverBackupsButton from './DiscoverBackupsButton.vue'
+import SectionTitle from '@/components/SectionTitle.vue'
 
 const backups = ref<Backup[]>([])
 const isLoading = ref(false)
@@ -50,9 +51,12 @@ onMounted(async () => {
       <div v-else class="space-y-6">
         <!-- Header Card -->
         <Card>
-          <CardContent class="flex justify-between items-center">
-            <TitleStatus title="Available Backups" :size="4" />
-            <CreateBackupButton :backupAPI="backupAPI" :loadBackups="loadBackups" />
+          <CardContent class="flex flex-wrap justify-between items-center gap-2">
+            <SectionTitle title="Available Backups" :size="4" />
+            <div class="flex flex-wrap gap-2">
+              <DiscoverBackupsButton :backupAPI="backupAPI" :loadBackups="loadBackups" />
+              <CreateBackupButton :backupAPI="backupAPI" :loadBackups="loadBackups" />
+            </div>
           </CardContent>
         </Card>
 
@@ -60,7 +64,7 @@ onMounted(async () => {
         <Card v-if="backups.length === 0">
           <CardContent class="flex items-center justify-center py-12">
             <p class="text-sm text-muted-foreground">
-              No backups available yet. Create your first backup to get started.
+              No backups listed. Create one, or discover the ones already in S3.
             </p>
           </CardContent>
         </Card>
