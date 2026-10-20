@@ -41,7 +41,7 @@ const notesError = ref('')
 const refreshing = ref(false)
 const refreshError = ref('')
 
-const md = new MarkdownIt({ linkify: true, breaks: false })
+const md = new MarkdownIt({ html: true, linkify: true, breaks: false })
 md.renderer.rules.link_open = (tokens, idx, options, _env, self) => {
   const token = tokens[idx]
   token?.attrSet('target', '_blank')
@@ -292,7 +292,8 @@ onUnmounted(() => {
 <style scoped>
 .release-notes :deep(h1),
 .release-notes :deep(h2),
-.release-notes :deep(h3) {
+.release-notes :deep(h3),
+.release-notes :deep(h4) {
   margin: 0.75rem 0 0.35rem;
   font-weight: 600;
   color: var(--foreground);
@@ -306,6 +307,13 @@ onUnmounted(() => {
 .release-notes :deep(h3) {
   font-size: 0.9rem;
 }
+.release-notes :deep(h4) {
+  font-size: 0.85rem;
+}
+.release-notes :deep(details) {
+  margin-top: 0.75rem;
+}
+
 .release-notes :deep(ul),
 .release-notes :deep(ol) {
   margin: 0.35rem 0;
@@ -342,6 +350,15 @@ onUnmounted(() => {
 .release-notes :deep(pre code) {
   padding: 0;
   background: transparent;
+}
+.release-notes :deep(summary) {
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--foreground);
+}
+.release-notes :deep(summary h3) {
+  display: inline;
+  margin: 0;
 }
 .release-notes :deep(hr) {
   margin: 0.75rem 0;

@@ -173,9 +173,9 @@ docker compose up --build --watch
 
 ## Release Notes
 
-- The release notes are the GitHub release body. Settings → Upgrade shows them as Markdown, after removing HTML comments.
-- For every release, generate technical release notes against the previous release: list the files changed since its tag (`git diff <previous tag> --stat`), then read the diffs. Cover config and env vars, startup order, endpoints added and removed, data and file formats (backups, S3 keys), the task queue, the Cloudflare and Tailscale resources Sage creates, the image and CI, and what was tested live and what wasn't. Give names, constants and formats exactly, so a reviewer can check each against the code.
-- Put them at the end of the release notes in a collapsible block (`<details><summary>Technical notes</summary> … </details>`). The user-facing notes above it stay short.
+- The release notes are the GitHub release body. Settings → Upgrade renders them as Markdown with raw HTML allowed (sanitized), so the collapsible block works. Put every code identifier, path and `<placeholder>` in backticks: unquoted, `<name>` is read as an HTML tag and disappears.
+- For every release, generate technical release notes against the previous release: list the files changed since its tag (`git diff <previous tag> --stat`), then read the diffs. Cover config and env vars, startup order, endpoints added and removed, data and file formats (backups, S3 keys), the task queue, the Cloudflare and Tailscale resources Sage creates, and the image and CI. Leave test status out of the notes. Give names, constants and formats exactly, so a reviewer can check each against the code.
+- Put them at the end of the release notes in a collapsible block (`<details><summary><h3 style="display:inline">Technical notes</h3></summary> … </details>`) with its sections as `####` headings (GitHub inlines a heading in a summary by itself; the style keeps it beside the marker in plain renderers). The user-facing notes above it stay short.
 
 ## Documentation Rules
 
