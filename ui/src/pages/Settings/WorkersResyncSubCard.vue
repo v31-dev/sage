@@ -81,9 +81,9 @@ async function onConfirmResync() {
               Resync Workers
             </DialogTitle>
             <DialogDescription>
-              This queues a re-sync of every online worker that will run on the next scheduler tick
-              (within ~30s). Use when worker compose, env, or Vector templates have drifted. Does
-              not touch certificates — use Resync Traefik for cert/ACME issues.
+              This queues a re-sync of every online worker, which starts as soon as the platform
+              work already running has finished. Use when worker compose, env, or Vector templates
+              have drifted. Does not issue certificates — use Resync Traefik for cert/ACME issues.
             </DialogDescription>
           </DialogHeader>
 
@@ -96,10 +96,7 @@ async function onConfirmResync() {
                 <code>docker compose up -d</code> is run on the worker; base-stack services with
                 config drift will recreate.
               </li>
-              <li>
-                Every application on the worker is flagged for Traefik domain config resync on the
-                next scheduler tick.
-              </li>
+              <li>Every application on the worker is queued for a Traefik domain config resync.</li>
             </ul>
             <p
               class="rounded border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs text-destructive"

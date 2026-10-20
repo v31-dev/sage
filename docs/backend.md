@@ -371,7 +371,7 @@ deploy materializes its app dir, so a dir captured on the worker whose row is
 being created concurrently is present in the later read and never reaped
 mid-deploy.
 
-`refresh_traefik` (domain/admin-email change) rewrites each online worker's
+`refresh_traefik` (Resync Traefik) rewrites each online worker's
 traefik files directly but deliberately does **not** advance their `infra`
 stamps — the stamp vouches for every infra file (compose, `.env`, vector),
 and refresh only touched the traefik ones; advancing it could falsely certify

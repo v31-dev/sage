@@ -51,9 +51,11 @@ async function onConfirmResync() {
           <Field>
             <FieldLabel>Resync Traefik</FieldLabel>
             <FieldDescription>
-              ⚠ Rewrites all Traefik config on the manager and online workers, restarts Traefik
-              containers, and forces certificate re-issuance. Use when TLS certs are broken, ACME
-              state is corrupt, or you've rotated the Cloudflare API token outside of settings.
+              ⚠ Re-checks the manager's and the workers' certificates (a missing, invalid or
+              soon-to-expire one is issued again), pushes the workers' certificate and Traefik
+              config to every online worker, restores their *.int DNS records and resyncs every
+              application's routing. Use when a certificate is broken or routing has drifted on the
+              workers.
             </FieldDescription>
           </Field>
         </FieldGroup>
@@ -80,30 +82,26 @@ async function onConfirmResync() {
               Resync Traefik
             </DialogTitle>
             <DialogDescription>
-              This rebuilds Traefik state across the platform — manager config, ACME certs, and
-              worker Traefik. Use for cert/ACME failures or Cloudflare API token rotation, not for
-              general worker drift.
+              This re-checks the certificates and resyncs Traefik on every online worker. Use it for
+              certificate problems or routing drift, not for general worker drift.
             </DialogDescription>
           </DialogHeader>
 
           <div class="space-y-3 py-2 text-sm text-muted-foreground">
             <p>The following will happen:</p>
             <ul class="ml-4 list-disc space-y-1 text-xs">
-              <li>Manager Traefik config files and DNS API token file are rewritten.</li>
-              <li>Manager Traefik is restarted; existing certificates are re-issued via ACME.</li>
               <li>
-                Worker Traefik static and dynamic config is resynced; worker Traefik restarted.
+                The manager's and the workers' certificates are checked; one that is missing,
+                invalid or within 30 days of expiry is issued again through ACME. The manager serves
+                a new certificate without a restart.
               </li>
               <li>
-                Every application is flagged for domain config resync on the next scheduler tick.
+                The workers' certificate and Traefik config are pushed to every online worker;
+                Traefik reloads them from its watched files.
               </li>
+              <li>Each online worker's *.int DNS record is created again in Cloudflare.</li>
+              <li>Every application's routing is resynced.</li>
             </ul>
-            <p
-              class="rounded border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs text-destructive"
-            >
-              <strong>Brief downtime expected.</strong> Public traffic to all apps may drop for a
-              few seconds during Traefik restarts.
-            </p>
           </div>
 
           <p v-if="errorMessage" class="text-xs text-destructive">{{ errorMessage }}</p>
