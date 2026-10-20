@@ -18,7 +18,7 @@ This is a living project-context file for AI coding agents. Keep it concise, cur
   - When a cycle's items are all resolved and the tracker is reset for new work, move the finished detail files into `todo/archive/` rather than deleting them; start the new cycle's numbering fresh.
   - Work items one at a time.
 - **Discussion-first per item:** when working through a task list, make no code or file changes for an item until its approach has been discussed and explicitly approved. Settle the design in conversation, get sign-off, then implement.
-- A design question gets a recommendation and a list of what would change; code follows an explicit go-ahead. A decision the user leaves ("leave it") stays as it is. Work the user defers goes to `todo/BACKLOG.md` with no code change. During live testing, add each fix to `todo/checklist.md` and tick only what was tested live.
+- A design question gets a recommendation and a list of what would change; code follows an explicit go-ahead. A decision the user leaves ("leave it") stays as it is. Work the user defers goes to `todo/BACKLOG.md` with no code change. During a cycle's live testing, keep a checklist in `todo/checklist.md`: add each fix to it and tick only what was tested live (the finished one moves to the cycle's archive folder).
 - Treat every identified task as priority work. Do not defer with "revisit later" or "doesn't matter now". An item leaves the list only when it is done or the user explicitly rejects it.
 - Run this work on Claude Opus at extra-high reasoning (minimum). Evaluation and design decisions here are subtle; do not use a lighter model or lower reasoning effort.
 
