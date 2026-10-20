@@ -32,7 +32,10 @@ const deployButtonSpinner = computed(() => {
 })
 
 async function onClickDeployApplication() {
-  appStore.updateApplicationDeployStatus('deploying')
+  appStore.updateApplicationDeployStatus(
+    'deploying',
+    props.application.containers.map(container => container.worker.hostname)
+  )
   try {
     await props.applicationAPI.action(`${props.application.name}/deploy`)
   } catch (err) {

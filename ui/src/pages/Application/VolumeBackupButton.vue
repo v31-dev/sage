@@ -36,7 +36,10 @@ const backupButtonDisabled = computed(() => {
 
 async function onClickCreateBackup() {
   const previousStatus = props.application.status
-  appStore.updateApplicationDeployStatus('backup')
+  appStore.updateApplicationDeployStatus(
+    'backup',
+    props.application.containers.map(container => container.worker.hostname)
+  )
 
   try {
     await volumeBackupAPI.create({})

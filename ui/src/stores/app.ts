@@ -6,6 +6,7 @@ import {
   fetchAppInfo,
   type AppInfo,
   type Application,
+  type Container,
   type Indicator,
   type IndicatorState,
   type SettingSection,
@@ -32,6 +33,8 @@ export const useAppStore = defineStore('app', () => {
 
   // Immediate updates to block UI button till polling gives the real update
   const applicationDeployStatus = ref('inactive' as Application['status'])
+  // The open application's containers by worker hostname, as the last action set them.
+  const containerStatuses = ref<Record<string, Application['status']>>({})
 
   const workersIndicator = computed<Indicator | undefined>(() => {
     const workers = info.value?.workers
@@ -128,8 +131,18 @@ export const useAppStore = defineStore('app', () => {
     if (entry) entry.state = 'applying'
   }
 
-  function updateApplicationDeployStatus(status: Application['status']) {
+  // The containers named are shown with the status too; the others keep the polled one.
+  function updateApplicationDeployStatus(status: Application['status'], hostnames: string[] = []) {
     applicationDeployStatus.value = status
+    containerStatuses.value = Object.fromEntries(hostnames.map(hostname => [hostname, status]))
+  }
+
+  function updateContainerStatus(hostname: string, status: Application['status']) {
+    containerStatuses.value = { ...containerStatuses.value, [hostname]: status }
+  }
+
+  function containerStatus(container: Container): Application['status'] {
+    return containerStatuses.value[container.worker.hostname] ?? container.status
   }
 
   return {
@@ -143,11 +156,13 @@ export const useAppStore = defineStore('app', () => {
     workerIndicator,
     domainIndicator,
     taskIndicator,
+    containerStatus,
     // Actions
     init,
     refresh,
     setState,
     setSettingApplying,
     updateApplicationDeployStatus,
+    updateContainerStatus,
   }
 })

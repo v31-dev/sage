@@ -125,7 +125,7 @@ async function onClickRestore() {
 
   const previousStatus = appStore.applicationDeployStatus
   isRestoring.value = true
-  appStore.updateApplicationDeployStatus('restoring')
+  appStore.updateApplicationDeployStatus('restoring', [selectedTargetWorker.value])
 
   try {
     await volumeBackupAPI.action(`${selectedBackup.value.id}/restore`, {

@@ -40,7 +40,7 @@ const workerIndicator = computed(() => appStore.workerIndicator(props.container.
       <CardTitle>
         <div class="flex w-full flex-wrap gap-2">
           <StateIndicator
-            v-bind="appStore.applicationIndicator(props.container.status)"
+            v-bind="appStore.applicationIndicator(appStore.containerStatus(props.container))"
             show-label
           />
         </div>

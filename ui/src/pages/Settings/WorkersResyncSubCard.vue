@@ -15,7 +15,9 @@ import { Field, FieldDescription, FieldGroup, FieldLabel, FieldSet } from '@/com
 import { Spinner } from '@/components/ui/spinner'
 import { RotateCw, TriangleAlert } from 'lucide-vue-next'
 import { settingsAPI } from '@/services/api'
+import { useAppStore } from '@/stores/app'
 
+const appStore = useAppStore()
 const submitting = ref(false)
 const dialogOpen = ref(false)
 const errorMessage = ref('')
@@ -31,6 +33,7 @@ async function onConfirmResync() {
 
   try {
     await settingsAPI.action('resync_workers')
+    appStore.setSettingApplying('tailscale')
     dialogOpen.value = false
   } catch (err) {
     errorMessage.value = err instanceof Error ? err.message : 'Failed to queue worker resync'

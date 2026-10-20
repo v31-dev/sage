@@ -77,7 +77,7 @@ const repoURL = computed(() => {
       <CardTitle>
         <SectionTitle :title="props.application.label" :size="3">
           <StateIndicator
-            v-bind="appStore.applicationIndicator(props.application.status)"
+            v-bind="appStore.applicationIndicator(appStore.applicationDeployStatus)"
             show-label
           />
         </SectionTitle>

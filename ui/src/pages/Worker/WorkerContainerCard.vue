@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { ArrowRight, Trash } from 'lucide-vue-next'
 import { RouterLink } from 'vue-router'
 import { Button } from '@/components/ui/button'
@@ -16,7 +16,7 @@ import CardFooter from '@/components/ui/card/CardFooter.vue'
 interface Props {
   worker: Worker
   container: Container
-  loadWorker: () => Promise<void>
+  loadWorkerStatus: () => Promise<void>
 }
 
 const appStore = useAppStore()
@@ -24,16 +24,32 @@ const appStore = useAppStore()
 const props = withDefaults(defineProps<Props>(), {})
 
 const showForceDelete = computed(() => !props.worker.online)
+
+// Until the container's status changes, a force delete shows as stopping.
+const forceDeleting = ref(false)
+watch(
+  () => props.container.status,
+  () => {
+    forceDeleting.value = false
+  }
+)
+const status = computed(() => (forceDeleting.value ? 'stopping' : props.container.status))
 const containersAPI = getContainerAPI(
   props.container.application.project.name,
   props.container.application.name
 )
 
 async function onConfirmForceDelete() {
-  await containersAPI.delete(props.worker.hostname, { force: true })
+  forceDeleting.value = true
+  try {
+    await containersAPI.delete(props.worker.hostname, { force: true })
+  } catch (err) {
+    forceDeleting.value = false
+    throw err
+  }
 
   toast.success(`Force delete initiated for ${props.container.application.label}`)
-  await props.loadWorker()
+  await props.loadWorkerStatus()
 }
 </script>
 
@@ -46,10 +62,7 @@ async function onConfirmForceDelete() {
             props.container.application.project.name + '-' + props.container.application.label
           "
         >
-          <StateIndicator
-            v-bind="appStore.applicationIndicator(props.container.status)"
-            show-label
-          />
+          <StateIndicator v-bind="appStore.applicationIndicator(status)" show-label />
         </SectionTitle>
       </CardTitle>
       <CardAction v-if="showForceDelete">

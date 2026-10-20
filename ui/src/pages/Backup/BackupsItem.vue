@@ -52,7 +52,7 @@ async function onConfirmRestoreBackup(backupId: string) {
   try {
     await props.backupAPI.action(`${backupId}/restore`)
     toast.success('Backup restore initiated successfully')
-    // Shows the restore overlay without waiting for the next poll.
+    appStore.setState('restoring')
     await appStore.refresh()
   } catch (err) {
     // Extract task_id from error response headers and open logs dialog
