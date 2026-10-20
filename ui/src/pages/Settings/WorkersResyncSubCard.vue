@@ -51,10 +51,9 @@ async function onConfirmResync() {
           <Field>
             <FieldLabel>Resync Workers</FieldLabel>
             <FieldDescription>
-              ⚠ Re-pushes compose, Traefik, and Vector templates to every online worker and restarts
-              their base stack. Use when worker templates have drifted. Also re-pushes worker
-              Traefik config, and repairs a stale certificate copy, but never re-issues the
-              certificate — use Resync Traefik for that.
+              ⚠ Re-applies the platform setup on every online worker and restarts its Traefik and
+              Vector. Use when workers have drifted from it. Certificates are not renewed; use
+              Resync Traefik for that.
             </FieldDescription>
           </Field>
         </FieldGroup>
@@ -81,28 +80,23 @@ async function onConfirmResync() {
               Resync Workers
             </DialogTitle>
             <DialogDescription>
-              This queues a re-sync of every online worker, which starts as soon as the platform
-              work already running has finished. Use when worker compose, env, or Vector templates
-              have drifted. Does not issue certificates — use Resync Traefik for cert/ACME issues.
+              This queues a re-sync of every online worker. Use when workers have drifted from the
+              platform setup. It doesn't renew certificates; use Resync Traefik for that.
             </DialogDescription>
           </DialogHeader>
 
           <div class="space-y-3 py-2 text-sm text-muted-foreground">
             <p>The following will happen for each online worker:</p>
             <ul class="ml-4 list-disc space-y-1 text-xs">
-              <li>Compose, Traefik, Vector, and worker.env files are re-rsynced.</li>
-              <li>The Cloudflare <code>*.int</code> DNS record is reasserted.</li>
-              <li>
-                <code>docker compose up -d</code> is run on the worker; base-stack services with
-                config drift will recreate.
-              </li>
-              <li>Every application on the worker is queued for a Traefik domain config resync.</li>
+              <li>The worker's setup files are re-sent and its services updated.</li>
+              <li>Traefik and Vector are restarted.</li>
+              <li>Every application's routing on the worker is resynced.</li>
             </ul>
             <p
               class="rounded border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs text-destructive"
             >
-              <strong>Brief downtime expected.</strong> Worker Traefik may restart, causing a few
-              seconds of dropped traffic to apps on that worker.
+              <strong>Brief downtime expected.</strong> Apps on the worker may drop traffic for a
+              few seconds while Traefik restarts.
             </p>
           </div>
 

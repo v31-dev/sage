@@ -51,11 +51,8 @@ async function onConfirmResync() {
           <Field>
             <FieldLabel>Resync Traefik</FieldLabel>
             <FieldDescription>
-              ⚠ Re-checks the manager's and the workers' certificates (a missing, invalid or
-              soon-to-expire one is issued again), pushes the workers' certificate and Traefik
-              config to every online worker, restores their *.int DNS records and resyncs every
-              application's routing. Use when a certificate is broken or routing has drifted on the
-              workers.
+              ⚠ Re-checks the certificates and resyncs routing on every online worker. Use when a
+              certificate is broken or routing on the workers has drifted.
             </FieldDescription>
           </Field>
         </FieldGroup>
@@ -82,24 +79,15 @@ async function onConfirmResync() {
               Resync Traefik
             </DialogTitle>
             <DialogDescription>
-              This re-checks the certificates and resyncs Traefik on every online worker. Use it for
-              certificate problems or routing drift, not for general worker drift.
+              Use this for certificate problems or routing drift, not for general worker drift.
             </DialogDescription>
           </DialogHeader>
 
           <div class="space-y-3 py-2 text-sm text-muted-foreground">
             <p>The following will happen:</p>
             <ul class="ml-4 list-disc space-y-1 text-xs">
-              <li>
-                The manager's and the workers' certificates are checked; one that is missing,
-                invalid or within 30 days of expiry is issued again through ACME. The manager serves
-                a new certificate without a restart.
-              </li>
-              <li>
-                The workers' certificate and Traefik config are pushed to every online worker;
-                Traefik reloads them from its watched files.
-              </li>
-              <li>Each online worker's *.int DNS record is created again in Cloudflare.</li>
+              <li>Certificates that are missing or about to expire are renewed.</li>
+              <li>Every online worker gets the current certificate and routing configuration.</li>
               <li>Every application's routing is resynced.</li>
             </ul>
           </div>
