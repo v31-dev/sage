@@ -37,8 +37,11 @@ const headingSize = computed(() => {
     <div v-if="props.title" class="font-semibold inline-flex items-center">
       {{ props.title }}
     </div>
-    <!-- Centred on the lowercase body of the title, which sits below its cap-height centre. -->
-    <div v-if="$slots.default" class="ml-2 flex translate-y-[0.09em] items-center">
+    <!-- A badge is centred on the lowercase body of the title, which sits below its cap-height centre; an icon or dot stays on the middle of the line. -->
+    <div
+      v-if="$slots.default"
+      class="ml-2 flex items-center has-data-[slot=badge]:translate-y-[0.09em]"
+    >
       <slot />
     </div>
     <TooltipProvider v-if="props.tooltip">
