@@ -2,17 +2,17 @@
 max_line_length = 150
 indent_size = 2
 aggressive = 2
-exclude = "app-venv,.venv,__pycache__,build,dist"
+exclude = ".venv,__pycache__,build,dist"
 
 [tool.isort]
 line_length = 150
-skip = ["app-venv", ".venv"]
-skip_glob = ["**/app-venv/**", "**/.venv/**"]
+skip = [".venv"]
+skip_glob = ["**/.venv/**"]
 
 [tool.ruff]
 line-length = 150
 target-version = "py312"
-exclude = ["app-venv", ".venv", "__pycache__", "build", "dist"]
+exclude = [".venv", "__pycache__", "build", "dist"]
 
 [tool.ruff.lint]
 # Start with correctness-focused rules only so Ruff can be introduced without
@@ -23,13 +23,13 @@ select = ["E9", "F63", "F7", "F82"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
-addopts = "--import-mode=importlib --cov"
+addopts = "--import-mode=importlib --cov=."
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 
 [tool.coverage.run]
 source = ["."]
-omit = ["**/tests/**", "**/*-venv/**", "main.py"]
+omit = ["**/tests/**", "**/.venv/**", "main.py"]
 branch = true
 
 [tool.coverage.report]

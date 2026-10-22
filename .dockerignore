@@ -12,7 +12,7 @@
 **/coverage.xml
 **/htmlcov
 app/tests
-**/*-venv
+**/.venv
 
 # Ignore marked files
 **/*-gitignore

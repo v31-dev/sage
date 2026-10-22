@@ -10,12 +10,12 @@ The repo includes helper scripts in `dev/`:
   - Docker: installed from Docker's apt repository on Ubuntu when it is missing (the only step
     that uses `sudo`); on another OS it only says so
   - Python: a pinned `uv`, Python 3.12 (newer Ubuntu releases don't package it), the virtual
-    environment under `app/app-venv` and the requirements with the dev tools; the environment is
+    environment under `app/.venv` and the requirements with the dev tools; the environment is
     recreated when its Python is missing or the wrong version
   - Node: `nvm`, the Node version in `ui/.nvmrc`, and `ui/node_modules` (`npm ci`, repeated
     when `package.json`, `package-lock.json` or the Node version changes)
-  - afterwards, in a new shell: `source app/app-venv/bin/activate`, and `cd ui && nvm use`
-- `test.sh`
+  - afterwards, in a new shell: `source app/.venv/bin/activate`, and `cd ui && nvm use`
+- `test-app.sh`
   - runs the backend tests in a `python:3.12-slim` container, for a machine without Python 3.12;
     see Tests
 - `env.sh`
@@ -112,8 +112,8 @@ repo root, `pytest app/tests`; the config is in `app/pyproject.toml`).
 `setup.sh` installs `requirements-dev.txt`, which includes `requirements-test.txt` (pytest,
 pytest-asyncio, pytest-cov, ruff and isort, the tools CI runs).
 
-Without Python 3.12 on the machine, `dev/test.sh` runs the same tests in a Docker
-container and passes its arguments to pytest (`dev/test.sh -q --no-cov -k queue`). It keeps
+Without Python 3.12 on the machine, `dev/test-app.sh` runs the same tests in a Docker
+container and passes its arguments to pytest (`dev/test-app.sh -q --no-cov -k queue`). It keeps
 the virtual environment in `~/.cache/sage-test-venv` (or `SAGE_TEST_VENV`) and rebuilds it when the
 requirements change; the first run takes about a minute, later runs a second or two.
 
@@ -135,6 +135,9 @@ reads at import, clears the service singletons between tests, and provides:
 
 Locations, endpoints and timings live in `app/config.py` and are read as `config.NAME` where they
 are used, so a test overrides one attribute (`monkeypatch.setattr(config, ...)`).
+
+A bug fix comes with a regression test: reproduce the bug in a test and see it fail, fix the code,
+and keep the test so the bug can't return unnoticed.
 
 ## Frontend Commands
 

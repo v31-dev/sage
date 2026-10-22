@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Builds the local development environment, as your own user: Docker (only when it is missing,
-# on Ubuntu, using sudo), then uv, Python and app/app-venv, then nvm, Node (the version in
+# on Ubuntu, using sudo), then uv, Python and app/.venv, then nvm, Node (the version in
 # ui/.nvmrc) and ui/node_modules.
 # Safe to re-run: each step does only what has changed since the last run.
 
@@ -38,7 +38,7 @@ export PATH="${HOME}/.local/bin:${PATH}"
 if ! command -v uv > /dev/null; then
   curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" | UV_NO_MODIFY_PATH=1 sh
 fi
-venv=app/app-venv
+venv=app/.venv
 if ! "${venv}/bin/python" -c "import sys; sys.exit(sys.version_info[:2] != tuple(map(int, '${PYTHON_VERSION}'.split('.'))))" 2> /dev/null; then
   uv venv --python "${PYTHON_VERSION}" --clear "${venv}"
 fi
@@ -66,5 +66,5 @@ fi
 cd ..
 
 echo "==> Done"
-echo "Python: source app/app-venv/bin/activate"
+echo "Python: source app/.venv/bin/activate"
 echo "Node:   cd ui && nvm use"

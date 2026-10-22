@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Runs the backend tests in a python:3.12-slim container, for a machine without Python 3.12.
-# Arguments go to pytest: dev/test.sh -q --no-cov -k queue
+# Arguments go to pytest: dev/test-app.sh -q --no-cov -k queue
 # The virtualenv is kept in SAGE_TEST_VENV (default ~/.cache/sage-test-venv) and rebuilt when
 # the requirements change.
 
