@@ -12,20 +12,14 @@ from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
+import config
 from services.base import Base
 from services.cloudflare import Cloudflare
 from utils.common import get_env
 
 logger = logging.getLogger(__name__)
 
-ACME_DIRECTORY = "https://acme-v02.api.letsencrypt.org/directory"
-RENEWAL_THRESHOLD_DAYS = 30
-DNS_PROPAGATION_TIMEOUT = 180
-DNS_POLL_INTERVAL = 5
-FINALIZE_TIMEOUT_SECONDS = 180
 CHALLENGE_COMMENT = "sage-acme-challenge"
-# A cold start without a certificate retries before giving up (seconds).
-STARTUP_RETRY_DELAYS = (60, 240, 960)
 
 
 class Certificate:
@@ -65,7 +59,7 @@ class Certificate:
       return False
     return all(name in sans for name in self.names)
 
-  def needs_renewal(self, days: int = RENEWAL_THRESHOLD_DAYS):
+  def needs_renewal(self, days: int = config.RENEWAL_THRESHOLD_DAYS):
     if self._cert is None:
       return True
     return self._cert.not_valid_after_utc <= datetime.now(timezone.utc) + timedelta(days=days)
@@ -87,7 +81,7 @@ class Certs(Base):
   def __init__(self):
     super().__init__()
 
-    cert_dir = Path("/app/data/certs")
+    cert_dir = config.DATA_DIR / "certs"
     cert_dir.mkdir(parents=True, exist_ok=True)
     self.account_key_path = cert_dir / "account.key"
     self.domain = get_env("DOMAIN")
@@ -120,7 +114,7 @@ class Certs(Base):
     an executor lane, never call on the event loop."""
     account_key = self._account_key()
     net = client.ClientNetwork(account_key, user_agent="sage")
-    directory = client.ClientV2.get_directory(ACME_DIRECTORY, net)
+    directory = client.ClientV2.get_directory(config.ACME_DIRECTORY, net)
     acme_client = client.ClientV2(directory, net=net)
     try:
       # No contact email: Let's Encrypt doesn't send expiry mail.
@@ -154,15 +148,15 @@ class Certs(Base):
 
       # Let's Encrypt validates a challenge the moment it is answered, so wait
       # until every TXT is actually served before answering
-      logger.info(f"Waiting for the DNS-01 records to appear on the zone's nameservers (up to {DNS_PROPAGATION_TIMEOUT}s).")
+      logger.info(f"Waiting for the DNS-01 records to appear on the zone's nameservers (up to {config.DNS_PROPAGATION_TIMEOUT}s).")
       self._wait_for_dns([(name, value) for name, value, _, _ in published])
 
       for _, _, challenge, response in published:
         acme_client.answer_challenge(challenge, response)
 
-      logger.info(f"Let's Encrypt is validating the DNS-01 challenge (up to {FINALIZE_TIMEOUT_SECONDS}s).")
+      logger.info(f"Let's Encrypt is validating the DNS-01 challenge (up to {config.FINALIZE_TIMEOUT_SECONDS}s).")
       order = acme_client.poll_and_finalize(
-          order, deadline=datetime.now() + timedelta(seconds=FINALIZE_TIMEOUT_SECONDS))
+          order, deadline=datetime.now() + timedelta(seconds=config.FINALIZE_TIMEOUT_SECONDS))
     finally:
       for record_name, *_ in published:
         try:
@@ -203,7 +197,7 @@ class Certs(Base):
       resolver = dns.resolver.Resolver()
     resolver.lifetime = 10
 
-    deadline = time.time() + DNS_PROPAGATION_TIMEOUT
+    deadline = time.time() + config.DNS_PROPAGATION_TIMEOUT
     pending = list(records)
     while pending:
       remaining = []
@@ -219,9 +213,9 @@ class Certs(Base):
       if pending and time.time() >= deadline:
         raise TimeoutError(
             f"DNS-01 TXT records not visible on authoritative nameservers after "
-            f"{DNS_PROPAGATION_TIMEOUT}s: {[name for name, _ in pending]}")
+            f"{config.DNS_PROPAGATION_TIMEOUT}s: {[name for name, _ in pending]}")
       if pending:
-        time.sleep(DNS_POLL_INTERVAL)
+        time.sleep(config.DNS_POLL_INTERVAL)
 
   def ensure(self, certificate: Certificate):
     """Issue only when there is no valid cert or it is within the renewal
@@ -237,7 +231,7 @@ class Certs(Base):
     backoff before giving up. An existing valid certificate means this was only a
     renewal: a failure is logged and left to the daily renewal task rather than
     holding startup for a certificate that still works."""
-    for delay in (*STARTUP_RETRY_DELAYS, None):
+    for delay in (*config.STARTUP_RETRY_DELAYS, None):
       try:
         self.ensure(self.manager)
         return

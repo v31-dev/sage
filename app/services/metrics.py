@@ -9,9 +9,10 @@ from pathlib import Path
 import httpx
 from peewee import CharField, CompositeKey, DateTimeField, FloatField, IntegerField, Model, SqliteDatabase
 
+import config
 from services.base import Base
 from services.db import Worker
-from utils.common import RETENTION_DAYS, get_env
+from utils.common import get_env
 
 logger = logging.getLogger(__name__)
 
@@ -26,16 +27,12 @@ _PERIODS = {
     "1w": {"delta": timedelta(days=7), "bucket": 168, "points": 60},
 }
 
-# The manager samples its own usage every few seconds and reports the per-minute peak
-_CGROUP = Path("/sys/fs/cgroup")
-_SAMPLE_INTERVAL = 5
-
 
 class Metrics(Base):
   def __init__(self):
     super().__init__()
 
-    self.db_path = "/app/data"
+    self.db_path = config.DATA_DIR
     os.makedirs(f"{self.db_path}/metrics", exist_ok=True)
 
     self._dbs = {"metrics": {}}
@@ -204,14 +201,14 @@ class Metrics(Base):
     else host cores); memory total is the cgroup limit if set, else host memory;
     disk is the root filesystem so temp usage counts. The minutely flush
     (`collect_self`) drains it to the shard."""
-    while not self._sampler_stop.wait(_SAMPLE_INTERVAL):
+    while not self._sampler_stop.wait(config.METRICS_SAMPLE_INTERVAL):
       try:
         now = time.monotonic()
         minute = datetime.now().replace(second=0, microsecond=0)
 
         cpu_usage_usec = next(
             int(line.split()[1])
-            for line in (_CGROUP / "cpu.stat").read_text().splitlines()
+            for line in (config.CGROUP_ROOT / "cpu.stat").read_text().splitlines()
             if line.startswith("usage_usec ")
         )
         interfaces = [
@@ -227,18 +224,18 @@ class Metrics(Base):
           continue  # no previous counter for a rate -> seed only, skip this point
         elapsed = now - prev[3]
 
-        cpu_max = (_CGROUP / "cpu.max").read_text().split()
+        cpu_max = (config.CGROUP_ROOT / "cpu.max").read_text().split()
         cpu_allowance = (os.cpu_count() or 1) if cpu_max[0] == "max" else int(cpu_max[0]) / int(cpu_max[1])
         cpu_pct = round(max(cpu_usage_usec - prev[0], 0) / (elapsed * 1_000_000) / cpu_allowance * 100, 2)
         net_rx_kbps = round(max(rx_bytes - prev[1], 0) / 1024 / elapsed, 2)
         net_tx_kbps = round(max(tx_bytes - prev[2], 0) / 1024 / elapsed, 2)
 
-        mem_used = int((_CGROUP / "memory.current").read_text())
+        mem_used = int((config.CGROUP_ROOT / "memory.current").read_text())
         mem_stat = dict(
-            line.split(maxsplit=1) for line in (_CGROUP / "memory.stat").read_text().splitlines()
+            line.split(maxsplit=1) for line in (config.CGROUP_ROOT / "memory.stat").read_text().splitlines()
         )
         mem_cached = int(mem_stat.get("file", 0))
-        mem_max = (_CGROUP / "memory.max").read_text().strip()
+        mem_max = (config.CGROUP_ROOT / "memory.max").read_text().strip()
         if mem_max == "max":
           mem_total = next(
               int(line.split()[1]) * 1024
@@ -342,7 +339,7 @@ class Metrics(Base):
       logger.info(f"Removed orphaned {kind} shard '{key}'.")
     return len(orphans)
 
-  def cleanup(self, days: int = RETENTION_DAYS):
+  def cleanup(self, days: int = config.RETENTION_DAYS):
     cutoff = datetime.now() - timedelta(days=days)
 
     # Drop shards for hosts that no longer exist (keyed by hostname -- manager

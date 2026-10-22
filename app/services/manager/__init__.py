@@ -1,5 +1,6 @@
 import logging
 
+import config
 from services.base import Base
 from services.certs import Certs
 from services.cloudflare import Cloudflare
@@ -37,7 +38,7 @@ class Manager(
     QueueMixin,
     Base,
 ):
-  worker_home_dir = "/opt/sage"
+  worker_home_dir = config.WORKER_HOME_DIR
   s3_backup_path_platform = "/backups/platform"
   s3_backup_path_applications = "/backups/applications"
 

@@ -10,6 +10,16 @@
 - Tailscale CLI
 - boto3 (sync, offloaded to the task's pool)
 
+## Configuration
+
+`app/config.py` holds the locations (`DATA_DIR`, `DB_PATH`, `STATIC_DIR`, the worker home
+directory), external endpoints and timings (retry delays, certificate waits, link expiries,
+retention). A module reads a value as `config.NAME` where it is used, not `from config import
+NAME`, so a test can override one attribute. The required env vars are read with `get_env`.
+
+The main database is deferred: `Database` opens it at `config.DB_PATH` at startup, so importing
+the models touches no disk.
+
 ## API Surface
 
 The main API is mounted in `app/api.py` and exposes route groups for:

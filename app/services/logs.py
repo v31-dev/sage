@@ -9,9 +9,10 @@ from pathlib import Path
 from peewee import CharField, Model, SqliteDatabase, TextField
 from playhouse.sqlite_ext import FTS5Model, RowIDField, SearchField
 
+import config
 from services.base import Base
 from services.db import Application, Project
-from utils.common import RETENTION_DAYS, get_env
+from utils.common import get_env
 from utils.logging import LOG_FORMAT, ContextVarFilter, SuppressTracebackFilter
 
 logger = logging.getLogger(__name__)
@@ -27,7 +28,7 @@ class Logs(Base):
   def __init__(self):
     super().__init__()
 
-    self.db_path = "/app/data"
+    self.db_path = config.DATA_DIR
     os.makedirs(f"{self.db_path}/logs", exist_ok=True)
     self._dbs = {"logs": {}}
 
@@ -198,7 +199,7 @@ class Logs(Base):
     for path in (db_file, f"{db_file}-wal", f"{db_file}-shm"):
       Path(path).unlink(missing_ok=True)
 
-  def cleanup(self, days: int = RETENTION_DAYS):
+  def cleanup(self, days: int = config.RETENTION_DAYS):
     cutoff = datetime.now() - timedelta(days=days)
 
     # Drop shards for apps that no longer exist (logs keyed by app qualified_name);

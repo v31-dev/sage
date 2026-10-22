@@ -1,4 +1,5 @@
-FROM node:lts-alpine
+# The Node major in .nvmrc
+FROM node:24-alpine
 
 WORKDIR /app
 

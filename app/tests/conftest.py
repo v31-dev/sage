@@ -1,0 +1,54 @@
+import os
+
+import pytest
+from cryptography.fernet import Fernet
+
+# Set before any test module imports the app: utils.db reads the key at import.
+os.environ.update(
+    ENCRYPTION_KEY=Fernet.generate_key().decode(),
+    DOMAIN="example.test",
+    CLOUDFLARE_ACCOUNT_ID="test-account",
+    CLOUDFLARE_API_TOKEN="test-token",
+    TS_NAME="manager",
+    TS_WORKER_TAG="tag:worker",
+    ENV="development",
+)
+
+
+@pytest.fixture(autouse=True)
+def _reset_singletons():
+  from services.base import Singleton
+  Singleton._instances.clear()
+  Singleton._locks.clear()
+  yield
+  Singleton._instances.clear()
+  Singleton._locks.clear()
+
+
+@pytest.fixture
+def register():
+  """Put a fake where a service singleton would be built: `register(Cloudflare, fake)`."""
+  from services.base import Singleton
+
+  def _register(cls, fake):
+    Singleton._instances[cls] = fake
+    return fake
+
+  return _register
+
+
+@pytest.fixture
+def data_dir(tmp_path, monkeypatch):
+  import config
+  monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+  monkeypatch.setattr(config, "DB_PATH", tmp_path / "data.db")
+  return tmp_path
+
+
+@pytest.fixture
+def db(data_dir):
+  from services.db import Database
+  from services.db import db as database
+  Database()
+  yield database
+  database.close()

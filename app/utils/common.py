@@ -13,11 +13,6 @@ def format_yaml(content: str) -> str:
   return yaml.safe_dump(yaml.safe_load(content), sort_keys=False, default_flow_style=False)
 
 
-# How long history is kept: logs, metrics, events, notifications, task history, restore
-# safety copies, and S3 platform and volume backups (the daily cleanup).
-RETENTION_DAYS = 14
-
-
 def dict_to_obj(data):
   """
   Convert a dictionary to an object with named attributes

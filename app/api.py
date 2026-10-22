@@ -1,5 +1,4 @@
 import os
-from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, RedirectResponse
@@ -8,6 +7,7 @@ from starlette.exceptions import HTTPException
 from starlette.routing import Route
 from starlette.staticfiles import StaticFiles
 
+import config
 from routes.backups import router as backup_router
 from routes.info import router as info_router
 from routes.notifications import router as notifications_router
@@ -47,8 +47,6 @@ async def refuse_changes_unless_running(request: Request, call_next):
 async def value_error_handler(request: Request, exc: ValueError):
   return JSONResponse(status_code=400, content={"detail": str(exc)})
 
-static_dir = Path("/app/static")
-
 
 class SpaStaticFiles(StaticFiles):
   async def get_response(self, path: str, scope):
@@ -72,8 +70,8 @@ app.include_router(projects_router, prefix="/api/projects")
 app.include_router(notifications_router, prefix="/api/notifications")
 app.include_router(tasks_router, prefix="/api/tasks")
 
-if (static_dir / "index.html").is_file():
-  app.mount("/", SpaStaticFiles(directory=static_dir, html=False, check_dir=False), name="ui")
+if (config.STATIC_DIR / "index.html").is_file():
+  app.mount("/", SpaStaticFiles(directory=config.STATIC_DIR, html=False, check_dir=False), name="ui")
 else:
   @app.get("/")
   def health():

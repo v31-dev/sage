@@ -1,6 +1,5 @@
 import hashlib
 import json
-import os
 import re
 from dataclasses import dataclass
 from datetime import datetime
@@ -10,17 +9,8 @@ from playhouse.signals import Model
 
 from utils.db import AlphaNumericField, CleanCharField, EncryptedJSONField, EncryptedTextField, JSONField, validate_multiline_kv
 
-DB_PATH = "/app/data/data.db"
-os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-db = SqliteDatabase(
-    DB_PATH,
-    pragmas={
-        "journal_mode": "wal",  # Allow readers while writer active.
-        "cache_size": -64000,  # 64 MB page cache.
-        "foreign_keys": 1,  # Enforce FK constraints.
-        "busy_timeout": 5000,  # Wait up to 5s before returning SQLITE_BUSY.
-    },
-)
+# Deferred: opened by Database at startup.
+db = SqliteDatabase(None)
 
 STATUS_CHOICES = ["active", "inactive", "deploying", "stopping", "error", "backup", "restoring"]
 APPLICATION_BUSY_STATUSES = {"deploying", "stopping", "backup", "restoring"}

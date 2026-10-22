@@ -8,11 +8,11 @@ from tempfile import TemporaryDirectory
 from cryptography.fernet import InvalidToken
 from peewee import chunked
 
-from services.db import DB_PATH, Application, Backup, Database, Event, Notification, Task, db
+import config
+from services.db import Application, Backup, Database, Event, Notification, Task, db
 from services.notification import Notifications
 from services.settings import Settings
 from utils.archive import BackupDecryptError, decrypt_file, encrypt_file
-from utils.common import RETENTION_DAYS
 from utils.executor import run_in_executor_with_context
 from utils.queue import OnConflict
 
@@ -105,7 +105,7 @@ class PlatformMixin:
           return datetime.strptime(timestamp, BACKUP_TIMESTAMP_FORMAT).isoformat()
     return None
 
-  async def cleanup(self, days: int = RETENTION_DAYS):
+  async def cleanup(self, days: int = config.RETENTION_DAYS):
     cutoff = datetime.now() - timedelta(days=days)
 
     # Cleanup events
@@ -128,7 +128,7 @@ class PlatformMixin:
 
     # Cleanup local DB-restore safety copies (data.db.backup.<ts>) past retention.
     # They exist only to roll back an in-flight restore, so old ones are dead weight.
-    db_file = Path(DB_PATH)
+    db_file = config.DB_PATH
     removed = 0
     for path in db_file.parent.glob(f"{db_file.name}.backup.*"):
       if is_expired_backup_key(path.name, cutoff):
@@ -250,7 +250,7 @@ class PlatformMixin:
 
         # Create safety backup of current database
         timestamp = datetime.now().strftime(BACKUP_TIMESTAMP_FORMAT)
-        safety_backup_path = f"{DB_PATH}.backup.{timestamp}"
+        safety_backup_path = f"{config.DB_PATH}.backup.{timestamp}"
         logger.info(f"Creating safety backup: {safety_backup_path}")
 
         try:

@@ -5,13 +5,12 @@ from datetime import datetime, timedelta
 import httpx
 from peewee import fn
 
+import config
 from services.db import Application, Backup, Container, Domain, Event, Notification, Project, Worker
 from services.notification import Notifications
 from utils.executor import NOTIFICATIONS_EXECUTOR, submit_with_context
 
 logger = logging.getLogger(__name__)
-
-LATEST_RELEASE_URL = "https://api.github.com/repos/v31-dev/sage/releases/latest"
 
 HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
 
@@ -21,7 +20,7 @@ class CoreMixin:
     """Fetch the latest GitHub release payload (raises on HTTP/network error)."""
     with httpx.Client(timeout=10) as client:
       response = client.get(
-          LATEST_RELEASE_URL,
+          config.LATEST_RELEASE_URL,
           headers={"Accept": "application/vnd.github+json"},
       )
       response.raise_for_status()

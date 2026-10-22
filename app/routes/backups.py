@@ -3,9 +3,9 @@ import re
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 
+import config
 from services.db import Backup
 from services.manager import Manager
-from services.s3 import BROWSER_LINK_SECONDS
 from utils.api import generic_delete, generic_get, generic_list, get_request_models
 from utils.queue import OnConflict
 
@@ -138,10 +138,10 @@ def download_backup(request: Request):
     raise HTTPException(status_code=404, detail="The backup file is no longer in S3.")
 
   url = Manager().s3.create_presigned_download_url(
-      backup.s3_path, expires_in=BROWSER_LINK_SECONDS, raw_path=True,
+      backup.s3_path, expires_in=config.BROWSER_LINK_SECONDS, raw_path=True,
       filename=download_filename(backup))
-  logger.info(f"Download link for backup {backup.id} ({backup.s3_path}) valid for {BROWSER_LINK_SECONDS}s.")
-  return {"url": url, "expires_in": BROWSER_LINK_SECONDS}
+  logger.info(f"Download link for backup {backup.id} ({backup.s3_path}) valid for {config.BROWSER_LINK_SECONDS}s.")
+  return {"url": url, "expires_in": config.BROWSER_LINK_SECONDS}
 
 
 @router.delete("/{backup}", dependencies=[Depends(inject_backup)])

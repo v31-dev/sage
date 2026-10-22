@@ -17,6 +17,7 @@ COPY --from=tailscale /usr/local/bin/tailscale /usr/local/bin/tailscaled /usr/lo
 WORKDIR /app
 
 COPY ./requirements.txt /app/requirements.txt
+COPY ./requirements-test.txt /app/requirements-test.txt
 COPY ./requirements-dev.txt /app/requirements-dev.txt
 
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \

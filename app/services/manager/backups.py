@@ -5,8 +5,8 @@ from pathlib import Path
 
 from croniter import croniter
 
+import config
 from services.db import APPLICATION_BUSY_STATUSES, Application, Backup, Container, Event, Volume
-from services.s3 import WORKER_LINK_SECONDS
 from utils.common import get_env
 from utils.logging import generate_task_id_token, task_id
 
@@ -174,7 +174,7 @@ class BackupsMixin:
         f"{container.worker.hostname}/{volume.name}/{timestamp}.tar.gz.enc"
     )
     archive_name = Path(object_key).name.removesuffix(".tar.gz.enc")
-    upload_url = self.s3.create_presigned_upload_url(object_key, expires_in=WORKER_LINK_SECONDS)
+    upload_url = self.s3.create_presigned_upload_url(object_key, expires_in=config.WORKER_LINK_SECONDS)
     backup_unit_label = self._get_application_backup_unit_label(application, container, volume)
     remote_script_path = f"/tmp/sage-backup-{container_task_id}.sh"
 
@@ -370,7 +370,7 @@ class BackupsMixin:
     restore_unit_label = self._get_application_backup_unit_label(application, target_container, volume)
     remote_script_path = f"/tmp/sage-restore-{restore_task_id}.sh"
     download_url = self.s3.create_presigned_download_url(
-        backup.s3_path, expires_in=WORKER_LINK_SECONDS, raw_path=True)
+        backup.s3_path, expires_in=config.WORKER_LINK_SECONDS, raw_path=True)
 
     Event.create(
         container=target_container,
