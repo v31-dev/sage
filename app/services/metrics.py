@@ -421,7 +421,7 @@ class Metrics(Base):
     """
     Aggregate rows into buckets by averaging values within each bucket time range.
     Aggregate all fields except for `agg_fields` fields.
-    Aggregate functions will be average, if any bucket has missing values for a field, the aggregated value will be null.
+    Aggregate functions will be average. Missing values are left out of the average; a field with no values in a bucket is null.
     """
     keys = set(rows[0].keys()) - set(agg_fields) if rows else set()
 
@@ -450,9 +450,11 @@ class Metrics(Base):
     idx = len(rows) - 1  # Start from the newest row (end of list)
     while len(result) < target_points:
       current_iso = current.isoformat() + "Z"
+      # A row past the start, or between two minutes, fits no slot and must not hold back the older ones.
+      while idx >= 0 and rows[idx]["ts"] > current_iso:
+        idx -= 1
       if idx >= 0 and rows[idx]["ts"] == current_iso:
         result.append(rows[idx])
-        idx -= 1  # Move backwards through rows
       else:
         # Insert empty row for missing bucket
         result.append({"ts": current_iso, **template})

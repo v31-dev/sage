@@ -15,6 +15,20 @@ os.environ.update(
 )
 
 
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_makereport(item, call):
+  """A known bug keeps the run red until it is fixed: an expected failure, whether set by a
+  marker or by pytest.xfail(), is reported as a failure. pytest leaves a failure out of the
+  exit code while the report has `wasxfail`, so that is removed."""
+  report = yield
+  if hasattr(report, "wasxfail"):
+    reason = report.wasxfail
+    del report.wasxfail
+    report.outcome = "failed"
+    report.longrepr = f"{item.nodeid}: xfail is not allowed, fix the bug instead ({reason or 'no reason given'})."
+  return report
+
+
 @pytest.fixture(autouse=True)
 def _reset_singletons():
   from services.base import Singleton

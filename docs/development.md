@@ -139,6 +139,10 @@ are used, so a test overrides one attribute (`monkeypatch.setattr(config, ...)`)
 A bug fix comes with a regression test: reproduce the bug in a test and see it fail, fix the code,
 and keep the test so the bug can't return unnoticed.
 
+A known bug is never parked behind `xfail`: `tests/conftest.py` reports an expected failure as a
+failure, so the run stays red until the bug is fixed. pytest lists every failed and skipped test
+with its reason in the summary by default (`-ra`).
+
 ## Frontend Commands
 
 Run from `ui/`:
