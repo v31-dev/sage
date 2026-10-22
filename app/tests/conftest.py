@@ -66,3 +66,21 @@ def db(data_dir):
   Database()
   yield database
   database.close()
+
+
+@pytest.fixture
+def project(db):
+  from services.db import Project
+  return Project.create(name="demo", label="Demo")
+
+
+@pytest.fixture
+def application(project):
+  from services.db import Application
+  return Application.create(project=project, name="web", label="Web", image="nginx")
+
+
+@pytest.fixture
+def worker(db):
+  from services.db import Worker
+  return Worker.create(hostname="w1", ip="100.64.0.2")

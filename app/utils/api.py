@@ -131,6 +131,8 @@ def generic_delete(model, instance):
     return {"status": "deleted"}
   except HTTPException:
     raise
+  except IntegrityError as e:
+    raise HTTPException(status_code=409, detail=f"Conflict: {e}")
   except Exception as e:
     logger.error(f"Error deleting {model.__name__}: {e}")
     raise HTTPException(
