@@ -49,6 +49,26 @@ md.renderer.rules.link_open = (tokens, idx, options, _env, self) => {
   return self.renderToken(tokens, idx, options)
 }
 
+// GitHub alerts: a quote that starts with [!NOTE], [!TIP], [!IMPORTANT], [!WARNING] or [!CAUTION].
+const ALERT_MARKER = /^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]\s*/i
+md.core.ruler.after('inline', 'github-alerts', state => {
+  const tokens = state.tokens
+  for (let i = 0; i + 2 < tokens.length; i++) {
+    if (tokens[i]?.type !== 'blockquote_open' || tokens[i + 1]?.type !== 'paragraph_open') continue
+    const children = tokens[i + 2]?.children
+    const first = children?.[0]
+    const match = first?.type === 'text' ? ALERT_MARKER.exec(first.content) : null
+    if (!children || !first || !match) continue
+    const kind = match[1]!.toLowerCase()
+    first.content = first.content.slice(match[0].length)
+    if (!first.content) children.splice(0, children[1]?.type === 'softbreak' ? 2 : 1)
+    tokens[i]!.attrJoin('class', `markdown-alert markdown-alert-${kind}`)
+    const title = new state.Token('html_block', '', 0)
+    title.content = `<p class="markdown-alert-title">${kind[0]!.toUpperCase()}${kind.slice(1)}</p>\n`
+    tokens.splice(i + 1, 0, title)
+  }
+})
+
 const renderedNotes = computed(() => {
   const body = release.value?.body
   if (!body) return ''
@@ -359,6 +379,32 @@ onUnmounted(() => {
 .release-notes :deep(summary h3) {
   display: inline;
   margin: 0;
+}
+.release-notes :deep(blockquote) {
+  margin: 0.5rem 0;
+  padding: 0.1rem 0.75rem;
+  border-left: 3px solid var(--border);
+}
+.release-notes :deep(.markdown-alert) {
+  --alert: var(--info);
+  border-left-color: var(--alert);
+  border-radius: 0 0.375rem 0.375rem 0;
+  background: color-mix(in oklab, var(--alert) 10%, transparent);
+}
+.release-notes :deep(.markdown-alert-tip) {
+  --alert: var(--success);
+}
+.release-notes :deep(.markdown-alert-important),
+.release-notes :deep(.markdown-alert-warning) {
+  --alert: var(--warning);
+}
+.release-notes :deep(.markdown-alert-caution) {
+  --alert: var(--destructive);
+}
+.release-notes :deep(.markdown-alert-title) {
+  margin: 0.3rem 0 0;
+  font-weight: 600;
+  color: var(--alert);
 }
 .release-notes :deep(hr) {
   margin: 0.75rem 0;
