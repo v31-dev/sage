@@ -79,8 +79,8 @@ def decrypt_file(source: Path, target: Path, passphrase: str | None = None):
         "encryption key")
 
   # Everything but the MAC goes to openssl, in chunks.
-  with source.open("rb") as file, target.open("wb") as out:
-    process = _openssl(["-d"], passphrase, stdin=subprocess.PIPE, stdout=out)
+  with source.open("rb") as file, target.open("wb") as out, \
+          _openssl(["-d"], passphrase, stdin=subprocess.PIPE, stdout=out) as process:
     try:
       remaining = size - MAC_LENGTH
       while remaining > 0:
@@ -91,6 +91,5 @@ def decrypt_file(source: Path, target: Path, passphrase: str | None = None):
     except BrokenPipeError:
       pass  # openssl stopped early; its error says why
     error = process.stderr.read()
-    process.wait()
   if process.returncode != 0:
     raise BackupDecryptError(f"could not be decrypted: {error.decode(errors='replace').strip()}")

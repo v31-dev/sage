@@ -19,7 +19,7 @@ COPY ui/ .
 RUN npm run build
 
 # Stage 2: Python app with built UI
-FROM python:3.12-slim
+FROM python:3.14-slim
 
 # Security updates for the base image's packages. Live-profiling tools are dev-only
 # (app/Dockerfile).

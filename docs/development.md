@@ -9,14 +9,14 @@ The repo includes helper scripts in `dev/`:
     only what changed
   - Docker: installed from Docker's apt repository on Ubuntu when it is missing (the only step
     that uses `sudo`); on another OS it only says so
-  - Python: a pinned `uv`, Python 3.12 (newer Ubuntu releases don't package it), the virtual
+  - Python: a pinned `uv`, Python 3.14 (uv installs it, so the system Python doesn't matter), the virtual
     environment under `app/.venv` and the requirements with the dev tools; the environment is
     recreated when its Python is missing or the wrong version
   - Node: `nvm`, the Node version in `ui/.nvmrc`, and `ui/node_modules` (`npm ci`, repeated
     when `package.json`, `package-lock.json` or the Node version changes)
   - afterwards, in a new shell: `source app/.venv/bin/activate`, and `cd ui && nvm use`
 - `test-app.sh`
-  - runs the backend tests in a `python:3.12-slim` container, for a machine without Python 3.12;
+  - runs the backend tests in a `python:3.14-slim` container, for a machine without Python 3.14;
     see Tests
 - `env.sh`
   - resets the local compose environment: wipes the manager's `data` volume except its
@@ -107,12 +107,12 @@ python main.py
 
 ## Tests
 
-The backend's unit tests are in `app/tests/`; run `pytest` from `app/` on Python 3.12 (from the
+The backend's unit tests are in `app/tests/`; run `pytest` from `app/` on Python 3.14 (from the
 repo root, `pytest app/tests`; the config is in `app/pyproject.toml`).
 `setup.sh` installs `requirements-dev.txt`, which includes `requirements-test.txt` (pytest,
 pytest-asyncio, pytest-cov, ruff and isort, the tools CI runs).
 
-Without Python 3.12 on the machine, `dev/test-app.sh` runs the same tests in a Docker
+Without Python 3.14 on the machine, `dev/test-app.sh` runs the same tests in a Docker
 container and passes its arguments to pytest (`dev/test-app.sh -q --no-cov -k queue`). It keeps
 the virtual environment in `~/.cache/sage-test-venv` (or `SAGE_TEST_VENV`) and rebuilds it when the
 requirements change; the first run takes about a minute, later runs a second or two.
@@ -172,7 +172,7 @@ Current GitHub workflows:
 - `ci.yml`
   - runs on every pull request; a newer run on the same ref cancels the older one
   - two independent jobs that run in parallel
-  - backend: `ruff check`, `isort --check-only .` and `pytest` with coverage on Python 3.12
+  - backend: `ruff check`, `isort --check-only .` and `pytest` with coverage on Python 3.14
   - UI: `npm ci`, `npm run format:check` and `npm run build`, on the Node version in `ui/.nvmrc`
   - the actions are pinned by commit SHA
 - `release-pr.yml`
