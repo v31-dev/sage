@@ -51,6 +51,7 @@ If this context may have been lost, reread this file plus the relevant `docs/` p
 | `app/main.py` | Starts the main API, vector ingestion API, and APScheduler scheduler |
 | `app/config.py` | Locations, endpoints and timings; read as `config.NAME` where used so tests can override them |
 | `app/tests/` | Backend unit tests (`pytest` from `app/`); `conftest.py` provides the `data_dir`, `db` and `register` fixtures |
+| `ui/tests/` | UI unit tests (`npm test` from `ui/`, Vitest and happy-dom), in the layout of `ui/src/`; `ui/vitest.config.ts` holds the config |
 | `app/api.py` | Main FastAPI application |
 | `app/api_vector.py` | Metrics/log ingestion FastAPI application |
 | `app/routes/` | API route handlers |
@@ -166,6 +167,7 @@ npm run format:check
 npm run format
 npm run build
 npm run dev
+npm test
 ```
 
 Local dev stack (`docker-compose.yml` is dev-only; deploying the image is in the README):

@@ -3,6 +3,8 @@
 
 # Node
 node_modules
+coverage
+tests
 
 # Python
 __pycache__

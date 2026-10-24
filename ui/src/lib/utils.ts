@@ -51,7 +51,7 @@ export function formatDate(dateObj: string | Date): string {
   try {
     return _tsFormatter.format(parseDate(dateObj)).replace(',', '')
   } catch {
-    return typeof dateObj === 'string' ? dateObj : dateObj.toISOString()
+    return typeof dateObj === 'string' ? dateObj : String(dateObj)
   }
 }
 

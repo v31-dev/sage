@@ -18,6 +18,9 @@ The repo includes helper scripts in `dev/`:
 - `test-app.sh`
   - runs the backend tests in a `python:3.14-slim` container, for a machine without Python 3.14;
     see Tests
+- `test-ui.sh`
+  - runs the UI tests in a Node container on the major in `ui/.nvmrc`, for a machine without that
+    Node; see UI Tests
 - `env.sh`
   - resets the local compose environment: wipes the manager's `data` volume except its
     Tailscale state and issued cert
@@ -143,6 +146,28 @@ A known bug is never parked behind `xfail`: `tests/conftest.py` reports an expec
 failure, so the run stays red until the bug is fixed. pytest lists every failed and skipped test
 with its reason in the summary by default (`-ra`).
 
+## UI Tests
+
+The UI's tests are in `ui/tests/`, in the layout of `ui/src/`; run `npm test` from `ui/`. They use
+Vitest with happy-dom as the DOM and Vue Test Utils for mounting, and the config is in
+`ui/vitest.config.ts`, apart from `vite.config.ts` so the production build never reads it.
+`npm test` measures coverage by default (V8) and prints a summary; `npm run test:watch` runs
+without it and reruns on a change. Every file in `src/` counts, also the ones no test imports; the
+per-file report is in `ui/coverage/lcov-report/index.html`. CI reports it in the job summary and
+uploads `ui/coverage` as an artifact; it doesn't fail a build on a coverage level.
+
+The tests run in UTC and `en-US` whatever the machine is set to, and the API client does not wait
+before a call (`VITE_LOAD_DELAY=0`). `fetch` is replaced in each test, and a store test mocks
+`fetchAppInfo`. `npm run typecheck:tests` type-checks the tests, which `npm run build` does not.
+So far the tests cover the pure logic: `src/lib/`, `src/services/api.ts`, the Pinia store and the
+route table. Components are not tested yet.
+
+Without the pinned Node on the machine, `dev/test-ui.sh` runs the same tests in a Docker container
+and passes its arguments to vitest (`dev/test-ui.sh tests/lib --coverage.enabled=false`). It keeps
+`node_modules` in `~/.cache/sage-test-node-modules` (or `SAGE_TEST_NODE_MODULES`), apart from
+`ui/node_modules`, and reinstalls when `package.json`, `package-lock.json` or the image change;
+the first run takes under a minute, later runs a second or two.
+
 ## Frontend Commands
 
 Run from `ui/`:
@@ -152,6 +177,9 @@ npm run format:check
 npm run format
 npm run build
 npm run dev
+npm test
+npm run test:watch
+npm run typecheck:tests
 ```
 
 ## Docker Image
@@ -173,7 +201,8 @@ Current GitHub workflows:
   - runs on every pull request; a newer run on the same ref cancels the older one
   - two independent jobs that run in parallel
   - backend: `ruff check`, `isort --check-only .` and `pytest` with coverage on Python 3.14
-  - UI: `npm ci`, `npm run format:check` and `npm run build`, on the Node version in `ui/.nvmrc`
+  - UI: `npm ci`, `npm run format:check`, `npm run build`, `npm run typecheck:tests` and `npm test` with
+    a coverage summary and artifact, on the Node version in `ui/.nvmrc`
   - the actions are pinned by commit SHA
 - `release-pr.yml`
   - runs manually through `workflow_dispatch`
