@@ -76,6 +76,7 @@ class Server(uvicorn.Server):
     while manager.task_snapshot()["running"]:
       await asyncio.sleep(0.5)
     logger.info("Stopping: no tasks running.")
+    await manager.tailscale.close()
     super().handle_exit(sig, None)
 
 

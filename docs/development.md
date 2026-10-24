@@ -120,6 +120,10 @@ container and passes its arguments to pytest (`dev/test-app.sh -q --no-cov -k qu
 the virtual environment in `~/.cache/sage-test-venv` (or `SAGE_TEST_VENV`) and rebuilds it when the
 requirements change; the first run takes about a minute, later runs a second or two.
 
+Unit tests cover Sage's own code. Cloudflare, S3, Tailscale SSH, Docker, ACME and Discord are replaced
+by mock data that feeds the code a situation (a failure, a slow answer, a documented response shape);
+what the services really do is left to the live integration suite, which runs against the real ones.
+
 The suite runs in `Asia/Kolkata` (UTC+5:30), set in `tests/conftest.py`, so a time read from the local clock
 fails a test. The `clock` fixture freezes `utcnow()` (`clock.set(...)`, `clock.advance(...)`) and
 `machine_timezone("America/Los_Angeles")` moves a single test to another zone.

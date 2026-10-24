@@ -59,6 +59,16 @@ class Tailscale(Base):
     if conn is not None:
       conn.close()
 
+  async def close(self):
+    """Close every pooled connection and wait for them to close, so none is left to be torn down
+    after the event loop has stopped. One that fails to close does not stop the others."""
+    connections = list(self._conns.values())
+    self._conns.clear()
+    for connection in connections:
+      with contextlib.suppress(Exception):
+        connection.close()
+    await asyncio.gather(*(connection.wait_closed() for connection in connections), return_exceptions=True)
+
   def status(self):
     try:
       result = subprocess.run(

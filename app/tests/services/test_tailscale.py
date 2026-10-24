@@ -424,3 +424,54 @@ class TestSyncFileWithoutAMode:
 
     assert sftp.files == {DESTINATION: {"data": b"TOKEN=${CONTENT}", "mode": 0o644}}
     assert sftp.renames == []
+
+
+class ClosableConnection:
+  def __init__(self, close_error=None, wait_error=None):
+    self.close_error = close_error
+    self.wait_error = wait_error
+    self.closed = False
+    self.waited = False
+
+  def close(self):
+    if self.close_error is not None:
+      raise self.close_error
+    self.closed = True
+
+  async def wait_closed(self):
+    self.waited = True
+    if self.wait_error is not None:
+      raise self.wait_error
+
+
+class TestClose:
+  async def test_every_pooled_connection_is_closed_and_waited_for_and_the_pool_is_emptied(self, tailscale):
+    first, second = ClosableConnection(), ClosableConnection()
+    tailscale._conns = {"w1": first, "w2": second}
+
+    await tailscale.close()
+
+    assert (first.closed, first.waited, second.closed, second.waited) == (True, True, True, True)
+    assert tailscale._conns == {}
+
+  async def test_one_that_fails_to_close_does_not_stop_the_others(self, tailscale):
+    broken, healthy = ClosableConnection(close_error=OSError("already gone")), ClosableConnection()
+    tailscale._conns = {"w1": broken, "w2": healthy}
+
+    await tailscale.close()
+
+    assert healthy.closed and healthy.waited
+    assert tailscale._conns == {}
+
+  async def test_a_connection_that_fails_while_closing_does_not_fail_the_shutdown(self, tailscale):
+    broken, healthy = ClosableConnection(wait_error=asyncssh.ConnectionLost("reset")), ClosableConnection()
+    tailscale._conns = {"w1": broken, "w2": healthy}
+
+    await tailscale.close()
+
+    assert healthy.waited and tailscale._conns == {}
+
+  async def test_with_no_connections_there_is_nothing_to_do(self, tailscale):
+    await tailscale.close()
+
+    assert tailscale._conns == {}
