@@ -12,6 +12,8 @@
 **/coverage.xml
 **/htmlcov
 app/tests
+ui/tests
+ui/coverage
 **/.venv
 
 # Ignore marked files

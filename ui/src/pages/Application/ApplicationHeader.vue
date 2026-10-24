@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import router from '@/router'
+import { useRouter } from 'vue-router'
 import { toast } from 'vue-sonner'
 import { Logs, Activity, TriangleAlert, Trash } from 'lucide-vue-next'
 import {
@@ -34,6 +34,7 @@ interface Props {
 }
 
 const appStore = useAppStore()
+const router = useRouter()
 
 const props = withDefaults(defineProps<Props>(), {})
 
