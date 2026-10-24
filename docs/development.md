@@ -2,14 +2,22 @@
 
 ## Local Setup
 
-The repo includes helper scripts in `setup/dev/`:
+The repo includes helper scripts in `dev/`:
 
-- `ubuntu.sh`
-  - installs Docker
-  - creates the Python virtual environment under `app/app-venv`
-  - installs Python dependencies
-  - installs Node via `nvm`
-  - installs UI dependencies
+- `setup.sh`
+  - builds the development environment as your own user and is safe to re-run: each step does
+    only what changed
+  - Docker: installed from Docker's apt repository on Ubuntu when it is missing (the only step
+    that uses `sudo`); on another OS it only says so
+  - Python: a pinned `uv`, Python 3.12 (newer Ubuntu releases don't package it), the virtual
+    environment under `app/.venv` and the requirements with the dev tools; the environment is
+    recreated when its Python is missing or the wrong version
+  - Node: `nvm`, the Node version in `ui/.nvmrc`, and `ui/node_modules` (`npm ci`, repeated
+    when `package.json`, `package-lock.json` or the Node version changes)
+  - afterwards, in a new shell: `source app/.venv/bin/activate`, and `cd ui && nvm use`
+- `test-app.sh`
+  - runs the backend tests in a `python:3.12-slim` container, for a machine without Python 3.12;
+    see Tests
 - `env.sh`
   - resets the local compose environment: wipes the manager's `data` volume except its
     Tailscale state and issued cert
@@ -74,7 +82,7 @@ Nothing is published on the host; everything is reached over the tailnet:
   owns the dev manager's `:80` and `:443`. It serves the manager's certificate (from
   `SAGE_DATA/certs/manager`), routes `/api` to the manager (plain HTTP on `:9000` in dev)
   and everything else, including Vite's HMR WebSocket, to the `ui` service (Vite on
-  `:5173`); `:80` and other hostnames don't serve the UI. Config: `setup/dev/traefik/`
+  `:5173`); `:80` and other hostnames don't serve the UI. Config: `dev/traefik/`
   (templated with `TS_NAME` and `DOMAIN`). Compose restarts it whenever `sage` restarts,
   since it loses its network with it. It doesn't watch the certificate files: after the
   manager's certificate renews (about every 60 days), run `docker compose restart traefik`.
@@ -93,8 +101,47 @@ Run from `app/`:
 ruff check
 autopep8 --in-place --recursive .
 isort .
+pytest
 python main.py
 ```
+
+## Tests
+
+The backend's unit tests are in `app/tests/`; run `pytest` from `app/` on Python 3.12 (from the
+repo root, `pytest app/tests`; the config is in `app/pyproject.toml`).
+`setup.sh` installs `requirements-dev.txt`, which includes `requirements-test.txt` (pytest,
+pytest-asyncio, pytest-cov, ruff and isort, the tools CI runs).
+
+Without Python 3.12 on the machine, `dev/test-app.sh` runs the same tests in a Docker
+container and passes its arguments to pytest (`dev/test-app.sh -q --no-cov -k queue`). It keeps
+the virtual environment in `~/.cache/sage-test-venv` (or `SAGE_TEST_VENV`) and rebuilds it when the
+requirements change; the first run takes about a minute, later runs a second or two.
+
+`pytest` measures coverage by default (`addopts` in `app/pyproject.toml`) and prints the table with
+the missing lines; `pytest --no-cov` turns it off, which is what to use under a debugger. Every
+backend module is measured, including the ones no test imports; only `main.py` (it starts the
+Manager when imported) and the tests are left out. CI reports it in the job summary and uploads
+`coverage.xml` as an artifact; it doesn't fail a build on a coverage level.
+
+`-q` (quiet) only shortens pytest's own output to the dots and the summary line; `-v` lists each
+test by name.
+
+The tests need no container, Tailscale or network. `tests/conftest.py` sets the env vars the app
+reads at import, clears the service singletons between tests, and provides:
+
+- `data_dir`: points `config.DATA_DIR` and `config.DB_PATH` at a temporary directory;
+- `db`: a real `Database` on that directory, with every table created;
+- `register(cls, fake)`: puts a fake where a service singleton would be built.
+
+Locations, endpoints and timings live in `app/config.py` and are read as `config.NAME` where they
+are used, so a test overrides one attribute (`monkeypatch.setattr(config, ...)`).
+
+A bug fix comes with a regression test: reproduce the bug in a test and see it fail, fix the code,
+and keep the test so the bug can't return unnoticed.
+
+A known bug is never parked behind `xfail`: `tests/conftest.py` reports an expected failure as a
+failure, so the run stays red until the bug is fixed. pytest lists every failed and skipped test
+with its reason in the summary by default (`-ra`).
 
 ## Frontend Commands
 
@@ -111,7 +158,9 @@ npm run dev
 
 The top-level `Dockerfile` builds:
 
-1. the UI bundle
+1. the UI bundle, on the Node major in `ui/.nvmrc` (`setup.sh`, the CI UI job and both Dockerfiles
+   use it; a Dockerfile can't read the file, so its `node:<major>-alpine` tag is changed by hand
+   with it)
 2. the Python app image that serves the built frontend from `/app/static` and exposes it at `/` while leaving `/api` on the backend
 
 The production UI build currently injects `VITE_LOAD_DELAY=0`, while local frontend development keeps the source default delay.
@@ -120,6 +169,12 @@ The production UI build currently injects `VITE_LOAD_DELAY=0`, while local front
 
 Current GitHub workflows:
 
+- `ci.yml`
+  - runs on every pull request; a newer run on the same ref cancels the older one
+  - two independent jobs that run in parallel
+  - backend: `ruff check`, `isort --check-only .` and `pytest` with coverage on Python 3.12
+  - UI: `npm ci`, `npm run format:check` and `npm run build`, on the Node version in `ui/.nvmrc`
+  - the actions are pinned by commit SHA
 - `release-pr.yml`
   - runs manually through `workflow_dispatch`
   - requires the workflow to be started from `main`

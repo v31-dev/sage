@@ -4,7 +4,7 @@ import logging
 import re
 import time
 
-from services.certs import STARTUP_RETRY_DELAYS
+import config
 from services.db import Application, Domain, Project, Worker
 from utils.executor import run_in_executor_with_context
 from utils.queue import OnConflict
@@ -34,7 +34,7 @@ class TraefikMixin:
     logger.info(
         f"Setting up {self.cloudflare.manager_hostname}: Cloudflare (zone, tunnel, DNS record), then the "
         "manager's certificate. The UI starts once this is done; a first start can take a few minutes.")
-    for delay in (*STARTUP_RETRY_DELAYS, None):
+    for delay in (*config.STARTUP_RETRY_DELAYS, None):
       try:
         self.cloudflare.connect()
         break

@@ -2,6 +2,7 @@ import logging
 
 from playhouse.migrate import SqliteMigrator, migrate
 
+import config
 from services.base import Base
 
 from .models import Application, Backup, Container, Domain, Event, Notification, Project, Setting, Task, Volume, Worker, db
@@ -15,6 +16,16 @@ class Database(Base):
   def __init__(self):
     super().__init__()
 
+    config.DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    db.init(
+        str(config.DB_PATH),
+        pragmas={
+            "journal_mode": "wal",  # Allow readers while writer active.
+            "cache_size": -64000,  # 64 MB page cache.
+            "foreign_keys": 1,  # Enforce FK constraints.
+            "busy_timeout": 5000,  # Wait up to 5s before returning SQLITE_BUSY.
+        },
+    )
     db.connect(reuse_if_open=True)
 
     self.reconcile_schema()

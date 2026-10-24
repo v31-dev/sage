@@ -7,6 +7,7 @@ import sys
 from cryptography.fernet import Fernet
 from peewee import CharField, TextField
 
+from utils.common import strip_env_comment
 from utils.logging import LOG_FORMAT
 
 # Encrypts sensitive fields. The same key encrypts every backup (through openssl, see
@@ -34,10 +35,7 @@ def validate_multiline_kv(config: str, field_name: str = "config"):
     return
 
   for line_number, line in enumerate(config.splitlines(), start=1):
-    # allow inline comments after #
-    if "#" in line:
-      line = line.split("#", 1)[0]
-    line = line.rstrip()
+    line = strip_env_comment(line).rstrip()
     if not line.strip():
       continue
     if "=" not in line:

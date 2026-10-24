@@ -1,6 +1,5 @@
+-r requirements-test.txt
 debugpy==1.8.6
 autopep8==2.3.2
-isort==8.0.1
-ruff==0.11.13
 py-spy==0.4.2
 memray==1.19.3

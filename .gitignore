@@ -5,7 +5,11 @@ node_modules
 
 # Python
 __pycache__
-*-venv
+.pytest_cache
+.coverage
+coverage.xml
+htmlcov
+.venv
 *.mem.bin
 
 # Ignore marked files

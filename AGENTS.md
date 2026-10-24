@@ -49,6 +49,8 @@ If this context may have been lost, reread this file plus the relevant `docs/` p
 | --- | --- |
 | `app/entrypoint.sh` | Container entrypoint: starts the manager's userspace `tailscaled`, then the manager process |
 | `app/main.py` | Starts the main API, vector ingestion API, and APScheduler scheduler |
+| `app/config.py` | Locations, endpoints and timings; read as `config.NAME` where used so tests can override them |
+| `app/tests/` | Backend unit tests (`pytest` from `app/`); `conftest.py` provides the `data_dir`, `db` and `register` fixtures |
 | `app/api.py` | Main FastAPI application |
 | `app/api_vector.py` | Metrics/log ingestion FastAPI application |
 | `app/routes/` | API route handlers |
@@ -97,7 +99,7 @@ If this context may have been lost, reread this file plus the relevant `docs/` p
 
 ### Database
 
-- Main state is stored in SQLite with WAL mode.
+- Main state is stored in SQLite with WAL mode. The database is deferred: `Database` opens it at `config.DB_PATH` at startup, and importing the models touches no disk.
 - Metrics are stored in per-host SQLite files.
 - Logs are stored in per-container SQLite files with FTS5 search.
 - Preserve the existing lightweight storage approach unless the task explicitly requires otherwise.
@@ -153,6 +155,7 @@ Backend commands from `app/`:
 ruff check
 autopep8 --in-place --recursive .
 isort .
+pytest
 python main.py
 ```
 

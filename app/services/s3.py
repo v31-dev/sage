@@ -13,11 +13,6 @@ from utils.executor import run_in_executor_with_context
 
 logger = logging.getLogger(__name__)
 
-# UI download presigned link expiry
-BROWSER_LINK_SECONDS = 60
-# A worker's upload or download presigned link expiry
-WORKER_LINK_SECONDS = 1200
-
 
 class S3(Base):
   def __init__(self):

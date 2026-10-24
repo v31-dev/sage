@@ -2,8 +2,8 @@ ARG TAILSCALE_VERSION=v1.102.5
 
 FROM tailscale/tailscale:${TAILSCALE_VERSION} AS tailscale
 
-# Stage 1: Build UI
-FROM node:lts-alpine AS ui-builder
+# Stage 1: Build UI, on the Node major in ui/.nvmrc
+FROM node:24-alpine AS ui-builder
 
 WORKDIR /ui
 

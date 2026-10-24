@@ -7,7 +7,12 @@
 # Python
 **/__pycache__
 **/.ruff_cache
-**/*-venv
+**/.pytest_cache
+**/.coverage
+**/coverage.xml
+**/htmlcov
+tests
+**/.venv
 
 # Ignore marked files
 **/*-gitignore

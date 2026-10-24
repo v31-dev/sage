@@ -43,7 +43,7 @@ def create_application(
 ):
   data = parse_api_data(application_data, ["label", "description"])
   data["project"] = request.state.models["project"]
-  data["name"] = AlphaNumericField.clean(data["label"])
+  data["name"] = AlphaNumericField.clean(data.get("label"))
   return generic_create(Application, data)
 
 

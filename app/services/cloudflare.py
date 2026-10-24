@@ -3,15 +3,12 @@ import time
 
 import httpx
 
+import config
 from services.base import Base
 from services.tailscale import Tailscale
 from utils.common import dict_to_obj, get_env
 
 logger = logging.getLogger(__name__)
-
-API_URL = "https://api.cloudflare.com/client/v4"
-# Network errors, rate limits and server errors are retried after these delays (seconds).
-RETRY_DELAYS = (1, 2)
 
 
 class CloudflareError(Exception):
@@ -38,7 +35,7 @@ class Cloudflare(Base):
     self.account_id = self.config["account_id"]
     # The manager's only address; its DNS-only record points at the tailnet IP.
     self.manager_hostname = f"{get_env('TS_NAME')}.core.{self.domain}"
-    self.http = httpx.Client(base_url=API_URL, timeout=15)
+    self.http = httpx.Client(base_url=config.CLOUDFLARE_API_URL, timeout=15)
     self.zone_id = None
     self.tunnel_id = None
     # healthy, degraded, down or inactive; refreshed by the periodic settings check.
@@ -48,7 +45,7 @@ class Cloudflare(Base):
     """One API call; returns the response body. Retries network errors, rate limits and
     server errors; raises CloudflareError when the API refuses the request."""
     headers = {"Authorization": f"Bearer {token or self.config['api_token']}"}
-    for delay in (*RETRY_DELAYS, None):
+    for delay in (*config.CLOUDFLARE_RETRY_DELAYS, None):
       try:
         response = self.http.request(method, path, headers=headers, **kwargs)
       except httpx.TransportError:
@@ -107,20 +104,20 @@ class Cloudflare(Base):
 
       logger.info(f"Cloudflare connected for domain: {self.domain} with zone ID: {self.zone_id}")
 
-  def check_config(self, config: dict):
+  def check_config(self, values: dict):
     """Check a Cloudflare config against the API; raises with the reason. Every field is
     mandatory."""
-    missing = [field for field in ("api_token", "account_id", "domain") if not config.get(field)]
+    missing = [field for field in ("api_token", "account_id", "domain") if not values.get(field)]
     if missing:
       raise ValueError(f"Missing values for: {', '.join(missing)}.")
 
-    token = config["api_token"]
+    token = values["api_token"]
     if self.request("GET", "/user/tokens/verify", token=token)["result"]["status"] != "active":
       raise ValueError("The API token is not active.")
-    if not self.request("GET", "/zones", token=token, params={"name": config["domain"]})["result"]:
-      raise ValueError(f"No zone for {config['domain']} is visible to this API token.")
+    if not self.request("GET", "/zones", token=token, params={"name": values["domain"]})["result"]:
+      raise ValueError(f"No zone for {values['domain']} is visible to this API token.")
     # Tunnel access for the account
-    self.request("GET", f"/accounts/{config['account_id']}/cfd_tunnel", token=token, params={"per_page": 1})
+    self.request("GET", f"/accounts/{values['account_id']}/cfd_tunnel", token=token, params={"per_page": 1})
 
   def get_dns_records(self, name: str) -> list[dict]:
     self.connect()

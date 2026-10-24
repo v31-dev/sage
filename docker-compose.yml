@@ -69,7 +69,7 @@ services:
       - TS_NAME=${TS_NAME}
       - DOMAIN=${DOMAIN}
     volumes:
-      - ./setup/dev/traefik:/etc/traefik:ro
+      - ./dev/traefik:/etc/traefik:ro
       - ${SAGE_DATA}/certs/manager:/certs:ro
     depends_on:
       sage:
