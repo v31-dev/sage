@@ -28,6 +28,12 @@ FINALIZE_TIMEOUT_SECONDS = 180
 # The manager samples its own usage every few seconds and reports the per-minute peak
 METRICS_SAMPLE_INTERVAL = 5
 
+# A command on a worker is wrapped in `timeout`, which stops it at its deadline and, if it
+# ignores that, kills it this many seconds later. The manager waits this much longer than the
+# deadline before it gives up on a worker that answers nothing.
+COMMAND_KILL_AFTER_SECONDS = 5
+COMMAND_WAIT_GRACE_SECONDS = 15
+
 # UI download presigned link expiry
 BROWSER_LINK_SECONDS = 60
 # A worker's upload or download presigned link expiry

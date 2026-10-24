@@ -3,10 +3,13 @@ import json
 import logging
 import os
 import posixpath
+import shlex
 import subprocess
+import time
 
 import asyncssh
 
+import config
 from services.base import Base
 from utils.common import dict_to_obj, get_env
 
@@ -99,47 +102,73 @@ class Tailscale(Base):
         if any(_tag == f"tag:{tag}" for _tag in peer.get("Tags", []))
     ]
 
-  async def exec_command(self, hostname, command, timeout=300):
-    """
-    Execute a command on a worker over the Tailscale SSH server via asyncssh,
-    reusing a pooled connection. Returns (exit_status, output_lines); raises on
-    timeout or non-zero exit. A stale/dead pooled connection is evicted and the
-    command retried once on a fresh connection.
-    """
-    logger.info(f"Executing command on {hostname}: {command}")
-    result = None
+  async def _start_command(self, hostname, command):
+    """Open a channel on a pooled connection and start `command` on it. A stale pooled
+    connection is evicted and the open retried once on a fresh one; that is safe because
+    nothing has run yet. Once this returns the command is running and is never retried."""
     for attempt in range(2):
       try:
         conn = await self._get_conn(hostname)
       except (OSError, asyncssh.Error) as e:
         raise Exception(f"Error connecting to {hostname}: {e}")
       try:
-        # merge stderr into stdout so a failed command's output is captured
-        result = await conn.run(
-            command, timeout=timeout, check=False, stderr=asyncssh.STDOUT)
-        break
-      except (asyncio.TimeoutError, asyncssh.TimeoutError):
-        raise Exception(f"Command on {hostname} timed out after {timeout}s: {command}")
+        # stderr is merged into stdout so a failed command's output is captured
+        return await conn.create_process(command, stderr=asyncssh.STDOUT, errors="replace")
       except (OSError, asyncssh.Error) as e:
-        await self._evict(hostname)  # connection likely dead; retry once fresh
+        await self._evict(hostname)
         if attempt == 1:
           raise Exception(f"Error executing command on {hostname}: {e}")
 
-    output_lines = [
-        line for line in (result.stdout or "").splitlines()
-        if "Warning: client version" not in line
-    ]
-    for line in output_lines:
-      logger.info(f"[{hostname}] {line}")
+  async def exec_command(self, hostname, command, timeout=300):
+    """
+    Execute a command on a worker over the Tailscale SSH server via asyncssh,
+    reusing a pooled connection. Each output line is logged as it arrives. Returns
+    (exit_status, output_lines); raises on timeout or non-zero exit.
 
-    if result.exit_status != 0:
+    The worker stops the command at `timeout` (GNU or uutils `timeout`, run through the
+    session's own shell): Tailscale SSH ignores signals and a closed channel, so nothing the
+    manager does afterwards would stop it. The manager also gives up on a worker that answers
+    nothing, a little after the deadline.
+    """
+    if timeout <= 0:
+      raise ValueError(f"timeout must be positive, got {timeout}")  # `timeout 0` would mean no deadline
+    logger.info(f"Executing command on {hostname}: {command}")
+    wrapped = (
+        f'timeout -k {config.COMMAND_KILL_AFTER_SECONDS} {timeout} "${{SHELL:-/bin/sh}}" -c {shlex.quote(command)}')
+    process = await self._start_command(hostname, wrapped)
+
+    output_lines = []
+    started = time.monotonic()
+    try:
+      async with asyncio.timeout(timeout + config.COMMAND_WAIT_GRACE_SECONDS):
+        async for chunk in process.stdout:
+          for line in chunk.splitlines():
+            if "Warning: client version" in line:
+              continue
+            output_lines.append(line)
+            logger.info(f"[{hostname}] {line}")
+        result = await process.wait()
+    except TimeoutError:
+      await self._evict(hostname)  # the worker is not answering; do not reuse the connection
+      raise Exception(f"Command on {hostname} timed out after {timeout}s: {command}")
+    except (OSError, asyncssh.Error) as e:
+      await self._evict(hostname)  # connection likely dead
+      raise Exception(f"Error executing command on {hostname}: {e}")
+    finally:
+      process.close()
+
+    status = result.exit_status
+    # `timeout` exits 124 at the deadline, or 137 when it had to kill the command
+    if status in (124, 137) and time.monotonic() - started >= timeout - 1:
+      raise Exception(f"Command on {hostname} timed out after {timeout}s: {command}")
+    if status != 0:
       tail = "\n".join(output_lines[-10:])
       raise Exception(
-          f"Error executing command on {hostname}: exit code {result.exit_status}"
+          f"Error executing command on {hostname}: exit code {status}"
           + (f"\n{tail}" if tail else ""))
 
     logger.info(f"Successfully executed command on {hostname}.")
-    return (result.exit_status, output_lines)
+    return (status, output_lines)
 
   async def sync_file(self, hostname, src, dst, keys=None, formatter=None, timeout=120):
     """

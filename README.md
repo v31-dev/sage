@@ -191,6 +191,10 @@ tailscale up --ssh --auth-key=tskey-auth-...   # a key tagged tag:worker
 Set the same tag in `TS_WORKER_TAG`. The manager discovers machines carrying it and sets
 them up over SSH.
 
+Workers are meant to be dedicated to Sage: a hardened, bare VM with Docker and nothing else
+running on it. The manager has no such requirement; it needs only Docker and runs anywhere, on
+a laptop, a PaaS or a VM.
+
 ### First steps
 
 Once Sage is up, the UI is at `https://<TS_NAME>.core.<DOMAIN>`. S3 (backups) and
