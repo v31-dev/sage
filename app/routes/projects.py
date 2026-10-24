@@ -29,7 +29,7 @@ def list_projects():
 @router.post("/")
 def create_project(project_data: dict = Body(...)):
   data = parse_api_data(project_data, ["label", "description"])
-  data["name"] = AlphaNumericField.clean(data["label"])
+  data["name"] = AlphaNumericField.clean(data.get("label"))
   return generic_create(Project, data)
 
 
