@@ -73,6 +73,7 @@ If this context may have been lost, reread this file plus the relevant `docs/` p
 
 - Inbound tailnet traffic to the manager is delivered to `127.0.0.1:<port>` inside the container, so anything listening there (on `0.0.0.0` or `127.0.0.1`) is reachable from the tailnet wherever the tailnet policy allows. Never put an internal-only listener on `127.0.0.1`; use `127.0.0.2` (as tailscaled's outbound proxy does) or a unix socket.
 - The container has no route into the tailnet: SSH to workers goes through `tailscale nc` (asyncssh `proxy_command`), HTTP to workers through `TAILNET_HTTP_PROXY`. Internet calls (Cloudflare, S3, ACME, GitHub) go direct.
+- A file with a secret in it goes to a worker with `sync_file(..., mode=0o600)` (a script `0o700`): created with the mode and renamed into place, because Tailscale SSH keeps the mode of a file it rewrites in place and ignores the mode of a new directory. Other files are written in place.
 - Optional services (S3 `s3_config`, notifications) are checked before use: scheduled triggers skip quietly when unconfigured, user actions get a clear 4xx. Cloudflare is always configured; don't add checks for it.
 
 ### Services

@@ -131,7 +131,7 @@ class TraefikMixin:
     await self.tailscale.sync_file(
         worker.hostname, self.certs.workers.fullchain_path, f"{traefik_dir}/certs/fullchain.pem")
     await self.tailscale.sync_file(
-        worker.hostname, self.certs.workers.key_path, f"{traefik_dir}/certs/key.pem")
+        worker.hostname, self.certs.workers.key_path, f"{traefik_dir}/certs/key.pem", mode=0o600)
     # Re-write the watched dynamic cert config so Traefik's file-provider watch
     # fires and reloads the new PEM; overwriting only the cert files is not a
     # reliable reload trigger.

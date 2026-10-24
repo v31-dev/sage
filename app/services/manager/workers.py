@@ -237,6 +237,7 @@ class WorkersMixin:
                 "TS_HOSTNAME": worker.hostname,
                 "TUNNEL_TOKEN": tunnel_token,
             },
+            mode=0o600,
         )
         await self.tailscale.sync_file(
             worker.hostname,

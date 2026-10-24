@@ -1,11 +1,14 @@
 import asyncio
+import contextlib
 import json
 import logging
 import os
 import posixpath
+import secrets
 import shlex
 import subprocess
 import time
+from pathlib import Path
 
 import asyncssh
 
@@ -170,7 +173,7 @@ class Tailscale(Base):
     logger.info(f"Successfully executed command on {hostname}.")
     return (status, output_lines)
 
-  async def sync_file(self, hostname, src, dst, keys=None, formatter=None, timeout=120):
+  async def sync_file(self, hostname, src, dst, keys=None, formatter=None, timeout=120, mode=None):
     """
     Copy a single file to a worker via SFTP over the Tailscale SSH server.
     If keys (dict) is given, src is treated as a template and ${VAR} placeholders
@@ -178,6 +181,12 @@ class Tailscale(Base):
     text (after any substitution) and returns the text to upload. Either one
     reads src as text; with neither, src is copied verbatim. Missing parent
     directories are created.
+
+    Without `mode` the file is written in place with the server's default mode. With
+    `mode` (secrets, scripts) the file is created with that mode, uploaded to a temporary
+    name beside `dst` and renamed over it: nobody reads a partial file, and a `dst` that
+    was written earlier with a looser mode is replaced rather than rewritten, because a
+    rewrite keeps the old mode.
 
     `timeout` caps the whole connect+transfer so a wedged sync can't hold a
     task's scope forever.
@@ -201,11 +210,25 @@ class Tailscale(Base):
       async with conn.start_sftp_client() as sftp:
         if remote_dir:
           await sftp.makedirs(remote_dir, exist_ok=True)
-        if content is not None:
+        if mode is not None:
+          await _upload_with_mode(sftp)
+        elif content is not None:
           async with sftp.open(dst, "w") as remote_file:
             await remote_file.write(content)
         else:
           await sftp.put(str(src), dst)
+
+    async def _upload_with_mode(sftp):
+      data = content.encode() if content is not None else Path(src).read_bytes()
+      temporary = posixpath.join(remote_dir, f".{posixpath.basename(dst)}.{secrets.token_hex(4)}.tmp")
+      try:
+        async with sftp.open(temporary, "wb", asyncssh.SFTPAttrs(permissions=mode)) as remote_file:
+          await remote_file.write(data)
+        await sftp.posix_rename(temporary, dst)
+      except BaseException:
+        with contextlib.suppress(Exception):
+          await sftp.remove(temporary)
+        raise
 
     logger.info(f"Syncing file to {hostname} from {src} to {dst}.")
     for attempt in range(2):

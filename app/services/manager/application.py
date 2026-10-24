@@ -138,6 +138,7 @@ class ApplicationMixin:
           app_dir / "templates/worker/file",
           f"{container_dir}/.env",
           {"CONTENT": app_env},
+          mode=0o600,
       )
 
       # Create the volumes
@@ -190,7 +191,7 @@ class ApplicationMixin:
         secrets_dir = f"{container_dir}/secrets"
         await self.tailscale.exec_command(
             container.worker.hostname,
-            f"rm -rf {secrets_dir}",
+            f"rm -rf {secrets_dir}" + (f" && mkdir -m 700 {secrets_dir}" if build_secret_items else ""),
         )
         for name, value in build_secret_items:
           await self.tailscale.sync_file(
@@ -198,6 +199,7 @@ class ApplicationMixin:
               app_dir / "templates/worker/file",
               f"{secrets_dir}/{name}",
               {"CONTENT": value},
+              mode=0o600,
           )
 
         secrets_block = "secrets:\n" + "\n".join(

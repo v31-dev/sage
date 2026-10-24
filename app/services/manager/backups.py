@@ -200,12 +200,9 @@ class BackupsMixin:
               "ARCHIVE_NAME": archive_name,
               "ENCRYPTION_KEY": get_env("ENCRYPTION_KEY"),
               "UPLOAD_URL": upload_url,
-          })
-      await self.tailscale.exec_command(
-          container.worker.hostname,
-          f"chmod 700 {remote_script_path} && {remote_script_path}",
-          900,
-      )
+          },
+          mode=0o700)
+      await self.tailscale.exec_command(container.worker.hostname, remote_script_path, 900)
       s3_path = self.s3.get_full_path(object_key)
       Backup.create(
           s3_path=s3_path,
@@ -401,12 +398,9 @@ class BackupsMixin:
               "ENCRYPTION_KEY": get_env("ENCRYPTION_KEY"),
               "DOWNLOAD_URL": download_url,
           },
+          mode=0o700,
       )
-      await self.tailscale.exec_command(
-          target_container.worker.hostname,
-          f"chmod 700 {remote_script_path} && {remote_script_path}",
-          900,
-      )
+      await self.tailscale.exec_command(target_container.worker.hostname, remote_script_path, 900)
       self.notify(
           f"Restore completed for {restore_unit_label} from {backup.s3_path}.",
           "success",
