@@ -8,7 +8,7 @@
 set -euo pipefail
 
 UV_VERSION=0.12.24
-PYTHON_VERSION=3.12
+PYTHON_VERSION=3.14
 NVM_VERSION=v0.40.4
 
 if [ "$(id -u)" -eq 0 ]; then

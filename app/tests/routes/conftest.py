@@ -16,7 +16,27 @@ def s3(manager):
 
 
 @pytest.fixture
-def client(manager, db):
+def thread_connections(db, monkeypatch):
+  """Closes the connections the app's worker threads open. Each test client starts its own
+  short-lived threads, and Python 3.13 and later warn about a connection left to garbage
+  collection."""
+  opened = []
+  connect = db._connect
+
+  def tracked():
+    connection = connect()
+    opened.append(connection)
+    return connection
+
+  monkeypatch.setattr(db, "_connect", tracked)
+  db.connect_params["check_same_thread"] = False
+  yield
+  for connection in opened:
+    connection.close()
+
+
+@pytest.fixture
+def client(manager, thread_connections):
   from api import app
   return TestClient(app)
 

@@ -11,7 +11,7 @@ MESSAGES = {
 
 
 @pytest.fixture
-def lenient(manager, db):
+def lenient(manager, thread_connections):
   """A client that returns a 500 for a handler that fails, instead of raising it."""
   from api import app
   return TestClient(app, raise_server_exceptions=False)

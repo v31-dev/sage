@@ -5,6 +5,7 @@ import subprocess
 
 import pytest
 
+from utils import archive
 from utils.archive import MAC_LENGTH, BackupDecryptError, decrypt_file, encrypt_file
 
 PASSPHRASE = "correct horse battery staple"
@@ -94,6 +95,42 @@ def test_a_file_with_a_valid_mac_but_no_valid_encryption_is_reported(tmp_path):
   forged.write_bytes(body + hmac.new(key, body, hashlib.sha256).digest())
   with pytest.raises(BackupDecryptError, match="could not be decrypted"):
     decrypt_file(forged, tmp_path / "restored.bin", PASSPHRASE)
+
+
+@pytest.fixture
+def openssl_processes(monkeypatch):
+  """The openssl processes decrypt_file starts."""
+  started = []
+  real = archive._openssl
+
+  def spy(*args, **kwargs):
+    started.append(real(*args, **kwargs))
+    return started[-1]
+
+  monkeypatch.setattr(archive, "_openssl", spy)
+  return started
+
+
+def test_decrypting_leaves_no_pipe_to_openssl_open(plain, encrypted, tmp_path, openssl_processes):
+  decrypt_file(encrypted, tmp_path / "restored.bin", PASSPHRASE)
+
+  [process] = openssl_processes
+  assert process.stdin.closed
+  assert process.stderr.closed
+
+
+def test_a_failed_decryption_leaves_no_pipe_to_openssl_open(tmp_path, openssl_processes):
+  body = b"Salted__" + b"\0" * 8 + b"not a valid ciphertext block"
+  key = hashlib.sha256(b"sage-archive-mac:" + PASSPHRASE.encode() + b"\n").digest()
+  forged = tmp_path / "forged.enc"
+  forged.write_bytes(body + hmac.new(key, body, hashlib.sha256).digest())
+
+  with pytest.raises(BackupDecryptError):
+    decrypt_file(forged, tmp_path / "restored.bin", PASSPHRASE)
+
+  [process] = openssl_processes
+  assert process.stdin.closed
+  assert process.stderr.closed
 
 
 def test_the_encryption_key_is_the_default_passphrase(plain, tmp_path):

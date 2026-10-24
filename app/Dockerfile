@@ -2,7 +2,7 @@ ARG TAILSCALE_VERSION=v1.102.5
 
 FROM tailscale/tailscale:${TAILSCALE_VERSION} AS tailscale
 
-FROM python:3.12-slim
+FROM python:3.14-slim
 
 ARG ENV=production
 

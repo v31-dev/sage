@@ -1,5 +1,5 @@
 -r requirements-test.txt
-debugpy==1.8.6
+debugpy==1.8.22
 autopep8==2.3.2
 py-spy==0.4.2
 memray==1.19.3
