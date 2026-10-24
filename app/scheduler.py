@@ -1,5 +1,4 @@
 import logging
-from datetime import datetime
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -10,7 +9,7 @@ from services.logs import Logs
 from services.manager import Manager
 from services.manager.settings import SETTING_SECTIONS
 from services.metrics import Metrics
-from utils.common import get_env
+from utils.common import get_env, utcnow
 from utils.queue import OnConflict
 
 logger = logging.getLogger(__name__)
@@ -62,7 +61,7 @@ async def sync_application_status():
 async def schedule_application_backups():
   if not Manager().s3.s3_config:
     return
-  now = datetime.now()
+  now = utcnow()
   for application, volumes in Manager().get_due_volume_backups(now):
     Manager().add_task(
         task=Manager().backup_application_s3,

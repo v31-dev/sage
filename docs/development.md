@@ -120,6 +120,10 @@ container and passes its arguments to pytest (`dev/test-app.sh -q --no-cov -k qu
 the virtual environment in `~/.cache/sage-test-venv` (or `SAGE_TEST_VENV`) and rebuilds it when the
 requirements change; the first run takes about a minute, later runs a second or two.
 
+The suite runs in `Asia/Kolkata` (UTC+5:30), set in `tests/conftest.py`, so a time read from the local clock
+fails a test. The `clock` fixture freezes `utcnow()` (`clock.set(...)`, `clock.advance(...)`) and
+`machine_timezone("America/Los_Angeles")` moves a single test to another zone.
+
 `pytest` measures coverage by default (`addopts` in `app/pyproject.toml`) and prints the table with
 the missing lines; `pytest --no-cov` turns it off, which is what to use under a debugger. Every
 backend module is measured, including the ones no test imports; only `main.py` (it starts the

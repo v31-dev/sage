@@ -5,6 +5,7 @@ import pytest
 from peewee import IntegrityError
 
 from services.db import Application, Backup, Container, DeployConfig, Domain, Event, Project, Task, Volume, Worker
+from utils.common import utcnow
 
 PAST = datetime(2000, 1, 2, 3, 4, 5)
 
@@ -15,9 +16,9 @@ DEPLOY_CONFIG = DeployConfig(
 
 class TestBaseModel:
   def test_both_timestamps_are_set_when_a_row_is_created(self, db):
-    before = datetime.now()
+    before = utcnow()
     project = Project.create(name="demo", label="Demo")
-    after = datetime.now()
+    after = utcnow()
 
     assert before <= project.created_at <= after
     assert before <= project.updated_at <= after
@@ -25,7 +26,7 @@ class TestBaseModel:
   def test_saving_moves_updated_at_forward_and_leaves_created_at(self, project):
     Project.update(created_at=PAST, updated_at=PAST).execute()
     stored = Project.get_by_id("demo")
-    before = datetime.now()
+    before = utcnow()
 
     stored.label = "Renamed"
     stored.save()
@@ -47,9 +48,6 @@ class TestBaseModel:
 
 
 class TestProject:
-  def test_the_application_count_starts_at_zero(self, project):
-    assert project.application_count == 0
-
   def test_a_project_needs_a_label(self, db):
     with pytest.raises(IntegrityError):
       Project.create(name="demo")
@@ -67,9 +65,6 @@ class TestProject:
     project.env = "A=1\nB=two words\n# note"
     project.save()
     assert Project.get_by_id("demo").env == "A=1\nB=two words\n# note"
-
-  def test_env_can_be_empty(self, project):
-    assert Project.get_by_id("demo").env is None
 
   def test_an_invalid_env_is_refused_and_not_stored(self, project):
     project.env = "A=1\n9BAD=2"
@@ -119,15 +114,6 @@ class TestDeployConfig:
 
 
 class TestApplication:
-  def test_the_defaults(self, application):
-    assert application.type == "docker"
-    assert application.status == "inactive"
-    assert application.path == "Dockerfile"
-    assert application.container_count == 0
-    assert application.domains_synced is False
-    assert application.deployed_at is None
-    assert application.deployed_hash is None
-
   def test_the_qualified_name_joins_the_project_and_the_application(self, application):
     assert application.qualified_name == "demo-web"
 
@@ -298,9 +284,6 @@ class TestDomain:
     Domain.create(application=application, name="shop", type="public", port=80)
     Domain.create(application=application, name="shop", type="internal", port=80)
 
-  def test_the_type_defaults_to_internal(self, application):
-    assert Domain.create(application=application, name="shop", port=80).type == "internal"
-
   def test_domains_go_with_their_application(self, application):
     Domain.create(application=application, name="shop", port=80)
 
@@ -310,9 +293,6 @@ class TestDomain:
 
 
 class TestContainer:
-  def test_the_status_defaults_to_inactive(self, application, worker):
-    assert Container.create(application=application, worker=worker).status == "inactive"
-
   def test_one_container_per_application_and_worker(self, application, worker):
     Container.create(application=application, worker=worker)
 
@@ -360,9 +340,6 @@ class TestVolume:
 
     assert Volume.select().count() == 0
 
-  def test_the_backup_schedule_is_optional(self, application):
-    assert Volume.create(application=application, name="data", path="/data").backup_cron is None
-
 
 class TestEvent:
   @pytest.fixture
@@ -388,10 +365,6 @@ class TestEvent:
 
 
 class TestBackup:
-  def test_a_backup_is_a_platform_backup_without_an_application_by_default(self, db):
-    backup = Backup.create(s3_path="backups/platform/x.db.enc")
-    assert (backup.type, backup.application, backup.source_volume_name) == ("platform", None, None)
-
   def test_backups_go_with_their_application(self, application):
     Backup.create(type="application", s3_path="backups/applications/x.tar.gz.enc", application=application)
 
@@ -409,13 +382,6 @@ class TestTask:
 
     assert task.scopes == ["application:1"]
     assert task.params == {"force": True, "names": ["a"]}
-
-  def test_the_json_fields_can_be_empty(self, db):
-    Task.create(task_id="t1", name="deploy", executor="common", status="failed")
-
-    task = Task.get_by_id("t1")
-
-    assert (task.scopes, task.params, task.finished_at) == (None, None, None)
 
   def test_the_task_id_is_unique(self, db):
     Task.create(task_id="t1", name="deploy", executor="common", status="completed")

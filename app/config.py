@@ -18,6 +18,8 @@ RETENTION_DAYS = 14
 
 # Cloudflare network errors, rate limits and server errors are retried after these delays (seconds).
 CLOUDFLARE_RETRY_DELAYS = (1, 2)
+# S3 deletes are retried after these delays (seconds).
+S3_RETRY_DELAYS = (1, 2)
 # A cold start without a certificate retries before giving up (seconds).
 STARTUP_RETRY_DELAYS = (60, 240, 960)
 RENEWAL_THRESHOLD_DAYS = 30

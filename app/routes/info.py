@@ -1,17 +1,16 @@
 import logging
-from datetime import datetime
 
 from fastapi import APIRouter
 
 from services.manager import Manager
 from services.tailscale import Tailscale
-from utils.common import get_env
+from utils.common import get_env, utcnow
 from utils.queue import OnConflict
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-start_time = datetime.now()
+start_time = utcnow()
 
 
 def settings_status():

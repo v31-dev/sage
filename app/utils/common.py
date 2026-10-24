@@ -1,10 +1,17 @@
 import logging
 import os
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import yaml
 
 logger = logging.getLogger(__name__)
+
+
+def utcnow() -> datetime:
+  """The current time as naive UTC, which is how Sage stores times and how the UI reads a
+  timestamp that has no zone. A test freezes it by patching this module's `datetime`."""
+  return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 def format_yaml(content: str) -> str:

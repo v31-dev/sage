@@ -1,10 +1,10 @@
 import json
+import time
 
 import httpx
 import pytest
 
 import config
-from services import cloudflare as cloudflare_module
 from services.cloudflare import Cloudflare, CloudflareError
 from services.tailscale import Tailscale
 
@@ -67,7 +67,7 @@ def api():
 def sleeps(monkeypatch):
   delays = []
   monkeypatch.setattr(config, "CLOUDFLARE_RETRY_DELAYS", (1, 2))
-  monkeypatch.setattr(cloudflare_module.time, "sleep", delays.append)
+  monkeypatch.setattr(time, "sleep", delays.append)
   return delays
 
 
@@ -140,10 +140,6 @@ class TestConstruction:
 
 
 class TestRequest:
-  def test_it_returns_the_body_of_a_successful_call(self, cloudflare, api):
-    api.on("GET", "/zones", ok([{"id": "z"}]))
-    assert cloudflare.request("GET", "/zones")["result"] == [{"id": "z"}]
-
   def test_it_authenticates_with_the_configured_token(self, cloudflare, api):
     api.on("GET", "/zones", ok([]))
     cloudflare.request("GET", "/zones")

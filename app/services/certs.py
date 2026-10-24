@@ -15,9 +15,16 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 import config
 from services.base import Base
 from services.cloudflare import Cloudflare
-from utils.common import get_env
+from utils.common import get_env, utcnow
+from utils.retry import retry
 
 logger = logging.getLogger(__name__)
+
+
+def _aware_now():
+  """utcnow() for comparing with a certificate's aware expiry."""
+  return utcnow().replace(tzinfo=timezone.utc)
+
 
 CHALLENGE_COMMENT = "sage-acme-challenge"
 
@@ -50,7 +57,7 @@ class Certificate:
   def is_valid(self):
     """Unexpired and covering every name (so a domain change makes it stale)."""
     cert = self._cert
-    if cert is None or cert.not_valid_after_utc <= datetime.now(timezone.utc):
+    if cert is None or cert.not_valid_after_utc <= _aware_now():
       return False
     try:
       sans = cert.extensions.get_extension_for_class(
@@ -62,7 +69,7 @@ class Certificate:
   def needs_renewal(self, days: int = config.RENEWAL_THRESHOLD_DAYS):
     if self._cert is None:
       return True
-    return self._cert.not_valid_after_utc <= datetime.now(timezone.utc) + timedelta(days=days)
+    return self._cert.not_valid_after_utc <= _aware_now() + timedelta(days=days)
 
   def hash(self):
     """Content hash of the chain (None when absent); compared against a worker's
@@ -155,8 +162,9 @@ class Certs(Base):
         acme_client.answer_challenge(challenge, response)
 
       logger.info(f"Let's Encrypt is validating the DNS-01 challenge (up to {config.FINALIZE_TIMEOUT_SECONDS}s).")
+      # The ACME library compares its deadline with naive local time, so this one stays local.
       order = acme_client.poll_and_finalize(
-          order, deadline=datetime.now() + timedelta(seconds=config.FINALIZE_TIMEOUT_SECONDS))
+          order, deadline=datetime.now() + timedelta(seconds=config.FINALIZE_TIMEOUT_SECONDS))  # noqa: DTZ005
     finally:
       for record_name, *_ in published:
         try:
@@ -231,23 +239,23 @@ class Certs(Base):
     backoff before giving up. An existing valid certificate means this was only a
     renewal: a failure is logged and left to the daily renewal task rather than
     holding startup for a certificate that still works."""
-    for delay in (*config.STARTUP_RETRY_DELAYS, None):
-      try:
-        self.ensure(self.manager)
-        return
-      except Exception as e:
-        if self.manager.is_valid():
-          logger.error(
-              f"Certificate renewal failed during startup: {e}. Continuing on the current "
-              f"certificate (expires {self.manager.expiry()}); the daily renewal will retry.",
-              exc_info=True)
-          return
-        # Let's Encrypt's Retry-After for a rate limit is measured in hours, so
-        # further attempts this session would fail regardless.
-        if delay is None or (isinstance(e, messages.Error) and e.code == "rateLimited"):
-          raise
-        logger.warning(f"Certificate issuance failed during startup: {e}. Retrying in {delay}s.")
-        time.sleep(delay)
+    def should_retry(error):
+      # Let's Encrypt's Retry-After for a rate limit is measured in hours, so further
+      # attempts this session would fail regardless.
+      rate_limited = isinstance(error, messages.Error) and error.code == "rateLimited"
+      return not self.manager.is_valid() and not rate_limited
+
+    try:
+      retry(
+          lambda: self.ensure(self.manager), delays=config.STARTUP_RETRY_DELAYS, should_retry=should_retry,
+          on_retry=lambda error, delay: logger.warning(f"Certificate issuance failed during startup: {error}. Retrying in {delay}s."))
+    except Exception as e:
+      if not self.manager.is_valid():
+        raise
+      logger.error(
+          f"Certificate renewal failed during startup: {e}. Continuing on the current "
+          f"certificate (expires {self.manager.expiry()}); the daily renewal will retry.",
+          exc_info=True)
 
   def reload_local_tls(self):
     """Swap the :443 cert in place on the live SSLContext. Call on the event

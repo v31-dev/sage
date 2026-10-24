@@ -1,8 +1,8 @@
 import logging
-from datetime import datetime
 from typing import Callable
 
 from services.db import Task
+from utils.common import utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +58,7 @@ class QueueMixin:
           params=task.params,
           executor=task.executor,
           status=status,
-          finished_at=datetime.now(),
+          finished_at=utcnow(),
       )
     except Exception as e:
       logger.error(f"Failed to persist task {task.task_id} ({status}): {e}")

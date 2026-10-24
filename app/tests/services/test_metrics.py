@@ -1,3 +1,4 @@
+import threading
 from datetime import datetime, timedelta
 
 import pytest
@@ -102,3 +103,45 @@ class TestAggregateBuckets:
   def test_the_listed_fields_are_kept_from_the_first_row_and_not_averaged(self, metrics):
     rows = [{"ts": "t1", "name": "web", "cpu": 10}, {"ts": "t2", "name": "web", "cpu": 30}]
     assert metrics._aggregate_buckets(rows, 2, ["ts", "name"]) == [{"ts": "t1", "name": "web", "cpu": 20.0}]
+
+
+class TestQueryPeriodClock:
+  """The buckets are UTC minutes, which the `Z` on every timestamp says, on any machine."""
+
+  @pytest.fixture
+  def store(self, data_dir):
+    (data_dir / "metrics").mkdir()
+    metrics = Metrics.__new__(Metrics)
+    metrics.lock = threading.RLock()
+    metrics._dbs = {"metrics": {}}
+    metrics.db_path = data_dir
+    return metrics
+
+  def write_minute(self, store, ts):
+    WorkerMetrics = store.get_metrics_db("w1")["models"]["WorkerMetrics"]
+    WorkerMetrics.create(ts=ts, cpu_pct=50.0, mem_used_mb=100, mem_cached_mb=10, disk_used_gb=1.0, net_rx_kbps=1.0, net_tx_kbps=2.0)
+
+  @pytest.mark.parametrize("zone", ["UTC", "Asia/Kolkata", "America/Los_Angeles"])
+  def test_the_window_ends_at_the_current_utc_minute(self, store, clock, machine_timezone, zone):
+    machine_timezone(zone)
+    clock.set(datetime(2026, 10, 23, 10, 5, 30))
+    self.write_minute(store, datetime(2026, 10, 23, 10, 4))
+
+    rows = store.query_period("w1", "1h")["host"]
+
+    assert len(rows) == 60
+    assert rows[-1]["ts"] == "2026-10-23T10:05:00Z"
+    assert [row["ts"] for row in rows if row["cpu_pct"] is not None] == ["2026-10-23T10:04:00Z"]
+
+  @pytest.mark.parametrize("zone", ["UTC", "Asia/Kolkata", "America/Los_Angeles"])
+  def test_a_containers_window_ends_at_the_current_utc_minute_too(self, store, clock, machine_timezone, zone):
+    machine_timezone(zone)
+    clock.set(datetime(2026, 10, 23, 10, 5, 30))
+    ContainerMetrics = store.get_metrics_db("w1")["models"]["ContainerMetrics"]
+    ContainerMetrics.create(name="demo-web", ts=datetime(2026, 10, 23, 10, 3), cpu_pct=5.0, mem_used_mb=50.0, net_rx_kbps=1.0, net_tx_kbps=1.0)
+
+    rows = store.query_container_period("w1", "demo-web", "1h")
+
+    assert len(rows) == 60
+    assert rows[-1]["ts"] == "2026-10-23T10:05:00Z"
+    assert [row["ts"] for row in rows if row["cpu_pct"] is not None] == ["2026-10-23T10:03:00Z"]

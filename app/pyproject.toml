@@ -17,8 +17,9 @@ exclude = [".venv", "__pycache__", "build", "dist"]
 [tool.ruff.lint]
 # Start with correctness-focused rules only so Ruff can be introduced without
 # forcing broad code cleanup. Formatting stays with autopep8, and import
-# ordering stays with isort.
-select = ["E9", "F63", "F7", "F82"]
+# ordering stays with isort. DTZ003 and DTZ005 keep the clock in `utils.common.utcnow`: no
+# `datetime.utcnow()` and no `datetime.now()` without a zone.
+select = ["E9", "F63", "F7", "F82", "DTZ003", "DTZ005"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

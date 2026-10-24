@@ -2,12 +2,12 @@ import asyncio
 import json
 import logging
 import re
-import time
 
 import config
 from services.db import Application, Domain, Project, Worker
 from utils.executor import run_in_executor_with_context
 from utils.queue import OnConflict
+from utils.retry import retry
 
 from ._common import app_dir, routing_input_hash
 
@@ -34,19 +34,17 @@ class TraefikMixin:
     logger.info(
         f"Setting up {self.cloudflare.manager_hostname}: Cloudflare (zone, tunnel, DNS record), then the "
         "manager's certificate. The UI starts once this is done; a first start can take a few minutes.")
-    for delay in (*config.STARTUP_RETRY_DELAYS, None):
-      try:
-        self.cloudflare.connect()
-        break
-      except Exception as e:
-        # With a certificate that still works, serve now; Cloudflare is retried on use.
-        if self.certs.manager.is_valid():
-          logger.error(f"Cloudflare setup failed during startup: {e}. Continuing on the current certificate.")
-          return
-        if delay is None:
-          raise
-        logger.warning(f"Cloudflare setup failed during startup: {e}. Retrying in {delay}s.")
-        time.sleep(delay)
+    try:
+      retry(
+          self.cloudflare.connect, delays=config.STARTUP_RETRY_DELAYS,
+          should_retry=lambda error: not self.certs.manager.is_valid(),
+          on_retry=lambda error, delay: logger.warning(f"Cloudflare setup failed during startup: {error}. Retrying in {delay}s."))
+    except Exception as e:
+      # With a certificate that still works, serve now; Cloudflare is retried on use.
+      if not self.certs.manager.is_valid():
+        raise
+      logger.error(f"Cloudflare setup failed during startup: {e}. Continuing on the current certificate.")
+      return
     self.certs.ensure_manager_at_startup()
 
   async def renew_certificates(self):

@@ -3,10 +3,9 @@ import json
 import logging
 import re
 import shlex
-from datetime import datetime
 
 from services.db import APPLICATION_BUSY_STATUSES, Application, Container, DeployConfig, Event, db
-from utils.common import format_yaml, parse_multiline_kv
+from utils.common import format_yaml, parse_multiline_kv, utcnow
 from utils.logging import generate_task_id_token, task_id
 
 from ._common import app_dir
@@ -38,7 +37,7 @@ class ApplicationMixin:
           application.save()
       else:
         application.status = "deploying"
-        application.deployed_at = datetime.now()
+        application.deployed_at = utcnow()
         config = application.deploy_config
         application.deployed_hash = config.content_hash
         application.save()

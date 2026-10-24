@@ -1,10 +1,14 @@
 import os
+import time
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from cryptography.fernet import Fernet
 
 # Set before any test module imports the app: utils.db reads the key at import.
+# TZ puts the suite away from UTC (+5:30), so a time read from the local clock fails a test.
 os.environ.update(
+    TZ="Asia/Kolkata",
     ENCRYPTION_KEY=Fernet.generate_key().decode(),
     DOMAIN="example.test",
     CLOUDFLARE_ACCOUNT_ID="test-account",
@@ -13,6 +17,7 @@ os.environ.update(
     TS_WORKER_TAG="tag:worker",
     ENV="development",
 )
+time.tzset()
 
 
 @pytest.hookimpl(wrapper=True)
@@ -37,6 +42,48 @@ def _reset_singletons():
   yield
   Singleton._instances.clear()
   Singleton._locks.clear()
+
+
+class Clock:
+  """The frozen utcnow(): `clock.set(datetime(2026, 1, 1, 12))`, `clock.advance(timedelta(minutes=1))`."""
+
+  def __init__(self):
+    self.current = datetime(2026, 1, 1, 12, 0, 0)
+
+  def set(self, value: datetime):
+    self.current = value
+
+  def advance(self, delta: timedelta):
+    self.current += delta
+
+
+@pytest.fixture
+def clock(monkeypatch):
+  """Freezes `utils.common.utcnow()` at 2026-01-01 12:00 UTC until the test moves it."""
+  from utils import common
+  frozen = Clock()
+
+  class FrozenDatetime(datetime):
+    @classmethod
+    def now(cls, tz=None):
+      assert tz is timezone.utc, "utcnow() reads the clock in UTC"
+      return frozen.current.replace(tzinfo=timezone.utc)
+
+  monkeypatch.setattr(common, "datetime", FrozenDatetime)
+  return frozen
+
+
+@pytest.fixture
+def machine_timezone(monkeypatch):
+  """Runs the test in another time zone: `machine_timezone("Asia/Kolkata")`."""
+
+  def use(name: str):
+    monkeypatch.setenv("TZ", name)
+    time.tzset()
+
+  yield use
+  monkeypatch.undo()
+  time.tzset()
 
 
 @pytest.fixture

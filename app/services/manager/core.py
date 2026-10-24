@@ -1,6 +1,6 @@
 import logging
 import re
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 import httpx
 from peewee import fn
@@ -8,6 +8,7 @@ from peewee import fn
 import config
 from services.db import Application, Backup, Container, Domain, Event, Notification, Project, Worker
 from services.notification import Notifications
+from utils.common import utcnow
 from utils.executor import NOTIFICATIONS_EXECUTOR, submit_with_context
 
 logger = logging.getLogger(__name__)
@@ -44,7 +45,7 @@ class CoreMixin:
         "body": body,
         "html_url": release.get("html_url"),
         "published_at": release.get("published_at"),
-        "fetched_at": datetime.now().isoformat(),
+        "fetched_at": utcnow().isoformat(),
     }
     return self.latest_release
 
@@ -76,7 +77,7 @@ class CoreMixin:
     return {row["status"]: row["count"] for row in rows}
 
   def get_system_summary(self, lookback_hours: int = 24):
-    now = datetime.now()
+    now = utcnow()
     since = now - timedelta(hours=lookback_hours)
 
     worker_total = Worker.select().count()

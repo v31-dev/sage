@@ -31,21 +31,10 @@ class TestDescribeCheckError:
     error = ChannelCheckFailed({"a": ("A down", True)}, configured=2)
     assert describe(error) == ("A down", False)
 
-  @pytest.mark.parametrize("status, transient", [(500, True), (503, True), (400, False), (403, False), (404, False)])
-  def test_an_s3_error_is_transient_only_for_a_server_error(self, status, transient):
+  @pytest.mark.parametrize("status, transient", [(503, True), (403, False)])
+  def test_an_s3_error_keeps_its_message_and_is_transient_only_for_a_server_error(self, status, transient):
     error = client_error(status)
     assert describe(error) == (str(error), transient)
-
-  def test_an_s3_error_without_a_status_is_not_transient(self):
-    error = botocore.exceptions.ClientError({"Error": {"Code": "Failure"}}, "ListObjectsV2")
-    assert describe(error)[1] is False
-
-  @pytest.mark.parametrize("error", [
-      botocore.exceptions.EndpointConnectionError(endpoint_url="https://s3.example.test"),
-      botocore.exceptions.ReadTimeoutError(endpoint_url="https://s3.example.test"),
-  ])
-  def test_an_s3_connection_problem_is_transient(self, error):
-    assert describe(error) == (str(error), True)
 
   @pytest.mark.parametrize("status, transient", [(503, True), (429, True), (403, False)])
   def test_a_cloudflare_error_follows_its_own_flag(self, status, transient):

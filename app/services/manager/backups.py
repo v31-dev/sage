@@ -7,7 +7,7 @@ from croniter import croniter
 
 import config
 from services.db import APPLICATION_BUSY_STATUSES, Application, Backup, Container, Event, Volume
-from utils.common import get_env
+from utils.common import get_env, utcnow
 from utils.logging import generate_task_id_token, task_id
 
 from ._common import BACKUP_TIMESTAMP_FORMAT, app_dir
@@ -232,7 +232,7 @@ class BackupsMixin:
       )
 
     snapshot = self._get_application_backup_snapshot(application)
-    timestamp = datetime.now().strftime(BACKUP_TIMESTAMP_FORMAT)
+    timestamp = utcnow().strftime(BACKUP_TIMESTAMP_FORMAT)
     if volume_ids is None:
       volumes = list(application.volumes)
     else:

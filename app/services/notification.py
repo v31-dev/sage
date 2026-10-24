@@ -6,6 +6,7 @@ import requests
 from services.base import Base
 from services.settings import Settings
 from utils.common import get_env
+from utils.retry import is_transient
 
 logger = logging.getLogger(__name__)
 
@@ -24,13 +25,14 @@ def webhook_failure(error: Exception, name: str) -> tuple[str, bool]:
   """Why a webhook request failed, without its URL (which holds the webhook token), and
   whether that clears by itself."""
   if isinstance(error, requests.HTTPError):
-    status = error.response.status_code
-    return f"{name} answered HTTP {status}", status >= 500 or status == 429
-  if isinstance(error, requests.Timeout):
-    return f"{name} did not answer in time", True
-  if isinstance(error, requests.ConnectionError):
-    return f"could not reach {name}", True
-  return f"{name} request failed ({type(error).__name__})", False
+    message = f"{name} answered HTTP {error.response.status_code}"
+  elif isinstance(error, requests.Timeout):
+    message = f"{name} did not answer in time"
+  elif isinstance(error, requests.ConnectionError):
+    message = f"could not reach {name}"
+  else:
+    message = f"{name} request failed ({type(error).__name__})"
+  return message, is_transient(error)
 
 
 def _request_webhook(method: str, url: str, name: str, **kwargs) -> tuple[str, bool] | None:

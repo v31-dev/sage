@@ -1,13 +1,17 @@
+import logging
+import time
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
+from acme import messages
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 
 import config
-from services.certs import Certificate
+from services.certs import Certificate, Certs
 
 NAMES = ["manager.core.example.test"]
 
@@ -64,6 +68,11 @@ class TestLoad:
     certificate.load()
     assert certificate.is_valid() is True
 
+  @pytest.mark.parametrize("expires_in, valid", [(timedelta(hours=1), True), (timedelta(hours=-1), False)])
+  def test_a_certificate_an_hour_either_side_of_its_expiry(self, tmp_path, expires_in, valid):
+    write_certificate(tmp_path, NAMES, expires_in)
+    assert Certificate(tmp_path, NAMES).is_valid() is valid
+
   def test_load_forgets_a_certificate_whose_file_is_gone(self, tmp_path):
     write_certificate(tmp_path, NAMES)
     certificate = Certificate(tmp_path, NAMES)
@@ -118,6 +127,11 @@ class TestNeedsRenewal:
     write_certificate(tmp_path, NAMES, timedelta(hours=-1))
     assert Certificate(tmp_path, NAMES).needs_renewal() is True
 
+  @pytest.mark.parametrize("hours, renew", [(-1, True), (1, False)])
+  def test_the_edge_of_the_window_to_the_hour(self, tmp_path, hours, renew):
+    write_certificate(tmp_path, NAMES, timedelta(days=config.RENEWAL_THRESHOLD_DAYS, hours=hours))
+    assert Certificate(tmp_path, NAMES).needs_renewal() is renew
+
   @pytest.mark.parametrize("days, renew", [(60, True), (40, False)])
   def test_the_window_can_be_given(self, tmp_path, days, renew):
     write_certificate(tmp_path, NAMES, timedelta(days=50))
@@ -135,3 +149,85 @@ class TestHash:
     first = certificate.hash()
     (tmp_path / "fullchain.pem").write_bytes(b"two")
     assert certificate.hash() != first
+
+
+class TestEnsureManagerAtStartup:
+  """A cold start retries with backoff; a certificate that still works ends it at once."""
+
+  @pytest.fixture
+  def sleeps(self, monkeypatch):
+    delays = []
+    monkeypatch.setattr(config, "STARTUP_RETRY_DELAYS", (60, 240))
+    monkeypatch.setattr(time, "sleep", delays.append)
+    return delays
+
+  def certs(self, results, valid=False):
+    """A Certs whose `ensure` returns or raises each of `results` in turn."""
+    certs = Certs.__new__(Certs)
+    certs.manager = SimpleNamespace(is_valid=lambda: valid, expiry=lambda: "tomorrow")
+    certs.calls = 0
+
+    def ensure(certificate):
+      outcome = results[certs.calls]
+      certs.calls += 1
+      if isinstance(outcome, Exception):
+        raise outcome
+      return outcome
+
+    certs.ensure = ensure
+    return certs
+
+  def test_a_certificate_that_is_issued_at_once_waits_for_nothing(self, sleeps):
+    certs = self.certs([True])
+
+    certs.ensure_manager_at_startup()
+
+    assert certs.calls == 1
+    assert sleeps == []
+
+  def test_a_failure_waits_and_tries_again(self, sleeps, caplog):
+    certs = self.certs([Exception("dns not ready"), True])
+
+    with caplog.at_level(logging.WARNING, logger="services.certs"):
+      certs.ensure_manager_at_startup()
+
+    assert certs.calls == 2
+    assert sleeps == [60]
+    assert "Certificate issuance failed during startup: dns not ready. Retrying in 60s." in caplog.text
+
+  def test_it_gives_up_after_the_last_delay_with_the_last_error(self, sleeps):
+    certs = self.certs([Exception("first"), Exception("second"), Exception("last")])
+
+    with pytest.raises(Exception, match="last"):
+      certs.ensure_manager_at_startup()
+
+    assert certs.calls == 3
+    assert sleeps == [60, 240]
+
+  def test_a_rate_limit_is_not_retried(self, sleeps):
+    limited = messages.Error(typ="urn:ietf:params:acme:error:rateLimited", detail="too many certificates")
+    certs = self.certs([limited, True])
+
+    with pytest.raises(messages.Error):
+      certs.ensure_manager_at_startup()
+
+    assert certs.calls == 1
+    assert sleeps == []
+
+  def test_another_acme_error_is_retried(self, sleeps):
+    certs = self.certs([messages.Error(typ="urn:ietf:params:acme:error:serverInternal", detail="try later"), True])
+
+    certs.ensure_manager_at_startup()
+
+    assert certs.calls == 2
+    assert sleeps == [60]
+
+  def test_with_a_certificate_that_still_works_a_failure_is_logged_and_startup_goes_on(self, sleeps, caplog):
+    certs = self.certs([Exception("renewal failed")], valid=True)
+
+    with caplog.at_level(logging.ERROR, logger="services.certs"):
+      certs.ensure_manager_at_startup()
+
+    assert certs.calls == 1
+    assert sleeps == []
+    assert "Certificate renewal failed during startup: renewal failed. Continuing on the current certificate (expires tomorrow)" in caplog.text

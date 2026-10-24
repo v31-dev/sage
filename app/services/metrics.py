@@ -3,7 +3,7 @@ import os
 import shutil
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import timedelta
 from pathlib import Path
 
 import httpx
@@ -12,7 +12,7 @@ from peewee import CharField, CompositeKey, DateTimeField, FloatField, IntegerFi
 import config
 from services.base import Base
 from services.db import Worker
-from utils.common import get_env
+from utils.common import get_env, utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -117,7 +117,7 @@ class Metrics(Base):
   def collect(self, ip, hostname):
     metrics_endpoint = f"http://{ip}:61208/api/4"
     plugins = ["cpu", "mem", "fs", "load", "network", "containers"]
-    ts = datetime.now().replace(second=0, microsecond=0)
+    ts = utcnow().replace(second=0, microsecond=0)
 
     try:
       data = {ep: self._http.get(f"{metrics_endpoint}/{ep}").json() for ep in plugins}
@@ -204,7 +204,7 @@ class Metrics(Base):
     while not self._sampler_stop.wait(config.METRICS_SAMPLE_INTERVAL):
       try:
         now = time.monotonic()
-        minute = datetime.now().replace(second=0, microsecond=0)
+        minute = utcnow().replace(second=0, microsecond=0)
 
         cpu_usage_usec = next(
             int(line.split()[1])
@@ -275,7 +275,7 @@ class Metrics(Base):
     The in-progress minute is left to keep accumulating; a minute with no samples
     (e.g. spanning a restart) simply gets no row."""
     hostname = get_env("TS_NAME")
-    now_minute = datetime.now().replace(second=0, microsecond=0)
+    now_minute = utcnow().replace(second=0, microsecond=0)
 
     with self.lock:
       completed = {minute: peak for minute, peak in self._peaks.items() if minute < now_minute}
@@ -340,7 +340,7 @@ class Metrics(Base):
     return len(orphans)
 
   def cleanup(self, days: int = config.RETENTION_DAYS):
-    cutoff = datetime.now() - timedelta(days=days)
+    cutoff = utcnow() - timedelta(days=days)
 
     # Drop shards for hosts that no longer exist (keyed by hostname -- manager
     # plus all workers, incl. offline).
@@ -367,7 +367,7 @@ class Metrics(Base):
     period_config = _PERIODS.get(period, _PERIODS["1h"])
 
     # Snap now to previous minute for consistent bucketing
-    now = datetime.now().replace(second=0, microsecond=0)
+    now = utcnow().replace(second=0, microsecond=0)
     since = now - period_config["delta"]
 
     # Get the db shard for this hostname
@@ -466,7 +466,7 @@ class Metrics(Base):
     period_config = _PERIODS.get(period, _PERIODS["1h"])
 
     # Snap now to previous minute for consistent bucketing
-    now = datetime.now().replace(second=0, microsecond=0)
+    now = utcnow().replace(second=0, microsecond=0)
     since = now - period_config["delta"]
 
     # Get the db shard for this hostname
