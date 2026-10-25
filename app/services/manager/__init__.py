@@ -60,6 +60,8 @@ class Manager(
       self.worker_summary = None
       # When each worker's stack was last started for being down (services/manager/workers.py).
       self.stack_repairs = {}
+      # The reboots the manager asked for that may still be under way, by worker.
+      self.rebooting = {}
 
       # Single-dispatcher operation queue. Each scope root maps to an independent
       # lane pool (all defined in utils.executor).

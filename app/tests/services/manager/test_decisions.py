@@ -1,8 +1,10 @@
+from datetime import datetime, timedelta
+
 import pytest
 
 import config
-from services.manager.decisions import (ABSENT, OFFLINE, SEEN, UNKNOWN, Observation, WorkerRow, plan_worker_sync, reconcile_container, rollup_status,
-                                        stack_problem)
+from services.manager.decisions import (ABSENT, OFFLINE, SEEN, UNKNOWN, Observation, RebootMark, WorkerRow, is_rebooting, plan_worker_sync,
+                                        reconcile_container, rollup_status, stack_problem)
 from services.reports import ContainerReading, HostReading, Snapshot
 
 STAMP = "2026-10-24T23:08:35.718155"
@@ -164,3 +166,31 @@ class TestStackProblem:
   def test_no_report_is_a_problem_only_after_a_silence(self):
     assert stack_problem(None, config.STACK_SILENCE_SECONDS) is None
     assert stack_problem(None, config.STACK_SILENCE_SECONDS + 1) == "not reporting"
+
+
+class TestIsRebooting:
+  ASKED = datetime(2026, 1, 1, 12)
+
+  def under_way(self, ready, started_at, seconds=30, before=100):
+    mark = RebootMark(self.ASKED, before)
+    return is_rebooting(mark, self.ASKED + timedelta(seconds=seconds), ready, started_at)
+
+  @pytest.mark.parametrize("ready", [None, False])
+  def test_a_worker_that_is_not_ready_is_still_rebooting(self, ready):
+    assert self.under_way(ready, started_at=None)
+    assert self.under_way(ready, started_at=200)
+
+  def test_a_ready_worker_whose_telegraf_has_not_restarted_has_not_gone_down_yet(self):
+    assert self.under_way(True, started_at=100)
+
+  def test_a_ready_worker_with_a_telegraf_that_restarted_is_back(self):
+    assert not self.under_way(True, started_at=200)
+
+  @pytest.mark.parametrize("started_at", [200, None])
+  def test_a_ready_worker_with_nothing_to_compare_with_counts_as_back(self, started_at):
+    mark = RebootMark(self.ASKED, None)
+    assert not is_rebooting(mark, self.ASKED + timedelta(seconds=30), True, started_at)
+
+  def test_a_worker_that_never_comes_back_stops_being_one_after_the_limit(self):
+    assert self.under_way(None, None, seconds=config.REBOOT_LIMIT_SECONDS)
+    assert not self.under_way(None, None, seconds=config.REBOOT_LIMIT_SECONDS + 1)

@@ -1,6 +1,7 @@
 """The decisions of the worker sync and the status sync, as plain functions of the state they are
 given. The async tasks gather that state, call these, and apply the answer."""
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Iterable
 
 import config
@@ -137,3 +138,23 @@ def stack_problem(snapshot: Snapshot | None, silent_for: float) -> str | None:
   if snapshot.traefik_reachable is False:
     return "Traefik is not answering"
   return None
+
+
+@dataclass(frozen=True)
+class RebootMark:
+  """A reboot the manager asked for: when, and the start of Telegraf's container on the worker's clock
+  before it (None when the worker had not reported)."""
+  since: datetime
+  started_at: int | None
+
+
+def is_rebooting(mark: RebootMark, now: datetime, ready: bool | None, started_at: int | None) -> bool:
+  """Whether a reboot asked for at `mark.since` is still under way: until the worker is ready again with a
+  Telegraf that has started since the request (its container's `started_at` is another than before), or the
+  limit. Reports go on until the host goes down, so a ready worker with the same start has not rebooted yet.
+  Without a start from before the request there is nothing to compare with, and a ready worker counts as back."""
+  if (now - mark.since).total_seconds() > config.REBOOT_LIMIT_SECONDS:
+    return False
+  if ready is not True:
+    return True
+  return mark.started_at is not None and started_at == mark.started_at

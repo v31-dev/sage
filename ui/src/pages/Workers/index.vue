@@ -18,6 +18,7 @@ const workerMetrics = ref<Record<string, WorkerMetricSummary>>({})
 const isLoading = ref(true)
 const loadError = ref('')
 let pollInterval: ReturnType<typeof setInterval> | null = null
+let statusInterval: ReturnType<typeof setInterval> | null = null
 
 function summarizeWorkerMetrics(workerData: WorkerMetricsResponse): WorkerMetricSummary {
   const latest = workerData.host[workerData.host.length - 1]
@@ -41,13 +42,17 @@ function summarizeWorkerMetrics(workerData: WorkerMetricsResponse): WorkerMetric
   }
 }
 
+// A refresh that fails keeps the list on screen; only the first load shows the error.
 async function loadWorkers() {
   try {
+    const next = (await workersAPI.fetchAll()) as Worker[]
+    workers.value = next
     loadError.value = ''
-    workers.value = (await workersAPI.fetchAll()) as Worker[]
   } catch (err) {
-    workers.value = []
-    loadError.value = err instanceof Error ? err.message : 'Failed to load workers'
+    if (isLoading.value) {
+      workers.value = []
+      loadError.value = err instanceof Error ? err.message : 'Failed to load workers'
+    }
   } finally {
     isLoading.value = false
   }
@@ -91,10 +96,12 @@ onMounted(async () => {
   await loadWorkers()
   await loadWorkerMetrics()
   pollInterval = setInterval(loadWorkerMetrics, 60_000)
+  statusInterval = setInterval(loadWorkers, 10_000)
 })
 
 onUnmounted(() => {
   if (pollInterval) clearInterval(pollInterval)
+  if (statusInterval) clearInterval(statusInterval)
 })
 </script>
 

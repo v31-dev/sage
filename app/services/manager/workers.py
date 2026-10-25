@@ -11,7 +11,7 @@ from utils.executor import run_in_executor_with_context
 from utils.logging import TaskFailed
 
 from ._common import WORKER_INFRA_TEMPLATES, app_dir, content_hash, routing_input_hash
-from .decisions import WorkerRow, plan_worker_sync, stack_problem
+from .decisions import RebootMark, WorkerRow, is_rebooting, plan_worker_sync, stack_problem
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +53,24 @@ class WorkersMixin:
         logger.error(f"sync_workers failed for {hostname}: {e}")
 
     await self.repair_worker_stacks()
+    self.rebooting = {h: mark for h, mark in self.rebooting.items() if self._reboot_under_way(h, mark)}
     self.refresh_worker_summary()
+
+  def worker_state(self, hostname: str) -> str | None:
+    """What is being done to a worker that its online state does not say: "removing" while its removal is
+    queued or running, "rebooting" from the request until it is back (`is_rebooting`), otherwise None.
+    Derived on every call from the queue and the reports, so there is nothing stored to go stale."""
+    params = {"worker_hostname": hostname}
+    if self.has_task(self.remove_worker, params):
+      return "removing"
+    if self.has_task(self.reboot_worker, params):
+      return "rebooting"
+    mark = self.rebooting.get(hostname)
+    return "rebooting" if mark is not None and self._reboot_under_way(hostname, mark) else None
+
+  def _reboot_under_way(self, hostname: str, mark: RebootMark) -> bool:
+    reports = Reports()
+    return is_rebooting(mark, utcnow(), reports.ready(hostname), reports.started_at(hostname, "telegraf"))
 
   async def start_worker_stack(self, worker) -> bool:
     """`docker compose up -d` for the worker's stack: it starts what is stopped and leaves what runs
@@ -378,6 +395,8 @@ class WorkersMixin:
       self.notify(f"Failed to reboot worker {worker.hostname}: {e}", "error")
       raise Exception(f"Failed to reboot worker {worker.hostname}: {e}")
 
+    self.rebooting[worker.hostname] = RebootMark(utcnow(), Reports().started_at(worker.hostname, "telegraf", current=False))
+
     # Hold the scope past the backgrounded reboot's delay so a deploy can't grab a
     # still-up worker in the gap between this task finishing and the host dropping.
     await asyncio.sleep(3)
@@ -404,6 +423,7 @@ class WorkersMixin:
 
     logger.info(f"Removing worker {worker.hostname} from manager.")
     Worker.delete().where(Worker.hostname == worker.hostname).execute()
+    self.rebooting.pop(worker.hostname, None)
     Reports().forget(worker.hostname)
     Metrics().forget(worker.hostname)
     self.refresh_worker_summary()

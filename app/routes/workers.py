@@ -37,7 +37,8 @@ def inject_worker(request: Request):
 
 @router.get("/")
 def get():
-  return [{**worker, "ready": Reports().ready(worker["hostname"])} for worker in Worker.select().dicts()]
+  return [{**worker, "ready": Reports().ready(worker["hostname"]), "state": Manager().worker_state(worker["hostname"])}
+          for worker in Worker.select().dicts()]
 
 
 @router.get("/{hostname}", dependencies=[Depends(inject_worker)])
@@ -61,6 +62,7 @@ def get_worker(request: Request, hostname: str):
   )
   data["ready"] = Reports().ready(hostname)
   data["infra"] = Reports().infra(hostname)
+  data["state"] = Manager().worker_state(hostname)
   return data
 
 
@@ -97,6 +99,9 @@ def reboot_worker(request: Request, hostname: str):
 
   if not worker:
     raise HTTPException(status_code=400, detail="Only a worker can be rebooted.")
+  state = Manager().worker_state(hostname)
+  if state:
+    raise HTTPException(status_code=409, detail=f"Worker is {state}.")
   if not worker.online:
     raise HTTPException(status_code=409, detail="Worker is offline.")
 
@@ -122,6 +127,8 @@ def delete_worker(request: Request, hostname: str):
   # Worker should not have any containers before deletion
   if worker and worker.containers.count() > 0:
     raise HTTPException(status_code=400, detail="Worker has active containers and cannot be deleted.")
+  if Manager().worker_state(hostname) == "removing":
+    raise HTTPException(status_code=409, detail="Worker is already being removed.")
 
   # platform+app scoped so it serializes with worker sync and deploys; QUEUE so a
   # deliberate removal waits behind an in-flight op instead of being dropped.

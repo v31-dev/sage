@@ -12,6 +12,7 @@ import {
   type InfraContainer,
   type SettingSection,
   type SettingState,
+  type WorkerState,
 } from '@/services/api'
 
 const IDLE_POLL_MS = 30000
@@ -63,8 +64,14 @@ export const useAppStore = defineStore('app', () => {
     return { state, label: status }
   }
 
-  // `ready` is whether the worker is reporting and its Traefik answers; null while unknown.
-  function workerIndicator(online: boolean, ready?: boolean | null): Indicator {
+  // `ready` is whether the worker is reporting and its Traefik answers; null while unknown. `state` is what
+  // is being done to it, which says more than whether it answers.
+  function workerIndicator(
+    online: boolean,
+    ready?: boolean | null,
+    state?: WorkerState | null,
+  ): Indicator {
+    if (state) return { state: 'busy', label: state }
     if (!online) return { state: 'error', label: 'offline' }
     return ready === false ? { state: 'warning', label: 'not ready' } : { state: 'ok', label: 'online' }
   }

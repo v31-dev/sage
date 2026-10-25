@@ -262,6 +262,13 @@ class Reports(Base):
     return [{"name": name, "status": containers[name].status if name in containers else "missing"}
             for name in config.WORKER_STACK_SERVICES]
 
+  def started_at(self, hostname: str, container: str, current: bool = True) -> int | None:
+    """When the container last started, on the worker's clock (nanoseconds), from the current report or,
+    with `current` false, from the newest one however old. None when the report does not list it."""
+    received = self.current(hostname) if current else self.latest(hostname)
+    reading = received.snapshot.containers.get(container) if received is not None else None
+    return reading.started_at if reading is not None else None
+
   def silent_for(self, hostname: str) -> float:
     """Seconds since the worker last reported, or since the manager started if it has not."""
     received = self.latest(hostname)

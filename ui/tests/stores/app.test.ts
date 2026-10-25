@@ -164,6 +164,21 @@ describe('the indicators by status', () => {
     expect(store.workerIndicator(true, null)).toEqual({ state: 'ok', label: 'online' })
   })
 
+  it.each(['rebooting', 'removing'] as const)(
+    'workerIndicator: a worker that is %s shows it whatever else is true',
+    state => {
+      const store = useAppStore()
+      expect(store.workerIndicator(true, true, state)).toEqual({ state: 'busy', label: state })
+      expect(store.workerIndicator(false, null, state)).toEqual({ state: 'busy', label: state })
+    },
+  )
+
+  it('workerIndicator: no state falls back to online, readiness and offline', () => {
+    const store = useAppStore()
+    expect(store.workerIndicator(true, true, null)).toEqual({ state: 'ok', label: 'online' })
+    expect(store.workerIndicator(false, false, null)).toEqual({ state: 'error', label: 'offline' })
+  })
+
   it('workerIndicator: an offline worker is offline whatever its readiness says', () => {
     const store = useAppStore()
     expect(store.workerIndicator(false, true)).toEqual({ state: 'error', label: 'offline' })

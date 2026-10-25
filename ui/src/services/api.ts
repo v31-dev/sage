@@ -47,11 +47,15 @@ export interface InfraContainer {
   status: string
 }
 
+// What is being done to a worker that its online state does not say.
+export type WorkerState = 'rebooting' | 'removing'
+
 export interface Worker {
   hostname: string
   ip: string
   online: boolean
   ready: boolean | null
+  state: WorkerState | null
   // Null when the worker has no current report; only the worker's own page loads it.
   infra?: InfraContainer[] | null
   created_at: Date

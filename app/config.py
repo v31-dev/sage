@@ -53,6 +53,9 @@ WORKER_STACK_SERVICES = ("traefik", "vector", "telegraf", "cloudflared")
 OFFLINE_AFTER_MISSED_PINGS = 2
 PING_TIMEOUT_SECONDS = 5
 
+# A reboot that has not finished by now (a worker that never came back) is no longer called one.
+REBOOT_LIMIT_SECONDS = 600
+
 # A worker whose stack is down (or silent for this long) gets `docker compose up -d`, at most
 # once per cooldown.
 STACK_SILENCE_SECONDS = 120

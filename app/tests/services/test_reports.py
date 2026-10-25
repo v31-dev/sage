@@ -310,3 +310,21 @@ class TestInfra:
     reports.accept("w1", with_containers(10, reading("traefik")))
     clock.advance(timedelta(seconds=config.REPORT_STALE_SECONDS + 1))
     assert reports.infra("w1") is None
+
+
+class TestStartedAt:
+  def test_when_a_container_last_started_from_the_current_report(self):
+    reports = Reports()
+    reports.accept("w1", with_containers(10, reading("telegraf", started_at=42)))
+    assert reports.started_at("w1", "telegraf") == 42
+    assert reports.started_at("w1", "traefik") is None
+
+  def test_a_stale_report_gives_nothing_unless_asked_for_however_old(self, clock):
+    reports = Reports()
+    reports.accept("w1", with_containers(10, reading("telegraf", started_at=42)))
+    clock.advance(timedelta(seconds=config.REPORT_STALE_SECONDS + 1))
+    assert reports.started_at("w1", "telegraf") is None
+    assert reports.started_at("w1", "telegraf", current=False) == 42
+
+  def test_a_worker_that_never_reported_has_none(self):
+    assert Reports().started_at("w1", "telegraf", current=False) is None

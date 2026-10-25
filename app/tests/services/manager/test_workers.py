@@ -7,6 +7,7 @@ import pytest
 
 import config
 from services.db import Worker
+from services.manager.decisions import RebootMark
 from services.manager.workers import WorkersMixin
 from services.reports import ContainerReading, HostReading, Reports, Snapshot
 from utils.executor import active_executor
@@ -49,6 +50,13 @@ class Harness(WorkersMixin):
     self.setups = []
     self.offlined = []
     self.failing = set()
+    self.rebooting = {}
+    self.queued = set()          # (task name, hostname) of the removals and reboots queued or running
+    self.dns_deleted = []
+    self.cloudflare = SimpleNamespace(domain="example.test", delete_dns_record=lambda **kw: self.dns_deleted.append(kw))
+
+  def has_task(self, task, params=None):
+    return (task.__name__, params["worker_hostname"]) in self.queued
 
   def notify(self, message, level="info"):
     self.notices.append((level, message))
@@ -209,3 +217,96 @@ class TestStartWorkerStack:
     harness.tailscale.up_output = output
     worker = SimpleNamespace(hostname="w1")
     assert asyncio.run(harness.start_worker_stack(worker)) is started
+
+
+def telegraf_started(started_at, traefik_reachable=True):
+  from dataclasses import replace
+  reading = ContainerReading(name="telegraf", status="running", image="", deployed_at=None, exit_code=0, oom_killed=False,
+                             started_at=started_at, finished_at=None, health=None, cpu_percent=None, mem_bytes=None,
+                             net_rx_bytes=None, net_tx_bytes=None)
+  base = snapshot(running=())[0]
+  return [replace(base, containers={"telegraf": reading}, traefik_reachable=traefik_reachable)]
+
+
+class TestWorkerState:
+  def test_a_worker_nothing_is_happening_to_has_none(self, harness):
+    assert harness.worker_state("w1") is None
+
+  def test_a_removal_that_is_queued_or_running_is_removing(self, harness):
+    harness.queued = {("remove_worker", "w1")}
+    assert harness.worker_state("w1") == "removing"
+    assert harness.worker_state("w2") is None
+
+  def test_removing_wins_over_rebooting(self, harness):
+    harness.queued = {("remove_worker", "w1"), ("reboot_worker", "w1")}
+    assert harness.worker_state("w1") == "removing"
+
+  def test_a_reboot_that_is_queued_or_running_is_rebooting(self, harness):
+    harness.queued = {("reboot_worker", "w1")}
+    assert harness.worker_state("w1") == "rebooting"
+
+  def test_after_the_task_a_reboot_lasts_until_the_worker_is_ready_with_a_telegraf_that_restarted(self, harness, clock):
+    Reports().accept("w1", telegraf_started(100))
+    harness.rebooting["w1"] = RebootMark(clock.current, 100)
+    assert harness.worker_state("w1") == "rebooting"          # reports go on until the host goes down
+    clock.advance(timedelta(seconds=config.REPORT_STALE_SECONDS + 1))
+    assert harness.worker_state("w1") == "rebooting"          # down: no current report
+    clock.advance(timedelta(seconds=60))
+    Reports().accept("w1", telegraf_started(100 + 90_000_000_000, traefik_reachable=False))
+    assert harness.worker_state("w1") == "rebooting"          # back, but Traefik does not answer yet
+    Reports().accept("w1", telegraf_started(100 + 90_000_000_000))
+    assert harness.worker_state("w1") is None
+
+  def test_a_worker_that_does_not_come_back_is_no_longer_rebooting_after_the_limit(self, harness, clock):
+    harness.rebooting["w1"] = RebootMark(clock.current, None)
+    assert harness.worker_state("w1") == "rebooting"
+    clock.advance(timedelta(seconds=config.REBOOT_LIMIT_SECONDS + 1))
+    assert harness.worker_state("w1") is None
+
+
+class TestRebootAndRemove:
+  @pytest.fixture(autouse=True)
+  def no_waiting(self, monkeypatch):
+    async def instant(seconds):
+      pass
+    monkeypatch.setattr(asyncio, "sleep", instant)
+
+  def test_a_reboot_leaves_a_mark_with_the_start_of_telegraf_before_it(self, harness, clock):
+    add("w1", True)
+    Reports().accept("w1", telegraf_started(777))
+    asyncio.run(harness.reboot_worker("w1"))
+    assert harness.rebooting == {"w1": RebootMark(clock.current, 777)}
+    assert "reboot" in harness.tailscale.commands[0][1]
+
+  def test_the_start_before_the_reboot_is_taken_from_a_report_that_is_a_little_old_too(self, harness, clock):
+    add("w1", True)
+    Reports().accept("w1", telegraf_started(777))
+    clock.advance(timedelta(seconds=config.REPORT_STALE_SECONDS + 5))
+    asyncio.run(harness.reboot_worker("w1"))
+    assert harness.rebooting["w1"].started_at == 777
+
+  def test_a_reboot_that_fails_leaves_no_mark(self, harness):
+    add("w1", True)
+    harness.tailscale.up_error = Exception("no route")
+    with pytest.raises(Exception, match="Failed to reboot worker w1"):
+      asyncio.run(harness.reboot_worker("w1"))
+    assert harness.rebooting == {}
+
+  def test_removing_a_worker_drops_its_mark_and_its_reports(self, harness, clock):
+    add("w1", False)
+    Reports().accept("w1", telegraf_started(1))
+    harness.rebooting["w1"] = RebootMark(clock.current, 1)
+    harness.remove_worker("w1")
+    assert harness.rebooting == {} and Reports().latest("w1") is None
+    assert Worker.get_or_none(Worker.hostname == "w1") is None
+
+  def test_the_sync_forgets_the_reboots_that_are_over(self, harness, clock):
+    add("w1", True)
+    add("w2", True, "100.64.0.3")
+    Reports().accept("w1", telegraf_started(100 + 1))
+    Reports().accept("w2", telegraf_started(100))
+    harness.rebooting = {"w1": RebootMark(clock.current, 100), "w2": RebootMark(clock.current, 100)}
+    harness.tailscale.listed = [("w1", "100.64.0.2"), ("w2", "100.64.0.3")]
+    harness.tailscale.answering = {"w1", "w2"}
+    asyncio.run(harness.sync_workers())
+    assert set(harness.rebooting) == {"w2"}

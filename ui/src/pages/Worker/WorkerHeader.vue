@@ -23,6 +23,7 @@ import { useAppStore } from '@/stores/app'
 interface Props {
   worker: Worker
   workerMetrics: WorkerMetricsResponse
+  loadWorkerStatus?: () => Promise<void>
 }
 
 const router = useRouter()
@@ -43,6 +44,7 @@ async function onConfirmDelete() {
 async function onConfirmRestart() {
   await workersAPI.action(`${props.worker.hostname}/reboot`)
   toast.success(`Worker ${props.worker.hostname} reboot triggered`)
+  await props.loadWorkerStatus?.()
 }
 </script>
 
@@ -51,7 +53,7 @@ async function onConfirmRestart() {
     <CardHeader class="border-b">
       <CardTitle>
         <SectionTitle :title="props.worker.hostname" :size="3">
-          <StateIndicator v-bind="appStore.workerIndicator(props.worker.online, props.worker.ready)" show-label />
+          <StateIndicator v-bind="appStore.workerIndicator(props.worker.online, props.worker.ready, props.worker.state)" show-label />
         </SectionTitle>
       </CardTitle>
       <CardAction>
@@ -62,6 +64,7 @@ async function onConfirmRestart() {
             body="Are you sure you want to restart this worker? It will reboot and briefly go offline."
             :description="props.worker.hostname"
             :icon="RotateCw"
+            :disabled="!props.worker.online || !!props.worker.state"
             :onConfirm="onConfirmRestart"
           />
           <ConfirmationButton
@@ -71,6 +74,7 @@ async function onConfirmRestart() {
             :description="props.worker.hostname"
             :icon="Trash"
             destructive
+            :disabled="props.worker.state === 'removing'"
             :onConfirm="onConfirmDelete"
           />
         </ButtonGroup>
