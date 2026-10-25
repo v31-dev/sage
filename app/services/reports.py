@@ -185,7 +185,7 @@ def parse_batch(batch) -> list[Snapshot]:
 
 class Reports(Base):
   """The newest snapshot Telegraf reported for each worker, in memory. The report route fills
-  it and decides nothing; the operation queue reads it (see todo/06)."""
+  it and decides nothing; the operation queue reads it."""
 
   def __init__(self):
     super().__init__()

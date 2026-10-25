@@ -58,7 +58,8 @@ class WorkersMixin:
 
   def worker_state(self, hostname: str) -> str | None:
     """What is being done to a worker that its online state does not say: "removing" while its removal is
-    queued or running, "rebooting" from the request until it is back (`is_rebooting`), otherwise None.
+    queued or running, "rebooting" from the request until it reports again after the reboot (`is_rebooting`),
+    otherwise None.
     Derived on every call from the queue and the reports, so there is nothing stored to go stale."""
     params = {"worker_hostname": hostname}
     if self.has_task(self.remove_worker, params):
@@ -69,8 +70,7 @@ class WorkersMixin:
     return "rebooting" if mark is not None and self._reboot_under_way(hostname, mark) else None
 
   def _reboot_under_way(self, hostname: str, mark: RebootMark) -> bool:
-    reports = Reports()
-    return is_rebooting(mark, utcnow(), reports.ready(hostname), reports.started_at(hostname, "telegraf"))
+    return is_rebooting(mark, utcnow(), Reports().started_at(hostname, "telegraf"))
 
   async def start_worker_stack(self, worker) -> bool:
     """`docker compose up -d` for the worker's stack: it starts what is stopped and leaves what runs
@@ -250,9 +250,7 @@ class WorkersMixin:
         # Telegraf runs as a user in the Docker socket's group, which differs between hosts.
         _, socket_group = await self.tailscale.exec_command(
             worker.hostname, "stat -c %g /var/run/docker.sock", timeout=30)
-        docker_gid = socket_group[-1].strip() if socket_group else ""
-        if not docker_gid.isdigit():
-          raise Exception(f"Could not read the group of the Docker socket on {worker.hostname}: {socket_group!r}")
+        docker_gid = socket_group[-1].strip()
 
         # Sync files
         await self.tailscale.sync_file(
@@ -345,7 +343,7 @@ class WorkersMixin:
             timeout=60,
         )
       else:
-        # Nothing drifted, but a container may be stopped (one that failed to start at boot stays so).
+        # Nothing drifted, but a container may be stopped.
         await self.start_worker_stack(worker)
 
       Worker.update(online=True).where(

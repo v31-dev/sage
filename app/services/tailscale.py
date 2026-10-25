@@ -40,7 +40,6 @@ class Tailscale(Base):
     # Pooled SSH connections per worker
     self._conns: dict[str, asyncssh.SSHClientConnection] = {}
     self._conn_locks: dict[str, asyncio.Lock] = {}
-    # Pings missed in a row, per worker
     self._misses: dict[str, int] = {}
 
   async def _get_conn(self, hostname):
@@ -98,8 +97,7 @@ class Tailscale(Base):
     return bool(self.status().get("Self", {}).get("Online"))
 
   async def ping(self, target: str) -> bool:
-    """Whether a peer answers `tailscale ping`, tailscaled's probe of the path SSH uses. Tailscale's own
-    `Online` flag is the coordination server's view and lags in both directions."""
+    """Whether a peer answers `tailscale ping`, tailscaled's probe of the path SSH uses."""
     process = await asyncio.create_subprocess_exec(
         "tailscale", "ping", "-c", "1", f"--timeout={config.PING_TIMEOUT_SECONDS}s", target,
         stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
@@ -141,8 +139,7 @@ class Tailscale(Base):
 
   def get_by_tag(self, tag):
     """
-    Get a list of objects with hostname and ip attributes for all peers with a given tag. Whether
-    a peer is online is not read from Tailscale (see `online_states`).
+    Get a list of objects with hostname and ip attributes for all peers with a given tag.
     """
     status = self.status()
 

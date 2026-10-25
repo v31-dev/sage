@@ -170,7 +170,7 @@ describe('the indicators by status', () => {
       const store = useAppStore()
       expect(store.workerIndicator(true, true, state)).toEqual({ state: 'busy', label: state })
       expect(store.workerIndicator(false, null, state)).toEqual({ state: 'busy', label: state })
-    },
+    }
   )
 
   it('workerIndicator: no state falls back to online, readiness and offline', () => {

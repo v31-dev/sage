@@ -69,17 +69,23 @@ export const useAppStore = defineStore('app', () => {
   function workerIndicator(
     online: boolean,
     ready?: boolean | null,
-    state?: WorkerState | null,
+    state?: WorkerState | null
   ): Indicator {
     if (state) return { state: 'busy', label: state }
     if (!online) return { state: 'error', label: 'offline' }
-    return ready === false ? { state: 'warning', label: 'not ready' } : { state: 'ok', label: 'online' }
+    return ready === false
+      ? { state: 'warning', label: 'not ready' }
+      : { state: 'ok', label: 'online' }
   }
 
   function infraIndicator(container: InfraContainer): Indicator {
     const { name, status } = container
     const state: IndicatorState =
-      status === 'running' ? 'ok' : status === 'restarting' || status === 'paused' ? 'warning' : 'error'
+      status === 'running'
+        ? 'ok'
+        : status === 'restarting' || status === 'paused'
+          ? 'warning'
+          : 'error'
     return { state, label: `${name}: ${status}` }
   }
 

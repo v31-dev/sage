@@ -171,26 +171,25 @@ class TestStackProblem:
 class TestIsRebooting:
   ASKED = datetime(2026, 1, 1, 12)
 
-  def under_way(self, ready, started_at, seconds=30, before=100):
+  def under_way(self, started_at, seconds=30, before=100):
     mark = RebootMark(self.ASKED, before)
-    return is_rebooting(mark, self.ASKED + timedelta(seconds=seconds), ready, started_at)
+    return is_rebooting(mark, self.ASKED + timedelta(seconds=seconds), started_at)
 
-  @pytest.mark.parametrize("ready", [None, False])
-  def test_a_worker_that_is_not_ready_is_still_rebooting(self, ready):
-    assert self.under_way(ready, started_at=None)
-    assert self.under_way(ready, started_at=200)
+  def test_a_worker_with_no_current_report_is_still_rebooting(self):
+    assert self.under_way(None)
 
-  def test_a_ready_worker_whose_telegraf_has_not_restarted_has_not_gone_down_yet(self):
-    assert self.under_way(True, started_at=100)
+  def test_a_report_with_the_same_telegraf_start_is_from_before_the_host_went_down(self):
+    assert self.under_way(100)
 
-  def test_a_ready_worker_with_a_telegraf_that_restarted_is_back(self):
-    assert not self.under_way(True, started_at=200)
+  def test_a_report_from_a_telegraf_that_restarted_means_the_worker_is_back(self):
+    assert not self.under_way(200)
 
   @pytest.mark.parametrize("started_at", [200, None])
-  def test_a_ready_worker_with_nothing_to_compare_with_counts_as_back(self, started_at):
+  def test_with_nothing_to_compare_with_any_report_counts_as_back(self, started_at):
     mark = RebootMark(self.ASKED, None)
-    assert not is_rebooting(mark, self.ASKED + timedelta(seconds=30), True, started_at)
+    assert is_rebooting(mark, self.ASKED + timedelta(seconds=30), started_at) is (started_at is None)
 
   def test_a_worker_that_never_comes_back_stops_being_one_after_the_limit(self):
-    assert self.under_way(None, None, seconds=config.REBOOT_LIMIT_SECONDS)
-    assert not self.under_way(None, None, seconds=config.REBOOT_LIMIT_SECONDS + 1)
+    assert self.under_way(None, seconds=config.REBOOT_LIMIT_SECONDS)
+    assert not self.under_way(None, seconds=config.REBOOT_LIMIT_SECONDS + 1)
+    assert not self.under_way(100, seconds=config.REBOOT_LIMIT_SECONDS + 1)

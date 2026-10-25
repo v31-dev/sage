@@ -245,17 +245,21 @@ class TestWorkerState:
     harness.queued = {("reboot_worker", "w1")}
     assert harness.worker_state("w1") == "rebooting"
 
-  def test_after_the_task_a_reboot_lasts_until_the_worker_is_ready_with_a_telegraf_that_restarted(self, harness, clock):
+  def test_after_the_task_a_reboot_lasts_until_the_worker_reports_with_a_telegraf_that_restarted(self, harness, clock):
     Reports().accept("w1", telegraf_started(100))
     harness.rebooting["w1"] = RebootMark(clock.current, 100)
     assert harness.worker_state("w1") == "rebooting"          # reports go on until the host goes down
     clock.advance(timedelta(seconds=config.REPORT_STALE_SECONDS + 1))
     assert harness.worker_state("w1") == "rebooting"          # down: no current report
     clock.advance(timedelta(seconds=60))
-    Reports().accept("w1", telegraf_started(100 + 90_000_000_000, traefik_reachable=False))
-    assert harness.worker_state("w1") == "rebooting"          # back, but Traefik does not answer yet
     Reports().accept("w1", telegraf_started(100 + 90_000_000_000))
     assert harness.worker_state("w1") is None
+
+  def test_a_worker_that_is_back_is_not_rebooting_while_its_traefik_does_not_answer(self, harness, clock):
+    harness.rebooting["w1"] = RebootMark(clock.current, 100)
+    Reports().accept("w1", telegraf_started(100 + 90_000_000_000, traefik_reachable=False))
+    assert harness.worker_state("w1") is None
+    assert Reports().ready("w1") is False
 
   def test_a_worker_that_does_not_come_back_is_no_longer_rebooting_after_the_limit(self, harness, clock):
     harness.rebooting["w1"] = RebootMark(clock.current, None)

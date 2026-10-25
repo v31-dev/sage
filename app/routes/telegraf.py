@@ -35,17 +35,14 @@ async def _read_body(request: Request) -> bytes:
   return body
 
 
-def _is_worker(hostname: str) -> bool:
-  try:
-    return Worker.select().where(Worker.hostname == hostname).exists()
-  except ValueError:  # the model refuses a name that no worker can have
-    return False
-
-
 @router.post("/report")
 async def telegraf_report(request: Request):
   hostname = request.headers.get("x-node-name", "")
-  if not _is_worker(hostname):
+  try:
+    known = Worker.select().where(Worker.hostname == hostname).exists()
+  except ValueError:  # the model refuses a name that no worker can have
+    known = False
+  if not known:
     if Reports().first_unknown(hostname):
       logger.warning(f"Ignoring reports from unknown worker {hostname!r}.")
     raise HTTPException(status_code=404, detail="Unknown worker.")

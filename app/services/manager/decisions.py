@@ -148,13 +148,12 @@ class RebootMark:
   started_at: int | None
 
 
-def is_rebooting(mark: RebootMark, now: datetime, ready: bool | None, started_at: int | None) -> bool:
-  """Whether a reboot asked for at `mark.since` is still under way: until the worker is ready again with a
-  Telegraf that has started since the request (its container's `started_at` is another than before), or the
-  limit. Reports go on until the host goes down, so a ready worker with the same start has not rebooted yet.
-  Without a start from before the request there is nothing to compare with, and a ready worker counts as back."""
+def is_rebooting(mark: RebootMark, now: datetime, started_at: int | None) -> bool:
+  """Whether a reboot asked for at `mark.since` is still under way: until the worker reports again with a
+  Telegraf that has started since the request (`started_at`, from its current report, is another than
+  `mark.started_at`), or the limit. Reports go on until the host goes down, so a report with the same start
+  is from before the reboot. Whether the rest of the stack is up yet is the worker's readiness, not the reboot's.
+  Without a start from before the request there is nothing to compare with, and any report counts as back."""
   if (now - mark.since).total_seconds() > config.REBOOT_LIMIT_SECONDS:
     return False
-  if ready is not True:
-    return True
-  return mark.started_at is not None and started_at == mark.started_at
+  return started_at is None or started_at == mark.started_at
