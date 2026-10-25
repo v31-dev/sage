@@ -13,7 +13,7 @@ concurrency:
 jobs:
   backend:
     name: Backend
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     defaults:
       run:
         working-directory: app
@@ -57,7 +57,7 @@ jobs:
 
   ui:
     name: UI
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     defaults:
       run:
         working-directory: ui

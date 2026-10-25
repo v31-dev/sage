@@ -53,6 +53,7 @@ WORKER_INFRA_TEMPLATES = templates_digest(
     "worker/traefik/config.yml",
     "worker/traefik/certs.yml",
     "worker/vector/vector.yml",
+    "worker/telegraf/telegraf.conf",
 )
 
 # Per-application routing files, pushed by `sync_application_traefik_domains_config`

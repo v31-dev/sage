@@ -3,15 +3,25 @@ import json
 import logging
 import re
 import shlex
-from datetime import datetime
 
-from services.db import APPLICATION_BUSY_STATUSES, Application, Container, DeployConfig, Event, db
-from utils.common import format_yaml, parse_multiline_kv
+from services.db import APPLICATION_BUSY_STATUSES, Application, Container, DeployConfig, Event, Project, Worker, db
+from services.reports import Reports
+from utils.common import format_yaml, parse_multiline_kv, utcnow
 from utils.logging import generate_task_id_token, task_id
+from utils.queue import OnConflict
 
 from ._common import app_dir
+from .decisions import ABSENT, OFFLINE, SEEN, UNKNOWN, Observation, reconcile_container, rollup_status
 
 logger = logging.getLogger(__name__)
+
+# What is said when an application's status follows from its containers': the end of the sentence
+# that starts with the application's name, and the notification level.
+_ROLLUP_NOTICES = {
+    "error": ("is in error state as at least one container is in error state.", "error"),
+    "active": ("is active as all containers are active.", "success"),
+    "inactive": ("is inactive as all containers are inactive.", "warning"),
+}
 
 
 class ApplicationMixin:
@@ -38,7 +48,7 @@ class ApplicationMixin:
           application.save()
       else:
         application.status = "deploying"
-        application.deployed_at = datetime.now()
+        application.deployed_at = utcnow()
         config = application.deploy_config
         application.deployed_hash = config.content_hash
         application.save()
@@ -139,6 +149,7 @@ class ApplicationMixin:
           app_dir / "templates/worker/file",
           f"{container_dir}/.env",
           {"CONTENT": app_env},
+          mode=0o600,
       )
 
       # Create the volumes
@@ -191,7 +202,7 @@ class ApplicationMixin:
         secrets_dir = f"{container_dir}/secrets"
         await self.tailscale.exec_command(
             container.worker.hostname,
-            f"rm -rf {secrets_dir}",
+            f"rm -rf {secrets_dir}" + (f" && mkdir -m 700 {secrets_dir}" if build_secret_items else ""),
         )
         for name, value in build_secret_items:
           await self.tailscale.sync_file(
@@ -199,6 +210,7 @@ class ApplicationMixin:
               app_dir / "templates/worker/file",
               f"{secrets_dir}/{name}",
               {"CONTENT": value},
+              mode=0o600,
           )
 
         secrets_block = "secrets:\n" + "\n".join(
@@ -452,36 +464,25 @@ class ApplicationMixin:
         self.notify(f"Application {application.qualified_name} is inactive as it has no containers.", "warning")
       return
 
-    # Query container state (and the deploy stamp label) only on the
-    # (distinct, online) workers backing this application's containers.
-    container_status = {}
-    workers = {container.worker.hostname: container.worker for container in containers}
-    for hostname, worker in workers.items():
-      if not worker.online:
-        continue
-      try:
-        _, docker_ps_output = await self.tailscale.exec_command(
-            hostname,
-            f"docker ps --filter 'name=^{application.qualified_name}$' "
-            f"--format '{{{{.Names}}}}|{{{{.State}}}}|{{{{.Label \"sage.deployed_at\"}}}}'")
-        for line in docker_ps_output:
-          parts = line.split("|")
-          if len(parts) != 3:
-            continue
-          container_status[f"{hostname}-{parts[0]}"] = (parts[1], parts[2])
-      except Exception as e:
-        logger.error(
-            f"Failed to get container status from worker {hostname} while syncing application {application.qualified_name}: {e}")
+    # Where each worker's container stands, from its report when that can be compared with the rows
+    # (current, and received after their last write).
+    last_write = max(application.updated_at, *(container.updated_at for container in containers))
+    observations: dict[str, Observation] = {}
+    for container in containers:
+      if container.worker.hostname not in observations:
+        observations[container.worker.hostname] = self.observe_application(
+            application, container.worker, last_write)
 
     # A container flipping active<->error changes the routing pool, so refresh
     # Traefik once at the end if any of them moved.
     routing_changed = False
     for container in containers:
-      worker_container_name = f"{container.worker.hostname}-{application.qualified_name}"
+      hostname = container.worker.hostname
+      worker_container_name = f"{hostname}-{application.qualified_name}"
 
       if container.status in APPLICATION_BUSY_STATUSES:
-        # Same ownership rule as the application-level reset above; the worker
-        # probe below then converges it to the real container state.
+        # Same ownership rule as the application-level reset above; the observation
+        # below then converges it to the real container state.
         if application_was_stuck:
           logger.warning(
               f"Container {worker_container_name} reset from stuck '{container.status}' to error.")
@@ -494,79 +495,74 @@ class ApplicationMixin:
         container.save()
         routing_changed = True
 
-      entry = container_status.get(worker_container_name)
-      if entry:
-        # Container must be running + match deploy timestamp
-        status, deployed_label = entry
-        if status == "running" and deployed_label != application.deploy_stamp:
-          try:
-            await self.tailscale.exec_command(
-                container.worker.hostname,
-                f"docker compose -f {self.worker_home_dir}/applications/{application.qualified_name}/docker-compose.yml down",
-                timeout=60,
-            )
-            if container.status == "active":
-              routing_changed = True
-            container.status = "inactive"
-            container.save()
-            self.notify(
-                f"Application container {worker_container_name} was running a stale version and has "
-                f"been stopped; redeploy {application.qualified_name} to update it.",
-                "error")
-          except Exception as e:
-            if container.status != "error":
-              container.status = "error"
-              container.save()
-              routing_changed = True
-            self.notify(
-                f"Application container {worker_container_name} is running a stale version and could "
-                f"not be stopped: {e}",
-                "error")
-        elif status == "running" and container.status != "active":
-          container.status = "active"
-          container.save()
-          routing_changed = True
-          self.notify(f"Application container {worker_container_name} is active again.", "success")
-        elif status in ["paused", "restarting"] and container.status != "error":
-          container.status = "error"
-          container.save()
-          routing_changed = True
-          self.notify(f"Application container {worker_container_name} is in error state ({status}).", "error")
-      else:
-        # if no status is found and container is supposed to be active, mark as
-        # error (could be offline or stopped container)
-        if container.status == "active":
-          container.status = "error"
-          container.save()
-          routing_changed = True
-          self.notify(f"Application container {worker_container_name} is in error state (status not found).", "error")
+      decision = reconcile_container(
+          worker_container_name, container.status, observations[hostname], application.deploy_stamp)
+      status, message, level = decision.status, decision.message, decision.level
+      if decision.stop_stale:
+        try:
+          await self.tailscale.exec_command(
+              hostname,
+              f"docker compose -f {self.worker_home_dir}/applications/{application.qualified_name}/docker-compose.yml down",
+              timeout=60,
+          )
+        except Exception as e:
+          status = "error"
+          message = f"Application container {worker_container_name} is running a stale version and could not be stopped: {e}"
+          level = "error"
+      if status is not None and status != container.status:
+        container.status = status
+        container.save()
+        routing_changed = True
+      if message:
+        self.notify(message, level)
 
     if routing_changed:
       self.request_application_traefik_sync(application)
 
     # Sync the overall application status from the (possibly updated) containers.
-    containers = list(application.containers)
+    status = rollup_status(container.status for container in application.containers)
+    if status is not None and status != application.status:
+      application.status = status
+      application.save()
+      notice, level = _ROLLUP_NOTICES[status]
+      self.notify(f"Application {application.qualified_name} {notice}", level)
 
-    if any(c.status == "error" for c in containers):
-      if application.status != "error":
-        application.status = "error"
-        application.save()
-        self.notify(
-            f"Application {application.qualified_name} is in error state as at least one container is in error state.",
-            "error")
+  def observe_application(self, application, worker, last_write) -> Observation:
+    """How the application's container stands on a worker, from the worker's report. A worker out of
+    the pool is OFFLINE. With no report that can be compared with rows last written at `last_write`
+    (`Reports.trusted`) nothing is known: the containers keep their status until the next report or the
+    next minute's sync. A container with no label has an empty version, which matches no deploy stamp."""
+    if not worker.online:
+      return Observation(OFFLINE)
+    snapshot = Reports().trusted(worker.hostname, last_write)
+    if snapshot is None:
+      return Observation(UNKNOWN)
+    reading = snapshot.containers.get(application.qualified_name)
+    if reading is None:
+      return Observation(ABSENT)
+    return Observation(SEEN, reading.status, reading.deployed_at or "")
 
-    elif all(c.status == "active" for c in containers):
-      if application.status != "active":
-        application.status = "active"
-        application.save()
-        self.notify(
-            f"Application {application.qualified_name} is active as all containers are active.",
-            "success")
+  def request_application_status_sync(self, application):
+    """Queue a status sync for the application. REPLACE, not DEDUP: DEDUP also drops a request while
+    the same task is running, and a change that arrives after that task read its input would wait
+    for the next cron. REPLACE supersedes only a pending duplicate."""
+    self.add_task(
+        task=self.sync_application_status,
+        scopes={f"app:{application.qualified_name}"},
+        params={"application_id": application.id},
+        executor="app",
+        on_conflict=OnConflict.REPLACE,
+        quiet=True,
+    )
 
-    elif all(c.status == "inactive" for c in containers):
-      if application.status != "inactive":
-        application.status = "inactive"
-        application.save()
-        self.notify(
-            f"Application {application.qualified_name} is inactive as all containers are inactive.",
-            "warning")
+  def request_status_sync_for_containers(self, hostname: str, names):
+    """Queue a status sync for each application with a container on the worker named in `names`
+    (the containers a report changed)."""
+    containers = (
+        Container.select(Container, Application, Project)
+        .join(Application).join(Project)
+        .switch(Container).join(Worker)
+        .where(Worker.hostname == hostname))
+    for container in containers:
+      if container.application.qualified_name in names:
+        self.request_application_status_sync(container.application)

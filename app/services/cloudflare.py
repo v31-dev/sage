@@ -1,5 +1,4 @@
 import logging
-import time
 
 import httpx
 
@@ -7,6 +6,7 @@ import config
 from services.base import Base
 from services.tailscale import Tailscale
 from utils.common import dict_to_obj, get_env
+from utils.retry import retry
 
 logger = logging.getLogger(__name__)
 
@@ -45,24 +45,18 @@ class Cloudflare(Base):
     """One API call; returns the response body. Retries network errors, rate limits and
     server errors; raises CloudflareError when the API refuses the request."""
     headers = {"Authorization": f"Bearer {token or self.config['api_token']}"}
-    for delay in (*config.CLOUDFLARE_RETRY_DELAYS, None):
-      try:
-        response = self.http.request(method, path, headers=headers, **kwargs)
-      except httpx.TransportError:
-        if delay is None:
-          raise
-        time.sleep(delay)
-        continue
+
+    def attempt():
+      response = self.http.request(method, path, headers=headers, **kwargs)
       if response.is_success:
         return response.json()
       try:
         errors = response.json().get("errors") or []
       except ValueError:
         errors = []
-      error = CloudflareError(response.status_code, "; ".join(e.get("message", "") for e in errors))
-      if not error.transient or delay is None:
-        raise error
-      time.sleep(delay)
+      raise CloudflareError(response.status_code, "; ".join(e.get("message", "") for e in errors))
+
+    return retry(attempt, delays=config.CLOUDFLARE_RETRY_DELAYS)
 
   def list_all(self, path: str, **params) -> list[dict]:
     """Every item of a paginated list."""

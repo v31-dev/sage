@@ -1,11 +1,17 @@
+import asyncio
 import logging
+from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 from urllib.parse import parse_qs, unquote, urlsplit
 
+import botocore.exceptions
 import pytest
 
+import config
 from services import s3 as s3_module
 from services.s3 import S3
 from services.settings import Settings
+from utils.executor import active_executor
 
 VALUES = {"access_key": "AK", "secret_key": "SK", "bucket": "bucket", "endpoint": "https://s3.example.test", "path": "backups"}
 
@@ -173,3 +179,88 @@ class TestPresignedUrls:
   def test_both_need_a_configuration(self, unconfigured, call):
     with pytest.raises(Exception, match="S3 configuration is not set"):
       getattr(unconfigured, call)("x", 60)
+
+
+class TestDeleteKey:
+  """Retries with the delays in the config, except for invalid credentials."""
+
+  @pytest.fixture(autouse=True)
+  def lane(self):
+    """The executor a queued task would have bound."""
+    pool = ThreadPoolExecutor(max_workers=1)
+    token = active_executor.set(pool)
+    yield
+    active_executor.reset(token)
+    pool.shutdown()
+
+  @pytest.fixture
+  def sleeps(self, monkeypatch):
+    delays = []
+
+    async def sleep(delay):
+      delays.append(delay)
+
+    monkeypatch.setattr(config, "S3_RETRY_DELAYS", (1, 2))
+    monkeypatch.setattr(asyncio, "sleep", sleep)
+    return delays
+
+  def client_error(self):
+    return botocore.exceptions.ClientError({"Error": {"Code": "SlowDown"}, "ResponseMetadata": {"HTTPStatusCode": 503}}, "DeleteObjects")
+
+  def with_listing(self, s3, outcomes):
+    """`_list_keys` returns or raises each of `outcomes` in turn; deletes answer with every key deleted."""
+    s3.attempts = 0
+
+    def list_keys(prefix):
+      outcome = outcomes[min(s3.attempts, len(outcomes) - 1)]
+      s3.attempts += 1
+      if isinstance(outcome, Exception):
+        raise outcome
+      return outcome
+
+    s3._list_keys = list_keys
+    s3._client = SimpleNamespace(delete_objects=lambda Bucket, Delete: {"Deleted": Delete["Objects"]})
+    return s3
+
+  async def test_a_filter_keeps_the_other_keys(self, make_s3, sleeps):
+    s3 = self.with_listing(make_s3(), [["backups/old_1", "backups/new_1"]])
+
+    assert await s3.delete_key("x", filter=lambda key: "old_" in key) == ["backups/old_1"]
+
+  async def test_a_failure_is_retried_after_each_delay(self, make_s3, sleeps):
+    s3 = self.with_listing(make_s3(), [self.client_error(), Exception("flaky"), ["backups/a"]])
+
+    assert await s3.delete_key("old") == ["backups/a"]
+    assert s3.attempts == 3
+    assert sleeps == [1, 2]
+
+  async def test_an_s3_error_that_persists_is_reported_with_the_attempt_count(self, make_s3, sleeps):
+    s3 = self.with_listing(make_s3(), [self.client_error()])
+
+    with pytest.raises(Exception, match="Failed to delete from S3 after 3 attempts"):
+      await s3.delete_key("old")
+    assert s3.attempts == 3
+    assert sleeps == [1, 2]
+
+  async def test_any_other_error_that_persists_is_raised_as_it_is(self, make_s3, sleeps):
+    s3 = self.with_listing(make_s3(), [ValueError("listing broke")])
+
+    with pytest.raises(ValueError, match="listing broke"):
+      await s3.delete_key("old")
+    assert s3.attempts == 3
+
+  async def test_invalid_credentials_are_not_retried(self, make_s3, sleeps):
+    s3 = self.with_listing(make_s3(), [botocore.exceptions.NoCredentialsError()])
+
+    with pytest.raises(Exception, match="S3 credentials are not valid."):
+      await s3.delete_key("old")
+    assert s3.attempts == 1
+    assert sleeps == []
+
+  async def test_a_key_the_bucket_refuses_to_delete_is_retried_then_raised(self, make_s3, sleeps):
+    s3 = self.with_listing(make_s3(), [["backups/a"]])
+    s3._client = SimpleNamespace(delete_objects=lambda Bucket, Delete: {"Errors": [{"Key": "backups/a", "Message": "AccessDenied"}]})
+
+    with pytest.raises(Exception, match="Failed to delete backups/a: AccessDenied"):
+      await s3.delete_key("old")
+    assert sleeps == [1, 2]

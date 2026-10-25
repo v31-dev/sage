@@ -1,24 +1,16 @@
 import logging
-from datetime import datetime
 
-import botocore.exceptions
 import httpx
 
-from services.cloudflare import CloudflareError
 from services.notification import ChannelCheckFailed, Notifications
 from services.settings import SETTING_DEFINITIONS, Settings
+from utils.common import utcnow
 from utils.executor import run_in_executor_with_context
+from utils.retry import is_transient
 
 logger = logging.getLogger(__name__)
 
 SETTING_SECTIONS = ("tailscale", "cloudflare", "s3", "notifications")
-
-# Failures expected to clear on their own; the periodic check retries them.
-TRANSIENT_ERRORS = (
-    botocore.exceptions.ConnectionError,
-    botocore.exceptions.ReadTimeoutError,
-    httpx.TransportError,
-)
 
 
 def task(name: str, **params) -> tuple[str, dict]:
@@ -69,8 +61,7 @@ class SettingsMixin:
     if backend_state != "Running":
       raise ValueError(f"The manager's tailnet node is not running ({backend_state}).")
     machines = self.tailscale.get_by_tag(self.tailscale.worker_tag)
-    online = sum(machine.online for machine in machines)
-    return f"{len(machines)} machine(s) tagged tag:{self.tailscale.worker_tag}, {online} online."
+    return f"{len(machines)} machine(s) tagged tag:{self.tailscale.worker_tag}."
 
   def _test_cloudflare(self, value: dict, side_effects: bool) -> str:
     """Env vars, so checked as configured: token, zone and account, and the tunnel's health."""
@@ -98,17 +89,8 @@ class SettingsMixin:
   def describe_check_error(error: Exception) -> tuple[str, bool]:
     """The message for a failed check (never a webhook URL, which holds its token) and
     whether the failure is transient."""
-    transient = isinstance(error, TRANSIENT_ERRORS)
-    message = str(error)
-    if isinstance(error, ChannelCheckFailed):
-      transient = error.transient
-    elif isinstance(error, botocore.exceptions.ClientError):
-      transient = error.response.get("ResponseMetadata", {}).get("HTTPStatusCode", 0) >= 500
-    elif isinstance(error, CloudflareError):
-      transient = error.transient
-    elif isinstance(error, httpx.TransportError):
-      message = "could not reach Cloudflare"
-    return message, transient
+    message = "could not reach Cloudflare" if isinstance(error, httpx.TransportError) else str(error)
+    return message, is_transient(error)
 
   def section_configured(self, key: str) -> bool:
     """Tailscale and Cloudflare always are (required env vars); settings when complete."""
@@ -127,7 +109,7 @@ class SettingsMixin:
       channels = e.channels if isinstance(e, ChannelCheckFailed) else None
       logger.warning(f"{key} check failed: {message}")
     self.setting_checks[key] = {"state": state, "message": message, "channels": channels,
-                                "checked_at": datetime.now().isoformat()}
+                                "checked_at": utcnow().isoformat()}
 
   def settings_status(self) -> dict:
     """Per section: not_configured, applying (with the task), ok, retrying or error. A quiet

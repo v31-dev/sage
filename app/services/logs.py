@@ -12,12 +12,12 @@ from playhouse.sqlite_ext import FTS5Model, RowIDField, SearchField
 import config
 from services.base import Base
 from services.db import Application, Project
-from utils.common import get_env
+from utils.common import get_env, utcnow
 from utils.logging import LOG_FORMAT, ContextVarFilter, SuppressTracebackFilter
 
 logger = logging.getLogger(__name__)
 
-_SYSTEM_LOG_CONTAINERS = {"sage", "cloudflared", "traefik", "glances", "vector"}
+_SYSTEM_LOG_CONTAINERS = {"sage", "cloudflared", "traefik", "telegraf", "vector"}
 
 
 class Logs(Base):
@@ -200,7 +200,7 @@ class Logs(Base):
       Path(path).unlink(missing_ok=True)
 
   def cleanup(self, days: int = config.RETENTION_DAYS):
-    cutoff = datetime.now() - timedelta(days=days)
+    cutoff = utcnow() - timedelta(days=days)
 
     # Drop shards for apps that no longer exist (logs keyed by app qualified_name);
     # system containers (manager + worker edge stack) are always kept.

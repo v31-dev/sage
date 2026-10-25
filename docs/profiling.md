@@ -65,10 +65,10 @@ RSS growth is not always a leak. Always look at **both**:
   growth is **heap fragmentation** driven by high-frequency alloc/free — the
   allocator holds freed pages instead of returning them to the OS.
 
-A real example from this codebase: `Metrics.collect` created a new `httpx.Client`
+A real example from this codebase (the worker metrics poll, since replaced by Telegraf's reports): it created a new `httpx.Client`
 every minute per host, each rebuilding an SSL context and reloading the whole CA
 bundle (~1.9M allocations, all freed) — `--leaks` showed almost nothing, but
-`stats` showed the churn. The fix was reusing one client (see `self._http`). The
+`stats` showed the churn. The fix was reusing one client. The
 general pattern: **don't recreate expensive clients/sessions on hot paths**
 (httpx, boto3 clients, SSH connections) — build once and reuse.
 

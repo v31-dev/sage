@@ -8,6 +8,7 @@ from services.db import Application, Container, Project, Worker
 from services.logs import Logs
 from services.manager import Manager
 from services.metrics import Metrics
+from services.reports import Reports
 from services.tailscale import Tailscale
 from utils.api import generic_get, get_request_models
 from utils.common import get_env
@@ -36,13 +37,14 @@ def inject_worker(request: Request):
 
 @router.get("/")
 def get():
-  return list(Worker.select().dicts())
+  return [{**worker, "status": Manager().worker_status(worker["hostname"], worker["online"])}
+          for worker in Worker.select().dicts()]
 
 
 @router.get("/{hostname}", dependencies=[Depends(inject_worker)])
 def get_worker(request: Request, hostname: str):
   worker = request.state.models["worker"]
-  return model_to_dict(
+  data = model_to_dict(
       worker,
       backrefs=True,
       only=(
@@ -58,6 +60,9 @@ def get_worker(request: Request, hostname: str):
           }
       ),
   )
+  data["infra"] = Reports().infra(hostname)
+  data["status"] = Manager().worker_status(hostname, worker.online)
+  return data
 
 
 @router.get("/{hostname}/metrics", dependencies=[Depends(inject_worker)])
@@ -93,8 +98,9 @@ def reboot_worker(request: Request, hostname: str):
 
   if not worker:
     raise HTTPException(status_code=400, detail="Only a worker can be rebooted.")
-  if not worker.online:
-    raise HTTPException(status_code=409, detail="Worker is offline.")
+  status = Manager().worker_status(hostname, worker.online)
+  if status not in ("online", "not ready"):
+    raise HTTPException(status_code=409, detail=f"Worker is {status}.")
 
   Manager().add_task(
       task=Manager().reboot_worker,
@@ -118,6 +124,8 @@ def delete_worker(request: Request, hostname: str):
   # Worker should not have any containers before deletion
   if worker and worker.containers.count() > 0:
     raise HTTPException(status_code=400, detail="Worker has active containers and cannot be deleted.")
+  if Manager().worker_status(hostname, worker.online) == "removing":
+    raise HTTPException(status_code=409, detail="Worker is already being removed.")
 
   # platform+app scoped so it serializes with worker sync and deploys; QUEUE so a
   # deliberate removal waits behind an in-flight op instead of being dropped.

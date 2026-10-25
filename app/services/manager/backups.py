@@ -7,7 +7,7 @@ from croniter import croniter
 
 import config
 from services.db import APPLICATION_BUSY_STATUSES, Application, Backup, Container, Event, Volume
-from utils.common import get_env
+from utils.common import get_env, utcnow
 from utils.logging import generate_task_id_token, task_id
 
 from ._common import BACKUP_TIMESTAMP_FORMAT, app_dir
@@ -200,12 +200,9 @@ class BackupsMixin:
               "ARCHIVE_NAME": archive_name,
               "ENCRYPTION_KEY": get_env("ENCRYPTION_KEY"),
               "UPLOAD_URL": upload_url,
-          })
-      await self.tailscale.exec_command(
-          container.worker.hostname,
-          f"chmod 700 {remote_script_path} && {remote_script_path}",
-          900,
-      )
+          },
+          mode=0o700)
+      await self.tailscale.exec_command(container.worker.hostname, remote_script_path, 900)
       s3_path = self.s3.get_full_path(object_key)
       Backup.create(
           s3_path=s3_path,
@@ -232,7 +229,7 @@ class BackupsMixin:
       )
 
     snapshot = self._get_application_backup_snapshot(application)
-    timestamp = datetime.now().strftime(BACKUP_TIMESTAMP_FORMAT)
+    timestamp = utcnow().strftime(BACKUP_TIMESTAMP_FORMAT)
     if volume_ids is None:
       volumes = list(application.volumes)
     else:
@@ -401,12 +398,9 @@ class BackupsMixin:
               "ENCRYPTION_KEY": get_env("ENCRYPTION_KEY"),
               "DOWNLOAD_URL": download_url,
           },
+          mode=0o700,
       )
-      await self.tailscale.exec_command(
-          target_container.worker.hostname,
-          f"chmod 700 {remote_script_path} && {remote_script_path}",
-          900,
-      )
+      await self.tailscale.exec_command(target_container.worker.hostname, remote_script_path, 900)
       self.notify(
           f"Restore completed for {restore_unit_label} from {backup.s3_path}.",
           "success",

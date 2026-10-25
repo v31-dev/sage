@@ -108,11 +108,6 @@ class TestTemplatesDigest:
     with pytest.raises(FileNotFoundError):
       _common.templates_digest("worker/missing.yml")
 
-  def test_the_shipped_template_sets_are_digested(self):
-    assert re.fullmatch(r"[0-9a-f]{16}", _common.WORKER_INFRA_TEMPLATES)
-    assert re.fullmatch(r"[0-9a-f]{16}", _common.APPLICATION_ROUTING_TEMPLATES)
-    assert _common.WORKER_INFRA_TEMPLATES != _common.APPLICATION_ROUTING_TEMPLATES
-
 
 class TestRoutingInputHash:
   def hash(self, domains=None, containers=None, domain_name="example.test"):

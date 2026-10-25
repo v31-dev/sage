@@ -13,6 +13,7 @@ from services.db import Application, Backup, Database, Event, Notification, Task
 from services.notification import Notifications
 from services.settings import Settings
 from utils.archive import BackupDecryptError, decrypt_file, encrypt_file
+from utils.common import utcnow
 from utils.executor import run_in_executor_with_context
 from utils.queue import OnConflict
 
@@ -106,7 +107,7 @@ class PlatformMixin:
     return None
 
   async def cleanup(self, days: int = config.RETENTION_DAYS):
-    cutoff = datetime.now() - timedelta(days=days)
+    cutoff = utcnow() - timedelta(days=days)
 
     # Cleanup events
     deleted_count = (Event.delete().where(Event.created_at < cutoff).execute())
@@ -166,7 +167,7 @@ class PlatformMixin:
   async def backup_database_s3(self):
     # Create the backup
     with TemporaryDirectory() as temp_dir:
-      timestamp = datetime.now().strftime(BACKUP_TIMESTAMP_FORMAT)
+      timestamp = utcnow().strftime(BACKUP_TIMESTAMP_FORMAT)
       snapshot_file = Path(temp_dir) / f"{timestamp}.db"
       backup_file = Path(temp_dir) / f"{timestamp}.db.enc"
 
@@ -249,7 +250,7 @@ class PlatformMixin:
           raise Exception(f"Invalid SQLite database in backup: {e}")
 
         # Create safety backup of current database
-        timestamp = datetime.now().strftime(BACKUP_TIMESTAMP_FORMAT)
+        timestamp = utcnow().strftime(BACKUP_TIMESTAMP_FORMAT)
         safety_backup_path = f"{config.DB_PATH}.backup.{timestamp}"
         logger.info(f"Creating safety backup: {safety_backup_path}")
 

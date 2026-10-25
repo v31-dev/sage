@@ -9,8 +9,10 @@ import {
   type Container,
   type Indicator,
   type IndicatorState,
+  type InfraContainer,
   type SettingSection,
   type SettingState,
+  type WorkerStatus,
 } from '@/services/api'
 
 const IDLE_POLL_MS = 30000
@@ -23,6 +25,14 @@ const SETTING_INDICATORS: Record<SettingState, Indicator> = {
   ok: { state: 'ok', label: 'OK' },
   retrying: { state: 'warning', label: 'Retrying' },
   error: { state: 'error', label: 'Error' },
+}
+
+const WORKER_INDICATORS: Record<WorkerStatus, Indicator> = {
+  online: { state: 'ok', label: 'online' },
+  'not ready': { state: 'warning', label: 'not ready' },
+  offline: { state: 'error', label: 'offline' },
+  rebooting: { state: 'busy', label: 'rebooting' },
+  removing: { state: 'busy', label: 'removing' },
 }
 
 // The manager's status, which the sidebar, the banner, the restore overlay and the
@@ -62,8 +72,19 @@ export const useAppStore = defineStore('app', () => {
     return { state, label: status }
   }
 
-  function workerIndicator(online: boolean): Indicator {
-    return online ? { state: 'ok', label: 'online' } : { state: 'error', label: 'offline' }
+  function workerIndicator(status: WorkerStatus): Indicator {
+    return WORKER_INDICATORS[status]
+  }
+
+  function infraIndicator(container: InfraContainer): Indicator {
+    const { name, status } = container
+    const state: IndicatorState =
+      status === 'running'
+        ? 'ok'
+        : status === 'restarting' || status === 'paused'
+          ? 'warning'
+          : 'error'
+    return { state, label: `${name}: ${status}` }
   }
 
   function domainIndicator(synced: boolean): Indicator {
@@ -154,6 +175,7 @@ export const useAppStore = defineStore('app', () => {
     sectionIndicator,
     applicationIndicator,
     workerIndicator,
+    infraIndicator,
     domainIndicator,
     taskIndicator,
     containerStatus,

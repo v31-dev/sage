@@ -40,7 +40,7 @@ Nested routes cover:
 - volumes
 - volume backups
 
-The vector ingestion API is separate in `app/api_vector.py` and currently handles log ingestion at `/api/vector/logs`.
+The ingestion API is separate in `app/api_ingest.py` and serves what the workers push on port 9001: Telegraf's reports at `/api/telegraf/report` (kept in memory by `services/reports.py`, read by the operation queue) and Vector's logs at `/api/vector/logs`.
 
 ## Orchestration Layer
 
@@ -76,7 +76,9 @@ Most high-level backend behavior ultimately flows through this service, and almo
 - `services/manager/traefik.py`
   - worker-side Traefik routing-config generation (mixin)
 - `services/metrics.py`
-  - metrics collection (workers' Glances via tailscaled's outbound proxy; the manager's own container in-process)
+  - metrics (workers' per-minute peaks from Telegraf's reports, written by the queue; the manager's own container in-process). A minute is written to its shard once it has ended; the queries add the minutes still in memory, so the latest reading is at most one report old and the `1m` view is the last two minutes
+- `services/reports.py`
+  - Telegraf's reports: parsing a batch into snapshots, and the newest snapshot of each worker in memory
 - `services/logs.py`
   - per-container log storage and FTS search; the manager's own logs captured in-process
 - `services/s3.py`
@@ -150,7 +152,7 @@ the `TaskQueue` (`QueueState`: `running`, `paused`, `restoring`, `stopping`), ex
   stops the queue: queued tasks, and any added later (e.g. a follow-up queued by a
   finishing task), are recorded as `cancelled`; running ones finish, then the API server
   stops. There is no cap in Sage: the runtime's stop grace period bounds it. A second
-  signal stops right away. The log-ingest server (`api_vector`) doesn't handle signals, so
+  signal stops right away. The ingest server (`api_ingest`) doesn't handle signals, so
   worker logs keep arriving until the process exits.
 
 `GET /api` reports that `state`, the `workers` summary (`total` and `online`, kept in memory by `refresh_worker_summary` after each `sync_workers` run, worker removal and restore, and read from the database once at startup) and the `settings` status. It reads memory only (the certificate expiry too: `Certificate.load` reads the PEM at startup and after each write), because the pause banner and the restore overlay depend on it while the database is being replaced; if building the settings status fails, that part is `null` and the rest is still returned. While it isn't `running`,
@@ -222,10 +224,10 @@ Every queued operation, its scope, where it is enqueued from, its lane pool, and
 | Task | Scope | Source | Lane | on_conflict |
 | --- | --- | --- | --- | --- |
 | `sync_workers` | platform | interval 30s | platform | DEDUP |
-| `sync_application_status` | app:`<qn>` | cron 1m | app | DEDUP |
+| `sync_application_status` | app:`<qn>` | cron 1m (via `request_application_status_sync`) | app | REPLACE — decides from the worker's report when it can be trusted, otherwise changes nothing |
 | `backup_application_s3` | app:`<qn>` | cron 1m (due backups; skipped when S3 isn't configured) | app | DEDUP — worker `backup.sh`: tar → `openssl enc` (ENCRYPTION_KEY) → HMAC-SHA256 appended (encrypt-then-MAC) → presigned PUT |
 | `reconcile_traefik_configs` | platform | cron 1m | platform | DEDUP |
-| `Metrics.collect` | metrics:`<worker>` | cron 1m | metrics | DEDUP |
+| `Metrics.flush_workers` | metrics:`workers` | cron 1m | metrics | DEDUP — writes the minutes of the workers' reports that have completed |
 | `Metrics.collect_self` | metrics:`<manager>` | cron 1m | metrics | DEDUP |
 | `send_summary_notification` | common | cron daily 08:00 | common | REPLACE |
 | `refresh_latest_release` | common | cron 4h + once at startup | common | REPLACE — caches latest-release detail (version + notes + `fetched_at`) served by `GET /info/release` |
@@ -279,18 +281,23 @@ Container create and tag-update are **instant route-side model writes**, like ev
 | --- | --- | --- | --- | --- |
 | `sync_workers` | platform | `restore_database_from_s3` (via `end_restore`, priority) | platform | REPLACE |
 | `discover_s3_backups` | platform, app | `restore_database_from_s3` (via `end_restore`, priority; the restored Backup table is the snapshot's) | platform | DEDUP |
+| `sync_application_status` | app:`<qn>` | the cron (every application, every minute), and a report that changes a container of the application (`request_status_sync_for_containers`, from the report route) | app | REPLACE — a request that arrives while one runs is kept, since the running one may have read its input before the change |
 | `sync_application_traefik_domains_config` | app:`<qn>` | deploy/stop, delete-container, `sync_application_status`, `sync_workers`, `refresh_traefik`, `reconcile_traefik_configs` missing-file check (via `request_application_traefik_sync`) | app | REPLACE |
 | `sync_application_traefik_domains_config` | app:`<qn>` | `reconcile_traefik_configs` `domains_synced=False` backstop | app | DEDUP |
 
-Quiet tasks (recorded only on failure): `sync_workers` (cron), `sync_application_status`, `sync_application_traefik_domains_config`, `reconcile_traefik_configs`, `Metrics.collect`, `Metrics.collect_self`, `Metrics.cleanup`, `Logs.cleanup`.
+Quiet tasks (recorded only on failure): `sync_workers` (cron), `sync_application_status`, `sync_application_traefik_domains_config`, `reconcile_traefik_configs`, `Metrics.flush_workers`, `Metrics.collect_self`, `Metrics.cleanup`, `Logs.cleanup`.
 
-Not every periodic/background job is a queue task. Two service-owned daemon threads run off the queue: the `Metrics` sampler reads the manager's **own** container metrics (cgroup v2 / root-fs / net) every few seconds into an in-memory per-minute peak accumulator; and the `Logs` capture thread drains formatted self-log records (enqueued by a root-logger handler) to the manager's `sage` log shard. Both are trivial in-process work with no scope to serialize (like the `dispatch_tick` pump). Their periodic DB maintenance stays on the queue: `Metrics.collect_self` (minutely peak flush) and `Metrics.cleanup` (daily, fast row-deletes) on the `metrics` scope, and `Logs.cleanup` on `common` — kept off `metrics` because its per-shard FTS `optimize` can run long, and blocking the `metrics` scope that long would stall the minutely flush past the sampler's 10-minute peak buffer. Workers are still polled over Glances by `Metrics.collect`, and ship their container logs to `LOGS_EXECUTOR` via the `:9001` ingestion API.
+Not every periodic/background job is a queue task. Two service-owned daemon threads run off the queue: the `Metrics` sampler reads the manager's **own** container metrics (cgroup v2 / root-fs / net) every few seconds into an in-memory per-minute peak accumulator; and the `Logs` capture thread drains formatted self-log records (enqueued by a root-logger handler) to the manager's `sage` log shard. Both are trivial in-process work with no scope to serialize (like the `dispatch_tick` pump). Their periodic DB maintenance stays on the queue: `Metrics.collect_self` (minutely peak flush) and `Metrics.cleanup` (daily, fast row-deletes) on the `metrics` scope, and `Logs.cleanup` on `common` — kept off `metrics` because its per-shard FTS `optimize` can run long, and blocking the `metrics` scope that long would stall the minutely flush past the sampler's 10-minute peak buffer. Workers push: Telegraf's reports reach `Metrics.ingest` (in-memory per-minute peaks, written by `Metrics.flush_workers` on the queue), and Vector's container logs go to `LOGS_EXECUTOR`, both via the `:9001` ingestion API.
 
 Cron cadence convention: **≤ 1m → `DEDUP`** (a high-frequency reconciler skips only if its own previous run is still in flight; the next tick retries), **> 1m → `REPLACE`** (a 6h/1d/10d task must not skip its whole cycle on a transient conflict; latest-wins keeps no backlog).
 
 `sync_workers` deliberately differs by source — cron uses `DEDUP`, while resync/restore use `REPLACE` with `{force: True}` to supersede a pending plain sync. That is why DEDUP/REPLACE identity is name + scope and not params.
 
-**Interrupted-operation recovery.** A busy status (`deploying`/`stopping`/`backup`/`restoring`) is only ever written by a task while it holds that app's scope — and `sync_application_status` holds that same scope while it runs, so by mutual exclusion any busy status it observes has no owning operation left: the mark of an interrupted task (crash, plain container restart, cancelled coroutine). Instead of skipping such apps, the sync resets the stuck app/containers to `error` (with a notification) and then converges them against real `docker ps` state in the same run. This is why no boot-time status reset exists: the minutely sync covers startup wedges and mid-flight loss with one mechanism. Detection defers while a broad `app`-scope task runs (the per-app syncs queue behind it) and resumes when it finishes. Deploy/stop container children additionally run their whole body inside their try block so an early failure can never kill the parent's gather and leave detached siblings running.
+**Interrupted-operation recovery.** A busy status (`deploying`/`stopping`/`backup`/`restoring`) is only ever written by a task while it holds that app's scope — and `sync_application_status` holds that same scope while it runs, so by mutual exclusion any busy status it observes has no owning operation left: the mark of an interrupted task (crash, plain container restart, cancelled coroutine). Instead of skipping such apps, the sync resets the stuck app/containers to `error` (with a notification) and and the next sync that has a usable report converges them (the reset is itself a write, which no earlier report can be compared with, so that is at most a minute later). This is why no boot-time status reset exists: the minutely sync covers startup wedges and mid-flight loss with one mechanism. Detection defers while a broad `app`-scope task runs (the per-app syncs queue behind it) and resumes when it finishes. Deploy/stop container children additionally run their whole body inside their try block so an early failure can never kill the parent's gather and leave detached siblings running.
+
+**Worker states.** `Worker.online` is whether the worker answers `tailscale ping` (`Tailscale.online_states`, decided by `plan_worker_sync`): online at the first answer, offline after two misses in a row, and unchanged while the manager's own node is cut off from the tailnet. Tailscale's own `Online` flag is not used: it is the coordination server's view and can lag by many minutes in both directions. Whether the worker is ready is read, not stored (`Reports.ready`): a report less than 30 s old and Traefik's port answering, unknown for a worker that has not reported just after the manager started. A worker out of the pool puts its active containers in `error`; a worker that is in the pool but cannot be asked and has no usable report leaves its containers as they are (`reconcile_container`). A report is trusted for a status decision only when it is current and arrived at least 15 s after the last write to the application's rows; otherwise nothing is known and the containers keep their status until the next report or the next minute's sync. There is no SSH fallback: the worker JSON's `infra` shows the state of the stack's containers from the same report. `sync_workers` ends with `repair_worker_stacks`: when the reports say a stack container is down, Traefik is not answering, or the worker has been silent for a minute, it runs `docker compose up -d` for the stack, at most once a minute per worker and not while the worker is being rebooted or removed, and `setup_worker` runs the same command when nothing drifted. Docker does not retry a container whose start failed, which is what happens to Traefik when a worker boots before its Tailscale address exists.
+
+**Worker status.** The worker JSON carries `status` (`Manager.worker_status`) next to the stored `online`, derived on every call and stored nowhere. In this order: `removing` while `remove_worker` is queued or running for it; `rebooting` while `reboot_worker` is queued or running and then, through a small in-memory mark the task leaves (`Manager.worker_reboots`), until the worker reports again with a Telegraf container that has started since the request (`is_worker_rebooting`; comparing the worker's own `started_at` before and after needs no clock agreement), or 5 minutes (`WORKER_REBOOT_LIMIT_SECONDS`); `offline` when `online` is false; `not ready` when the worker answers but is not ready (the rest of the stack may still be coming up after a reboot, which is not part of the reboot); otherwise `online`. `sync_workers` forgets the marks that are over. The UI shows the status as the worker's indicator and enables Restart only for `online` and `not ready`; the routes refuse a reboot in any other status and a second removal while it is removing.
 
 Worker convergence (`setup_worker`, reached only through `sync_workers`) runs on the **`platform` scope only** — it does not barrier app work, so the 30-second worker poll is never starved by long builds and worker drift is detected (and converged) within ~30s regardless of app activity. This is safe because app tasks already treat workers as unreliable — a worker can vanish mid-exec regardless of scheduling: deploy/stop/delete/backup **fast-fail on an offline-flagged worker**, any per-exec failure lands the container in `error`, and the status syncs converge from there. The residual race — a deploy targeting a worker whose setup is still mid-flight — fails loudly and converges identically, which is the same outcome as deploying to an offline worker (already possible at any time; placement doesn't require `online`). Tasks that mutate fleet-wide state keep the broad `{platform, app}` barrier: `remove_worker` (deletes the row), `refresh_traefik` (re-issues the cert and rewrites worker traefik config on a domain change), platform backup/restore, and the daily `renew_certificates` — the latter holds `{platform, app}` so it also serializes with `setup_worker`'s per-worker cert sync. The manager now issues the wildcard cert in-process (`Certs`, via ACME DNS-01) before the sync runs, so there is no wait-for-provisioning spin; the cert reaches a worker as PEM plus a re-written `traefik/dynamic/certs.yml`, whose file-provider `watch` reloads it with no traefik restart. There is deliberately no per-worker scope dimension; at ≤10 workers it isn't worth the fragility.
 
@@ -350,7 +357,7 @@ template in either set means every worker (or every app) resyncs once on the
 next deploy** — that is the intended repair, and it is the mechanism that would
 have caught the retired `certResolver` block surviving on migrating workers. The fourth stamp is the app compose label `sage.deployed_at`
 (mirrors `Application.deployed_at`, both written from the same deploy):
-`sync_application_status` reads it in its existing `docker ps` probe and
+`sync_application_status` reads it from the worker's report (the `sage.deployed_at` tag) and
 trusts `running` only when the label equals the app's current stamp — **no
 label, or no recorded deploy, is no match**. A running container that cannot
 prove its version is **stopped, marked `inactive`, and error-notified**

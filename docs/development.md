@@ -71,7 +71,7 @@ stops the container with a `[CRITICAL]` line in Sage's log format, after stoppin
 device or published ports are needed; tailnet traffic to the node's ports reaches the
 container's listeners.
 
-Workers run their own edge stack (`traefik`, `vector`, `glances` and `cloudflared`), bootstrapped remotely over Tailscale SSH.
+Workers run their own edge stack (`traefik`, `vector`, `telegraf` and `cloudflared`), bootstrapped remotely over Tailscale SSH.
 
 ### Dev routing
 
@@ -119,6 +119,14 @@ Without Python 3.14 on the machine, `dev/test-app.sh` runs the same tests in a D
 container and passes its arguments to pytest (`dev/test-app.sh -q --no-cov -k queue`). It keeps
 the virtual environment in `~/.cache/sage-test-venv` (or `SAGE_TEST_VENV`) and rebuilds it when the
 requirements change; the first run takes about a minute, later runs a second or two.
+
+Unit tests cover Sage's own code. Cloudflare, S3, Tailscale SSH, Docker, ACME and Discord are replaced
+by mock data that feeds the code a situation (a failure, a slow answer, a documented response shape);
+what the services really do is left to the live integration suite, which runs against the real ones.
+
+The suite runs in `Asia/Kolkata` (UTC+5:30), set in `tests/conftest.py`, so a time read from the local clock
+fails a test. The `clock` fixture freezes `utcnow()` (`clock.set(...)`, `clock.advance(...)`) and
+`machine_timezone("America/Los_Angeles")` moves a single test to another zone.
 
 `pytest` measures coverage by default (`addopts` in `app/pyproject.toml`) and prints the table with
 the missing lines; `pytest --no-cov` turns it off, which is what to use under a debugger. Every
@@ -191,7 +199,7 @@ The top-level `Dockerfile` builds:
    with it)
 2. the Python app image that serves the built frontend from `/app/static` and exposes it at `/` while leaving `/api` on the backend
 
-The production UI build currently injects `VITE_LOAD_DELAY=0`, while local frontend development keeps the source default delay.
+`VITE_LOAD_DELAY` (milliseconds, 300 when unset) makes the API client wait before every call, so that development simulates a slow network: the instant status updates after an action and the protection against a second click can be seen and tried. Raise it (for example `VITE_LOAD_DELAY=2000`) to test them harder, and set it to 0 to judge how responsive the UI really is. The production UI build and the UI tests set it to 0.
 
 ## CI And Release Notes
 

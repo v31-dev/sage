@@ -23,7 +23,7 @@ const appStore = useAppStore()
 
 const props = withDefaults(defineProps<Props>(), {})
 
-const showForceDelete = computed(() => !props.worker.online)
+const showForceDelete = computed(() => props.worker.status === 'offline')
 
 // Until the container's status changes, a force delete shows as stopping.
 const forceDeleting = ref(false)

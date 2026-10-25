@@ -1,5 +1,4 @@
 import logging
-from datetime import datetime
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -10,7 +9,7 @@ from services.logs import Logs
 from services.manager import Manager
 from services.manager.settings import SETTING_SECTIONS
 from services.metrics import Metrics
-from utils.common import get_env
+from utils.common import get_env, utcnow
 from utils.queue import OnConflict
 
 logger = logging.getLogger(__name__)
@@ -50,19 +49,13 @@ async def check_worker_stamps():
 
 async def sync_application_status():
   for application in Application.select(Application, Project).join(Project):
-    Manager().add_task(
-        task=Manager().sync_application_status,
-        scopes={f"app:{application.qualified_name}"},
-        params={"application_id": application.id},
-        executor="app",
-        quiet=True,
-    )
+    Manager().request_application_status_sync(application)
 
 
 async def schedule_application_backups():
   if not Manager().s3.s3_config:
     return
-  now = datetime.now()
+  now = utcnow()
   for application, volumes in Manager().get_due_volume_backups(now):
     Manager().add_task(
         task=Manager().backup_application_s3,
@@ -90,15 +83,13 @@ async def collect_metrics():
       quiet=True,
   )
 
-  # Worker metrics are polled over their Glances endpoint.
-  for worker in Worker.select().where(Worker.online):
-    Manager().add_task(
-        task=Metrics().collect,
-        scopes={f"metrics:{worker.hostname}"},
-        params={"ip": worker.ip, "hostname": worker.hostname},
-        executor="metrics",
-        quiet=True,
-    )
+  # The workers' metrics arrive in their reports; this writes the minutes that have completed.
+  Manager().add_task(
+      task=Metrics().flush_workers,
+      scopes={"metrics:workers"},
+      executor="metrics",
+      quiet=True,
+  )
 
 
 async def send_summary_notification():

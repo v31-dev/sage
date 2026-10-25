@@ -40,10 +40,19 @@ export interface Release {
   fetched_at: string | null
 }
 
+export interface InfraContainer {
+  name: string
+  status: string
+}
+
+export type WorkerStatus = 'online' | 'not ready' | 'offline' | 'rebooting' | 'removing'
+
 export interface Worker {
   hostname: string
   ip: string
   online: boolean
+  status: WorkerStatus
+  infra?: InfraContainer[] | null
   created_at: Date
   updated_at: Date
   containers: Container[]

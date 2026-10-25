@@ -27,7 +27,7 @@ RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
 COPY . /app
 
 ENV PORT=80
-ENV METRICS_PORT=9001
+ENV INGEST_PORT=9001
 ENV PYTHONUNBUFFERED=1
 ENV MALLOC_ARENA_MAX=2
 

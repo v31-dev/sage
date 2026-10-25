@@ -8,6 +8,7 @@ from services.db import Database
 from services.logs import Logs
 from services.metrics import Metrics
 from services.notification import Notifications
+from services.reports import Reports
 from services.s3 import S3
 from services.settings import Settings
 from services.tailscale import Tailscale
@@ -55,8 +56,14 @@ class Manager(
 
       # Last check result per settings section (services/manager/settings.py).
       self.setting_checks = {}
-      # Worker counts as of the last sync
+      # Worker counts as of the last sync (services/manager/workers.py).
       self.worker_summary = None
+      # When the stack of each worker was last started for being down, until its cooldown is over
+      # (services/manager/workers.py).
+      self.worker_stack_repairs = {}
+      # The reboots the manager asked of workers that may still be under way, by worker
+      # (services/manager/workers.py).
+      self.worker_reboots = {}
 
       # Single-dispatcher operation queue. Each scope root maps to an independent
       # lane pool (all defined in utils.executor).
@@ -76,7 +83,8 @@ class Manager(
       Database()
       Settings()
       Notifications()
-      Metrics()
+      Metrics().start_sampler()
+      Reports()
       self.tailscale = Tailscale()
       self.cloudflare = Cloudflare()
       self.certs = Certs()

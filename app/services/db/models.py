@@ -2,11 +2,11 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass
-from datetime import datetime
 
 from peewee import BooleanField, CharField, DateTimeField, FixedCharField, ForeignKeyField, IntegerField, SqliteDatabase
 from playhouse.signals import Model
 
+from utils.common import utcnow
 from utils.db import AlphaNumericField, CleanCharField, EncryptedJSONField, EncryptedTextField, JSONField, validate_multiline_kv
 
 # Deferred: opened by Database at startup.
@@ -18,15 +18,15 @@ APPLICATION_STOP_ELIGIBLE_STATUSES = {"active", "error"}
 
 
 class BaseModel(Model):
-  created_at = DateTimeField(default=datetime.now)
-  updated_at = DateTimeField(default=datetime.now)
+  created_at = DateTimeField(default=utcnow)
+  updated_at = DateTimeField(default=utcnow)
 
   class Meta:
     database = db
     only_save_dirty = True
 
   def save(self, *args, **kwargs):
-    self.updated_at = datetime.now()
+    self.updated_at = utcnow()
     return super().save(*args, **kwargs)
 
 

@@ -19,13 +19,7 @@ mkdir -p "$state_dir" /var/run/tailscale
 # large transfers then stall while small ones succeed.
 export TS_DEBUG_MTU=1230
 
-# The manager's outbound HTTP into the tailnet goes through this proxy. It listens on
-# 127.0.0.2 because tailscaled hands inbound tailnet connections to 127.0.0.1:<port>;
-# on 127.0.0.1 any tailnet peer allowed to reach the manager could use it.
-export TAILNET_HTTP_PROXY=http://127.0.0.2:1055
-
-tailscaled --tun=userspace-networking --statedir="$state_dir" \
-  --outbound-http-proxy-listen="${TAILNET_HTTP_PROXY#http://}" &
+tailscaled --tun=userspace-networking --statedir="$state_dir" &
 tailscaled_pid=$!
 
 # Sage's log line format, for the messages that come before Sage's own logger starts.

@@ -47,7 +47,7 @@ RUN test -f /app/VERSION || (echo "ERROR: VERSION file is required" && exit 1)
 COPY --from=ui-builder /ui/dist /app/static
 
 ENV PORT=80
-ENV METRICS_PORT=9001
+ENV INGEST_PORT=9001
 ENV PYTHONUNBUFFERED=1
 ENV MALLOC_ARENA_MAX=2
 

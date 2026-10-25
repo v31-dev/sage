@@ -1,4 +1,3 @@
-import asyncio
 import logging
 from pathlib import Path
 from urllib.parse import urlparse
@@ -7,9 +6,11 @@ import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError, NoCredentialsError
 
+import config
 from services.base import Base
 from services.settings import SETTING_DEFINITIONS, Settings
 from utils.executor import run_in_executor_with_context
+from utils.retry import retry_async
 
 logger = logging.getLogger(__name__)
 
@@ -152,16 +153,16 @@ class S3(Base):
         return False
       raise
 
-  async def delete_key(self, s3_path, filter=None, max_retries=3, raw_path=False):
+  async def delete_key(self, s3_path, filter=None, raw_path=False):
     """
-    Delete files/folders from S3 based on a filter function (async).
+    Delete files/folders from S3 based on a filter function (async). A failure is
+    retried after each of `config.S3_RETRY_DELAYS`, except for invalid credentials.
 
     Args:
       s3_path: S3 path relative to base config path (will be combined)
       filter: Callable that takes S3 key/path string and returns True to delete, False to keep.
                   Example: lambda key: "old_" in key
                   If None, deletes all objects at the prefix.
-      max_retries: Maximum number of retry attempts (default: 3)
       raw_path: If True, s3_path is treated as the full key without combining with base path.
 
 
@@ -170,50 +171,42 @@ class S3(Base):
     """
     self.check_config_exists()
 
-    for attempt in range(max_retries):
-      try:
-        bucket_name = self.s3_config['bucket']
-        deleted_paths = []
+    async def attempt():
+      bucket_name = self.s3_config['bucket']
+      deleted_paths = []
 
-        # List all objects at the given prefix
-        if raw_path:
-          prefix = s3_path.strip('/')
-        else:
-          prefix = self.get_full_path(s3_path)
-        keys = await run_in_executor_with_context(self._list_keys, prefix)
+      # List all objects at the given prefix
+      if raw_path:
+        prefix = s3_path.strip('/')
+      else:
+        prefix = self.get_full_path(s3_path)
+      keys = await run_in_executor_with_context(self._list_keys, prefix)
 
-        # Apply filter function if provided
-        objects_to_delete = [{'Key': key} for key in keys if filter is None or filter(key)]
+      # Apply filter function if provided
+      objects_to_delete = [{'Key': key} for key in keys if filter is None or filter(key)]
 
-        # S3 delete_objects is limited to 1000 objects per request
-        for i in range(0, len(objects_to_delete), 1000):
-          batch = objects_to_delete[i:i + 1000]
-          response = await run_in_executor_with_context(
-              self._client.delete_objects, Bucket=bucket_name, Delete={'Objects': batch})
+      # S3 delete_objects is limited to 1000 objects per request
+      for i in range(0, len(objects_to_delete), 1000):
+        batch = objects_to_delete[i:i + 1000]
+        response = await run_in_executor_with_context(
+            self._client.delete_objects, Bucket=bucket_name, Delete={'Objects': batch})
 
-          # Track deleted paths
-          for deleted_obj in response.get('Deleted', []):
-            deleted_paths.append(deleted_obj['Key'])
+        # Track deleted paths
+        for deleted_obj in response.get('Deleted', []):
+          deleted_paths.append(deleted_obj['Key'])
 
-          for error_obj in response.get('Errors', []):
-            raise Exception(f"Failed to delete {error_obj['Key']}: {error_obj['Message']}")
+        for error_obj in response.get('Errors', []):
+          raise Exception(f"Failed to delete {error_obj['Key']}: {error_obj['Message']}")
 
-        return deleted_paths
+      return deleted_paths
 
-      except NoCredentialsError:
-        raise Exception("S3 credentials are not valid.")
-      except ClientError as e:
-        if attempt < max_retries - 1:
-          wait_time = 2 ** attempt  # Exponential backoff: 1s, 2s, 4s
-          await asyncio.sleep(wait_time)
-        else:
-          raise Exception(f"Failed to delete from S3 after {max_retries} attempts: {e}")
-      except Exception:
-        if attempt < max_retries - 1:
-          wait_time = 2 ** attempt
-          await asyncio.sleep(wait_time)
-        else:
-          raise
+    try:
+      return await retry_async(
+          attempt, delays=config.S3_RETRY_DELAYS, should_retry=lambda error: not isinstance(error, NoCredentialsError))
+    except NoCredentialsError:
+      raise Exception("S3 credentials are not valid.")
+    except ClientError as e:
+      raise Exception(f"Failed to delete from S3 after {len(config.S3_RETRY_DELAYS) + 1} attempts: {e}")
 
   async def upload_to_key(self, file_path, s3_path):
     """

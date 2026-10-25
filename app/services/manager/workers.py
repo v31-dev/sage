@@ -2,11 +2,16 @@ import asyncio
 import logging
 import re
 
+import config
 from services.db import Application, Container, Worker
+from services.metrics import Metrics
+from services.reports import Reports
+from utils.common import utcnow
 from utils.executor import run_in_executor_with_context
 from utils.logging import TaskFailed
 
 from ._common import WORKER_INFRA_TEMPLATES, app_dir, content_hash, routing_input_hash
+from .decisions import WorkerReboot, WorkerRow, is_worker_rebooting, plan_worker_sync, worker_stack_problem
 
 logger = logging.getLogger(__name__)
 
@@ -16,70 +21,96 @@ class WorkersMixin:
     """
     Check for worker changes. `check_stamps` also sets up workers that stayed online,
     letting their stamps decide what to redo (at startup, since the env may have changed
-    while Sage was stopped).
-    - New workers (not in db but in tailscale)
-    - Offline workers (in db but tailscale says offline)
+    while Sage was stopped). Whether a worker is online is whether it answers a ping
+    (`Tailscale.online_states`), not Tailscale's own flag. The decisions are `plan_worker_sync`'s:
+    - New workers (not in db but in tailscale, and answering)
+    - Offline workers (in db but not answering, or not in tailscale)
     - Updated workers (IPs have changed)
-    - Recently online workers (previously offline but now back online)
-    - Offline workers (in db but not in tailscale)
+    - Recently online workers (previously offline but now answering)
+    After that, a worker whose reports say its stack is down gets it started.
     """
     worker_tag = self.tailscale.worker_tag
-    existing_workers = list(Worker.select())
-    tailscale_workers = await run_in_executor_with_context(
-        self.tailscale.get_by_tag, worker_tag)
+    known = [WorkerRow(w.hostname, w.ip, w.online) for w in Worker.select()]
+    listed = await run_in_executor_with_context(self.tailscale.get_by_tag, worker_tag)
+    was_online = {row.hostname: row.online for row in known}
+    online = await self.tailscale.online_states(
+        {w.hostname: (w.ip, was_online.get(w.hostname, False)) for w in listed})
+    peers = [WorkerRow(w.hostname, w.ip, online[w.hostname]) for w in listed]
 
-    logger.info(
-        f"Existing workers: {[(w.hostname, w.ip, 'online' if w.online else 'offline') for w in existing_workers]}")
-    logger.info(
-        f"Tailscale workers: {[(w.hostname, w.ip, 'online' if w.online else 'offline') for w in tailscale_workers]}")
+    logger.info(f"Existing workers: {[(w.hostname, w.ip, 'online' if w.online else 'offline') for w in known]}")
+    logger.info(f"Tailscale workers: {[(w.hostname, w.ip, 'online' if w.online else 'offline') for w in peers]}")
 
-    for worker in tailscale_workers:
+    for action in plan_worker_sync(known, peers, force, check_stamps):
+      hostname = action.worker.hostname
       try:
-        existing_worker = next((w for w in existing_workers if w.hostname == worker.hostname), None)
-        if existing_worker:
-          if existing_worker.online and not worker.online:
-            # worker went offline
-            logger.info(f"Worker {worker.hostname} went offline.")
-            await run_in_executor_with_context(self.set_worker_offline, worker)
-          elif not existing_worker.online and worker.online:
-            # Worker came back online (or an interrupted setup left it flagged
-            # offline). Convergence is stamp-driven: only what drifted during
-            # the outage is repaired.
-            logger.info(f"Worker {worker.hostname} came back online.")
-            await self.setup_worker(worker)
-          elif existing_worker.ip != worker.ip:
-            # worker IP changed (worker was re-created)
-            logger.info(
-                f"Worker {
-                    worker.hostname} IP changed from {
-                    existing_worker.ip} to {
-                    worker.ip}.")
-            await self.setup_worker(worker)
-          elif force:
-            # Force re-sync: distrust every stamp and converge from scratch.
-            logger.info(f"Force syncing worker {worker.hostname}.")
-            await self.setup_worker(worker, force=True)
-          elif check_stamps and worker.online:
-            await self.setup_worker(worker)
+        if action.kind == "offline":
+          logger.info(f"Worker {hostname}: {action.reason}.")
+          await run_in_executor_with_context(self.set_worker_offline, action.worker)
         else:
-          # new worker
-          logger.info(f"New worker {worker.hostname} detected.")
-          await self.setup_worker(worker)
+          logger.info(f"{'Force syncing' if action.force else 'Syncing'} worker {hostname}: {action.reason}.")
+          await self.setup_worker(action.worker, force=action.force)
       except Exception as e:
-        logger.error(f"sync_workers failed for {worker.hostname}: {e}")
+        logger.error(f"sync_workers failed for {hostname}: {e}")
 
-    for existing_worker in existing_workers:
-      try:
-        if (not any(w.hostname == existing_worker.hostname for w in tailscale_workers)
-                and existing_worker.online):
-          # worker went offline or was removed
-          logger.info(
-              f"Worker {existing_worker.hostname} not found in tailscale. Presumed it went offline.")
-          await run_in_executor_with_context(self.set_worker_offline, existing_worker)
-      except Exception as e:
-        logger.error(f"sync_workers offline-check failed for {existing_worker.hostname}: {e}")
-
+    await self.repair_worker_stacks()
+    self.worker_reboots = {h: mark for h, mark in self.worker_reboots.items() if self._worker_reboot_under_way(h, mark)}
     self.refresh_worker_summary()
+
+  def worker_status(self, hostname: str, online: bool) -> str:
+    """What the worker is shown as: "removing" while its removal is queued or running, "rebooting" from the
+    request until it reports again after the reboot (`is_worker_rebooting`), "offline" when it does not answer a ping
+    (`online`), "not ready" when its report says Traefik is not answering, otherwise "online".
+    Derived on every call from the queue and the reports, so there is nothing stored to go stale."""
+    params = {"worker_hostname": hostname}
+    if self.has_task(self.remove_worker, params):
+      return "removing"
+    mark = self.worker_reboots.get(hostname)
+    if self.has_task(self.reboot_worker, params) or (mark is not None and self._worker_reboot_under_way(hostname, mark)):
+      return "rebooting"
+    if not online:
+      return "offline"
+    return "not ready" if Reports().ready(hostname) is False else "online"
+
+  def _worker_reboot_under_way(self, hostname: str, mark: WorkerReboot) -> bool:
+    return is_worker_rebooting(mark, utcnow(), Reports().started_at(hostname, "telegraf"))
+
+  async def start_worker_stack(self, worker) -> bool:
+    """`docker compose up -d` for the worker's stack: it starts what is stopped and leaves what runs
+    alone. True when it started something."""
+    _, lines = await self.tailscale.exec_command(
+        worker.hostname,
+        f"docker compose -f {self.worker_home_dir}/docker-compose.yml up -d --quiet-pull "
+        f"{' '.join(config.WORKER_STACK_SERVICES)}",
+        timeout=120,
+    )
+    return any(re.search(r"\b(Started|Starting|Created)\b", line) for line in lines)
+
+  async def repair_worker_stacks(self):
+    """Start the stack of every online worker whose reports say part of it is down (`worker_stack_problem`).
+    Docker does not retry a container whose start failed, as Traefik's does when the worker boots
+    before its Tailscale address exists. A worker is tried at most once per cooldown, and not while it is
+    being rebooted or removed."""
+    now = utcnow()
+    self.worker_stack_repairs = {
+        hostname: at for hostname, at in self.worker_stack_repairs.items()
+        if (now - at).total_seconds() < config.WORKER_STACK_REPAIR_COOLDOWN_SECONDS}
+    reports = Reports()
+    for worker in Worker.select().where(Worker.online):
+      current = reports.current(worker.hostname)
+      problem = worker_stack_problem(current.snapshot if current else None, reports.silent_for(worker.hostname))
+      if (problem is None or worker.hostname in self.worker_stack_repairs
+              or self.worker_status(worker.hostname, worker.online) in ("rebooting", "removing")):
+        continue
+      self.worker_stack_repairs[worker.hostname] = now
+      try:
+        started = await self.start_worker_stack(worker)
+      except Exception as e:
+        self.notify(f"Worker {worker.hostname}: {problem}; starting its stack failed: {e}", "error")
+        continue
+      if started:
+        self.notify(f"Worker {worker.hostname}: {problem}; started its stack.", "warning")
+      else:
+        logger.warning(f"Worker {worker.hostname}: {problem}, but starting its stack changed nothing.")
 
   def refresh_worker_summary(self):
     """Record how many workers there are and how many are online. Every change to the
@@ -98,6 +129,8 @@ class WorkersMixin:
         "version": self.version,
         "domain": self.cloudflare.domain,
         "tunnel": self.cloudflare.tunnel_id,
+        "manager_ip": self.tailscale.ip(),
+        "report_interval": config.REPORT_INTERVAL_SECONDS,
     })
 
   async def read_worker_revisions(self, hostname: str) -> dict:
@@ -220,6 +253,10 @@ class WorkersMixin:
 
       if infra_stale:
         tunnel_token = (await run_in_executor_with_context(self.cloudflare.get_tunnel_token)).token
+        # Telegraf runs as a user in the Docker socket's group, which differs between hosts.
+        _, socket_group = await self.tailscale.exec_command(
+            worker.hostname, "stat -c %g /var/run/docker.sock", timeout=30)
+        docker_gid = socket_group[-1].strip()
 
         # Sync files
         await self.tailscale.sync_file(
@@ -236,7 +273,9 @@ class WorkersMixin:
                 "TS_IP": worker.ip,
                 "TS_HOSTNAME": worker.hostname,
                 "TUNNEL_TOKEN": tunnel_token,
+                "DOCKER_GID": docker_gid,
             },
+            mode=0o600,
         )
         await self.tailscale.sync_file(
             worker.hostname,
@@ -261,6 +300,17 @@ class WorkersMixin:
             f"{self.worker_home_dir}/vector/config/vector.yml",
             {"IP": self.tailscale.ip(), "HOSTNAME": worker.hostname},
         )
+        await self.tailscale.sync_file(
+            worker.hostname,
+            app_dir / "templates/worker/telegraf/telegraf.conf",
+            f"{self.worker_home_dir}/telegraf/telegraf.conf",
+            {
+                "IP": self.tailscale.ip(),
+                "HOSTNAME": worker.hostname,
+                "TS_IP": worker.ip,
+                "INTERVAL": config.REPORT_INTERVAL_SECONDS,
+            },
+        )
 
       # Land the cert before any container start/restart below
       repaired = []
@@ -274,7 +324,7 @@ class WorkersMixin:
         await self.tailscale.exec_command(
             worker.hostname,
             f"docker compose -f {self.worker_home_dir}/docker-compose.yml up -d --wait --remove-orphans --quiet-pull --quiet-build "
-            "traefik vector glances cloudflared",
+            f"{' '.join(config.WORKER_STACK_SERVICES)}",
             timeout=300,
         )
 
@@ -291,6 +341,16 @@ class WorkersMixin:
             f"docker compose -f {self.worker_home_dir}/docker-compose.yml restart vector",
             timeout=60,
         )
+
+        # Restart telegraf to pick up config changes
+        await self.tailscale.exec_command(
+            worker.hostname,
+            f"docker compose -f {self.worker_home_dir}/docker-compose.yml restart telegraf",
+            timeout=60,
+        )
+      else:
+        # Nothing drifted, but a container may be stopped.
+        await self.start_worker_stack(worker)
 
       Worker.update(online=True).where(
           Worker.hostname == worker.hostname).execute()
@@ -339,6 +399,8 @@ class WorkersMixin:
       self.notify(f"Failed to reboot worker {worker.hostname}: {e}", "error")
       raise Exception(f"Failed to reboot worker {worker.hostname}: {e}")
 
+    self.worker_reboots[worker.hostname] = WorkerReboot(utcnow(), Reports().started_at(worker.hostname, "telegraf", current=False))
+
     # Hold the scope past the backgrounded reboot's delay so a deploy can't grab a
     # still-up worker in the gap between this task finishing and the host dropping.
     await asyncio.sleep(3)
@@ -365,6 +427,9 @@ class WorkersMixin:
 
     logger.info(f"Removing worker {worker.hostname} from manager.")
     Worker.delete().where(Worker.hostname == worker.hostname).execute()
+    self.worker_reboots.pop(worker.hostname, None)
+    Reports().forget(worker.hostname)
+    Metrics().forget(worker.hostname)
     self.refresh_worker_summary()
     self.cloudflare.delete_dns_record(name=f"*.int.{self.cloudflare.domain}", content=worker.ip)
     logger.info(f"Worker {worker.hostname} removed from manager.")
