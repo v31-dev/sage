@@ -8,6 +8,7 @@ from services.db import Database
 from services.logs import Logs
 from services.metrics import Metrics
 from services.notification import Notifications
+from services.reports import Reports
 from services.s3 import S3
 from services.settings import Settings
 from services.tailscale import Tailscale
@@ -57,6 +58,8 @@ class Manager(
       self.setting_checks = {}
       # Worker counts as of the last sync
       self.worker_summary = None
+      # When each worker's stack was last started for being down (services/manager/workers.py).
+      self.stack_repairs = {}
 
       # Single-dispatcher operation queue. Each scope root maps to an independent
       # lane pool (all defined in utils.executor).
@@ -77,6 +80,7 @@ class Manager(
       Settings()
       Notifications()
       Metrics().start_sampler()
+      Reports()
       self.tailscale = Tailscale()
       self.cloudflare = Cloudflare()
       self.certs = Certs()

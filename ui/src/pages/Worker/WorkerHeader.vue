@@ -51,7 +51,7 @@ async function onConfirmRestart() {
     <CardHeader class="border-b">
       <CardTitle>
         <SectionTitle :title="props.worker.hostname" :size="3">
-          <StateIndicator v-bind="appStore.workerIndicator(props.worker.online)" show-label />
+          <StateIndicator v-bind="appStore.workerIndicator(props.worker.online, props.worker.ready)" show-label />
         </SectionTitle>
       </CardTitle>
       <CardAction>
@@ -107,6 +107,19 @@ async function onConfirmRestart() {
         <p class="text-sm text-muted-foreground">
           {{ props.worker.containers.length }}
         </p>
+      </div>
+
+      <div class="md:col-span-2 lg:col-span-5">
+        <Label>Stack</Label>
+        <div v-if="props.worker.infra" class="mt-1 flex flex-wrap gap-2">
+          <StateIndicator
+            v-for="container in props.worker.infra"
+            :key="container.name"
+            v-bind="appStore.infraIndicator(container)"
+            show-label
+          />
+        </div>
+        <p v-else class="text-sm text-muted-foreground">No current report from the worker.</p>
       </div>
     </CardContent>
 

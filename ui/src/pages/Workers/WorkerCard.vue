@@ -48,7 +48,7 @@ function goToMetrics(hostname: string) {
     <CardHeader class="border-b">
       <CardTitle>
         <SectionTitle :title="props.worker.hostname">
-          <StateIndicator v-bind="appStore.workerIndicator(props.worker.online)" show-label />
+          <StateIndicator v-bind="appStore.workerIndicator(props.worker.online, props.worker.ready)" show-label />
         </SectionTitle>
       </CardTitle>
     </CardHeader>

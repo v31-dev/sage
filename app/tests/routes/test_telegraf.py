@@ -7,6 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import config
+from services.manager import Manager
 from services.metrics import Metrics
 from services.reports import Reports, parse_batch
 
@@ -14,8 +15,21 @@ BATCH = json.loads((Path(__file__).parent.parent / "data" / "telegraf_batch.json
 URL = "/api/telegraf/report"
 
 
+class FakeManager:
+  def __init__(self):
+    self.status_syncs = []
+
+  def request_status_sync_for_containers(self, hostname, names):
+    self.status_syncs.append((hostname, set(names)))
+
+
 @pytest.fixture
-def client(db, thread_connections):
+def manager(register):
+  return register(Manager, FakeManager())
+
+
+@pytest.fixture
+def client(db, thread_connections, manager):
   from api_ingest import app
   return TestClient(app)
 
@@ -65,6 +79,30 @@ class TestReport:
     register(Metrics, FakeMetrics())
     assert post(client, b"not json").status_code == 400
     assert post(client, json.dumps(BATCH).encode(), node="stranger").status_code == 404
+
+  def test_the_first_report_asks_for_a_status_sync_of_every_container(self, client, worker, manager):
+    post(client, json.dumps(BATCH).encode())
+    assert manager.status_syncs == [("w1", {"web", "traefik", "old-job"})]
+
+  def test_a_report_that_changes_nothing_asks_for_nothing(self, client, worker, manager):
+    post(client, json.dumps(BATCH).encode())
+    post(client, json.dumps(BATCH).encode())
+    assert len(manager.status_syncs) == 1
+
+  def test_a_container_that_changed_is_the_only_one_asked_for(self, client, worker, manager):
+    post(client, json.dumps(BATCH).encode())
+    later = json.loads(json.dumps(BATCH))
+    later["metrics"] = [dict(m, timestamp=m["timestamp"] + 10_000) for m in later["metrics"]]
+    for metric in later["metrics"]:
+      if metric["name"] == "docker_container_status" and metric["tags"]["container_name"] == "web":
+        metric["tags"]["container_status"] = "restarting"
+    post(client, json.dumps(later).encode())
+    assert manager.status_syncs[-1] == ("w1", {"web"})
+
+  def test_a_refused_report_asks_for_nothing(self, client, worker, manager):
+    post(client, b"not json")
+    post(client, json.dumps(BATCH).encode(), node="stranger")
+    assert manager.status_syncs == []
 
   def test_the_first_report_is_logged_and_the_next_is_not(self, client, worker, caplog):
     with caplog.at_level(logging.INFO, logger="routes.telegraf"):

@@ -37,6 +37,27 @@ REPORT_INTERVAL_SECONDS = 10
 REPORT_KEEP_ALIVE_SECONDS = 30
 REPORT_MAX_BYTES = 8 * 1024 * 1024
 
+# A worker's report is current for this long. A snapshot can stand for how things are now only if
+# it arrived this long after the last change the manager made to the rows it is compared with
+# (a gather, a flush and a request), since a snapshot taken before that change says nothing about it.
+REPORT_STALE_SECONDS = 30
+REPORT_SETTLE_SECONDS = 15
+# After the manager starts, a worker that has not reported yet is not called not ready for this long.
+REPORT_STARTUP_GRACE_SECONDS = 60
+
+# The services of the worker stack, which `docker compose up -d` starts and which are also the names
+# of their containers.
+WORKER_STACK_SERVICES = ("traefik", "vector", "telegraf", "cloudflared")
+
+# A worker is offline after this many pings in a row went unanswered (about a minute).
+OFFLINE_AFTER_MISSED_PINGS = 2
+PING_TIMEOUT_SECONDS = 5
+
+# A worker whose stack is down (or silent for this long) gets `docker compose up -d`, at most
+# once per cooldown.
+STACK_SILENCE_SECONDS = 120
+STACK_REPAIR_COOLDOWN_SECONDS = 300
+
 # A command on a worker is wrapped in `timeout`, which stops it at its deadline and, if it
 # ignores that, kills it this many seconds later. The manager waits this much longer than the
 # deadline before it gives up on a worker that answers nothing.

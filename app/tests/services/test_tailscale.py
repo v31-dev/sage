@@ -2,6 +2,7 @@ import asyncio
 import logging
 import posixpath
 import shlex
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -10,7 +11,8 @@ import pytest
 
 import config
 from services import tailscale as tailscale_module
-from services.tailscale import Tailscale
+from services.tailscale import Tailscale, next_online
+from utils.executor import active_executor
 
 HOST = "worker-1"
 
@@ -475,3 +477,119 @@ class TestClose:
     await tailscale.close()
 
     assert tailscale._conns == {}
+
+
+class TestNextOnline:
+  @pytest.mark.parametrize("was_online", [True, False])
+  def test_an_answer_makes_it_online_and_clears_the_misses(self, was_online):
+    assert next_online(was_online, True, 5) == (True, 0)
+
+  def test_one_miss_keeps_an_online_worker_online(self):
+    assert next_online(True, False, 0) == (True, 1)
+
+  def test_the_miss_that_reaches_the_limit_takes_it_offline(self):
+    assert next_online(True, False, config.OFFLINE_AFTER_MISSED_PINGS - 1) == (False, config.OFFLINE_AFTER_MISSED_PINGS)
+
+  def test_a_worker_that_is_offline_stays_offline_however_it_misses(self):
+    assert next_online(False, False, 0) == (False, 1)
+
+
+class FakePing:
+  """The `tailscale ping` process: ends with `status`, or never ends."""
+
+  def __init__(self, status=0, hangs=False):
+    self.status = status
+    self.hangs = hangs
+    self.killed = False
+
+  async def wait(self):
+    if self.hangs and not self.killed:
+      await asyncio.sleep(3600)
+    return -9 if self.killed else self.status
+
+  def kill(self):
+    self.killed = True
+
+
+class TestPing:
+  @pytest.fixture
+  def started(self, monkeypatch):
+    commands = []
+
+    def use(process):
+      async def create(*command, **kwargs):
+        commands.append(command)
+        return process
+      monkeypatch.setattr(asyncio, "create_subprocess_exec", create)
+      return commands
+
+    return use
+
+  def test_a_peer_that_answers_is_true(self, tailscale, started):
+    commands = started(FakePing(0))
+    assert asyncio.run(tailscale.ping("100.64.0.2")) is True
+    assert commands[0][:3] == ("tailscale", "ping", "-c")
+    assert commands[0][-1] == "100.64.0.2"
+
+  def test_a_peer_that_does_not_answer_is_false(self, tailscale, started):
+    started(FakePing(1))
+    assert asyncio.run(tailscale.ping("100.64.0.2")) is False
+
+  def test_a_ping_that_never_ends_is_stopped_and_false(self, tailscale, started, monkeypatch):
+    monkeypatch.setattr(config, "PING_TIMEOUT_SECONDS", -4.9)  # the wait is the timeout plus 5 s: 0.1 s
+    process = FakePing(hangs=True)
+    started(process)
+    assert asyncio.run(tailscale.ping("100.64.0.2")) is False
+    assert process.killed
+
+
+class TestOnlineStates:
+  @pytest.fixture
+  def answers(self, tailscale, monkeypatch):
+    """Which peers answer, by address; `connected` is whether the manager's own node is."""
+    state = SimpleNamespace(up=set(), connected=True)
+
+    async def ping(target):
+      return target in state.up
+
+    monkeypatch.setattr(tailscale, "ping", ping)
+    monkeypatch.setattr(tailscale, "connected", lambda: state.connected)
+    # The blocking check runs on the pool of the task that calls it.
+    executor = ThreadPoolExecutor(max_workers=1)
+    token = active_executor.set(executor)
+    yield state
+    active_executor.reset(token)
+    executor.shutdown()
+
+  def states(self, tailscale, **was):
+    peers = {name: (f"100.64.0.{i}", online) for i, (name, online) in enumerate(was.items(), 1)}
+    return asyncio.run(tailscale.online_states(peers))
+
+  def test_peers_that_answer_are_online_at_once(self, tailscale, answers):
+    answers.up = {"100.64.0.1", "100.64.0.2"}
+    assert self.states(tailscale, a=False, b=True) == {"a": True, "b": True}
+
+  def test_a_peer_that_missed_once_stays_online_and_the_second_miss_takes_it_out(self, tailscale, answers):
+    assert self.states(tailscale, a=True) == {"a": True}
+    assert self.states(tailscale, a=True) == {"a": False}
+
+  def test_an_answer_between_misses_starts_the_count_again(self, tailscale, answers):
+    self.states(tailscale, a=True)
+    answers.up = {"100.64.0.1"}
+    assert self.states(tailscale, a=True) == {"a": True}
+    answers.up = set()
+    assert self.states(tailscale, a=True) == {"a": True}
+
+  def test_the_peers_are_counted_separately(self, tailscale, answers):
+    answers.up = {"100.64.0.2"}
+    self.states(tailscale, a=True, b=True)
+    assert self.states(tailscale, a=True, b=True) == {"a": False, "b": True}
+
+  def test_when_the_manager_is_cut_off_nobody_changes_and_the_misses_are_not_counted(self, tailscale, answers):
+    answers.connected = False
+    assert self.states(tailscale, a=True, b=False) == {"a": True, "b": False}
+    answers.connected = True
+    assert self.states(tailscale, a=True) == {"a": True}
+
+  def test_no_peers_is_no_states(self, tailscale, answers):
+    assert asyncio.run(tailscale.online_states({})) == {}

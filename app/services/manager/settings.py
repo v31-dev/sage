@@ -61,8 +61,7 @@ class SettingsMixin:
     if backend_state != "Running":
       raise ValueError(f"The manager's tailnet node is not running ({backend_state}).")
     machines = self.tailscale.get_by_tag(self.tailscale.worker_tag)
-    online = sum(machine.online for machine in machines)
-    return f"{len(machines)} machine(s) tagged tag:{self.tailscale.worker_tag}, {online} online."
+    return f"{len(machines)} machine(s) tagged tag:{self.tailscale.worker_tag}."
 
   def _test_cloudflare(self, value: dict, side_effects: bool) -> str:
     """Env vars, so checked as configured: token, zone and account, and the tunnel's health."""

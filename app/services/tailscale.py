@@ -15,10 +15,20 @@ import asyncssh
 import config
 from services.base import Base
 from utils.common import dict_to_obj, get_env
+from utils.executor import run_in_executor_with_context
 
 logger = logging.getLogger(__name__)
 
 SSH_USER = "root"
+
+
+def next_online(was_online: bool, answered: bool, misses: int) -> tuple[bool, int]:
+  """A worker's online state after one ping, and the pings missed in a row: online at the first answer,
+  offline once OFFLINE_AFTER_MISSED_PINGS in a row have gone unanswered."""
+  if answered:
+    return True, 0
+  misses += 1
+  return was_online and misses < config.OFFLINE_AFTER_MISSED_PINGS, misses
 
 
 class Tailscale(Base):
@@ -30,6 +40,8 @@ class Tailscale(Base):
     # Pooled SSH connections per worker
     self._conns: dict[str, asyncssh.SSHClientConnection] = {}
     self._conn_locks: dict[str, asyncio.Lock] = {}
+    # Pings missed in a row, per worker
+    self._misses: dict[str, int] = {}
 
   async def _get_conn(self, hostname):
     """Return a live pooled SSH connection to `hostname`, connecting if needed."""
@@ -81,6 +93,36 @@ class Tailscale(Base):
       raise Exception(f"Tailscale status failed: {result.stderr.strip()}")
     return json.loads(result.stdout)
 
+  def connected(self) -> bool:
+    """Whether the manager's own node is connected to the tailnet's coordination server."""
+    return bool(self.status().get("Self", {}).get("Online"))
+
+  async def ping(self, target: str) -> bool:
+    """Whether a peer answers `tailscale ping`, tailscaled's probe of the path SSH uses. Tailscale's own
+    `Online` flag is the coordination server's view and lags in both directions."""
+    process = await asyncio.create_subprocess_exec(
+        "tailscale", "ping", "-c", "1", f"--timeout={config.PING_TIMEOUT_SECONDS}s", target,
+        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+    try:
+      return await asyncio.wait_for(process.wait(), config.PING_TIMEOUT_SECONDS + 5) == 0
+    except TimeoutError:
+      process.kill()
+      await process.wait()
+      return False
+
+  async def online_states(self, peers: dict[str, tuple[str, bool]]) -> dict[str, bool]:
+    """Ping every peer ({hostname: (ip, online now)}) at once and return its online state, which lags
+    by one missed ping (see `next_online`). When the manager's own node is cut off from the tailnet a
+    miss says nothing about the peers, so their states are left as they are."""
+    answers = await asyncio.gather(*(self.ping(ip) for ip, _ in peers.values()))
+    if not all(answers) and not await run_in_executor_with_context(self.connected):
+      logger.warning("The manager is not connected to the tailnet; worker states are left as they are.")
+      return {hostname: online for hostname, (_, online) in peers.items()}
+    states = {}
+    for (hostname, (_, online)), answered in zip(peers.items(), answers):
+      states[hostname], self._misses[hostname] = next_online(online, answered, self._misses.get(hostname, 0))
+    return states
+
   def ip(self):
     if not getattr(self, "_ip", ""):
       try:
@@ -99,7 +141,8 @@ class Tailscale(Base):
 
   def get_by_tag(self, tag):
     """
-    Get a list of objects with hostname, ip, online attributes for all peers with a given tag.
+    Get a list of objects with hostname and ip attributes for all peers with a given tag. Whether
+    a peer is online is not read from Tailscale (see `online_states`).
     """
     status = self.status()
 
@@ -108,7 +151,6 @@ class Tailscale(Base):
             {
                 "hostname": peer["HostName"],
                 "ip": peer["TailscaleIPs"][0],
-                "online": peer["Online"],
             }
         )
         for peer in status.get("Peer", {}).values()

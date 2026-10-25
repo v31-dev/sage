@@ -48,14 +48,10 @@ async def check_worker_stamps():
 
 
 async def sync_application_status():
+  # Most changes are requested by a worker's report; this also catches an operation that was
+  # interrupted before its terminal status, and a worker that stopped reporting.
   for application in Application.select(Application, Project).join(Project):
-    Manager().add_task(
-        task=Manager().sync_application_status,
-        scopes={f"app:{application.qualified_name}"},
-        params={"application_id": application.id},
-        executor="app",
-        quiet=True,
-    )
+    Manager().request_application_status_sync(application)
 
 
 async def schedule_application_backups():

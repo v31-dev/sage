@@ -8,6 +8,7 @@ from services.db import Application, Container, Project, Worker
 from services.logs import Logs
 from services.manager import Manager
 from services.metrics import Metrics
+from services.reports import Reports
 from services.tailscale import Tailscale
 from utils.api import generic_get, get_request_models
 from utils.common import get_env
@@ -36,13 +37,13 @@ def inject_worker(request: Request):
 
 @router.get("/")
 def get():
-  return list(Worker.select().dicts())
+  return [{**worker, "ready": Reports().ready(worker["hostname"])} for worker in Worker.select().dicts()]
 
 
 @router.get("/{hostname}", dependencies=[Depends(inject_worker)])
 def get_worker(request: Request, hostname: str):
   worker = request.state.models["worker"]
-  return model_to_dict(
+  data = model_to_dict(
       worker,
       backrefs=True,
       only=(
@@ -58,6 +59,9 @@ def get_worker(request: Request, hostname: str):
           }
       ),
   )
+  data["ready"] = Reports().ready(hostname)
+  data["infra"] = Reports().infra(hostname)
+  return data
 
 
 @router.get("/{hostname}/metrics", dependencies=[Depends(inject_worker)])

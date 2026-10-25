@@ -157,6 +157,31 @@ describe('the indicators by status', () => {
     expect(store.workerIndicator(false)).toEqual({ state: 'error', label: 'offline' })
   })
 
+  it('workerIndicator: online but not ready is a warning, and unknown readiness is online', () => {
+    const store = useAppStore()
+    expect(store.workerIndicator(true, false)).toEqual({ state: 'warning', label: 'not ready' })
+    expect(store.workerIndicator(true, true)).toEqual({ state: 'ok', label: 'online' })
+    expect(store.workerIndicator(true, null)).toEqual({ state: 'ok', label: 'online' })
+  })
+
+  it('workerIndicator: an offline worker is offline whatever its readiness says', () => {
+    const store = useAppStore()
+    expect(store.workerIndicator(false, true)).toEqual({ state: 'error', label: 'offline' })
+  })
+
+  it.each([
+    ['running', 'ok'],
+    ['restarting', 'warning'],
+    ['paused', 'warning'],
+    ['exited', 'error'],
+    ['missing', 'error'],
+  ] as const)('infraIndicator: a stack container that is %s is %s', (status, state) => {
+    expect(useAppStore().infraIndicator({ name: 'traefik', status })).toEqual({
+      state,
+      label: `traefik: ${status}`,
+    })
+  })
+
   it('domainIndicator: synced and syncing', () => {
     const store = useAppStore()
     expect(store.domainIndicator(true)).toEqual({ state: 'ok', label: 'synced' })

@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException, Request, Response
 
 import config
 from services.db import Worker
+from services.manager import Manager
 from services.metrics import Metrics
 from services.reports import Reports, parse_batch
 
@@ -56,7 +57,10 @@ async def telegraf_report(request: Request):
     logger.warning(f"Rejected a malformed report from {hostname}: {e}")
     raise HTTPException(status_code=400, detail="Malformed report.")
 
-  if Reports().accept(hostname, snapshots):
+  arrival = Reports().accept(hostname, snapshots)
+  if arrival is not None and arrival.resumed:
     logger.info(f"Receiving reports from {hostname}.")
   Metrics().ingest(hostname, snapshots)
+  if arrival is not None and arrival.changed:
+    Manager().request_status_sync_for_containers(hostname, arrival.changed)
   return Response(status_code=204)
