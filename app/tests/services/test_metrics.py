@@ -116,6 +116,7 @@ def store(data_dir):
   metrics.lock = threading.RLock()
   metrics._dbs = {"metrics": {}}
   metrics._workers = {}
+  metrics._peaks = MinutePeaks()
   metrics.db_path = data_dir
   yield metrics
   for shard in metrics._dbs["metrics"].values():
@@ -403,3 +404,96 @@ class TestFlushWorker:
     result = store.query_period("w1", "1h")
     assert [row["cpu_pct"] for row in result["host"] if row["cpu_pct"] is not None] != []
     assert {c[0]["name"] for c in result["containers"]} == {"traefik", "web"}
+
+
+class TestQueriesSeeTheMinutesNotYetWritten:
+  """A minute is written to the shard once it has ended; the charts and the list cards show the latest
+  reading, so the queries add what is still in memory."""
+
+  def hour(self, store, hostname="w1"):
+    return store.query_period(hostname, "1h")
+
+  def host_ts_with_data(self, result):
+    return [row["ts"][11:16] for row in result["host"] if row["cpu_pct"] is not None]
+
+  def test_the_minute_in_progress_is_shown_before_it_is_written(self, store, clock):
+    store.ingest("w1", [snapshot(10, host(idle=80))])
+    clock.set(MINUTE + timedelta(seconds=30))
+    result = self.hour(store)
+    assert result["host"][-1]["ts"] == "2026-10-23T10:05:00Z"
+    assert result["host"][-1]["cpu_pct"] == 20.0
+    assert store.get_metrics_db("w1")["models"]["WorkerMetrics"].select().count() == 0
+
+  def test_a_completed_minute_that_is_not_written_yet_is_shown_too(self, store, clock):
+    store.ingest("w1", [snapshot(-50, host(idle=70)), snapshot(10, host(idle=80))])
+    clock.set(MINUTE + timedelta(seconds=30))
+    assert self.host_ts_with_data(self.hour(store)) == ["10:04", "10:05"]
+
+  def test_once_written_a_minute_comes_from_the_shard_and_is_not_shown_twice(self, store, clock):
+    store.ingest("w1", [snapshot(-50, host(idle=70)), snapshot(10, host(idle=80))])
+    clock.set(MINUTE + timedelta(seconds=30))
+    store.flush_worker("w1")
+    result = self.hour(store)
+    assert len(result["host"]) == 60
+    assert self.host_ts_with_data(result) == ["10:04", "10:05"]
+    assert [row["cpu_pct"] for row in result["host"] if row["cpu_pct"] is not None] == [30.0, 20.0]
+
+  def test_a_minute_that_is_written_and_still_filling_shows_the_memory_not_the_old_row(self, store, clock):
+    WorkerMetrics = store.get_metrics_db("w1")["models"]["WorkerMetrics"]
+    WorkerMetrics.create(ts=MINUTE, cpu_pct=1.0, mem_used_mb=1, mem_cached_mb=1, disk_used_gb=1.0, net_rx_kbps=0, net_tx_kbps=0)
+    store.ingest("w1", [snapshot(10, host(idle=50))])
+    clock.set(MINUTE + timedelta(seconds=30))
+    assert self.hour(store)["host"][-1]["cpu_pct"] == 50.0
+
+  def test_the_latest_view_has_the_minute_before_in_the_first_seconds_of_a_minute(self, store, clock):
+    store.ingest("w1", [snapshot(-10, host(idle=80))])
+    clock.set(MINUTE + timedelta(seconds=3))
+    rows = store.query_period("w1", "1m")["host"]
+    assert [(row["ts"][11:16], row["cpu_pct"]) for row in rows] == [("10:04", 20.0), ("10:05", None)]
+
+  def test_a_pending_minute_older_than_the_window_is_left_out(self, store, clock):
+    store.ingest("w1", [snapshot(-240, host(idle=80))])
+    clock.set(MINUTE + timedelta(seconds=30))
+    assert self.host_ts_with_data(store.query_period("w1", "1m")) == []
+
+  def test_a_minute_without_a_cpu_reading_is_not_shown(self, store, clock):
+    store.ingest("w1", [snapshot(10, host(idle=None))])
+    clock.set(MINUTE + timedelta(seconds=30))
+    assert self.host_ts_with_data(self.hour(store)) == []
+
+  def test_the_containers_in_memory_are_listed_with_their_latest_reading(self, store, clock):
+    store.ingest("w1", [snapshot(10, host(), container("web", cpu=100.0), container("db", cpu=40.0))])
+    clock.set(MINUTE + timedelta(seconds=30))
+    series = self.hour(store)["containers"]
+    assert [points[-1]["name"] for points in series] == ["db", "web"]
+    assert [points[-1]["cpu_pct"] for points in series] == [10.0, 25.0]
+    assert store.query_container_period("w1", "web", "1h")[-1]["cpu_pct"] == 25.0
+
+  def test_a_container_written_and_one_in_memory_are_both_listed(self, store, clock):
+    store.ingest("w1", [snapshot(-50, host(), container("old"))])
+    clock.set(MINUTE + timedelta(seconds=30))
+    store.flush_worker("w1")
+    store.ingest("w1", [snapshot(40, host(), container("new"))])
+    assert [points[-1]["name"] for points in self.hour(store)["containers"]] == ["new", "old"]
+
+  def test_the_managers_own_minutes_in_memory_are_shown_too(self, store, clock):
+    store._peaks.fold(MINUTE, {"cpu_pct": 12.0, "mem_used_mb": 100, "mem_cached_mb": 10, "disk_used_gb": 1.0,
+                               "net_rx_kbps": 1.0, "net_tx_kbps": 2.0})
+    clock.set(MINUTE + timedelta(seconds=30))
+    last = store.query_period("manager", "1h")["host"][-1]
+    assert (last["ts"], last["cpu_pct"], last["load_avg_1m"]) == ("2026-10-23T10:05:00Z", 12.0, None)
+
+  def test_a_host_nothing_has_been_reported_for_has_no_rows(self, store, clock):
+    clock.set(MINUTE + timedelta(seconds=30))
+    assert self.host_ts_with_data(self.hour(store, "nobody")) == []
+
+
+class TestRows:
+  def test_a_minute_lacking_a_core_reading_has_no_row(self):
+    from services.metrics import _host_row
+    assert _host_row(MINUTE, {"cpu_pct": 1, "mem_used_mb": 1, "mem_cached_mb": 1}) is None
+
+  def test_the_network_rates_are_zero_and_the_load_is_none_when_not_reported(self):
+    from services.metrics import _host_row
+    row = _host_row(MINUTE, {"cpu_pct": 1, "mem_used_mb": 2, "mem_cached_mb": 3, "disk_used_gb": 4})
+    assert (row["net_rx_kbps"], row["net_tx_kbps"], row["load_avg_1m"]) == (0.0, 0.0, None)

@@ -585,6 +585,11 @@ class TestOnlineStates:
     self.states(tailscale, a=True, b=True)
     assert self.states(tailscale, a=True, b=True) == {"a": False, "b": True}
 
+  def test_a_peer_that_is_no_longer_listed_starts_again_with_no_misses(self, tailscale, answers):
+    self.states(tailscale, a=True)
+    self.states(tailscale, b=True)
+    assert self.states(tailscale, a=True) == {"a": True}
+
   def test_when_the_manager_is_cut_off_nobody_changes_and_the_misses_are_not_counted(self, tailscale, answers):
     answers.connected = False
     assert self.states(tailscale, a=True, b=False) == {"a": True, "b": False}

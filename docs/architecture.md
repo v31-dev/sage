@@ -55,6 +55,8 @@ The worker stack currently includes:
 - `telegraf`
 - `cloudflared`, connecting the worker to the manager's tunnel
 
+`vector` and `telegraf` run with a 128 MiB memory limit, swap included: their executables are large, and the kernel keeps the pages it has read in the container's memory, which on a small worker the applications could use.
+
 Applications themselves are also deployed onto workers as Docker workloads.
 
 ## Traffic Model

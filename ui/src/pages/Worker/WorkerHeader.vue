@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { computed, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { toast } from 'vue-sonner'
 import { Activity, RotateCw, Trash } from 'lucide-vue-next'
@@ -15,7 +16,12 @@ import {
 import { Label } from '@/components/ui/label'
 
 import ConfirmationButton from '@/components/ConfirmationButton.vue'
-import { workersAPI, type Worker, type WorkerMetricsResponse } from '@/services/api'
+import {
+  workersAPI,
+  type Worker,
+  type WorkerMetricsResponse,
+  type WorkerStatus,
+} from '@/services/api'
 import SectionTitle from '@/components/SectionTitle.vue'
 import StateIndicator from '@/components/StateIndicator.vue'
 import { useAppStore } from '@/stores/app'
@@ -23,13 +29,22 @@ import { useAppStore } from '@/stores/app'
 interface Props {
   worker: Worker
   workerMetrics: WorkerMetricsResponse
-  loadWorkerStatus?: () => Promise<void>
 }
 
 const router = useRouter()
 const appStore = useAppStore()
 
 const props = withDefaults(defineProps<Props>(), {})
+
+// Shown from the moment Restart is confirmed (undone if the manager refuses) until the next poll replaces `worker`
+// with the manager's answer.
+const requested = ref<WorkerStatus | null>(null)
+watch(
+  () => props.worker,
+  () => (requested.value = null)
+)
+const status = computed(() => requested.value ?? props.worker.status)
+const restartable = computed(() => status.value === 'online' || status.value === 'not ready')
 
 function goToMetrics() {
   router.push(`/workers/${props.worker.hostname}/metrics`)
@@ -42,9 +57,14 @@ async function onConfirmDelete() {
 }
 
 async function onConfirmRestart() {
-  await workersAPI.action(`${props.worker.hostname}/reboot`)
+  requested.value = 'rebooting'
+  try {
+    await workersAPI.action(`${props.worker.hostname}/reboot`)
+  } catch (err) {
+    requested.value = null
+    throw err
+  }
   toast.success(`Worker ${props.worker.hostname} reboot triggered`)
-  await props.loadWorkerStatus?.()
 }
 </script>
 
@@ -53,12 +73,7 @@ async function onConfirmRestart() {
     <CardHeader class="border-b">
       <CardTitle>
         <SectionTitle :title="props.worker.hostname" :size="3">
-          <StateIndicator
-            v-bind="
-              appStore.workerIndicator(props.worker.online, props.worker.ready, props.worker.state)
-            "
-            show-label
-          />
+          <StateIndicator v-bind="appStore.workerIndicator(status)" show-label />
         </SectionTitle>
       </CardTitle>
       <CardAction>
@@ -69,7 +84,7 @@ async function onConfirmRestart() {
             body="Are you sure you want to restart this worker? It will reboot and briefly go offline."
             :description="props.worker.hostname"
             :icon="RotateCw"
-            :disabled="!props.worker.online || !!props.worker.state"
+            :disabled="!restartable"
             :onConfirm="onConfirmRestart"
           />
           <ConfirmationButton
@@ -79,7 +94,7 @@ async function onConfirmRestart() {
             :description="props.worker.hostname"
             :icon="Trash"
             destructive
-            :disabled="props.worker.state === 'removing'"
+            :disabled="status === 'removing'"
             :onConfirm="onConfirmDelete"
           />
         </ButtonGroup>

@@ -3,8 +3,8 @@ from datetime import datetime, timedelta
 import pytest
 
 import config
-from services.manager.decisions import (ABSENT, OFFLINE, SEEN, UNKNOWN, Observation, RebootMark, WorkerRow, is_rebooting, plan_worker_sync,
-                                        reconcile_container, rollup_status, stack_problem)
+from services.manager.decisions import (ABSENT, OFFLINE, SEEN, UNKNOWN, Observation, WorkerReboot, WorkerRow, is_worker_rebooting, plan_worker_sync,
+                                        reconcile_container, rollup_status, worker_stack_problem)
 from services.reports import ContainerReading, HostReading, Snapshot
 
 STAMP = "2026-10-24T23:08:35.718155"
@@ -143,37 +143,37 @@ def snapshot(running=("traefik", "vector", "telegraf", "cloudflared"), traefik_r
                   traefik_reachable=traefik_reachable)
 
 
-class TestStackProblem:
+class TestWorkerStackProblem:
   def test_a_stack_that_is_all_running_and_answering_has_none(self):
-    assert stack_problem(snapshot(), 5) is None
+    assert worker_stack_problem(snapshot(), 5) is None
 
   def test_a_missing_or_stopped_container_of_the_stack_is_named(self):
-    assert stack_problem(snapshot(running=("vector", "telegraf", "cloudflared")), 5) == "traefik not running"
-    assert stack_problem(snapshot(running=("vector",)), 5) == "traefik, telegraf, cloudflared not running"
+    assert worker_stack_problem(snapshot(running=("vector", "telegraf", "cloudflared")), 5) == "traefik not running"
+    assert worker_stack_problem(snapshot(running=("vector",)), 5) == "traefik, telegraf, cloudflared not running"
 
   def test_a_stopped_state_counts_as_not_running(self):
     from dataclasses import replace
     shot = snapshot()
     shot.containers["traefik"] = replace(shot.containers["traefik"], status="exited")
-    assert stack_problem(shot, 5) == "traefik not running"
+    assert worker_stack_problem(shot, 5) == "traefik not running"
 
   def test_traefik_running_but_not_answering_is_a_problem(self):
-    assert stack_problem(snapshot(traefik_reachable=False), 5) == "Traefik is not answering"
+    assert worker_stack_problem(snapshot(traefik_reachable=False), 5) == "Traefik is not answering"
 
   def test_a_report_without_the_check_is_not_a_problem(self):
-    assert stack_problem(snapshot(traefik_reachable=None), 5) is None
+    assert worker_stack_problem(snapshot(traefik_reachable=None), 5) is None
 
   def test_no_report_is_a_problem_only_after_a_silence(self):
-    assert stack_problem(None, config.STACK_SILENCE_SECONDS) is None
-    assert stack_problem(None, config.STACK_SILENCE_SECONDS + 1) == "not reporting"
+    assert worker_stack_problem(None, config.WORKER_STACK_SILENCE_SECONDS) is None
+    assert worker_stack_problem(None, config.WORKER_STACK_SILENCE_SECONDS + 1) == "not reporting"
 
 
-class TestIsRebooting:
+class TestIsWorkerRebooting:
   ASKED = datetime(2026, 1, 1, 12)
 
   def under_way(self, started_at, seconds=30, before=100):
-    mark = RebootMark(self.ASKED, before)
-    return is_rebooting(mark, self.ASKED + timedelta(seconds=seconds), started_at)
+    mark = WorkerReboot(self.ASKED, before)
+    return is_worker_rebooting(mark, self.ASKED + timedelta(seconds=seconds), started_at)
 
   def test_a_worker_with_no_current_report_is_still_rebooting(self):
     assert self.under_way(None)
@@ -186,10 +186,10 @@ class TestIsRebooting:
 
   @pytest.mark.parametrize("started_at", [200, None])
   def test_with_nothing_to_compare_with_any_report_counts_as_back(self, started_at):
-    mark = RebootMark(self.ASKED, None)
-    assert is_rebooting(mark, self.ASKED + timedelta(seconds=30), started_at) is (started_at is None)
+    mark = WorkerReboot(self.ASKED, None)
+    assert is_worker_rebooting(mark, self.ASKED + timedelta(seconds=30), started_at) is (started_at is None)
 
   def test_a_worker_that_never_comes_back_stops_being_one_after_the_limit(self):
-    assert self.under_way(None, seconds=config.REBOOT_LIMIT_SECONDS)
-    assert not self.under_way(None, seconds=config.REBOOT_LIMIT_SECONDS + 1)
-    assert not self.under_way(100, seconds=config.REBOOT_LIMIT_SECONDS + 1)
+    assert self.under_way(None, seconds=config.WORKER_REBOOT_LIMIT_SECONDS)
+    assert not self.under_way(None, seconds=config.WORKER_REBOOT_LIMIT_SECONDS + 1)
+    assert not self.under_way(100, seconds=config.WORKER_REBOOT_LIMIT_SECONDS + 1)

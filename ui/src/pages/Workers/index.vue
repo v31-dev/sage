@@ -21,7 +21,7 @@ let pollInterval: ReturnType<typeof setInterval> | null = null
 let statusInterval: ReturnType<typeof setInterval> | null = null
 
 function summarizeWorkerMetrics(workerData: WorkerMetricsResponse): WorkerMetricSummary {
-  const latest = workerData.host[workerData.host.length - 1]
+  const latest = [...workerData.host].reverse().find(row => row.cpu_pct !== null)
 
   return {
     cpu: latest?.cpu_pct ?? null,
@@ -42,7 +42,6 @@ function summarizeWorkerMetrics(workerData: WorkerMetricsResponse): WorkerMetric
   }
 }
 
-// A refresh that fails keeps the list on screen; only the first load shows the error.
 async function loadWorkers() {
   try {
     const next = (await workersAPI.fetchAll()) as Worker[]
@@ -95,7 +94,7 @@ async function loadWorkerMetrics() {
 onMounted(async () => {
   await loadWorkers()
   await loadWorkerMetrics()
-  pollInterval = setInterval(loadWorkerMetrics, 60_000)
+  pollInterval = setInterval(loadWorkerMetrics, 15_000)
   statusInterval = setInterval(loadWorkers, 10_000)
 })
 

@@ -91,11 +91,7 @@ function goBack() {
       </Card>
 
       <div v-else-if="worker && workerMetrics" class="space-y-6">
-        <WorkerHeader
-          :worker="worker"
-          :workerMetrics="workerMetrics"
-          :loadWorkerStatus="loadWorkerStatus"
-        />
+        <WorkerHeader :worker="worker" :workerMetrics="workerMetrics" />
 
         <div class="space-y-4">
           <div class="flex items-center justify-between">

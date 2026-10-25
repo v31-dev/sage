@@ -199,7 +199,7 @@ The top-level `Dockerfile` builds:
    with it)
 2. the Python app image that serves the built frontend from `/app/static` and exposes it at `/` while leaving `/api` on the backend
 
-The production UI build currently injects `VITE_LOAD_DELAY=0`, while local frontend development keeps the source default delay.
+`VITE_LOAD_DELAY` (milliseconds, 300 when unset) makes the API client wait before every call, so that development simulates a slow network: the instant status updates after an action and the protection against a second click can be seen and tried. Raise it (for example `VITE_LOAD_DELAY=2000`) to test them harder, and set it to 0 to judge how responsive the UI really is. The production UI build and the UI tests set it to 0.
 
 ## CI And Release Notes
 

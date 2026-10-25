@@ -39,7 +39,7 @@ watch(period, () => {
 
 onMounted(async () => {
   await load()
-  pollInterval = setInterval(load, 60_000)
+  pollInterval = setInterval(load, 15_000)
 })
 onUnmounted(() => {
   if (pollInterval) clearInterval(pollInterval)

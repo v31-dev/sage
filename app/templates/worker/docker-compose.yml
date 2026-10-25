@@ -35,6 +35,8 @@ services:
     image: timberio/vector:0.54.0-alpine
     container_name: vector
     restart: unless-stopped
+    mem_limit: 128m
+    memswap_limit: 128m
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ${SAGE_HOME}/vector/config:/etc/vector:ro
@@ -54,6 +56,8 @@ services:
     image: telegraf:1.40.2-alpine
     container_name: telegraf
     restart: unless-stopped
+    mem_limit: 128m
+    memswap_limit: 128m
     network_mode: host
     user: telegraf:${DOCKER_GID}
     read_only: true

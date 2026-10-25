@@ -56,12 +56,14 @@ class Manager(
 
       # Last check result per settings section (services/manager/settings.py).
       self.setting_checks = {}
-      # Worker counts as of the last sync
+      # Worker counts as of the last sync (services/manager/workers.py).
       self.worker_summary = None
-      # When each worker's stack was last started for being down (services/manager/workers.py).
-      self.stack_repairs = {}
-      # The reboots the manager asked for that may still be under way, by worker.
-      self.rebooting = {}
+      # When the stack of each worker was last started for being down, until its cooldown is over
+      # (services/manager/workers.py).
+      self.worker_stack_repairs = {}
+      # The reboots the manager asked of workers that may still be under way, by worker
+      # (services/manager/workers.py).
+      self.worker_reboots = {}
 
       # Single-dispatcher operation queue. Each scope root maps to an independent
       # lane pool (all defined in utils.executor).

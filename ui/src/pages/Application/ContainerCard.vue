@@ -31,7 +31,9 @@ const appStore = useAppStore()
 
 const props = withDefaults(defineProps<Props>(), {})
 
-const workerIndicator = computed(() => appStore.workerIndicator(props.container.worker.online))
+const workerIndicator = computed(() =>
+  appStore.workerIndicator(props.container.worker.online ? 'online' : 'offline')
+)
 </script>
 
 <template>

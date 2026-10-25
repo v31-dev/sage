@@ -116,9 +116,10 @@ class Tailscale(Base):
     if not all(answers) and not await run_in_executor_with_context(self.connected):
       logger.warning("The manager is not connected to the tailnet; worker states are left as they are.")
       return {hostname: online for hostname, (_, online) in peers.items()}
-    states = {}
+    states, misses = {}, {}
     for (hostname, (_, online)), answered in zip(peers.items(), answers):
-      states[hostname], self._misses[hostname] = next_online(online, answered, self._misses.get(hostname, 0))
+      states[hostname], misses[hostname] = next_online(online, answered, self._misses.get(hostname, 0))
+    self._misses = misses
     return states
 
   def ip(self):

@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 # points is number of data points to return
 # data in db is stored in minute intervals
 _PERIODS = {
-    "1m": {"delta": timedelta(minutes=1), "bucket": 1, "points": 1},
+    "1m": {"delta": timedelta(minutes=2), "bucket": 1, "points": 2},
     "1h": {"delta": timedelta(hours=1), "bucket": 1, "points": 60},
     "24h": {"delta": timedelta(hours=24), "bucket": 24, "points": 60},
     "1w": {"delta": timedelta(days=7), "bucket": 168, "points": 60},
@@ -57,12 +57,45 @@ class MinutePeaks:
       entry[key] = max(entry.get(key, value), value)
     entry.update(latest or {})
 
+  def snapshot(self) -> dict[datetime, dict]:
+    return {minute: dict(entry) for minute, entry in self._minutes.items()}
+
   def drain(self, before: datetime) -> dict[datetime, dict]:
     """Remove and return the minutes earlier than `before`."""
     completed = {minute: entry for minute, entry in self._minutes.items() if minute < before}
     for minute in completed:
       del self._minutes[minute]
     return completed
+
+
+def _host_row(minute: datetime, peak: dict) -> dict | None:
+  """A host's row for a minute from its peaks; None while the minute lacks a core reading. The network
+  rates are 0 until there are two reports."""
+  if not all(key in peak for key in _REQUIRED_HOST_PEAKS):
+    return None
+  return {
+      "ts": minute,
+      "cpu_pct": peak["cpu_pct"],
+      "mem_used_mb": peak["mem_used_mb"],
+      "mem_cached_mb": peak["mem_cached_mb"],
+      "disk_used_gb": peak["disk_used_gb"],
+      "load_avg_1m": peak.get("load_avg_1m"),
+      "load_avg_5m": peak.get("load_avg_5m"),
+      "load_avg_15m": peak.get("load_avg_15m"),
+      "net_rx_kbps": peak.get("net_rx_kbps", 0.0),
+      "net_tx_kbps": peak.get("net_tx_kbps", 0.0),
+  }
+
+
+def _container_row(name: str, minute: datetime, peak: dict) -> dict:
+  return {
+      "ts": minute,
+      "name": name,
+      "cpu_pct": peak.get("cpu_pct", 0.0),
+      "mem_used_mb": peak.get("mem_used_mb", 0.0),
+      "net_rx_kbps": peak.get("net_rx_kbps", 0.0),
+      "net_tx_kbps": peak.get("net_tx_kbps", 0.0),
+  }
 
 
 def _present(**values):
@@ -136,6 +169,10 @@ class WorkerPeaks:
       )
       if peaks:
         self.containers.setdefault(name, MinutePeaks()).fold(minute, peaks)
+
+  def pending(self):
+    """What has not been drained: the host's minutes, and by container name."""
+    return self.host.snapshot(), {name: peaks.snapshot() for name, peaks in self.containers.items()}
 
   def idle(self) -> bool:
     return not len(self.host) and not self.containers
@@ -275,22 +312,9 @@ class Metrics(Base):
     ContainerMetrics = db_info["models"]["ContainerMetrics"]
 
     with db_info["db"].atomic():
-      complete = {minute: peak for minute, peak in host_minutes.items()
-                  if all(key in peak for key in _REQUIRED_HOST_PEAKS)}
-      for minute in sorted(complete):
-        peak = complete[minute]
-        WorkerMetrics.replace(
-            ts=minute,
-            cpu_pct=peak["cpu_pct"],
-            mem_used_mb=peak["mem_used_mb"],
-            mem_cached_mb=peak["mem_cached_mb"],
-            disk_used_gb=peak["disk_used_gb"],
-            load_avg_1m=peak.get("load_avg_1m"),
-            load_avg_5m=peak.get("load_avg_5m"),
-            load_avg_15m=peak.get("load_avg_15m"),
-            net_rx_kbps=peak.get("net_rx_kbps", 0.0),
-            net_tx_kbps=peak.get("net_tx_kbps", 0.0),
-        ).execute()
+      rows = [row for minute, peak in sorted(host_minutes.items()) if (row := _host_row(minute, peak))]
+      for row in rows:
+        WorkerMetrics.replace(**row).execute()
 
       sized = [peak for _, peak in sorted(host_minutes.items())
                if all(key in peak for key in ("cpu_cores", "mem_total_mb", "disk_total_gb"))]
@@ -304,17 +328,17 @@ class Metrics(Base):
 
       for name, minutes in container_minutes.items():
         for minute in sorted(minutes):
-          peak = minutes[minute]
-          ContainerMetrics.replace(
-              ts=minute,
-              name=name,
-              cpu_pct=peak.get("cpu_pct", 0.0),
-              mem_used_mb=peak.get("mem_used_mb", 0.0),
-              net_rx_kbps=peak.get("net_rx_kbps", 0.0),
-              net_tx_kbps=peak.get("net_tx_kbps", 0.0),
-          ).execute()
+          ContainerMetrics.replace(**_container_row(name, minute, minutes[minute])).execute()
 
-    logger.debug(f"Flushed metrics for {hostname}: {len(complete)} minute(s), {len(container_minutes)} container(s).")
+    logger.debug(f"Flushed metrics for {hostname}: {len(rows)} minute(s), {len(container_minutes)} container(s).")
+
+  def _pending(self, hostname: str):
+    """The minutes of a host not yet written to its shard, in memory: its own, and by container name."""
+    with self.lock:
+      if hostname == get_env("TS_NAME"):
+        return self._peaks.snapshot(), {}
+      workers = self._workers.get(hostname)
+      return workers.pending() if workers else ({}, {})
 
   def forget(self, hostname: str):
     """Drop what a removed worker has not yet flushed."""
@@ -420,19 +444,7 @@ class Metrics(Base):
     ).execute()
 
     for minute in sorted(completed):
-      peak = completed[minute]
-      WorkerMetrics.replace(
-          ts=minute,
-          cpu_pct=peak["cpu_pct"],
-          mem_used_mb=peak["mem_used_mb"],
-          mem_cached_mb=peak["mem_cached_mb"],
-          disk_used_gb=peak["disk_used_gb"],
-          load_avg_1m=None,
-          load_avg_5m=None,
-          load_avg_15m=None,
-          net_rx_kbps=peak["net_rx_kbps"],
-          net_tx_kbps=peak["net_tx_kbps"],
-      ).execute()
+      WorkerMetrics.replace(**_host_row(minute, completed[minute])).execute()
 
     logger.info(f"Flushed manager metrics for {hostname}: {len(completed)} minute(s).")
 
@@ -498,12 +510,14 @@ class Metrics(Base):
     WorkerMetrics = db_info["models"]["WorkerMetrics"]
     ContainerMetrics = db_info["models"]["ContainerMetrics"]
 
-    rows = list(
-        WorkerMetrics.select()
-        .where(WorkerMetrics.ts >= since)
-        .order_by(WorkerMetrics.ts)
-        .dicts()
-    )
+    # The minutes not yet written are in memory; the newest of them, the one in progress, is the reading
+    # that is current.
+    pending_host, pending_containers = self._pending(hostname)
+    by_minute = {row["ts"]: row for row in WorkerMetrics.select().where(WorkerMetrics.ts >= since).dicts()}
+    for minute, peak in pending_host.items():
+      if row := _host_row(minute, peak):
+        by_minute[minute] = row
+    rows = [by_minute[minute] for minute in sorted(by_minute)]
 
     # Format timestamps once — compute template with None values for missing fields
     metric_fields = {k for k in WorkerMetrics._meta.fields.keys() if k != "ts"}
@@ -526,13 +540,9 @@ class Metrics(Base):
     rows = self._aggregate_buckets(rows, period_config["bucket"], ["ts"])
 
     # Container series — group by name, same bucketing
-    containers = list(
-        ContainerMetrics.select(ContainerMetrics.name)
-        .where(ContainerMetrics.ts >= since)
-        .distinct()
-        .dicts()
-    )
-    containers = [self.query_container_period(hostname, c["name"], period) for c in containers]
+    names = {c["name"] for c in ContainerMetrics.select(ContainerMetrics.name).where(ContainerMetrics.ts >= since).distinct().dicts()}
+    names |= {name for name, minutes in pending_containers.items() if any(minute >= since for minute in minutes)}
+    containers = [self.query_container_period(hostname, name, period) for name in sorted(names)]
 
     # Get static metadata for capacity context
     meta = WorkerMeta.select().dicts().first() or {}
@@ -595,12 +605,13 @@ class Metrics(Base):
     db_info = self.get_metrics_db(hostname)
     ContainerMetrics = db_info["models"]["ContainerMetrics"]
 
-    rows = list(
-        ContainerMetrics.select()
-        .where((ContainerMetrics.name == container) & (ContainerMetrics.ts >= since))
-        .order_by(ContainerMetrics.ts)
-        .dicts()
-    )
+    by_minute = {
+        row["ts"]: row
+        for row in ContainerMetrics.select().where((ContainerMetrics.name == container) & (ContainerMetrics.ts >= since)).dicts()
+    }
+    for minute, peak in self._pending(hostname)[1].get(container, {}).items():
+      by_minute[minute] = _container_row(container, minute, peak)
+    rows = [by_minute[minute] for minute in sorted(by_minute)]
 
     # Format timestamps once — compute template with None values for missing fields
     metric_fields = {k for k in ContainerMetrics._meta.fields.keys() if k not in {"ts", "name"}}

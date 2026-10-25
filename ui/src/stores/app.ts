@@ -12,7 +12,7 @@ import {
   type InfraContainer,
   type SettingSection,
   type SettingState,
-  type WorkerState,
+  type WorkerStatus,
 } from '@/services/api'
 
 const IDLE_POLL_MS = 30000
@@ -25,6 +25,14 @@ const SETTING_INDICATORS: Record<SettingState, Indicator> = {
   ok: { state: 'ok', label: 'OK' },
   retrying: { state: 'warning', label: 'Retrying' },
   error: { state: 'error', label: 'Error' },
+}
+
+const WORKER_INDICATORS: Record<WorkerStatus, Indicator> = {
+  online: { state: 'ok', label: 'online' },
+  'not ready': { state: 'warning', label: 'not ready' },
+  offline: { state: 'error', label: 'offline' },
+  rebooting: { state: 'busy', label: 'rebooting' },
+  removing: { state: 'busy', label: 'removing' },
 }
 
 // The manager's status, which the sidebar, the banner, the restore overlay and the
@@ -64,18 +72,8 @@ export const useAppStore = defineStore('app', () => {
     return { state, label: status }
   }
 
-  // `ready` is whether the worker is reporting and its Traefik answers; null while unknown. `state` is what
-  // is being done to it, which says more than whether it answers.
-  function workerIndicator(
-    online: boolean,
-    ready?: boolean | null,
-    state?: WorkerState | null
-  ): Indicator {
-    if (state) return { state: 'busy', label: state }
-    if (!online) return { state: 'error', label: 'offline' }
-    return ready === false
-      ? { state: 'warning', label: 'not ready' }
-      : { state: 'ok', label: 'online' }
+  function workerIndicator(status: WorkerStatus): Indicator {
+    return WORKER_INDICATORS[status]
   }
 
   function infraIndicator(container: InfraContainer): Indicator {

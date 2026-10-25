@@ -40,23 +40,18 @@ export interface Release {
   fetched_at: string | null
 }
 
-// One container of a worker's own stack (Traefik, Vector, Telegraf, cloudflared) as its last report
-// shows it; `missing` when the report does not list it.
 export interface InfraContainer {
   name: string
   status: string
 }
 
-// What is being done to a worker that its online state does not say.
-export type WorkerState = 'rebooting' | 'removing'
+export type WorkerStatus = 'online' | 'not ready' | 'offline' | 'rebooting' | 'removing'
 
 export interface Worker {
   hostname: string
   ip: string
   online: boolean
-  ready: boolean | null
-  state: WorkerState | null
-  // Null when the worker has no current report; only the worker's own page loads it.
+  status: WorkerStatus
   infra?: InfraContainer[] | null
   created_at: Date
   updated_at: Date

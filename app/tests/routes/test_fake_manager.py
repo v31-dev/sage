@@ -16,7 +16,7 @@ def test_the_fake_s3_takes_the_same_arguments_as_the_real_one(name):
   assert parameters(getattr(FakeS3, name)) == parameters(getattr(S3, name))
 
 
-@pytest.mark.parametrize("name", ["task_state", "is_task_running", "has_task", "worker_state", "get_volume_backup_resource_error"])
+@pytest.mark.parametrize("name", ["task_state", "is_task_running", "has_task", "worker_status", "get_volume_backup_resource_error"])
 def test_the_fake_manager_takes_the_same_arguments_as_the_real_one(name):
   assert parameters(getattr(FakeManager, name)) == parameters(getattr(Manager, name))
 

@@ -125,12 +125,12 @@ def plan_worker_sync(known: list[WorkerRow], peers: list[WorkerRow], force: bool
   return actions
 
 
-def stack_problem(snapshot: Snapshot | None, silent_for: float) -> str | None:
+def worker_stack_problem(snapshot: Snapshot | None, silent_for: float) -> str | None:
   """What a worker's report says is wrong with its stack, None when nothing is. `snapshot` is the
   current one, or None when the worker has no current report, `silent_for` the seconds since it
   last reported."""
   if snapshot is None:
-    return "not reporting" if silent_for > config.STACK_SILENCE_SECONDS else None
+    return "not reporting" if silent_for > config.WORKER_STACK_SILENCE_SECONDS else None
   down = [name for name in config.WORKER_STACK_SERVICES
           if name not in snapshot.containers or snapshot.containers[name].status != "running"]
   if down:
@@ -141,19 +141,19 @@ def stack_problem(snapshot: Snapshot | None, silent_for: float) -> str | None:
 
 
 @dataclass(frozen=True)
-class RebootMark:
+class WorkerReboot:
   """A reboot the manager asked for: when, and the start of Telegraf's container on the worker's clock
   before it (None when the worker had not reported)."""
   since: datetime
   started_at: int | None
 
 
-def is_rebooting(mark: RebootMark, now: datetime, started_at: int | None) -> bool:
+def is_worker_rebooting(mark: WorkerReboot, now: datetime, started_at: int | None) -> bool:
   """Whether a reboot asked for at `mark.since` is still under way: until the worker reports again with a
   Telegraf that has started since the request (`started_at`, from its current report, is another than
   `mark.started_at`), or the limit. Reports go on until the host goes down, so a report with the same start
   is from before the reboot. Whether the rest of the stack is up yet is the worker's readiness, not the reboot's.
   Without a start from before the request there is nothing to compare with, and any report counts as back."""
-  if (now - mark.since).total_seconds() > config.REBOOT_LIMIT_SECONDS:
+  if (now - mark.since).total_seconds() > config.WORKER_REBOOT_LIMIT_SECONDS:
     return False
   return started_at is None or started_at == mark.started_at

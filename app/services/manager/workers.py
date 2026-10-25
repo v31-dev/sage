@@ -11,7 +11,7 @@ from utils.executor import run_in_executor_with_context
 from utils.logging import TaskFailed
 
 from ._common import WORKER_INFRA_TEMPLATES, app_dir, content_hash, routing_input_hash
-from .decisions import RebootMark, WorkerRow, is_rebooting, plan_worker_sync, stack_problem
+from .decisions import WorkerReboot, WorkerRow, is_worker_rebooting, plan_worker_sync, worker_stack_problem
 
 logger = logging.getLogger(__name__)
 
@@ -53,24 +53,26 @@ class WorkersMixin:
         logger.error(f"sync_workers failed for {hostname}: {e}")
 
     await self.repair_worker_stacks()
-    self.rebooting = {h: mark for h, mark in self.rebooting.items() if self._reboot_under_way(h, mark)}
+    self.worker_reboots = {h: mark for h, mark in self.worker_reboots.items() if self._worker_reboot_under_way(h, mark)}
     self.refresh_worker_summary()
 
-  def worker_state(self, hostname: str) -> str | None:
-    """What is being done to a worker that its online state does not say: "removing" while its removal is
-    queued or running, "rebooting" from the request until it reports again after the reboot (`is_rebooting`),
-    otherwise None.
+  def worker_status(self, hostname: str, online: bool) -> str:
+    """What the worker is shown as: "removing" while its removal is queued or running, "rebooting" from the
+    request until it reports again after the reboot (`is_worker_rebooting`), "offline" when it does not answer a ping
+    (`online`), "not ready" when its report says Traefik is not answering, otherwise "online".
     Derived on every call from the queue and the reports, so there is nothing stored to go stale."""
     params = {"worker_hostname": hostname}
     if self.has_task(self.remove_worker, params):
       return "removing"
-    if self.has_task(self.reboot_worker, params):
+    mark = self.worker_reboots.get(hostname)
+    if self.has_task(self.reboot_worker, params) or (mark is not None and self._worker_reboot_under_way(hostname, mark)):
       return "rebooting"
-    mark = self.rebooting.get(hostname)
-    return "rebooting" if mark is not None and self._reboot_under_way(hostname, mark) else None
+    if not online:
+      return "offline"
+    return "not ready" if Reports().ready(hostname) is False else "online"
 
-  def _reboot_under_way(self, hostname: str, mark: RebootMark) -> bool:
-    return is_rebooting(mark, utcnow(), Reports().started_at(hostname, "telegraf"))
+  def _worker_reboot_under_way(self, hostname: str, mark: WorkerReboot) -> bool:
+    return is_worker_rebooting(mark, utcnow(), Reports().started_at(hostname, "telegraf"))
 
   async def start_worker_stack(self, worker) -> bool:
     """`docker compose up -d` for the worker's stack: it starts what is stopped and leaves what runs
@@ -84,18 +86,22 @@ class WorkersMixin:
     return any(re.search(r"\b(Started|Starting|Created)\b", line) for line in lines)
 
   async def repair_worker_stacks(self):
-    """Start the stack of every online worker whose reports say part of it is down (`stack_problem`).
+    """Start the stack of every online worker whose reports say part of it is down (`worker_stack_problem`).
     Docker does not retry a container whose start failed, as Traefik's does when the worker boots
-    before its Tailscale address exists. A worker is tried at most once per cooldown."""
+    before its Tailscale address exists. A worker is tried at most once per cooldown, and not while it is
+    being rebooted or removed."""
     now = utcnow()
+    self.worker_stack_repairs = {
+        hostname: at for hostname, at in self.worker_stack_repairs.items()
+        if (now - at).total_seconds() < config.WORKER_STACK_REPAIR_COOLDOWN_SECONDS}
     reports = Reports()
     for worker in Worker.select().where(Worker.online):
       current = reports.current(worker.hostname)
-      problem = stack_problem(current.snapshot if current else None, reports.silent_for(worker.hostname))
-      last = self.stack_repairs.get(worker.hostname)
-      if problem is None or (last is not None and (now - last).total_seconds() < config.STACK_REPAIR_COOLDOWN_SECONDS):
+      problem = worker_stack_problem(current.snapshot if current else None, reports.silent_for(worker.hostname))
+      if (problem is None or worker.hostname in self.worker_stack_repairs
+              or self.worker_status(worker.hostname, worker.online) in ("rebooting", "removing")):
         continue
-      self.stack_repairs[worker.hostname] = now
+      self.worker_stack_repairs[worker.hostname] = now
       try:
         started = await self.start_worker_stack(worker)
       except Exception as e:
@@ -393,7 +399,7 @@ class WorkersMixin:
       self.notify(f"Failed to reboot worker {worker.hostname}: {e}", "error")
       raise Exception(f"Failed to reboot worker {worker.hostname}: {e}")
 
-    self.rebooting[worker.hostname] = RebootMark(utcnow(), Reports().started_at(worker.hostname, "telegraf", current=False))
+    self.worker_reboots[worker.hostname] = WorkerReboot(utcnow(), Reports().started_at(worker.hostname, "telegraf", current=False))
 
     # Hold the scope past the backgrounded reboot's delay so a deploy can't grab a
     # still-up worker in the gap between this task finishing and the host dropping.
@@ -421,7 +427,7 @@ class WorkersMixin:
 
     logger.info(f"Removing worker {worker.hostname} from manager.")
     Worker.delete().where(Worker.hostname == worker.hostname).execute()
-    self.rebooting.pop(worker.hostname, None)
+    self.worker_reboots.pop(worker.hostname, None)
     Reports().forget(worker.hostname)
     Metrics().forget(worker.hostname)
     self.refresh_worker_summary()

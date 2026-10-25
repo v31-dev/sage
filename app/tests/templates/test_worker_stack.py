@@ -2,6 +2,7 @@ import re
 import tomllib
 from pathlib import Path
 
+import pytest
 import yaml
 
 import config
@@ -15,8 +16,12 @@ def telegraf_config():
   return tomllib.loads(re.sub(r"\$\{(\w+)\}", lambda m: {"INTERVAL": str(config.REPORT_INTERVAL_SECONDS)}.get(m[1], "x"), text))
 
 
+def service(name):
+  return yaml.safe_load((TEMPLATES / "docker-compose.yml").read_text())["services"][name]
+
+
 def telegraf_service():
-  return yaml.safe_load((TEMPLATES / "docker-compose.yml").read_text())["services"]["telegraf"]
+  return service("telegraf")
 
 
 class TestTelegrafConfig:
@@ -64,3 +69,14 @@ class TestTelegrafService:
     service = telegraf_service()
     assert service["user"] == "telegraf:${DOCKER_GID}"
     assert service["network_mode"] == "host"
+
+
+class TestMemoryLimits:
+  """Their executables are large and the kernel keeps the pages it has read in the container's memory, which on a
+  small worker is memory the applications could use."""
+
+  @pytest.mark.parametrize("name", ["telegraf", "vector"])
+  def test_the_log_and_metric_collectors_have_a_memory_limit_that_swap_does_not_extend(self, name):
+    limits = service(name)
+    assert limits["mem_limit"].endswith("m")
+    assert limits["memswap_limit"] == limits["mem_limit"]
