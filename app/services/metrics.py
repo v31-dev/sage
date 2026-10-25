@@ -3,15 +3,15 @@ import os
 import shutil
 import threading
 import time
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 
-import httpx
 from peewee import CharField, CompositeKey, DateTimeField, FloatField, IntegerField, Model, SqliteDatabase
 
 import config
 from services.base import Base
 from services.db import Worker
+from services.reports import Snapshot
 from utils.common import get_env, utcnow
 
 logger = logging.getLogger(__name__)
@@ -28,6 +28,131 @@ _PERIODS = {
 }
 
 
+_MIB = 1024**2
+_GIB = 1024**3
+
+# A minute of a worker's rows needs these; the network rates are 0 until there are two reports.
+_REQUIRED_HOST_PEAKS = ("cpu_pct", "mem_used_mb", "mem_cached_mb", "disk_used_gb")
+
+
+class MinutePeaks:
+  """The highest reading of each kind in each minute, in memory until the minute has completed.
+  A reading that is not a peak (a total, a core count) keeps its latest value. Not thread-safe:
+  the caller holds a lock."""
+
+  def __init__(self, keep: timedelta = timedelta(minutes=10)):
+    self._keep = keep
+    self._minutes: dict[datetime, dict] = {}
+
+  def __len__(self):
+    return len(self._minutes)
+
+  def fold(self, minute: datetime, peaks: dict, latest: dict | None = None):
+    # Completed minutes are drained every minute, so this normally holds one or two;
+    # bound it in case the flush ever stalls.
+    for stale in [m for m in self._minutes if m < minute - self._keep]:
+      del self._minutes[stale]
+    entry = self._minutes.setdefault(minute, {})
+    for key, value in peaks.items():
+      entry[key] = max(entry.get(key, value), value)
+    entry.update(latest or {})
+
+  def drain(self, before: datetime) -> dict[datetime, dict]:
+    """Remove and return the minutes earlier than `before`."""
+    completed = {minute: entry for minute, entry in self._minutes.items() if minute < before}
+    for minute in completed:
+      del self._minutes[minute]
+    return completed
+
+
+def _present(**values):
+  return {key: value for key, value in values.items() if value is not None}
+
+
+def _rate_kbps(now, before, seconds):
+  """Kilobytes a second between two readings of a byte counter; None when there is no earlier
+  reading or the counter went down (a restart)."""
+  if now is None or before is None or now < before:
+    return None
+  return round((now - before) / 1024 / seconds, 2)
+
+
+class WorkerPeaks:
+  """What one worker's reports add up to: the per-minute peaks of the host and of each running
+  container. Not thread-safe: the caller holds a lock."""
+
+  def __init__(self):
+    self.host = MinutePeaks()
+    self.containers: dict[str, MinutePeaks] = {}
+    self._previous: Snapshot | None = None
+
+  def fold(self, snapshot: Snapshot):
+    previous = self._previous
+    if previous is not None and snapshot.at <= previous.at:
+      return  # a repeat, or a replay of an older gather
+    self._previous = snapshot
+
+    seconds = (snapshot.at - previous.at).total_seconds() if previous else 0
+    if seconds > config.REPORT_INTERVAL_SECONDS * 3:
+      previous = None  # after a long silence a counter's change is not a rate
+    minute = snapshot.at.replace(second=0, microsecond=0)
+    host = snapshot.host
+
+    rx = _rate_kbps(host.net_rx_bytes, previous and previous.host.net_rx_bytes, seconds)
+    tx = _rate_kbps(host.net_tx_bytes, previous and previous.host.net_tx_bytes, seconds)
+    self.host.fold(
+        minute,
+        _present(
+            cpu_pct=None if host.cpu_idle_percent is None else round(max(100 - host.cpu_idle_percent, 0), 2),
+            mem_used_mb=None if host.mem_used is None else host.mem_used // _MIB,
+            mem_cached_mb=None if host.mem_cached is None else host.mem_cached // _MIB,
+            disk_used_gb=None if host.disk_used is None else round(host.disk_used / _GIB, 2),
+            load_avg_1m=host.load1,
+            load_avg_5m=host.load5,
+            load_avg_15m=host.load15,
+            net_rx_kbps=rx,
+            net_tx_kbps=tx,
+        ),
+        _present(
+            cpu_cores=host.cores,
+            mem_total_mb=None if host.mem_total is None else host.mem_total // _MIB,
+            disk_total_gb=None if host.disk_total is None else round(host.disk_total / _GIB, 2),
+        ),
+    )
+
+    for name, container in snapshot.containers.items():
+      if container.status != "running":
+        continue
+      before = previous.containers.get(name) if previous else None
+      if before is not None and before.started_at != container.started_at:
+        before = None  # a different run of the container: its counters started again
+      peaks = _present(
+          # Docker's percentage counts a whole core as 100, so it is shared over the cores.
+          cpu_pct=(None if container.cpu_percent is None or not host.cores
+                   else round(container.cpu_percent / host.cores, 2)),
+          mem_used_mb=None if container.mem_bytes is None else container.mem_bytes // _MIB,
+          net_rx_kbps=_rate_kbps(container.net_rx_bytes, before and before.net_rx_bytes, seconds),
+          net_tx_kbps=_rate_kbps(container.net_tx_bytes, before and before.net_tx_bytes, seconds),
+      )
+      if peaks:
+        self.containers.setdefault(name, MinutePeaks()).fold(minute, peaks)
+
+  def idle(self) -> bool:
+    return not len(self.host) and not self.containers
+
+  def drain(self, before: datetime):
+    """Remove and return the completed minutes: those of the host, and by container name."""
+    host = self.host.drain(before)
+    containers = {}
+    for name in list(self.containers):
+      minutes = self.containers[name].drain(before)
+      if minutes:
+        containers[name] = minutes
+      if not len(self.containers[name]):
+        del self.containers[name]
+    return host, containers
+
+
 class Metrics(Base):
   def __init__(self):
     super().__init__()
@@ -37,18 +162,19 @@ class Metrics(Base):
 
     self._dbs = {"metrics": {}}
 
-    # Reused across collects which also pools connections. Workers' Glances is reached
-    # through tailscaled's outbound proxy (set by the container entrypoint).
-    self._http = httpx.Client(timeout=10, proxy=os.getenv("TAILNET_HTTP_PROXY"))
-
-    # In-memory per-minute peak accumulator for the manager's own metrics: the
-    # background sampler folds samples in, the minutely flush drains completed
-    # minutes to the shard. `_sampler_prev` is the last CPU/net counter sample.
-    self._peaks = {}
+    # In-memory per-minute peaks of the manager's own metrics: the background sampler folds
+    # samples in, the minutely flush drains completed minutes to the shard. `_sampler_prev` is
+    # the last CPU/net counter sample.
+    self._peaks = MinutePeaks()
     self._sampler_prev = None
     self._sampler_stop = threading.Event()
     self._sampler_thread = threading.Thread(
         target=self._sample_loop, name="metrics-sampler", daemon=True)
+
+    # The same for each worker, filled from its reports (`ingest`), drained by `flush_workers`.
+    self._workers: dict[str, WorkerPeaks] = {}
+
+  def start_sampler(self):
     self._sampler_thread.start()
 
   def get_metrics_db(self, hostname):
@@ -114,85 +240,86 @@ class Metrics(Base):
 
     return self._dbs["metrics"][hostname]
 
-  def collect(self, ip, hostname):
-    metrics_endpoint = f"http://{ip}:61208/api/4"
-    plugins = ["cpu", "mem", "fs", "load", "network", "containers"]
-    ts = utcnow().replace(second=0, microsecond=0)
+  def ingest(self, hostname: str, snapshots: list[Snapshot]):
+    """Add the snapshots of a worker's report to its per-minute peaks, in memory. The report
+    route calls this; `flush_worker` writes the completed minutes."""
+    with self.lock:
+      self._workers.setdefault(hostname, WorkerPeaks())
+      for snapshot in snapshots:
+        self._workers[hostname].fold(snapshot)
 
-    try:
-      data = {ep: self._http.get(f"{metrics_endpoint}/{ep}").json() for ep in plugins}
+  def flush_workers(self):
+    """Write the completed minutes of every worker that has reported."""
+    with self.lock:
+      hostnames = list(self._workers)
+    for hostname in hostnames:
+      self.flush_worker(hostname)
 
-      root_fs = max(data["fs"], key=lambda f: f.get("size", 0))
-      db_info = self.get_metrics_db(hostname)
-      WorkerMeta = db_info["models"]["WorkerMeta"]
-      WorkerMetrics = db_info["models"]["WorkerMetrics"]
-      ContainerMetrics = db_info["models"]["ContainerMetrics"]
+  def flush_worker(self, hostname: str):
+    """Write a worker's completed minutes to its shard. The minute in progress keeps
+    accumulating; a minute with no reports simply gets no row. A worker that has gone
+    quiet is dropped once everything is written."""
+    now_minute = utcnow().replace(second=0, microsecond=0)
+    with self.lock:
+      pending = self._workers.get(hostname)
+      host_minutes, container_minutes = pending.drain(now_minute) if pending else ({}, {})
+      if pending is not None and pending.idle():
+        del self._workers[hostname]
 
-      WorkerMeta.replace(
-          id=1,
-          cpu_cores=data["cpu"]["cpucore"],
-          mem_total_mb=data["mem"]["total"] // (1024**2),
-          disk_total_gb=round(root_fs["size"] / (1024**3), 2),
-      ).execute()
+    if not host_minutes and not container_minutes:
+      return
 
-      WorkerMetrics.replace(
-          ts=ts,
-          cpu_pct=data["cpu"]["total"],
-          mem_used_mb=data["mem"]["used"] // (1024**2),
-          mem_cached_mb=data["mem"]["cached"] // (1024**2),
-          disk_used_gb=round(root_fs["used"] / (1024**3), 2),
-          load_avg_1m=data["load"]["min1"],
-          load_avg_5m=data["load"]["min5"],
-          load_avg_15m=data["load"]["min15"],
-          net_rx_kbps=round(
-              sum(
-                  i.get("bytes_recv_rate_per_sec", 0)
-                  for i in data["network"]
-                  if i.get("interface_name") != "lo"
-              )
-              / 1024,
-              2,
-          ),
-          net_tx_kbps=round(
-              sum(
-                  i.get("bytes_sent_rate_per_sec", 0)
-                  for i in data["network"]
-                  if i.get("interface_name") != "lo"
-              )
-              / 1024,
-              2,
-          ),
-      ).execute()
+    db_info = self.get_metrics_db(hostname)
+    WorkerMeta = db_info["models"]["WorkerMeta"]
+    WorkerMetrics = db_info["models"]["WorkerMetrics"]
+    ContainerMetrics = db_info["models"]["ContainerMetrics"]
 
-      cpu_cores = data["cpu"]["cpucore"]
-      for ct in data["containers"]:
-        cpu_total = ct.get("cpu", {}).get("total", 0)
-        mem_usage = ct.get("memory", {}).get("usage", 0)
-        net_rx = 0
-        net_tx = 0
-
-        if cpu_cores > 0:
-          cpu_total = round(cpu_total / cpu_cores, 2)
-
-        if ct.get("network"):
-          net_rx = round(ct["network"].get("rx", 0) / 1024, 2)
-          net_tx = round(ct["network"].get("tx", 0) / 1024, 2)
-
-        ContainerMetrics.replace(
-            ts=ts,
-            name=ct["name"],
-            cpu_pct=cpu_total,
-            mem_used_mb=mem_usage // (1024**2),
-            net_rx_kbps=net_rx,
-            net_tx_kbps=net_tx,
+    with db_info["db"].atomic():
+      complete = {minute: peak for minute, peak in host_minutes.items()
+                  if all(key in peak for key in _REQUIRED_HOST_PEAKS)}
+      for minute in sorted(complete):
+        peak = complete[minute]
+        WorkerMetrics.replace(
+            ts=minute,
+            cpu_pct=peak["cpu_pct"],
+            mem_used_mb=peak["mem_used_mb"],
+            mem_cached_mb=peak["mem_cached_mb"],
+            disk_used_gb=peak["disk_used_gb"],
+            load_avg_1m=peak.get("load_avg_1m"),
+            load_avg_5m=peak.get("load_avg_5m"),
+            load_avg_15m=peak.get("load_avg_15m"),
+            net_rx_kbps=peak.get("net_rx_kbps", 0.0),
+            net_tx_kbps=peak.get("net_tx_kbps", 0.0),
         ).execute()
 
-      logger.info(f"Collected metrics for {hostname} ({len(data['containers'])} containers) at {ts.isoformat()}.")
-    except Exception as e:
-      error_name = type(e).__name__
-      error_message = str(e).strip()
-      error_detail = f"{error_name}: {error_message}" if error_message else error_name
-      raise RuntimeError(f"Failed to collect metrics for {hostname} ({ip}): {error_detail}") from e
+      sized = [peak for _, peak in sorted(host_minutes.items())
+               if all(key in peak for key in ("cpu_cores", "mem_total_mb", "disk_total_gb"))]
+      if sized:
+        WorkerMeta.replace(
+            id=1,
+            cpu_cores=sized[-1]["cpu_cores"],
+            mem_total_mb=sized[-1]["mem_total_mb"],
+            disk_total_gb=sized[-1]["disk_total_gb"],
+        ).execute()
+
+      for name, minutes in container_minutes.items():
+        for minute in sorted(minutes):
+          peak = minutes[minute]
+          ContainerMetrics.replace(
+              ts=minute,
+              name=name,
+              cpu_pct=peak.get("cpu_pct", 0.0),
+              mem_used_mb=peak.get("mem_used_mb", 0.0),
+              net_rx_kbps=peak.get("net_rx_kbps", 0.0),
+              net_tx_kbps=peak.get("net_tx_kbps", 0.0),
+          ).execute()
+
+    logger.debug(f"Flushed metrics for {hostname}: {len(complete)} minute(s), {len(container_minutes)} container(s).")
+
+  def forget(self, hostname: str):
+    """Drop what a removed worker has not yet flushed."""
+    with self.lock:
+      self._workers.pop(hostname, None)
 
   def _sample_loop(self):
     """Background thread: read the manager container's own cgroup/net/disk usage
@@ -248,25 +375,22 @@ class Metrics(Base):
         disk = shutil.disk_usage("/")
 
         with self.lock:
-          # The minutely flush drains completed minutes, so this normally holds
-          # one or two; bound it in case the flush ever stalls.
-          cutoff = minute - timedelta(minutes=10)
-          for stale in [m for m in self._peaks if m < cutoff]:
-            del self._peaks[stale]
-
-          peak = self._peaks.setdefault(minute, {
-              "cpu_pct": 0.0, "mem_used_mb": 0, "mem_cached_mb": 0,
-              "disk_used_gb": 0.0, "net_rx_kbps": 0.0, "net_tx_kbps": 0.0,
-          })
-          peak["cpu_pct"] = max(peak["cpu_pct"], cpu_pct)
-          peak["mem_used_mb"] = max(peak["mem_used_mb"], mem_used // (1024**2))
-          peak["mem_cached_mb"] = max(peak["mem_cached_mb"], mem_cached // (1024**2))
-          peak["disk_used_gb"] = max(peak["disk_used_gb"], round(disk.used / (1024**3), 2))
-          peak["net_rx_kbps"] = max(peak["net_rx_kbps"], net_rx_kbps)
-          peak["net_tx_kbps"] = max(peak["net_tx_kbps"], net_tx_kbps)
-          peak["cpu_cores"] = round(cpu_allowance)
-          peak["mem_total_mb"] = mem_total // (1024**2)
-          peak["disk_total_gb"] = round(disk.total / (1024**3), 2)
+          self._peaks.fold(
+              minute,
+              {
+                  "cpu_pct": cpu_pct,
+                  "mem_used_mb": mem_used // _MIB,
+                  "mem_cached_mb": mem_cached // _MIB,
+                  "disk_used_gb": round(disk.used / _GIB, 2),
+                  "net_rx_kbps": net_rx_kbps,
+                  "net_tx_kbps": net_tx_kbps,
+              },
+              {
+                  "cpu_cores": round(cpu_allowance),
+                  "mem_total_mb": mem_total // _MIB,
+                  "disk_total_gb": round(disk.total / _GIB, 2),
+              },
+          )
       except Exception:
         logger.warning("Manager metrics sample failed.", exc_info=True)
 
@@ -278,9 +402,7 @@ class Metrics(Base):
     now_minute = utcnow().replace(second=0, microsecond=0)
 
     with self.lock:
-      completed = {minute: peak for minute, peak in self._peaks.items() if minute < now_minute}
-      for minute in completed:
-        del self._peaks[minute]
+      completed = self._peaks.drain(now_minute)
 
     if not completed:
       return

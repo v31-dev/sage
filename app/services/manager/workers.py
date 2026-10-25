@@ -2,7 +2,10 @@ import asyncio
 import logging
 import re
 
+import config
 from services.db import Application, Container, Worker
+from services.metrics import Metrics
+from services.reports import Reports
 from utils.executor import run_in_executor_with_context
 from utils.logging import TaskFailed
 
@@ -98,6 +101,8 @@ class WorkersMixin:
         "version": self.version,
         "domain": self.cloudflare.domain,
         "tunnel": self.cloudflare.tunnel_id,
+        "manager_ip": self.tailscale.ip(),
+        "report_interval": config.REPORT_INTERVAL_SECONDS,
     })
 
   async def read_worker_revisions(self, hostname: str) -> dict:
@@ -220,6 +225,12 @@ class WorkersMixin:
 
       if infra_stale:
         tunnel_token = (await run_in_executor_with_context(self.cloudflare.get_tunnel_token)).token
+        # Telegraf runs as a user in the Docker socket's group, which differs between hosts.
+        _, socket_group = await self.tailscale.exec_command(
+            worker.hostname, "stat -c %g /var/run/docker.sock", timeout=30)
+        docker_gid = socket_group[-1].strip() if socket_group else ""
+        if not docker_gid.isdigit():
+          raise Exception(f"Could not read the group of the Docker socket on {worker.hostname}: {socket_group!r}")
 
         # Sync files
         await self.tailscale.sync_file(
@@ -236,6 +247,7 @@ class WorkersMixin:
                 "TS_IP": worker.ip,
                 "TS_HOSTNAME": worker.hostname,
                 "TUNNEL_TOKEN": tunnel_token,
+                "DOCKER_GID": docker_gid,
             },
             mode=0o600,
         )
@@ -262,6 +274,17 @@ class WorkersMixin:
             f"{self.worker_home_dir}/vector/config/vector.yml",
             {"IP": self.tailscale.ip(), "HOSTNAME": worker.hostname},
         )
+        await self.tailscale.sync_file(
+            worker.hostname,
+            app_dir / "templates/worker/telegraf/telegraf.conf",
+            f"{self.worker_home_dir}/telegraf/telegraf.conf",
+            {
+                "IP": self.tailscale.ip(),
+                "HOSTNAME": worker.hostname,
+                "TS_IP": worker.ip,
+                "INTERVAL": config.REPORT_INTERVAL_SECONDS,
+            },
+        )
 
       # Land the cert before any container start/restart below
       repaired = []
@@ -275,7 +298,7 @@ class WorkersMixin:
         await self.tailscale.exec_command(
             worker.hostname,
             f"docker compose -f {self.worker_home_dir}/docker-compose.yml up -d --wait --remove-orphans --quiet-pull --quiet-build "
-            "traefik vector glances cloudflared",
+            "traefik vector telegraf cloudflared",
             timeout=300,
         )
 
@@ -290,6 +313,13 @@ class WorkersMixin:
         await self.tailscale.exec_command(
             worker.hostname,
             f"docker compose -f {self.worker_home_dir}/docker-compose.yml restart vector",
+            timeout=60,
+        )
+
+        # Restart telegraf to pick up config changes
+        await self.tailscale.exec_command(
+            worker.hostname,
+            f"docker compose -f {self.worker_home_dir}/docker-compose.yml restart telegraf",
             timeout=60,
         )
 
@@ -366,6 +396,8 @@ class WorkersMixin:
 
     logger.info(f"Removing worker {worker.hostname} from manager.")
     Worker.delete().where(Worker.hostname == worker.hostname).execute()
+    Reports().forget(worker.hostname)
+    Metrics().forget(worker.hostname)
     self.refresh_worker_summary()
     self.cloudflare.delete_dns_record(name=f"*.int.{self.cloudflare.domain}", content=worker.ip)
     logger.info(f"Worker {worker.hostname} removed from manager.")

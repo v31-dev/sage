@@ -89,15 +89,13 @@ async def collect_metrics():
       quiet=True,
   )
 
-  # Worker metrics are polled over their Glances endpoint.
-  for worker in Worker.select().where(Worker.online):
-    Manager().add_task(
-        task=Metrics().collect,
-        scopes={f"metrics:{worker.hostname}"},
-        params={"ip": worker.ip, "hostname": worker.hostname},
-        executor="metrics",
-        quiet=True,
-    )
+  # The workers' metrics arrive in their reports; this writes the minutes that have completed.
+  Manager().add_task(
+      task=Metrics().flush_workers,
+      scopes={"metrics:workers"},
+      executor="metrics",
+      quiet=True,
+  )
 
 
 async def send_summary_notification():

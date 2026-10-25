@@ -9,7 +9,7 @@ Sage is a manager-and-workers platform designed for Docker workloads connected t
 - Cloudflare is required (env vars): DNS records, the tunnel for public apps, and the DNS-01 challenge for Sage's certificates.
 - Traefik provides ingress on workers. The manager issues two certificates in-process (ACME DNS-01): its own for `<TS_NAME>.core.<domain>`, whose key never leaves it, and the workers' `*.int.<domain>` wildcard, synced to every worker.
 - Vector runs on workers and forwards their container logs to the manager; the manager captures its own logs in-process.
-- Glances runs on workers and exposes metrics endpoints the manager polls; the manager collects its own container metrics in-process.
+- Telegraf runs on workers and pushes the host's and the containers' metrics and the containers' state to the manager every 10 s; the manager collects its own container metrics in-process.
 
 ## Manager Runtime
 
@@ -22,15 +22,14 @@ policy allows.
 
 In userspace mode the container has no route into the tailnet, so outbound traffic goes
 through `tailscaled`: SSH to workers uses asyncssh's `proxy_command` with
-`tailscale nc <worker> 22`, and HTTP to workers (Glances) uses tailscaled's outbound HTTP
-proxy on `127.0.0.2:1055` (`TAILNET_HTTP_PROXY`). The proxy deliberately avoids
-`127.0.0.1`, where tailnet peers could reach it and use the manager's identity.
+`tailscale nc <worker> 22`. For HTTP the workers reach the manager (the reports and logs on
+`:9001`), not the other way round.
 
 The manager process starts these concurrent services from `app/main.py`:
 
 1. Main FastAPI API and UI on port `80`, plain HTTP — it is reached over the tailnet,
    which WireGuard already encrypts
-2. Log/metric ingestion FastAPI API on port `9001` (receives workers' Vector log shipments)
+2. Ingestion FastAPI API on port `9001` (receives workers' Telegraf reports and Vector log shipments)
 3. APScheduler (cron/interval) scheduler
 
 Startup is service-driven:
@@ -47,12 +46,13 @@ Workers are bootstrapped remotely over Tailscale SSH (asyncssh): the manager run
 - worker `.env`
 - Traefik config
 - Vector config
+- Telegraf config
 
 The worker stack currently includes:
 
 - `traefik`
 - `vector`
-- `glances`
+- `telegraf`
 - `cloudflared`, connecting the worker to the manager's tunnel
 
 Applications themselves are also deployed onto workers as Docker workloads.
@@ -154,7 +154,7 @@ Metrics and logs are intentionally sharded:
 - Logs: one SQLite database per container under `/app/data/logs/`
 
 Container log search uses SQLite FTS5. Worker metric shards are populated from
-Glances; the manager's own shard is populated in-process from cgroup v2 and the data
+the workers' Telegraf reports (per-minute peaks of 10 s readings); the manager's own shard is populated in-process from cgroup v2 and the data
 volume (its single sage container, so no host load average). Worker container logs
 arrive via each worker's Vector (the `:9001` ingestion API); the manager's own logs
 are written to the `sage` shard in-process by a logging handler (no Vector sidecar).

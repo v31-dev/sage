@@ -163,10 +163,10 @@ unreachable; tailnet traffic reaches every port the manager container listens on
   "acls": [
     // Your devices → the manager UI (443; 80 only redirects to it)
     {"action": "accept", "src": ["autogroup:member"], "dst": ["tag:manager:80,443"]},
-    // Workers → the manager's log ingestion
+    // Workers → the manager: Telegraf's reports and Vector's logs
     {"action": "accept", "src": ["tag:worker"], "dst": ["tag:manager:9001"]},
-    // Manager → workers: SSH (Tailscale SSH) and Glances metrics
-    {"action": "accept", "src": ["tag:manager"], "dst": ["tag:worker:22,61208"]},
+    // Manager → workers: SSH (Tailscale SSH)
+    {"action": "accept", "src": ["tag:manager"], "dst": ["tag:worker:22"]},
     // Workers ↔ workers: the Traefik mesh
     {"action": "accept", "src": ["tag:worker"], "dst": ["tag:worker:9002,9003"]},
     // Internal app domains (*.int) served by workers

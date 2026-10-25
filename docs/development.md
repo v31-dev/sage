@@ -71,7 +71,7 @@ stops the container with a `[CRITICAL]` line in Sage's log format, after stoppin
 device or published ports are needed; tailnet traffic to the node's ports reaches the
 container's listeners.
 
-Workers run their own edge stack (`traefik`, `vector`, `glances` and `cloudflared`), bootstrapped remotely over Tailscale SSH.
+Workers run their own edge stack (`traefik`, `vector`, `telegraf` and `cloudflared`), bootstrapped remotely over Tailscale SSH.
 
 ### Dev routing
 

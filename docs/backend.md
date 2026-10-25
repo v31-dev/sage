@@ -40,7 +40,7 @@ Nested routes cover:
 - volumes
 - volume backups
 
-The vector ingestion API is separate in `app/api_vector.py` and currently handles log ingestion at `/api/vector/logs`.
+The ingestion API is separate in `app/api_ingest.py` and serves what the workers push on port 9001: Telegraf's reports at `/api/telegraf/report` (kept in memory by `services/reports.py`, read by the operation queue) and Vector's logs at `/api/vector/logs`.
 
 ## Orchestration Layer
 
@@ -76,7 +76,9 @@ Most high-level backend behavior ultimately flows through this service, and almo
 - `services/manager/traefik.py`
   - worker-side Traefik routing-config generation (mixin)
 - `services/metrics.py`
-  - metrics collection (workers' Glances via tailscaled's outbound proxy; the manager's own container in-process)
+  - metrics (workers' per-minute peaks from Telegraf's reports, written by the queue; the manager's own container in-process)
+- `services/reports.py`
+  - Telegraf's reports: parsing a batch into snapshots, and the newest snapshot of each worker in memory
 - `services/logs.py`
   - per-container log storage and FTS search; the manager's own logs captured in-process
 - `services/s3.py`
@@ -150,7 +152,7 @@ the `TaskQueue` (`QueueState`: `running`, `paused`, `restoring`, `stopping`), ex
   stops the queue: queued tasks, and any added later (e.g. a follow-up queued by a
   finishing task), are recorded as `cancelled`; running ones finish, then the API server
   stops. There is no cap in Sage: the runtime's stop grace period bounds it. A second
-  signal stops right away. The log-ingest server (`api_vector`) doesn't handle signals, so
+  signal stops right away. The ingest server (`api_ingest`) doesn't handle signals, so
   worker logs keep arriving until the process exits.
 
 `GET /api` reports that `state`, the `workers` summary (`total` and `online`, kept in memory by `refresh_worker_summary` after each `sync_workers` run, worker removal and restore, and read from the database once at startup) and the `settings` status. It reads memory only (the certificate expiry too: `Certificate.load` reads the PEM at startup and after each write), because the pause banner and the restore overlay depend on it while the database is being replaced; if building the settings status fails, that part is `null` and the rest is still returned. While it isn't `running`,
@@ -225,7 +227,7 @@ Every queued operation, its scope, where it is enqueued from, its lane pool, and
 | `sync_application_status` | app:`<qn>` | cron 1m | app | DEDUP |
 | `backup_application_s3` | app:`<qn>` | cron 1m (due backups; skipped when S3 isn't configured) | app | DEDUP — worker `backup.sh`: tar → `openssl enc` (ENCRYPTION_KEY) → HMAC-SHA256 appended (encrypt-then-MAC) → presigned PUT |
 | `reconcile_traefik_configs` | platform | cron 1m | platform | DEDUP |
-| `Metrics.collect` | metrics:`<worker>` | cron 1m | metrics | DEDUP |
+| `Metrics.flush_workers` | metrics:`workers` | cron 1m | metrics | DEDUP — writes the minutes of the workers' reports that have completed |
 | `Metrics.collect_self` | metrics:`<manager>` | cron 1m | metrics | DEDUP |
 | `send_summary_notification` | common | cron daily 08:00 | common | REPLACE |
 | `refresh_latest_release` | common | cron 4h + once at startup | common | REPLACE — caches latest-release detail (version + notes + `fetched_at`) served by `GET /info/release` |
@@ -282,9 +284,9 @@ Container create and tag-update are **instant route-side model writes**, like ev
 | `sync_application_traefik_domains_config` | app:`<qn>` | deploy/stop, delete-container, `sync_application_status`, `sync_workers`, `refresh_traefik`, `reconcile_traefik_configs` missing-file check (via `request_application_traefik_sync`) | app | REPLACE |
 | `sync_application_traefik_domains_config` | app:`<qn>` | `reconcile_traefik_configs` `domains_synced=False` backstop | app | DEDUP |
 
-Quiet tasks (recorded only on failure): `sync_workers` (cron), `sync_application_status`, `sync_application_traefik_domains_config`, `reconcile_traefik_configs`, `Metrics.collect`, `Metrics.collect_self`, `Metrics.cleanup`, `Logs.cleanup`.
+Quiet tasks (recorded only on failure): `sync_workers` (cron), `sync_application_status`, `sync_application_traefik_domains_config`, `reconcile_traefik_configs`, `Metrics.flush_workers`, `Metrics.collect_self`, `Metrics.cleanup`, `Logs.cleanup`.
 
-Not every periodic/background job is a queue task. Two service-owned daemon threads run off the queue: the `Metrics` sampler reads the manager's **own** container metrics (cgroup v2 / root-fs / net) every few seconds into an in-memory per-minute peak accumulator; and the `Logs` capture thread drains formatted self-log records (enqueued by a root-logger handler) to the manager's `sage` log shard. Both are trivial in-process work with no scope to serialize (like the `dispatch_tick` pump). Their periodic DB maintenance stays on the queue: `Metrics.collect_self` (minutely peak flush) and `Metrics.cleanup` (daily, fast row-deletes) on the `metrics` scope, and `Logs.cleanup` on `common` — kept off `metrics` because its per-shard FTS `optimize` can run long, and blocking the `metrics` scope that long would stall the minutely flush past the sampler's 10-minute peak buffer. Workers are still polled over Glances by `Metrics.collect`, and ship their container logs to `LOGS_EXECUTOR` via the `:9001` ingestion API.
+Not every periodic/background job is a queue task. Two service-owned daemon threads run off the queue: the `Metrics` sampler reads the manager's **own** container metrics (cgroup v2 / root-fs / net) every few seconds into an in-memory per-minute peak accumulator; and the `Logs` capture thread drains formatted self-log records (enqueued by a root-logger handler) to the manager's `sage` log shard. Both are trivial in-process work with no scope to serialize (like the `dispatch_tick` pump). Their periodic DB maintenance stays on the queue: `Metrics.collect_self` (minutely peak flush) and `Metrics.cleanup` (daily, fast row-deletes) on the `metrics` scope, and `Logs.cleanup` on `common` — kept off `metrics` because its per-shard FTS `optimize` can run long, and blocking the `metrics` scope that long would stall the minutely flush past the sampler's 10-minute peak buffer. Workers push: Telegraf's reports reach `Metrics.ingest` (in-memory per-minute peaks, written by `Metrics.flush_workers` on the queue), and Vector's container logs go to `LOGS_EXECUTOR`, both via the `:9001` ingestion API.
 
 Cron cadence convention: **≤ 1m → `DEDUP`** (a high-frequency reconciler skips only if its own previous run is still in flight; the next tick retries), **> 1m → `REPLACE`** (a 6h/1d/10d task must not skip its whole cycle on a transient conflict; latest-wins keeps no backlog).
 

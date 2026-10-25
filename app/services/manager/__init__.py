@@ -76,7 +76,7 @@ class Manager(
       Database()
       Settings()
       Notifications()
-      Metrics()
+      Metrics().start_sampler()
       self.tailscale = Tailscale()
       self.cloudflare = Cloudflare()
       self.certs = Certs()

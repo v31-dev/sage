@@ -24,7 +24,7 @@ This is a living project-context file for AI coding agents. Keep it concise, cur
 
 ## Project Summary
 
-Sage is a lightweight manager-and-workers micro-PaaS that uses Tailscale for node connectivity, Cloudflare (required) for the domain, DNS and tunnels, Traefik for ingress, Vector for worker logs (the manager logs itself in-process via a SQLite logging handler), Glances for worker metrics (the manager self-collects its own container metrics in-process), SQLite for persistence, APScheduler as a cron/interval trigger feeding an in-memory operation queue, and Vue 3 for the UI.
+Sage is a lightweight manager-and-workers micro-PaaS that uses Tailscale for node connectivity, Cloudflare (required) for the domain, DNS and tunnels, Traefik for ingress, Vector for worker logs (the manager logs itself in-process via a SQLite logging handler), Telegraf for worker metrics and container state (the manager self-collects its own container metrics in-process), SQLite for persistence, APScheduler as a cron/interval trigger feeding an in-memory operation queue, and Vue 3 for the UI.
 
 ## Core Context To Preserve
 
@@ -54,7 +54,7 @@ If this context may have been lost, reread this file plus the relevant `docs/` p
 | `app/tests/` | Backend unit tests (`pytest` from `app/`); `conftest.py` provides the `data_dir`, `db` and `register` fixtures |
 | `ui/tests/` | UI unit tests (`npm test` from `ui/`, Vitest and happy-dom), in the layout of `ui/src/`; `ui/vitest.config.ts` holds the config |
 | `app/api.py` | Main FastAPI application |
-| `app/api_vector.py` | Metrics/log ingestion FastAPI application |
+| `app/api_ingest.py` | Worker ingestion FastAPI application: Telegraf reports and Vector logs |
 | `app/routes/` | API route handlers |
 | `app/services/` | Singleton service layer |
 | `app/services/manager/` | Manager singleton (mixins): the operation orchestrator |
@@ -71,8 +71,8 @@ If this context may have been lost, reread this file plus the relevant `docs/` p
 
 ### Manager Networking (userspace Tailscale)
 
-- Inbound tailnet traffic to the manager is delivered to `127.0.0.1:<port>` inside the container, so anything listening there (on `0.0.0.0` or `127.0.0.1`) is reachable from the tailnet wherever the tailnet policy allows. Never put an internal-only listener on `127.0.0.1`; use `127.0.0.2` (as tailscaled's outbound proxy does) or a unix socket.
-- The container has no route into the tailnet: SSH to workers goes through `tailscale nc` (asyncssh `proxy_command`), HTTP to workers through `TAILNET_HTTP_PROXY`. Internet calls (Cloudflare, S3, ACME, GitHub) go direct.
+- Inbound tailnet traffic to the manager is delivered to `127.0.0.1:<port>` inside the container, so anything listening there (on `0.0.0.0` or `127.0.0.1`) is reachable from the tailnet wherever the tailnet policy allows. Never put an internal-only listener on `127.0.0.1`; use `127.0.0.2` or a unix socket.
+- The container has no route into the tailnet: SSH to workers goes through `tailscale nc` (asyncssh `proxy_command`), for HTTP the workers reach the manager (Telegraf's reports and Vector's logs on 9001), not the other way round. Internet calls (Cloudflare, S3, ACME, GitHub) go direct.
 - A file with a secret in it goes to a worker with `sync_file(..., mode=0o600)` (a script `0o700`): created with the mode and renamed into place, because Tailscale SSH keeps the mode of a file it rewrites in place and ignores the mode of a new directory. Other files are written in place.
 - Optional services (S3 `s3_config`, notifications) are checked before use: scheduled triggers skip quietly when unconfigured, user actions get a clear 4xx. Cloudflare is always configured; don't add checks for it.
 

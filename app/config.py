@@ -30,6 +30,13 @@ FINALIZE_TIMEOUT_SECONDS = 180
 # The manager samples its own usage every few seconds and reports the per-minute peak
 METRICS_SAMPLE_INTERVAL = 5
 
+# Telegraf on a worker gathers and pushes a report this often. The port-9001 server keeps an
+# idle connection longer than that (uvicorn's 5 s default would close it between reports). A
+# report is refused above REPORT_MAX_BYTES once decompressed.
+REPORT_INTERVAL_SECONDS = 10
+REPORT_KEEP_ALIVE_SECONDS = 30
+REPORT_MAX_BYTES = 8 * 1024 * 1024
+
 # A command on a worker is wrapped in `timeout`, which stops it at its deadline and, if it
 # ignores that, kills it this many seconds later. The manager waits this much longer than the
 # deadline before it gives up on a worker that answers nothing.

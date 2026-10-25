@@ -17,7 +17,7 @@ from utils.logging import LOG_FORMAT, ContextVarFilter, SuppressTracebackFilter
 
 logger = logging.getLogger(__name__)
 
-_SYSTEM_LOG_CONTAINERS = {"sage", "cloudflared", "traefik", "glances", "vector"}
+_SYSTEM_LOG_CONTAINERS = {"sage", "cloudflared", "traefik", "telegraf", "vector"}
 
 
 class Logs(Base):

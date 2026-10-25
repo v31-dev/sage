@@ -50,16 +50,22 @@ services:
       - 1.1.1.1
       - 8.8.8.8
 
-  glances:
-    image: nicolargo/glances:latest
-    container_name: glances
+  telegraf:
+    image: telegraf:1.40.2-alpine
+    container_name: telegraf
     restart: unless-stopped
     network_mode: host
+    user: telegraf:${DOCKER_GID}
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
-    environment:
-      - GLANCES_OPT=-w --disable-webui
-    pid: host
+      - ${SAGE_HOME}/telegraf:/etc/telegraf:ro
 
 networks:
   default:

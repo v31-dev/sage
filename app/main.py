@@ -7,9 +7,10 @@ import sys
 import uvicorn
 from cryptography.fernet import InvalidToken
 
+import config
 from api import app as app_fastapi
 from api import redirect_app
-from api_vector import app as app_fastapi_vector
+from api_ingest import app as app_fastapi_ingest
 from scheduler import shutdown as shutdown_scheduler
 from scheduler import start as start_scheduler
 from services.manager import Manager
@@ -94,15 +95,18 @@ async def main():
   # here, so it runs while the servers below are already serving.
   start_scheduler()
 
-  # Vector server for worker log ingestion
-  vector_server = BackgroundServer(
+  # What the workers push: Telegraf's reports and Vector's logs. The access log is off: a
+  # report arrives every few seconds from every worker, and the routes log what matters.
+  ingest_server = BackgroundServer(
       config=uvicorn.Config(
-          app_fastapi_vector,
+          app_fastapi_ingest,
           host="0.0.0.0",
-          port=int(os.getenv("METRICS_PORT", 9001)),
+          port=int(os.getenv("INGEST_PORT", 9001)),
           workers=1,
           loop="asyncio",
           log_config=None,
+          access_log=False,
+          timeout_keep_alive=config.REPORT_KEEP_ALIVE_SECONDS,
       )
   )
 
@@ -132,7 +136,7 @@ async def main():
             log_config=None)),
     ]
 
-  tasks = [asyncio.create_task(server.serve()) for server in (*servers, vector_server)]
+  tasks = [asyncio.create_task(server.serve()) for server in (*servers, ingest_server)]
 
   await asyncio.wait(tasks)
 
