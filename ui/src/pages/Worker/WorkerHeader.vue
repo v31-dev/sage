@@ -45,6 +45,11 @@ watch(
 )
 const status = computed(() => requested.value ?? props.worker.status)
 const restartable = computed(() => status.value === 'online' || status.value === 'not ready')
+const deleteBody = computed(() =>
+  status.value === 'offline'
+    ? 'This worker is offline, so Sage cannot clean it up. It is removed from Sage together with its containers; delete the VM yourself if it is not deleted already.'
+    : 'Are you sure you want to delete this worker? Sage stops its services and removes its files from the VM; the VM itself is not deleted. Delete its containers first.'
+)
 
 function goToMetrics() {
   router.push(`/workers/${props.worker.hostname}/metrics`)
@@ -90,11 +95,11 @@ async function onConfirmRestart() {
           <ConfirmationButton
             triggerText="Delete"
             title="Delete Worker"
-            body="Are you sure you want to delete this worker? This action cannot be undone."
+            :body="deleteBody"
             :description="props.worker.hostname"
             :icon="Trash"
             destructive
-            :disabled="status === 'removing'"
+            :disabled="status === 'removing' || status === 'adding'"
             :onConfirm="onConfirmDelete"
           />
         </ButtonGroup>

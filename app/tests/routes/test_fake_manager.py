@@ -4,7 +4,8 @@ import pytest
 
 from services.manager import Manager
 from services.s3 import S3
-from tests.routes.fakes import FakeManager, FakeS3
+from services.tailscale import Tailscale
+from tests.routes.fakes import FakeManager, FakeS3, FakeTailscale
 
 
 def parameters(function):
@@ -14,6 +15,10 @@ def parameters(function):
 @pytest.mark.parametrize("name", ["key_exists", "create_presigned_download_url"])
 def test_the_fake_s3_takes_the_same_arguments_as_the_real_one(name):
   assert parameters(getattr(FakeS3, name)) == parameters(getattr(S3, name))
+
+
+def test_the_fake_tailscale_takes_the_same_arguments_as_the_real_one():
+  assert parameters(FakeTailscale.find_peer) == parameters(Tailscale.find_peer)
 
 
 @pytest.mark.parametrize("name", ["task_state", "is_task_running", "has_task", "worker_status", "get_volume_backup_resource_error"])

@@ -3,7 +3,7 @@ import logging
 import re
 
 import config
-from services.db import Application, Container, Worker
+from services.db import Application, Container, Instance, Worker
 from services.metrics import Metrics
 from services.reports import Reports
 from utils.common import utcnow
@@ -11,7 +11,7 @@ from utils.executor import run_in_executor_with_context
 from utils.logging import TaskFailed
 
 from ._common import WORKER_INFRA_TEMPLATES, app_dir, content_hash, routing_input_hash
-from .decisions import WorkerReboot, WorkerRow, is_worker_rebooting, plan_worker_sync, worker_stack_problem
+from .decisions import WorkerReboot, WorkerRow, is_worker_rebooting, plan_worker_sync, worker_claim_refusal, worker_owner, worker_stack_problem
 
 logger = logging.getLogger(__name__)
 
@@ -19,19 +19,20 @@ logger = logging.getLogger(__name__)
 class WorkersMixin:
   async def sync_workers(self, force: bool = False, check_stamps: bool = False):
     """
-    Check for worker changes. `check_stamps` also sets up workers that stayed online,
-    letting their stamps decide what to redo (at startup, since the env may have changed
-    while Sage was stopped). Whether a worker is online is whether it answers a ping
-    (`Tailscale.online_states`), not Tailscale's own flag. The decisions are `plan_worker_sync`'s:
-    - New workers (not in db but in tailscale, and answering)
-    - Offline workers (in db but not answering, or not in tailscale)
+    Check the workers for changes. Workers are added by hand (`add_worker`), so a machine of
+    the tailnet that is not a known worker is not looked at. `check_stamps` also sets up
+    workers that stayed online, letting their stamps decide what to redo (at startup, since
+    the env may have changed while Sage was stopped). Whether a worker is online is whether it
+    answers a ping (`Tailscale.online_states`), not Tailscale's own flag. The decisions are
+    `plan_worker_sync`'s:
+    - Offline workers (not answering, or not in the tailnet)
     - Updated workers (IPs have changed)
     - Recently online workers (previously offline but now answering)
     After that, a worker whose reports say its stack is down gets it started.
     """
-    worker_tag = self.tailscale.worker_tag
     known = [WorkerRow(w.hostname, w.ip, w.online) for w in Worker.select()]
-    listed = await run_in_executor_with_context(self.tailscale.get_by_tag, worker_tag)
+    names = {row.hostname for row in known}
+    listed = [peer for peer in await run_in_executor_with_context(self.tailscale.peers) if peer.hostname in names]
     was_online = {row.hostname: row.online for row in known}
     online = await self.tailscale.online_states(
         {w.hostname: (w.ip, was_online.get(w.hostname, False)) for w in listed})
@@ -57,13 +58,16 @@ class WorkersMixin:
     self.refresh_worker_summary()
 
   def worker_status(self, hostname: str, online: bool) -> str:
-    """What the worker is shown as: "removing" while its removal is queued or running, "rebooting" from the
-    request until it reports again after the reboot (`is_worker_rebooting`), "offline" when it does not answer a ping
-    (`online`), "not ready" when its report says Traefik is not answering, otherwise "online".
+    """What the worker is shown as: "removing" while its removal is queued or running, "adding" while its
+    addition is, "rebooting" from the request until it reports again after the reboot (`is_worker_rebooting`),
+    "offline" when it does not answer a ping (`online`), "not ready" when its report says Traefik is not
+    answering, otherwise "online".
     Derived on every call from the queue and the reports, so there is nothing stored to go stale."""
     params = {"worker_hostname": hostname}
     if self.has_task(self.remove_worker, params):
       return "removing"
+    if self.has_task(self.add_worker, params):
+      return "adding"
     mark = self.worker_reboots.get(hostname)
     if self.has_task(self.reboot_worker, params) or (mark is not None and self._worker_reboot_under_way(hostname, mark)):
       return "rebooting"
@@ -210,6 +214,20 @@ class WorkersMixin:
           f"{', '.join(sorted(orphan_containers | orphan_dirs))}.",
           "warning")
 
+  async def add_worker(self, worker_hostname: str):
+    """
+    Add a machine of the tailnet as a worker: it must answer a ping and not be managed by
+    another Sage (`setup_worker` checks). `setup_worker` does the rest.
+    """
+    peer = await run_in_executor_with_context(self.tailscale.find_peer, worker_hostname)
+    if peer is None or not await self.tailscale.ping(peer.ip):
+      self.notify(f"Failed to add worker {worker_hostname}: it is not in the tailnet or does not answer a ping.", "error")
+      raise TaskFailed()
+    await self.setup_worker(peer)
+
+  def instance_id(self) -> str:
+    return Instance.get().id
+
   async def setup_worker(self, worker, force: bool = False):
     """
     Converge a worker to current manager state — the single idempotent heal
@@ -218,8 +236,9 @@ class WorkersMixin:
     skips the file syncs / compose up / restarts, matching cert and per-app
     stamps skip those repairs, and a worker that missed nothing costs one
     read. `force` deletes the stamps first — distrust everything, converge
-    from scratch. On failure, the worker row + DNS are only cleaned up if
-    this call was adding a brand-new worker.
+    from scratch. A worker that another Sage manages (its owner stamp names
+    another instance) is refused. On failure, the worker row + DNS are only
+    cleaned up if this call was adding a brand-new worker.
     """
     existing = Worker.get_or_none(Worker.hostname == worker.hostname)
     is_new = existing is None
@@ -230,10 +249,18 @@ class WorkersMixin:
       await run_in_executor_with_context(self.cloudflare.connect)
       domain = self.cloudflare.domain
 
+      revisions = await self.read_worker_revisions(worker.hostname)
+      instance_id = self.instance_id()
+      refusal = worker_claim_refusal(revisions, instance_id)
+      if refusal:
+        raise Exception(refusal)
       if force:
         await self.tailscale.exec_command(
             worker.hostname, f"rm -rf {self.worker_home_dir}/revisions")
-      revisions = await self.read_worker_revisions(worker.hostname)
+        revisions = {}
+      # Claim it before changing anything, so a failed setup leaves it claimed.
+      if revisions.get("owner") != f"{instance_id} {domain}":
+        await self.write_worker_revision(worker.hostname, "owner", f"{instance_id} {domain}")
       # The IP is rendered into infra files, so a changed IP is infra drift
       # even under a matching stamp.
       infra_stale = (revisions.get("infra") != self.infra_hash()
@@ -380,7 +407,7 @@ class WorkersMixin:
       self.notify(f"Failed to {action} worker {worker.hostname} : {e}", "error")
       # Only roll back the worker row + DNS if this was a fresh add.
       if is_new:
-        await run_in_executor_with_context(self.remove_worker, worker.hostname)
+        await self.remove_worker(worker.hostname)
       raise Exception(f"Failed to {action} worker {worker.hostname} : {e}")
 
   async def reboot_worker(self, worker_hostname: str):
@@ -407,9 +434,12 @@ class WorkersMixin:
 
     self.notify(f"Worker {worker.hostname} reboot triggered.")
 
-  def remove_worker(self, worker_hostname: str):
+  async def remove_worker(self, worker_hostname: str):
     """
-    A removed worker is assumed to have been destoryed externally (VM + Tailscale) -
+    Forget a worker. One that answers a ping and is this Sage's is cleaned up first: its stack is
+    stopped and Sage's files on it removed, so that another Sage can take it. One that is offline
+    (the VM may be gone) is forgotten as it is, and its containers are removed from Sage only. A worker
+    that is online and has containers is refused: they have to be deleted first -
     - Remove from Manager database
     - Delete Cloudflare DNS entry (*.int) for Tailscale routing
     - Cloudflare automatically cleans up dead tunnels
@@ -421,17 +451,41 @@ class WorkersMixin:
     # Re-check under the scope lock: a deploy could have placed a container here
     # between the route's check and this task running. Fail loudly so it surfaces
     # in the task table rather than vanishing.
-    if worker.containers.count() > 0:
+    if worker.online and worker.containers.count() > 0:
       logger.error(f"Worker {worker_hostname} gained containers before removal; aborting.")
       raise TaskFailed()
 
     logger.info(f"Removing worker {worker.hostname} from manager.")
+    containers = list(worker.containers)
+    for container in containers:
+      await self.delete_container(container.id, force=True)
+
+    # The containers of an offline worker were deleted without cleaning up after them, so its files stay.
+    if not containers and await self.tailscale.ping(worker.ip):
+      try:
+        owner = worker_owner(await self.read_worker_revisions(worker.hostname))
+        if owner and owner[0] == self.instance_id():
+          await self.tailscale.exec_command(
+              worker.hostname,
+              f"docker compose -f {self.worker_home_dir}/docker-compose.yml down --remove-orphans "
+              f"&& rm -rf {self.worker_home_dir}",
+              timeout=120,
+          )
+      except Exception as e:
+        self.notify(
+            f"Worker {worker.hostname} is removed from Sage, but its stack could not be stopped: {e}. "
+            "Stop it and remove its files by hand.", "warning")
+    else:
+      self.notify(
+          f"Worker {worker.hostname} was offline, so Sage could not clean it up. It is removed from Sage "
+          "only; anything on the VM, including the VM itself, has to be removed by hand.", "warning")
     Worker.delete().where(Worker.hostname == worker.hostname).execute()
     self.worker_reboots.pop(worker.hostname, None)
     Reports().forget(worker.hostname)
     Metrics().forget(worker.hostname)
     self.refresh_worker_summary()
-    self.cloudflare.delete_dns_record(name=f"*.int.{self.cloudflare.domain}", content=worker.ip)
+    await run_in_executor_with_context(
+        self.cloudflare.delete_dns_record, name=f"*.int.{self.cloudflare.domain}", content=worker.ip)
     logger.info(f"Worker {worker.hostname} removed from manager.")
 
   def set_worker_offline(self, worker):

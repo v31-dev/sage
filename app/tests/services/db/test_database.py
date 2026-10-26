@@ -3,7 +3,7 @@ import logging
 import pytest
 
 import config
-from services.db import BaseModel, Database, Project
+from services.db import BaseModel, Database, Instance, Project
 from services.db import db as database
 from services.db.database import MODELS
 
@@ -36,6 +36,23 @@ def test_every_model_is_registered_and_has_a_table(db):
 ])
 def test_applies_the_connection_pragmas(db, pragma, expected):
   assert db.execute_sql(f"PRAGMA {pragma}").fetchone()[0] == expected
+
+
+class TestInstance:
+  def test_a_new_database_has_one_instance_with_an_id(self, db):
+    (instance,) = Instance.select()
+    assert len(instance.id) == 16
+
+  def test_the_instance_survives_reconciling_and_a_restart(self, db):
+    before = Instance.get().id
+    Database().reconcile_schema()
+    Database()
+    assert [instance.id for instance in Instance.select()] == [before]
+
+  def test_a_snapshot_from_before_the_instance_existed_gets_one_when_it_is_restored(self, db):
+    db.execute_sql("DROP TABLE instance")
+    Database().reconcile_schema()
+    assert Instance.select().count() == 1
 
 
 class TestReconcileSchema:

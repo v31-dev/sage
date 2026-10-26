@@ -543,6 +543,34 @@ class TestPing:
     assert process.killed
 
 
+class TestPeers:
+  @pytest.fixture
+  def peers(self, tailscale, monkeypatch):
+    status = {"Peer": {
+        "k1": {"HostName": "worker-1", "TailscaleIPs": ["100.64.0.2", "fd7a::2"]},
+        "k2": {"HostName": "Worker-2", "TailscaleIPs": ["100.64.0.3"]},
+        "k3": {"HostName": "pending", "TailscaleIPs": []},
+        "k4": {"HostName": "no-addresses"},
+    }}
+    monkeypatch.setattr(tailscale, "status", lambda: status)
+    return tailscale
+
+  def test_every_machine_with_an_address_is_listed_with_its_first_address(self, peers):
+    assert [(peer.hostname, peer.ip) for peer in peers.peers()] == [("worker-1", "100.64.0.2"), ("Worker-2", "100.64.0.3")]
+
+  def test_a_tailnet_without_peers_lists_none(self, tailscale, monkeypatch):
+    monkeypatch.setattr(tailscale, "status", lambda: {})
+    assert tailscale.peers() == []
+
+  @pytest.mark.parametrize("query", ["worker-2", "WORKER-2", " Worker-2 ", "100.64.0.3"])
+  def test_a_machine_is_found_by_hostname_in_any_case_or_by_address(self, peers, query):
+    assert peers.find_peer(query).hostname == "Worker-2"
+
+  @pytest.mark.parametrize("query", ["worker-3", "100.64.0.9", "", "pending", "fd7a::2"])
+  def test_a_machine_that_is_not_listed_is_not_found(self, peers, query):
+    assert peers.find_peer(query) is None
+
+
 class TestOnlineStates:
   @pytest.fixture
   def answers(self, tailscale, monkeypatch):

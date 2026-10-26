@@ -30,7 +30,7 @@ These scripts assume a fairly direct machine setup and should be reviewed before
 ## Environment
 
 The manager's env vars are all required (see the README): `TS_AUTH_KEY`, `TS_NAME`,
-`TS_WORKER_TAG`, `ENCRYPTION_KEY` (fixed after the first boot — wipe `SAGE_DATA` to switch
+`ENCRYPTION_KEY` (fixed after the first boot — wipe `SAGE_DATA` to switch
 keys) and the Cloudflare details `DOMAIN` and
 `CLOUDFLARE_API_TOKEN`. Use a domain only the dev manager uses: two managers on one domain
 share its tunnel and records.

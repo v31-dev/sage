@@ -1,4 +1,5 @@
 import inspect
+from types import SimpleNamespace
 
 from services.manager import Manager
 from utils.queue import TaskQueue
@@ -20,6 +21,20 @@ class FakeS3:
   def create_presigned_download_url(self, s3_path, expires_in, raw_path=False, filename=None):
     self.links.append({"s3_path": s3_path, "expires_in": expires_in, "raw_path": raw_path, "filename": filename})
     return f"https://s3.example.test/{s3_path}"
+
+
+class FakeTailscale:
+  """The tailnet as the routes see it; the signatures mirror the real ones."""
+
+  def __init__(self):
+    self.machines = {}    # hostname -> ip
+
+  def find_peer(self, query):
+    query = query.strip().lower()
+    for hostname, ip in self.machines.items():
+      if query in (hostname.lower(), ip):
+        return SimpleNamespace(hostname=hostname, ip=ip)
+    return None
 
 
 class FakeManager:

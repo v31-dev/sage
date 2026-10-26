@@ -1,6 +1,6 @@
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from playhouse.shortcuts import model_to_dict
 
 from routes.containers import router as container_router
@@ -39,6 +39,31 @@ def inject_worker(request: Request):
 def get():
   return [{**worker, "status": Manager().worker_status(worker["hostname"], worker["online"])}
           for worker in Worker.select().dicts()]
+
+
+@router.post("/")
+def add_worker(request: Request, worker_data: dict = Body(...)):
+  """Add a machine of the tailnet, given by hostname or Tailscale IP, as a worker."""
+  host = str(worker_data.get("host") or "").strip()
+  peer = Tailscale().find_peer(host) if host else None
+  if peer is None:
+    raise HTTPException(status_code=404, detail=f"No machine with hostname or IP '{host}' in the tailnet.")
+
+  if Worker.get_or_none(Worker.hostname == peer.hostname):
+    raise HTTPException(status_code=409, detail=f"Worker {peer.hostname} is already added.")
+  if Manager().has_task(Manager().add_worker, {"worker_hostname": peer.hostname}):
+    raise HTTPException(status_code=409, detail=f"Worker {peer.hostname} is already being added.")
+
+  Manager().add_task(
+      task=Manager().add_worker,
+      scopes={"platform"},
+      params={"worker_hostname": peer.hostname},
+      executor="platform",
+      task_id=request.state.task_id,
+      on_conflict=OnConflict.QUEUE,
+  )
+
+  return {"status": "OK", "hostname": peer.hostname}
 
 
 @router.get("/{hostname}", dependencies=[Depends(inject_worker)])
@@ -121,9 +146,10 @@ def delete_worker(request: Request, hostname: str):
   if not worker:
     raise HTTPException(status_code=404, detail="Worker not found")
 
-  # Worker should not have any containers before deletion
-  if worker and worker.containers.count() > 0:
-    raise HTTPException(status_code=400, detail="Worker has active containers and cannot be deleted.")
+  # An online worker is cleaned up when it goes, so its containers are deleted first; an offline one is
+  # force-deleted with them.
+  if worker.online and worker.containers.count() > 0:
+    raise HTTPException(status_code=400, detail="Worker is online and has containers; delete them first.")
   if Manager().worker_status(hostname, worker.online) == "removing":
     raise HTTPException(status_code=409, detail="Worker is already being removed.")
 

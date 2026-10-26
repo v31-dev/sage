@@ -17,7 +17,6 @@ export interface AppInfo {
   latest_version: string | null
   domain: string
   name: string
-  worker_tag: string
   ip: string
   start_time: string
   state: 'running' | 'paused' | 'restoring' | 'stopping'
@@ -45,7 +44,7 @@ export interface InfraContainer {
   status: string
 }
 
-export type WorkerStatus = 'online' | 'not ready' | 'offline' | 'rebooting' | 'removing'
+export type WorkerStatus = 'online' | 'not ready' | 'offline' | 'adding' | 'rebooting' | 'removing'
 
 export interface Worker {
   hostname: string
@@ -180,6 +179,20 @@ export const workersAPI = new CRUDAPI({
   path: `${API_ROOT}/workers`,
   load_delay: LOAD_DELAY,
 })
+
+// Adds a machine of the tailnet, by hostname or Tailscale IP, as a worker. It is set up in the
+// background and shows in the list once the manager has reached it.
+export async function addWorker(host: string): Promise<{ hostname: string }> {
+  await new Promise(resolve => setTimeout(resolve, LOAD_DELAY))
+  const response = await fetch(`${API_ROOT}/workers/`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ host }),
+  })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(data.detail || 'Failed to add worker')
+  return data
+}
 
 export const projectAPI = new CRUDAPI({
   name: 'Project',

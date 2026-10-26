@@ -2,12 +2,18 @@ import pytest
 from fastapi.testclient import TestClient
 
 from services.manager import Manager
-from tests.routes.fakes import FakeManager
+from services.tailscale import Tailscale
+from tests.routes.fakes import FakeManager, FakeTailscale
 
 
 @pytest.fixture
 def manager(register):
   return register(Manager, FakeManager())
+
+
+@pytest.fixture
+def tailscale(register):
+  return register(Tailscale, FakeTailscale())
 
 
 @pytest.fixture

@@ -34,7 +34,6 @@ function appInfo(overrides: Partial<AppInfo> = {}): AppInfo {
     latest_version: null,
     domain: 'example.test',
     name: 'manager',
-    worker_tag: 'worker',
     ip: '100.64.0.1',
     start_time: '2026-10-24T10:00:00Z',
     state: 'running',
@@ -155,6 +154,7 @@ describe('the indicators by status', () => {
     ['online', 'ok'],
     ['not ready', 'warning'],
     ['offline', 'error'],
+    ['adding', 'busy'],
     ['rebooting', 'busy'],
     ['removing', 'busy'],
   ] as const)('workerIndicator: %s is %s', (status, state) => {

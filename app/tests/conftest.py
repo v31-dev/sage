@@ -13,7 +13,6 @@ os.environ.update(
     DOMAIN="example.test",
     CLOUDFLARE_API_TOKEN="test-token",
     TS_NAME="manager",
-    TS_WORKER_TAG="tag:worker",
     ENV="development",
 )
 time.tzset()

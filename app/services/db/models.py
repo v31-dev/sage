@@ -1,6 +1,7 @@
 import hashlib
 import json
 import re
+import secrets
 from dataclasses import dataclass
 
 from peewee import BooleanField, CharField, DateTimeField, FixedCharField, ForeignKeyField, IntegerField, SqliteDatabase
@@ -33,6 +34,12 @@ class BaseModel(Model):
 class Setting(BaseModel):
   key = AlphaNumericField(primary_key=True)
   value = EncryptedJSONField(null=True)
+
+
+class Instance(BaseModel):
+  """This manager's identity, made on the first boot and kept in the database, so a restored
+  backup is the same instance. A worker records it to say whose it is."""
+  id = CharField(primary_key=True, default=lambda: secrets.token_hex(8))
 
 
 class Worker(BaseModel):

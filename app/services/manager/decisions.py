@@ -97,17 +97,15 @@ class WorkerAction:
 
 
 def plan_worker_sync(known: list[WorkerRow], peers: list[WorkerRow], force: bool, check_stamps: bool) -> list[WorkerAction]:
-  """What the worker sync does, from the workers in the database and those the tailnet lists (with
-  `online` as the pings found them). A worker that does not answer is never set up."""
+  """What the worker sync does, from the workers in the database and the tailnet's machines among
+  them (`peers`, with `online` as the pings found them). A machine that is not a known worker is
+  left alone: workers are added by hand. A worker that does not answer is never set up."""
   known_by_name = {row.hostname: row for row in known}
   actions = []
 
   for peer in peers:
-    row = known_by_name.get(peer.hostname)
-    if row is None:
-      if peer.online:
-        actions.append(WorkerAction("setup", peer, "new worker"))
-    elif row.online and not peer.online:
+    row = known_by_name[peer.hostname]
+    if row.online and not peer.online:
       actions.append(WorkerAction("offline", peer, "went offline"))
     elif not row.online and peer.online:
       actions.append(WorkerAction("setup", peer, "came back online"))
@@ -123,6 +121,22 @@ def plan_worker_sync(known: list[WorkerRow], peers: list[WorkerRow], force: bool
     if row.hostname not in listed and row.online:
       actions.append(WorkerAction("offline", row, "not found in the tailnet"))
   return actions
+
+
+def worker_owner(revisions: dict) -> tuple[str, str] | None:
+  """The Sage that a worker belongs to, as (instance id, domain) from its owner stamp, or None when it
+  has none."""
+  instance_id, _, domain = revisions.get("owner", "").partition(" ")
+  return (instance_id, domain) if instance_id else None
+
+
+def worker_claim_refusal(revisions: dict, instance_id: str) -> str | None:
+  """Why this Sage may not set a worker up: its owner stamp names another instance. None when it is
+  unowned or this Sage's."""
+  owner = worker_owner(revisions)
+  if owner and owner[0] != instance_id:
+    return f"it is managed by another Sage ({owner[1] or 'unknown domain'}); remove it from there first"
+  return None
 
 
 def worker_stack_problem(snapshot: Snapshot | None, silent_for: float) -> str | None:

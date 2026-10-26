@@ -11,6 +11,7 @@ import {
   type WorkerMetricsResponse,
   type WorkerMetricSummary,
 } from '@/services/api'
+import AddWorkerButton from './AddWorkerButton.vue'
 import WorkerCard from './WorkerCard.vue'
 
 const workers = ref<Worker[]>([])
@@ -117,6 +118,10 @@ onUnmounted(() => {
 
       <!-- Content -->
       <div v-else class="space-y-6">
+        <div class="flex justify-end">
+          <AddWorkerButton :loadWorkers="loadWorkers" />
+        </div>
+
         <Card v-if="loadError">
           <CardContent class="flex flex-col items-center justify-center py-12">
             <p class="text-muted-foreground text-lg">Failed to load workers</p>
@@ -128,6 +133,9 @@ onUnmounted(() => {
         <Card v-else-if="workers.length === 0">
           <CardContent class="flex flex-col items-center justify-center py-12">
             <p class="text-muted-foreground text-lg">No workers found</p>
+            <p class="text-sm text-muted-foreground">
+              Add a machine of your tailnet to get started.
+            </p>
           </CardContent>
         </Card>
 
