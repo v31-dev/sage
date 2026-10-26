@@ -4,7 +4,7 @@ import pytest
 
 import config
 from services.manager.decisions import (ABSENT, OFFLINE, SEEN, UNKNOWN, Observation, WorkerReboot, WorkerRow, is_worker_rebooting, plan_worker_sync,
-                                        reconcile_container, rollup_status, worker_stack_problem)
+                                        reconcile_container, rollup_status, worker_claim_refusal, worker_owner, worker_stack_problem)
 from services.reports import ContainerReading, HostReading, Snapshot
 
 STAMP = "2026-10-24T23:08:35.718155"
@@ -93,12 +93,6 @@ def plan(known, peers, force=False, check_stamps=False):
 
 
 class TestPlanWorkerSync:
-  def test_a_new_worker_that_answers_is_set_up(self):
-    assert plan([], [row("w1", True)]) == [("setup", "w1", "new worker", False)]
-
-  def test_a_new_worker_that_does_not_answer_is_left_alone(self):
-    assert plan([], [row("w1", False)]) == []
-
   def test_a_worker_that_stopped_answering_is_taken_out(self):
     assert plan([row("w1", True)], [row("w1", False)]) == [("offline", "w1", "went offline", False)]
 
@@ -141,6 +135,35 @@ def snapshot(running=("traefik", "vector", "telegraf", "cloudflared"), traefik_r
   host = HostReading(*([None] * 13))
   return Snapshot(at=datetime(2026, 1, 1), host=host, containers={n: reading(n, "running") for n in running},
                   traefik_reachable=traefik_reachable)
+
+
+class TestWorkerOwner:
+  def test_the_stamp_holds_the_instance_and_its_domain(self):
+    assert worker_owner({"owner": "abc123 example.test"}) == ("abc123", "example.test")
+
+  def test_a_stamp_without_a_domain_still_names_the_instance(self):
+    assert worker_owner({"owner": "abc123"}) == ("abc123", "")
+
+  @pytest.mark.parametrize("revisions", [{}, {"infra": "x"}, {"owner": ""}])
+  def test_a_worker_without_a_stamp_has_no_owner(self, revisions):
+    assert worker_owner(revisions) is None
+
+
+class TestWorkerClaimRefusal:
+  MINE = {"owner": "me example.test"}
+
+  def test_a_worker_nobody_owns_may_be_set_up(self):
+    assert worker_claim_refusal({}, "me") is None
+
+  def test_a_worker_of_this_sage_may_be_set_up_whatever_its_domain_says(self):
+    assert worker_claim_refusal({"owner": "me old.test"}, "me") is None
+
+  def test_a_worker_of_another_sage_is_refused_with_its_domain_and_what_to_do(self):
+    refusal = worker_claim_refusal({"owner": "other other.test"}, "me")
+    assert "managed by another Sage (other.test)" in refusal and "remove it from there first" in refusal
+
+  def test_a_worker_of_another_sage_with_no_domain_is_still_refused(self):
+    assert "unknown domain" in worker_claim_refusal({"owner": "other"}, "me")
 
 
 class TestWorkerStackProblem:

@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi, type Mock } from 'vitest'
 import {
+  addWorker,
   APPLICATION_BUSY_STATUSES,
   APPLICATION_STOP_ELIGIBLE_STATUSES,
   backupAPI,
@@ -156,6 +157,29 @@ describe('the release calls', () => {
 
     fetchMock.mockResolvedValueOnce(reply({}, 500))
     await expect(refreshRelease()).rejects.toThrow('Failed to refresh release')
+  })
+})
+
+describe('addWorker', () => {
+  it('posts the host, and returns the hostname it resolved to', async () => {
+    fetchMock.mockResolvedValue(reply({ status: 'OK', hostname: 'worker-1' }))
+
+    await expect(addWorker('100.64.0.2')).resolves.toEqual({
+      status: 'OK',
+      hostname: 'worker-1',
+    })
+
+    expect(lastCall().path).toBe('/api/workers/')
+    expect(lastCall().init?.method).toBe('POST')
+    expect(JSON.parse(lastCall().init?.body as string)).toEqual({ host: '100.64.0.2' })
+  })
+
+  it("throws the manager's reason, or says what failed", async () => {
+    fetchMock.mockResolvedValueOnce(reply({ detail: 'Worker w1 is already added.' }, 409))
+    await expect(addWorker('w1')).rejects.toThrow('Worker w1 is already added.')
+
+    fetchMock.mockResolvedValueOnce(reply({}, 500))
+    await expect(addWorker('w1')).rejects.toThrow('Failed to add worker')
   })
 })
 

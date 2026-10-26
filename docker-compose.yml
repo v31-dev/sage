@@ -15,9 +15,7 @@ services:
       - TS_AUTH_KEY=${TS_AUTH_KEY:?Set TS_AUTH_KEY to a tagged, non-ephemeral Tailscale auth key}
       - TS_NAME=${TS_NAME:?Set TS_NAME to the manager's tailnet machine name}
       - ENCRYPTION_KEY=${ENCRYPTION_KEY:?Set ENCRYPTION_KEY (openssl rand -base64 32 | tr '+/' '-_')}
-      - TS_WORKER_TAG=${TS_WORKER_TAG:?Set TS_WORKER_TAG to the dev workers' Tailscale tag}
       - CLOUDFLARE_API_TOKEN=${CLOUDFLARE_API_TOKEN:?Set CLOUDFLARE_API_TOKEN}
-      - CLOUDFLARE_ACCOUNT_ID=${CLOUDFLARE_ACCOUNT_ID:?Set CLOUDFLARE_ACCOUNT_ID}
       - DOMAIN=${DOMAIN:?Set DOMAIN to the dev Cloudflare domain}
       - ENV=development
       # The dev Traefik owns :80/:443 and routes /api here.

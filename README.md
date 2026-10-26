@@ -44,7 +44,7 @@ For deeper architecture details, see [docs/architecture.md](docs/architecture.md
 - Deploy applications from Docker images or Git repositories (private repos via a `GIT_AUTH_TOKEN` build secret)
 - Stop and delete deployed workloads
 - Route public and internal traffic through generated Traefik configuration
-- Discover and bootstrap workers over Tailscale
+- Add workers from your tailnet and bootstrap them over Tailscale
 - Collect worker and container metrics
 - Ingest and search container logs
 - Create and restore platform and application backups
@@ -65,13 +65,12 @@ It needs:
   the tailnet with it (an invalid or expired key), the container exits at once with a
   `[CRITICAL]` line.
 - `TS_NAME` — the manager's tailnet machine name, also its name inside Sage.
-- `TS_WORKER_TAG` — the Tailscale tag that marks worker machines (with or without the
-  `tag:` prefix).
-- `DOMAIN` — a domain whose DNS is on Cloudflare (a zone in the account below). Apps get
-  addresses under it, and the UI is served only at `https://<TS_NAME>.core.<DOMAIN>`.
-- `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` — the account holding the zone, and a
-  token with Account › Cloudflare Tunnel › Edit, Zone › DNS › Edit and Zone › Zone › Read
-  for the zone.
+- `DOMAIN` — a domain whose DNS is on Cloudflare: its zone must be active (the registrar
+  lists Cloudflare's nameservers). Apps get addresses under it, and the UI is served only at
+  `https://<TS_NAME>.core.<DOMAIN>`.
+- `CLOUDFLARE_API_TOKEN` — a token with Account › Cloudflare Tunnel › Edit, Zone › DNS ›
+  Edit and Zone › Zone › Read for the zone. It must see only one active zone for `DOMAIN`;
+  Sage uses the account that holds that zone.
 - `ENCRYPTION_KEY` — encrypts secrets in the database, platform backups and volume
   backups. Generate one with `openssl rand -base64 32 | tr '+/' '-_'` and keep it with
   your S3 credentials: backups can't be restored without it. It can't change after the
@@ -89,9 +88,7 @@ It needs:
 ```bash
 TS_AUTH_KEY=tskey-auth-...
 TS_NAME=sage
-TS_WORKER_TAG=worker
 DOMAIN=example.com
-CLOUDFLARE_ACCOUNT_ID=...
 CLOUDFLARE_API_TOKEN=...
 ENCRYPTION_KEY=...
 ```
@@ -182,14 +179,22 @@ unreachable; tailnet traffic reaches every port the manager container listens on
 ### Workers
 
 A worker is a Linux machine with Docker (including the Compose plugin) that joins the
-tailnet with the worker tag and Tailscale SSH enabled:
+tailnet with Tailscale SSH enabled:
 
 ```bash
 tailscale up --ssh --auth-key=tskey-auth-...   # a key tagged tag:worker
 ```
 
-Set the same tag in `TS_WORKER_TAG`. The manager discovers machines carrying it and sets
-them up over SSH.
+The tag is for the tailnet policy above, which lets the manager reach the machine; Sage does
+not read it. Add the machine on the Workers page by its hostname or Tailscale IP: Sage checks
+that it answers, then sets it up over SSH. Deleting a worker stops Sage's services on it and
+removes Sage's files from it, so delete its containers first. A worker that is offline is
+removed from Sage as it is, with its containers; its VM has to be deleted by hand.
+
+A worker records which Sage manages it. Several Sages can share a tailnet when each has its own
+domain, S3 path and workers: a machine that another Sage manages is refused, and has to be
+deleted from that Sage first. Give each Sage its own tags in the tailnet policy if one must not
+reach the other's workers.
 
 Workers are meant to be dedicated to Sage: a hardened, bare VM with Docker and nothing else
 running on it. The manager has no such requirement; it needs only Docker and runs anywhere, on
@@ -207,7 +212,7 @@ backups are listed once their application is back. Each backup can also be downl
 from the Backups page (platform) or a volume's Restore dialog (volume): a link that works
 for a minute, straight from S3. The files are encrypted; Settings → S3 shows how to open one.
 
-To change `TS_NAME`, `TS_WORKER_TAG` or the Cloudflare details, edit the env and restart:
+To change `TS_NAME` or the Cloudflare details, edit the env and restart:
 Sage brings the workers in line on start. A new `TS_NAME` renames the manager's tailnet
 machine. Records and tunnels of a previous domain, account or name stay in Cloudflare
 until you delete them.

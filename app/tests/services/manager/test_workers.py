@@ -6,28 +6,38 @@ from types import SimpleNamespace
 import pytest
 
 import config
-from services.db import Worker
+from services.db import Container, Worker
 from services.manager.decisions import WorkerReboot
 from services.manager.workers import WorkersMixin
 from services.reports import ContainerReading, HostReading, Reports, Snapshot
 from utils.executor import active_executor
+from utils.logging import TaskFailed
 
 STACK = ("traefik", "vector", "telegraf", "cloudflared")
 
 
 class FakeTailscale:
-  worker_tag = "worker"
-
   def __init__(self):
-    self.listed = []          # (hostname, ip)
+    self.listed = []          # (hostname, ip) of the tailnet's machines
     self.answering = set()    # hostnames that answer a ping
     self.asked = None
     self.commands = []
     self.up_output = ["Container traefik  Running"]
     self.up_error = None
+    self.synced = []          # (path on the worker, substitutions) of the files written
+    self.sync_error = None
 
-  def get_by_tag(self, tag):
+  def ip(self):
+    return "100.64.0.1"
+
+  def peers(self):
     return [SimpleNamespace(hostname=h, ip=ip) for h, ip in self.listed]
+
+  def find_peer(self, query):
+    return next((peer for peer in self.peers() if query in (peer.hostname, peer.ip)), None)
+
+  async def ping(self, ip):
+    return any(peer.ip == ip and peer.hostname in self.answering for peer in self.peers())
 
   async def online_states(self, peers):
     self.asked = peers
@@ -39,6 +49,11 @@ class FakeTailscale:
       raise self.up_error
     return 0, self.up_output
 
+  async def sync_file(self, hostname, src, dst, keys=None, formatter=None, timeout=120, mode=None):
+    self.synced.append((dst, keys))
+    if self.sync_error:
+      raise self.sync_error
+
 
 class Harness(WorkersMixin):
   worker_home_dir = "/opt/sage"
@@ -48,10 +63,11 @@ class Harness(WorkersMixin):
     self.worker_stack_repairs = {}
     self.notices = []
     self.setups = []
+    self.deleted_containers = []
     self.offlined = []
     self.failing = set()
     self.worker_reboots = {}
-    self.queued = set()          # (task name, hostname) of the removals and reboots queued or running
+    self.queued = set()          # (task name, hostname) of the additions, removals and reboots queued or running
     self.dns_deleted = []
     self.cloudflare = SimpleNamespace(domain="example.test", delete_dns_record=lambda **kw: self.dns_deleted.append(kw))
 
@@ -68,6 +84,10 @@ class Harness(WorkersMixin):
     if worker.hostname in self.failing:
       raise Exception("boom")
     self.setups.append((worker.hostname, force))
+
+  async def delete_container(self, container_id, force=False):
+    self.deleted_containers.append((container_id, force))
+    Container.delete().where(Container.id == container_id).execute()
 
   def set_worker_offline(self, worker):
     self.offlined.append(worker.hostname)
@@ -94,11 +114,19 @@ class TestSyncWorkers:
   def test_the_plan_is_carried_out(self, harness):
     add("w1", True)
     add("w2", False)
-    harness.tailscale.listed = [("w1", "100.64.0.2"), ("w2", "100.64.0.2"), ("w3", "100.64.0.3")]
-    harness.tailscale.answering = {"w2", "w3"}
+    harness.tailscale.listed = [("w1", "100.64.0.2"), ("w2", "100.64.0.2")]
+    harness.tailscale.answering = {"w2"}
     self.sync(harness)
     assert harness.offlined == ["w1"]
-    assert harness.setups == [("w2", False), ("w3", False)]
+    assert harness.setups == [("w2", False)]
+
+  def test_a_machine_that_is_not_a_known_worker_is_not_pinged_or_set_up(self, harness):
+    add("w1", True)
+    harness.tailscale.listed = [("w1", "100.64.0.2"), ("w3", "100.64.0.3")]
+    harness.tailscale.answering = {"w1", "w3"}
+    self.sync(harness)
+    assert harness.tailscale.asked == {"w1": ("100.64.0.2", True)}
+    assert harness.setups == []
 
   def test_a_worker_that_does_not_answer_is_taken_out(self, harness):
     add("w1", True)
@@ -108,6 +136,7 @@ class TestSyncWorkers:
 
   def test_the_pings_are_given_what_the_database_knows_about_each_worker(self, harness):
     add("w1", True, "100.64.0.2")
+    add("w2", False, "100.64.0.3")
     harness.tailscale.listed = [("w1", "100.64.0.2"), ("w2", "100.64.0.3")]
     self.sync(harness)
     assert harness.tailscale.asked == {"w1": ("100.64.0.2", True), "w2": ("100.64.0.3", False)}
@@ -283,6 +312,15 @@ class TestWorkerStatus:
     harness.queued = {("remove_worker", "w1"), ("reboot_worker", "w1")}
     assert harness.worker_status("w1", True) == "removing"
 
+  def test_an_addition_that_is_queued_or_running_is_adding(self, harness):
+    harness.queued = {("add_worker", "w1")}
+    assert harness.worker_status("w1", False) == "adding"
+    assert harness.worker_status("w2", False) == "offline"
+
+  def test_removing_wins_over_adding(self, harness):
+    harness.queued = {("remove_worker", "w1"), ("add_worker", "w1")}
+    assert harness.worker_status("w1", False) == "removing"
+
   @pytest.mark.parametrize("online", [True, False])
   def test_a_reboot_that_is_queued_or_running_is_rebooting(self, harness, online):
     harness.queued = {("reboot_worker", "w1")}
@@ -308,6 +346,177 @@ class TestWorkerStatus:
     assert harness.worker_status("w1", False) == "rebooting"
     clock.advance(timedelta(seconds=config.WORKER_REBOOT_LIMIT_SECONDS + 1))
     assert harness.worker_status("w1", False) == "offline"
+
+
+class TestAddWorker:
+  def add(self, harness):
+    asyncio.run(harness.add_worker("w3"))
+
+  def test_a_machine_that_answers_is_set_up(self, harness):
+    harness.tailscale.listed = [("w3", "100.64.0.3")]
+    harness.tailscale.answering = {"w3"}
+    self.add(harness)
+    assert harness.setups == [("w3", False)]
+
+  def test_a_machine_that_is_not_in_the_tailnet_is_refused_and_said_so(self, harness):
+    with pytest.raises(TaskFailed):
+      self.add(harness)
+    assert harness.setups == []
+    assert harness.notices == [("error", "Failed to add worker w3: it is not in the tailnet or does not answer a ping.")]
+
+  def test_a_machine_that_does_not_answer_a_ping_is_refused_and_said_so(self, harness):
+    harness.tailscale.listed = [("w3", "100.64.0.3")]
+    with pytest.raises(TaskFailed):
+      self.add(harness)
+    assert harness.setups == []
+    assert harness.notices[0][0] == "error" and "does not answer a ping" in harness.notices[0][1]
+
+
+class SetupHarness(Harness):
+  """The real `setup_worker`, up to the first file it writes (the fake tailnet then stops it)."""
+  setup_worker = WorkersMixin.setup_worker
+
+  version = "test"
+
+  def __init__(self):
+    super().__init__()
+    self.cloudflare.tunnel_id = "tunnel"
+    self.cloudflare.connect = lambda: None
+    self.cloudflare.create_dns_record = lambda **kwargs: None
+    self.cloudflare.get_tunnel_token = lambda: SimpleNamespace(token="token")
+    self.tailscale.sync_error = Exception("stop here")
+
+
+class TestSetupWorkerClaim:
+  @pytest.fixture
+  def setup(self, db, clock):
+    executor = ThreadPoolExecutor(max_workers=1)
+    token = active_executor.set(executor)
+    Reports()
+    yield SetupHarness()
+    active_executor.reset(token)
+    executor.shutdown()
+
+  def run(self, setup, **kwargs):
+    asyncio.run(setup.setup_worker(SimpleNamespace(hostname="w3", ip="100.64.0.3"), **kwargs))
+
+  def stamp(self, setup, owner):
+    setup.tailscale.up_output = [f"/opt/sage/revisions/owner:{owner} other.test"]
+
+  def test_a_worker_of_another_sage_is_refused_before_anything_is_changed(self, setup):
+    self.stamp(setup, "someone-else")
+    with pytest.raises(Exception, match=r"managed by another Sage \(other.test\); remove it from there first"):
+      self.run(setup)
+    assert len(setup.tailscale.commands) == 1 and "grep" in setup.tailscale.commands[0][1]
+    assert setup.tailscale.synced == []
+    assert Worker.get_or_none(Worker.hostname == "w3") is None
+    assert setup.notices[0][0] == "error" and "Failed to setup worker w3" in setup.notices[0][1]
+
+  def test_a_forced_setup_does_not_wipe_the_stamps_of_a_worker_of_another_sage(self, setup):
+    self.stamp(setup, "someone-else")
+    with pytest.raises(Exception, match="managed by another Sage"):
+      self.run(setup, force=True)
+    assert [command for _, command in setup.tailscale.commands if "rm -rf" in command] == []
+
+  def test_a_worker_nobody_owns_is_claimed_first(self, setup):
+    with pytest.raises(Exception, match="stop here"):
+      self.run(setup)
+    assert setup.tailscale.synced[0] == ("/opt/sage/revisions/owner", {"CONTENT": f"{setup.instance_id()} example.test"})
+
+  def test_a_worker_already_claimed_by_this_sage_is_not_claimed_again(self, setup):
+    setup.tailscale.up_output = [f"/opt/sage/revisions/owner:{setup.instance_id()} example.test"]
+    with pytest.raises(Exception, match="stop here"):
+      self.run(setup)
+    assert all(not path.endswith("/owner") for path, _ in setup.tailscale.synced)
+
+  def test_a_claim_with_an_old_domain_is_rewritten_with_the_current_one(self, setup):
+    setup.tailscale.up_output = [f"/opt/sage/revisions/owner:{setup.instance_id()} old.test"]
+    with pytest.raises(Exception, match="stop here"):
+      self.run(setup)
+    assert setup.tailscale.synced[0][1] == {"CONTENT": f"{setup.instance_id()} example.test"}
+
+  def test_a_forced_setup_of_its_own_worker_wipes_the_stamps_and_claims_it_again(self, setup):
+    setup.tailscale.up_output = [f"/opt/sage/revisions/owner:{setup.instance_id()} example.test"]
+    with pytest.raises(Exception, match="stop here"):
+      self.run(setup, force=True)
+    assert any(command.endswith("rm -rf /opt/sage/revisions") for _, command in setup.tailscale.commands)
+    assert setup.tailscale.synced[0][0] == "/opt/sage/revisions/owner"
+
+
+class TestRemoveWorker:
+  def remove(self, harness):
+    asyncio.run(harness.remove_worker("w1"))
+
+  def reachable(self, harness, owner=None):
+    harness.tailscale.listed = [("w1", "100.64.0.2")]
+    harness.tailscale.answering = {"w1"}
+    if owner:
+      harness.tailscale.up_output = [f"/opt/sage/revisions/owner:{owner} example.test"]
+
+  def test_an_online_worker_of_this_sage_has_its_stack_stopped_and_its_files_removed_before_it_is_forgotten(self, harness):
+    add("w1", True)
+    self.reachable(harness, owner=harness.instance_id())
+    self.remove(harness)
+    stop = harness.tailscale.commands[-1][1]
+    assert "docker-compose.yml down --remove-orphans" in stop and stop.endswith("&& rm -rf /opt/sage")
+    assert Worker.get_or_none(Worker.hostname == "w1") is None
+    assert harness.notices == []
+    assert harness.dns_deleted == [{"name": "*.int.example.test", "content": "100.64.0.2"}]
+
+  def test_a_worker_of_another_sage_is_forgotten_and_left_as_it_is(self, harness):
+    add("w1", True)
+    self.reachable(harness, owner="someone-else")
+    self.remove(harness)
+    assert [command for _, command in harness.tailscale.commands if "down" in command] == []
+    assert Worker.get_or_none(Worker.hostname == "w1") is None
+    assert harness.notices == []
+
+  def test_a_worker_without_an_owner_stamp_is_forgotten_and_left_as_it_is(self, harness):
+    add("w1", True)
+    self.reachable(harness)
+    self.remove(harness)
+    assert [command for _, command in harness.tailscale.commands if "down" in command] == []
+    assert Worker.get_or_none(Worker.hostname == "w1") is None
+
+  def test_a_worker_that_does_not_answer_is_forgotten_without_cleanup_and_the_user_is_told_to_finish_by_hand(self, harness):
+    add("w1", False)
+    self.remove(harness)
+    assert harness.tailscale.commands == []
+    assert Worker.get_or_none(Worker.hostname == "w1") is None
+    (level, message), = harness.notices
+    assert level == "warning" and "was offline" in message and "by hand" in message
+
+  def test_a_stack_that_cannot_be_stopped_still_lets_the_worker_go_and_says_so(self, harness):
+    add("w1", True)
+    self.reachable(harness)
+    harness.tailscale.up_error = Exception("connection lost")
+    self.remove(harness)
+    assert Worker.get_or_none(Worker.hostname == "w1") is None
+    (level, message), = harness.notices
+    assert level == "warning" and "could not be stopped: connection lost" in message
+
+  def test_an_online_worker_with_containers_is_refused_and_nothing_changes(self, harness, application):
+    add("w1", True)
+    Container.create(application=application, worker="w1")
+    with pytest.raises(TaskFailed):
+      self.remove(harness)
+    assert Worker.get_or_none(Worker.hostname == "w1") is not None
+    assert harness.deleted_containers == [] and harness.tailscale.commands == []
+
+  def test_an_offline_worker_has_its_containers_force_deleted_with_it(self, harness, application):
+    add("w1", False)
+    first = Container.create(application=application, worker="w1")
+    self.remove(harness)
+    assert harness.deleted_containers == [(first.id, True)]
+    assert Worker.get_or_none(Worker.hostname == "w1") is None
+
+  def test_the_files_of_a_worker_that_had_containers_deleted_without_cleanup_are_left_even_if_it_answers(self, harness, application):
+    add("w1", False)
+    Container.create(application=application, worker="w1")
+    self.reachable(harness, owner=harness.instance_id())
+    self.remove(harness)
+    assert harness.tailscale.commands == []
+    assert harness.notices[0][0] == "warning" and "was offline" in harness.notices[0][1]
 
 
 class TestRebootAndRemove:
@@ -342,7 +551,7 @@ class TestRebootAndRemove:
     add("w1", False)
     Reports().accept("w1", telegraf_started(1))
     harness.worker_reboots["w1"] = WorkerReboot(clock.current, 1)
-    harness.remove_worker("w1")
+    asyncio.run(harness.remove_worker("w1"))
     assert harness.worker_reboots == {} and Reports().latest("w1") is None
     assert Worker.get_or_none(Worker.hostname == "w1") is None
 

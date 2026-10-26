@@ -56,12 +56,11 @@ class SettingsMixin:
     return tests[key](value, side_effects)
 
   def _test_tailscale(self, value: dict, side_effects: bool) -> str:
-    """Env vars, so checked as configured: the node is up and the workers are visible."""
+    """Env vars, so checked as configured: the node is up and sees the tailnet."""
     backend_state = self.tailscale.status().get("BackendState")
     if backend_state != "Running":
       raise ValueError(f"The manager's tailnet node is not running ({backend_state}).")
-    machines = self.tailscale.get_by_tag(self.tailscale.worker_tag)
-    return f"{len(machines)} machine(s) tagged tag:{self.tailscale.worker_tag}."
+    return f"The node is running; {len(self.tailscale.peers())} other machine(s) on the tailnet."
 
   def _test_cloudflare(self, value: dict, side_effects: bool) -> str:
     """Env vars, so checked as configured: token, zone and account, and the tunnel's health."""

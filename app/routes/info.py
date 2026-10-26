@@ -28,7 +28,6 @@ def get():
       "latest_version": Manager().latest_version,
       "domain": get_env("DOMAIN"),
       "name": get_env("TS_NAME"),
-      "worker_tag": Tailscale().worker_tag,
       "ip": Tailscale().ip(),
       "start_time": start_time.isoformat(),
       "state": Manager().task_state(),

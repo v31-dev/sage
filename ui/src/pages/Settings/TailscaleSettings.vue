@@ -10,13 +10,6 @@ const appStore = useAppStore()
 
 const fields = computed(() => [
   {
-    key: 'worker_tag',
-    label: 'Worker Tag',
-    description: 'TS_WORKER_TAG',
-    readonly: true,
-    value: `tag:${appStore.info?.worker_tag}`,
-  },
-  {
     key: 'manager',
     label: 'This Manager',
     description: 'TS_NAME and its tailnet IP',
@@ -29,7 +22,7 @@ const fields = computed(() => [
 <template>
   <SettingsSection
     title="Tailscale"
-    description="Machines on your tailnet that carry the worker tag become workers. Set by environment variables: change them and restart Sage."
+    description="The manager's node on your tailnet. Workers are added by hand on the Workers page. Set by environment variables: change them and restart Sage."
     section="tailscale"
     :fields="fields"
   >

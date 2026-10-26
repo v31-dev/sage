@@ -36,7 +36,6 @@ class Tailscale(Base):
     super().__init__()
 
     self.uds = "/var/run/tailscale/tailscaled.sock"
-    self.worker_tag = get_env("TS_WORKER_TAG").strip().removeprefix("tag:")
     # Pooled SSH connections per worker
     self._conns: dict[str, asyncssh.SSHClientConnection] = {}
     self._conn_locks: dict[str, asyncio.Lock] = {}
@@ -138,22 +137,18 @@ class Tailscale(Base):
       logger.info(f"Tailscale IP address: {self._ip}")
     return self._ip
 
-  def get_by_tag(self, tag):
-    """
-    Get a list of objects with hostname and ip attributes for all peers with a given tag.
-    """
-    status = self.status()
-
+  def peers(self):
+    """Every machine of the tailnet that has an address, as objects with hostname and ip."""
     return [
-        dict_to_obj(
-            {
-                "hostname": peer["HostName"],
-                "ip": peer["TailscaleIPs"][0],
-            }
-        )
-        for peer in status.get("Peer", {}).values()
-        if any(_tag == f"tag:{tag}" for _tag in peer.get("Tags", []))
+        dict_to_obj({"hostname": peer["HostName"], "ip": peer["TailscaleIPs"][0]})
+        for peer in self.status().get("Peer", {}).values()
+        if peer.get("TailscaleIPs")
     ]
+
+  def find_peer(self, query: str):
+    """The machine with that hostname (any case) or Tailscale IP, or None."""
+    query = query.strip().lower()
+    return next((peer for peer in self.peers() if query in (peer.hostname.lower(), peer.ip)), None)
 
   async def _start_command(self, hostname, command):
     """Open a channel on a pooled connection and start `command` on it. A stale pooled

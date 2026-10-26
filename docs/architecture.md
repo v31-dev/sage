@@ -165,7 +165,7 @@ are written to the `sage` shard in-process by a logging handler (no Vector sidec
 
 APScheduler is a pure cron/interval trigger: each scheduled coroutine only calls `Manager().add_task(...)` to enqueue work and owns no execution or concurrency logic. Recurring triggers cover:
 
-- worker discovery and sync
+- worker sync
 - application status sync
 - scheduled volume backup dispatch
 - Traefik domain config sync

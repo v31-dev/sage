@@ -47,8 +47,8 @@ try:
   manager.setup_domain()
 except Exception as e:
   logger.critical(
-      f"Could not set up {manager.cloudflare.manager_hostname}: {e}. Check CLOUDFLARE_API_TOKEN, "
-      "CLOUDFLARE_ACCOUNT_ID and DOMAIN.", exc_info=True)
+      f"Could not set up {manager.cloudflare.manager_hostname}: {e}. Check CLOUDFLARE_API_TOKEN "
+      "and DOMAIN.", exc_info=True)
   sys.exit(1)
 
 

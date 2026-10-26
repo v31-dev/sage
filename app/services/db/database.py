@@ -5,11 +5,11 @@ from playhouse.migrate import SqliteMigrator, migrate
 import config
 from services.base import Base
 
-from .models import Application, Backup, Container, Domain, Event, Notification, Project, Setting, Task, Volume, Worker, db
+from .models import Application, Backup, Container, Domain, Event, Instance, Notification, Project, Setting, Task, Volume, Worker, db
 
 logger = logging.getLogger(__name__)
 
-MODELS = [Setting, Project, Application, Volume, Domain, Worker, Container, Event, Notification, Backup, Task]
+MODELS = [Setting, Instance, Project, Application, Volume, Domain, Worker, Container, Event, Notification, Backup, Task]
 
 
 class Database(Base):
@@ -37,10 +37,12 @@ class Database(Base):
     Bring the live database schema up to the current models: create missing
     tables and add missing columns. Idempotent and safe to call any time the
     on-disk schema may lag the models -- at startup, or after a restore swaps in
-    an older database snapshot.
+    an older database snapshot. Also gives the manager its identity if it has none.
     """
     db.create_tables(MODELS, safe=True)
     self._sync_columns()
+    if not Instance.select().exists():
+      Instance.create()
 
   def _sync_columns(self):
     """
