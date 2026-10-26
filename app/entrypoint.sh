@@ -9,7 +9,6 @@ set -euo pipefail
 : "${ENCRYPTION_KEY:?ENCRYPTION_KEY must be set}"
 : "${TS_WORKER_TAG:?TS_WORKER_TAG must be set}"
 : "${CLOUDFLARE_API_TOKEN:?CLOUDFLARE_API_TOKEN must be set}"
-: "${CLOUDFLARE_ACCOUNT_ID:?CLOUDFLARE_ACCOUNT_ID must be set}"
 : "${DOMAIN:?DOMAIN must be set}"
 
 state_dir=/app/data/tailscale

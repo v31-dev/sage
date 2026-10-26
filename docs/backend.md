@@ -66,7 +66,7 @@ Most high-level backend behavior ultimately flows through this service, and almo
 - `services/settings.py`
   - persistent settings state for S3 and notifications; every field is optional and set from the UI
 - `services/cloudflare.py`
-  - Cloudflare DNS and tunnel management, configured from env (`DOMAIN`, `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`); connects at startup and again on use if that failed
+  - Cloudflare DNS and tunnel management, configured from env (`DOMAIN`, `CLOUDFLARE_API_TOKEN`); finds the domain's active zone and, from it, the account that holds it; connects at startup and again on use if that failed
 - `services/certs.py`
   - the manager's certificate (`<TS_NAME>.core.<domain>`, never leaves the manager) and the workers' (`*.int.<domain>`): ACME DNS-01 issuance, renewal, the startup retry and the `:443` in-place reload
 - `services/tailscale.py`
@@ -440,7 +440,7 @@ affected apps and call the helper rather than bulk-setting the flag.
 ## Settings And Traefik Refresh
 
 Cloudflare and Tailscale are configured by required env vars (`DOMAIN`,
-`CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`, `TS_WORKER_TAG`), so changing them is a
+`CLOUDFLARE_API_TOKEN`, `TS_WORKER_TAG`), so changing them is a
 restart. On start, `setup_domain` sets up the new domain (zone, tunnel, the manager's
 record, the manager's certificate) before serving, the `renew_certificates` startup run
 issues the workers' certificate for a new domain, and the `check_stamps` worker sync

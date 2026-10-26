@@ -21,22 +21,22 @@ class CloudflareError(Exception):
 
 
 class Cloudflare(Base):
-  """Cloudflare is part of the platform: its token, account and domain are required env
-  vars, so changing them is a restart. Calls the REST API directly over httpx."""
+  """Cloudflare is part of the platform: its token and domain are required env vars, so
+  changing them is a restart. Calls the REST API directly over httpx."""
 
   def __init__(self):
     super().__init__()
     self.config = {
         "api_token": get_env("CLOUDFLARE_API_TOKEN"),
-        "account_id": get_env("CLOUDFLARE_ACCOUNT_ID"),
         "domain": get_env("DOMAIN"),
     }
     self.domain = self.config["domain"]
-    self.account_id = self.config["account_id"]
     # The manager's only address; its DNS-only record points at the tailnet IP.
     self.manager_hostname = f"{get_env('TS_NAME')}.core.{self.domain}"
     self.http = httpx.Client(base_url=config.CLOUDFLARE_API_URL, timeout=15)
     self.zone_id = None
+    # The account holding the zone, found with it.
+    self.account_id = None
     self.tunnel_id = None
     # healthy, degraded, down or inactive; refreshed by the periodic settings check.
     self.tunnel_status = None
@@ -68,22 +68,36 @@ class Cloudflare(Base):
         return items
       page += 1
 
+  def find_zone(self, domain: str, token: str | None = None) -> dict:
+    """The active zone of `domain` that the token can see. A domain added to several accounts
+    is active in only one of them. Raises with the reason when there is no such zone, or more
+    than one."""
+    zones = self.request("GET", "/zones", token=token, params={"name": domain, "status": "active"})["result"]
+    if not zones:
+      raise ValueError(
+          f"No active zone for {domain} is visible to this API token. Check that the domain's "
+          "nameservers are Cloudflare's.")
+    if len(zones) > 1:
+      raise ValueError(f"This API token sees {len(zones)} active zones for {domain}; it must see only one.")
+    if not (zones[0].get("account") or {}).get("id"):
+      raise ValueError(f"Cloudflare did not say which account holds the zone for {domain}.")
+    return zones[0]
+
   def connect(self):
-    """Verify the token, find the zone, and make sure the tunnel and the manager's DNS
-    record exist. Runs at startup and again on use if that failed; raises when the API
-    fails, leaving it unconnected so the next use retries."""
+    """Verify the token, find the zone and its account, and make sure the tunnel and the
+    manager's DNS record exist. Runs at startup and again on use if that failed; raises when
+    the API fails, leaving it unconnected so the next use retries."""
     with self.lock:
       if self.zone_id is not None:
         return
 
       if self.request("GET", "/user/tokens/verify")["result"]["status"] != "active":
         raise ValueError("The Cloudflare API token is not active.")
-      zones = self.request("GET", "/zones", params={"name": self.domain})["result"]
-      if not zones:
-        raise ValueError(f"No Cloudflare zone for {self.domain} is visible to this API token.")
+      zone = self.find_zone(self.domain)
 
       # Set first: the record calls below go through connect() too.
-      self.zone_id = zones[0]["id"]
+      self.zone_id = zone["id"]
+      self.account_id = zone["account"]["id"]
       try:
         self.tunnel_id = self.create_tunnel(f"{self.domain}-sage")
         self.create_dns_record(
@@ -94,6 +108,7 @@ class Cloudflare(Base):
         )
       except Exception:
         self.zone_id = None
+        self.account_id = None
         raise
 
       logger.info(f"Cloudflare connected for domain: {self.domain} with zone ID: {self.zone_id}")
@@ -101,17 +116,16 @@ class Cloudflare(Base):
   def check_config(self, values: dict):
     """Check a Cloudflare config against the API; raises with the reason. Every field is
     mandatory."""
-    missing = [field for field in ("api_token", "account_id", "domain") if not values.get(field)]
+    missing = [field for field in ("api_token", "domain") if not values.get(field)]
     if missing:
       raise ValueError(f"Missing values for: {', '.join(missing)}.")
 
     token = values["api_token"]
     if self.request("GET", "/user/tokens/verify", token=token)["result"]["status"] != "active":
       raise ValueError("The API token is not active.")
-    if not self.request("GET", "/zones", token=token, params={"name": values["domain"]})["result"]:
-      raise ValueError(f"No zone for {values['domain']} is visible to this API token.")
-    # Tunnel access for the account
-    self.request("GET", f"/accounts/{values['account_id']}/cfd_tunnel", token=token, params={"per_page": 1})
+    zone = self.find_zone(values["domain"], token)
+    # Tunnel access for the zone's account
+    self.request("GET", f"/accounts/{zone['account']['id']}/cfd_tunnel", token=token, params={"per_page": 1})
 
   def get_dns_records(self, name: str) -> list[dict]:
     self.connect()

@@ -11,7 +11,6 @@ os.environ.update(
     TZ="Asia/Kolkata",
     ENCRYPTION_KEY=Fernet.generate_key().decode(),
     DOMAIN="example.test",
-    CLOUDFLARE_ACCOUNT_ID="test-account",
     CLOUDFLARE_API_TOKEN="test-token",
     TS_NAME="manager",
     TS_WORKER_TAG="tag:worker",

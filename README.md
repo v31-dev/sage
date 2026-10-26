@@ -67,11 +67,12 @@ It needs:
 - `TS_NAME` — the manager's tailnet machine name, also its name inside Sage.
 - `TS_WORKER_TAG` — the Tailscale tag that marks worker machines (with or without the
   `tag:` prefix).
-- `DOMAIN` — a domain whose DNS is on Cloudflare (a zone in the account below). Apps get
-  addresses under it, and the UI is served only at `https://<TS_NAME>.core.<DOMAIN>`.
-- `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` — the account holding the zone, and a
-  token with Account › Cloudflare Tunnel › Edit, Zone › DNS › Edit and Zone › Zone › Read
-  for the zone.
+- `DOMAIN` — a domain whose DNS is on Cloudflare: its zone must be active (the registrar
+  lists Cloudflare's nameservers). Apps get addresses under it, and the UI is served only at
+  `https://<TS_NAME>.core.<DOMAIN>`.
+- `CLOUDFLARE_API_TOKEN` — a token with Account › Cloudflare Tunnel › Edit, Zone › DNS ›
+  Edit and Zone › Zone › Read for the zone. It must see only one active zone for `DOMAIN`;
+  Sage uses the account that holds that zone.
 - `ENCRYPTION_KEY` — encrypts secrets in the database, platform backups and volume
   backups. Generate one with `openssl rand -base64 32 | tr '+/' '-_'` and keep it with
   your S3 credentials: backups can't be restored without it. It can't change after the
@@ -91,7 +92,6 @@ TS_AUTH_KEY=tskey-auth-...
 TS_NAME=sage
 TS_WORKER_TAG=worker
 DOMAIN=example.com
-CLOUDFLARE_ACCOUNT_ID=...
 CLOUDFLARE_API_TOKEN=...
 ENCRYPTION_KEY=...
 ```

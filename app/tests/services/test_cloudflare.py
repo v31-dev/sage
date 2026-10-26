@@ -53,6 +53,10 @@ def body(request):
   return json.loads(request.content)
 
 
+def zone(zone_id, account_id):
+  return {"id": zone_id, "account": {"id": account_id, "name": f"{account_id} account"}}
+
+
 class FakeTailscale:
   def ip(self):
     return "100.64.0.1"
@@ -83,16 +87,17 @@ def cloudflare(api, sleeps):
 @pytest.fixture
 def connected(cloudflare):
   cloudflare.zone_id = ZONE
+  cloudflare.account_id = ACCOUNT
   cloudflare.tunnel_id = TUNNEL
   return cloudflare
 
 
 @pytest.fixture
 def healthy(api, register):
-  """An account where the token is active, the zone is visible and there is no tunnel or record yet."""
+  """An account where the token is active, the zone is active and visible, and there is no tunnel or record yet."""
   register(Tailscale, FakeTailscale())
   api.on("GET", "/user/tokens/verify", ok({"status": "active"}))
-  api.on("GET", "/zones", ok([{"id": ZONE}]))
+  api.on("GET", "/zones", ok([zone(ZONE, ACCOUNT)]))
   api.on("GET", TUNNELS, ok([]))
   api.on("POST", TUNNELS, ok({"id": TUNNEL, "name": TUNNEL_NAME}))
   api.on("PUT", f"{TUNNELS}/{TUNNEL}/configurations", ok({}))
@@ -116,23 +121,23 @@ class TestCloudflareError:
 
 
 class TestConstruction:
-  def test_the_account_and_names_come_from_the_environment(self):
+  def test_the_names_come_from_the_environment(self):
     cloudflare = Cloudflare()
 
-    assert cloudflare.config == {"api_token": "test-token", "account_id": ACCOUNT, "domain": "example.test"}
+    assert cloudflare.config == {"api_token": "test-token", "domain": "example.test"}
     assert cloudflare.domain == "example.test"
-    assert cloudflare.account_id == ACCOUNT
     assert cloudflare.manager_hostname == "manager.core.example.test"
 
   def test_it_starts_unconnected(self):
     cloudflare = Cloudflare()
-    assert (cloudflare.zone_id, cloudflare.tunnel_id, cloudflare.tunnel_status) == (None, None, None)
+    assert (cloudflare.zone_id, cloudflare.account_id, cloudflare.tunnel_id, cloudflare.tunnel_status) == (
+        None, None, None, None)
 
   def test_the_api_url_comes_from_the_config(self, monkeypatch):
     monkeypatch.setattr(config, "CLOUDFLARE_API_URL", "https://cloudflare.test/v4")
     assert str(Cloudflare().http.base_url).rstrip("/") == "https://cloudflare.test/v4"
 
-  @pytest.mark.parametrize("variable", ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID", "DOMAIN", "TS_NAME"])
+  @pytest.mark.parametrize("variable", ["CLOUDFLARE_API_TOKEN", "DOMAIN", "TS_NAME"])
   def test_a_missing_variable_is_named_in_the_error(self, monkeypatch, variable):
     monkeypatch.delenv(variable)
     with pytest.raises(Exception, match=variable):
@@ -267,9 +272,15 @@ class TestConnect:
     assert cloudflare.zone_id == ZONE
     assert cloudflare.tunnel_id == TUNNEL
 
-  def test_the_zone_is_looked_up_by_the_domain(self, cloudflare, healthy):
+  def test_the_account_is_the_one_holding_the_zone(self, cloudflare, healthy):
     cloudflare.connect()
-    assert healthy.sent("GET", "/zones")[0].url.params["name"] == "example.test"
+    assert cloudflare.account_id == ACCOUNT
+    assert healthy.sent("POST", TUNNELS)
+
+  def test_the_zone_is_looked_up_by_the_domain_and_must_be_active(self, cloudflare, healthy):
+    cloudflare.connect()
+    params = healthy.sent("GET", "/zones")[0].url.params
+    assert (params["name"], params["status"]) == ("example.test", "active")
 
   def test_it_publishes_the_managers_address_in_dns(self, cloudflare, healthy):
     cloudflare.connect()
@@ -300,7 +311,25 @@ class TestConnect:
   def test_a_zone_the_token_cannot_see_is_refused(self, cloudflare, healthy):
     healthy.on("GET", "/zones", ok([]))
 
-    with pytest.raises(ValueError, match="No Cloudflare zone for example.test"):
+    with pytest.raises(ValueError, match="No active zone for example.test"):
+      cloudflare.connect()
+
+    assert cloudflare.zone_id is None
+
+  def test_two_active_zones_are_refused_rather_than_guessed(self, cloudflare, healthy):
+    healthy.on("GET", "/zones", ok([zone("z1", "a1"), zone("z2", "a2")]))
+
+    with pytest.raises(ValueError, match="sees 2 active zones for example.test"):
+      cloudflare.connect()
+
+    assert (cloudflare.zone_id, cloudflare.account_id) == (None, None)
+    assert healthy.sent("POST", TUNNELS) == []
+
+  @pytest.mark.parametrize("answer", [{"id": ZONE}, {"id": ZONE, "account": None}, {"id": ZONE, "account": {"name": "n"}}])
+  def test_a_zone_that_does_not_name_its_account_is_refused(self, cloudflare, healthy, answer):
+    healthy.on("GET", "/zones", ok([answer]))
+
+    with pytest.raises(ValueError, match="did not say which account holds the zone for example.test"):
       cloudflare.connect()
 
     assert cloudflare.zone_id is None
@@ -310,28 +339,28 @@ class TestConnect:
 
     with pytest.raises(CloudflareError):
       cloudflare.connect()
-    assert cloudflare.zone_id is None
+    assert (cloudflare.zone_id, cloudflare.account_id) == (None, None)
 
     healthy.on("POST", TUNNELS, ok({"id": TUNNEL, "name": TUNNEL_NAME}))
     cloudflare.connect()
-    assert cloudflare.zone_id == ZONE
+    assert (cloudflare.zone_id, cloudflare.account_id) == (ZONE, ACCOUNT)
 
 
 class TestCheckConfig:
-  VALUES = {"api_token": "candidate", "account_id": "other-account", "domain": "other.test"}
+  VALUES = {"api_token": "candidate", "domain": "other.test"}
 
   @pytest.fixture
   def candidate(self, api):
     api.on("GET", "/user/tokens/verify", ok({"status": "active"}))
-    api.on("GET", "/zones", ok([{"id": "z"}]))
+    api.on("GET", "/zones", ok([zone("z", "other-account")]))
     api.on("GET", "/accounts/other-account/cfd_tunnel", ok([]))
     return api
 
   @pytest.mark.parametrize("values, named", [
-      ({}, "api_token, account_id, domain"),
-      ({"account_id": "a"}, "api_token, domain"),
-      ({"api_token": "t", "account_id": "a", "domain": ""}, "domain"),
-      ({"api_token": None, "account_id": "a", "domain": "d"}, "api_token"),
+      ({}, "api_token, domain"),
+      ({"domain": "d"}, "api_token"),
+      ({"api_token": "t", "domain": ""}, "domain"),
+      ({"api_token": None, "domain": "d"}, "api_token"),
   ])
   def test_every_field_is_mandatory(self, cloudflare, values, named):
     with pytest.raises(ValueError, match=f"Missing values for: {named}\\."):
@@ -343,19 +372,19 @@ class TestCheckConfig:
     assert [(request.method, request.url.path) for request in candidate.requests] == [
         ("GET", "/user/tokens/verify"), ("GET", "/zones"), ("GET", "/accounts/other-account/cfd_tunnel")]
     assert {request.headers["Authorization"] for request in candidate.requests} == {"Bearer candidate"}
-    assert candidate.requests[1].url.params["name"] == "other.test"
+    assert (candidate.requests[1].url.params["name"], candidate.requests[1].url.params["status"]) == ("other.test", "active")
 
   def test_an_inactive_token_is_refused(self, cloudflare, candidate):
     candidate.on("GET", "/user/tokens/verify", ok({"status": "expired"}))
     with pytest.raises(ValueError, match="The API token is not active."):
       cloudflare.check_config(self.VALUES)
 
-  def test_a_domain_without_a_visible_zone_is_refused(self, cloudflare, candidate):
+  def test_a_domain_without_an_active_visible_zone_is_refused(self, cloudflare, candidate):
     candidate.on("GET", "/zones", ok([]))
-    with pytest.raises(ValueError, match="No zone for other.test is visible to this API token."):
+    with pytest.raises(ValueError, match="No active zone for other.test is visible to this API token."):
       cloudflare.check_config(self.VALUES)
 
-  def test_no_tunnel_access_for_the_account_raises_the_apis_error(self, cloudflare, candidate):
+  def test_no_tunnel_access_for_the_accounts_of_the_zone_raises_the_apis_error(self, cloudflare, candidate):
     candidate.on("GET", "/accounts/other-account/cfd_tunnel", fail(403, "Authentication error"))
     with pytest.raises(CloudflareError, match="HTTP 403: Authentication error"):
       cloudflare.check_config(self.VALUES)
