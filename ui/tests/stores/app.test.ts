@@ -162,6 +162,14 @@ describe('the indicators by status', () => {
   })
 
   it.each([
+    ['direct', 'ok'],
+    ['relay', 'warning'],
+    ['relay blr', 'warning'],
+  ])('pathIndicator: %s is %s', (path, state) => {
+    expect(useAppStore().pathIndicator(path)).toEqual({ state, label: path })
+  })
+
+  it.each([
     ['running', 'ok'],
     ['restarting', 'warning'],
     ['paused', 'warning'],

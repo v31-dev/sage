@@ -49,6 +49,12 @@ function goToMetrics(hostname: string) {
       <CardTitle>
         <SectionTitle :title="props.worker.hostname">
           <StateIndicator v-bind="appStore.workerIndicator(props.worker.status)" show-label />
+          <StateIndicator
+            v-if="props.worker.path"
+            class="ml-2"
+            v-bind="appStore.pathIndicator(props.worker.path)"
+            show-label
+          />
         </SectionTitle>
       </CardTitle>
     </CardHeader>

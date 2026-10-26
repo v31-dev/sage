@@ -36,6 +36,17 @@ class TestStatus:
     assert client.get("/api/workers/w1").json()["status"] == "online"
 
 
+class TestPath:
+  def test_the_list_and_the_detail_say_how_the_worker_is_reached(self, client, worker, tailscale):
+    tailscale.paths["100.64.0.2"] = "relay blr"
+    assert client.get("/api/workers/").json()[0]["path"] == "relay blr"
+    assert client.get("/api/workers/w1").json()["path"] == "relay blr"
+
+  def test_a_worker_that_has_not_answered_has_none(self, client, worker, tailscale):
+    assert client.get("/api/workers/").json()[0]["path"] is None
+    assert client.get("/api/workers/w1").json()["path"] is None
+
+
 class TestReboot:
   @pytest.fixture
   def online(self, worker):

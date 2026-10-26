@@ -51,6 +51,8 @@ export interface Worker {
   ip: string
   online: boolean
   status: WorkerStatus
+  // How the manager's last ping reached the worker: "direct", or "relay" with its region.
+  path: string | null
   infra?: InfraContainer[] | null
   created_at: Date
   updated_at: Date

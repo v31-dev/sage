@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import posixpath
+import re
 import secrets
 import shlex
 import subprocess
@@ -31,6 +32,19 @@ def next_online(was_online: bool, answered: bool, misses: int) -> tuple[bool, in
   return was_online and misses < config.OFFLINE_AFTER_MISSED_PINGS, misses
 
 
+def ping_path(output: str) -> str | None:
+  """How the answer to a `tailscale ping` reached the manager: "direct", or "relay" (with the region for a
+  DERP relay). None when the output holds no answer."""
+  match = re.search(r"^pong from .* via (\S+)", output, re.MULTILINE)
+  if match is None:
+    return None
+  via = match.group(1)
+  region = re.fullmatch(r"DERP\(([\w-]+)\)", via)
+  if region:
+    return f"relay {region.group(1)}"
+  return "direct" if re.fullmatch(r"[0-9a-fA-F.:\[\]]+:\d+", via) else "relay"
+
+
 class Tailscale(Base):
   def __init__(self):
     super().__init__()
@@ -40,6 +54,8 @@ class Tailscale(Base):
     self._conns: dict[str, asyncssh.SSHClientConnection] = {}
     self._conn_locks: dict[str, asyncio.Lock] = {}
     self._misses: dict[str, int] = {}
+    # How the last ping of each peer (by Tailscale IP) arrived, for the peers that answered.
+    self._paths: dict[str, str] = {}
 
   async def _get_conn(self, hostname):
     """Return a live pooled SSH connection to `hostname`, connecting if needed."""
@@ -96,22 +112,38 @@ class Tailscale(Base):
     return bool(self.status().get("Self", {}).get("Online"))
 
   async def ping(self, target: str) -> bool:
-    """Whether a peer answers `tailscale ping`, tailscaled's probe of the path SSH uses."""
+    """Whether a peer answers `tailscale ping`, tailscaled's probe of the path SSH uses. The way the
+    answer arrived (direct or through a relay) is kept for `path`."""
     process = await asyncio.create_subprocess_exec(
         "tailscale", "ping", "-c", "1", f"--timeout={config.PING_TIMEOUT_SECONDS}s", target,
-        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
     try:
-      return await asyncio.wait_for(process.wait(), config.PING_TIMEOUT_SECONDS + 5) == 0
+      output, _ = await asyncio.wait_for(process.communicate(), config.PING_TIMEOUT_SECONDS + 5)
     except TimeoutError:
       process.kill()
       await process.wait()
+      self._paths.pop(target, None)
       return False
+    answered = process.returncode == 0
+    path = ping_path(output.decode(errors="replace")) if answered else None
+    if path:
+      self._paths[target] = path
+    else:
+      self._paths.pop(target, None)
+    return answered
+
+  def path(self, target: str) -> str | None:
+    """How the last ping of the peer with that Tailscale IP reached it: "direct", or "relay" with its region.
+    None when it did not answer, or its answer did not say."""
+    return self._paths.get(target)
 
   async def online_states(self, peers: dict[str, tuple[str, bool]]) -> dict[str, bool]:
     """Ping every peer ({hostname: (ip, online now)}) at once and return its online state, which lags
     by one missed ping (see `next_online`). When the manager's own node is cut off from the tailnet a
     miss says nothing about the peers, so their states are left as they are."""
     answers = await asyncio.gather(*(self.ping(ip) for ip, _ in peers.values()))
+    asked = {ip for ip, _ in peers.values()}
+    self._paths = {ip: path for ip, path in self._paths.items() if ip in asked}
     if not all(answers) and not await run_in_executor_with_context(self.connected):
       logger.warning("The manager is not connected to the tailnet; worker states are left as they are.")
       return {hostname: online for hostname, (_, online) in peers.items()}

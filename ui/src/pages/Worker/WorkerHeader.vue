@@ -79,6 +79,12 @@ async function onConfirmRestart() {
       <CardTitle>
         <SectionTitle :title="props.worker.hostname" :size="3">
           <StateIndicator v-bind="appStore.workerIndicator(status)" show-label />
+          <StateIndicator
+            v-if="props.worker.path"
+            class="ml-2"
+            v-bind="appStore.pathIndicator(props.worker.path)"
+            show-label
+          />
         </SectionTitle>
       </CardTitle>
       <CardAction>

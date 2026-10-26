@@ -77,6 +77,10 @@ export const useAppStore = defineStore('app', () => {
     return WORKER_INDICATORS[status]
   }
 
+  function pathIndicator(path: string): Indicator {
+    return { state: path === 'direct' ? 'ok' : 'warning', label: path }
+  }
+
   function infraIndicator(container: InfraContainer): Indicator {
     const { name, status } = container
     const state: IndicatorState =
@@ -176,6 +180,7 @@ export const useAppStore = defineStore('app', () => {
     sectionIndicator,
     applicationIndicator,
     workerIndicator,
+    pathIndicator,
     infraIndicator,
     domainIndicator,
     taskIndicator,
