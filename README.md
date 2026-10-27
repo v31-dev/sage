@@ -148,30 +148,30 @@ webhook. The tailnet policy is the only gate: restrict who can reach the manager
 and never expose it outside the tailnet (no published ports, no public URL).
 
 In the tailnet policy, give the manager and the workers their own tags (the examples use
-`tag:manager` and `tag:worker`) and allow the traffic Sage uses. Anything not allowed is
+`tag:sage` and `tag:sage-worker`) and allow the traffic Sage uses. Anything not allowed is
 unreachable; tailnet traffic reaches every port the manager container listens on.
 
 ```jsonc
 {
   "tagOwners": {
-    "tag:manager": ["autogroup:admin"],
-    "tag:worker":  ["autogroup:admin"]
+    "tag:sage":        ["autogroup:admin"],
+    "tag:sage-worker": ["autogroup:admin"]
   },
   "acls": [
     // Your devices → the manager UI (443; 80 only redirects to it)
-    {"action": "accept", "src": ["autogroup:member"], "dst": ["tag:manager:80,443"]},
+    {"action": "accept", "src": ["autogroup:member"], "dst": ["tag:sage:80,443"]},
     // Workers → the manager: Telegraf's reports and Vector's logs
-    {"action": "accept", "src": ["tag:worker"], "dst": ["tag:manager:9001"]},
+    {"action": "accept", "src": ["tag:sage-worker"], "dst": ["tag:sage:9001"]},
     // Manager → workers: SSH (Tailscale SSH)
-    {"action": "accept", "src": ["tag:manager"], "dst": ["tag:worker:22"]},
+    {"action": "accept", "src": ["tag:sage"], "dst": ["tag:sage-worker:22"]},
     // Workers ↔ workers: the Traefik mesh
-    {"action": "accept", "src": ["tag:worker"], "dst": ["tag:worker:9002,9003"]},
+    {"action": "accept", "src": ["tag:sage-worker"], "dst": ["tag:sage-worker:9002,9003"]},
     // Internal app domains (*.int) served by workers
-    {"action": "accept", "src": ["autogroup:member", "tag:worker"], "dst": ["tag:worker:443,8443"]}
+    {"action": "accept", "src": ["autogroup:member", "tag:sage-worker"], "dst": ["tag:sage-worker:443,8443"]}
   ],
   "ssh": [
     // Tagged sources must use "accept" (not "check")
-    {"action": "accept", "src": ["tag:manager"], "dst": ["tag:worker"], "users": ["root"]}
+    {"action": "accept", "src": ["tag:sage"], "dst": ["tag:sage-worker"], "users": ["root"]}
   ]
 }
 ```
@@ -182,7 +182,7 @@ A worker is a Linux machine with Docker (including the Compose plugin) that join
 tailnet with Tailscale SSH enabled:
 
 ```bash
-tailscale up --ssh --auth-key=tskey-auth-...   # a key tagged tag:worker
+tailscale up --ssh --auth-key=tskey-auth-...   # a key tagged tag:sage-worker
 ```
 
 The tag is for the tailnet policy above, which lets the manager reach the machine; Sage does
