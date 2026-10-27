@@ -3,4 +3,5 @@ pytest-asyncio==1.4.0
 pytest-cov==7.1.0
 ruff==0.16.10
 isort==8.0.1
+autopep8==2.3.2
 httpx2==2.13.1

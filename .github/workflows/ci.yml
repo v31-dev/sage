@@ -41,6 +41,9 @@ jobs:
       - name: Import order
         run: isort --check-only .
 
+      - name: Format check
+        run: autopep8 --diff --recursive --exit-code .
+
       - name: Test
         run: pytest -q --cov-report=term --cov-report=xml
 
