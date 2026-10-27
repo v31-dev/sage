@@ -68,9 +68,11 @@ It needs:
 - `DOMAIN` — a domain whose DNS is on Cloudflare: its zone must be active (the registrar
   lists Cloudflare's nameservers). Apps get addresses under it, and the UI is served only at
   `https://<TS_NAME>.core.<DOMAIN>`.
-- `CLOUDFLARE_API_TOKEN` — a token with Account › Cloudflare Tunnel › Edit, Zone › DNS ›
-  Edit and Zone › Zone › Read for the zone. It must see only one active zone for `DOMAIN`;
-  Sage uses the account that holds that zone.
+- `CLOUDFLARE_API_TOKEN` — a user API token, created under
+  [My Profile › API Tokens](https://dash.cloudflare.com/profile/api-tokens) (account-owned
+  tokens are not supported), with Account › Cloudflare Tunnel › Edit and Zone › DNS › Edit,
+  and nothing else. Limit it to the account and to the one zone of `DOMAIN`. It must see
+  only one active zone for `DOMAIN`; Sage uses the account that holds that zone.
 - `ENCRYPTION_KEY` — encrypts secrets in the database, platform backups and volume
   backups. Generate one with `openssl rand -base64 32 | tr '+/' '-_'` and keep it with
   your S3 credentials: backups can't be restored without it. It can't change after the
