@@ -340,7 +340,10 @@ issued PEM cert chain, stamped by the per-worker cert sync; one per application 
 `routing_input_hash` over the per-app routing template contents, domains, tags,
 and the active container set (the receiving-worker set is deliberately excluded,
 so one worker's outage never invalidates the others' stamps), stamped by the
-domains sync on each worker it wrote to.
+domains sync on each worker it wrote to; `owner` — `<instance id> <domain>` of the
+Sage that manages the worker, written first by `setup_worker`, which another Sage
+refuses to set up. The reconcile removes the stamps of deleted applications and
+leaves `infra`, `certs` and `owner`.
 
 Both hashes fold in a digest of the **template files themselves**
 (`templates_digest` in `services/manager/_common.py`, computed once at import

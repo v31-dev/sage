@@ -361,7 +361,7 @@ class TraefikMixin:
     # Revision stamps: existence checks above catch missing files; the hash
     # layer catches files rendered from stale inputs (a worker that missed a
     # sync). Stamps for deleted applications are removed here, like their
-    # routing files.
+    # routing files; the worker's own stamps (infra, certs, owner) stay.
     revisions_by_worker = {}
     for worker in online_workers:
       revisions_by_worker[worker.hostname] = await self.read_worker_revisions(worker.hostname)
@@ -369,7 +369,7 @@ class TraefikMixin:
     for worker in online_workers:
       stale_keys = sorted(
           key for key in revisions_by_worker[worker.hostname]
-          if key not in live_names and key not in ("infra", "certs")
+          if key not in live_names and key not in ("infra", "certs", "owner")
           and re.fullmatch(r"[a-z0-9-]+", key)
       )
       if stale_keys:
