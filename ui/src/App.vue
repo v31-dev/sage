@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, watchEffect } from 'vue'
 import { useColorMode } from '@vueuse/core'
 import Header from './components/layout/Header.vue'
 import Footer from '@/components/layout/Footer.vue'
@@ -24,6 +24,11 @@ import { useAppStore } from '@/stores/app'
 useColorMode()
 
 const appStore = useAppStore()
+
+watchEffect(() => {
+  document.title = appStore.info?.name ?? 'sage'
+})
+
 const isLoading = ref(true)
 const showError = ref(false)
 const error = ref<string | null>(null)
