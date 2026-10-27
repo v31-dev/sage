@@ -61,10 +61,15 @@ class ChannelCheckFailed(ValueError):
     return {field: reason for field, (reason, _) in self.failures.items()}
 
 
-def _discord_payload(instance, domain):
+def _source() -> str:
+  """The manager's name and domain."""
+  return f"{get_env('TS_NAME')} {get_env('DOMAIN')}"
+
+
+def _discord_payload(instance, source):
   style = NOTIFICATION_STYLES.get(instance.type, NOTIFICATION_STYLES["info"])
   embed = {
-      "title": f"{style['emoji']} Sage {domain}",
+      "title": f"{style['emoji']} {source}",
       "description": instance.content,
       "color": style["color"],
   }
@@ -103,14 +108,14 @@ class Notifications(Base):
     """Check every configured channel (each is optional) and return their names. Raises
     ChannelCheckFailed naming the ones that failed. With send, each gets a test message;
     without, its webhook is only read, which posts nothing to the channel."""
-    domain = get_env("DOMAIN")
+    source = _source()
     configured = {field: channel for field, channel in CHANNELS.items() if config.get(field)}
 
     failures = {}
     for field, channel in configured.items():
       if send:
         failure = _request_webhook("POST", config[field], channel["name"],
-                                   json=channel["payload"](TEST_NOTIFICATION, domain))
+                                   json=channel["payload"](TEST_NOTIFICATION, source))
       else:
         failure = _request_webhook("GET", config[field], channel["name"])
       if failure:
@@ -127,7 +132,7 @@ class Notifications(Base):
                                  content=instance["content"],
                                  link=instance.get("link"),)
 
-    domain = get_env("DOMAIN")
+    source = _source()
 
     for field, channel in CHANNELS.items():
       webhook_url = self.get_notification_value(field)
@@ -135,7 +140,7 @@ class Notifications(Base):
         continue
       try:
         failure = _request_webhook(
-            "POST", webhook_url, channel["name"], json=channel["payload"](instance, domain))
+            "POST", webhook_url, channel["name"], json=channel["payload"](instance, source))
         if failure:
           logger.error(f"Failed to send notification to {channel['name']}: {failure[0]}")
       except Exception as e:
