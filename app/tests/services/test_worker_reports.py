@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 import config
-from services.reports import Reports, parse_batch
+from services.worker_reports import WorkerReports, parse_batch
 
 BATCH = json.loads((Path(__file__).parent.parent / "data" / "telegraf_batch.json").read_text())
 
@@ -121,7 +121,7 @@ def snapshots_at(seconds):
 
 class TestReports:
   def test_keeps_the_newest_snapshot_with_its_arrival(self, clock):
-    reports = Reports()
+    reports = WorkerReports()
     reports.accept("w1", snapshots_at(10))
     clock.advance(timedelta(seconds=10))
     reports.accept("w1", snapshots_at(20))
@@ -130,12 +130,12 @@ class TestReports:
     assert received.arrived_at == datetime(2026, 1, 1, 12, 0, 10)
 
   def test_takes_the_last_snapshot_of_a_batch_that_holds_several(self):
-    reports = Reports()
+    reports = WorkerReports()
     reports.accept("w1", snapshots_at(10) + snapshots_at(20) + snapshots_at(30))
     assert reports.latest("w1").snapshot.host.cpu_idle_percent == 30
 
   def test_a_replay_older_than_what_is_held_is_ignored(self, clock):
-    reports = Reports()
+    reports = WorkerReports()
     reports.accept("w1", snapshots_at(30))
     clock.advance(timedelta(seconds=5))
     assert reports.accept("w1", snapshots_at(10)) is None
@@ -144,7 +144,7 @@ class TestReports:
     assert received.arrived_at == datetime(2026, 1, 1, 12, 0, 0)
 
   def test_each_worker_has_its_own(self):
-    reports = Reports()
+    reports = WorkerReports()
     reports.accept("w1", snapshots_at(10))
     reports.accept("w2", snapshots_at(20))
     assert reports.latest("w1").snapshot.host.cpu_idle_percent == 10
@@ -152,7 +152,7 @@ class TestReports:
     assert reports.latest("w3") is None
 
   def test_the_first_report_and_the_first_after_a_silence_are_flagged(self, clock):
-    reports = Reports()
+    reports = WorkerReports()
     assert reports.accept("w1", snapshots_at(10)).resumed is True
     clock.advance(timedelta(seconds=config.REPORT_INTERVAL_SECONDS))
     assert reports.accept("w1", snapshots_at(20)).resumed is False
@@ -160,32 +160,45 @@ class TestReports:
     assert reports.accept("w1", snapshots_at(30)).resumed is True
 
   def test_an_empty_batch_changes_nothing(self):
-    reports = Reports()
+    reports = WorkerReports()
     assert reports.accept("w1", []) is None
     assert reports.latest("w1") is None
 
   def test_forget_drops_a_worker(self):
-    reports = Reports()
+    reports = WorkerReports()
     reports.accept("w1", snapshots_at(10))
     reports.forget("w1")
     reports.forget("never-seen")
     assert reports.latest("w1") is None
 
   def test_an_unknown_name_is_first_only_once(self):
-    reports = Reports()
+    reports = WorkerReports()
     assert reports.first_unknown("stranger") is True
     assert reports.first_unknown("stranger") is False
+
+  def test_names_that_keep_changing_do_not_grow_what_is_remembered(self, monkeypatch):
+    monkeypatch.setattr(config, "REPORT_UNKNOWN_LIMIT", 3)
+    reports = WorkerReports()
+    assert all(reports.first_unknown(f"stranger-{n}") for n in range(10))
+    assert len(reports._unknown) <= 3
+
+  def test_a_name_still_remembered_is_not_first_again(self, monkeypatch):
+    monkeypatch.setattr(config, "REPORT_UNKNOWN_LIMIT", 3)
+    reports = WorkerReports()
+    for name in ("a", "b", "c"):
+      reports.first_unknown(name)
+    assert reports.first_unknown("c") is False
 
 
 def with_containers(seconds, *readings):
   host = parse_batch({"metrics": [metric("cpu", seconds * 1000, usage_idle=90)]})[0].host
-  from services.reports import Snapshot
+  from services.worker_reports import Snapshot
   base = snapshots_at(seconds)[0]
   return [Snapshot(at=base.at, host=host, containers={c.name: c for c in readings}, traefik_reachable=True)]
 
 
 def reading(name, status="running", started_at=1, deployed_at="stamp"):
-  from services.reports import ContainerReading
+  from services.worker_reports import ContainerReading
   return ContainerReading(name=name, status=status, image="img", deployed_at=deployed_at, exit_code=0, oom_killed=False,
                           started_at=started_at, finished_at=None, health=None, cpu_percent=None, mem_bytes=None,
                           net_rx_bytes=None, net_tx_bytes=None)
@@ -193,11 +206,11 @@ def reading(name, status="running", started_at=1, deployed_at="stamp"):
 
 class TestWhatChanged:
   def test_the_first_report_changes_every_container(self):
-    arrival = Reports().accept("w1", with_containers(10, reading("web"), reading("db")))
+    arrival = WorkerReports().accept("w1", with_containers(10, reading("web"), reading("db")))
     assert arrival.changed == {"web", "db"}
 
   def test_a_report_that_is_the_same_changes_nothing(self):
-    reports = Reports()
+    reports = WorkerReports()
     reports.accept("w1", with_containers(10, reading("web")))
     assert reports.accept("w1", with_containers(20, reading("web"))).changed == frozenset()
 
@@ -207,19 +220,19 @@ class TestWhatChanged:
       reading("web", deployed_at="newer"),
   ])
   def test_a_new_state_start_or_version_changes_the_container(self, after):
-    reports = Reports()
+    reports = WorkerReports()
     reports.accept("w1", with_containers(10, reading("web"), reading("db")))
     assert reports.accept("w1", with_containers(20, after, reading("db"))).changed == {"web"}
 
   def test_a_container_that_appeared_or_vanished_changes(self):
-    reports = Reports()
+    reports = WorkerReports()
     reports.accept("w1", with_containers(10, reading("web"), reading("db")))
     assert reports.accept("w1", with_containers(20, reading("web"), reading("cache"))).changed == {"db", "cache"}
 
 
 class TestCurrentAndTrusted:
   def test_a_report_is_current_for_the_stale_window(self, clock):
-    reports = Reports()
+    reports = WorkerReports()
     reports.accept("w1", snapshots_at(10))
     clock.advance(timedelta(seconds=config.REPORT_STALE_SECONDS))
     assert reports.current("w1") is not None
@@ -227,31 +240,31 @@ class TestCurrentAndTrusted:
     assert reports.current("w1") is None
 
   def test_a_worker_that_never_reported_has_no_current_report(self):
-    assert Reports().current("w1") is None
+    assert WorkerReports().current("w1") is None
 
   def test_a_snapshot_counts_only_if_it_arrived_after_the_last_write_and_the_settle_time(self, clock):
-    reports = Reports()
+    reports = WorkerReports()
     wrote = clock.current
     clock.advance(timedelta(seconds=config.REPORT_SETTLE_SECONDS - 1))
     reports.accept("w1", snapshots_at(10))
     assert reports.trusted("w1", wrote) is None
 
   def test_a_snapshot_that_arrived_after_the_settle_time_counts(self, clock):
-    reports = Reports()
+    reports = WorkerReports()
     wrote = clock.current
     clock.advance(timedelta(seconds=config.REPORT_SETTLE_SECONDS))
     reports.accept("w1", snapshots_at(10))
     assert reports.trusted("w1", wrote) is not None
 
   def test_a_snapshot_that_is_no_longer_current_does_not_count(self, clock):
-    reports = Reports()
+    reports = WorkerReports()
     wrote = clock.current - timedelta(minutes=5)
     reports.accept("w1", snapshots_at(10))
     clock.advance(timedelta(seconds=config.REPORT_STALE_SECONDS + 1))
     assert reports.trusted("w1", wrote) is None
 
   def test_the_seconds_since_the_last_report_or_since_the_start(self, clock):
-    reports = Reports()
+    reports = WorkerReports()
     clock.advance(timedelta(seconds=40))
     assert reports.silent_for("w1") == 40
     reports.accept("w1", snapshots_at(10))
@@ -261,12 +274,12 @@ class TestCurrentAndTrusted:
 
 class TestReady:
   def test_a_worker_reporting_with_traefik_answering_is_ready(self):
-    reports = Reports()
+    reports = WorkerReports()
     reports.accept("w1", with_containers(10, reading("traefik")))
     assert reports.ready("w1") is True
 
   def test_traefik_not_answering_is_not_ready(self):
-    reports = Reports()
+    reports = WorkerReports()
     snapshot = with_containers(10, reading("traefik"))[0]
     from dataclasses import replace
     reports.accept("w1", [replace(snapshot, traefik_reachable=False)])
@@ -274,18 +287,18 @@ class TestReady:
 
   def test_a_report_without_the_check_is_ready(self):
     from dataclasses import replace
-    reports = Reports()
+    reports = WorkerReports()
     reports.accept("w1", [replace(snapshots_at(10)[0], traefik_reachable=None)])
     assert reports.ready("w1") is True
 
   def test_a_stale_report_is_not_ready(self, clock):
-    reports = Reports()
+    reports = WorkerReports()
     reports.accept("w1", snapshots_at(10))
     clock.advance(timedelta(seconds=config.REPORT_STALE_SECONDS + 1))
     assert reports.ready("w1") is False
 
   def test_a_worker_that_has_not_reported_yet_is_unknown_just_after_the_start_and_not_ready_later(self, clock):
-    reports = Reports()
+    reports = WorkerReports()
     clock.advance(timedelta(seconds=config.REPORT_STARTUP_GRACE_SECONDS - 1))
     assert reports.ready("w1") is None
     clock.advance(timedelta(seconds=1))
@@ -294,7 +307,7 @@ class TestReady:
 
 class TestInfra:
   def test_each_container_of_the_stack_has_its_state_and_a_missing_one_says_so(self):
-    reports = Reports()
+    reports = WorkerReports()
     reports.accept("w1", with_containers(10, reading("traefik"), reading("vector", status="restarting"),
                                          reading("telegraf"), reading("web")))
     assert reports.infra("w1") == [
@@ -305,7 +318,7 @@ class TestInfra:
     ]
 
   def test_nothing_is_known_without_a_current_report(self, clock):
-    reports = Reports()
+    reports = WorkerReports()
     assert reports.infra("w1") is None
     reports.accept("w1", with_containers(10, reading("traefik")))
     clock.advance(timedelta(seconds=config.REPORT_STALE_SECONDS + 1))
@@ -314,17 +327,17 @@ class TestInfra:
 
 class TestStartedAt:
   def test_when_a_container_last_started_from_the_current_report(self):
-    reports = Reports()
+    reports = WorkerReports()
     reports.accept("w1", with_containers(10, reading("telegraf", started_at=42)))
     assert reports.started_at("w1", "telegraf") == 42
     assert reports.started_at("w1", "traefik") is None
 
   def test_a_stale_report_gives_nothing_unless_asked_for_however_old(self, clock):
-    reports = Reports()
+    reports = WorkerReports()
     reports.accept("w1", with_containers(10, reading("telegraf", started_at=42)))
     clock.advance(timedelta(seconds=config.REPORT_STALE_SECONDS + 1))
     assert reports.started_at("w1", "telegraf") is None
     assert reports.started_at("w1", "telegraf", current=False) == 42
 
   def test_a_worker_that_never_reported_has_none(self):
-    assert Reports().started_at("w1", "telegraf", current=False) is None
+    assert WorkerReports().started_at("w1", "telegraf", current=False) is None

@@ -80,10 +80,18 @@ class Tailscale(Base):
       return conn
 
   async def _evict(self, hostname):
-    """Drop and close a pooled connection (after an error, or a removed worker)."""
+    """Drop a pooled connection (after an error) and wait for it to close."""
     conn = self._conns.pop(hostname, None)
-    if conn is not None:
+    if conn is None:
+      return
+    with contextlib.suppress(Exception):
       conn.close()
+      await asyncio.wait_for(conn.wait_closed(), config.SSH_CLOSE_WAIT_SECONDS)
+
+  async def forget(self, hostname):
+    """Close the pooled connection of a worker that is no longer managed, and drop its lock."""
+    await self._evict(hostname)
+    self._conn_locks.pop(hostname, None)
 
   async def close(self):
     """Close every pooled connection and wait for them to close, so none is left to be torn down

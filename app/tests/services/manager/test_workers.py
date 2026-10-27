@@ -9,7 +9,7 @@ import config
 from services.db import Container, Worker
 from services.manager.decisions import WorkerReboot
 from services.manager.workers import WorkersMixin
-from services.reports import ContainerReading, HostReading, Reports, Snapshot
+from services.worker_reports import ContainerReading, HostReading, Snapshot, WorkerReports
 from utils.executor import active_executor
 from utils.logging import TaskFailed
 
@@ -26,6 +26,7 @@ class FakeTailscale:
     self.up_error = None
     self.synced = []          # (path on the worker, substitutions) of the files written
     self.sync_error = None
+    self.forgotten = []       # hostnames whose pooled connection was closed
 
   def ip(self):
     return "100.64.0.1"
@@ -53,6 +54,9 @@ class FakeTailscale:
     self.synced.append((dst, keys))
     if self.sync_error:
       raise self.sync_error
+
+  async def forget(self, hostname):
+    self.forgotten.append(hostname)
 
 
 class Harness(WorkersMixin):
@@ -97,7 +101,7 @@ class Harness(WorkersMixin):
 def harness(db, clock):
   executor = ThreadPoolExecutor(max_workers=1)
   token = active_executor.set(executor)
-  Reports()  # the Manager creates it at startup, which is when its silence starts
+  WorkerReports()  # the Manager creates it at startup, which is when its silence starts
   yield Harness()
   active_executor.reset(token)
   executor.shutdown()
@@ -174,7 +178,7 @@ class TestRepairWorkerStacks:
 
   def test_a_stack_the_report_shows_down_is_started_and_said_so(self, harness):
     add("w1", True)
-    Reports().accept("w1", snapshot(running=("vector", "telegraf", "cloudflared")))
+    WorkerReports().accept("w1", snapshot(running=("vector", "telegraf", "cloudflared")))
     harness.tailscale.up_output = ["Container traefik  Starting", "Container traefik  Started"]
     self.repair(harness)
     host, command = harness.tailscale.commands[0]
@@ -183,13 +187,13 @@ class TestRepairWorkerStacks:
 
   def test_a_healthy_stack_is_left_alone(self, harness):
     add("w1", True)
-    Reports().accept("w1", snapshot())
+    WorkerReports().accept("w1", snapshot())
     self.repair(harness)
     assert harness.tailscale.commands == []
 
   def test_a_worker_out_of_the_pool_is_left_alone(self, harness):
     add("w1", False)
-    Reports().accept("w1", snapshot(running=()))
+    WorkerReports().accept("w1", snapshot(running=()))
     self.repair(harness)
     assert harness.tailscale.commands == []
 
@@ -197,21 +201,21 @@ class TestRepairWorkerStacks:
     add("w1", True)
     harness.tailscale.up_output = ["Container traefik  Started"]
     down = snapshot(traefik_reachable=False)
-    Reports().accept("w1", down)
+    WorkerReports().accept("w1", down)
     self.repair(harness)
     clock.advance(timedelta(seconds=config.WORKER_STACK_REPAIR_COOLDOWN_SECONDS - 1))
-    Reports().accept("w1", down)
+    WorkerReports().accept("w1", down)
     self.repair(harness)
     assert len(harness.tailscale.commands) == 1
     clock.advance(timedelta(seconds=1))
-    Reports().accept("w1", down)
+    WorkerReports().accept("w1", down)
     self.repair(harness)
     assert len(harness.tailscale.commands) == 2
 
   @pytest.mark.parametrize("task", ["reboot_worker", "remove_worker"])
   def test_a_worker_that_is_being_rebooted_or_removed_is_left_alone(self, harness, task):
     add("w1", True)
-    Reports().accept("w1", snapshot(traefik_reachable=False))
+    WorkerReports().accept("w1", snapshot(traefik_reachable=False))
     harness.queued = {(task, "w1")}
     self.repair(harness)
     assert harness.tailscale.commands == [] and harness.worker_stack_repairs == {}
@@ -226,7 +230,7 @@ class TestRepairWorkerStacks:
   def test_a_worker_is_forgotten_once_its_cooldown_is_over(self, harness, clock):
     add("w1", True)
     harness.tailscale.up_output = ["Container traefik  Started"]
-    Reports().accept("w1", snapshot(traefik_reachable=False))
+    WorkerReports().accept("w1", snapshot(traefik_reachable=False))
     self.repair(harness)
     assert set(harness.worker_stack_repairs) == {"w1"}
     clock.advance(timedelta(seconds=config.WORKER_STACK_REPAIR_COOLDOWN_SECONDS))
@@ -236,14 +240,14 @@ class TestRepairWorkerStacks:
 
   def test_starting_that_changes_nothing_is_not_announced(self, harness):
     add("w1", True)
-    Reports().accept("w1", snapshot(traefik_reachable=False))
+    WorkerReports().accept("w1", snapshot(traefik_reachable=False))
     harness.tailscale.up_output = ["Container traefik  Running"]
     self.repair(harness)
     assert harness.notices == []
 
   def test_a_start_that_fails_is_reported_and_not_retried_at_once(self, harness):
     add("w1", True)
-    Reports().accept("w1", snapshot(traefik_reachable=False))
+    WorkerReports().accept("w1", snapshot(traefik_reachable=False))
     harness.tailscale.up_error = Exception("compose failed")
     self.repair(harness)
     self.repair(harness)
@@ -291,7 +295,7 @@ class TestWorkerStatus:
     assert harness.worker_status("w1", False) == "offline"
 
   def test_a_worker_whose_traefik_does_not_answer_is_not_ready(self, harness):
-    Reports().accept("w1", telegraf_started(100, traefik_reachable=False))
+    WorkerReports().accept("w1", telegraf_started(100, traefik_reachable=False))
     assert harness.worker_status("w1", True) == "not ready"
 
   def test_a_worker_that_does_not_report_is_not_ready_once_the_manager_has_been_up_a_while(self, harness, clock):
@@ -299,7 +303,7 @@ class TestWorkerStatus:
     assert harness.worker_status("w1", True) == "not ready"
 
   def test_a_worker_that_does_not_answer_is_offline_whatever_its_report_says(self, harness):
-    Reports().accept("w1", telegraf_started(100, traefik_reachable=False))
+    WorkerReports().accept("w1", telegraf_started(100, traefik_reachable=False))
     assert harness.worker_status("w1", False) == "offline"
 
   @pytest.mark.parametrize("online", [True, False])
@@ -327,18 +331,18 @@ class TestWorkerStatus:
     assert harness.worker_status("w1", online) == "rebooting"
 
   def test_after_the_task_a_reboot_lasts_until_the_worker_reports_with_a_telegraf_that_restarted(self, harness, clock):
-    Reports().accept("w1", telegraf_started(100))
+    WorkerReports().accept("w1", telegraf_started(100))
     harness.worker_reboots["w1"] = WorkerReboot(clock.current, 100)
     assert harness.worker_status("w1", True) == "rebooting"          # reports go on until the host goes down
     clock.advance(timedelta(seconds=config.REPORT_STALE_SECONDS + 1))
     assert harness.worker_status("w1", False) == "rebooting"         # down: no current report
     clock.advance(timedelta(seconds=60))
-    Reports().accept("w1", telegraf_started(100 + 90_000_000_000))
+    WorkerReports().accept("w1", telegraf_started(100 + 90_000_000_000))
     assert harness.worker_status("w1", True) == "online"
 
   def test_a_worker_that_is_back_is_not_rebooting_while_its_traefik_does_not_answer(self, harness, clock):
     harness.worker_reboots["w1"] = WorkerReboot(clock.current, 100)
-    Reports().accept("w1", telegraf_started(100 + 90_000_000_000, traefik_reachable=False))
+    WorkerReports().accept("w1", telegraf_started(100 + 90_000_000_000, traefik_reachable=False))
     assert harness.worker_status("w1", True) == "not ready"
 
   def test_a_worker_that_does_not_come_back_is_no_longer_rebooting_after_the_limit(self, harness, clock):
@@ -392,7 +396,7 @@ class TestSetupWorkerClaim:
   def setup(self, db, clock):
     executor = ThreadPoolExecutor(max_workers=1)
     token = active_executor.set(executor)
-    Reports()
+    WorkerReports()
     yield SetupHarness()
     active_executor.reset(token)
     executor.shutdown()
@@ -463,6 +467,14 @@ class TestRemoveWorker:
     assert harness.notices == []
     assert harness.dns_deleted == [{"name": "*.int.example.test", "content": "100.64.0.2"}]
 
+  @pytest.mark.parametrize("online", [True, False])
+  def test_the_pooled_ssh_connection_of_a_removed_worker_is_closed(self, harness, online):
+    add("w1", online)
+    if online:
+      self.reachable(harness, owner=harness.instance_id())
+    self.remove(harness)
+    assert harness.tailscale.forgotten == ["w1"]
+
   def test_a_worker_of_another_sage_is_forgotten_and_left_as_it_is(self, harness):
     add("w1", True)
     self.reachable(harness, owner="someone-else")
@@ -528,14 +540,14 @@ class TestRebootAndRemove:
 
   def test_a_reboot_leaves_a_mark_with_the_start_of_telegraf_before_it(self, harness, clock):
     add("w1", True)
-    Reports().accept("w1", telegraf_started(777))
+    WorkerReports().accept("w1", telegraf_started(777))
     asyncio.run(harness.reboot_worker("w1"))
     assert harness.worker_reboots == {"w1": WorkerReboot(clock.current, 777)}
     assert "reboot" in harness.tailscale.commands[0][1]
 
   def test_the_start_before_the_reboot_is_taken_from_a_report_that_is_a_little_old_too(self, harness, clock):
     add("w1", True)
-    Reports().accept("w1", telegraf_started(777))
+    WorkerReports().accept("w1", telegraf_started(777))
     clock.advance(timedelta(seconds=config.REPORT_STALE_SECONDS + 5))
     asyncio.run(harness.reboot_worker("w1"))
     assert harness.worker_reboots["w1"].started_at == 777
@@ -549,17 +561,17 @@ class TestRebootAndRemove:
 
   def test_removing_a_worker_drops_its_mark_and_its_reports(self, harness, clock):
     add("w1", False)
-    Reports().accept("w1", telegraf_started(1))
+    WorkerReports().accept("w1", telegraf_started(1))
     harness.worker_reboots["w1"] = WorkerReboot(clock.current, 1)
     asyncio.run(harness.remove_worker("w1"))
-    assert harness.worker_reboots == {} and Reports().latest("w1") is None
+    assert harness.worker_reboots == {} and WorkerReports().latest("w1") is None
     assert Worker.get_or_none(Worker.hostname == "w1") is None
 
   def test_the_sync_forgets_the_reboots_that_are_over(self, harness, clock):
     add("w1", True)
     add("w2", True, "100.64.0.3")
-    Reports().accept("w1", telegraf_started(100 + 1))
-    Reports().accept("w2", telegraf_started(100))
+    WorkerReports().accept("w1", telegraf_started(100 + 1))
+    WorkerReports().accept("w2", telegraf_started(100))
     harness.worker_reboots = {"w1": WorkerReboot(clock.current, 100), "w2": WorkerReboot(clock.current, 100)}
     harness.tailscale.listed = [("w1", "100.64.0.2"), ("w2", "100.64.0.3")]
     harness.tailscale.answering = {"w1", "w2"}

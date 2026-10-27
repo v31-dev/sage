@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Iterable
 
 import config
-from services.reports import Snapshot
+from services.worker_reports import Snapshot
 
 # What a look at a worker's containers found for one application.
 SEEN = "seen"          # the container is there, in `state`

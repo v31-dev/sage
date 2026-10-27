@@ -8,8 +8,8 @@ from services.db import Application, Container, Project, Worker
 from services.logs import Logs
 from services.manager import Manager
 from services.metrics import Metrics
-from services.reports import Reports
 from services.tailscale import Tailscale
+from services.worker_reports import WorkerReports
 from utils.api import generic_get, get_request_models
 from utils.common import get_env
 from utils.queue import OnConflict
@@ -86,7 +86,7 @@ def get_worker(request: Request, hostname: str):
           }
       ),
   )
-  data["infra"] = Reports().infra(hostname)
+  data["infra"] = WorkerReports().infra(hostname)
   data["status"] = Manager().worker_status(hostname, worker.online)
   data["path"] = Tailscale().path(worker.ip)
   return data

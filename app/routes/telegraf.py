@@ -8,7 +8,7 @@ import config
 from services.db import Worker
 from services.manager import Manager
 from services.metrics import Metrics
-from services.reports import Reports, parse_batch
+from services.worker_reports import WorkerReports, parse_batch
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -43,7 +43,7 @@ async def telegraf_report(request: Request):
   except ValueError:  # the model refuses a name that no worker can have
     known = False
   if not known:
-    if Reports().first_unknown(hostname):
+    if WorkerReports().first_unknown(hostname):
       logger.warning(f"Ignoring reports from unknown worker {hostname!r}.")
     raise HTTPException(status_code=404, detail="Unknown worker.")
 
@@ -54,7 +54,7 @@ async def telegraf_report(request: Request):
     logger.warning(f"Rejected a malformed report from {hostname}: {e}")
     raise HTTPException(status_code=400, detail="Malformed report.")
 
-  arrival = Reports().accept(hostname, snapshots)
+  arrival = WorkerReports().accept(hostname, snapshots)
   if arrival is not None and arrival.resumed:
     logger.info(f"Receiving reports from {hostname}.")
   Metrics().ingest(hostname, snapshots)

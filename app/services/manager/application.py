@@ -5,7 +5,7 @@ import re
 import shlex
 
 from services.db import APPLICATION_BUSY_STATUSES, Application, Container, DeployConfig, Event, Project, Worker, db
-from services.reports import Reports
+from services.worker_reports import WorkerReports
 from utils.common import format_yaml, parse_multiline_kv, utcnow
 from utils.logging import generate_task_id_token, task_id
 from utils.queue import OnConflict
@@ -530,11 +530,11 @@ class ApplicationMixin:
   def observe_application(self, application, worker, last_write) -> Observation:
     """How the application's container stands on a worker, from the worker's report. A worker out of
     the pool is OFFLINE. With no report that can be compared with rows last written at `last_write`
-    (`Reports.trusted`) nothing is known: the containers keep their status until the next report or the
+    (`WorkerReports.trusted`) nothing is known: the containers keep their status until the next report or the
     next minute's sync. A container with no label has an empty version, which matches no deploy stamp."""
     if not worker.online:
       return Observation(OFFLINE)
-    snapshot = Reports().trusted(worker.hostname, last_write)
+    snapshot = WorkerReports().trusted(worker.hostname, last_write)
     if snapshot is None:
       return Observation(UNKNOWN)
     reading = snapshot.containers.get(application.qualified_name)

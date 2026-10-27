@@ -5,7 +5,7 @@ import pytest
 import config
 from services.manager.decisions import (ABSENT, OFFLINE, SEEN, UNKNOWN, Observation, WorkerReboot, WorkerRow, is_worker_rebooting, plan_worker_sync,
                                         reconcile_container, rollup_status, worker_claim_refusal, worker_owner, worker_stack_problem)
-from services.reports import ContainerReading, HostReading, Snapshot
+from services.worker_reports import ContainerReading, HostReading, Snapshot
 
 STAMP = "2026-10-24T23:08:35.718155"
 

@@ -75,6 +75,11 @@ def tailscale(monkeypatch):
   return service
 
 
+@pytest.fixture
+def pool():
+  return Tailscale()
+
+
 def use(tailscale, *conns):
   """The pool hands out these connections in turn."""
   pending = list(conns)
@@ -477,6 +482,56 @@ class TestClose:
     await tailscale.close()
 
     assert tailscale._conns == {}
+
+
+class TestEvict:
+  async def test_the_connection_is_dropped_closed_and_waited_for(self, pool):
+    conn, other = ClosableConnection(), ClosableConnection()
+    pool._conns = {"w1": conn, "w2": other}
+
+    await pool._evict("w1")
+
+    assert (conn.closed, conn.waited) == (True, True)
+    assert pool._conns == {"w2": other}
+    assert (other.closed, other.waited) == (False, False)
+
+  @pytest.mark.parametrize("failing", [{"close_error": OSError("already gone")}, {"wait_error": asyncssh.ConnectionLost("reset")}])
+  async def test_a_connection_that_fails_while_closing_does_not_hide_the_error_being_handled(self, pool, failing):
+    pool._conns = {"w1": ClosableConnection(**failing)}
+
+    await pool._evict("w1")
+
+    assert pool._conns == {}
+
+  async def test_a_connection_that_never_finishes_closing_is_given_up_on(self, pool, monkeypatch):
+    class Stuck(ClosableConnection):
+      async def wait_closed(self):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(config, "SSH_CLOSE_WAIT_SECONDS", 0.01)
+    pool._conns = {"w1": Stuck()}
+
+    await pool._evict("w1")
+
+    assert pool._conns == {}
+
+  async def test_a_worker_with_no_connection_is_nothing_to_do(self, pool):
+    await pool._evict("w1")
+
+    assert pool._conns == {}
+
+
+class TestForget:
+  async def test_the_connection_is_closed_and_the_lock_dropped(self, pool):
+    conn = ClosableConnection()
+    pool._conns = {"w1": conn}
+    pool._conn_locks = {"w1": asyncio.Lock(), "w2": asyncio.Lock()}
+
+    await pool.forget("w1")
+
+    assert (conn.closed, conn.waited) == (True, True)
+    assert pool._conns == {}
+    assert list(pool._conn_locks) == ["w2"]
 
 
 class TestNextOnline:

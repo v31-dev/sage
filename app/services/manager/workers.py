@@ -5,7 +5,7 @@ import re
 import config
 from services.db import Application, Container, Instance, Worker
 from services.metrics import Metrics
-from services.reports import Reports
+from services.worker_reports import WorkerReports
 from utils.common import utcnow
 from utils.executor import run_in_executor_with_context
 from utils.logging import TaskFailed
@@ -73,10 +73,10 @@ class WorkersMixin:
       return "rebooting"
     if not online:
       return "offline"
-    return "not ready" if Reports().ready(hostname) is False else "online"
+    return "not ready" if WorkerReports().ready(hostname) is False else "online"
 
   def _worker_reboot_under_way(self, hostname: str, mark: WorkerReboot) -> bool:
-    return is_worker_rebooting(mark, utcnow(), Reports().started_at(hostname, "telegraf"))
+    return is_worker_rebooting(mark, utcnow(), WorkerReports().started_at(hostname, "telegraf"))
 
   async def start_worker_stack(self, worker) -> bool:
     """`docker compose up -d` for the worker's stack: it starts what is stopped and leaves what runs
@@ -98,7 +98,7 @@ class WorkersMixin:
     self.worker_stack_repairs = {
         hostname: at for hostname, at in self.worker_stack_repairs.items()
         if (now - at).total_seconds() < config.WORKER_STACK_REPAIR_COOLDOWN_SECONDS}
-    reports = Reports()
+    reports = WorkerReports()
     for worker in Worker.select().where(Worker.online):
       current = reports.current(worker.hostname)
       problem = worker_stack_problem(current.snapshot if current else None, reports.silent_for(worker.hostname))
@@ -426,7 +426,7 @@ class WorkersMixin:
       self.notify(f"Failed to reboot worker {worker.hostname}: {e}", "error")
       raise Exception(f"Failed to reboot worker {worker.hostname}: {e}")
 
-    self.worker_reboots[worker.hostname] = WorkerReboot(utcnow(), Reports().started_at(worker.hostname, "telegraf", current=False))
+    self.worker_reboots[worker.hostname] = WorkerReboot(utcnow(), WorkerReports().started_at(worker.hostname, "telegraf", current=False))
 
     # Hold the scope past the backgrounded reboot's delay so a deploy can't grab a
     # still-up worker in the gap between this task finishing and the host dropping.
@@ -481,8 +481,9 @@ class WorkersMixin:
           "only; anything on the VM, including the VM itself, has to be removed by hand.", "warning")
     Worker.delete().where(Worker.hostname == worker.hostname).execute()
     self.worker_reboots.pop(worker.hostname, None)
-    Reports().forget(worker.hostname)
+    WorkerReports().forget(worker.hostname)
     Metrics().forget(worker.hostname)
+    await self.tailscale.forget(worker.hostname)
     self.refresh_worker_summary()
     await run_in_executor_with_context(
         self.cloudflare.delete_dns_record, name=f"*.int.{self.cloudflare.domain}", content=worker.ip)
