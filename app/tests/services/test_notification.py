@@ -19,8 +19,8 @@ def http_response(status):
   return response
 
 
-def discord_payload(instance, domain="example.test"):
-  return CHANNELS["discord_webhook"]["payload"](instance, domain)
+def discord_payload(instance, source="manager example.test"):
+  return CHANNELS["discord_webhook"]["payload"](instance, source)
 
 
 class FakeSession:
@@ -143,7 +143,7 @@ class TestDiscordPayload:
   def test_the_message_is_one_embed(self):
     payload = discord_payload(SimpleNamespace(type="success", content="Deployed", link=None))
 
-    assert payload == {"embeds": [{"title": "✅ Sage example.test", "description": "Deployed", "color": 3066993}]}
+    assert payload == {"embeds": [{"title": "✅ manager example.test", "description": "Deployed", "color": 3066993}]}
 
   @pytest.mark.parametrize("kind", list(NOTIFICATION_STYLES))
   def test_each_type_has_its_own_emoji_and_color(self, kind):
@@ -196,7 +196,7 @@ class TestCheckConfig:
     assert (method, url, name) == ("POST", URL, "Discord")
     embed = kwargs["json"]["embeds"][0]
     assert embed["description"] == TEST_NOTIFICATION.content
-    assert "example.test" in embed["title"]
+    assert embed["title"].endswith("manager example.test")
 
   def test_without_send_the_webhook_is_only_read(self, notifications, webhook):
     notifications.check_config({"discord_webhook": URL}, send=False)
@@ -238,6 +238,7 @@ class TestDispatch:
     [(method, url, name, kwargs)] = webhook.calls
     assert (method, url, name) == ("POST", URL, "Discord")
     embed = kwargs["json"]["embeds"][0]
+    assert embed["title"] == f"{NOTIFICATION_STYLES['error']['emoji']} manager example.test"
     assert embed["description"] == "Deploy failed"
     assert embed["color"] == NOTIFICATION_STYLES["error"]["color"]
     assert embed["fields"][0]["value"] == "https://app.example.test/p"

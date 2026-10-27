@@ -37,7 +37,8 @@ def inject_worker(request: Request):
 
 @router.get("/")
 def get():
-  return [{**worker, "status": Manager().worker_status(worker["hostname"], worker["online"])}
+  return [{**worker, "status": Manager().worker_status(worker["hostname"], worker["online"]),
+           "path": Tailscale().path(worker["ip"])}
           for worker in Worker.select().dicts()]
 
 
@@ -87,6 +88,7 @@ def get_worker(request: Request, hostname: str):
   )
   data["infra"] = Reports().infra(hostname)
   data["status"] = Manager().worker_status(hostname, worker.online)
+  data["path"] = Tailscale().path(worker.ip)
   return data
 
 

@@ -23,7 +23,7 @@ concurrency:
 
 jobs:
   prepare-release-pr:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     name: Prepare Release PR
     steps:
       - name: Ensure workflow runs on main

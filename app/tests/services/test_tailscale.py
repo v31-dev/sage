@@ -11,7 +11,7 @@ import pytest
 
 import config
 from services import tailscale as tailscale_module
-from services.tailscale import Tailscale, next_online
+from services.tailscale import Tailscale, next_online, ping_path
 from utils.executor import active_executor
 
 HOST = "worker-1"
@@ -495,16 +495,22 @@ class TestNextOnline:
 
 
 class FakePing:
-  """The `tailscale ping` process: ends with `status`, or never ends."""
+  """The `tailscale ping` process: prints `output` and ends with `status`, or never ends."""
 
-  def __init__(self, status=0, hangs=False):
+  def __init__(self, status=0, hangs=False, output=""):
     self.status = status
     self.hangs = hangs
+    self.output = output
     self.killed = False
+    self.returncode = None
 
-  async def wait(self):
+  async def communicate(self):
     if self.hangs and not self.killed:
       await asyncio.sleep(3600)
+    self.returncode = -9 if self.killed else self.status
+    return self.output.encode(), None
+
+  async def wait(self):
     return -9 if self.killed else self.status
 
   def kill(self):
@@ -535,12 +541,64 @@ class TestPing:
     started(FakePing(1))
     assert asyncio.run(tailscale.ping("100.64.0.2")) is False
 
+  def test_how_the_answer_arrived_is_kept_for_that_peer(self, tailscale, started):
+    started(FakePing(0, output="pong from w1 (100.64.0.2) via 203.0.113.5:41641 in 2ms\n"))
+    asyncio.run(tailscale.ping("100.64.0.2"))
+    assert tailscale.path("100.64.0.2") == "direct"
+    assert tailscale.path("100.64.0.3") is None
+
+  def test_the_latest_answer_replaces_the_one_before(self, tailscale, started):
+    started(FakePing(0, output="pong from w1 (100.64.0.2) via DERP(blr) in 30ms\n"))
+    asyncio.run(tailscale.ping("100.64.0.2"))
+    assert tailscale.path("100.64.0.2") == "relay blr"
+    started(FakePing(0, output="pong from w1 (100.64.0.2) via 203.0.113.5:41641 in 2ms\n"))
+    asyncio.run(tailscale.ping("100.64.0.2"))
+    assert tailscale.path("100.64.0.2") == "direct"
+
+  def test_an_answer_that_does_not_say_how_it_arrived_still_counts_as_an_answer(self, tailscale, started):
+    started(FakePing(0, output="something new\n"))
+    assert asyncio.run(tailscale.ping("100.64.0.2")) is True
+    assert tailscale.path("100.64.0.2") is None
+
+  def test_the_output_of_a_ping_that_failed_is_not_trusted(self, tailscale, started):
+    started(FakePing(1, output="pong from w1 (100.64.0.2) via DERP(blr) in 30ms\n"))
+    assert asyncio.run(tailscale.ping("100.64.0.2")) is False
+    assert tailscale.path("100.64.0.2") is None
+
+  def test_a_peer_that_stops_answering_loses_its_path(self, tailscale, started):
+    tailscale._paths["100.64.0.2"] = "direct"
+    started(FakePing(1, output="ping did not respond\n"))
+    asyncio.run(tailscale.ping("100.64.0.2"))
+    assert tailscale.path("100.64.0.2") is None
+
+  def test_a_ping_that_never_ends_loses_its_path_too(self, tailscale, started, monkeypatch):
+    tailscale._paths["100.64.0.2"] = "direct"
+    monkeypatch.setattr(config, "PING_TIMEOUT_SECONDS", -4.9)  # the wait is the timeout plus 5 s: 0.1 s
+    started(FakePing(hangs=True))
+    assert asyncio.run(tailscale.ping("100.64.0.2")) is False
+    assert tailscale.path("100.64.0.2") is None
+
   def test_a_ping_that_never_ends_is_stopped_and_false(self, tailscale, started, monkeypatch):
     monkeypatch.setattr(config, "PING_TIMEOUT_SECONDS", -4.9)  # the wait is the timeout plus 5 s: 0.1 s
     process = FakePing(hangs=True)
     started(process)
     assert asyncio.run(tailscale.ping("100.64.0.2")) is False
     assert process.killed
+
+
+class TestPingPath:
+  @pytest.mark.parametrize("output, expected", [
+      ("pong from w1 (100.64.0.2) via 203.0.113.5:41641 in 2ms", "direct"),
+      ("pong from w1 (100.64.0.2) via [2001:db8::1]:41641 in 2ms", "direct"),
+      ("pong from w1 (100.64.0.2) via DERP(blr) in 30ms", "relay blr"),
+      ("pong from w1 (100.64.0.2) via DERP(us-east) in 30ms", "relay us-east"),
+      ("pong from w1 (100.64.0.2) via peer-relay(10.0.0.1:1234) in 9ms", "relay"),
+      ("some warning\npong from w1 (100.64.0.2) via DERP(nyc) in 30ms\n", "relay nyc"),
+      ("", None),
+      ("ping \"100.64.0.2\" did not respond", None),
+  ])
+  def test_table(self, output, expected):
+    assert ping_path(output) == expected
 
 
 class TestPeers:
@@ -617,6 +675,12 @@ class TestOnlineStates:
     self.states(tailscale, a=True)
     self.states(tailscale, b=True)
     assert self.states(tailscale, a=True) == {"a": True}
+
+  def test_paths_are_kept_for_the_peers_asked_and_dropped_for_the_others(self, tailscale, answers):
+    tailscale._paths = {"100.64.0.1": "direct", "100.64.0.9": "relay blr"}
+    self.states(tailscale, a=True)
+    assert tailscale.path("100.64.0.1") == "direct"
+    assert tailscale.path("100.64.0.9") is None
 
   def test_when_the_manager_is_cut_off_nobody_changes_and_the_misses_are_not_counted(self, tailscale, answers):
     answers.connected = False

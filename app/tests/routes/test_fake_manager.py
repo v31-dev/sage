@@ -17,8 +17,9 @@ def test_the_fake_s3_takes_the_same_arguments_as_the_real_one(name):
   assert parameters(getattr(FakeS3, name)) == parameters(getattr(S3, name))
 
 
-def test_the_fake_tailscale_takes_the_same_arguments_as_the_real_one():
-  assert parameters(FakeTailscale.find_peer) == parameters(Tailscale.find_peer)
+@pytest.mark.parametrize("name", ["find_peer", "path"])
+def test_the_fake_tailscale_takes_the_same_arguments_as_the_real_one(name):
+  assert parameters(getattr(FakeTailscale, name)) == parameters(getattr(Tailscale, name))
 
 
 @pytest.mark.parametrize("name", ["task_state", "is_task_running", "has_task", "worker_status", "get_volume_backup_resource_error"])

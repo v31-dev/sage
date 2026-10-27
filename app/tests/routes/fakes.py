@@ -28,6 +28,10 @@ class FakeTailscale:
 
   def __init__(self):
     self.machines = {}    # hostname -> ip
+    self.paths = {}       # ip -> how the last ping arrived
+
+  def path(self, target):
+    return self.paths.get(target)
 
   def find_peer(self, query):
     query = query.strip().lower()
