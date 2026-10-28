@@ -59,9 +59,9 @@ class Manager(
       self.setting_checks = {}
       # Worker counts as of the last sync (services/manager/workers.py).
       self.worker_summary = None
-      # What the status showed of the queue at its last change (services/manager/queue.py).
-      self.last_queue_status = None
-      self._queue_status_lock = threading.Lock()
+      # What the topics that come from the queue showed of it at its last change (services/manager/queue.py).
+      self.last_queue_facts = {}
+      self._queue_facts_lock = threading.Lock()
       # When the stack of each worker was last started for being down, until its cooldown is over
       # (services/manager/workers.py).
       self.worker_stack_repairs = {}

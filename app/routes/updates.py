@@ -1,12 +1,20 @@
 import socketio
 
 import config
+from routes.backups import get_platform_backup_status
 from routes.info import get as info
-from services.updates import CHECKS, LATEST_VERSION, NOTIFICATIONS, QUEUE_STATUS, WORKERS, Feed, Topic, Updates
+from routes.info import get_release
+from routes.tasks import list_tasks
+from services.updates import Feed, Topic, UpdateFeed, Updates, UpdateSource, UpdateTopic
 
 TOPICS = {
-    "info": Topic(info, frozenset({QUEUE_STATUS, WORKERS, CHECKS, LATEST_VERSION})),
-    NOTIFICATIONS: Feed(),
+    UpdateTopic.INFO: Topic(info, frozenset({UpdateSource.QUEUE_STATUS, UpdateSource.WORKERS, UpdateSource.CHECKS,
+                                             UpdateSource.LATEST_VERSION})),
+    UpdateTopic.TASKS: Topic(list_tasks, frozenset({UpdateSource.TASKS})),
+    UpdateTopic.BACKUP_STATUS: Topic(get_platform_backup_status, frozenset({UpdateSource.BACKUP_STATUS})),
+    UpdateTopic.RELEASE: Topic(get_release, frozenset({UpdateSource.RELEASE})),
+    UpdateFeed.NOTIFICATIONS: Feed(),
+    UpdateFeed.TASK_HISTORY: Feed(),
 }
 
 SCHEMES = {"http": "http", "https": "https", "ws": "http", "wss": "https"}

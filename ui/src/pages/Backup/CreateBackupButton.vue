@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
+import { watchState } from '@/lib/updates'
+import type { BackupStatus } from '@/services/api'
 import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/ui/spinner'
 import { toast } from 'vue-sonner'
@@ -13,19 +15,12 @@ interface Props {
 const props = withDefaults(defineProps<Props>(), {})
 
 const isBackupInProgress = ref(false)
-const pollInterval = 10_000
-const pollTimer = ref<number | null>(null)
+let stop: (() => void) | undefined
 
-async function checkBackupStatus() {
-  try {
-    const status = await props.backupAPI.action('platform_backup_status')
-    if (isBackupInProgress.value && status.platform_backup_in_progress === false) {
-      await props.loadBackups()
-    }
-    isBackupInProgress.value = status.platform_backup_in_progress
-  } catch (error) {
-    console.error('Error checking backup status:', error)
-  }
+async function showStatus(status: BackupStatus) {
+  const wasInProgress = isBackupInProgress.value
+  isBackupInProgress.value = status.platform_backup_in_progress
+  if (wasInProgress && !status.platform_backup_in_progress) await props.loadBackups()
 }
 
 async function onClickCreateBackup() {
@@ -40,19 +35,17 @@ async function onClickCreateBackup() {
   }
 }
 
-onMounted(async () => {
-  // Check status immediately on mount
-  await checkBackupStatus()
-
-  // Set up polling
-  pollTimer.value = window.setInterval(checkBackupStatus, pollInterval)
+onMounted(() => {
+  const status = watchState(
+    'backup-status',
+    () => props.backupAPI.action('platform_backup_status'),
+    showStatus
+  )
+  stop = status.stop
+  status.first.catch(error => console.error('Error checking backup status:', error))
 })
 
-onUnmounted(() => {
-  if (pollTimer.value) {
-    clearInterval(pollTimer.value)
-  }
-})
+onUnmounted(() => stop?.())
 </script>
 
 <template>

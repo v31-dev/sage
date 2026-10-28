@@ -17,13 +17,14 @@ import {
 import { Skeleton } from '@/components/ui/skeleton'
 import { Spinner } from '@/components/ui/spinner'
 import { formatDate } from '@/lib/utils'
+import { watchState } from '@/lib/updates'
 import {
   fetchRelease,
+  fetchTasks,
   refreshRelease,
   settingsAPI,
-  tasksAPI,
+  type QueueResponse,
   type Release,
-  type TasksResponse,
 } from '@/services/api'
 import { useAppStore } from '@/stores/app'
 import { TONES } from '@/lib/tone'
@@ -79,60 +80,47 @@ const publishedDate = computed(() =>
   release.value?.published_at ? formatDate(release.value.published_at) : ''
 )
 
-async function loadNotes() {
-  notesLoading.value = true
-  notesError.value = ''
-  try {
-    release.value = await fetchRelease()
-  } catch (err) {
-    notesError.value = err instanceof Error ? err.message : 'Failed to load release notes'
-  } finally {
-    notesLoading.value = false
+const REFRESH_TIMEOUT_MS = 60_000
+let fetchedBefore: string | null = null
+let refreshTimer: ReturnType<typeof setTimeout> | undefined
+
+// A refresh is over when a release fetched after the click is pushed.
+function showRelease(next: Release) {
+  release.value = next
+  if (refreshing.value && next.fetched_at && next.fetched_at !== fetchedBefore) {
+    clearTimeout(refreshTimer)
+    refreshing.value = false
   }
 }
 
 async function onRefresh() {
   refreshing.value = true
   refreshError.value = ''
-  const before = release.value?.fetched_at ?? null
+  fetchedBefore = release.value?.fetched_at ?? null
+  refreshTimer = setTimeout(() => {
+    if (!refreshing.value) return
+    refreshing.value = false
+    refreshError.value = 'Refresh timed out. Please try again.'
+  }, REFRESH_TIMEOUT_MS)
   try {
     await refreshRelease()
-    const deadline = Date.now() + 60_000
-    while (Date.now() < deadline) {
-      await new Promise(resolve => setTimeout(resolve, 5000))
-      const latest = await fetchRelease()
-      if (latest.fetched_at && latest.fetched_at !== before) {
-        release.value = latest
-        await appStore.refresh()
-        return
-      }
-    }
-    refreshError.value = 'Refresh timed out. Please try again.'
   } catch (err) {
-    refreshError.value = err instanceof Error ? err.message : 'Failed to refresh release'
-  } finally {
+    clearTimeout(refreshTimer)
     refreshing.value = false
+    refreshError.value = err instanceof Error ? err.message : 'Failed to refresh release'
   }
 }
 
 // Pause / resume ("prepare to stop")
-const tasks = ref<TasksResponse | null>(null)
+const queue = ref<QueueResponse | null>(null)
 const toggling = ref(false)
 const pauseError = ref('')
-let tasksTimer: ReturnType<typeof setInterval> | null = null
+let stops: Array<() => void> = []
 
 const state = computed(() => appStore.info?.state ?? 'running')
-const running = computed(() => tasks.value?.running ?? [])
-const queuedCount = computed(() => tasks.value?.queued.length ?? 0)
+const running = computed(() => queue.value?.running ?? [])
+const queuedCount = computed(() => queue.value?.queued.length ?? 0)
 const safeToStop = computed(() => state.value === 'paused' && running.value.length === 0)
-
-async function loadTasks() {
-  try {
-    tasks.value = (await tasksAPI.fetchAll()) as unknown as TasksResponse
-  } catch (err) {
-    console.error('Failed to load tasks:', err)
-  }
-}
 
 async function onToggle() {
   toggling.value = true
@@ -141,7 +129,6 @@ async function onToggle() {
     const next = state.value === 'paused' ? 'running' : 'paused'
     await settingsAPI.action(next === 'running' ? 'resume' : 'pause')
     appStore.setState(next)
-    await loadTasks()
   } catch (err) {
     pauseError.value = err instanceof Error ? err.message : 'Failed to change state'
   } finally {
@@ -149,14 +136,23 @@ async function onToggle() {
   }
 }
 
-onMounted(() => {
-  loadNotes()
-  loadTasks()
-  tasksTimer = setInterval(loadTasks, 2000)
+onMounted(async () => {
+  const releaseWatch = watchState('release', fetchRelease, showRelease)
+  const tasksWatch = watchState('tasks', fetchTasks, next => (queue.value = next))
+  stops = [releaseWatch.stop, tasksWatch.stop]
+  tasksWatch.first.catch(err => console.error('Failed to load tasks:', err))
+  try {
+    await releaseWatch.first
+  } catch (err) {
+    notesError.value = err instanceof Error ? err.message : 'Failed to load release notes'
+  } finally {
+    notesLoading.value = false
+  }
 })
 
 onUnmounted(() => {
-  if (tasksTimer) clearInterval(tasksTimer)
+  clearTimeout(refreshTimer)
+  stops.forEach(stop => stop())
 })
 </script>
 

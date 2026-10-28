@@ -23,6 +23,13 @@ logger = logging.getLogger(__name__)
 
 
 class PlatformMixin:
+  def backup_status(self) -> dict:
+    """Whether a platform backup is running and whether backups are being discovered."""
+    return {
+        "platform_backup_in_progress": self.is_task_running(self.backup_database_s3),
+        "discovery_in_progress": self.has_task(self.discover_s3_backups),
+    }
+
   async def discover_s3_backups(self):
     """
     Make the Backup table match what's in S3 under the configured path: record the

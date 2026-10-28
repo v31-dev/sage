@@ -79,6 +79,12 @@ class FakeManager:
   def has_task(self, task, params=None):
     return task.__name__ in self.queued
 
+  def backup_status(self):
+    return Manager.backup_status(self)
+
+  def task_snapshot(self):
+    return {"running": [{"task_id": "t-1"}], "queued": []}
+
   def worker_status(self, hostname, online):
     return self.worker_statuses.get(hostname, "online" if online else "offline")
 

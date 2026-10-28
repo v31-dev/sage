@@ -52,12 +52,9 @@ def list_backups(request: Request):
 
 
 @router.post("/platform_backup_status")
-def get_platform_backup_status(request: Request):
+def get_platform_backup_status():
   """Get current platform backup and discovery status."""
-  return {
-      "platform_backup_in_progress": Manager().is_task_running(Manager().backup_database_s3),
-      "discovery_in_progress": Manager().has_task(Manager().discover_s3_backups),
-  }
+  return Manager().backup_status()
 
 
 def require_s3():

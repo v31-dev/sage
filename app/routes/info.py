@@ -38,7 +38,7 @@ def get():
 
 
 @router.get("/release")
-async def get_release():
+def get_release():
   return Manager().get_latest_release()
 
 

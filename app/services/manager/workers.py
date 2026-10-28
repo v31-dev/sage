@@ -5,7 +5,7 @@ import re
 import config
 from services.db import Application, Container, Instance, Worker
 from services.metrics import Metrics
-from services.updates import WORKERS, Updates
+from services.updates import Updates, UpdateSource
 from services.worker_reports import WorkerReports
 from utils.common import utcnow
 from utils.executor import run_in_executor_with_context
@@ -130,7 +130,7 @@ class WorkersMixin:
     differs = summary != self.worker_summary
     self.worker_summary = summary
     if differs:
-      Updates().changed(WORKERS)
+      Updates().changed(UpdateSource.WORKERS)
 
   def infra_hash(self) -> str:
     """Hash of every input `setup_worker` renders into worker infra files.

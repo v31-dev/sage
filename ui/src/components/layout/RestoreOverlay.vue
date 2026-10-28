@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onUnmounted, ref, watch } from 'vue'
 import {
   AlertDialog,
   AlertDialogContent,
@@ -9,7 +9,8 @@ import {
 } from '@/components/ui/alert-dialog'
 import { Spinner } from '@/components/ui/spinner'
 import { formatDate } from '@/lib/utils'
-import { tasksAPI, type TasksResponse } from '@/services/api'
+import { watchState } from '@/lib/updates'
+import { fetchTasks, type QueueResponse } from '@/services/api'
 import { useAppStore } from '@/stores/app'
 
 const appStore = useAppStore()
@@ -19,29 +20,30 @@ const restoringFrom = computed(() => appStore.info?.restoring_from)
 // The restore itself is among the running tasks; it is not what the restore waits for.
 const waitingFor = ref(0)
 
-async function loadWaitingFor() {
-  try {
-    const tasks = (await tasksAPI.fetchAll()) as unknown as TasksResponse
-    waitingFor.value = tasks.running.filter(task => task.name !== 'restore_database_from_s3').length
-  } catch (err) {
-    console.error('Failed to load the running tasks:', err)
-  }
+function showWaitingFor(tasks: QueueResponse) {
+  waitingFor.value = tasks.running.filter(task => task.name !== 'restore_database_from_s3').length
 }
 
-// The state is held by the manager, so a refreshed page shows the same overlay. The app
-// store polls every 2 s while restoring, and each of its updates refreshes the count.
+// The state is held by the manager, so a refreshed page shows the same overlay. The running
+// tasks are followed only while restoring.
+let stopTasks: (() => void) | undefined
 watch(
-  () => appStore.info,
-  () => {
-    if (restoring.value) loadWaitingFor()
+  restoring,
+  (now, before) => {
+    stopTasks?.()
+    stopTasks = undefined
+    if (now) {
+      const tasks = watchState('tasks', fetchTasks, showWaitingFor)
+      stopTasks = tasks.stop
+      tasks.first.catch(err => console.error('Failed to load the running tasks:', err))
+    }
+    // When the restore ends the data under every page has changed: reload them all.
+    if (before && !now) location.reload()
   },
   { immediate: true }
 )
 
-// When the restore ends the data under every page has changed: reload them all.
-watch(restoring, (now, before) => {
-  if (before && !now) location.reload()
-})
+onUnmounted(() => stopTasks?.())
 </script>
 
 <template>

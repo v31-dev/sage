@@ -4,7 +4,7 @@ import httpx
 
 from services.notification import ChannelCheckFailed, Notifications
 from services.settings import SETTING_DEFINITIONS, Settings
-from services.updates import CHECKS, Updates
+from services.updates import Updates, UpdateSource
 from utils.common import utcnow
 from utils.executor import run_in_executor_with_context
 from utils.retry import is_transient
@@ -110,7 +110,7 @@ class SettingsMixin:
       logger.warning(f"{key} check failed: {message}")
     self.setting_checks[key] = {"state": state, "message": message, "channels": channels,
                                 "checked_at": utcnow().isoformat()}
-    Updates().changed(CHECKS)
+    Updates().changed(UpdateSource.CHECKS)
 
   def applying_tasks(self) -> dict:
     """Per section, the queued or running task that makes it apply, or None. A quiet task is

@@ -171,7 +171,7 @@ container's newest 1,000 lines. The check runs after writes (at most every 30 s)
 
 ## Pushed Updates
 
-The UI keeps one Socket.IO connection to the manager (`/api/socket.io`) and follows topics over it instead of polling: the manager's status (`info`) and the notifications. A page loads a topic from its REST route, and the manager pushes the whole state of `info` each time it changes and each new notification as it is stored; the page loads again each time the socket connects, so it makes up for what it missed. Socket.IO reconnects and falls back from WebSocket to long-polling by itself, a heartbeat every 10 s shows in an indicator at the top left of the UI, and a connection from another origin is refused. See [backend.md](backend.md) and [frontend.md](frontend.md).
+The UI keeps one Socket.IO connection to the manager (`/api/socket.io`) and follows topics over it instead of polling: the manager's status (`info`), the tasks (`tasks`, and the finished ones as `task-history`), the backup and discovery status, the release and the notifications. A page loads a topic from its REST route, and the manager pushes the whole state of a state topic each time it changes and each new row of a feed (a notification, a finished task) as it is stored; the page loads again each time the socket connects, so it makes up for what it missed. Socket.IO reconnects and falls back from WebSocket to long-polling by itself, a heartbeat every 10 s shows in an indicator at the top left of the UI, and a connection from another origin is refused. See [backend.md](backend.md) and [frontend.md](frontend.md).
 
 ## Scheduler And Operation Queue
 

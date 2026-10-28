@@ -21,10 +21,14 @@ from socketio.exceptions import ConnectionError as SocketConnectionError
 import config
 import services.updates as updates_module
 from api import build_asgi_app
+from routes.backups import get_platform_backup_status
+from routes.info import get as info
+from routes.info import get_release
 from routes.notifications import list_notifications
+from routes.tasks import list_tasks
 from routes.updates import TOPICS, same_origin, sio
 from services.db import Notification
-from services.updates import CHECKS, LATEST_VERSION, NOTIFICATIONS, QUEUE_STATUS, WORKERS, Feed, Topic, Updates
+from services.updates import Feed, Topic, UpdateFeed, Updates, UpdateSource, UpdateTopic
 
 BOTH = ["polling", "websocket"]
 SAME_ORIGIN = object()
@@ -144,19 +148,36 @@ def browser(served):
 @pytest.fixture
 def state(monkeypatch):
   state = {"value": 1}
-  monkeypatch.setitem(TOPICS, "info", Topic(lambda: dict(state), frozenset({QUEUE_STATUS})))
+  monkeypatch.setitem(TOPICS, "info", Topic(lambda: dict(state), frozenset({UpdateSource.QUEUE_STATUS})))
   return state
 
 
 class TestTopics:
-  def test_the_topics_are_the_info_and_the_notifications(self):
-    assert set(TOPICS) == {"info", "notifications"}
+  def test_the_topics_are_the_ones_the_pages_follow(self):
+    assert set(TOPICS) == {"info", "tasks", "backup-status", "release", "notifications", "task-history"}
+
+  def test_the_table_has_each_topic_and_each_feed_once(self):
+    assert not set(UpdateTopic) & set(UpdateFeed)
+    assert set(TOPICS) == set(UpdateTopic) | set(UpdateFeed)
+    assert len(TOPICS) == len(UpdateTopic) + len(UpdateFeed)
+
+  def test_the_state_topics_are_topics_and_the_feeds_are_feeds(self):
+    assert all(isinstance(TOPICS[name], Topic) for name in UpdateTopic)
+    assert all(isinstance(TOPICS[name], Feed) for name in UpdateFeed)
 
   def test_the_info_follows_what_the_manager_status_is_made_of(self):
-    assert TOPICS["info"].sources == {QUEUE_STATUS, WORKERS, CHECKS, LATEST_VERSION}
+    assert TOPICS["info"].sources == {UpdateSource.QUEUE_STATUS, UpdateSource.WORKERS, UpdateSource.CHECKS,
+                                      UpdateSource.LATEST_VERSION}
 
-  def test_the_notifications_are_a_feed(self):
-    assert isinstance(TOPICS["notifications"], Feed)
+  @pytest.mark.parametrize("topic, source", [("tasks", UpdateSource.TASKS), ("backup-status", UpdateSource.BACKUP_STATUS),
+                                             ("release", UpdateSource.RELEASE)])
+  def test_the_other_topics_follow_the_one_source_they_show(self, topic, source):
+    assert TOPICS[topic].sources == {source}
+
+  @pytest.mark.parametrize("topic, route", [("info", info), ("tasks", list_tasks), ("backup-status", get_platform_backup_status),
+                                            ("release", get_release)])
+  def test_a_topic_is_loaded_by_the_function_of_its_route(self, topic, route):
+    assert TOPICS[topic].load is route
 
   def test_the_server_pings_at_the_configured_interval(self):
     assert sio.eio.ping_interval == config.UPDATES_PING_INTERVAL_SECONDS
@@ -170,10 +191,10 @@ class TestOverEachTransport:
     one.subscribe("info")
     assert one.received.empty()
     state["value"] = 2
-    Updates().changed(QUEUE_STATUS)
+    Updates().changed(UpdateSource.QUEUE_STATUS)
     assert one.next() == ("state", {"topic": "info", "data": {"value": 2}})
     state["value"] = 3
-    Updates().changed(QUEUE_STATUS)
+    Updates().changed(UpdateSource.QUEUE_STATUS)
     assert one.next() == ("state", {"topic": "info", "data": {"value": 3}})
 
   def test_an_unknown_topic_is_an_error(self, browser, transports):
@@ -187,7 +208,7 @@ class TestOverEachTransport:
     one.client.call("subscribe", topic, timeout=5)
     one.client.call("unsubscribe", topic, timeout=5)
     one.subscribe("info")
-    Updates().changed(QUEUE_STATUS)
+    Updates().changed(UpdateSource.QUEUE_STATUS)
     assert one.next() == ("state", {"topic": "info", "data": {"value": 1}})
     assert one.received.empty()
 
@@ -196,9 +217,9 @@ class TestOverEachTransport:
     one.subscribe("info")
     one.unsubscribe("info")
     state["value"] = 2
-    Updates().changed(QUEUE_STATUS)
+    Updates().changed(UpdateSource.QUEUE_STATUS)
     one.subscribe("notifications")
-    Updates().publish(NOTIFICATIONS, [{"id": 1}])
+    Updates().publish(UpdateFeed.NOTIFICATIONS, [{"id": 1}])
     assert one.next() == ("state", {"topic": "notifications", "data": [{"id": 1}]})
 
   def test_two_browsers_each_get_the_change(self, browser, state, transports):
@@ -206,7 +227,7 @@ class TestOverEachTransport:
     for one in (first, second):
       one.subscribe("info")
     state["value"] = 3
-    Updates().changed(QUEUE_STATUS)
+    Updates().changed(UpdateSource.QUEUE_STATUS)
     assert first.next()[1]["data"] == {"value": 3}
     assert second.next()[1]["data"] == {"value": 3}
 
@@ -215,7 +236,7 @@ class TestOverEachTransport:
     one.subscribe("notifications")
     assert one.received.empty()
     notification = Notification.create(content="deployed", type="success", link="https://example.test")
-    Updates().publish(NOTIFICATIONS, [model_to_dict(notification, recurse=False)])
+    Updates().publish(UpdateFeed.NOTIFICATIONS, [model_to_dict(notification, recurse=False)])
     event, payload = one.next()
     assert event == "state" and payload["topic"] == "notifications"
     assert [row["content"] for row in payload["data"]] == ["deployed"]
@@ -324,7 +345,7 @@ class TestWhilePaused:
     manager.state = "paused"
     one = browser(["polling"])
     one.subscribe("info")
-    Updates().changed(QUEUE_STATUS)
+    Updates().changed(UpdateSource.QUEUE_STATUS)
     assert one.next()[1]["data"] == {"value": 1}
     one.close()
 

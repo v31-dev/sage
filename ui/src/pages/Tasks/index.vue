@@ -5,36 +5,51 @@ import { toast } from 'vue-sonner'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import TaskCard from './TaskCard.vue'
 import TaskTable from './TaskTable.vue'
-import { tasksAPI, type TasksResponse } from '@/services/api'
+import { watchFeed, watchState } from '@/lib/updates'
+import {
+  fetchTaskHistory,
+  fetchTasks,
+  type CompletedTask,
+  type QueueResponse,
+} from '@/services/api'
 
-const tasks = ref<TasksResponse>({ running: [], queued: [], completed: [] })
-const isLoading = ref(false)
-let timer: number | undefined
+const HISTORY_SHOWN = 100
+
+const queue = ref<QueueResponse>({ running: [], queued: [] })
+const completed = ref<CompletedTask[]>([])
+const isLoading = ref(true)
+let stops: Array<() => void> = []
 
 const queueSections = computed(() => [
-  { title: 'Running', rows: tasks.value.running },
-  { title: 'Queued', rows: tasks.value.queued },
+  { title: 'Running', rows: queue.value.running },
+  { title: 'Queued', rows: queue.value.queued },
 ])
 
-async function loadTasks(showSpinner = false) {
-  if (showSpinner) isLoading.value = true
-  try {
-    tasks.value = (await tasksAPI.fetchAll()) as unknown as TasksResponse
-  } catch {
-    toast.error('Failed to load tasks')
-  } finally {
-    if (showSpinner) isLoading.value = false
-  }
+function addCompleted(rows: CompletedTask[]) {
+  const known = new Set(completed.value.map(task => task.task_id))
+  const fresh = rows.filter(task => !known.has(task.task_id))
+  if (fresh.length === 0) return
+  completed.value = [...completed.value, ...fresh]
+    .sort((a, b) => (a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : 0))
+    .slice(0, HISTORY_SHOWN)
 }
 
 onMounted(async () => {
-  await loadTasks(true)
-  timer = window.setInterval(loadTasks, 3000)
+  const watches = [
+    watchState('tasks', fetchTasks, next => (queue.value = next)),
+    watchFeed('task-history', fetchTaskHistory, addCompleted),
+  ]
+  stops = watches.map(watch => watch.stop)
+  try {
+    await Promise.all(watches.map(watch => watch.first))
+  } catch {
+    toast.error('Failed to load tasks')
+  } finally {
+    isLoading.value = false
+  }
 })
 
-onUnmounted(() => {
-  if (timer) window.clearInterval(timer)
-})
+onUnmounted(() => stops.forEach(stop => stop()))
 </script>
 
 <template>
@@ -72,28 +87,20 @@ onUnmounted(() => {
         <!-- Completed / failed / cancelled tasks (from the DB) -->
         <Card>
           <CardHeader>
-            <CardTitle>Completed ({{ tasks.completed.length }})</CardTitle>
+            <CardTitle>Completed ({{ completed.length }})</CardTitle>
           </CardHeader>
           <CardContent>
             <!-- Desktop table (md+) -->
             <div class="hidden md:block">
-              <TaskTable :rows="tasks.completed" emptyLabel="completed" :showTimestamps="true" />
+              <TaskTable :rows="completed" emptyLabel="completed" :showTimestamps="true" />
             </div>
 
             <!-- Mobile cards (< md) -->
             <div class="md:hidden space-y-2">
-              <p
-                v-if="!tasks.completed.length"
-                class="py-4 text-center text-sm text-muted-foreground"
-              >
+              <p v-if="!completed.length" class="py-4 text-center text-sm text-muted-foreground">
                 No completed tasks
               </p>
-              <TaskCard
-                v-for="t in tasks.completed"
-                :key="t.task_id"
-                :task="t"
-                :showTimestamps="true"
-              />
+              <TaskCard v-for="t in completed" :key="t.task_id" :task="t" :showTimestamps="true" />
             </div>
           </CardContent>
         </Card>

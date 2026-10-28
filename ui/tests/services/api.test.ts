@@ -10,6 +10,8 @@ import {
   fetchLogs,
   fetchNotifications,
   fetchRelease,
+  fetchTaskHistory,
+  fetchTasks,
   fetchWorkerMetrics,
   getApplicationAPI,
   getContainerAPI,
@@ -19,7 +21,6 @@ import {
   projectAPI,
   refreshRelease,
   settingsAPI,
-  tasksAPI,
   workersAPI,
 } from '@/services/api'
 
@@ -64,7 +65,6 @@ describe('the APIs', () => {
     [workersAPI, 'Workers', '/api/workers'],
     [projectAPI, 'Project', '/api/projects'],
     [settingsAPI, 'Settings', '/api/settings'],
-    [tasksAPI, 'Task', '/api/tasks'],
     [backupAPI, 'Backup', '/api/backups'],
   ])('%#: points at its path', (api, name, path) => {
     expect([api.name, api.path]).toEqual([name, path])
@@ -123,6 +123,32 @@ describe('fetchAppInfo', () => {
 
     await expect(fetchAppInfo()).rejects.toThrow('Failed to fetch app info')
     expect(console.error).toHaveBeenCalled()
+  })
+})
+
+describe('the task calls', () => {
+  it('fetchTasks gets the running and queued tasks', async () => {
+    fetchMock.mockResolvedValue(reply({ running: [{ task_id: 't1' }], queued: [] }))
+
+    expect(await fetchTasks()).toEqual({ running: [{ task_id: 't1' }], queued: [] })
+    expect(lastCall().path).toBe('/api/tasks/')
+  })
+
+  it('fetchTasks says what failed', async () => {
+    fetchMock.mockResolvedValue(reply({}, 500))
+    await expect(fetchTasks()).rejects.toThrow('Failed to fetch tasks')
+  })
+
+  it('fetchTaskHistory gets the finished tasks', async () => {
+    fetchMock.mockResolvedValue(reply([{ task_id: 't2' }]))
+
+    expect(await fetchTaskHistory()).toEqual([{ task_id: 't2' }])
+    expect(lastCall().path).toBe('/api/tasks/history')
+  })
+
+  it('fetchTaskHistory says what failed', async () => {
+    fetchMock.mockResolvedValue(reply({}, 500))
+    await expect(fetchTaskHistory()).rejects.toThrow('Failed to fetch the finished tasks')
   })
 })
 

@@ -1,8 +1,10 @@
 import logging
 from typing import Callable
 
+from playhouse.shortcuts import model_to_dict
+
 from services.db import Task
-from services.updates import QUEUE_STATUS, Updates
+from services.updates import UpdateFeed, Updates, UpdateSource
 from utils.common import utcnow
 
 logger = logging.getLogger(__name__)
@@ -52,14 +54,23 @@ class QueueMixin:
     applying = self.applying_tasks().values()
     return (self.task_state(), self.restoring_from(), tuple(task and task["task_id"] for task in applying))
 
+  def queue_facts(self) -> dict:
+    """What each topic that comes from the queue shows of it, by its source."""
+    return {
+        UpdateSource.TASKS: self.task_snapshot(),
+        UpdateSource.QUEUE_STATUS: self.queue_status(),
+        UpdateSource.BACKUP_STATUS: self.backup_status(),
+    }
+
   def _queue_changed(self):
-    """TaskQueue change hook, called from any thread after the tasks or the state changed."""
-    with self._queue_status_lock:
-      status = self.queue_status()
-      differs = status != self.last_queue_status
-      self.last_queue_status = status
-    if differs:
-      Updates().changed(QUEUE_STATUS)
+    """TaskQueue change hook, called from any thread after the tasks or the state changed. Fires the source of each
+    topic whose facts differ from the last time."""
+    with self._queue_facts_lock:
+      facts = self.queue_facts()
+      differing = [source for source, fact in facts.items() if fact != self.last_queue_facts.get(source)]
+      self.last_queue_facts = facts
+    for source in differing:
+      Updates().changed(source)
 
   def _persist_task(self, task, status: str):
     """TaskQueue persistence hook: record a finished task in the Task table.
@@ -67,7 +78,7 @@ class QueueMixin:
     reach the DB, each as a single row. Best-effort so a DB hiccup never breaks
     the operation."""
     try:
-      Task.create(
+      row = Task.create(
           task_id=task.task_id,
           name=task.name,
           scopes=sorted(task.scopes),
@@ -78,3 +89,5 @@ class QueueMixin:
       )
     except Exception as e:
       logger.error(f"Failed to persist task {task.task_id} ({status}): {e}")
+    else:
+      Updates().publish(UpdateFeed.TASK_HISTORY, [model_to_dict(row, recurse=False)])

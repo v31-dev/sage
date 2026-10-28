@@ -2,6 +2,7 @@ import asyncio
 import itertools
 import logging
 from dataclasses import dataclass
+from enum import StrEnum, unique
 from typing import Awaitable, Callable
 
 from fastapi.encoders import jsonable_encoder
@@ -12,14 +13,33 @@ from utils.executor import UPDATES_EXECUTOR, run_in_executor_with_context
 
 logger = logging.getLogger(__name__)
 
-# What can change a topic. An owner of state says that it changed, and fires only when what it owns differs from before.
-QUEUE_STATUS = "queue_status"  # what the manager's status shows of the queue
-WORKERS = "workers"
-CHECKS = "checks"
-LATEST_VERSION = "latest_version"
 
-# The feeds. An owner of rows sends each new one to the feed.
-NOTIFICATIONS = "notifications"
+@unique
+class UpdateSource(StrEnum):
+  """What can change a topic. An owner of state says that it changed, and fires only when what it owns differs from before."""
+  TASKS = "tasks"                    # the running and queued tasks
+  QUEUE_STATUS = "queue_status"      # what the manager's status shows of the queue
+  BACKUP_STATUS = "backup_status"    # whether a platform backup runs or backups are being discovered
+  WORKERS = "workers"
+  CHECKS = "checks"
+  LATEST_VERSION = "latest_version"
+  RELEASE = "release"                # a release was fetched
+
+
+@unique
+class UpdateTopic(StrEnum):
+  """The names of the state topics a connection can follow."""
+  INFO = "info"
+  TASKS = "tasks"
+  BACKUP_STATUS = "backup-status"
+  RELEASE = "release"
+
+
+@unique
+class UpdateFeed(StrEnum):
+  """The names of the feeds a connection can follow. A feed's owner sends each new row to it."""
+  NOTIFICATIONS = "notifications"
+  TASK_HISTORY = "task-history"
 
 
 @dataclass(frozen=True)
@@ -103,7 +123,7 @@ class Updates(Base):
     self._loop = None
     self._tasks: set[asyncio.Task] = set()
 
-  def connect(self, sid: str, emit: Emit, topics: dict[str, Topic | Feed]):
+  def connect(self, sid: str, emit: Emit, topics: dict[UpdateTopic | UpdateFeed, Topic | Feed]):
     self._loop = asyncio.get_running_loop()
     self._topics = topics
     self._connections[sid] = Connection(emit)
@@ -144,7 +164,7 @@ class Updates(Base):
     except RuntimeError:
       logger.debug("A change was dropped: the event loop is closed.")
 
-  def publish(self, feed: str, rows: list):
+  def publish(self, feed: UpdateFeed, rows: list):
     """Send rows to the subscribers of a feed. Safe to call from any thread."""
     loop = self._loop
     if loop is None:

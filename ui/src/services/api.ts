@@ -155,8 +155,8 @@ export async function fetchAppInfo(): Promise<AppInfo> {
 }
 
 // Cached release detail (version + notes + fetched_at), populated by the
-// scheduled/on-demand refresh job. Read when the upgrade popup opens; kept off the
-// polled app-info payload since the notes body is large.
+// scheduled/on-demand refresh job. It is a topic of its own and not part of the
+// app info, since the notes body is large.
 export async function fetchRelease(): Promise<Release> {
   const response = await fetch(`${API_ROOT}/release`)
   if (!response.ok) {
@@ -167,7 +167,7 @@ export async function fetchRelease(): Promise<Release> {
 }
 
 // Fire the refresh job (re-checks GitHub and updates the cache). Returns
-// immediately; poll fetchRelease() and watch `fetched_at` for the result.
+// immediately; the release topic pushes the result, with a new `fetched_at`.
 export async function refreshRelease(): Promise<void> {
   const response = await fetch(`${API_ROOT}/release/refresh`, { method: 'POST' })
   if (!response.ok) {
@@ -483,17 +483,29 @@ export interface CompletedTask extends QueueTask {
   finished_at: string | null
 }
 
-export interface TasksResponse {
-  running: QueueTask[]
-  queued: QueueTask[]
-  completed: CompletedTask[]
+export interface BackupStatus {
+  platform_backup_in_progress: boolean
+  discovery_in_progress: boolean
 }
 
-export const tasksAPI = new CRUDAPI({
-  name: 'Task',
-  path: `${API_ROOT}/tasks`,
-  load_delay: LOAD_DELAY,
-})
+export interface QueueResponse {
+  running: QueueTask[]
+  queued: QueueTask[]
+}
+
+// The tasks that are running or waiting, held in memory by the manager.
+export async function fetchTasks(): Promise<QueueResponse> {
+  const response = await fetch(`${API_ROOT}/tasks/`)
+  if (!response.ok) throw new Error('Failed to fetch tasks')
+  return await response.json()
+}
+
+// The latest finished tasks, newest first.
+export async function fetchTaskHistory(): Promise<CompletedTask[]> {
+  const response = await fetch(`${API_ROOT}/tasks/history`)
+  if (!response.ok) throw new Error('Failed to fetch the finished tasks')
+  return await response.json()
+}
 
 export interface Backup {
   id: number
