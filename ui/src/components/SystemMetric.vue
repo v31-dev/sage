@@ -5,6 +5,7 @@ import { Spinner } from '@/components/ui/spinner'
 
 import {
   fetchWorkerMetrics,
+  METRICS_POLL_MS,
   type WorkerMetricsResponse,
   type MetricsPeriod,
   type ContainerMetricsPoint,
@@ -39,7 +40,7 @@ watch(period, () => {
 
 onMounted(async () => {
   await load()
-  pollInterval = setInterval(load, 15_000)
+  pollInterval = setInterval(load, METRICS_POLL_MS)
 })
 onUnmounted(() => {
   if (pollInterval) clearInterval(pollInterval)

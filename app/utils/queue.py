@@ -221,9 +221,6 @@ class TaskQueue:
           self._state = QueueState.RESTORING
           logger.info("Restoring: nothing else starts until the restore has finished.")
 
-    # Nothing new runs once stopping (e.g. a follow-up queued by a task that is still
-    # finishing): it is recorded as never started instead of lost on exit. A superseded
-    # duplicate is recorded the same way.
     # Persist cancellations outside the lock: _record does a DB write, which must
     # stay off the critical section so the event loop never blocks on it.
     cancelled = [new_task] if admission.admit == Admit.CANCEL else list(admission.superseded)

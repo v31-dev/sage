@@ -192,7 +192,7 @@ async def check_settings():
 _JOBS = [
     (dispatch_tick, IntervalTrigger(seconds=1)),
     (sync_workers, IntervalTrigger(seconds=30)),
-    (refresh_worker_paths, IntervalTrigger(seconds=30)),
+    (refresh_worker_paths, IntervalTrigger(seconds=60)),
     (sync_application_status, CronTrigger.from_crontab("* * * * *")),
     (schedule_application_backups, CronTrigger.from_crontab("* * * * *")),
     (reconcile_traefik_configs, CronTrigger.from_crontab("* * * * *")),

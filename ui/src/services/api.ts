@@ -324,6 +324,8 @@ export interface WorkerMetricSummary {
   cores: number | null
 }
 
+export const METRICS_POLL_MS = 60_000
+
 export async function fetchWorkerMetrics(
   hostname: string,
   period: MetricsPeriod = '1h'

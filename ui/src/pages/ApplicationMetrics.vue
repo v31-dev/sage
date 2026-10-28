@@ -7,7 +7,7 @@ import { Spinner } from '@/components/ui/spinner'
 import { type ContainerMetricsPoint, type MetricsPeriod } from '@/services/api'
 import MetricChart from '@/components/MetricChart.vue'
 import { processContainerData } from '@/lib/metrics'
-import { getApplicationAPI } from '@/services/api'
+import { getApplicationAPI, METRICS_POLL_MS } from '@/services/api'
 
 const route = useRoute()
 const projectName = route.params.projectId as string
@@ -49,7 +49,7 @@ watch(period, () => {
 
 onMounted(async () => {
   await load()
-  pollInterval = setInterval(load, 15_000)
+  pollInterval = setInterval(load, METRICS_POLL_MS)
 })
 onUnmounted(() => {
   if (pollInterval) clearInterval(pollInterval)

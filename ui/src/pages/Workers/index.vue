@@ -6,6 +6,7 @@ import { Spinner } from '@/components/ui/spinner'
 
 import {
   fetchWorkerMetrics,
+  METRICS_POLL_MS,
   workersAPI,
   type Worker,
   type WorkerMetricsResponse,
@@ -95,7 +96,7 @@ async function loadWorkerMetrics() {
 onMounted(async () => {
   await loadWorkers()
   await loadWorkerMetrics()
-  pollInterval = setInterval(loadWorkerMetrics, 15_000)
+  pollInterval = setInterval(loadWorkerMetrics, METRICS_POLL_MS)
   statusInterval = setInterval(loadWorkers, 10_000)
 })
 

@@ -233,7 +233,7 @@ class Logs(Base):
     return page_size, pages, free
 
   def _live_bytes(self, shard) -> int:
-    """The data in a shard: its pages less the free ones, which later writes reuse."""
+    """The data in a shard: its pages less the free ones."""
     page_size, pages, free = self._pages(shard)
     return (pages - free) * page_size
 
@@ -250,7 +250,7 @@ class Logs(Base):
 
   @staticmethod
   def _delete_oldest(shard, rows: int):
-    """Delete the `rows` oldest lines by timestamp, a batch to a transaction so a writer never waits long."""
+    """Delete the `rows` oldest lines by timestamp, a batch to a transaction."""
     ContainerLogs = shard["models"]["ContainerLogs"]
     done = 0
     while done < rows:

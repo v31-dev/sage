@@ -16,12 +16,11 @@ LATEST_RELEASE_URL = "https://api.github.com/repos/v31-dev/sage/releases/latest"
 # safety copies, and S3 platform and volume backups (the daily cleanup).
 RETENTION_DAYS = 14
 
-# The logs of one container are trimmed, oldest lines first, once their data passes LOG_SHARD_MAX_BYTES, and the
-# logs of all containers once together they pass the smaller of LOG_TOTAL_MAX_BYTES and LOG_TOTAL_MAX_DISK_SHARE of
-# the data volume. A trim leaves LOG_TRIM_TO_SHARE of the limit, so it does not run again at once, and never takes a
-# container below its newest LOG_KEEP_NEWEST_ROWS lines. Sizes are looked at after a write, at most every
-# LOG_SIZE_CHECK_SECONDS, and old lines go in batches of LOG_TRIM_BATCH_ROWS. A shard file whose size passes
-# LOG_SHARD_VACUUM_RATIO times its limit is rewritten, since a file does not shrink when rows are deleted.
+# Log size limits. A container's logs are trimmed, oldest lines first, when their data passes LOG_SHARD_MAX_BYTES, and
+# all containers' logs when together they pass the smaller of LOG_TOTAL_MAX_BYTES and LOG_TOTAL_MAX_DISK_SHARE of the
+# data volume. A trim leaves LOG_TRIM_TO_SHARE of the limit and keeps each container's newest LOG_KEEP_NEWEST_ROWS
+# lines. Sizes are checked after a write at most every LOG_SIZE_CHECK_SECONDS, and lines go LOG_TRIM_BATCH_ROWS at a
+# time. A shard file bigger than LOG_SHARD_VACUUM_RATIO times its limit is rewritten.
 LOG_SHARD_MAX_BYTES = 256 * 1024 * 1024
 LOG_TOTAL_MAX_BYTES = 2 * 1024 * 1024 * 1024
 LOG_TOTAL_MAX_DISK_SHARE = 0.10
