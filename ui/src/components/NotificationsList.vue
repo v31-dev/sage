@@ -14,6 +14,7 @@ import { Icon } from '@iconify/vue'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 
 import { fetchNotifications, type Notification } from '@/services/api'
+import { watchFeed } from '@/lib/updates'
 import { formatDateStringAgo } from '@/lib/utils'
 import SectionTitle from './SectionTitle.vue'
 import { TONES } from '@/lib/tone'
@@ -22,17 +23,12 @@ const notifications = ref<Notification[]>([])
 const isLoading = ref(true)
 const isLoadingMore = ref(false)
 const pageSize = 20
-const pollInterval = 10_000
-const pollTimer = ref<number | null>(null)
+let stop: (() => void) | undefined
 
-const unreadNotifications = computed(() => {
-  if (notifications.value.length === 0) return false
+const LAST_SEEN_KEY = 'lastSeenNotificationId'
+const lastSeenId = ref(Number(localStorage.getItem(LAST_SEEN_KEY)) || 0)
 
-  const lastSeenTimestamp = getLastSeenNotificationTimestamp()
-  if (!lastSeenTimestamp) return true
-
-  return new Date(notifications.value[0]!.created_at + 'Z') > new Date(lastSeenTimestamp)
-})
+const unreadNotifications = computed(() => (notifications.value[0]?.id ?? 0) > lastSeenId.value)
 
 const typeConfig = {
   info: { icon: 'radix-icons:info-circled', color: TONES.info.soft },
@@ -41,23 +37,23 @@ const typeConfig = {
   error: { icon: 'radix-icons:cross-circled', color: TONES.error.soft },
 }
 
-function getLastSeenNotificationTimestamp(): string | null {
-  return localStorage.getItem('lastSeenNotificationTimestamp')
+function markSeen() {
+  lastSeenId.value = notifications.value[0]?.id ?? lastSeenId.value
+  localStorage.setItem(LAST_SEEN_KEY, String(lastSeenId.value))
 }
 
-function setLastSeenNotificationTimestamp(): void {
-  localStorage.setItem('lastSeenNotificationTimestamp', new Date().toISOString())
-  notifications.value = [...notifications.value]
-}
-
-async function loadNotifications() {
-  try {
-    notifications.value = await fetchNotifications({ limit: pageSize })
-  } catch (error) {
-    console.error('Error loading notifications:', error)
-  } finally {
-    isLoading.value = false
+function addNotifications(rows: Notification[]) {
+  const known = new Set(notifications.value.map(notification => notification.id))
+  const fresh = rows.filter(notification => !known.has(notification.id))
+  if (fresh.length > 0) {
+    notifications.value = [...notifications.value, ...fresh].sort((a, b) => b.id - a.id)
   }
+}
+
+// What the list does not have yet: the newest page at first, then whatever came after its newest.
+function loadNewest() {
+  const newest = notifications.value[0]
+  return fetchNotifications(newest ? { from_ts: newest.created_at } : { limit: pageSize })
 }
 
 async function loadMore() {
@@ -70,13 +66,7 @@ async function loadMore() {
 
   isLoadingMore.value = true
   try {
-    const newNotifications = await fetchNotifications({ limit: pageSize, to_ts })
-    if (newNotifications.length > 0) {
-      const existingIds = new Set(notifications.value.map(notification => notification.id))
-      notifications.value.push(
-        ...newNotifications.filter(notification => !existingIds.has(notification.id))
-      )
-    }
+    addNotifications(await fetchNotifications({ limit: pageSize, to_ts }))
   } catch (error) {
     console.error('Error loading more notifications:', error)
   } finally {
@@ -90,45 +80,32 @@ function handleNotificationClick(notification: Notification) {
   }
 }
 
-onMounted(() => {
-  loadNotifications()
-  pollTimer.value = window.setInterval(async () => {
-    // Get the date of the latest loaded notification (first in the list)
-    const firstNotification = notifications.value[0]
-    const from_ts = firstNotification ? firstNotification.created_at : null
-
-    try {
-      const newNotifications = await fetchNotifications({ limit: pageSize, from_ts })
-      if (newNotifications.length > 0) {
-        notifications.value.unshift(...newNotifications)
-      }
-    } catch (error) {
-      console.error('Error loading more notifications:', error)
-    }
-  }, pollInterval)
-})
-
-onUnmounted(() => {
-  if (pollTimer.value) {
-    clearInterval(pollTimer.value)
+onMounted(async () => {
+  const watch = watchFeed('notifications', loadNewest, addNotifications)
+  stop = watch.stop
+  try {
+    await watch.first
+  } catch (error) {
+    console.error('Error loading notifications:', error)
+  } finally {
+    isLoading.value = false
   }
 })
+
+onUnmounted(() => stop?.())
 </script>
 
 <template>
   <Popover>
     <PopoverTrigger as-child>
-      <Button
-        variant="ghost"
-        size="icon"
-        class="relative"
-        @click="setLastSeenNotificationTimestamp"
-      >
+      <Button variant="ghost" size="icon" class="relative" @click="markSeen">
         <Icon icon="radix-icons:bell" class="h-[1rem] w-[1rem]" />
         <span
           v-if="unreadNotifications"
+          role="img"
+          aria-label="New notifications"
           :class="[
-            'absolute top-1 right-0 w-3 h-3 text-white text-xs rounded-full flex items-center justify-center font-bold',
+            'absolute top-1 right-0 size-2.5 text-white text-xs rounded-full flex items-center justify-center font-bold',
             TONES.error.dot,
           ]"
         >

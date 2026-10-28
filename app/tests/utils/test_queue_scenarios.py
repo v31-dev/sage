@@ -99,7 +99,8 @@ class Sim:
   def __init__(self):
     self.pools = {root: ThreadPoolExecutor(max_workers=size, thread_name_prefix=f"sim-{root}")
                   for root, size in POOLS.items()}
-    self.queue = TaskQueue(frozenset(self.pools), self.pools, record=self.record)
+    self.notified = 0
+    self.queue = TaskQueue(frozenset(self.pools), self.pools, record=self.record, notify=self.notify)
     self.lock = threading.Lock()
     self.thread_gate = threading.Event()
     self.jobs = {}
@@ -111,6 +112,8 @@ class Sim:
     self.in_thread = dict.fromkeys(POOLS, 0)
     self.max_in_thread = dict.fromkeys(POOLS, 0)
     self.verify_admission = True
+    self.seen_key = None
+    self.seen_notified = 0
 
   # --- what the bodies report
 
@@ -141,6 +144,9 @@ class Sim:
     finally:
       with self.lock:
         self.in_thread[lane] -= 1
+
+  def notify(self):
+    self.notified += 1
 
   def record(self, task, status):
     with self.lock:
@@ -259,6 +265,10 @@ class Sim:
       if expected is not None and after[len(before):] != expected:
         self.violations.append(f"a tick started {after[len(before):]}, the model says {expected}")
       self.check_snapshot(snapshot)
+      key = (tuple(after), tuple(entry["params"]["label"] for entry in snapshot["queued"]), self.queue.state)
+      if self.verify_admission and key != self.seen_key and self.seen_key is not None and self.notified == self.seen_notified:
+        self.violations.append(f"the queue went from {self.seen_key} to {key} without a change being announced")
+      self.seen_key, self.seen_notified = key, self.notified
       await asyncio.sleep(every)
 
   def check_snapshot(self, snapshot):

@@ -1,4 +1,5 @@
 import logging
+import threading
 
 import config
 from services.base import Base
@@ -58,6 +59,9 @@ class Manager(
       self.setting_checks = {}
       # Worker counts as of the last sync (services/manager/workers.py).
       self.worker_summary = None
+      # What the status showed of the queue at its last change (services/manager/queue.py).
+      self.last_queue_status = None
+      self._queue_status_lock = threading.Lock()
       # When the stack of each worker was last started for being down, until its cooldown is over
       # (services/manager/workers.py).
       self.worker_stack_repairs = {}
@@ -67,7 +71,8 @@ class Manager(
 
       # Single-dispatcher operation queue. Each scope root maps to an independent
       # lane pool (all defined in utils.executor).
-      self.task_queue = TaskQueue(scopes=frozenset(LANES), executors=LANES, record=self._persist_task)
+      self.task_queue = TaskQueue(scopes=frozenset(LANES), executors=LANES, record=self._persist_task,
+                                  notify=self._queue_changed)
 
       # Initialize all services
       Logs()

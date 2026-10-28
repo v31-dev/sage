@@ -31,6 +31,7 @@ The main API is mounted in `app/api.py` and exposes route groups for:
 - `workers`
 - `notifications`
 - `tasks`
+- `updates`, the Socket.IO server at `/api/socket.io/` (see Pushed Updates)
 
 Nested routes cover:
 
@@ -41,6 +42,21 @@ Nested routes cover:
 - volume backups
 
 The ingestion API is separate in `app/api_ingest.py` and serves what the workers push on port 9001: Telegraf's reports at `/api/telegraf/report` (kept in memory by `services/worker_reports.py`, read by the operation queue) and Vector's logs at `/api/vector/logs`.
+
+## Pushed Updates
+
+`services/updates.py` (`Updates`) pushes state to the UI's Socket.IO connections, and `routes/updates.py` holds the Socket.IO server (`sio`). A topic is a resource: a connection that follows it is sent its whole state each time it changes, as the JSON of the REST route for it. Subscribing sends nothing; a page loads the first copy from the route. A feed is a list that grows: a connection that follows it is sent each row that is published to it.
+
+- **Transport.** Socket.IO at `/api/socket.io/` (`python-socketio` and `python-engineio`, pinned in `requirements.txt`). The browser starts with long-polling and upgrades to a WebSocket, which uvicorn serves through `websockets` (also pinned); reconnecting, and falling back to long-polling, are the libraries'. `api.build_asgi_app` puts the Socket.IO server in front of the FastAPI app, so the API's refusal of changes while paused (an HTTP middleware) does not apply to it, and in production wraps both in `OnlyManagerAddress`.
+- **Events.** Client to server: `subscribe` and `unsubscribe`, with a topic name. `subscribe` is acknowledged once the connection is subscribed, which is the point from which every change reaches it. Server to client: `state` `{topic, data}` (for a feed, `data` is a list of rows, one list per published batch) and `topic_error` `{topic, status}` for an unknown topic (404). A message that is not a topic name is ignored.
+- **Topics** are the `TOPICS` table in `routes/updates.py`: a loader (the REST function, so a route and its topic cannot differ) and the sources whose change makes it worth computing again. `info` (`GET /api`) follows `queue_status`, `workers`, `checks` and `latest_version`; `notifications` is a feed and has no loader, since `GET /notifications` is where a page gets the rows it starts with.
+- **Sources** only say "I changed", with no detail, and their owner fires one only when what it owns differs from before, so the hub does not compare anything. `Updates().changed(source)` is safe from any thread (it hands the change to the event loop) and does nothing before the first connection. Today: `queue_status`, from `Manager._queue_changed` (the `TaskQueue` hook, called outside its lock on any change of the running or queued tasks or the state), only when the three things the status shows of the queue differ from the last time (`queue_status()`: the state, the backup being restored, and the task that makes each settings section apply; compared under a lock, since the hook runs on many threads); `workers`, when `refresh_worker_summary` records counts that differ; `checks`, for each settings check (it records a new `checked_at`); and `latest_version`, when `refresh_latest_release` finds a version that differs. A new topic is a loader and its sources; what a topic shows that no source covers stays stale until the next change, so a source is tested to fire when its owner's state changes and not when it does not.
+- **Feeds** are sent rows, not told of a change: `Updates().publish(feed, rows)` (rows in the REST route's shape, safe from any thread, nothing before the first connection) sends them to the feed's subscribers without reading anything. `Manager.notify` publishes each stored notification as `model_to_dict` of the row, which is the shape the list returns. Each published batch is its own frame, in the order published, and a frame is never replaced by a later one. The UI gets the rows a page starts with, and the ones it missed while disconnected, from `GET /notifications` (see frontend.md), and merges by id.
+- **What is sent.** After a change the hub waits `UPDATES_COALESCE_SECONDS` (0.3 s) so a burst is one pass, then computes each topic somebody follows that depends on a source that changed, on `UPDATES_EXECUTOR`, and sends it to its subscribers. A topic is computed one at a time, so an older state never overtakes a newer one, and a change that arrives during a computation is computed once more afterwards. A connection holds only the newest pending frame for each topic (the rows of a feed are the exception, none replaces another), so a slow browser skips states and never queues them, and one that cannot be written to does not hold up the others. A loader that fails is logged and nothing is sent; the topic is computed again at the next change.
+- **Heartbeat.** The server pings each connection every `UPDATES_PING_INTERVAL_SECONDS` (10 s) and drops one that does not answer within `UPDATES_PING_TIMEOUT_SECONDS` (10 s). The UI shows each ping as the heartbeat of its indicator.
+- **The handshake.** A browser lets any page connect to the manager and CORS does not stop it, so `same_origin` (in `routes/updates.py`) accepts a request only if its `Origin` is the scheme the request arrived with and the host it was sent to; a client that sends no `Origin` is not a page and is accepted. The scheme is the ASGI scope's, with a WebSocket's `ws` and `wss` read as `http` and `https`; uvicorn sets it from `X-Forwarded-Proto` when the proxy is trusted (127.0.0.1), and from the connection itself when it serves TLS directly. engine.io's own default rule, which builds the origin from `X-Forwarded-Proto` alone, refused every WebSocket handshake behind Traefik (it says `wss` for one, where a page's origin says `https`) and would have refused them in production too (no header, so `http`); a proxy in front of the manager has to say how it was reached. In production `OnlyManagerAddress` (pure ASGI, so it sees HTTP and WebSockets) answers only at the manager's address: another name is redirected, or for a WebSocket refused. This adds no authentication; it keeps the exposure of the read API as it was.
+- **Access log.** `/api/socket.io/` is left out of the access log, since long-polling is a request every few seconds.
+- **Tests.** `tests/routes/test_updates.py` serves the real app with uvicorn, over plain HTTP and with TLS of its own as in production, and connects with `socketio.Client` over long-polling, a WebSocket and the upgrade from one to the other, with the headers of a proxy and without (`websocket-client` is a test requirement). uvicorn 0.34.0 uses `websockets`' legacy implementation, so the tests warn about deprecations until uvicorn is upgraded.
 
 ## Orchestration Layer
 
@@ -170,6 +186,7 @@ Pools (lanes) are defined in `app/utils/executor.py`. `LANES` holds the queue la
 | `LANES["common"]` | 1 | `common` lane — version refresh, daily summary, S3 delete |
 | `LANES["app"]` | 6 | `app` lane — per-application deploy/stop/backup/restore |
 | `LANES["metrics"]` | 2 | `metrics` lane — collection, metrics-store cleanup |
+| `UPDATES_EXECUTOR` | 2 | the pushed topics of the UI's Socket.IO connection (off-queue) |
 | `NOTIFICATIONS_EXECUTOR` | 1 | `Manager.notify` webhook sends (off-queue, fire-and-forget) |
 | `LOGS_EXECUTOR` | 1 | Workers' Vector log ingestion (off-queue, request-path; single SQLite writer) |
 

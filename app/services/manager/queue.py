@@ -2,6 +2,7 @@ import logging
 from typing import Callable
 
 from services.db import Task
+from services.updates import QUEUE_STATUS, Updates
 from utils.common import utcnow
 
 logger = logging.getLogger(__name__)
@@ -44,6 +45,21 @@ class QueueMixin:
   def task_snapshot(self) -> dict:
     """Running + queued tasks held in memory by the queue."""
     return self.task_queue.snapshot()
+
+  def queue_status(self) -> tuple:
+    """What the status shows of the queue: its state, the backup being restored, and the task that makes
+    each settings section apply."""
+    applying = self.applying_tasks().values()
+    return (self.task_state(), self.restoring_from(), tuple(task and task["task_id"] for task in applying))
+
+  def _queue_changed(self):
+    """TaskQueue change hook, called from any thread after the tasks or the state changed."""
+    with self._queue_status_lock:
+      status = self.queue_status()
+      differs = status != self.last_queue_status
+      self.last_queue_status = status
+    if differs:
+      Updates().changed(QUEUE_STATUS)
 
   def _persist_task(self, task, status: str):
     """TaskQueue persistence hook: record a finished task in the Task table.

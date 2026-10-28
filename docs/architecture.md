@@ -169,6 +169,10 @@ limited to 256 MiB of data and all shards together to 2 GiB or 10% of the data v
 retention. Over a limit, the oldest lines go first (by timestamp), down to 90% of it and never below a
 container's newest 1,000 lines. The check runs after writes (at most every 30 s) and in the daily cleanup.
 
+## Pushed Updates
+
+The UI keeps one Socket.IO connection to the manager (`/api/socket.io`) and follows topics over it instead of polling: the manager's status (`info`) and the notifications. A page loads a topic from its REST route, and the manager pushes the whole state of `info` each time it changes and each new notification as it is stored; the page loads again each time the socket connects, so it makes up for what it missed. Socket.IO reconnects and falls back from WebSocket to long-polling by itself, a heartbeat every 10 s shows in an indicator at the top left of the UI, and a connection from another origin is refused. See [backend.md](backend.md) and [frontend.md](frontend.md).
+
 ## Scheduler And Operation Queue
 
 APScheduler is a pure cron/interval trigger: each scheduled coroutine only calls `Manager().add_task(...)` to enqueue work and owns no execution or concurrency logic. Recurring triggers cover:

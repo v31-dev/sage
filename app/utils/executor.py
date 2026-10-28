@@ -21,6 +21,9 @@ LANES = {
     "metrics": ThreadPoolExecutor(max_workers=2, thread_name_prefix="sage-metrics"),
 }
 
+# The pushed topics of the UI's WebSocket (`Updates`) are computed here.
+UPDATES_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="sage-updates")
+
 # Fire-and-forget webhook sends (Manager.notify); not a queue lane.
 NOTIFICATIONS_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="sage-notifications")
 

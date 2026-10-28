@@ -153,8 +153,13 @@ class Lane:
   def __init__(self):
     self.pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="lane")
     self.recorded = []
+    self.changes = 0
     self.queue = TaskQueue(frozenset(["platform", "app"]), {"platform": self.pool, "app": self.pool},
-                           record=lambda task, status: self.recorded.append((task.name, status)))
+                           record=lambda task, status: self.recorded.append((task.name, status)),
+                           notify=self.changed)
+
+  def changed(self):
+    self.changes += 1
 
   def add(self, task, scope="app:a", **kwargs):
     kwargs.setdefault("executor", "app")
@@ -446,3 +451,62 @@ class TestQueries:
     assert lane.queue.has_task(done) is False
     assert lane.queue.has_task("remove", {"worker": "w1"}) is True
     assert lane.queue.has_task("remove", {"worker": "w2"}) is False
+
+
+class TestChangeHook:
+  def test_an_admitted_task_is_a_change_and_a_dropped_one_is_not(self, lane):
+    lane.add(done, name="a")
+    assert lane.changes == 1
+    lane.add(done, name="a")
+    assert lane.changes == 1
+
+  def test_a_replaced_task_is_a_change(self, lane):
+    lane.add(done, name="a", on_conflict=OnConflict.REPLACE)
+    lane.add(done, name="a", on_conflict=OnConflict.REPLACE)
+    assert lane.changes == 2
+
+  async def test_starting_and_finishing_are_changes_and_a_tick_that_starts_nothing_is_not(self, lane):
+    lane.queue.dispatch_tick()
+    assert lane.changes == 0
+    lane.add(done)
+    await lane.run()
+    assert lane.changes == 3
+
+  async def test_a_finished_task_is_recorded_and_gone_when_the_hook_is_called(self, lane):
+    seen = []
+    lane.queue._notify = lambda: seen.append((list(lane.recorded), lane.queue.snapshot()["running"]))
+    lane.add(done, name="a")
+    await lane.run()
+    assert seen[-1] == ([("a", "completed")], [])
+
+  def test_pausing_and_resuming_are_changes_and_doing_either_twice_is_not(self, lane):
+    lane.queue.pause()
+    lane.queue.pause()
+    assert lane.changes == 1
+    lane.queue.resume()
+    lane.queue.resume()
+    assert lane.changes == 2
+
+  def test_a_restore_is_a_change_when_it_begins_and_when_it_ends(self, lane):
+    lane.add(done, name="restore", scope="platform", executor="platform", restore=True)
+    assert lane.changes == 1
+    lane.queue.end_restore(False)
+    assert lane.changes == 2
+
+  def test_stopping_is_a_change_and_so_is_what_it_cancels(self, lane):
+    lane.add(done, name="waiting")
+    lane.queue.stop()
+    assert lane.changes == 2
+    lane.add(done, name="late", scope="app:b")
+    assert lane.changes == 3
+
+  async def test_a_hook_that_raises_breaks_nothing(self, lane, caplog):
+    def broken():
+      raise RuntimeError("subscriber failed")
+
+    lane.queue._notify = broken
+    assert lane.add(done, name="a") is True
+    with caplog.at_level(logging.ERROR):
+      await lane.run()
+    assert lane.recorded == [("a", "completed")]
+    assert any("change hook failed" in record.getMessage() for record in caplog.records)

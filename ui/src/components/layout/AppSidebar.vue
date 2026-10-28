@@ -30,6 +30,7 @@ import {
   useSidebar,
 } from '@/components/ui/sidebar'
 import StateIndicator from '@/components/StateIndicator.vue'
+import SocketStatus from '@/components/layout/SocketStatus.vue'
 import type { Indicator } from '@/services/api'
 import { useAppStore } from '@/stores/app'
 
@@ -148,7 +149,12 @@ watch(
   <Sidebar v-bind="props">
     <SidebarHeader>
       <div class="flex items-center gap-2 px-2 py-1.5">
-        <Building class="size-5 shrink-0" />
+        <span class="relative shrink-0">
+          <Building class="size-5" />
+          <span class="absolute -right-1 -top-1">
+            <SocketStatus />
+          </span>
+        </span>
         <div class="grid flex-1 text-left text-sm leading-tight">
           <span class="truncate font-semibold">
             {{ appStore.info?.name }}

@@ -4,10 +4,12 @@ from datetime import timedelta
 
 import httpx
 from peewee import fn
+from playhouse.shortcuts import model_to_dict
 
 import config
 from services.db import Application, Backup, Container, Domain, Event, Notification, Project, Worker
 from services.notification import Notifications
+from services.updates import LATEST_VERSION, NOTIFICATIONS, Updates
 from utils.common import utcnow
 from utils.executor import NOTIFICATIONS_EXECUTOR, submit_with_context
 
@@ -34,6 +36,7 @@ class CoreMixin:
       logger.warning(f"Failed to fetch latest sage release: {e}")
       return self.latest_release
     version = (release.get("tag_name") or "").lstrip("v")
+    previous_version = self.latest_version
     if version:
       self.latest_version = version
     body = release.get("body")
@@ -47,6 +50,8 @@ class CoreMixin:
         "published_at": release.get("published_at"),
         "fetched_at": utcnow().isoformat(),
     }
+    if self.latest_version != previous_version:
+      Updates().changed(LATEST_VERSION)
     return self.latest_release
 
   def get_latest_release(self) -> dict:
@@ -66,6 +71,7 @@ class CoreMixin:
     log_method = logger.info if type == "success" else getattr(logger, type, logger.info)
     log_method(message)
     notification = Notification.create(content=message, type=type, link=link)
+    Updates().publish(NOTIFICATIONS, [model_to_dict(notification, recurse=False)])
     submit_with_context(NOTIFICATIONS_EXECUTOR, Notifications().dispatch, notification)
 
   def _status_counts(self, model):

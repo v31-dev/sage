@@ -14,10 +14,7 @@ import {
   type SettingState,
   type WorkerStatus,
 } from '@/services/api'
-
-const IDLE_POLL_MS = 30000
-// The restore overlay shows live progress.
-const RESTORING_POLL_MS = 2000
+import { watchState } from '@/lib/updates'
 
 const SETTING_INDICATORS: Record<SettingState, Indicator> = {
   not_configured: { state: 'idle', label: 'Not configured' },
@@ -37,12 +34,12 @@ const WORKER_INDICATORS: Record<WorkerStatus, Indicator> = {
 }
 
 // The manager's status, which the sidebar, the banner, the restore overlay and the
-// settings pages read. The store owns its one poll and the map from each status to the
-// indicator that shows it.
+// settings pages read. The store follows the manager's `info` topic and owns the map from
+// each status to the indicator that shows it.
 export const useAppStore = defineStore('app', () => {
   const info = ref<AppInfo | null>(null)
 
-  // Immediate updates to block UI button till polling gives the real update
+  // Immediate updates to block UI button till the next push gives the real update
   const applicationDeployStatus = ref('inactive' as Application['status'])
   // The open application's containers by worker hostname, as the last action set them.
   const containerStatuses = ref<Record<string, Application['status']>>({})
@@ -110,12 +107,10 @@ export const useAppStore = defineStore('app', () => {
     return { state, label: status }
   }
 
-  let timer: ReturnType<typeof setTimeout> | null = null
-  let started = false
+  let started: Promise<void> | null = null
 
   // A part the manager couldn't build comes as null; the last value stays.
-  async function load() {
-    const next = await fetchAppInfo()
+  function apply(next: AppInfo) {
     info.value = {
       ...next,
       workers: next.workers ?? info.value?.workers ?? null,
@@ -124,30 +119,20 @@ export const useAppStore = defineStore('app', () => {
   }
 
   async function refresh() {
-    if (timer) clearTimeout(timer)
     try {
-      await load()
+      apply(await fetchAppInfo())
     } catch (err) {
       console.error('Failed to refresh the app info:', err)
     }
-    if (timer) clearTimeout(timer)
-    timer = setTimeout(
-      refresh,
-      info.value?.state === 'restoring' ? RESTORING_POLL_MS : IDLE_POLL_MS
-    )
   }
 
-  // The first load, which the app waits for; then it keeps the info current, also when the
-  // window gets focus.
-  async function init() {
-    await load()
-    if (started) return
-    started = true
-    timer = setTimeout(refresh, IDLE_POLL_MS)
-    window.addEventListener('focus', refresh)
+  // The first info, which the app waits for; then the manager pushes each change.
+  function init() {
+    started ??= watchState('info', fetchAppInfo, apply).first
+    return started
   }
 
-  // Immediate updates after an action; the next poll confirms them.
+  // Immediate updates after an action; the next push confirms them.
   function setState(state: AppInfo['state']) {
     if (info.value) info.value.state = state
   }
@@ -157,7 +142,7 @@ export const useAppStore = defineStore('app', () => {
     if (entry) entry.state = 'applying'
   }
 
-  // The containers named are shown with the status too; the others keep the polled one.
+  // The containers named are shown with the status too; the others keep the pushed one.
   function updateApplicationDeployStatus(status: Application['status'], hostnames: string[] = []) {
     applicationDeployStatus.value = status
     containerStatuses.value = Object.fromEntries(hostnames.map(hostname => [hostname, status]))

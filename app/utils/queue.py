@@ -155,13 +155,17 @@ class TaskQueue:
   """
 
   def __init__(self, scopes: frozenset[str], executors: dict[str, ThreadPoolExecutor],
-               record: Callable[["QueuedTask", str], None] | None = None):
+               record: Callable[["QueuedTask", str], None] | None = None,
+               notify: Callable[[], None] | None = None):
     self._scopes = scopes
     self._executors = executors
     # Persistence hook called with (task, status) at each terminal state
     # (completed/failed/cancelled) so the owner can log tasks to a store.
     # Running tasks are not recorded -- they live in memory. Best-effort.
     self._record = record or (lambda *_: None)
+    # Called, outside the lock and on the thread that made the change, when the running or queued tasks or the
+    # queue state changed or a terminal state was recorded. It says only that something changed.
+    self._notify = notify or (lambda: None)
 
     self._lock = Lock()
     self._state = QueueState.RUNNING
@@ -225,6 +229,8 @@ class TaskQueue:
     # stay off the critical section so the event loop never blocks on it.
     cancelled = [new_task] if admission.admit == Admit.CANCEL else list(admission.superseded)
     self._record_cancelled(cancelled)
+    if admission.admit != Admit.DROP:
+      self._emit()
     return admission.admit == Admit.ENQUEUE
 
   def is_busy(self, scopes: frozenset[str]) -> bool:
@@ -272,6 +278,7 @@ class TaskQueue:
         return
       self._state = QueueState.PAUSED
     logger.info("Paused: no new tasks start until resumed.")
+    self._emit()
 
   def resume(self):
     with self._lock:
@@ -279,6 +286,7 @@ class TaskQueue:
         return
       self._state = QueueState.RUNNING
     logger.info("Resumed.")
+    self._emit()
 
   def end_restore(self, restored: bool, follow_ups: list[dict] = ()):
     """Leave the restoring state, called by the restore task when it ends.
@@ -303,6 +311,7 @@ class TaskQueue:
       if self._state == QueueState.RESTORING:
         self._state = QueueState.RUNNING
     logger.info("Restore finished.")
+    self._emit()
 
   def stop(self):
     """Stop for good when Sage exits: pending tasks, and any added later, are recorded
@@ -312,6 +321,7 @@ class TaskQueue:
       cancelled = list(self._queue)
       self._queue.clear()
     self._record_cancelled(cancelled)
+    self._emit()
 
   def snapshot(self) -> dict:
     """Point-in-time view of running and queued tasks (for the UI)."""
@@ -354,6 +364,14 @@ class TaskQueue:
         handle = asyncio.create_task(self.run_task(task))
         self._tasks.add(handle)
         handle.add_done_callback(self._tasks.discard)
+    if starting:
+      self._emit()
+
+  def _emit(self):
+    try:
+      self._notify()
+    except Exception:
+      logger.exception("The queue's change hook failed.")
 
   def _record_cancelled(self, tasks: list[QueuedTask]):
     """Log and persist already-removed pending tasks as cancelled. Call this
@@ -397,3 +415,4 @@ class TaskQueue:
       task_id.reset(token)
       with self._lock:
         self._running.remove(task)
+      self._emit()

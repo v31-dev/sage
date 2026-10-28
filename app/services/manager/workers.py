@@ -5,6 +5,7 @@ import re
 import config
 from services.db import Application, Container, Instance, Worker
 from services.metrics import Metrics
+from services.updates import WORKERS, Updates
 from services.worker_reports import WorkerReports
 from utils.common import utcnow
 from utils.executor import run_in_executor_with_context
@@ -122,10 +123,14 @@ class WorkersMixin:
   def refresh_worker_summary(self):
     """Record how many workers there are and how many are online. Every change to the
     worker table happens in a sync or a removal, which call this."""
-    self.worker_summary = {
+    summary = {
         "total": Worker.select().count(),
         "online": Worker.select().where(Worker.online).count(),
     }
+    differs = summary != self.worker_summary
+    self.worker_summary = summary
+    if differs:
+      Updates().changed(WORKERS)
 
   def infra_hash(self) -> str:
     """Hash of every input `setup_worker` renders into worker infra files.
