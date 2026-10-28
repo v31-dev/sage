@@ -2,10 +2,17 @@
 # made here are overwritten on the next sync.
 name: sage
 
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "5"
+
 services:
   traefik:
     image: traefik:v3.6.7
     container_name: traefik
+    logging: *logging
     restart: unless-stopped
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
@@ -26,6 +33,7 @@ services:
   cloudflared:
     image: cloudflare/cloudflared:latest
     container_name: cloudflared
+    logging: *logging
     restart: unless-stopped
     environment:
       - TUNNEL_TOKEN=${TUNNEL_TOKEN}
@@ -34,6 +42,7 @@ services:
   vector:
     image: timberio/vector:0.54.0-alpine
     container_name: vector
+    logging: *logging
     restart: unless-stopped
     mem_limit: 128m
     memswap_limit: 128m
@@ -55,6 +64,7 @@ services:
   telegraf:
     image: telegraf:1.40.2-alpine
     container_name: telegraf
+    logging: *logging
     restart: unless-stopped
     mem_limit: 128m
     memswap_limit: 128m

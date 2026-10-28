@@ -209,6 +209,7 @@ Additional storage:
 
 - metrics SQLite shards
 - log SQLite shards with FTS5 (worker containers via Vector ingestion; the manager's own logs written in-process by a logging handler)
+  - A shard is bounded by size as well as age (`Logs.trim_shard`, `Logs.trim_total`; limits in `config.py`, see architecture.md). A shard file does not shrink when rows are deleted, but later writes reuse the freed pages, so the limit applies to the data (pages less free pages) and a file that is far bigger than the limit is rewritten (`VACUUM`). Deleting by `ts` uses an index on it, which also serves the time-range queries of the log view. Writes use `BEGIN IMMEDIATE`: the full-text index trigger reads before it writes, and a plain `BEGIN` fails with "database is locked" when another connection writes at the same time (the trim, the cleanup, or the drain thread writing the `sage` shard).
 - on each worker, Traefik config and revision stamps under `/opt/sage`
 
 ## Scheduler Notes

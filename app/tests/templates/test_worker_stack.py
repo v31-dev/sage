@@ -80,3 +80,26 @@ class TestMemoryLimits:
     limits = service(name)
     assert limits["mem_limit"].endswith("m")
     assert limits["memswap_limit"] == limits["mem_limit"]
+
+
+COMPOSE_TEMPLATES = ["docker-compose.yml", "application/dockerhub-compose.yml", "application/gitrepo-compose.yml"]
+
+
+def compose_services(name):
+  """A Compose template with every ${PLACEHOLDER} filled by a stand-in, as the manager fills them."""
+  text = (TEMPLATES / name).read_text().replace("${SECRETS_BLOCK}", "")
+  return yaml.safe_load(re.sub(r"\$\{(\w+)\}", "x", text))["services"]
+
+
+class TestContainerLogs:
+  """Docker's json-file driver keeps every line of a container's output until the container is removed."""
+
+  @pytest.mark.parametrize("name", COMPOSE_TEMPLATES)
+  def test_every_container_rotates_its_logs_the_same_way(self, name):
+    services = compose_services(name)
+    assert services
+    for container, definition in services.items():
+      assert definition["logging"] == {"driver": "json-file", "options": {"max-size": "10m", "max-file": "5"}}, container
+
+  def test_the_stack_has_the_four_services_that_are_capped(self):
+    assert set(compose_services("docker-compose.yml")) == {"traefik", "cloudflared", "vector", "telegraf"}

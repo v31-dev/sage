@@ -16,6 +16,21 @@ LATEST_RELEASE_URL = "https://api.github.com/repos/v31-dev/sage/releases/latest"
 # safety copies, and S3 platform and volume backups (the daily cleanup).
 RETENTION_DAYS = 14
 
+# The logs of one container are trimmed, oldest lines first, once their data passes LOG_SHARD_MAX_BYTES, and the
+# logs of all containers once together they pass the smaller of LOG_TOTAL_MAX_BYTES and LOG_TOTAL_MAX_DISK_SHARE of
+# the data volume. A trim leaves LOG_TRIM_TO_SHARE of the limit, so it does not run again at once, and never takes a
+# container below its newest LOG_KEEP_NEWEST_ROWS lines. Sizes are looked at after a write, at most every
+# LOG_SIZE_CHECK_SECONDS, and old lines go in batches of LOG_TRIM_BATCH_ROWS. A shard file whose size passes
+# LOG_SHARD_VACUUM_RATIO times its limit is rewritten, since a file does not shrink when rows are deleted.
+LOG_SHARD_MAX_BYTES = 256 * 1024 * 1024
+LOG_TOTAL_MAX_BYTES = 2 * 1024 * 1024 * 1024
+LOG_TOTAL_MAX_DISK_SHARE = 0.10
+LOG_TRIM_TO_SHARE = 0.9
+LOG_KEEP_NEWEST_ROWS = 1000
+LOG_SIZE_CHECK_SECONDS = 30
+LOG_TRIM_BATCH_ROWS = 10000
+LOG_SHARD_VACUUM_RATIO = 1.25
+
 # Cloudflare network errors, rate limits and server errors are retried after these delays (seconds).
 CLOUDFLARE_RETRY_DELAYS = (1, 2)
 # S3 deletes are retried after these delays (seconds).

@@ -3,6 +3,11 @@ services:
     image: ${IMAGE}
     pull_policy: always
     container_name: ${CONTAINER_NAME}
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"
     labels:
       sage.deployed_at: "${DEPLOYED_AT}"
     restart: unless-stopped

@@ -161,6 +161,14 @@ volume (its single sage container, so no host load average). Worker container lo
 arrive via each worker's Vector (the `:9001` ingestion API); the manager's own logs
 are written to the `sage` shard in-process by a logging handler (no Vector sidecar).
 
+Log storage is bounded at both ends. On a worker, every container (the four of the stack and each
+application) keeps its Docker `json-file` logs in at most five files of 10 MB; the Compose templates set
+it, so an application container gets it when it is next deployed. On the manager, a container's shard is
+limited to 256 MiB of data and all shards together to 2 GiB or 10% of the data volume, whichever is smaller
+(`LOG_SHARD_MAX_BYTES`, `LOG_TOTAL_MAX_BYTES`, `LOG_TOTAL_MAX_DISK_SHARE` in `config.py`), next to the 14-day
+retention. Over a limit, the oldest lines go first (by timestamp), down to 90% of it and never below a
+container's newest 1,000 lines. The check runs after writes (at most every 30 s) and in the daily cleanup.
+
 ## Scheduler And Operation Queue
 
 APScheduler is a pure cron/interval trigger: each scheduled coroutine only calls `Manager().add_task(...)` to enqueue work and owns no execution or concurrency logic. Recurring triggers cover:
