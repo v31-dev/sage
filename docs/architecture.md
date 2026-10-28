@@ -35,7 +35,7 @@ The manager process starts these concurrent services from `app/main.py`:
 Startup is service-driven:
 
 - `Manager()` initializes the platform services.
-- Before serving, startup sets up the domain (`Manager.setup_domain`): connect to Cloudflare (zone, tunnel, the manager's record) and get the manager's certificate, retrying after 1, 4 and 16 minutes and then exiting; a rate limit exits at once, and a still-valid certificate lets startup continue. Other startup work that touches the network (release check, the workers' certificate, S3 backup discovery, settings checks, re-checking online workers against their stamps) runs as queued tasks once the servers are up. S3 and notifications are optional.
+- Before serving, startup sets up the domain (`Manager.setup_domain`): connect to Cloudflare (zone, tunnel, the manager's record) and get the manager's certificate, retrying a failure that clears by itself (a network error, HTTP 5xx or 429) after 1, 4 and 16 minutes and then exiting; any other failure, such as a rejected token, and a rate limit exit at once, and a still-valid certificate lets startup continue. Other startup work that touches the network (release check, the workers' certificate, S3 backup discovery, settings checks, re-checking online workers against their stamps) runs as queued tasks once the servers are up. S3 and notifications are optional.
 - If service initialization fails, the process exits.
 
 ## Worker Runtime

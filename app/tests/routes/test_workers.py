@@ -3,7 +3,7 @@ from datetime import datetime
 import pytest
 
 from services.db import Container
-from services.reports import HostReading, Reports, Snapshot
+from services.worker_reports import HostReading, Snapshot, WorkerReports
 
 
 def report():
@@ -12,7 +12,7 @@ def report():
 
 class TestInfra:
   def test_the_detail_carries_the_state_of_the_workers_stack(self, client, worker):
-    Reports().accept("w1", report())
+    WorkerReports().accept("w1", report())
     infra = client.get("/api/workers/w1").json()["infra"]
     assert [item["name"] for item in infra] == ["traefik", "vector", "telegraf", "cloudflared"]
     assert {item["status"] for item in infra} == {"missing"}

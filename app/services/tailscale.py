@@ -24,12 +24,12 @@ SSH_USER = "root"
 
 
 def next_online(was_online: bool, answered: bool, misses: int) -> tuple[bool, int]:
-  """A worker's online state after one ping, and the pings missed in a row: online at the first answer,
-  offline once OFFLINE_AFTER_MISSED_PINGS in a row have gone unanswered."""
+  """A worker's online state after one check, and the checks missed in a row: online at the first answer,
+  offline once OFFLINE_AFTER_MISSED_CHECKS in a row have gone unanswered."""
   if answered:
     return True, 0
   misses += 1
-  return was_online and misses < config.OFFLINE_AFTER_MISSED_PINGS, misses
+  return was_online and misses < config.OFFLINE_AFTER_MISSED_CHECKS, misses
 
 
 def ping_path(output: str) -> str | None:
@@ -54,7 +54,7 @@ class Tailscale(Base):
     self._conns: dict[str, asyncssh.SSHClientConnection] = {}
     self._conn_locks: dict[str, asyncio.Lock] = {}
     self._misses: dict[str, int] = {}
-    # How the last ping of each peer (by Tailscale IP) arrived, for the peers that answered.
+    # How each peer (by Tailscale IP) was reached at the last `refresh_paths`.
     self._paths: dict[str, str] = {}
 
   async def _get_conn(self, hostname):
@@ -80,10 +80,18 @@ class Tailscale(Base):
       return conn
 
   async def _evict(self, hostname):
-    """Drop and close a pooled connection (after an error, or a removed worker)."""
+    """Drop a pooled connection (after an error) and wait for it to close."""
     conn = self._conns.pop(hostname, None)
-    if conn is not None:
+    if conn is None:
+      return
+    with contextlib.suppress(Exception):
       conn.close()
+      await asyncio.wait_for(conn.wait_closed(), config.SSH_CLOSE_WAIT_SECONDS)
+
+  async def forget(self, hostname):
+    """Close the pooled connection of a worker that is no longer managed, and drop its lock."""
+    await self._evict(hostname)
+    self._conn_locks.pop(hostname, None)
 
   async def close(self):
     """Close every pooled connection and wait for them to close, so none is left to be torn down
@@ -111,9 +119,24 @@ class Tailscale(Base):
     """Whether the manager's own node is connected to the tailnet's coordination server."""
     return bool(self.status().get("Self", {}).get("Online"))
 
-  async def ping(self, target: str) -> bool:
-    """Whether a peer answers `tailscale ping`, tailscaled's probe of the path SSH uses. The way the
-    answer arrived (direct or through a relay) is kept for `path`."""
+  async def reachable(self, hostname: str) -> bool:
+    """Whether the worker's SSH server sends its banner through `tailscale nc`, the path commands take."""
+    process = await asyncio.create_subprocess_exec(
+        "tailscale", "nc", hostname, "22",
+        stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+    try:
+      banner = await asyncio.wait_for(process.stdout.readline(), config.SSH_BANNER_TIMEOUT_SECONDS)
+    except TimeoutError:
+      return False
+    finally:
+      with contextlib.suppress(ProcessLookupError):
+        process.kill()
+      await process.wait()
+    return banner.startswith(b"SSH-")
+
+  async def ping(self, target: str) -> str | None:
+    """How a peer's answer to `tailscale ping` reached the manager (`ping_path`): None when it did not
+    answer, or its answer did not say."""
     process = await asyncio.create_subprocess_exec(
         "tailscale", "ping", "-c", "1", f"--timeout={config.PING_TIMEOUT_SECONDS}s", target,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
@@ -122,33 +145,29 @@ class Tailscale(Base):
     except TimeoutError:
       process.kill()
       await process.wait()
-      self._paths.pop(target, None)
-      return False
-    answered = process.returncode == 0
-    path = ping_path(output.decode(errors="replace")) if answered else None
-    if path:
-      self._paths[target] = path
-    else:
-      self._paths.pop(target, None)
-    return answered
+      return None
+    return ping_path(output.decode(errors="replace")) if process.returncode == 0 else None
 
   def path(self, target: str) -> str | None:
-    """How the last ping of the peer with that Tailscale IP reached it: "direct", or "relay" with its region.
-    None when it did not answer, or its answer did not say."""
+    """How the peer with that Tailscale IP was reached at the last `refresh_paths`: "direct", or "relay" with
+    its region. None when it was not asked, did not answer, or its answer did not say."""
     return self._paths.get(target)
 
-  async def online_states(self, peers: dict[str, tuple[str, bool]]) -> dict[str, bool]:
-    """Ping every peer ({hostname: (ip, online now)}) at once and return its online state, which lags
-    by one missed ping (see `next_online`). When the manager's own node is cut off from the tailnet a
-    miss says nothing about the peers, so their states are left as they are."""
-    answers = await asyncio.gather(*(self.ping(ip) for ip, _ in peers.values()))
-    asked = {ip for ip, _ in peers.values()}
-    self._paths = {ip: path for ip, path in self._paths.items() if ip in asked}
-    if not all(answers) and not await run_in_executor_with_context(self.connected):
+  async def refresh_paths(self, ips: list[str]):
+    """Ping the peers with these Tailscale IPs and keep how each is reached (`path`)."""
+    paths = await asyncio.gather(*(self.ping(ip) for ip in ips))
+    self._paths = {ip: path for ip, path in zip(ips, paths) if path}
+
+  async def online_states(self, peers: dict[str, bool]) -> dict[str, bool]:
+    """Whether each worker ({hostname: online now}) is online: its SSH server answers (`reachable`). The
+    state lags by one missed check (see `next_online`). When the manager's own node is cut off from the
+    tailnet a miss says nothing about the workers, so their states are left as they are."""
+    results = await asyncio.gather(*(self.reachable(hostname) for hostname in peers))
+    if not all(results) and not await run_in_executor_with_context(self.connected):
       logger.warning("The manager is not connected to the tailnet; worker states are left as they are.")
-      return {hostname: online for hostname, (_, online) in peers.items()}
+      return dict(peers)
     states, misses = {}, {}
-    for (hostname, (_, online)), answered in zip(peers.items(), answers):
+    for (hostname, online), answered in zip(peers.items(), results):
       states[hostname], misses[hostname] = next_online(online, answered, self._misses.get(hostname, 0))
     self._misses = misses
     return states

@@ -183,7 +183,7 @@ def parse_batch(batch) -> list[Snapshot]:
   return snapshots
 
 
-class Reports(Base):
+class WorkerReports(Base):
   """The newest snapshot Telegraf reported for each worker, in memory. The report route fills
   it and decides nothing; the operation queue reads it."""
 
@@ -216,10 +216,13 @@ class Reports(Base):
     return Arrival(resumed, changed)
 
   def first_unknown(self, hostname: str) -> bool:
-    """True the first time a name that is not a worker sends a report, so it is logged once."""
+    """True the first time a name that is not a worker sends a report, so it is logged once. At most
+    REPORT_UNKNOWN_LIMIT names are remembered; past that the memory starts over."""
     with self.lock:
       if hostname in self._unknown:
         return False
+      if len(self._unknown) >= config.REPORT_UNKNOWN_LIMIT:
+        self._unknown.clear()
       self._unknown.add(hostname)
       return True
 

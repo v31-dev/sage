@@ -8,10 +8,10 @@ from services.db import Database
 from services.logs import Logs
 from services.metrics import Metrics
 from services.notification import Notifications
-from services.reports import Reports
 from services.s3 import S3
 from services.settings import Settings
 from services.tailscale import Tailscale
+from services.worker_reports import WorkerReports
 from utils.executor import APP_EXECUTOR, COMMON_EXECUTOR, METRICS_EXECUTOR, PLATFORM_EXECUTOR
 from utils.queue import TaskQueue
 
@@ -84,7 +84,7 @@ class Manager(
       Settings()
       Notifications()
       Metrics().start_sampler()
-      Reports()
+      WorkerReports()
       self.tailscale = Tailscale()
       self.cloudflare = Cloudflare()
       self.certs = Certs()

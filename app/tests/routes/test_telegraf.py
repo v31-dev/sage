@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 import config
 from services.manager import Manager
 from services.metrics import Metrics
-from services.reports import Reports, parse_batch
+from services.worker_reports import WorkerReports, parse_batch
 
 BATCH = json.loads((Path(__file__).parent.parent / "data" / "telegraf_batch.json").read_text())
 URL = "/api/telegraf/report"
@@ -48,16 +48,16 @@ class TestReport:
   def test_a_chunked_gzip_report_from_a_worker_is_kept(self, client, worker):
     response = post(client, json.dumps(BATCH).encode())
     assert response.status_code == 204
-    assert Reports().latest("w1").snapshot.containers["web"].status == "running"
+    assert WorkerReports().latest("w1").snapshot.containers["web"].status == "running"
 
   def test_a_plain_body_with_a_length_is_read_too(self, client, worker):
     response = post(client, json.dumps(BATCH).encode(), encoding=None, chunked=False)
     assert response.status_code == 204
-    assert Reports().latest("w1") is not None
+    assert WorkerReports().latest("w1") is not None
 
   def test_a_batch_of_several_gathers_keeps_the_newest(self, client, worker):
     post(client, json.dumps(BATCH).encode())
-    assert Reports().latest("w1").snapshot.at == parse_batch(BATCH)[-1].at
+    assert WorkerReports().latest("w1").snapshot.at == parse_batch(BATCH)[-1].at
 
   def test_the_snapshots_go_to_the_metrics_under_the_workers_name(self, client, worker, register):
     class FakeMetrics:
@@ -114,7 +114,7 @@ class TestReport:
   def test_a_name_that_is_not_a_worker_is_refused_and_kept_out(self, client, worker, node):
     response = post(client, json.dumps(BATCH).encode(), node=node)
     assert response.status_code == 404
-    assert Reports().latest(node) is None
+    assert WorkerReports().latest(node) is None
 
   def test_an_unknown_name_is_logged_once(self, client, worker, caplog):
     with caplog.at_level(logging.WARNING, logger="routes.telegraf"):
@@ -129,7 +129,7 @@ class TestReport:
   @pytest.mark.parametrize("body", [b"not json", b"[]", b'{"metrics": 5}', b'{"metrics": [{"name": "cpu"}]}'])
   def test_a_body_that_is_not_telegrafs_json_is_a_400_and_changes_nothing(self, client, worker, body):
     assert post(client, body).status_code == 400
-    assert Reports().latest("w1") is None
+    assert WorkerReports().latest("w1") is None
 
   def test_a_gzip_header_over_a_body_that_is_not_gzip_is_a_400(self, client, worker):
     response = client.post(URL, content=b"plainly not gzip", headers={"X-Node-Name": "w1", "Content-Encoding": "gzip"})
@@ -146,4 +146,4 @@ class TestReport:
     assert len(bomb) < 1000
     response = client.post(URL, content=bomb, headers={"X-Node-Name": "w1", "Content-Encoding": "gzip"})
     assert response.status_code == 413
-    assert Reports().latest("w1") is None
+    assert WorkerReports().latest("w1") is None

@@ -127,9 +127,10 @@ see the [GitHub releases](https://github.com/v31-dev/sage/releases)) to control 
 
 On start, before serving anything, Sage sets up Cloudflare (the tunnel and the manager's
 DNS record) and gets the manager's certificate from Let's Encrypt. A first start can take
-a few minutes. If that keeps failing (a wrong token, Cloudflare unreachable), Sage retries
-for about 20 minutes and then exits, and its log says why. With a certificate from an
-earlier start, it serves even while Cloudflare is unreachable.
+a few minutes. If Cloudflare is unreachable or answers with a server error, Sage retries
+for about 20 minutes and then exits, and its log says why. A token Cloudflare rejects, or a
+domain the token can't use, exits at once with the reason. With a certificate from an
+earlier start, it serves even while the Cloudflare setup fails.
 
 `unless-stopped` restarts Sage after a crash and after a host reboot, without limit. A
 start that keeps failing then loops, which Let's Encrypt tolerates: failed validations are

@@ -35,6 +35,15 @@ async def sync_workers():
   )
 
 
+async def refresh_worker_paths():
+  Manager().add_task(
+      task=Manager().refresh_worker_paths,
+      scopes={"common"},
+      executor="common",
+      quiet=True,
+  )
+
+
 async def check_worker_stamps():
   # The env (domain, Cloudflare account) may have changed while Sage was stopped, so
   # workers that stayed online are checked against their stamps too.
@@ -183,6 +192,7 @@ async def check_settings():
 _JOBS = [
     (dispatch_tick, IntervalTrigger(seconds=1)),
     (sync_workers, IntervalTrigger(seconds=30)),
+    (refresh_worker_paths, IntervalTrigger(seconds=30)),
     (sync_application_status, CronTrigger.from_crontab("* * * * *")),
     (schedule_application_backups, CronTrigger.from_crontab("* * * * *")),
     (reconcile_traefik_configs, CronTrigger.from_crontab("* * * * *")),
@@ -197,7 +207,7 @@ _JOBS = [
 
 # Run once right after startup (as queued tasks, so the servers are already up), then on
 # their cron schedule where they have one.
-_AT_STARTUP = [refresh_latest_release, renew_certificates, discover_backups, check_settings, check_worker_stamps]
+_AT_STARTUP = [refresh_latest_release, renew_certificates, discover_backups, check_settings, check_worker_stamps, refresh_worker_paths]
 
 
 def start():

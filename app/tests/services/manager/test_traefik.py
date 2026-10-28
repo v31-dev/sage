@@ -5,12 +5,13 @@ from types import SimpleNamespace
 import pytest
 
 import config
+from services.cloudflare import CloudflareError
 from services.manager.traefik import TraefikMixin
 
 
 class TestSetupDomain:
-  """Cloudflare is connected before Sage serves, retrying a cold start; a certificate that still
-  works lets it serve anyway."""
+  """Cloudflare is connected before Sage serves, retrying a cold start for failures that clear by
+  themselves; a certificate that still works lets it serve anyway."""
 
   @pytest.fixture
   def sleeps(self, monkeypatch):
@@ -45,8 +46,9 @@ class TestSetupDomain:
     assert manager.ensured
     assert sleeps == []
 
-  def test_a_failure_waits_and_tries_again(self, sleeps, caplog):
-    manager = self.manager([Exception("zone not found"), None])
+  @pytest.mark.parametrize("status", [429, 500, 503])
+  def test_a_failure_that_clears_waits_and_tries_again(self, sleeps, caplog, status):
+    manager = self.manager([CloudflareError(status, "busy"), None])
 
     with caplog.at_level(logging.WARNING, logger="services.manager.traefik"):
       TraefikMixin.setup_domain(manager)
@@ -54,20 +56,37 @@ class TestSetupDomain:
     assert manager.calls == 2
     assert sleeps == [60]
     assert manager.ensured
-    assert "Cloudflare setup failed during startup: zone not found. Retrying in 60s." in caplog.text
+    assert f"Cloudflare setup failed during startup: Cloudflare answered HTTP {status}: busy. Retrying in 60s." in caplog.text
+
+  @pytest.mark.parametrize("error", [
+      CloudflareError(401, "Invalid API Token"),
+      CloudflareError(403, "Forbidden"),
+      ValueError("The Cloudflare API token is not active."),
+      Exception("zone not found"),
+  ])
+  def test_a_failure_that_does_not_clear_stops_the_start_at_once(self, sleeps, error):
+    manager = self.manager([error])
+
+    with pytest.raises(type(error)):
+      TraefikMixin.setup_domain(manager)
+
+    assert manager.calls == 1
+    assert sleeps == []
+    assert not manager.ensured
 
   def test_it_gives_up_after_the_last_delay_and_never_asks_for_a_certificate(self, sleeps):
-    manager = self.manager([Exception("first"), Exception("second"), Exception("last")])
+    manager = self.manager([CloudflareError(503, "first"), CloudflareError(503, "second"), CloudflareError(503, "last")])
 
-    with pytest.raises(Exception, match="last"):
+    with pytest.raises(CloudflareError, match="last"):
       TraefikMixin.setup_domain(manager)
 
     assert manager.calls == 3
     assert sleeps == [60, 240]
     assert not manager.ensured
 
-  def test_with_a_certificate_that_still_works_it_serves_at_once(self, sleeps, caplog):
-    manager = self.manager([Exception("zone not found")], valid=True)
+  @pytest.mark.parametrize("error", [CloudflareError(401, "Invalid API Token"), CloudflareError(503, "busy")])
+  def test_with_a_certificate_that_still_works_it_serves_at_once(self, sleeps, caplog, error):
+    manager = self.manager([error], valid=True)
 
     with caplog.at_level(logging.ERROR, logger="services.manager.traefik"):
       TraefikMixin.setup_domain(manager)
@@ -75,7 +94,7 @@ class TestSetupDomain:
     assert manager.calls == 1
     assert sleeps == []
     assert not manager.ensured
-    assert "Cloudflare setup failed during startup: zone not found. Continuing on the current certificate." in caplog.text
+    assert f"Cloudflare setup failed during startup: {error}. Continuing on the current certificate." in caplog.text
 
 
 class TestSyncCertificatesToWorker:

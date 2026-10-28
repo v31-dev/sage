@@ -7,7 +7,7 @@ import config
 from services.db import Application, Container, Worker
 from services.manager.application import ApplicationMixin
 from services.manager.decisions import ABSENT, OFFLINE, SEEN, UNKNOWN, Observation
-from services.reports import ContainerReading, HostReading, Reports, Snapshot
+from services.worker_reports import ContainerReading, HostReading, Snapshot, WorkerReports
 from utils.queue import OnConflict
 
 STAMP = "2026-01-01T11:00:00.000000"
@@ -85,19 +85,19 @@ def statuses(application):
 
 class TestAReportThatCanBeTrusted:
   def test_it_decides_and_the_worker_is_not_asked(self, harness, deployed):
-    Reports().accept("w1", report(reading()))
+    WorkerReports().accept("w1", report(reading()))
     harness.sync(deployed)
     assert harness.tailscale.commands == []
     assert statuses(deployed) == ("active", ["active"])
 
   def test_a_container_it_shows_as_exited_goes_to_error_and_so_does_the_application(self, harness, deployed):
-    Reports().accept("w1", report(reading("exited")))
+    WorkerReports().accept("w1", report(reading("exited")))
     harness.sync(deployed)
     assert statuses(deployed) == ("error", ["error"])
     assert ("error", "Application container w1-demo-web is in error state (exited).") in harness.notices
 
   def test_a_container_it_does_not_list_is_not_running(self, harness, deployed):
-    Reports().accept("w1", report())
+    WorkerReports().accept("w1", report())
     harness.sync(deployed)
     assert statuses(deployed) == ("error", ["error"])
 
@@ -106,17 +106,17 @@ class TestAReportThatCanBeTrusted:
     deployed.status = "error"
     deployed.save()
     clock.advance(timedelta(seconds=config.REPORT_SETTLE_SECONDS))
-    Reports().accept("w1", report(reading()))
+    WorkerReports().accept("w1", report(reading()))
     harness.sync(deployed)
     assert statuses(deployed) == ("active", ["active"])
 
   def test_a_change_of_container_status_asks_for_the_traefik_config_to_be_synced(self, harness, deployed):
-    Reports().accept("w1", report(reading("exited")))
+    WorkerReports().accept("w1", report(reading("exited")))
     harness.sync(deployed)
     assert harness.traefik_syncs == [deployed.id]
 
   def test_nothing_changing_asks_for_nothing(self, harness, deployed):
-    Reports().accept("w1", report(reading()))
+    WorkerReports().accept("w1", report(reading()))
     harness.sync(deployed)
     assert harness.traefik_syncs == [] and harness.notices == []
 
@@ -131,17 +131,17 @@ class TestAReportThatCannotBeTrusted:
 
   def test_one_that_arrived_too_soon_after_the_last_write(self, harness, deployed):
     deployed.save()  # a write now, with the report arriving in the same instant
-    Reports().accept("w1", report(reading("exited")))
+    WorkerReports().accept("w1", report(reading("exited")))
     self.unchanged(harness, deployed)
 
   def test_a_write_to_a_container_row_counts_as_the_last_write_too(self, harness, deployed, clock):
     clock.advance(timedelta(seconds=20))
     deployed.containers.get().save()  # the application row was written long enough ago, the container's was not
-    Reports().accept("w1", report(reading("exited")))
+    WorkerReports().accept("w1", report(reading("exited")))
     self.unchanged(harness, deployed)
 
   def test_one_that_is_stale(self, harness, deployed, clock):
-    Reports().accept("w1", report(reading("exited")))
+    WorkerReports().accept("w1", report(reading("exited")))
     clock.advance(timedelta(seconds=config.REPORT_STALE_SECONDS + 1))
     self.unchanged(harness, deployed)
 
@@ -150,11 +150,11 @@ class TestAReportThatCannotBeTrusted:
 
   def test_a_report_that_settles_decides_at_the_next_sync(self, harness, deployed, clock):
     deployed.save()
-    Reports().accept("w1", report(reading("exited")))
+    WorkerReports().accept("w1", report(reading("exited")))
     harness.sync(deployed)
     assert statuses(deployed) == ("active", ["active"])
     clock.advance(timedelta(seconds=config.REPORT_SETTLE_SECONDS))
-    Reports().accept("w1", report(reading("exited")))
+    WorkerReports().accept("w1", report(reading("exited")))
     harness.sync(deployed)
     assert statuses(deployed) == ("error", ["error"])
 
@@ -171,7 +171,7 @@ class TestAWorkerOutOfThePool:
 
 class TestAStaleVersion:
   def test_it_is_stopped_and_becomes_inactive(self, harness, deployed):
-    Reports().accept("w1", report(reading(deployed_at="2025-01-01T00:00:00.000000")))
+    WorkerReports().accept("w1", report(reading(deployed_at="2025-01-01T00:00:00.000000")))
     harness.sync(deployed)
     assert any(" down" in c and "demo-web" in c for c in harness.tailscale.commands)
     assert statuses(deployed) == ("inactive", ["inactive"])
@@ -179,7 +179,7 @@ class TestAStaleVersion:
 
   def test_one_that_cannot_be_stopped_is_an_error(self, harness, deployed):
     harness.tailscale.stop_error = Exception("boom")
-    Reports().accept("w1", report(reading(deployed_at="2025-01-01T00:00:00.000000")))
+    WorkerReports().accept("w1", report(reading(deployed_at="2025-01-01T00:00:00.000000")))
     harness.sync(deployed)
     assert statuses(deployed) == ("error", ["error"])
     assert any("could not be stopped: boom" in message for _, message in harness.notices)
@@ -191,12 +191,12 @@ class TestBusyStatuses:
     Container.update(status="deploying").execute()
     deployed.status = "deploying"
     deployed.save()
-    Reports().accept("w1", report(reading()))
+    WorkerReports().accept("w1", report(reading()))
     harness.sync(deployed)  # the reset is a write, which no report so far can be compared with
     assert statuses(deployed) == ("error", ["error"])
     assert any("stuck in 'deploying'" in message for _, message in harness.notices)
     clock.advance(timedelta(seconds=config.REPORT_SETTLE_SECONDS))
-    Reports().accept("w1", report(reading()))
+    WorkerReports().accept("w1", report(reading()))
     harness.sync(deployed)
     assert statuses(deployed) == ("active", ["active"])
 
@@ -216,20 +216,20 @@ class TestObserveApplication:
     assert self.observe(harness, deployed, worker) == Observation(OFFLINE)
 
   def test_the_report_gives_the_state_and_the_version(self, harness, deployed, worker):
-    Reports().accept("w1", report(reading("paused", deployed_at="v1")))
+    WorkerReports().accept("w1", report(reading("paused", deployed_at="v1")))
     assert self.observe(harness, deployed, worker) == Observation(SEEN, "paused", "v1")
 
   def test_a_report_without_the_container_is_absent(self, harness, deployed, worker):
-    Reports().accept("w1", report(reading(name="another")))
+    WorkerReports().accept("w1", report(reading(name="another")))
     assert self.observe(harness, deployed, worker) == Observation(ABSENT)
 
   def test_a_container_with_no_label_has_an_empty_version(self, harness, deployed, worker):
-    Reports().accept("w1", report(reading(deployed_at=None)))
+    WorkerReports().accept("w1", report(reading(deployed_at=None)))
     assert self.observe(harness, deployed, worker).deployed_label == ""
 
   def test_no_report_that_can_be_compared_is_unknown(self, harness, deployed, worker):
     assert self.observe(harness, deployed, worker) == Observation(UNKNOWN)
-    Reports().accept("w1", report(reading()))
+    WorkerReports().accept("w1", report(reading()))
     just_written = datetime(2026, 1, 1, 12, 0, 10)  # the report arrived at 12:00:15
     assert self.observe(harness, deployed, worker, last_write=just_written) == Observation(UNKNOWN)
 

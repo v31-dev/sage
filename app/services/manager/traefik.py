@@ -7,7 +7,7 @@ import config
 from services.db import Application, Domain, Project, Worker
 from utils.executor import run_in_executor_with_context
 from utils.queue import OnConflict
-from utils.retry import retry
+from utils.retry import is_transient, retry
 
 from ._common import app_dir, routing_input_hash
 
@@ -37,7 +37,7 @@ class TraefikMixin:
     try:
       retry(
           self.cloudflare.connect, delays=config.STARTUP_RETRY_DELAYS,
-          should_retry=lambda error: not self.certs.manager.is_valid(),
+          should_retry=lambda error: is_transient(error) and not self.certs.manager.is_valid(),
           on_retry=lambda error, delay: logger.warning(f"Cloudflare setup failed during startup: {error}. Retrying in {delay}s."))
     except Exception as e:
       # With a certificate that still works, serve now; Cloudflare is retried on use.

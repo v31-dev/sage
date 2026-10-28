@@ -208,10 +208,9 @@ Current GitHub workflows:
 - `ci.yml`
   - runs on every pull request; a newer run on the same ref cancels the older one
   - two independent jobs that run in parallel
-  - backend: `ruff check`, `isort --check-only .` and `pytest` with coverage on Python 3.14
+  - backend: `ruff check`, `isort --check-only .`, `autopep8 --diff --recursive --exit-code .` and `pytest` with coverage on Python 3.14
   - UI: `npm ci`, `npm run format:check`, `npm run build`, `npm run typecheck:tests` and `npm test` with
     a coverage summary and artifact, on the Node version in `ui/.nvmrc`
-  - the actions are pinned by commit SHA
 - `release-pr.yml`
   - runs manually through `workflow_dispatch`
   - requires the workflow to be started from `main`
@@ -229,6 +228,8 @@ Current GitHub workflows:
   - creates a GitHub release with generated release notes configured by `.github/release.yml`
   - uses the highest existing `vMAJOR.MINOR.PATCH` tag lower than the current release as the previous release-note boundary when available
   - generates release notes from the changes on `main` before the release PR merge commit so the release PR itself is not included as a changelog entry
+
+The actions in all three workflows are pinned by commit SHA, with the version in a trailing comment.
 
 ## Documentation Notes
 

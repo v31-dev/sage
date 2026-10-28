@@ -44,13 +44,17 @@ REPORT_STALE_SECONDS = 30
 REPORT_SETTLE_SECONDS = 15
 # After the manager starts, a worker that has not reported yet is not called not ready for this long.
 REPORT_STARTUP_GRACE_SECONDS = 60
+# The names of unknown senders remembered so that each is logged once.
+REPORT_UNKNOWN_LIMIT = 100
 
 # The services of the worker stack, which `docker compose up -d` starts and which are also the names
 # of their containers.
 WORKER_STACK_SERVICES = ("traefik", "vector", "telegraf", "cloudflared")
 
-# A worker is offline after this many pings in a row went unanswered (about a minute).
-OFFLINE_AFTER_MISSED_PINGS = 2
+# A worker is offline after this many checks in a row went unanswered (about a minute).
+OFFLINE_AFTER_MISSED_CHECKS = 2
+# How long to wait for a worker's SSH banner.
+SSH_BANNER_TIMEOUT_SECONDS = 3
 PING_TIMEOUT_SECONDS = 3
 
 # A reboot that has not finished by now (a worker that never came back) is no longer called one.
@@ -66,6 +70,8 @@ WORKER_STACK_REPAIR_COOLDOWN_SECONDS = 60
 # deadline before it gives up on a worker that answers nothing.
 COMMAND_KILL_AFTER_SECONDS = 5
 COMMAND_WAIT_GRACE_SECONDS = 15
+# How long to wait for a closed SSH connection to finish closing.
+SSH_CLOSE_WAIT_SECONDS = 5
 
 # UI download presigned link expiry
 BROWSER_LINK_SECONDS = 60

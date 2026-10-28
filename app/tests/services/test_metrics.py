@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from services.metrics import _PERIODS, Metrics, MinutePeaks, WorkerPeaks
-from services.reports import ContainerReading, HostReading, Snapshot, parse_batch
+from services.worker_reports import ContainerReading, HostReading, Snapshot, parse_batch
 
 START = datetime(2026, 10, 23, 10, 5)
 
