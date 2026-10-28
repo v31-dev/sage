@@ -19,8 +19,9 @@ STACK = ("traefik", "vector", "telegraf", "cloudflared")
 class FakeTailscale:
   def __init__(self):
     self.listed = []          # (hostname, ip) of the tailnet's machines
-    self.answering = set()    # hostnames that answer a ping
-    self.asked = None
+    self.answering = set()    # hostnames whose SSH server answers
+    self.asked = None         # {hostname: online now} given to online_states
+    self.refreshed = None     # the IPs given to refresh_paths
     self.commands = []
     self.up_output = ["Container traefik  Running"]
     self.up_error = None
@@ -37,12 +38,15 @@ class FakeTailscale:
   def find_peer(self, query):
     return next((peer for peer in self.peers() if query in (peer.hostname, peer.ip)), None)
 
-  async def ping(self, ip):
-    return any(peer.ip == ip and peer.hostname in self.answering for peer in self.peers())
+  async def reachable(self, hostname):
+    return hostname in self.answering
 
   async def online_states(self, peers):
     self.asked = peers
     return {hostname: hostname in self.answering for hostname in peers}
+
+  async def refresh_paths(self, ips):
+    self.refreshed = ips
 
   async def exec_command(self, hostname, command, timeout=300):
     self.commands.append((hostname, command))
@@ -124,12 +128,12 @@ class TestSyncWorkers:
     assert harness.offlined == ["w1"]
     assert harness.setups == [("w2", False)]
 
-  def test_a_machine_that_is_not_a_known_worker_is_not_pinged_or_set_up(self, harness):
+  def test_a_machine_that_is_not_a_known_worker_is_not_checked_or_set_up(self, harness):
     add("w1", True)
     harness.tailscale.listed = [("w1", "100.64.0.2"), ("w3", "100.64.0.3")]
     harness.tailscale.answering = {"w1", "w3"}
     self.sync(harness)
-    assert harness.tailscale.asked == {"w1": ("100.64.0.2", True)}
+    assert harness.tailscale.asked == {"w1": True}
     assert harness.setups == []
 
   def test_a_worker_that_does_not_answer_is_taken_out(self, harness):
@@ -138,12 +142,12 @@ class TestSyncWorkers:
     self.sync(harness)
     assert harness.offlined == ["w1"]
 
-  def test_the_pings_are_given_what_the_database_knows_about_each_worker(self, harness):
+  def test_the_checks_are_given_what_the_database_knows_about_each_worker(self, harness):
     add("w1", True, "100.64.0.2")
     add("w2", False, "100.64.0.3")
     harness.tailscale.listed = [("w1", "100.64.0.2"), ("w2", "100.64.0.3")]
     self.sync(harness)
-    assert harness.tailscale.asked == {"w1": ("100.64.0.2", True), "w2": ("100.64.0.3", False)}
+    assert harness.tailscale.asked == {"w1": True, "w2": False}
 
   def test_a_forced_sync_is_passed_on(self, harness):
     add("w1", True)
@@ -366,14 +370,22 @@ class TestAddWorker:
     with pytest.raises(TaskFailed):
       self.add(harness)
     assert harness.setups == []
-    assert harness.notices == [("error", "Failed to add worker w3: it is not in the tailnet or does not answer a ping.")]
+    assert harness.notices == [("error", "Failed to add worker w3: it is not in the tailnet or its SSH server does not answer.")]
 
-  def test_a_machine_that_does_not_answer_a_ping_is_refused_and_said_so(self, harness):
+  def test_a_machine_whose_ssh_server_does_not_answer_is_refused_and_said_so(self, harness):
     harness.tailscale.listed = [("w3", "100.64.0.3")]
     with pytest.raises(TaskFailed):
       self.add(harness)
     assert harness.setups == []
-    assert harness.notices[0][0] == "error" and "does not answer a ping" in harness.notices[0][1]
+    assert harness.notices[0][0] == "error" and "SSH server does not answer" in harness.notices[0][1]
+
+
+class TestRefreshWorkerPaths:
+  def test_only_the_online_workers_are_asked(self, harness):
+    add("w1", True, "100.64.0.2")
+    add("w2", False, "100.64.0.3")
+    asyncio.run(harness.refresh_worker_paths())
+    assert harness.tailscale.refreshed == ["100.64.0.2"]
 
 
 class SetupHarness(Harness):

@@ -22,8 +22,8 @@ class WorkersMixin:
     Check the workers for changes. Workers are added by hand (`add_worker`), so a machine of
     the tailnet that is not a known worker is not looked at. `check_stamps` also sets up
     workers that stayed online, letting their stamps decide what to redo (at startup, since
-    the env may have changed while Sage was stopped). Whether a worker is online is whether it
-    answers a ping (`Tailscale.online_states`), not Tailscale's own flag. The decisions are
+    the env may have changed while Sage was stopped). Whether a worker is online is whether its
+    SSH server answers (`Tailscale.online_states`), not Tailscale's own flag. The decisions are
     `plan_worker_sync`'s:
     - Offline workers (not answering, or not in the tailnet)
     - Updated workers (IPs have changed)
@@ -34,8 +34,7 @@ class WorkersMixin:
     names = {row.hostname for row in known}
     listed = [peer for peer in await run_in_executor_with_context(self.tailscale.peers) if peer.hostname in names]
     was_online = {row.hostname: row.online for row in known}
-    online = await self.tailscale.online_states(
-        {w.hostname: (w.ip, was_online.get(w.hostname, False)) for w in listed})
+    online = await self.tailscale.online_states({w.hostname: was_online.get(w.hostname, False) for w in listed})
     peers = [WorkerRow(w.hostname, w.ip, online[w.hostname]) for w in listed]
 
     logger.info(f"Existing workers: {[(w.hostname, w.ip, 'online' if w.online else 'offline') for w in known]}")
@@ -57,10 +56,14 @@ class WorkersMixin:
     self.worker_reboots = {h: mark for h, mark in self.worker_reboots.items() if self._worker_reboot_under_way(h, mark)}
     self.refresh_worker_summary()
 
+  async def refresh_worker_paths(self):
+    """Record how each online worker is reached, direct or through a relay (`Tailscale.path`)."""
+    await self.tailscale.refresh_paths([worker.ip for worker in Worker.select().where(Worker.online)])
+
   def worker_status(self, hostname: str, online: bool) -> str:
     """What the worker is shown as: "removing" while its removal is queued or running, "adding" while its
     addition is, "rebooting" from the request until it reports again after the reboot (`is_worker_rebooting`),
-    "offline" when it does not answer a ping (`online`), "not ready" when its report says Traefik is not
+    "offline" when its SSH server does not answer (`online`), "not ready" when its report says Traefik is not
     answering, otherwise "online".
     Derived on every call from the queue and the reports, so there is nothing stored to go stale."""
     params = {"worker_hostname": hostname}
@@ -216,12 +219,12 @@ class WorkersMixin:
 
   async def add_worker(self, worker_hostname: str):
     """
-    Add a machine of the tailnet as a worker: it must answer a ping and not be managed by
-    another Sage (`setup_worker` checks). `setup_worker` does the rest.
+    Add a machine of the tailnet as a worker: its SSH server must answer and it must not be managed
+    by another Sage (`setup_worker` checks). `setup_worker` does the rest.
     """
     peer = await run_in_executor_with_context(self.tailscale.find_peer, worker_hostname)
-    if peer is None or not await self.tailscale.ping(peer.ip):
-      self.notify(f"Failed to add worker {worker_hostname}: it is not in the tailnet or does not answer a ping.", "error")
+    if peer is None or not await self.tailscale.reachable(peer.hostname):
+      self.notify(f"Failed to add worker {worker_hostname}: it is not in the tailnet or its SSH server does not answer.", "error")
       raise TaskFailed()
     await self.setup_worker(peer)
 
@@ -461,7 +464,7 @@ class WorkersMixin:
       await self.delete_container(container.id, force=True)
 
     # The containers of an offline worker were deleted without cleaning up after them, so its files stay.
-    if not containers and await self.tailscale.ping(worker.ip):
+    if not containers and await self.tailscale.reachable(worker.hostname):
       try:
         owner = worker_owner(await self.read_worker_revisions(worker.hostname))
         if owner and owner[0] == self.instance_id():

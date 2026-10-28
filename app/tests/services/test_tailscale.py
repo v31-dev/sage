@@ -543,7 +543,7 @@ class TestNextOnline:
     assert next_online(True, False, 0) == (True, 1)
 
   def test_the_miss_that_reaches_the_limit_takes_it_offline(self):
-    assert next_online(True, False, config.OFFLINE_AFTER_MISSED_PINGS - 1) == (False, config.OFFLINE_AFTER_MISSED_PINGS)
+    assert next_online(True, False, config.OFFLINE_AFTER_MISSED_CHECKS - 1) == (False, config.OFFLINE_AFTER_MISSED_CHECKS)
 
   def test_a_worker_that_is_offline_stays_offline_however_it_misses(self):
     assert next_online(False, False, 0) == (False, 1)
@@ -572,6 +572,65 @@ class FakePing:
     self.killed = True
 
 
+class FakeBanner:
+  """A `tailscale nc` process: `stdout.readline()` gives `banner`, or never ends when `hangs`."""
+
+  def __init__(self, banner=b"", hangs=False):
+    self.banner = banner
+    self.hangs = hangs
+    self.killed = False
+    self.stdout = SimpleNamespace(readline=self._readline)
+
+  async def _readline(self):
+    if self.hangs:
+      await asyncio.sleep(3600)
+    return self.banner
+
+  def kill(self):
+    self.killed = True
+
+  async def wait(self):
+    return -9
+
+
+class TestReachable:
+  @pytest.fixture
+  def started(self, monkeypatch):
+    commands = []
+
+    def use(process):
+      async def create(*command, **kwargs):
+        commands.append(command)
+        return process
+      monkeypatch.setattr(asyncio, "create_subprocess_exec", create)
+      return commands
+
+    return use
+
+  async def test_a_worker_that_sends_the_ssh_banner_is_reachable(self, tailscale, started):
+    commands = started(FakeBanner(b"SSH-2.0-Tailscale\r\n"))
+    assert await tailscale.reachable("w1") is True
+    assert commands == [("tailscale", "nc", "w1", "22")]
+
+  @pytest.mark.parametrize("sent", [b"", b"HTTP/1.1 400 Bad Request\r\n", b"220 mail ready\r\n"])
+  async def test_anything_else_or_nothing_is_not(self, tailscale, started, sent):
+    started(FakeBanner(sent))
+    assert await tailscale.reachable("w1") is False
+
+  async def test_a_worker_that_sends_nothing_is_given_up_on(self, tailscale, started, monkeypatch):
+    monkeypatch.setattr(config, "SSH_BANNER_TIMEOUT_SECONDS", 0.01)
+    started(FakeBanner(hangs=True))
+    assert await tailscale.reachable("w1") is False
+
+  @pytest.mark.parametrize("process", [lambda: FakeBanner(b"SSH-2.0-Tailscale\r\n"), lambda: FakeBanner(hangs=True)])
+  async def test_the_connection_is_always_stopped(self, tailscale, started, monkeypatch, process):
+    monkeypatch.setattr(config, "SSH_BANNER_TIMEOUT_SECONDS", 0.01)
+    fake = process()
+    started(fake)
+    await tailscale.reachable("w1")
+    assert fake.killed
+
+
 class TestPing:
   @pytest.fixture
   def started(self, monkeypatch):
@@ -586,59 +645,39 @@ class TestPing:
 
     return use
 
-  def test_a_peer_that_answers_is_true(self, tailscale, started):
-    commands = started(FakePing(0))
-    assert asyncio.run(tailscale.ping("100.64.0.2")) is True
-    assert commands[0][:3] == ("tailscale", "ping", "-c")
+  def test_the_peer_is_pinged_once(self, tailscale, started):
+    commands = started(FakePing(0, output="pong from w1 (100.64.0.2) via 203.0.113.5:41641 in 2ms\n"))
+    asyncio.run(tailscale.ping("100.64.0.2"))
+    assert commands[0][:5] == ("tailscale", "ping", "-c", "1", f"--timeout={config.PING_TIMEOUT_SECONDS}s")
     assert commands[0][-1] == "100.64.0.2"
 
-  def test_a_peer_that_does_not_answer_is_false(self, tailscale, started):
-    started(FakePing(1))
-    assert asyncio.run(tailscale.ping("100.64.0.2")) is False
+  @pytest.mark.parametrize("output, expected", [
+      ("pong from w1 (100.64.0.2) via 203.0.113.5:41641 in 2ms\n", "direct"),
+      ("pong from w1 (100.64.0.2) via DERP(blr) in 30ms\n", "relay blr"),
+  ])
+  def test_an_answer_gives_how_it_arrived(self, tailscale, started, output, expected):
+    started(FakePing(0, output=output))
+    assert asyncio.run(tailscale.ping("100.64.0.2")) == expected
 
-  def test_how_the_answer_arrived_is_kept_for_that_peer(self, tailscale, started):
-    started(FakePing(0, output="pong from w1 (100.64.0.2) via 203.0.113.5:41641 in 2ms\n"))
-    asyncio.run(tailscale.ping("100.64.0.2"))
-    assert tailscale.path("100.64.0.2") == "direct"
-    assert tailscale.path("100.64.0.3") is None
-
-  def test_the_latest_answer_replaces_the_one_before(self, tailscale, started):
-    started(FakePing(0, output="pong from w1 (100.64.0.2) via DERP(blr) in 30ms\n"))
-    asyncio.run(tailscale.ping("100.64.0.2"))
-    assert tailscale.path("100.64.0.2") == "relay blr"
-    started(FakePing(0, output="pong from w1 (100.64.0.2) via 203.0.113.5:41641 in 2ms\n"))
-    asyncio.run(tailscale.ping("100.64.0.2"))
-    assert tailscale.path("100.64.0.2") == "direct"
-
-  def test_an_answer_that_does_not_say_how_it_arrived_still_counts_as_an_answer(self, tailscale, started):
+  def test_an_answer_that_does_not_say_how_it_arrived_gives_none(self, tailscale, started):
     started(FakePing(0, output="something new\n"))
-    assert asyncio.run(tailscale.ping("100.64.0.2")) is True
-    assert tailscale.path("100.64.0.2") is None
+    assert asyncio.run(tailscale.ping("100.64.0.2")) is None
 
-  def test_the_output_of_a_ping_that_failed_is_not_trusted(self, tailscale, started):
+  def test_a_peer_that_does_not_answer_gives_none(self, tailscale, started):
     started(FakePing(1, output="pong from w1 (100.64.0.2) via DERP(blr) in 30ms\n"))
-    assert asyncio.run(tailscale.ping("100.64.0.2")) is False
-    assert tailscale.path("100.64.0.2") is None
+    assert asyncio.run(tailscale.ping("100.64.0.2")) is None
 
-  def test_a_peer_that_stops_answering_loses_its_path(self, tailscale, started):
-    tailscale._paths["100.64.0.2"] = "direct"
-    started(FakePing(1, output="ping did not respond\n"))
-    asyncio.run(tailscale.ping("100.64.0.2"))
-    assert tailscale.path("100.64.0.2") is None
-
-  def test_a_ping_that_never_ends_loses_its_path_too(self, tailscale, started, monkeypatch):
-    tailscale._paths["100.64.0.2"] = "direct"
-    monkeypatch.setattr(config, "PING_TIMEOUT_SECONDS", -4.9)  # the wait is the timeout plus 5 s: 0.1 s
-    started(FakePing(hangs=True))
-    assert asyncio.run(tailscale.ping("100.64.0.2")) is False
-    assert tailscale.path("100.64.0.2") is None
-
-  def test_a_ping_that_never_ends_is_stopped_and_false(self, tailscale, started, monkeypatch):
+  def test_a_ping_that_never_ends_is_stopped_and_gives_none(self, tailscale, started, monkeypatch):
     monkeypatch.setattr(config, "PING_TIMEOUT_SECONDS", -4.9)  # the wait is the timeout plus 5 s: 0.1 s
     process = FakePing(hangs=True)
     started(process)
-    assert asyncio.run(tailscale.ping("100.64.0.2")) is False
+    assert asyncio.run(tailscale.ping("100.64.0.2")) is None
     assert process.killed
+
+  def test_a_ping_keeps_nothing(self, tailscale, started):
+    started(FakePing(0, output="pong from w1 (100.64.0.2) via DERP(blr) in 30ms\n"))
+    asyncio.run(tailscale.ping("100.64.0.2"))
+    assert tailscale.path("100.64.0.2") is None
 
 
 class TestPingPath:
@@ -687,13 +726,14 @@ class TestPeers:
 class TestOnlineStates:
   @pytest.fixture
   def answers(self, tailscale, monkeypatch):
-    """Which peers answer, by address; `connected` is whether the manager's own node is."""
-    state = SimpleNamespace(up=set(), connected=True)
+    """Which workers' SSH servers answer, by hostname, and which were asked; `connected` is whether the manager's own node is."""
+    state = SimpleNamespace(up=set(), connected=True, asked=[])
 
-    async def ping(target):
-      return target in state.up
+    async def reachable(hostname):
+      state.asked.append(hostname)
+      return hostname in state.up
 
-    monkeypatch.setattr(tailscale, "ping", ping)
+    monkeypatch.setattr(tailscale, "reachable", reachable)
     monkeypatch.setattr(tailscale, "connected", lambda: state.connected)
     # The blocking check runs on the pool of the task that calls it.
     executor = ThreadPoolExecutor(max_workers=1)
@@ -703,39 +743,32 @@ class TestOnlineStates:
     executor.shutdown()
 
   def states(self, tailscale, **was):
-    peers = {name: (f"100.64.0.{i}", online) for i, (name, online) in enumerate(was.items(), 1)}
-    return asyncio.run(tailscale.online_states(peers))
+    return asyncio.run(tailscale.online_states(was))
 
-  def test_peers_that_answer_are_online_at_once(self, tailscale, answers):
-    answers.up = {"100.64.0.1", "100.64.0.2"}
+  def test_workers_that_answer_are_online_at_once(self, tailscale, answers):
+    answers.up = {"a", "b"}
     assert self.states(tailscale, a=False, b=True) == {"a": True, "b": True}
 
-  def test_a_peer_that_missed_once_stays_online_and_the_second_miss_takes_it_out(self, tailscale, answers):
+  def test_a_worker_that_missed_once_stays_online_and_the_second_miss_takes_it_out(self, tailscale, answers):
     assert self.states(tailscale, a=True) == {"a": True}
     assert self.states(tailscale, a=True) == {"a": False}
 
   def test_an_answer_between_misses_starts_the_count_again(self, tailscale, answers):
     self.states(tailscale, a=True)
-    answers.up = {"100.64.0.1"}
+    answers.up = {"a"}
     assert self.states(tailscale, a=True) == {"a": True}
     answers.up = set()
     assert self.states(tailscale, a=True) == {"a": True}
 
-  def test_the_peers_are_counted_separately(self, tailscale, answers):
-    answers.up = {"100.64.0.2"}
+  def test_the_workers_are_counted_separately(self, tailscale, answers):
+    answers.up = {"b"}
     self.states(tailscale, a=True, b=True)
     assert self.states(tailscale, a=True, b=True) == {"a": False, "b": True}
 
-  def test_a_peer_that_is_no_longer_listed_starts_again_with_no_misses(self, tailscale, answers):
+  def test_a_worker_that_is_no_longer_listed_starts_again_with_no_misses(self, tailscale, answers):
     self.states(tailscale, a=True)
     self.states(tailscale, b=True)
     assert self.states(tailscale, a=True) == {"a": True}
-
-  def test_paths_are_kept_for_the_peers_asked_and_dropped_for_the_others(self, tailscale, answers):
-    tailscale._paths = {"100.64.0.1": "direct", "100.64.0.9": "relay blr"}
-    self.states(tailscale, a=True)
-    assert tailscale.path("100.64.0.1") == "direct"
-    assert tailscale.path("100.64.0.9") is None
 
   def test_when_the_manager_is_cut_off_nobody_changes_and_the_misses_are_not_counted(self, tailscale, answers):
     answers.connected = False
@@ -743,5 +776,46 @@ class TestOnlineStates:
     answers.connected = True
     assert self.states(tailscale, a=True) == {"a": True}
 
-  def test_no_peers_is_no_states(self, tailscale, answers):
+  def test_no_workers_is_no_states(self, tailscale, answers):
     assert asyncio.run(tailscale.online_states({})) == {}
+
+
+class TestRefreshPaths:
+  @pytest.fixture
+  def pings(self, tailscale, monkeypatch):
+    """What each peer's ping gives, by IP, and which were pinged."""
+    state = SimpleNamespace(gives={}, asked=[])
+
+    async def ping(target):
+      state.asked.append(target)
+      return state.gives.get(target)
+
+    monkeypatch.setattr(tailscale, "ping", ping)
+    return state
+
+  async def test_the_peers_asked_are_pinged_and_their_paths_kept(self, tailscale, pings):
+    pings.gives = {"100.64.0.1": "direct", "100.64.0.2": "relay blr"}
+    await tailscale.refresh_paths(["100.64.0.1", "100.64.0.2"])
+    assert sorted(pings.asked) == ["100.64.0.1", "100.64.0.2"]
+    assert tailscale.path("100.64.0.1") == "direct"
+    assert tailscale.path("100.64.0.2") == "relay blr"
+
+  async def test_the_latest_ping_replaces_the_path_before(self, tailscale, pings):
+    pings.gives = {"100.64.0.1": "relay blr"}
+    await tailscale.refresh_paths(["100.64.0.1"])
+    pings.gives = {"100.64.0.1": "direct"}
+    await tailscale.refresh_paths(["100.64.0.1"])
+    assert tailscale.path("100.64.0.1") == "direct"
+
+  async def test_a_peer_that_stops_answering_loses_its_path(self, tailscale, pings):
+    pings.gives = {"100.64.0.1": "direct", "100.64.0.2": "direct"}
+    await tailscale.refresh_paths(["100.64.0.1", "100.64.0.2"])
+    pings.gives = {"100.64.0.2": "direct"}
+    await tailscale.refresh_paths(["100.64.0.1", "100.64.0.2"])
+    assert tailscale.path("100.64.0.1") is None
+    assert tailscale.path("100.64.0.2") == "direct"
+
+  async def test_a_peer_that_is_not_asked_loses_its_path(self, tailscale, pings):
+    tailscale._paths = {"100.64.0.9": "relay blr"}
+    await tailscale.refresh_paths(["100.64.0.1"])
+    assert tailscale.path("100.64.0.9") is None

@@ -51,8 +51,10 @@ REPORT_UNKNOWN_LIMIT = 100
 # of their containers.
 WORKER_STACK_SERVICES = ("traefik", "vector", "telegraf", "cloudflared")
 
-# A worker is offline after this many pings in a row went unanswered (about a minute).
-OFFLINE_AFTER_MISSED_PINGS = 2
+# A worker is offline after this many checks in a row went unanswered (about a minute).
+OFFLINE_AFTER_MISSED_CHECKS = 2
+# How long to wait for a worker's SSH banner.
+SSH_BANNER_TIMEOUT_SECONDS = 3
 PING_TIMEOUT_SECONDS = 3
 
 # A reboot that has not finished by now (a worker that never came back) is no longer called one.
