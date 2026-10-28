@@ -3,9 +3,8 @@ from concurrent.futures import ThreadPoolExecutor
 from contextvars import ContextVar, copy_context
 from functools import partial
 
-# Every thread pool in the process is defined here. The first four are the
-# operation-queue lanes (wired into TaskQueue by the Manager); each scope root
-# gets its own pool. Worker counts are fixed I/O-concurrency limits, not derived
+# Every thread pool in the process is defined here. LANES holds the operation-queue
+# lanes (the Manager builds its TaskQueue from it); each scope root gets its own pool. Worker counts are fixed I/O-concurrency limits, not derived
 # from os.cpu_count(): these lanes run blocking network I/O (Cloudflare API, S3,
 # tailscale status, httpx), so the manager's core count doesn't gate them -- and in a CPU-limited
 # container os.cpu_count() reports host cores, not the container's allowance.
@@ -15,10 +14,12 @@ from functools import partial
 # app sizes for a couple of parallel multi-worker deploys plus the minutely per-app status
 # sweep; metrics for concurrent per-host collection that tolerates a few slow hosts against
 # the 10s collect timeout.
-PLATFORM_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="sage-platform")
-COMMON_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="sage-common")
-APP_EXECUTOR = ThreadPoolExecutor(max_workers=6, thread_name_prefix="sage-app")
-METRICS_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="sage-metrics")
+LANES = {
+    "platform": ThreadPoolExecutor(max_workers=1, thread_name_prefix="sage-platform"),
+    "common": ThreadPoolExecutor(max_workers=1, thread_name_prefix="sage-common"),
+    "app": ThreadPoolExecutor(max_workers=6, thread_name_prefix="sage-app"),
+    "metrics": ThreadPoolExecutor(max_workers=2, thread_name_prefix="sage-metrics"),
+}
 
 # Fire-and-forget webhook sends (Manager.notify); not a queue lane.
 NOTIFICATIONS_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="sage-notifications")

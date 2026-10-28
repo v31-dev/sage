@@ -113,7 +113,7 @@ The Manager owns a single in-memory `TaskQueue` (`app/utils/queue.py`). It is th
 
 - **Enqueue.** Every operation runs via `Manager().add_task(task=..., scopes=..., executor=..., params=..., ...)`. Handlers receive ids (not ORM objects) and re-fetch, so nothing carries a stale snapshot across the queue boundary.
 - **Scopes** are `:`-delimited and hierarchical. Roots: `platform`, `app` (with `app:<qualified_name>` children), `common`, `metrics`. A parent scope conflicts with all of its children; siblings never conflict. Conflicting tasks are mutually excluded.
-- **Dispatch.** A one-second APScheduler interval tick calls `dispatch_tick`, which starts every pending task whose scope is free. One dispatcher makes the scan race-free; a `threading.Lock` guards the queue because producers run on FastAPI/loop threads. Dispatch is **deliberately opportunistic**: conflicts are checked against *running* work only, so a blocked pending task reserves nothing and later-queued non-conflicting tasks start past it (FIFO holds within a scope, not across conflicting scopes — a queued broad `{platform,app}` task waits for a tick with no app task running, and its start can be pushed out by later app work). This is the accepted trade: a pending-scope reservation rule would let any queued broad task freeze every `app:<qn>` task behind long-running work, converting rare bounded delays on platform ops into fleet-wide stalls. `priority` is queue-position only; nothing ever preempts running work.
+- **Dispatch.** A one-second APScheduler interval tick calls `dispatch_tick`, which starts every pending task whose scope is free. One dispatcher makes the scan race-free; a `threading.Lock` guards the queue because producers run on FastAPI/loop threads. Dispatch is **deliberately opportunistic**: conflicts are checked against *running* work only, so a blocked pending task reserves nothing and later-queued non-conflicting tasks start past it (FIFO holds within a scope, not across conflicting scopes — a queued broad `{platform,app}` task waits for a tick with no app task running, and its start can be pushed out by later app work). This is the accepted trade: a pending-scope reservation rule would let any queued broad task freeze every `app:<qn>` task behind long-running work, converting rare bounded delays on platform ops into fleet-wide stalls. `priority` is queue-position only; nothing ever preempts running work. The scan (`next_to_start`) and admission (`admit`) are pure functions of plain data in `utils/queue.py`, which the queue applies under its lock.
 - **Admission policy — `on_conflict` on `add_task`** (enum `OnConflict`; decided atomically under the queue lock). Admission decides *drop vs. enqueue*; mutual exclusion is **separate and always scope-based** — the dispatcher serializes conflicting scopes regardless of mode, so an enqueued task simply waits for its scope to free.
   - `DEDUP` (default) — drop and return `False` if an identical op (**same name + exact scope**) is already running or queued; otherwise enqueue and wait. Prevents reconciler pile-ups and double-triggers (e.g. a second deploy of the same app). A *different* op holding a conflicting scope does **not** cause a drop — it enqueues and waits behind that op. (So a background sync never rejects a user action; the action just defers behind it.)
   - `QUEUE` — always enqueue and wait, even for an identical op. For work where every call must run, including params-identified work that shares a name + scope (S3 delete by path, worker removal by host, the settings Traefik refresh by change-flags).
@@ -162,14 +162,14 @@ be added there.
 
 ## Execution Modes And Pools
 
-Pools (lanes) are defined in `app/utils/executor.py`. The first four are queue lanes wired into the `TaskQueue`; the rest are off-queue.
+Pools (lanes) are defined in `app/utils/executor.py`. `LANES` holds the queue lanes, wired into the `TaskQueue` by scope root; the rest are off-queue.
 
 | Pool | Workers | Used by |
 | --- | --- | --- |
-| `PLATFORM_EXECUTOR` | 1 | `platform` lane — main-DB backup/restore, cleanup |
-| `COMMON_EXECUTOR` | 1 | `common` lane — version refresh, daily summary, S3 delete |
-| `APP_EXECUTOR` | 6 | `app` lane — per-application deploy/stop/backup/restore |
-| `METRICS_EXECUTOR` | 2 | `metrics` lane — collection, metrics-store cleanup |
+| `LANES["platform"]` | 1 | `platform` lane — main-DB backup/restore, cleanup |
+| `LANES["common"]` | 1 | `common` lane — version refresh, daily summary, S3 delete |
+| `LANES["app"]` | 6 | `app` lane — per-application deploy/stop/backup/restore |
+| `LANES["metrics"]` | 2 | `metrics` lane — collection, metrics-store cleanup |
 | `NOTIFICATIONS_EXECUTOR` | 1 | `Manager.notify` webhook sends (off-queue, fire-and-forget) |
 | `LOGS_EXECUTOR` | 1 | Workers' Vector log ingestion (off-queue, request-path; single SQLite writer) |
 

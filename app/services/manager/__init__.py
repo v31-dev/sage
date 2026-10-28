@@ -12,7 +12,7 @@ from services.s3 import S3
 from services.settings import Settings
 from services.tailscale import Tailscale
 from services.worker_reports import WorkerReports
-from utils.executor import APP_EXECUTOR, COMMON_EXECUTOR, METRICS_EXECUTOR, PLATFORM_EXECUTOR
+from utils.executor import LANES
 from utils.queue import TaskQueue
 
 from ._common import app_dir
@@ -67,16 +67,7 @@ class Manager(
 
       # Single-dispatcher operation queue. Each scope root maps to an independent
       # lane pool (all defined in utils.executor).
-      self.task_queue = TaskQueue(
-          scopes=frozenset(["platform", "app", "common", "metrics"]),
-          executors={
-              "platform": PLATFORM_EXECUTOR,
-              "common": COMMON_EXECUTOR,
-              "app": APP_EXECUTOR,
-              "metrics": METRICS_EXECUTOR,
-          },
-          record=self._persist_task,
-      )
+      self.task_queue = TaskQueue(scopes=frozenset(LANES), executors=LANES, record=self._persist_task)
 
       # Initialize all services
       Logs()

@@ -77,6 +77,69 @@ class QueuedTask:
   restore: bool = False         # the platform restore: the one task that starts while restoring
 
 
+class Admit(Enum):
+  DROP = "drop"        # not admitted, nothing recorded
+  CANCEL = "cancel"    # not admitted because the queue is stopping: recorded as cancelled
+  ENQUEUE = "enqueue"
+
+
+@dataclass(frozen=True)
+class Admission:
+  """What `admit` decides for a new task. An enqueue also carries the pending duplicates it supersedes and
+  the position it takes in the queue once they are removed."""
+  admit: Admit
+  superseded: tuple[QueuedTask, ...] = ()
+  position: int = 0
+
+
+def admit(state: QueueState, running: list[QueuedTask], queue: list[QueuedTask], new: QueuedTask,
+          on_conflict: OnConflict, restore: bool, priority: bool) -> Admission:
+  """Whether `new` is dropped, cancelled or enqueued, and where. Identity for DEDUP and REPLACE is name and
+  exact scope; a different task on a conflicting scope is enqueued and waits."""
+  if restore and state != QueueState.RUNNING:
+    return Admission(Admit.DROP)
+  if state == QueueState.STOPPING:
+    return Admission(Admit.CANCEL)
+
+  def duplicate(task: QueuedTask) -> bool:
+    return task.name == new.name and task.scopes == new.scopes
+
+  if on_conflict == OnConflict.DEDUP and any(duplicate(task) for task in (*running, *queue)):
+    return Admission(Admit.DROP)
+
+  superseded = ()
+  if on_conflict == OnConflict.REPLACE:
+    superseded = tuple(task for task in queue if duplicate(task))
+    queue = [task for task in queue if not duplicate(task)]
+
+  position = len(queue)
+  if priority:
+    # Behind the tasks that dominate it (same level or higher), ahead of the rest.
+    position = 0
+    for queued in queue:
+      if not _dominates(queued.scopes, new.scopes):
+        break
+      position += 1
+  return Admission(Admit.ENQUEUE, superseded, position)
+
+
+def next_to_start(state: QueueState, queue: list[QueuedTask], running: list[QueuedTask]) -> list[QueuedTask]:
+  """The pending tasks to start now, in order: none unless running or restoring, only the restore while
+  restoring, and none whose scopes conflict with a running task or with one started earlier in this scan."""
+  if state not in (QueueState.RUNNING, QueueState.RESTORING):
+    return []
+  held = [task.scopes for task in running]
+  starting = []
+  for task in queue:
+    if state == QueueState.RESTORING and not task.restore:
+      continue
+    if any(_scopes_conflict(task.scopes, scopes) for scopes in held):
+      continue
+    starting.append(task)
+    held.append(task.scopes)
+  return starting
+
+
 class TaskQueue:
   """In-memory, single-dispatcher operation queue with hierarchical scope locking.
 
@@ -146,65 +209,32 @@ class TaskQueue:
     new_task = QueuedTask(name=name, scopes=scopes, task=task,
                           params=params or {}, executor=executor, task_id=task_id,
                           quiet=quiet, restore=restore)
-    cancelled: list[QueuedTask] = []
     with self._lock:
-      stopping = self._state == QueueState.STOPPING
-      if restore and self._state != QueueState.RUNNING:
+      admission = admit(self._state, self._running, self._queue, new_task, on_conflict, restore, priority)
+      if admission.admit == Admit.DROP:
         return False
-      elif stopping:
-        # Nothing new runs once stopping (e.g. a follow-up queued by a task that is
-        # still finishing): record it as never started instead of losing it on exit.
-        cancelled = [new_task]
-      elif on_conflict == OnConflict.DEDUP and any(
-              t.name == name and t.scopes == scopes for t in (*self._running, *self._queue)):
-        # Skip if an identical op (name + exact scope) is already pending or
-        # running -- pile-up / double-trigger prevention. A *different* op on a
-        # conflicting scope is not dropped here; it enqueues and the dispatcher
-        # serializes it by scope.
-        return False
-      else:
-        if on_conflict == OnConflict.REPLACE:
-          # Duplicate = same operation on the same exact scope (identity = name +
-          # scope; params are not part of identity). Supersede the pending one;
-          # persist the cancellation after the lock (see below).
-          cancelled = [t for t in self._queue if t.name == name and t.scopes == scopes]
-          for pending in cancelled:
-            self._queue.remove(pending)
-        # OnConflict.QUEUE: always enqueue and wait for the scope to free.
-
-        if priority:
-          position = 0
-          for queued_task in self._queue:
-            if _dominates(queued_task.scopes, scopes):
-              position += 1            # stay behind same/higher tasks
-            else:
-              break                    # jump ahead of the rest
-        else:
-          position = len(self._queue)
-
-        self._queue.insert(position, new_task)
+      if admission.admit == Admit.ENQUEUE:
+        for duplicate in admission.superseded:
+          self._queue.remove(duplicate)
+        self._queue.insert(admission.position, new_task)
         if restore:
           self._state = QueueState.RESTORING
           logger.info("Restoring: nothing else starts until the restore has finished.")
 
+    # Nothing new runs once stopping (e.g. a follow-up queued by a task that is still
+    # finishing): it is recorded as never started instead of lost on exit. A superseded
+    # duplicate is recorded the same way.
     # Persist cancellations outside the lock: _record does a DB write, which must
     # stay off the critical section so the event loop never blocks on it.
+    cancelled = [new_task] if admission.admit == Admit.CANCEL else list(admission.superseded)
     self._record_cancelled(cancelled)
-    return not stopping
-
-  def has_task_scopes(self, scopes: frozenset[str], only_running: bool = True) -> bool:
-    """True if a running (and, when only_running is False, also pending) task
-    conflicts with any of the given scopes. Caller must hold self._lock."""
-    if any(_scopes_conflict(scopes, task.scopes) for task in self._running):
-      return True
-    if not only_running:
-      return any(_scopes_conflict(scopes, task.scopes) for task in self._queue)
-    return False
+    return admission.admit == Admit.ENQUEUE
 
   def is_busy(self, scopes: frozenset[str]) -> bool:
     """True if any running or pending task conflicts with the given scopes."""
+    scopes = frozenset(scopes)
     with self._lock:
-      return self.has_task_scopes(frozenset(scopes), only_running=False)
+      return any(_scopes_conflict(scopes, task.scopes) for task in (*self._running, *self._queue))
 
   def is_task_running(self, task: Callable | str, scopes: frozenset[str] | None = None) -> bool:
     """True if a task with this identity is currently executing (not merely queued).
@@ -320,28 +350,18 @@ class TaskQueue:
   def dispatch_tick(self):
     """Start every pending task whose scopes do not conflict with running work."""
     with self._lock:
-      if self._state not in (QueueState.RUNNING, QueueState.RESTORING):
-        return
-      counter = 0
-      while counter < len(self._queue):
-        task = self._queue[counter]
-        # only_running=True: a dispatched task joins _running immediately, so
-        # same-scope tasks later in this scan correctly see it as held.
-        if self._state == QueueState.RESTORING and not task.restore:
-          counter += 1
-        elif self.has_task_scopes(task.scopes, only_running=True):
-          counter += 1
-        else:
-          task = self._queue.pop(counter)
-          self._running.append(task)
-          handle = asyncio.create_task(self.run_task(task))
-          self._tasks.add(handle)
-          handle.add_done_callback(self._tasks.discard)
+      starting = next_to_start(self._state, self._queue, self._running)
+      for task in starting:
+        self._queue.remove(task)
+        self._running.append(task)
+        handle = asyncio.create_task(self.run_task(task))
+        self._tasks.add(handle)
+        handle.add_done_callback(self._tasks.discard)
 
   def _record_cancelled(self, tasks: list[QueuedTask]):
     """Log and persist already-removed pending tasks as cancelled. Call this
     OUTSIDE the lock -- `_record` writes to the DB, which must not run inside the
-    critical section. Callers (REPLACE admission, stop()) remove
+    critical section. Callers (admission, end_restore, stop()) remove
     the tasks from the queue under the lock, then hand them here."""
     for task in tasks:
       logger.info(f"{task.name}: cancelled")
