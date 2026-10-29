@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 import config
-from services.worker_reports import WorkerReports, parse_batch
+from services.worker_reports import WorkerReports, container_started_at, is_current, parse_batch
 
 BATCH = json.loads((Path(__file__).parent.parent / "data" / "telegraf_batch.json").read_text())
 
@@ -230,6 +230,14 @@ class TestWhatChanged:
     assert reports.accept("w1", with_containers(20, reading("web"), reading("cache"))).changed == {"db", "cache"}
 
 
+class TestArrival:
+  def test_it_carries_the_report_now_held(self):
+    reports = WorkerReports()
+    arrival = reports.accept("w1", snapshots_at(10))
+    assert arrival.received is reports.latest("w1")
+    assert reports.accept("w1", snapshots_at(20)).received is reports.latest("w1")
+
+
 class TestCurrentAndTrusted:
   def test_a_report_is_current_for_the_stale_window(self, clock):
     reports = WorkerReports()
@@ -272,37 +280,22 @@ class TestCurrentAndTrusted:
     assert reports.silent_for("w1") == 7
 
 
-class TestReady:
-  def test_a_worker_reporting_with_traefik_answering_is_ready(self):
-    reports = WorkerReports()
-    reports.accept("w1", with_containers(10, reading("traefik")))
-    assert reports.ready("w1") is True
+class TestIsCurrent:
+  def test_a_report_is_current_up_to_the_stale_window_and_not_after(self, clock):
+    arrived = clock.current
+    assert is_current(arrived, arrived + timedelta(seconds=config.REPORT_STALE_SECONDS))
+    assert not is_current(arrived, arrived + timedelta(seconds=config.REPORT_STALE_SECONDS, microseconds=1))
 
-  def test_traefik_not_answering_is_not_ready(self):
-    reports = WorkerReports()
-    snapshot = with_containers(10, reading("traefik"))[0]
-    from dataclasses import replace
-    reports.accept("w1", [replace(snapshot, traefik_reachable=False)])
-    assert reports.ready("w1") is False
 
-  def test_a_report_without_the_check_is_ready(self):
-    from dataclasses import replace
-    reports = WorkerReports()
-    reports.accept("w1", [replace(snapshots_at(10)[0], traefik_reachable=None)])
-    assert reports.ready("w1") is True
+class TestContainerStartedAt:
+  def test_it_is_the_start_the_report_gives_the_container(self):
+    received = WorkerReports().accept("w1", with_containers(10, reading("telegraf", started_at=777))).received
+    assert container_started_at(received, "telegraf") == 777
 
-  def test_a_stale_report_is_not_ready(self, clock):
-    reports = WorkerReports()
-    reports.accept("w1", snapshots_at(10))
-    clock.advance(timedelta(seconds=config.REPORT_STALE_SECONDS + 1))
-    assert reports.ready("w1") is False
-
-  def test_a_worker_that_has_not_reported_yet_is_unknown_just_after_the_start_and_not_ready_later(self, clock):
-    reports = WorkerReports()
-    clock.advance(timedelta(seconds=config.REPORT_STARTUP_GRACE_SECONDS - 1))
-    assert reports.ready("w1") is None
-    clock.advance(timedelta(seconds=1))
-    assert reports.ready("w1") is False
+  def test_it_is_none_without_a_report_or_for_a_container_it_does_not_list(self):
+    received = WorkerReports().accept("w1", with_containers(10, reading("web"))).received
+    assert container_started_at(None, "telegraf") is None
+    assert container_started_at(received, "telegraf") is None
 
 
 class TestInfra:

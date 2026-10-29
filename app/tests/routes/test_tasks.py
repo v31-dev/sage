@@ -47,7 +47,7 @@ class TestHistory:
 
     assert len(client.get("/api/tasks/history").json()) == 100
 
-  def test_a_row_has_what_the_page_shows_of_a_finished_task(self, client, db):
+  def test_a_row_has_the_fields_of_a_finished_task(self, client, db):
     finished("t-0", status="failed")
 
     [row] = client.get("/api/tasks/history").json()

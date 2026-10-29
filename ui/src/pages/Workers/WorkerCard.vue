@@ -4,7 +4,7 @@ import { computed } from 'vue'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Label } from '@/components/ui/label'
 
-import { type Worker, type WorkerMetricSummary } from '@/services/api'
+import { type WorkerListItem, type WorkerMetricSummary } from '@/services/api'
 import PercentageBar from '@/components/PercentageBar.vue'
 import SectionTitle from '@/components/SectionTitle.vue'
 import StateIndicator from '@/components/StateIndicator.vue'
@@ -12,7 +12,7 @@ import { useAppStore } from '@/stores/app'
 import { TONES } from '@/lib/tone'
 
 interface Props {
-  worker: Worker
+  worker: WorkerListItem
   metrics?: WorkerMetricSummary
 }
 
@@ -30,7 +30,6 @@ const emptyMetrics: WorkerMetricSummary = {
   diskTotal: null,
   netRx: null,
   netTx: null,
-  containers: null,
 }
 
 const metrics = computed(() => props.metrics ?? emptyMetrics)
@@ -120,7 +119,7 @@ function goToMetrics(hostname: string) {
       <div>
         <Label>Containers</Label>
         <p class="text-sm text-muted-foreground">
-          {{ metrics.containers !== null ? metrics.containers : '-' }}
+          {{ props.worker.container_count ?? '-' }}
         </p>
       </div>
     </CardContent>

@@ -32,7 +32,6 @@ def get():
       "start_time": start_time.isoformat(),
       "state": Manager().task_state(),
       "restoring_from": Manager().restoring_from(),
-      "workers": Manager().worker_summary,
       "settings": settings_status(),
   }
 

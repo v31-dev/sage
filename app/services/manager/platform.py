@@ -12,6 +12,7 @@ import config
 from services.db import Application, Backup, Database, Event, Notification, Task, db
 from services.notification import Notifications
 from services.settings import Settings
+from services.updates import Fact, UpdateSource
 from utils.archive import BackupDecryptError, decrypt_file, encrypt_file
 from utils.common import utcnow
 from utils.executor import run_in_executor_with_context
@@ -23,6 +24,9 @@ logger = logging.getLogger(__name__)
 
 
 class PlatformMixin:
+  def platform_queue_facts(self) -> list[Fact]:
+    return [Fact(self.restoring_from, UpdateSource.RESTORING), Fact(self.backup_status, UpdateSource.BACKUP_STATUS)]
+
   def backup_status(self) -> dict:
     """Whether a platform backup is running and whether backups are being discovered."""
     return {
@@ -346,7 +350,7 @@ class PlatformMixin:
         # Services built from the settings pick up the restored values.
         self.s3.load()
         Notifications().load_notifications_config()
-        self.refresh_worker_summary()
+        self.load_workers()
 
         self.notify(f"Platform restored from backup {s3_path} successfully.", "success")
         restored = True

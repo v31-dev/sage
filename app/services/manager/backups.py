@@ -249,7 +249,7 @@ class BackupsMixin:
     offline_workers = sorted({
         container.worker.hostname
         for container in application.containers
-        if not container.worker.online
+        if not self.is_worker_online(container.worker.hostname)
     })
     if offline_workers:
       raise Exception(
@@ -354,7 +354,7 @@ class BackupsMixin:
           f"Target worker {target_worker_hostname} is not attached to application {application.qualified_name}."
       )
 
-    if not target_container.worker.online:
+    if not self.is_worker_online(target_container.worker.hostname):
       raise ValueError(f"Target worker {target_worker_hostname} is offline.")
 
     restore_task_id = task_id.get()

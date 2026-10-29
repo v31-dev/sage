@@ -324,7 +324,7 @@ class TaskQueue:
     self._emit()
 
   def snapshot(self) -> dict:
-    """Point-in-time view of running and queued tasks (for the UI)."""
+    """Point-in-time view of running and queued tasks."""
     with self._lock:
       return {
           "running": [self._task_dict(t, "running") for t in self._running],

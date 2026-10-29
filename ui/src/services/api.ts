@@ -21,13 +21,7 @@ export interface AppInfo {
   start_time: string
   state: 'running' | 'paused' | 'restoring' | 'stopping'
   restoring_from: string | null
-  workers: WorkerSummary | null
   settings: SettingsStatus | null
-}
-
-export interface WorkerSummary {
-  total: number
-  online: number
 }
 
 export interface Release {
@@ -57,6 +51,22 @@ export interface Worker {
   created_at: Date
   updated_at: Date
   containers: Container[]
+}
+
+// What the Workers page shows of a worker; `container_count` is the containers in its current report.
+export interface WorkerListItem {
+  hostname: string
+  ip: string
+  online: boolean
+  status: WorkerStatus
+  path: string | null
+  container_count: number | null
+}
+
+export async function fetchWorkers(): Promise<WorkerListItem[]> {
+  const response = await fetch(`${API_ROOT}/workers/`)
+  if (!response.ok) throw new Error('Failed to fetch workers')
+  return await response.json()
 }
 
 export interface Project {
@@ -320,7 +330,6 @@ export interface WorkerMetricSummary {
   diskTotal: number | null
   netRx: number | null
   netTx: number | null
-  containers: number | null
   cores: number | null
 }
 

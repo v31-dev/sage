@@ -27,6 +27,7 @@ from routes.info import get_release
 from routes.notifications import list_notifications
 from routes.tasks import list_tasks
 from routes.updates import TOPICS, same_origin, sio
+from routes.workers import get as list_workers
 from services.db import Notification
 from services.updates import Feed, Topic, UpdateFeed, Updates, UpdateSource, UpdateTopic
 
@@ -148,13 +149,13 @@ def browser(served):
 @pytest.fixture
 def state(monkeypatch):
   state = {"value": 1}
-  monkeypatch.setitem(TOPICS, "info", Topic(lambda: dict(state), frozenset({UpdateSource.QUEUE_STATUS})))
+  monkeypatch.setitem(TOPICS, "info", Topic(lambda: dict(state), frozenset({UpdateSource.QUEUE_STATE})))
   return state
 
 
 class TestTopics:
   def test_the_topics_are_the_ones_the_pages_follow(self):
-    assert set(TOPICS) == {"info", "tasks", "backup-status", "release", "notifications", "task-history"}
+    assert set(TOPICS) == {"info", "tasks", "backup-status", "release", "workers", "notifications", "task-history"}
 
   def test_the_table_has_each_topic_and_each_feed_once(self):
     assert not set(UpdateTopic) & set(UpdateFeed)
@@ -166,16 +167,16 @@ class TestTopics:
     assert all(isinstance(TOPICS[name], Feed) for name in UpdateFeed)
 
   def test_the_info_follows_what_the_manager_status_is_made_of(self):
-    assert TOPICS["info"].sources == {UpdateSource.QUEUE_STATUS, UpdateSource.WORKERS, UpdateSource.CHECKS,
-                                      UpdateSource.LATEST_VERSION}
+    assert TOPICS["info"].sources == {UpdateSource.QUEUE_STATE, UpdateSource.RESTORING, UpdateSource.SETTINGS_APPLYING,
+                                      UpdateSource.CHECKS, UpdateSource.LATEST_VERSION}
 
   @pytest.mark.parametrize("topic, source", [("tasks", UpdateSource.TASKS), ("backup-status", UpdateSource.BACKUP_STATUS),
-                                             ("release", UpdateSource.RELEASE)])
+                                             ("release", UpdateSource.RELEASE), ("workers", UpdateSource.WORKER_LIST)])
   def test_the_other_topics_follow_the_one_source_they_show(self, topic, source):
     assert TOPICS[topic].sources == {source}
 
   @pytest.mark.parametrize("topic, route", [("info", info), ("tasks", list_tasks), ("backup-status", get_platform_backup_status),
-                                            ("release", get_release)])
+                                            ("release", get_release), ("workers", list_workers)])
   def test_a_topic_is_loaded_by_the_function_of_its_route(self, topic, route):
     assert TOPICS[topic].load is route
 
@@ -191,10 +192,10 @@ class TestOverEachTransport:
     one.subscribe("info")
     assert one.received.empty()
     state["value"] = 2
-    Updates().changed(UpdateSource.QUEUE_STATUS)
+    Updates().changed(UpdateSource.QUEUE_STATE)
     assert one.next() == ("state", {"topic": "info", "data": {"value": 2}})
     state["value"] = 3
-    Updates().changed(UpdateSource.QUEUE_STATUS)
+    Updates().changed(UpdateSource.QUEUE_STATE)
     assert one.next() == ("state", {"topic": "info", "data": {"value": 3}})
 
   def test_an_unknown_topic_is_an_error(self, browser, transports):
@@ -208,7 +209,7 @@ class TestOverEachTransport:
     one.client.call("subscribe", topic, timeout=5)
     one.client.call("unsubscribe", topic, timeout=5)
     one.subscribe("info")
-    Updates().changed(UpdateSource.QUEUE_STATUS)
+    Updates().changed(UpdateSource.QUEUE_STATE)
     assert one.next() == ("state", {"topic": "info", "data": {"value": 1}})
     assert one.received.empty()
 
@@ -217,7 +218,7 @@ class TestOverEachTransport:
     one.subscribe("info")
     one.unsubscribe("info")
     state["value"] = 2
-    Updates().changed(UpdateSource.QUEUE_STATUS)
+    Updates().changed(UpdateSource.QUEUE_STATE)
     one.subscribe("notifications")
     Updates().publish(UpdateFeed.NOTIFICATIONS, [{"id": 1}])
     assert one.next() == ("state", {"topic": "notifications", "data": [{"id": 1}]})
@@ -227,7 +228,7 @@ class TestOverEachTransport:
     for one in (first, second):
       one.subscribe("info")
     state["value"] = 3
-    Updates().changed(UpdateSource.QUEUE_STATUS)
+    Updates().changed(UpdateSource.QUEUE_STATE)
     assert first.next()[1]["data"] == {"value": 3}
     assert second.next()[1]["data"] == {"value": 3}
 
@@ -345,7 +346,7 @@ class TestWhilePaused:
     manager.state = "paused"
     one = browser(["polling"])
     one.subscribe("info")
-    Updates().changed(UpdateSource.QUEUE_STATUS)
+    Updates().changed(UpdateSource.QUEUE_STATE)
     assert one.next()[1]["data"] == {"value": 1}
     one.close()
 

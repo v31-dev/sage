@@ -3,7 +3,7 @@ import logging
 import pytest
 
 import config
-from services.db import BaseModel, Database, Instance, Project
+from services.db import BaseModel, Database, Instance, Project, Worker
 from services.db import db as database
 from services.db.database import MODELS
 
@@ -82,6 +82,35 @@ class TestReconcileSchema:
     with caplog.at_level(logging.INFO, logger="services.db.database"):
       Database().reconcile_schema()
     assert "Adding missing column" not in caplog.text
+    assert "Dropping column" not in caplog.text
+
+  def test_drops_a_column_no_model_has_any_more_and_keeps_the_rows(self, db):
+    Project.create(name="demo", label="Demo")
+    db.execute_sql("ALTER TABLE project ADD COLUMN retired INTEGER NOT NULL DEFAULT 0")
+
+    Database().reconcile_schema()
+
+    assert "retired" not in columns(db, "project")
+    assert Project.get_by_id("demo").label == "Demo"
+
+  def test_a_not_null_column_without_a_default_that_no_model_has_does_not_stop_a_new_row(self, db):
+    """A worker table from before `online` left the models has it NOT NULL, so a new worker could not be inserted."""
+    db.execute_sql("DROP TABLE worker")
+    db.execute_sql(
+        "CREATE TABLE worker (hostname VARCHAR(255) NOT NULL PRIMARY KEY, ip CHAR(15) NOT NULL, online INTEGER NOT NULL, "
+        "created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL)")
+
+    Database().reconcile_schema()
+
+    assert "online" not in columns(db, "worker")
+    Worker.create(hostname="w1", ip="100.64.0.2")
+    assert Worker.get_by_id("w1").ip == "100.64.0.2"
+
+  def test_logs_the_column_it_drops(self, db, caplog):
+    db.execute_sql("ALTER TABLE project ADD COLUMN retired INTEGER NOT NULL DEFAULT 0")
+    with caplog.at_level(logging.INFO, logger="services.db.database"):
+      Database().reconcile_schema()
+    assert "Dropping column project.retired" in caplog.text
 
   def test_a_not_null_column_without_a_default_stops_the_startup(self, db):
     db.execute_sql("ALTER TABLE project DROP COLUMN label")

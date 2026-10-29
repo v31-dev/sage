@@ -31,9 +31,11 @@ const appStore = useAppStore()
 
 const props = withDefaults(defineProps<Props>(), {})
 
-const workerIndicator = computed(() =>
-  appStore.workerIndicator(props.container.worker.online ? 'online' : 'offline')
-)
+// The status of the container's worker in the list of workers; none before the list has loaded.
+const workerIndicator = computed(() => {
+  const status = appStore.workerStatus(props.container.worker.hostname)
+  return status ? appStore.workerIndicator(status) : undefined
+})
 </script>
 
 <template>
@@ -78,6 +80,7 @@ const workerIndicator = computed(() =>
           :title="`Worker: ${props.container.worker.hostname}`"
         >
           <StateIndicator
+            v-if="workerIndicator"
             dot
             class="size-2"
             :state="workerIndicator.state"

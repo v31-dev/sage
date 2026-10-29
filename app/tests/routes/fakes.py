@@ -54,6 +54,8 @@ class FakeManager:
     self.queued = set()
     self.s3 = FakeS3()
     self.worker_statuses = {}
+    self.worker_list = []
+    self.online = set()
 
   def __getattr__(self, name):
     if not callable(getattr(Manager, name, None)):
@@ -85,8 +87,11 @@ class FakeManager:
   def task_snapshot(self):
     return {"running": [{"task_id": "t-1"}], "queued": []}
 
-  def worker_status(self, hostname, online):
-    return self.worker_statuses.get(hostname, "online" if online else "offline")
+  def is_worker_online(self, hostname):
+    return hostname in self.online
+
+  def worker_status(self, hostname):
+    return self.worker_statuses.get(hostname, "online" if self.is_worker_online(hostname) else "offline")
 
   def get_volume_backup_resource_error(self, application, volumes):
     return Manager.get_volume_backup_resource_error(self, application, volumes)

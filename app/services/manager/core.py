@@ -7,7 +7,7 @@ from peewee import fn
 from playhouse.shortcuts import model_to_dict
 
 import config
-from services.db import Application, Backup, Container, Domain, Event, Notification, Project, Worker
+from services.db import Application, Backup, Container, Domain, Event, Notification, Project
 from services.notification import Notifications
 from services.updates import UpdateFeed, Updates, UpdateSource
 from utils.common import utcnow
@@ -87,8 +87,9 @@ class CoreMixin:
     now = utcnow()
     since = now - timedelta(hours=lookback_hours)
 
-    worker_total = Worker.select().count()
-    worker_online = Worker.select().where(Worker.online).count()
+    workers = self.worker_counts()
+    worker_total = workers["total"]
+    worker_online = workers["online"]
     application_total = Application.select().count()
     application_counts = self._status_counts(Application)
     application_active = application_counts.get("active", 0)

@@ -110,7 +110,7 @@ class ApplicationMixin:
               container.worker.hostname} with task id {container_task_id}...")
       task_id_token = task_id.set(container_task_id)
 
-      if not container.worker.online:
+      if not self.is_worker_online(container.worker.hostname):
         raise Exception(f"Worker {container.worker.hostname} is offline.")
 
       project_env = parse_multiline_kv(config.project_env, lambda key, value: (key, value))
@@ -288,13 +288,13 @@ class ApplicationMixin:
             container.worker.hostname}")
 
     try:
-      skip_remote_cleanup = force and not container.worker.online
+      skip_remote_cleanup = force and not self.is_worker_online(container.worker.hostname)
 
       if skip_remote_cleanup:
         logger.warning(
             f"Force deleting container of application {container.application.qualified_name} from offline worker {
                 container.worker.hostname}; skipping remote cleanup.")
-      elif not container.worker.online:
+      elif not self.is_worker_online(container.worker.hostname):
         raise Exception(
             f"Worker {container.worker.hostname} is offline; use force delete to remove the container record anyway.")
       else:
@@ -398,7 +398,7 @@ class ApplicationMixin:
         logger.info(
             f"Container of application {container.application.qualified_name} on worker {
                 container.worker.hostname} is already inactive. Skipping compose down.")
-      elif not container.worker.online:
+      elif not self.is_worker_online(container.worker.hostname):
         raise Exception(f"Worker {container.worker.hostname} is offline.")
       else:
         # Stop with docker compose
@@ -532,7 +532,7 @@ class ApplicationMixin:
     the pool is OFFLINE. With no report that can be compared with rows last written at `last_write`
     (`WorkerReports.trusted`) nothing is known: the containers keep their status until the next report or the
     next minute's sync. A container with no label has an empty version, which matches no deploy stamp."""
-    if not worker.online:
+    if not self.is_worker_online(worker.hostname):
       return Observation(OFFLINE)
     snapshot = WorkerReports().trusted(worker.hostname, last_write)
     if snapshot is None:

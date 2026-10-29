@@ -4,7 +4,7 @@ from typing import Callable
 from playhouse.shortcuts import model_to_dict
 
 from services.db import Task
-from services.updates import UpdateFeed, Updates, UpdateSource
+from services.updates import Fact, UpdateFeed, Updates, UpdateSource
 from utils.common import utcnow
 
 logger = logging.getLogger(__name__)
@@ -48,29 +48,15 @@ class QueueMixin:
     """Running + queued tasks held in memory by the queue."""
     return self.task_queue.snapshot()
 
-  def queue_status(self) -> tuple:
-    """What the status shows of the queue: its state, the backup being restored, and the task that makes
-    each settings section apply."""
-    applying = self.applying_tasks().values()
-    return (self.task_state(), self.restoring_from(), tuple(task and task["task_id"] for task in applying))
-
-  def queue_facts(self) -> dict:
-    """What each topic that comes from the queue shows of it, by its source."""
-    return {
-        UpdateSource.TASKS: self.task_snapshot(),
-        UpdateSource.QUEUE_STATUS: self.queue_status(),
-        UpdateSource.BACKUP_STATUS: self.backup_status(),
-    }
+  def tasks_queue_facts(self) -> list[Fact]:
+    """What the queue itself holds that topics show: its tasks and its state."""
+    return [Fact(self.task_snapshot, UpdateSource.TASKS), Fact(self.task_state, UpdateSource.QUEUE_STATE)]
 
   def _queue_changed(self):
-    """TaskQueue change hook, called from any thread after the tasks or the state changed. Fires the source of each
-    topic whose facts differ from the last time."""
-    with self._queue_facts_lock:
-      facts = self.queue_facts()
-      differing = [source for source, fact in facts.items() if fact != self.last_queue_facts.get(source)]
-      self.last_queue_facts = facts
-    for source in differing:
-      Updates().changed(source)
+    """TaskQueue change hook, called from any thread after the tasks or the state changed. Each owner's facts that come
+    from the queue (`queue_facts`) are checked."""
+    for fact in self.queue_facts:
+      fact.check()
 
   def _persist_task(self, task, status: str):
     """TaskQueue persistence hook: record a finished task in the Task table.

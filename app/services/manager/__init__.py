@@ -57,17 +57,19 @@ class Manager(
 
       # Last check result per settings section (services/manager/settings.py).
       self.setting_checks = {}
-      # Worker counts as of the last sync (services/manager/workers.py).
-      self.worker_summary = None
-      # What the topics that come from the queue showed of it at its last change (services/manager/queue.py).
-      self.last_queue_facts = {}
-      self._queue_facts_lock = threading.Lock()
+      # The workers: what their owners pushed (`WorkerInputs` by hostname), the entry derived from each (status, path,
+      # container count, and whether it answered the last sync and was set up, `online`; nothing is known at start,
+      # so none is until the first sync has looked at it) (services/manager/workers.py).
+      self._worker_inputs = {}
+      self.worker_list = []
+      self._worker_list_lock = threading.Lock()
+      # What each owner works out from the queue at every change of it: the tasks and the state, the settings sections
+      # applying, the restore and the backups, the worker tasks.
+      self.queue_facts = [*self.tasks_queue_facts(), *self.settings_queue_facts(), *self.platform_queue_facts(),
+                          *self.workers_queue_facts()]
       # When the stack of each worker was last started for being down, until its cooldown is over
       # (services/manager/workers.py).
       self.worker_stack_repairs = {}
-      # The reboots the manager asked of workers that may still be under way, by worker
-      # (services/manager/workers.py).
-      self.worker_reboots = {}
 
       # Single-dispatcher operation queue. Each scope root maps to an independent
       # lane pool (all defined in utils.executor).
@@ -85,7 +87,7 @@ class Manager(
       self.cloudflare = Cloudflare()
       self.certs = Certs()
       self.s3 = S3()
-      self.refresh_worker_summary()
+      self.load_workers()
 
       self.notify("Manager started.")
     except Exception as e:

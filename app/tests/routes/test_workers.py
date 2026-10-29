@@ -21,37 +21,44 @@ class TestInfra:
     assert client.get("/api/workers/w1").json()["infra"] is None
 
 
+class TestList:
+  def test_the_list_is_what_the_manager_holds_of_the_workers(self, client, manager):
+    manager.worker_list = [
+        {"hostname": "w1", "ip": "100.64.0.2", "status": "rebooting", "path": "direct", "container_count": 3},
+        {"hostname": "w2", "ip": "100.64.0.3", "status": "offline", "path": None, "container_count": None},
+    ]
+    assert client.get("/api/workers/").json() == manager.worker_list
+
+  def test_there_are_no_workers_before_any_is_added(self, client, manager):
+    assert client.get("/api/workers/").json() == []
+
+
 class TestStatus:
-  def test_the_list_and_the_detail_carry_the_status_the_manager_gives(self, client, worker, manager):
+  def test_the_detail_carries_the_status_the_manager_gives(self, client, worker, manager):
     manager.worker_statuses["w1"] = "rebooting"
-    assert client.get("/api/workers/").json()[0]["status"] == "rebooting"
     assert client.get("/api/workers/w1").json()["status"] == "rebooting"
 
-  def test_the_manager_is_told_whether_the_worker_answers(self, client, worker):
-    assert client.get("/api/workers/").json()[0]["status"] == "offline"
+  def test_the_manager_is_asked_whether_the_worker_answers(self, client, worker, manager):
     assert client.get("/api/workers/w1").json()["status"] == "offline"
-    worker.online = True
-    worker.save()
-    assert client.get("/api/workers/").json()[0]["status"] == "online"
+    assert client.get("/api/workers/w1").json()["online"] is False
+    manager.online.add("w1")
     assert client.get("/api/workers/w1").json()["status"] == "online"
+    assert client.get("/api/workers/w1").json()["online"] is True
 
 
 class TestPath:
-  def test_the_list_and_the_detail_say_how_the_worker_is_reached(self, client, worker, tailscale):
+  def test_the_detail_says_how_the_worker_is_reached(self, client, worker, tailscale):
     tailscale.paths["100.64.0.2"] = "relay blr"
-    assert client.get("/api/workers/").json()[0]["path"] == "relay blr"
     assert client.get("/api/workers/w1").json()["path"] == "relay blr"
 
   def test_a_worker_that_has_not_answered_has_none(self, client, worker, tailscale):
-    assert client.get("/api/workers/").json()[0]["path"] is None
     assert client.get("/api/workers/w1").json()["path"] is None
 
 
 class TestReboot:
   @pytest.fixture
-  def online(self, worker):
-    worker.online = True
-    worker.save()
+  def online(self, worker, manager):
+    manager.online.add(worker.hostname)
     return worker
 
   def test_it_queues_the_reboot_of_an_online_worker(self, client, online, manager):
@@ -114,8 +121,7 @@ class TestDelete:
     assert [task["task"].__name__ for task in manager.tasks] == ["remove_worker"]
 
   def test_an_online_worker_with_containers_is_refused_until_they_are_deleted(self, client, worker, application, manager):
-    worker.online = True
-    worker.save()
+    manager.online.add("w1")
     Container.create(application=application, worker=worker)
     response = client.delete("/api/workers/w1")
     assert (response.status_code, response.json()["detail"]) == (400, "Worker is online and has containers; delete them first.")
@@ -127,8 +133,7 @@ class TestDelete:
     assert [task["task"].__name__ for task in manager.tasks] == ["remove_worker"]
 
   def test_an_online_worker_without_containers_is_removed(self, client, worker, manager):
-    worker.online = True
-    worker.save()
+    manager.online.add("w1")
     assert client.delete("/api/workers/w1").status_code == 200
     assert [task["task"].__name__ for task in manager.tasks] == ["remove_worker"]
 

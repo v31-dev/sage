@@ -18,6 +18,10 @@ URL = "/api/telegraf/report"
 class FakeManager:
   def __init__(self):
     self.status_syncs = []
+    self.worker_reports = []
+
+  def update_worker(self, hostname, **inputs):
+    self.worker_reports.append((hostname, inputs))
 
   def request_status_sync_for_containers(self, hostname, names):
     self.status_syncs.append((hostname, set(names)))
@@ -103,6 +107,26 @@ class TestReport:
     post(client, b"not json")
     post(client, json.dumps(BATCH).encode(), node="stranger")
     assert manager.status_syncs == []
+    assert manager.worker_reports == []
+
+  def test_each_report_is_given_to_the_worker_list_as_the_newest_of_the_worker(self, client, worker, manager):
+    post(client, json.dumps(BATCH).encode())
+    first = WorkerReports().latest("w1")
+    post(client, json.dumps(self.later(BATCH)).encode())
+    assert [(hostname, inputs) for hostname, inputs in manager.worker_reports] == [
+        ("w1", {"report": first}), ("w1", {"report": WorkerReports().latest("w1")})]
+    assert first is not WorkerReports().latest("w1")
+
+  def test_a_report_older_than_the_one_held_is_not_given(self, client, worker, manager):
+    post(client, json.dumps(self.later(BATCH)).encode())
+    post(client, json.dumps(BATCH).encode())
+    assert len(manager.worker_reports) == 1
+
+  @staticmethod
+  def later(batch):
+    later = json.loads(json.dumps(batch))
+    later["metrics"] = [dict(m, timestamp=m["timestamp"] + 10_000) for m in later["metrics"]]
+    return later
 
   def test_the_first_report_is_logged_and_the_next_is_not(self, client, worker, caplog):
     with caplog.at_level(logging.INFO, logger="routes.telegraf"):

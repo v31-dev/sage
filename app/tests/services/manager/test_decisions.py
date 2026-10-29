@@ -1,11 +1,14 @@
+import random
+from dataclasses import replace
 from datetime import datetime, timedelta
 
 import pytest
 
 import config
-from services.manager.decisions import (ABSENT, OFFLINE, SEEN, UNKNOWN, Observation, WorkerReboot, WorkerRow, is_worker_rebooting, plan_worker_sync,
-                                        reconcile_container, rollup_status, worker_claim_refusal, worker_owner, worker_stack_problem)
-from services.worker_reports import ContainerReading, HostReading, Snapshot
+from services.manager.decisions import (ABSENT, OFFLINE, SEEN, UNKNOWN, WORKER_TASKS, Observation, WorkerInputs, WorkerReboot, WorkerRow,
+                                        is_worker_rebooting, plan_worker_sync, reconcile_container, rollup_status, worker_claim_refusal, worker_entry,
+                                        worker_owner, worker_ready, worker_stack_problem, worker_status, worker_with_row, worker_without_row)
+from services.worker_reports import ContainerReading, HostReading, Received, Snapshot
 
 STAMP = "2026-10-24T23:08:35.718155"
 
@@ -216,3 +219,126 @@ class TestIsWorkerRebooting:
     assert self.under_way(None, seconds=config.WORKER_REBOOT_LIMIT_SECONDS)
     assert not self.under_way(None, seconds=config.WORKER_REBOOT_LIMIT_SECONDS + 1)
     assert not self.under_way(100, seconds=config.WORKER_REBOOT_LIMIT_SECONDS + 1)
+
+
+NOW = datetime(2026, 1, 1, 12)
+
+
+def report(arrived_at=NOW, traefik_reachable=True, started_at=100, running=("traefik", "telegraf")):
+  """A worker's report that arrived at `arrived_at`, with Telegraf started at `started_at` on the worker's clock."""
+  shot = snapshot(running=running, traefik_reachable=traefik_reachable)
+  containers = {name: replace(reading, started_at=started_at) if name == "telegraf" else reading
+                for name, reading in shot.containers.items()}
+  return Received(arrived_at, replace(shot, containers=containers))
+
+
+def status(now=NOW, started=NOW, **inputs):
+  return worker_status(WorkerInputs(ip="100.64.0.2", **inputs), now, started)
+
+
+def later(seconds):
+  return NOW + timedelta(seconds=seconds)
+
+
+class TestWorkerStatus:
+  @pytest.mark.parametrize("task, expected", [("add_worker", "adding"), ("remove_worker", "removing"), ("reboot_worker", "rebooting")])
+  def test_each_task_the_queue_is_watched_for_gives_the_worker_a_status(self, task, expected):
+    assert status(online=True, tasks=frozenset({task})) == expected
+    assert status(online=False, tasks=frozenset({task})) == expected
+
+  def test_the_tasks_are_the_ones_the_statuses_are_given_for(self):
+    assert WORKER_TASKS == ("add_worker", "remove_worker", "reboot_worker")
+
+  def test_a_worker_that_answers_and_is_not_known_to_be_otherwise_is_online(self):
+    assert status(online=True) == "online"
+
+  def test_a_worker_that_does_not_answer_is_offline(self):
+    assert status(online=False) == "offline"
+
+  def test_a_worker_whose_traefik_does_not_answer_is_not_ready(self):
+    assert status(online=True, report=report(traefik_reachable=False)) == "not ready"
+
+  def test_a_worker_that_does_not_report_is_not_ready_once_the_manager_has_been_up_a_while(self):
+    assert status(online=True, now=later(config.REPORT_STARTUP_GRACE_SECONDS)) == "not ready"
+
+  def test_a_worker_that_does_not_report_is_online_just_after_the_manager_started(self):
+    assert status(online=True, now=later(config.REPORT_STARTUP_GRACE_SECONDS - 1)) == "online"
+
+  def test_a_worker_whose_report_went_stale_is_not_ready(self):
+    assert status(online=True, report=report(), now=later(config.REPORT_STALE_SECONDS)) == "online"
+    assert status(online=True, report=report(), now=later(config.REPORT_STALE_SECONDS + 1)) == "not ready"
+
+  def test_a_worker_that_does_not_answer_is_offline_whatever_its_report_says(self):
+    assert status(online=False, report=report(traefik_reachable=False)) == "offline"
+
+  def test_removing_wins_over_rebooting_and_adding(self):
+    assert status(online=True, tasks=frozenset(WORKER_TASKS)) == "removing"
+    assert status(online=True, tasks=frozenset({"add_worker", "reboot_worker"})) == "adding"
+
+  def test_after_the_task_a_reboot_lasts_until_the_worker_reports_with_a_telegraf_that_restarted(self):
+    mark = WorkerReboot(NOW, 100)
+    assert status(online=True, reboot=mark, report=report(started_at=100)) == "rebooting"      # reports go on until the host goes down
+    assert status(online=False, reboot=mark, report=report(started_at=100), now=later(config.REPORT_STALE_SECONDS + 1)) == "rebooting"
+    assert status(online=True, reboot=mark, report=report(arrived_at=later(60), started_at=100 + 90_000_000_000),
+                  now=later(60)) == "online"
+
+  def test_a_worker_that_is_back_is_not_rebooting_while_its_traefik_does_not_answer(self):
+    mark = WorkerReboot(NOW, 100)
+    assert status(online=True, reboot=mark, report=report(started_at=200, traefik_reachable=False)) == "not ready"
+
+  def test_a_worker_that_does_not_come_back_is_no_longer_rebooting_after_the_limit(self):
+    mark = WorkerReboot(NOW, None)
+    assert status(online=False, reboot=mark, now=later(config.WORKER_REBOOT_LIMIT_SECONDS)) == "rebooting"
+    assert status(online=False, reboot=mark, now=later(config.WORKER_REBOOT_LIMIT_SECONDS + 1)) == "offline"
+
+
+class TestWorkerReady:
+  def ready(self, now=NOW, started=NOW, **inputs):
+    return worker_ready(WorkerInputs(**inputs), now, started)
+
+  def test_a_worker_reporting_with_traefik_answering_is_ready(self):
+    assert self.ready(report=report())
+
+  def test_traefik_not_answering_is_not_ready(self):
+    assert not self.ready(report=report(traefik_reachable=False))
+
+  def test_a_report_without_the_check_is_ready(self):
+    assert self.ready(report=report(traefik_reachable=None))
+
+  def test_a_stale_report_is_not_ready(self):
+    assert not self.ready(report=report(), now=later(config.REPORT_STALE_SECONDS + 1))
+
+  def test_a_worker_that_has_not_reported_is_ready_for_the_grace_after_the_start_and_not_after(self):
+    assert self.ready(now=later(config.REPORT_STARTUP_GRACE_SECONDS - 1))
+    assert not self.ready(now=later(config.REPORT_STARTUP_GRACE_SECONDS))
+
+
+class TestWorkerEntry:
+  def entry(self, now=NOW, **inputs):
+    return worker_entry("w1", WorkerInputs(ip="100.64.0.2", **inputs), now, NOW)
+
+  def test_it_holds_what_the_list_shows_of_the_worker(self):
+    assert self.entry(online=True, path="direct", report=report(running=("traefik", "web", "telegraf"))) == {
+        "hostname": "w1", "ip": "100.64.0.2", "online": True, "status": "online", "path": "direct", "container_count": 3}
+
+  def test_the_container_count_is_that_of_the_current_report_only(self):
+    assert self.entry(report=report())["container_count"] == 2
+    assert self.entry(report=report(), now=later(config.REPORT_STALE_SECONDS + 1))["container_count"] is None
+    assert self.entry()["container_count"] is None
+
+
+class TestWorkerRows:
+  def test_a_worker_that_gets_a_row_starts_not_online_and_not_rebooting(self):
+    kept = WorkerInputs(online=True, reboot=WorkerReboot(NOW, 1), tasks=frozenset({"add_worker"}), report=report())
+    row = worker_with_row(kept, "100.64.0.2", "direct")
+    assert (row.ip, row.online, row.reboot, row.path) == ("100.64.0.2", False, None, "direct")
+    assert row.tasks == kept.tasks and row.report == kept.report
+
+  def test_a_worker_that_had_a_row_keeps_what_it_has_when_the_row_is_written_again(self):
+    held = WorkerInputs(ip="100.64.0.2", online=True, reboot=WorkerReboot(NOW, 1))
+    row = worker_with_row(held, "100.64.0.9", None)
+    assert (row.ip, row.online, row.reboot) == ("100.64.0.9", True, held.reboot)
+
+  def test_a_worker_whose_row_is_gone_keeps_only_its_tasks(self):
+    held = WorkerInputs(ip="100.64.0.2", online=True, tasks=frozenset({"remove_worker"}), report=report(), path="direct")
+    assert worker_without_row(held) == WorkerInputs(tasks=frozenset({"remove_worker"}))

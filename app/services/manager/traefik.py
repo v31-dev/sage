@@ -72,7 +72,7 @@ class TraefikMixin:
 
       # Worker Traefik picks up config.yml from its watched dynamic dir (file
       # provider), so no restart is needed.
-      for worker in Worker.select().where(Worker.online):
+      for worker in self.online_workers():
         await self.tailscale.sync_file(
             worker.hostname,
             app_dir / "templates/worker/traefik/config.yml",
@@ -108,7 +108,7 @@ class TraefikMixin:
       return
 
     cert_hash = self.certs.workers.hash()
-    workers = list(Worker.select().where(Worker.online))
+    workers = self.online_workers()
     if force:
       targets = workers
     else:
@@ -157,11 +157,11 @@ class TraefikMixin:
     containers = list(application.containers)
     application_domains = list(application.domains)
     workers = list(Worker.select())
-    online_workers = [worker for worker in workers if worker.online]
+    online_workers = [worker for worker in workers if self.is_worker_online(worker.hostname)]
     active_containers = [
         container
         for container in containers
-        if container.worker.online and container.status == "active"
+        if self.is_worker_online(container.worker.hostname) and container.status == "active"
     ]
     logger.info(
         f"Syncing Traefik config for application {
@@ -181,7 +181,7 @@ class TraefikMixin:
     # Reset any config on online workers before either clearing stale configs or
     # writing the new routing view for this application.
     for worker in workers:
-      if not worker.online:
+      if not self.is_worker_online(worker.hostname):
         logger.error(
             f"Worker {
                 worker.hostname} is offline, skipping Traefik config sync for application {
@@ -295,7 +295,7 @@ class TraefikMixin:
                 },
             )
 
-    input_hash = routing_input_hash(domain_name, application_domains, containers)
+    input_hash = routing_input_hash(domain_name, application_domains, containers, self.is_worker_online)
     for worker in online_workers:
       await self.write_worker_revision(worker.hostname, application.qualified_name, input_hash)
 
@@ -324,7 +324,7 @@ class TraefikMixin:
     applications left domains_synced=False (e.g. a restart dropped their queued
     sync) are re-enqueued here.
     """
-    online_workers = list(Worker.select().where(Worker.online))
+    online_workers = self.online_workers()
     worker_files = {}
     for worker in online_workers:
       _, files = await self.tailscale.exec_command(
@@ -402,7 +402,7 @@ class TraefikMixin:
 
       if not needs_sync and online_workers:
         app_hash = routing_input_hash(
-            domain_name, list(application.domains), list(application.containers))
+            domain_name, list(application.domains), list(application.containers), self.is_worker_online)
         needs_sync = any(
             revisions_by_worker[worker.hostname].get(application.qualified_name) != app_hash
             for worker in online_workers

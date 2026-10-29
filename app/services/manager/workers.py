@@ -1,18 +1,21 @@
 import asyncio
 import logging
 import re
+from dataclasses import replace
+from typing import Callable
 
 import config
 from services.db import Application, Container, Instance, Worker
 from services.metrics import Metrics
-from services.updates import Updates, UpdateSource
+from services.updates import Fact, Updates, UpdateSource
 from services.worker_reports import WorkerReports
 from utils.common import utcnow
 from utils.executor import run_in_executor_with_context
 from utils.logging import TaskFailed
 
 from ._common import WORKER_INFRA_TEMPLATES, app_dir, content_hash, routing_input_hash
-from .decisions import WorkerReboot, WorkerRow, is_worker_rebooting, plan_worker_sync, worker_claim_refusal, worker_owner, worker_stack_problem
+from .decisions import (WORKER_TASKS, WorkerInputs, WorkerReboot, WorkerRow, plan_worker_sync, worker_claim_refusal, worker_entry, worker_owner,
+                        worker_stack_problem, worker_with_row, worker_without_row)
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +34,7 @@ class WorkersMixin:
     - Recently online workers (previously offline but now answering)
     After that, a worker whose reports say its stack is down gets it started.
     """
-    known = [WorkerRow(w.hostname, w.ip, w.online) for w in Worker.select()]
+    known = [WorkerRow(w.hostname, w.ip, self.is_worker_online(w.hostname)) for w in Worker.select()]
     names = {row.hostname for row in known}
     listed = [peer for peer in await run_in_executor_with_context(self.tailscale.peers) if peer.hostname in names]
     was_online = {row.hostname: row.online for row in known}
@@ -54,33 +57,115 @@ class WorkersMixin:
         logger.error(f"sync_workers failed for {hostname}: {e}")
 
     await self.repair_worker_stacks()
-    self.worker_reboots = {h: mark for h, mark in self.worker_reboots.items() if self._worker_reboot_under_way(h, mark)}
-    self.refresh_worker_summary()
+    self.update_workers({})  # works the list out as of now, for what only the clock changed
 
   async def refresh_worker_paths(self):
-    """Record how each online worker is reached, direct or through a relay (`Tailscale.path`)."""
-    await self.tailscale.refresh_paths([worker.ip for worker in Worker.select().where(Worker.online)])
+    """Find how each online worker is reached, direct or through a relay (`Tailscale.path`), and give it to the
+    worker list."""
+    await self.tailscale.refresh_paths([worker.ip for worker in self.online_workers()])
+    self.update_workers({worker["hostname"]: {"path": self.tailscale.path(worker["ip"])} for worker in self.worker_list})
 
-  def worker_status(self, hostname: str, online: bool) -> str:
-    """What the worker is shown as: "removing" while its removal is queued or running, "adding" while its
-    addition is, "rebooting" from the request until it reports again after the reboot (`is_worker_rebooting`),
-    "offline" when its SSH server does not answer (`online`), "not ready" when its report says Traefik is not
-    answering, otherwise "online".
-    Derived on every call from the queue and the reports, so there is nothing stored to go stale."""
-    params = {"worker_hostname": hostname}
-    if self.has_task(self.remove_worker, params):
-      return "removing"
-    if self.has_task(self.add_worker, params):
-      return "adding"
-    mark = self.worker_reboots.get(hostname)
-    if self.has_task(self.reboot_worker, params) or (mark is not None and self._worker_reboot_under_way(hostname, mark)):
-      return "rebooting"
-    if not online:
-      return "offline"
-    return "not ready" if WorkerReports().ready(hostname) is False else "online"
+  def worker_tasks_busy(self) -> tuple:
+    """The workers that are being added, removed or rebooted, with the task."""
+    snapshot = self.task_snapshot()
+    busy = (task for task in (*snapshot["running"], *snapshot["queued"]) if task["name"] in WORKER_TASKS)
+    return tuple(sorted((task["name"], task["params"]["worker_hostname"]) for task in busy))
 
-  def _worker_reboot_under_way(self, hostname: str, mark: WorkerReboot) -> bool:
-    return is_worker_rebooting(mark, utcnow(), WorkerReports().started_at(hostname, "telegraf"))
+  def workers_queue_facts(self) -> list[Fact]:
+    """The worker tasks are given to the worker list when the set of them differs; they fire no source of their own."""
+    return [Fact(self.worker_tasks_busy, on_change=self._set_worker_tasks)]
+
+  def is_worker_online(self, hostname: str) -> bool:
+    """Whether the worker answered the last sync and was set up (`online` in `worker_list`). Not known, so not
+    online, until a sync has looked at it."""
+    return any(worker["online"] for worker in self.worker_list if worker["hostname"] == hostname)
+
+  def online_workers(self) -> list[Worker]:
+    online = {worker["hostname"] for worker in self.worker_list if worker["online"]}
+    return [worker for worker in Worker.select() if worker.hostname in online]
+
+  def worker_status(self, hostname: str) -> str:
+    """What the worker is shown as (`worker_status` in `decisions`), as of the last change of the worker list.
+    "offline" for a name that is not in it."""
+    return next((worker["status"] for worker in self.worker_list if worker["hostname"] == hostname), "offline")
+
+  def worker_counts(self) -> dict:
+    """How many workers there are and how many are online, from `worker_list`: a worker counts as online when its
+    status is "online", so the count and the statuses agree."""
+    return {"total": len(self.worker_list), "online": sum(worker["status"] == "online" for worker in self.worker_list)}
+
+  def update_workers(self, changes: dict[str, dict]):
+    """Give the worker list the inputs its owners push: `changes` maps a hostname to the `WorkerInputs` fields that
+    changed, and the rest of its record stays. A record is made for a name that has none, a worker only once the
+    row writer has given it an `ip`."""
+    def edit(records: dict):
+      for hostname, inputs in changes.items():
+        records[hostname] = replace(records.get(hostname, WorkerInputs()), **inputs)
+    self._edit_workers(edit)
+
+  def update_worker(self, hostname: str, **inputs):
+    self.update_workers({hostname: inputs})
+
+  def _set_worker_tasks(self, busy: tuple):
+    tasks = {}
+    for task, hostname in busy:
+      tasks.setdefault(hostname, set()).add(task)
+
+    def edit(records: dict):
+      for hostname in records.keys() | tasks.keys():
+        records[hostname] = replace(records.get(hostname, WorkerInputs()), tasks=frozenset(tasks.get(hostname, ())))
+    self._edit_workers(edit)
+
+  def _save_worker(self, hostname: str, ip: str):
+    """Write the worker's row and its record together."""
+    Worker.insert(hostname=hostname, ip=ip).on_conflict(
+        conflict_target=[Worker.hostname], preserve=[Worker.ip]
+    ).execute()
+    path = self.tailscale.path(ip)
+
+    def edit(records: dict):
+      records[hostname] = worker_with_row(records.get(hostname, WorkerInputs()), ip, path)
+    self._edit_workers(edit)
+
+  def _forget_worker(self, hostname: str):
+    """Delete the worker's row and its record together."""
+    Worker.delete().where(Worker.hostname == hostname).execute()
+
+    def edit(records: dict):
+      if hostname in records:
+        records[hostname] = worker_without_row(records[hostname])
+    self._edit_workers(edit)
+
+  def load_workers(self):
+    """Read the Worker table into the worker list, at start and after a restore replaced the table: the only
+    reads of it, as `_save_worker` and `_forget_worker` are the only writes."""
+    rows = {worker.hostname: worker.ip for worker in Worker.select()}
+    paths = {hostname: self.tailscale.path(ip) for hostname, ip in rows.items()}
+
+    def edit(records: dict):
+      for hostname in records.keys() | rows.keys():
+        record = records.get(hostname, WorkerInputs())
+        records[hostname] = (worker_with_row(record, rows[hostname], paths[hostname]) if hostname in rows
+                             else worker_without_row(record))
+    self._edit_workers(edit)
+
+  def _edit_workers(self, edit: Callable[[dict], None]):
+    """The one place the worker list is worked out. `edit` changes the records (hostname to `WorkerInputs`) under
+    the lock; then each worker's entry is derived from its record and the clock, and the list is replaced. Nothing
+    is read from the table, the queue, the reports or Tailscale here: their owners push. Fires `worker_list` when the
+    list differs. What only the clock changes (a report going stale, the start-up grace, the reboot limit) shows the
+    next time the list is worked out, which every push does."""
+    with self._worker_list_lock:
+      edit(self._worker_inputs)
+      for hostname in [hostname for hostname, record in self._worker_inputs.items() if record == WorkerInputs()]:
+        del self._worker_inputs[hostname]
+      now, started = utcnow(), WorkerReports().started
+      workers = [(hostname, record) for hostname, record in sorted(self._worker_inputs.items()) if record.ip is not None]
+      listed = self.worker_list
+      self.worker_list = [worker_entry(hostname, record, now, started) for hostname, record in workers]
+      differs = self.worker_list != listed
+    if differs:
+      Updates().changed(UpdateSource.WORKER_LIST)
 
   async def start_worker_stack(self, worker) -> bool:
     """`docker compose up -d` for the worker's stack: it starts what is stopped and leaves what runs
@@ -103,11 +188,11 @@ class WorkersMixin:
         hostname: at for hostname, at in self.worker_stack_repairs.items()
         if (now - at).total_seconds() < config.WORKER_STACK_REPAIR_COOLDOWN_SECONDS}
     reports = WorkerReports()
-    for worker in Worker.select().where(Worker.online):
+    for worker in self.online_workers():
       current = reports.current(worker.hostname)
       problem = worker_stack_problem(current.snapshot if current else None, reports.silent_for(worker.hostname))
       if (problem is None or worker.hostname in self.worker_stack_repairs
-              or self.worker_status(worker.hostname, worker.online) in ("rebooting", "removing")):
+              or self.worker_status(worker.hostname) in ("rebooting", "removing")):
         continue
       self.worker_stack_repairs[worker.hostname] = now
       try:
@@ -120,17 +205,17 @@ class WorkersMixin:
       else:
         logger.warning(f"Worker {worker.hostname}: {problem}, but starting its stack changed nothing.")
 
-  def refresh_worker_summary(self):
-    """Record how many workers there are and how many are online. Every change to the
-    worker table happens in a sync or a removal, which call this."""
-    summary = {
-        "total": Worker.select().count(),
-        "online": Worker.select().where(Worker.online).count(),
-    }
-    differs = summary != self.worker_summary
-    self.worker_summary = summary
-    if differs:
-      Updates().changed(UpdateSource.WORKERS)
+  def request_stale_application_syncs(self, domain: str, revisions: dict) -> list[str]:
+    """Request a Traefik sync of each application whose routing stamp in `revisions` (a worker's) is not what its files
+    would be now, which covers hosted and mesh files alike. Returns the names of those."""
+    stale = []
+    for application in Application.select():
+      app_hash = routing_input_hash(
+          domain, list(application.domains), list(application.containers), self.is_worker_online)
+      if revisions.get(application.qualified_name) != app_hash:
+        self.request_application_traefik_sync(application)
+        stale.append(application.qualified_name)
+    return stale
 
   def infra_hash(self) -> str:
     """Hash of every input `setup_worker` renders into worker infra files.
@@ -274,9 +359,7 @@ class WorkersMixin:
       infra_stale = (revisions.get("infra") != self.infra_hash()
                      or is_new or existing.ip != worker.ip)
 
-      Worker.insert(hostname=worker.hostname, ip=worker.ip).on_conflict(
-          conflict_target=[Worker.hostname], preserve=[Worker.ip]
-      ).execute()
+      self._save_worker(worker.hostname, worker.ip)
       # Always: the offline transition deleted the DNS record.
       await run_in_executor_with_context(
           self.cloudflare.create_dns_record,
@@ -387,17 +470,9 @@ class WorkersMixin:
         # Nothing drifted, but a container may be stopped.
         await self.start_worker_stack(worker)
 
-      Worker.update(online=True).where(
-          Worker.hostname == worker.hostname).execute()
+      self.update_worker(worker.hostname, online=True)
 
-      # Request a resync for exactly the applications whose routing stamp on
-      # this worker is stale (covers hosted and mesh files alike).
-      for application in Application.select():
-        app_hash = routing_input_hash(
-            domain, list(application.domains), list(application.containers))
-        if revisions.get(application.qualified_name) != app_hash:
-          self.request_application_traefik_sync(application)
-          repaired.append(application.qualified_name)
+      repaired.extend(self.request_stale_application_syncs(domain, revisions))
 
       await self.cleanup_orphan_containers(worker)
 
@@ -434,7 +509,8 @@ class WorkersMixin:
       self.notify(f"Failed to reboot worker {worker.hostname}: {e}", "error")
       raise Exception(f"Failed to reboot worker {worker.hostname}: {e}")
 
-    self.worker_reboots[worker.hostname] = WorkerReboot(utcnow(), WorkerReports().started_at(worker.hostname, "telegraf", current=False))
+    self.update_worker(
+        worker.hostname, reboot=WorkerReboot(utcnow(), WorkerReports().started_at(worker.hostname, "telegraf", current=False)))
 
     # Hold the scope past the backgrounded reboot's delay so a deploy can't grab a
     # still-up worker in the gap between this task finishing and the host dropping.
@@ -459,7 +535,7 @@ class WorkersMixin:
     # Re-check under the scope lock: a deploy could have placed a container here
     # between the route's check and this task running. Fail loudly so it surfaces
     # in the task table rather than vanishing.
-    if worker.online and worker.containers.count() > 0:
+    if self.is_worker_online(worker_hostname) and worker.containers.count() > 0:
       logger.error(f"Worker {worker_hostname} gained containers before removal; aborting.")
       raise TaskFailed()
 
@@ -487,12 +563,10 @@ class WorkersMixin:
       self.notify(
           f"Worker {worker.hostname} was offline, so Sage could not clean it up. It is removed from Sage "
           "only; anything on the VM, including the VM itself, has to be removed by hand.", "warning")
-    Worker.delete().where(Worker.hostname == worker.hostname).execute()
-    self.worker_reboots.pop(worker.hostname, None)
+    self._forget_worker(worker.hostname)
     WorkerReports().forget(worker.hostname)
     Metrics().forget(worker.hostname)
     await self.tailscale.forget(worker.hostname)
-    self.refresh_worker_summary()
     await run_in_executor_with_context(
         self.cloudflare.delete_dns_record, name=f"*.int.{self.cloudflare.domain}", content=worker.ip)
     logger.info(f"Worker {worker.hostname} removed from manager.")
@@ -505,6 +579,6 @@ class WorkersMixin:
     - Cloudflare will automatically handle an offline tunnel
     """
     logger.info(f"Setting worker {worker.hostname} offline.")
-    Worker.update(online=False).where(Worker.hostname == worker.hostname).execute()
+    self.update_worker(worker.hostname, online=False)
     self.cloudflare.delete_dns_record(name=f"*.int.{self.cloudflare.domain}", content=worker.ip)
     self.notify(f"Worker {worker.hostname} is offline.", "error")

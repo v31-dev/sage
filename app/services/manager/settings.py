@@ -4,7 +4,7 @@ import httpx
 
 from services.notification import ChannelCheckFailed, Notifications
 from services.settings import SETTING_DEFINITIONS, Settings
-from services.updates import Updates, UpdateSource
+from services.updates import Fact, Updates, UpdateSource
 from utils.common import utcnow
 from utils.executor import run_in_executor_with_context
 from utils.retry import is_transient
@@ -118,6 +118,13 @@ class SettingsMixin:
     snapshot = self.task_snapshot()
     active = [task for task in (*snapshot["running"], *snapshot["queued"]) if not task["quiet"]]
     return {key: next((t for t in active if _is_applying(t, key)), None) for key in SETTING_SECTIONS}
+
+  def applying_task_ids(self) -> tuple:
+    """The task that makes each section apply, or None, in the order of the sections."""
+    return tuple(task and task["task_id"] for task in self.applying_tasks().values())
+
+  def settings_queue_facts(self) -> list[Fact]:
+    return [Fact(self.applying_task_ids, UpdateSource.SETTINGS_APPLYING)]
 
   def settings_status(self) -> dict:
     """Per section: not_configured, applying (with the task), ok, retrying or error."""

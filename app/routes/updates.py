@@ -5,14 +5,16 @@ from routes.backups import get_platform_backup_status
 from routes.info import get as info
 from routes.info import get_release
 from routes.tasks import list_tasks
+from routes.workers import get as list_workers
 from services.updates import Feed, Topic, UpdateFeed, Updates, UpdateSource, UpdateTopic
 
 TOPICS = {
-    UpdateTopic.INFO: Topic(info, frozenset({UpdateSource.QUEUE_STATUS, UpdateSource.WORKERS, UpdateSource.CHECKS,
-                                             UpdateSource.LATEST_VERSION})),
+    UpdateTopic.INFO: Topic(info, frozenset({UpdateSource.QUEUE_STATE, UpdateSource.RESTORING, UpdateSource.SETTINGS_APPLYING,
+                                             UpdateSource.CHECKS, UpdateSource.LATEST_VERSION})),
     UpdateTopic.TASKS: Topic(list_tasks, frozenset({UpdateSource.TASKS})),
     UpdateTopic.BACKUP_STATUS: Topic(get_platform_backup_status, frozenset({UpdateSource.BACKUP_STATUS})),
     UpdateTopic.RELEASE: Topic(get_release, frozenset({UpdateSource.RELEASE})),
+    UpdateTopic.WORKERS: Topic(list_workers, frozenset({UpdateSource.WORKER_LIST})),
     UpdateFeed.NOTIFICATIONS: Feed(),
     UpdateFeed.TASK_HISTORY: Feed(),
 }

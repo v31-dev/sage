@@ -4,6 +4,7 @@ import { defineStore } from 'pinia'
 import {
   APPLICATION_BUSY_STATUSES,
   fetchAppInfo,
+  fetchWorkers,
   type AppInfo,
   type Application,
   type Container,
@@ -12,6 +13,7 @@ import {
   type InfraContainer,
   type SettingSection,
   type SettingState,
+  type WorkerListItem,
   type WorkerStatus,
 } from '@/services/api'
 import { watchState } from '@/lib/updates'
@@ -34,10 +36,14 @@ const WORKER_INDICATORS: Record<WorkerStatus, Indicator> = {
 }
 
 // The manager's status, which the sidebar, the banner, the restore overlay and the
-// settings pages read. The store follows the manager's `info` topic and owns the map from
-// each status to the indicator that shows it.
+// settings pages read, and the workers, which the sidebar and the pages of workers and
+// applications read. The store follows the manager's `info` and `workers` topics and owns
+// the map from each status to the indicator that shows it.
 export const useAppStore = defineStore('app', () => {
   const info = ref<AppInfo | null>(null)
+  // Null until the first load; the error is the first load failing, until a state arrives.
+  const workers = ref<WorkerListItem[] | null>(null)
+  const workersError = ref('')
 
   // Immediate updates to block UI button till the next push gives the real update
   const applicationDeployStatus = ref('inactive' as Application['status'])
@@ -45,12 +51,17 @@ export const useAppStore = defineStore('app', () => {
   const containerStatuses = ref<Record<string, Application['status']>>({})
 
   const workersIndicator = computed<Indicator | undefined>(() => {
-    const workers = info.value?.workers
-    if (!workers) return undefined
-    const { total, online } = workers
+    if (!workers.value) return undefined
+    const total = workers.value.length
+    const online = workers.value.filter(worker => worker.status === 'online').length
     if (total === 0) return { state: 'idle', label: 'No workers' }
     return { state: online === total ? 'ok' : 'error', label: `${online} of ${total} online` }
   })
+
+  // The status of the worker in the list, undefined before the list has loaded or for a name that is not in it.
+  function workerStatus(hostname: string): WorkerStatus | undefined {
+    return workers.value?.find(worker => worker.hostname === hostname)?.status
+  }
 
   function sectionIndicator(section: SettingSection): Indicator | undefined {
     const state = info.value?.settings?.[section]?.state
@@ -111,11 +122,12 @@ export const useAppStore = defineStore('app', () => {
 
   // A part the manager couldn't build comes as null; the last value stays.
   function apply(next: AppInfo) {
-    info.value = {
-      ...next,
-      workers: next.workers ?? info.value?.workers ?? null,
-      settings: next.settings ?? info.value?.settings ?? null,
-    }
+    info.value = { ...next, settings: next.settings ?? info.value?.settings ?? null }
+  }
+
+  function showWorkers(next: WorkerListItem[]) {
+    workers.value = next
+    workersError.value = ''
   }
 
   async function refresh() {
@@ -126,9 +138,14 @@ export const useAppStore = defineStore('app', () => {
     }
   }
 
-  // The first info, which the app waits for; then the manager pushes each change.
+  // The first info, which the app waits for, and the workers, which it does not; then the manager pushes each change.
   function init() {
-    started ??= watchState('info', fetchAppInfo, apply).first
+    if (!started) {
+      watchState('workers', fetchWorkers, showWorkers).first.catch(err => {
+        workersError.value = err instanceof Error ? err.message : 'Failed to load workers'
+      })
+      started = watchState('info', fetchAppInfo, apply).first
+    }
     return started
   }
 
@@ -159,9 +176,12 @@ export const useAppStore = defineStore('app', () => {
   return {
     // State
     info,
+    workers,
+    workersError,
     applicationDeployStatus,
     // Getters
     workersIndicator,
+    workerStatus,
     sectionIndicator,
     applicationIndicator,
     workerIndicator,

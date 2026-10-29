@@ -1,6 +1,7 @@
 import asyncio
 import itertools
 import logging
+import threading
 from dataclasses import dataclass
 from enum import StrEnum, unique
 from typing import Awaitable, Callable
@@ -18,11 +19,13 @@ logger = logging.getLogger(__name__)
 class UpdateSource(StrEnum):
   """What can change a topic. An owner of state says that it changed, and fires only when what it owns differs from before."""
   TASKS = "tasks"                    # the running and queued tasks
-  QUEUE_STATUS = "queue_status"      # what the manager's status shows of the queue
+  QUEUE_STATE = "queue_state"        # running, paused, restoring or stopping
+  RESTORING = "restoring"            # the backup being restored
+  SETTINGS_APPLYING = "settings_applying"  # the task that makes each settings section apply
   BACKUP_STATUS = "backup_status"    # whether a platform backup runs or backups are being discovered
-  WORKERS = "workers"
-  CHECKS = "checks"
-  LATEST_VERSION = "latest_version"
+  WORKER_LIST = "worker_list"        # each worker's status, path and container count
+  CHECKS = "checks"                  # the result of checking a settings section
+  LATEST_VERSION = "latest_version"  # the newest version released
   RELEASE = "release"                # a release was fetched
 
 
@@ -33,6 +36,7 @@ class UpdateTopic(StrEnum):
   TASKS = "tasks"
   BACKUP_STATUS = "backup-status"
   RELEASE = "release"
+  WORKERS = "workers"
 
 
 @unique
@@ -45,12 +49,39 @@ class UpdateFeed(StrEnum):
 @dataclass(frozen=True)
 class Topic:
   load: Callable[[], object]  # the state, as the REST route for it returns it
-  sources: frozenset[str]     # the sources whose change makes the state worth sending again
+  sources: frozenset[UpdateSource]  # the sources whose change makes the state worth sending again
 
 
 @dataclass(frozen=True)
 class Feed:
   """A list of rows that grows, sent as its owner publishes them."""
+
+
+_UNSET = object()
+
+
+class Fact:
+  """A value an owner works out from something that changes (the queue, say). `check()` works it out and, when it
+  differs from the last time, calls `on_change` with it and fires its source. Safe to call from any thread: the
+  value is worked out and handed to `on_change` under a lock, so the values arrive in the order they were worked out."""
+
+  def __init__(self, compute: Callable[[], object], source: "UpdateSource | None" = None,
+               on_change: Callable[[object], None] | None = None):
+    self._compute = compute
+    self._source = source
+    self._on_change = on_change
+    self._lock = threading.Lock()
+    self.last: object = _UNSET
+
+  def check(self):
+    with self._lock:
+      value = self._compute()
+      differs = value != self.last
+      self.last = value
+      if differs and self._on_change is not None:
+        self._on_change(value)
+    if differs and self._source is not None:
+      Updates().changed(self._source)
 
 
 Emit = Callable[[str, dict], Awaitable[None]]
@@ -105,7 +136,7 @@ class Connection:
 
 
 class Updates(Base):
-  """Pushes to the UI's Socket.IO connections. A topic is a resource: a connection that follows it is sent its whole
+  """Pushes to Socket.IO connections. A topic is a resource: a connection that follows it is sent its whole
   state each time it changes, and nothing when it subscribes; a page loads the first copy from the REST route for the
   topic. A change is only a source saying it changed (`changed`, from any thread); when the wait that it starts has
   passed, each topic that is followed and depends on a source that changed is computed again and sent. A feed is a
@@ -118,7 +149,7 @@ class Updates(Base):
     self._subscribers: dict[str, set[Connection]] = {}
     self._running: set[str] = set()
     self._rerun: set[str] = set()
-    self._changed: set[str] = set()
+    self._changed: set[UpdateSource] = set()
     self._timer = None
     self._loop = None
     self._tasks: set[asyncio.Task] = set()
@@ -154,7 +185,7 @@ class Updates(Base):
     self._subscribers.get(topic, set()).discard(connection)
     connection.forget(topic)
 
-  def changed(self, source: str):
+  def changed(self, source: UpdateSource):
     """A source changed. Safe to call from any thread."""
     loop = self._loop
     if loop is None:
@@ -179,7 +210,7 @@ class Updates(Base):
     for connection in self._subscribers.get(feed, set()):
       connection.append(frame)
 
-  def _add_source(self, source: str):
+  def _add_source(self, source: UpdateSource):
     self._changed.add(source)
     if self._timer is None:
       self._timer = self._loop.call_later(config.UPDATES_COALESCE_SECONDS, self._flush)

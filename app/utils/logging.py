@@ -16,7 +16,7 @@ fastapi_exclude_log_paths = [
     "/api/vector/logs",  # Logs ingeestion
     "/api/workers/*/logs/*",  # Logs query
     "/api/workers/*/metrics",  # Metrics query
-    "/api/socket.io/",  # The UI's live updates, when they fall back to long-polling
+    "/api/socket.io/",  # Socket.IO long-polling, a request every few seconds
 ]
 
 

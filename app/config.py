@@ -16,9 +16,9 @@ LATEST_RELEASE_URL = "https://api.github.com/repos/v31-dev/sage/releases/latest"
 # safety copies, and S3 platform and volume backups (the daily cleanup).
 RETENTION_DAYS = 14
 
-# The UI's Socket.IO connection: the first change starts this wait, and the topics that depend on the changes made within it
+# The Socket.IO connection: the first change starts this wait, and the topics that depend on the changes made within it
 # are recomputed together once it ends.
-UPDATES_COALESCE_SECONDS = 0.3
+UPDATES_COALESCE_SECONDS = 3
 # The server pings every connection this often, and drops one that does not answer within the timeout.
 UPDATES_PING_INTERVAL_SECONDS = 10
 UPDATES_PING_TIMEOUT_SECONDS = 10

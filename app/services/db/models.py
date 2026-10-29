@@ -45,7 +45,6 @@ class Instance(BaseModel):
 class Worker(BaseModel):
   hostname = CleanCharField(primary_key=True)
   ip = FixedCharField(15)
-  online = BooleanField(default=False)
 
 
 class Project(BaseModel):

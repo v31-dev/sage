@@ -1,11 +1,11 @@
 """The decisions of the worker sync and the status sync, as plain functions of the state they are
 given. The async tasks gather that state, call these, and apply the answer."""
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Iterable
 
 import config
-from services.worker_reports import Snapshot
+from services.worker_reports import Received, Snapshot, container_started_at, is_current
 
 # What a look at a worker's containers found for one application.
 SEEN = "seen"          # the container is there, in `state`
@@ -171,3 +171,75 @@ def is_worker_rebooting(mark: WorkerReboot, now: datetime, started_at: int | Non
   if (now - mark.since).total_seconds() > config.WORKER_REBOOT_LIMIT_SECONDS:
     return False
   return started_at is None or started_at == mark.started_at
+
+
+# The tasks that make a worker adding, removing or rebooting while they are queued or running.
+WORKER_TASKS = ("add_worker", "remove_worker", "reboot_worker")
+
+
+@dataclass(frozen=True)
+class WorkerInputs:
+  """What the worker marker knows of one worker, each field written by the one owner of that fact. A record
+  without an `ip` is not a worker, as the table has no row for it: a push can arrive before the row does."""
+  ip: str | None = None                 # the row in the Worker table
+  online: bool = False                  # at the last sync its SSH server answered and it was set up
+  tasks: frozenset[str] = frozenset()   # the `WORKER_TASKS` queued or running for it
+  reboot: WorkerReboot | None = None    # the last reboot asked of it
+  report: Received | None = None        # the newest report of its Telegraf
+  path: str | None = None               # how the manager reaches it
+
+
+def _current_report(worker: WorkerInputs, now: datetime) -> Received | None:
+  return worker.report if worker.report is not None and is_current(worker.report.arrived_at, now) else None
+
+
+def worker_ready(worker: WorkerInputs, now: datetime, started: datetime) -> bool:
+  """Whether the worker is reporting and Traefik answers on it. A worker that has not reported yet is given
+  REPORT_STARTUP_GRACE_SECONDS after `started`, when the manager started."""
+  if worker.report is None:
+    return (now - started).total_seconds() < config.REPORT_STARTUP_GRACE_SECONDS
+  current = _current_report(worker, now)
+  return current is not None and current.snapshot.traefik_reachable is not False
+
+
+def worker_status(worker: WorkerInputs, now: datetime, started: datetime) -> str:
+  """What the worker is shown as: "removing" while its removal is queued or running, "adding" while its
+  addition is, "rebooting" from the request until it reports again after the reboot (`is_worker_rebooting`),
+  "offline" when its SSH server did not answer (`online`), "not ready" when it is not ready (`worker_ready`),
+  otherwise "online"."""
+  if "remove_worker" in worker.tasks:
+    return "removing"
+  if "add_worker" in worker.tasks:
+    return "adding"
+  started_at = container_started_at(_current_report(worker, now), "telegraf")
+  if "reboot_worker" in worker.tasks or (worker.reboot is not None and is_worker_rebooting(worker.reboot, now, started_at)):
+    return "rebooting"
+  if not worker.online:
+    return "offline"
+  return "online" if worker_ready(worker, now, started) else "not ready"
+
+
+def worker_entry(hostname: str, worker: WorkerInputs, now: datetime, started: datetime) -> dict:
+  """The worker as the worker list shows it. `container_count` is the containers of its current report."""
+  current = _current_report(worker, now)
+  return {
+      "hostname": hostname,
+      "ip": worker.ip,
+      "online": worker.online,
+      "status": worker_status(worker, now, started),
+      "path": worker.path,
+      "container_count": len(current.snapshot.containers) if current else None,
+  }
+
+
+def worker_with_row(worker: WorkerInputs, ip: str, path: str | None) -> WorkerInputs:
+  """The record of a worker whose row has this `ip`. One that had no row yet starts not online and not rebooting,
+  whatever an earlier worker of the same name left."""
+  if worker.ip is None:
+    worker = replace(worker, online=False, reboot=None)
+  return replace(worker, ip=ip, path=path)
+
+
+def worker_without_row(worker: WorkerInputs) -> WorkerInputs:
+  """The record of a worker whose row is gone: what the queue says about its tasks is all that stays."""
+  return WorkerInputs(tasks=worker.tasks)

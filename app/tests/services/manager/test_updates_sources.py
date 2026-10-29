@@ -1,5 +1,7 @@
 import asyncio
+import inspect
 import random
+import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -11,13 +13,16 @@ from fastapi.encoders import jsonable_encoder
 from routes.notifications import list_notifications
 from routes.tasks import list_task_history
 from services.db import Notification, Task, Worker
+from services.manager import Manager
 from services.manager.core import CoreMixin
+from services.manager.decisions import WORKER_TASKS
 from services.manager.platform import PlatformMixin
 from services.manager.queue import QueueMixin
 from services.manager.settings import SettingsMixin
 from services.manager.workers import WorkersMixin
 from services.notification import Notifications
-from services.updates import UpdateFeed, Updates, UpdateSource
+from services.updates import Fact, UpdateFeed, Updates, UpdateSource
+from services.worker_reports import WorkerReports
 from utils.executor import active_executor
 from utils.queue import QueuedTask
 
@@ -39,130 +44,148 @@ def changes(register):
   return register(Updates, Changes())
 
 
-class Queue(QueueMixin):
-  """The queue's side of a manager: what the topics that come from it show of it, which the tests change."""
+class TestQueueFacts:
+  class Queue(QueueMixin):
+    """What the queue holds that topics show, which the tests change."""
 
-  def __init__(self, task_state_delay=0.0):
-    self.state = "running"
-    self.restoring = None
-    self.applying = {"tailscale": None, "cloudflare": None, "s3": None, "notifications": None}
-    self.snapshot = {"running": [], "queued": []}
-    self.backup = {"platform_backup_in_progress": False, "discovery_in_progress": False}
-    self.last_queue_facts = {}
-    self._queue_facts_lock = threading.Lock()
-    self.task_state_delay = task_state_delay
+    def __init__(self):
+      self.snapshot = {"running": [], "queued": []}
+      self.state = "running"
+      self.queue_facts = self.tasks_queue_facts()
 
-  def task_state(self):
-    if self.task_state_delay:
-      time.sleep(random.random() * self.task_state_delay)
-    return self.state
+    def task_snapshot(self):
+      return {name: list(tasks) for name, tasks in self.snapshot.items()}
 
-  def restoring_from(self):
-    return self.restoring
+    def task_state(self):
+      return self.state
 
-  def applying_tasks(self):
-    return dict(self.applying)
-
-  def task_snapshot(self):
-    return {name: list(tasks) for name, tasks in self.snapshot.items()}
-
-  def backup_status(self):
-    return dict(self.backup)
-
-
-class TestQueue:
   @pytest.fixture
   def queue(self, changes):
-    queue = Queue()
+    queue = self.Queue()
     queue._queue_changed()
     changes.sources.clear()
     return queue
 
-  def test_every_source_is_reported_the_first_time(self, changes):
-    Queue()._queue_changed()
-    assert sorted(changes.sources) == [UpdateSource.BACKUP_STATUS, UpdateSource.QUEUE_STATUS, UpdateSource.TASKS]
+  def test_the_queue_declares_its_tasks_and_its_state(self):
+    queue = self.Queue()
+    queue.state = "paused"
+    queue.snapshot["running"].append({"task_id": "t1"})
+    values = {fact._source: fact._compute() for fact in queue.tasks_queue_facts()}
+    assert values == {UpdateSource.TASKS: {"running": [{"task_id": "t1"}], "queued": []},
+                      UpdateSource.QUEUE_STATE: "paused"}
 
-  def test_a_change_that_no_topic_shows_is_not_reported(self, queue, changes):
+  def test_both_are_reported_the_first_time(self, changes):
+    self.Queue()._queue_changed()
+    assert sorted(changes.sources) == [UpdateSource.QUEUE_STATE, UpdateSource.TASKS]
+
+  def test_a_change_that_nothing_shows_is_not_reported(self, queue, changes):
     queue._queue_changed()
     assert changes.sources == []
 
-  def test_a_task_that_starts_is_reported_for_the_tasks_only(self, queue, changes):
-    queue.snapshot["running"].append({"task_id": "t1", "name": "deploy"})
-    queue._queue_changed()
-    assert changes.sources == [UpdateSource.TASKS]
-
-  def test_a_task_that_ends_is_reported_for_the_tasks_only(self, queue, changes):
+  def test_a_task_that_starts_and_ends_is_reported_for_the_tasks_only(self, queue, changes):
     queue.snapshot["running"].append({"task_id": "t1", "name": "deploy"})
     queue._queue_changed()
     queue.snapshot["running"].clear()
     queue._queue_changed()
     assert changes.sources == [UpdateSource.TASKS, UpdateSource.TASKS]
 
-  def test_the_state_changing_is_reported_for_the_status_and_not_for_the_tasks(self, queue, changes):
+  def test_the_state_changing_is_reported_for_the_state_only(self, queue, changes):
     queue.state = "paused"
     queue._queue_changed()
-    assert changes.sources == [UpdateSource.QUEUE_STATUS]
+    assert changes.sources == [UpdateSource.QUEUE_STATE]
 
-  @pytest.mark.parametrize("change", [
-      lambda queue: setattr(queue, "restoring", "2026-10-28T10:00:00"),
-      lambda queue: queue.applying.update(s3={"task_id": "t1"}),
-  ], ids=["the backup being restored", "a section applying"])
-  def test_the_status_is_reported_when_something_it_shows_changes(self, queue, changes, change):
-    change(queue)
+  def test_every_fact_of_every_owner_is_checked(self, queue, changes):
+    seen = []
+    queue.queue_facts.append(Fact(lambda: seen.append("checked") or len(seen), UpdateSource.RESTORING))
     queue._queue_changed()
-    assert changes.sources == [UpdateSource.QUEUE_STATUS]
-    queue._queue_changed()
-    assert changes.sources == [UpdateSource.QUEUE_STATUS]
+    assert seen == ["checked"]
+    assert changes.sources == [UpdateSource.RESTORING]
 
-  def test_a_section_that_applies_for_another_task_is_reported(self, queue, changes):
-    queue.applying["s3"] = {"task_id": "t1"}
-    queue._queue_changed()
-    queue.applying["s3"] = {"task_id": "t2"}
-    queue._queue_changed()
-    assert changes.sources.count(UpdateSource.QUEUE_STATUS) == 2
 
-  def test_a_section_that_stops_applying_is_reported(self, queue, changes):
-    queue.applying["s3"] = {"task_id": "t1"}
-    queue._queue_changed()
-    queue.applying["s3"] = None
-    queue._queue_changed()
-    assert changes.sources.count(UpdateSource.QUEUE_STATUS) == 2
+class TestSettingsQueueFacts:
+  class Settings(SettingsMixin):
+    def __init__(self):
+      self.applying = {"tailscale": None, "cloudflare": None, "s3": None, "notifications": None}
 
-  def test_a_backup_or_a_discovery_starting_is_reported_for_the_backup_status_only(self, queue, changes):
-    queue.backup["platform_backup_in_progress"] = True
-    queue._queue_changed()
-    queue.backup["discovery_in_progress"] = True
-    queue._queue_changed()
+    def applying_tasks(self):
+      return dict(self.applying)
+
+  def test_the_task_of_each_section_is_what_applies_it(self):
+    settings = self.Settings()
+    settings.applying["s3"] = {"task_id": "t1"}
+    assert settings.applying_task_ids() == (None, None, "t1", None)
+
+  def test_a_section_starting_to_apply_and_stopping_is_reported(self, changes):
+    settings = self.Settings()
+    [fact] = settings.settings_queue_facts()
+    fact.check()
+    changes.sources.clear()
+    settings.applying["s3"] = {"task_id": "t1"}
+    fact.check()
+    settings.applying["s3"] = None
+    fact.check()
+    assert changes.sources == [UpdateSource.SETTINGS_APPLYING, UpdateSource.SETTINGS_APPLYING]
+
+  def test_another_task_for_the_same_section_is_reported(self, changes):
+    settings = self.Settings()
+    [fact] = settings.settings_queue_facts()
+    settings.applying["s3"] = {"task_id": "t1"}
+    fact.check()
+    changes.sources.clear()
+    settings.applying["s3"] = {"task_id": "t2"}
+    fact.check()
+    assert changes.sources == [UpdateSource.SETTINGS_APPLYING]
+
+  def test_nothing_is_reported_when_it_stays_as_it_was(self, changes):
+    settings = self.Settings()
+    [fact] = settings.settings_queue_facts()
+    fact.check()
+    changes.sources.clear()
+    fact.check()
+    assert changes.sources == []
+
+
+class TestPlatformQueueFacts:
+  class Platform(PlatformMixin):
+    def __init__(self):
+      self.restoring = None
+      self.backup = {"platform_backup_in_progress": False, "discovery_in_progress": False}
+
+    def restoring_from(self):
+      return self.restoring
+
+    def backup_status(self):
+      return dict(self.backup)
+
+  @pytest.fixture
+  def facts(self, changes):
+    platform = self.Platform()
+    facts = platform.platform_queue_facts()
+    for fact in facts:
+      fact.check()
+    changes.sources.clear()
+    return platform, facts
+
+  def test_the_restore_and_the_backups_are_declared(self):
+    assert [fact._source for fact in self.Platform().platform_queue_facts()] == [UpdateSource.RESTORING,
+                                                                                 UpdateSource.BACKUP_STATUS]
+
+  def test_a_restore_starting_is_reported_for_the_restore_only(self, facts, changes):
+    platform, checks = facts
+    platform.restoring = "2026-10-28T10:00:00"
+    for fact in checks:
+      fact.check()
+    assert changes.sources == [UpdateSource.RESTORING]
+
+  def test_a_backup_or_a_discovery_starting_is_reported_for_the_backups_only(self, facts, changes):
+    platform, checks = facts
+    platform.backup["platform_backup_in_progress"] = True
+    for fact in checks:
+      fact.check()
+    platform.backup["discovery_in_progress"] = True
+    for fact in checks:
+      fact.check()
     assert changes.sources == [UpdateSource.BACKUP_STATUS, UpdateSource.BACKUP_STATUS]
-
-  def test_several_things_changing_at_once_are_each_reported_once(self, queue, changes):
-    queue.state = "restoring"
-    queue.snapshot["queued"].append({"task_id": "t1"})
-    queue.backup["platform_backup_in_progress"] = True
-    queue._queue_changed()
-    assert sorted(changes.sources) == [UpdateSource.BACKUP_STATUS, UpdateSource.QUEUE_STATUS, UpdateSource.TASKS]
-
-  @pytest.mark.parametrize("seed", range(6))
-  def test_after_changes_from_many_threads_the_last_facts_are_the_current_ones(self, changes, seed):
-    rng = random.Random(seed)
-    queue = Queue(task_state_delay=0.002)
-
-    def run(thread_seed):
-      thread_rng = random.Random(thread_seed)
-      for _ in range(40):
-        queue.state = thread_rng.choice(["running", "paused", "restoring", "stopping"])
-        queue.applying["s3"] = thread_rng.choice([None, {"task_id": "t1"}, {"task_id": "t2"}])
-        queue.snapshot["running"] = [{"task_id": f"t{thread_rng.randint(0, 3)}"}]
-        queue.backup["platform_backup_in_progress"] = thread_rng.random() < 0.5
-        queue._queue_changed()
-
-    threads = [threading.Thread(target=run, args=(rng.random(),)) for _ in range(6)]
-    for thread in threads:
-      thread.start()
-    for thread in threads:
-      thread.join()
-
-    assert queue.last_queue_facts == queue.queue_facts()
 
 
 class TestBackupStatus:
@@ -197,13 +220,13 @@ class TestTaskHistory:
   def test_a_finished_task_is_published_once_it_is_stored(self, db, changes):
     seen = []
     changes.publish = lambda feed, rows: seen.append((feed, rows, Task.select().count()))
-    Queue()._persist_task(self.task(), "failed")
+    QueueMixin()._persist_task(self.task(), "failed")
     [(feed, rows, stored)] = seen
     assert (feed, stored) == (UpdateFeed.TASK_HISTORY, 1)
     assert len(rows) == 1 and (rows[0]["task_id"], rows[0]["status"]) == ("t-1", "failed")
 
   def test_the_published_row_is_the_row_the_history_returns(self, db, changes):
-    Queue()._persist_task(self.task(), "completed")
+    QueueMixin()._persist_task(self.task(), "completed")
     [(_, rows)] = changes.published
     assert jsonable_encoder(rows) == jsonable_encoder(list_task_history())
 
@@ -212,11 +235,11 @@ class TestTaskHistory:
       raise RuntimeError("database is locked")
 
     monkeypatch.setattr(Task, "create", fails)
-    Queue()._persist_task(self.task(), "completed")
+    QueueMixin()._persist_task(self.task(), "completed")
     assert changes.published == []
 
   def test_a_task_that_is_finished_is_not_a_change_of_a_source(self, db, changes):
-    Queue()._persist_task(self.task(), "completed")
+    QueueMixin()._persist_task(self.task(), "completed")
     assert changes.sources == []
 
 
@@ -280,33 +303,79 @@ class TestLatestVersion:
     assert changes.sources == []
 
 
-class TestWorkers:
+class TestWorkersQueueFacts:
   class Workers(WorkersMixin):
-    worker_summary = None
+    def __init__(self):
+      self.snapshot = {"running": [], "queued": []}
+      self.given = []
 
-  def test_the_worker_counts_are_reported_when_they_are_recorded(self, db, changes):
-    Worker.create(hostname="w1", ip="100.64.0.2", online=True)
-    Worker.create(hostname="w2", ip="100.64.0.3", online=False)
-    workers = self.Workers()
-    workers.refresh_worker_summary()
-    assert workers.worker_summary == {"total": 2, "online": 1}
-    assert changes.sources == [UpdateSource.WORKERS]
+    def task_snapshot(self):
+      return {name: list(tasks) for name, tasks in self.snapshot.items()}
 
-  def test_the_same_counts_recorded_again_are_not_reported(self, db, changes):
-    Worker.create(hostname="w1", ip="100.64.0.2", online=True)
-    workers = self.Workers()
-    workers.refresh_worker_summary()
-    workers.refresh_worker_summary()
-    assert changes.sources == [UpdateSource.WORKERS]
+    def _set_worker_tasks(self, busy):
+      self.given.append(busy)
 
-  def test_counts_that_changed_are_reported(self, db, changes):
-    worker = Worker.create(hostname="w1", ip="100.64.0.2", online=True)
+  @staticmethod
+  def task(name, hostname="w1", task_id="t1"):
+    return {"task_id": task_id, "name": name, "params": {"worker_hostname": hostname}}
+
+  @pytest.fixture
+  def workers(self):
     workers = self.Workers()
-    workers.refresh_worker_summary()
-    worker.online = False
-    worker.save()
-    workers.refresh_worker_summary()
-    assert changes.sources == [UpdateSource.WORKERS, UpdateSource.WORKERS]
+    [workers.fact] = workers.workers_queue_facts()
+    workers.fact.check()
+    workers.given.clear()
+    return workers
+
+  @pytest.mark.parametrize("name", WORKER_TASKS)
+  def test_a_worker_being_added_removed_or_rebooted_is_given_to_the_worker_list(self, workers, name):
+    workers.snapshot["queued"].append(self.task(name))
+    workers.fact.check()
+    assert workers.given == [((name, "w1"),)]
+
+  def test_the_same_task_moving_from_queued_to_running_gives_nothing_new(self, workers):
+    workers.snapshot["queued"].append(self.task("reboot_worker"))
+    workers.fact.check()
+    workers.snapshot["running"].append(workers.snapshot["queued"].pop())
+    workers.fact.check()
+    assert workers.given == [(("reboot_worker", "w1"),)]
+
+  def test_the_task_ending_gives_the_empty_set(self, workers):
+    workers.snapshot["running"].append(self.task("remove_worker"))
+    workers.fact.check()
+    workers.snapshot["running"].clear()
+    workers.fact.check()
+    assert workers.given == [(("remove_worker", "w1"),), ()]
+
+  def test_another_task_gives_nothing(self, workers):
+    workers.snapshot["running"].append({"task_id": "t1", "name": "deploy_application", "params": {"application_id": 1}})
+    workers.fact.check()
+    assert workers.given == []
+
+  def test_another_worker_being_rebooted_is_a_change(self, workers):
+    workers.snapshot["running"].append(self.task("reboot_worker", "w1", "t1"))
+    workers.fact.check()
+    workers.snapshot["running"].append(self.task("reboot_worker", "w2", "t2"))
+    workers.fact.check()
+    assert workers.given[-1] == (("reboot_worker", "w1"), ("reboot_worker", "w2"))
+
+  def test_it_is_no_source(self, workers, changes):
+    workers.snapshot["queued"].append(self.task("add_worker"))
+    workers.fact.check()
+    assert changes.sources == []
+
+  def test_the_busy_workers_are_the_task_and_the_hostname_sorted(self, workers):
+    workers.snapshot["running"].append(self.task("reboot_worker", "w2", "t2"))
+    workers.snapshot["queued"].append(self.task("add_worker", "w1", "t1"))
+    assert workers.worker_tasks_busy() == (("add_worker", "w1"), ("reboot_worker", "w2"))
+
+
+class TestTheManagerChecksEveryOwner:
+  def test_each_owners_queue_facts_are_checked_by_the_manager(self):
+    owners = [name for name in dir(Manager) if name.endswith("_queue_facts")]
+    assert sorted(owners) == ["platform_queue_facts", "settings_queue_facts", "tasks_queue_facts", "workers_queue_facts"]
+    source = inspect.getsource(sys.modules[Manager.__module__])
+    assert [name for name in owners if f"self.{name}()" not in source] == []
 
 
 class TestChecks:

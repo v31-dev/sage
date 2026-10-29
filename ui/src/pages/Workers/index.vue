@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { computed, ref, onMounted, onUnmounted, watch } from 'vue'
 
 import { Card, CardContent } from '@/components/ui/card'
 import { Spinner } from '@/components/ui/spinner'
@@ -7,20 +7,19 @@ import { Spinner } from '@/components/ui/spinner'
 import {
   fetchWorkerMetrics,
   METRICS_POLL_MS,
-  workersAPI,
-  type Worker,
   type WorkerMetricsResponse,
   type WorkerMetricSummary,
 } from '@/services/api'
+import { useAppStore } from '@/stores/app'
 import AddWorkerButton from './AddWorkerButton.vue'
 import WorkerCard from './WorkerCard.vue'
 
-const workers = ref<Worker[]>([])
+// The workers are the app store's: it follows the manager's `workers` topic for the whole app.
+const appStore = useAppStore()
+const workers = computed(() => appStore.workers ?? [])
+const isLoading = computed(() => appStore.workers === null && !appStore.workersError)
 const workerMetrics = ref<Record<string, WorkerMetricSummary>>({})
-const isLoading = ref(true)
-const loadError = ref('')
 let pollInterval: ReturnType<typeof setInterval> | null = null
-let statusInterval: ReturnType<typeof setInterval> | null = null
 
 function summarizeWorkerMetrics(workerData: WorkerMetricsResponse): WorkerMetricSummary {
   const latest = [...workerData.host].reverse().find(row => row.cpu_pct !== null)
@@ -40,22 +39,6 @@ function summarizeWorkerMetrics(workerData: WorkerMetricsResponse): WorkerMetric
       latest && latest.net_tx_kbps !== null
         ? Math.round((latest.net_tx_kbps / 1000) * 10) / 10
         : null,
-    containers: Object.keys(workerData.containers ?? {}).length,
-  }
-}
-
-async function loadWorkers() {
-  try {
-    const next = (await workersAPI.fetchAll()) as Worker[]
-    workers.value = next
-    loadError.value = ''
-  } catch (err) {
-    if (isLoading.value) {
-      workers.value = []
-      loadError.value = err instanceof Error ? err.message : 'Failed to load workers'
-    }
-  } finally {
-    isLoading.value = false
   }
 }
 
@@ -83,7 +66,6 @@ async function loadWorkerMetrics() {
             diskTotal: null,
             netRx: null,
             netTx: null,
-            containers: null,
           },
         ] as const
       }
@@ -93,16 +75,17 @@ async function loadWorkerMetrics() {
   workerMetrics.value = Object.fromEntries(metricsEntries)
 }
 
-onMounted(async () => {
-  await loadWorkers()
-  await loadWorkerMetrics()
+// The metrics of the workers are asked for when there is a worker more or less, and every minute.
+watch(() => workers.value.map(worker => worker.hostname).join(','), loadWorkerMetrics, {
+  immediate: true,
+})
+
+onMounted(() => {
   pollInterval = setInterval(loadWorkerMetrics, METRICS_POLL_MS)
-  statusInterval = setInterval(loadWorkers, 10_000)
 })
 
 onUnmounted(() => {
   if (pollInterval) clearInterval(pollInterval)
-  if (statusInterval) clearInterval(statusInterval)
 })
 </script>
 
@@ -120,13 +103,13 @@ onUnmounted(() => {
       <!-- Content -->
       <div v-else class="space-y-6">
         <div class="flex justify-end">
-          <AddWorkerButton :loadWorkers="loadWorkers" />
+          <AddWorkerButton />
         </div>
 
-        <Card v-if="loadError">
+        <Card v-if="appStore.workersError">
           <CardContent class="flex flex-col items-center justify-center py-12">
             <p class="text-muted-foreground text-lg">Failed to load workers</p>
-            <p class="text-sm text-muted-foreground">{{ loadError }}</p>
+            <p class="text-sm text-muted-foreground">{{ appStore.workersError }}</p>
           </CardContent>
         </Card>
 

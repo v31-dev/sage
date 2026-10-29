@@ -37,9 +37,8 @@ def inject_worker(request: Request):
 
 @router.get("/")
 def get():
-  return [{**worker, "status": Manager().worker_status(worker["hostname"], worker["online"]),
-           "path": Tailscale().path(worker["ip"])}
-          for worker in Worker.select().dicts()]
+  """Each worker's status, path and container count: the manager's worker list."""
+  return Manager().worker_list
 
 
 @router.post("/")
@@ -87,7 +86,8 @@ def get_worker(request: Request, hostname: str):
       ),
   )
   data["infra"] = WorkerReports().infra(hostname)
-  data["status"] = Manager().worker_status(hostname, worker.online)
+  data["online"] = Manager().is_worker_online(hostname)
+  data["status"] = Manager().worker_status(hostname)
   data["path"] = Tailscale().path(worker.ip)
   return data
 
@@ -125,7 +125,7 @@ def reboot_worker(request: Request, hostname: str):
 
   if not worker:
     raise HTTPException(status_code=400, detail="Only a worker can be rebooted.")
-  status = Manager().worker_status(hostname, worker.online)
+  status = Manager().worker_status(hostname)
   if status not in ("online", "not ready"):
     raise HTTPException(status_code=409, detail=f"Worker is {status}.")
 
@@ -150,9 +150,9 @@ def delete_worker(request: Request, hostname: str):
 
   # An online worker is cleaned up when it goes, so its containers are deleted first; an offline one is
   # force-deleted with them.
-  if worker.online and worker.containers.count() > 0:
+  if Manager().is_worker_online(hostname) and worker.containers.count() > 0:
     raise HTTPException(status_code=400, detail="Worker is online and has containers; delete them first.")
-  if Manager().worker_status(hostname, worker.online) == "removing":
+  if Manager().worker_status(hostname) == "removing":
     raise HTTPException(status_code=409, detail="Worker is already being removed.")
 
   # platform+app scoped so it serializes with worker sync and deploys; QUEUE so a

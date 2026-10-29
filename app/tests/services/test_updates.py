@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 import pytest
 
 import config
-from services.updates import Feed, Topic, Updates
+from services.updates import Fact, Feed, Topic, Updates, UpdateSource
 
 
 class Socket:
@@ -514,3 +514,126 @@ class TestFeedsAgainstAModel:
         assert stored <= set(received), f"sid {index} missed {sorted(stored - set(received))}"
       else:
         assert len(socket.states("f")) == counts[index], f"sid {index} was sent rows after it left"
+
+
+class TestFact:
+  class Value:
+    """A value that changes, and what asking for it costs."""
+
+    def __init__(self, value=1, delay=0.0):
+      self.value = value
+      self.delay = delay
+      self.computed = 0
+
+    def __call__(self):
+      self.computed += 1
+      value = self.value
+      if self.delay:
+        time.sleep(random.random() * self.delay)
+      return value
+
+  @pytest.fixture
+  def sources(self, monkeypatch):
+    fired = []
+    monkeypatch.setattr(Updates, "changed", lambda self, source: fired.append(source))
+    return fired
+
+  def test_the_first_check_fires_whatever_the_value_is(self, sources):
+    for value in (1, None, (), {}, ""):
+      fact = Fact(lambda value=value: value, UpdateSource.TASKS)
+      fact.check()
+    assert sources == [UpdateSource.TASKS] * 5
+
+  def test_a_value_that_is_the_same_fires_nothing(self, sources):
+    value = self.Value()
+    fact = Fact(value, UpdateSource.TASKS)
+    fact.check()
+    fact.check()
+    assert sources == [UpdateSource.TASKS] and value.computed == 2
+
+  def test_a_value_that_differs_fires_once_each_time(self, sources):
+    value = self.Value()
+    fact = Fact(value, UpdateSource.TASKS)
+    fact.check()
+    value.value = 2
+    fact.check()
+    fact.check()
+    value.value = 1
+    fact.check()
+    assert sources == [UpdateSource.TASKS] * 3
+
+  def test_the_callback_is_called_when_it_differs_and_not_otherwise(self, sources):
+    value = self.Value()
+    called = []
+    fact = Fact(value, on_change=called.append)
+    fact.check()
+    fact.check()
+    value.value = 2
+    fact.check()
+    assert called == [1, 2] and sources == []
+
+  def test_it_fires_its_source_and_calls_its_callback(self, sources):
+    called = []
+    Fact(lambda: 1, UpdateSource.RESTORING, on_change=called.append).check()
+    assert sources == [UpdateSource.RESTORING] and called == [1]
+
+  def test_the_values_reach_the_callback_in_the_order_they_were_worked_out(self, sources):
+    entered, release = threading.Event(), threading.Event()
+    state = {"value": 1}
+    given = []
+
+    def on_change(value):
+      if value == 1:
+        entered.set()
+        release.wait(5)
+      given.append(value)
+
+    fact = Fact(lambda: state["value"], on_change=on_change)
+    slow = threading.Thread(target=fact.check)
+    slow.start()
+    entered.wait(5)
+    state["value"] = 2
+    fast = threading.Thread(target=fact.check)
+    fast.start()
+    time.sleep(0.05)
+    release.set()
+    slow.join()
+    fast.join()
+    assert given == [1, 2] and fact.last == 2
+
+  def test_a_source_is_fired_after_the_callback(self, sources):
+    order = []
+    Fact(lambda: 1, UpdateSource.TASKS, on_change=lambda value: order.append(("callback", list(sources)))).check()
+    assert order == [("callback", [])] and sources == [UpdateSource.TASKS]
+
+  def test_it_remembers_the_last_value(self, sources):
+    value = self.Value(3)
+    fact = Fact(value)
+    fact.check()
+    assert fact.last == 3
+
+  def test_a_slow_check_does_not_leave_an_older_value_over_a_newer_one(self, sources):
+    started, release = threading.Event(), threading.Event()
+    state = {"value": 1, "calls": 0}
+
+    def compute():
+      value = state["value"]
+      state["calls"] += 1
+      if state["calls"] == 1:
+        started.set()
+        release.wait(5)
+      return value
+
+    fact = Fact(compute, UpdateSource.TASKS)
+    slow = threading.Thread(target=fact.check)
+    slow.start()
+    started.wait(5)
+    state["value"] = 2
+    fast = threading.Thread(target=fact.check)
+    fast.start()
+    time.sleep(0.05)
+    release.set()
+    slow.join()
+    fast.join()
+
+    assert fact.last == 2
