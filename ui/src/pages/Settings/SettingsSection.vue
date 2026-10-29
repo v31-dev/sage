@@ -140,8 +140,10 @@ async function save() {
     saved.value = valuesFrom(data.value)
     values.value = { ...saved.value }
     toast.success(`${props.title} settings saved`)
-    // A saved section is checked again, unless it was emptied.
+    // A saved section is checked again, unless it was emptied. Nothing is checked for an emptied one, so its state is
+    // read back.
     if (keys.value.some(key => saved.value[key] !== '')) appStore.setSettingApplying(props.section)
+    else await appStore.refresh()
   } catch (err) {
     error.value = errorMessage(err, `Failed to save ${props.title} settings`)
   } finally {
