@@ -16,11 +16,10 @@ import { Input } from '@/components/ui/input'
 import { Field, FieldGroup, FieldLabel, FieldSet, FieldError } from '@/components/ui/field'
 import { Spinner } from '@/components/ui/spinner'
 
-import { type Application, type Volume, getVolumeAPI } from '@/services/api'
+import { type Application, createVolume } from '@/services/api'
 
 interface Props {
   application: Application
-  volumeAPI: ReturnType<typeof getVolumeAPI>
   loadApplication: () => Promise<void>
 }
 
@@ -60,7 +59,7 @@ async function onClickAddVolumeConfirm() {
 
   try {
     isClickedAddVolumeConfirm.value = true
-    ;(await props.volumeAPI.create(volume.value)) as Volume
+    await createVolume(props.application.project.name, props.application.name, volume.value)
     isAddVolumeDialogOpen.value = false
     await props.loadApplication()
     toast.success('Volume added successfully')

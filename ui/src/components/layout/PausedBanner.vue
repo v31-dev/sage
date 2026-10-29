@@ -4,7 +4,7 @@ import { PauseCircle } from 'lucide-vue-next'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/ui/spinner'
-import { settingsAPI } from '@/services/api'
+import { resumeSage } from '@/services/api'
 import { useAppStore } from '@/stores/app'
 
 const appStore = useAppStore()
@@ -14,7 +14,7 @@ const resuming = ref(false)
 async function onResume() {
   resuming.value = true
   try {
-    await settingsAPI.action('resume')
+    await resumeSage()
     appStore.setState('running')
   } catch (err) {
     console.error('Failed to resume:', err)

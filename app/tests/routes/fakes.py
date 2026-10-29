@@ -54,6 +54,10 @@ class FakeManager:
     self.queued = set()
     self.s3 = FakeS3()
     self.worker_statuses = {}
+    self.worker_list = []
+    self.online = set()
+    self.checking = set()   # workers no sync has looked at yet
+    self.traefik_syncs = []
 
   def __getattr__(self, name):
     if not callable(getattr(Manager, name, None)):
@@ -79,8 +83,26 @@ class FakeManager:
   def has_task(self, task, params=None):
     return task.__name__ in self.queued
 
-  def worker_status(self, hostname, online):
-    return self.worker_statuses.get(hostname, "online" if online else "offline")
+  def backup_status(self):
+    return Manager.backup_status(self)
+
+  def task_snapshot(self):
+    return {"running": [{"task_id": "t-1"}], "queued": []}
+
+  def worker_online(self, hostname):
+    return None if hostname in self.checking else hostname in self.online
+
+  def is_worker_online(self, hostname):
+    return self.worker_online(hostname) is True
+
+  def request_application_traefik_sync(self, application):
+    self.traefik_syncs.append(application.id)
+
+  def worker_entry(self, hostname):
+    return Manager.worker_entry(self, hostname)
+
+  def worker_status(self, hostname):
+    return self.worker_statuses.get(hostname, "online" if self.is_worker_online(hostname) else "offline")
 
   def get_volume_backup_resource_error(self, application, volumes):
     return Manager.get_volume_backup_resource_error(self, application, volumes)

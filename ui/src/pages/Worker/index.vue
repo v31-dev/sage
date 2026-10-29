@@ -5,9 +5,10 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/ui/spinner'
 import type { APIError } from '@/lib/api'
+import { watchState } from '@/lib/updates'
 
 import {
-  workersAPI,
+  fetchWorker as fetchWorkerByHostname,
   fetchWorkerMetrics,
   type Worker,
   type WorkerMetricsResponse,
@@ -25,44 +26,46 @@ const workerMetrics = ref<WorkerMetricsResponse | null>(null)
 const isLoading = ref(true)
 const loadError = ref('')
 const isNotFound = ref(false)
-let pollInterval: ReturnType<typeof setInterval> | null = null
+let stop: (() => void) | undefined
 
+const fetchWorker = () => fetchWorkerByHostname(hostname)
+
+// The worker, loaded from its route and then pushed by the manager each time it changes.
 onMounted(async () => {
-  await loadWorker()
-  if (worker.value) {
-    pollInterval = setInterval(loadWorkerStatus, 10_000)
-  }
-})
-onUnmounted(() => {
-  if (pollInterval) clearInterval(pollInterval)
-})
-
-async function loadWorker() {
+  const watch = watchState(`worker:${hostname}`, fetchWorker, showWorker, showNotFound)
+  stop = watch.stop
   try {
-    isLoading.value = true
-    loadError.value = ''
-    isNotFound.value = false
-    const workerData = (await workersAPI.fetchOne(hostname)) as Worker
-    worker.value = workerData
+    await watch.first
     workerMetrics.value = await fetchWorkerMetrics(hostname, '1m')
   } catch (err) {
     console.error('Failed to load worker:', err)
     const status = (err as APIError).status
     if (status === 404) {
-      worker.value = null
-      workerMetrics.value = null
-      isNotFound.value = true
+      showNotFound()
     } else {
       loadError.value = err instanceof Error ? err.message : 'Failed to load worker'
     }
   } finally {
     isLoading.value = false
   }
+})
+onUnmounted(() => stop?.())
+
+function showWorker(next: Worker) {
+  worker.value = next
 }
 
+// Also when the worker is removed while the page is open.
+function showNotFound() {
+  worker.value = null
+  workerMetrics.value = null
+  isNotFound.value = true
+}
+
+// After an action on one of its containers, without waiting for the manager's push.
 async function loadWorkerStatus() {
   try {
-    worker.value = (await workersAPI.fetchOne(hostname)) as Worker
+    showWorker(await fetchWorker())
   } catch (err) {
     console.error('Failed to load worker status:', err)
   }

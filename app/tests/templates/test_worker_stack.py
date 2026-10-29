@@ -16,12 +16,26 @@ def telegraf_config():
   return tomllib.loads(re.sub(r"\$\{(\w+)\}", lambda m: {"INTERVAL": str(config.REPORT_INTERVAL_SECONDS)}.get(m[1], "x"), text))
 
 
+def vector_sink():
+  return yaml.safe_load((TEMPLATES / "vector" / "vector.yml").read_text())["sinks"]["fastapi_http"]
+
+
 def service(name):
   return yaml.safe_load((TEMPLATES / "docker-compose.yml").read_text())["services"][name]
 
 
 def telegraf_service():
   return service("telegraf")
+
+
+class TestVectorConfig:
+  def test_it_sends_the_logs_it_holds_at_least_every_ten_seconds(self):
+    assert vector_sink()["batch"]["timeout_secs"] == 10
+
+  def test_it_posts_to_the_log_route_with_the_workers_name(self):
+    sink = vector_sink()
+    assert sink["uri"].endswith(":9001/api/vector/logs")
+    assert sink["request"]["headers"]["X-Node-Name"] == "${HOSTNAME}"
 
 
 class TestTelegrafConfig:
@@ -80,3 +94,26 @@ class TestMemoryLimits:
     limits = service(name)
     assert limits["mem_limit"].endswith("m")
     assert limits["memswap_limit"] == limits["mem_limit"]
+
+
+COMPOSE_TEMPLATES = ["docker-compose.yml", "application/dockerhub-compose.yml", "application/gitrepo-compose.yml"]
+
+
+def compose_services(name):
+  """A Compose template with every ${PLACEHOLDER} filled by a stand-in, as the manager fills them."""
+  text = (TEMPLATES / name).read_text().replace("${SECRETS_BLOCK}", "")
+  return yaml.safe_load(re.sub(r"\$\{(\w+)\}", "x", text))["services"]
+
+
+class TestContainerLogs:
+  """Docker's json-file driver keeps every line of a container's output until the container is removed."""
+
+  @pytest.mark.parametrize("name", COMPOSE_TEMPLATES)
+  def test_every_container_rotates_its_logs_the_same_way(self, name):
+    services = compose_services(name)
+    assert services
+    for container, definition in services.items():
+      assert definition["logging"] == {"driver": "json-file", "options": {"max-size": "10m", "max-file": "5"}}, container
+
+  def test_the_stack_has_the_four_services_that_are_capped(self):
+    assert set(compose_services("docker-compose.yml")) == {"traefik", "cloudflared", "vector", "telegraf"}

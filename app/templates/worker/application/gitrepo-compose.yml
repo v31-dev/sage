@@ -6,6 +6,11 @@ services:
       args: [ ${BUILD_ARGS} ]
       secrets: [ ${BUILD_SECRETS} ]
     container_name: ${CONTAINER_NAME}
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"
     labels:
       sage.deployed_at: "${DEPLOYED_AT}"
     restart: unless-stopped

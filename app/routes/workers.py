@@ -37,9 +37,8 @@ def inject_worker(request: Request):
 
 @router.get("/")
 def get():
-  return [{**worker, "status": Manager().worker_status(worker["hostname"], worker["online"]),
-           "path": Tailscale().path(worker["ip"])}
-          for worker in Worker.select().dicts()]
+  """Each worker's status, path and container count: the manager's worker list."""
+  return Manager().worker_list
 
 
 @router.post("/")
@@ -67,9 +66,9 @@ def add_worker(request: Request, worker_data: dict = Body(...)):
   return {"status": "OK", "hostname": peer.hostname}
 
 
-@router.get("/{hostname}", dependencies=[Depends(inject_worker)])
-def get_worker(request: Request, hostname: str):
-  worker = request.state.models["worker"]
+def worker_payload(worker: Worker) -> dict:
+  """The worker with its containers and their applications, and what the worker list holds of it: `infra` (the state
+  of the containers of its stack), `online`, `status`, `path` and `metrics` (its newest minute)."""
   data = model_to_dict(
       worker,
       backrefs=True,
@@ -86,10 +85,23 @@ def get_worker(request: Request, hostname: str):
           }
       ),
   )
-  data["infra"] = WorkerReports().infra(hostname)
-  data["status"] = Manager().worker_status(hostname, worker.online)
-  data["path"] = Tailscale().path(worker.ip)
+  entry = Manager().worker_entry(worker.hostname) or {}
+  data["infra"] = entry.get("infra")
+  data["online"] = entry.get("online", False)
+  data["status"] = entry.get("status", "offline")
+  data["path"] = entry.get("path")
+  data["metrics"] = entry.get("metrics")
   return data
+
+
+def load_worker(hostname: str) -> dict:
+  """The `worker` topic of a hostname: what `GET /workers/{hostname}` returns."""
+  return worker_payload(generic_get(Worker, Worker.hostname == hostname, return_model=True))
+
+
+@router.get("/{hostname}", dependencies=[Depends(inject_worker)])
+def get_worker(request: Request, hostname: str):
+  return worker_payload(request.state.models["worker"])
 
 
 @router.get("/{hostname}/metrics", dependencies=[Depends(inject_worker)])
@@ -125,7 +137,7 @@ def reboot_worker(request: Request, hostname: str):
 
   if not worker:
     raise HTTPException(status_code=400, detail="Only a worker can be rebooted.")
-  status = Manager().worker_status(hostname, worker.online)
+  status = Manager().worker_status(hostname)
   if status not in ("online", "not ready"):
     raise HTTPException(status_code=409, detail=f"Worker is {status}.")
 
@@ -150,9 +162,9 @@ def delete_worker(request: Request, hostname: str):
 
   # An online worker is cleaned up when it goes, so its containers are deleted first; an offline one is
   # force-deleted with them.
-  if worker.online and worker.containers.count() > 0:
+  if Manager().worker_online(hostname) is not False and worker.containers.count() > 0:
     raise HTTPException(status_code=400, detail="Worker is online and has containers; delete them first.")
-  if Manager().worker_status(hostname, worker.online) == "removing":
+  if Manager().worker_status(hostname) == "removing":
     raise HTTPException(status_code=409, detail="Worker is already being removed.")
 
   # platform+app scoped so it serializes with worker sync and deploys; QUEUE so a

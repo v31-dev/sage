@@ -1,54 +1,37 @@
 <script setup lang="ts">
-import { ref, onUnmounted } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
+import { watchState } from '@/lib/updates'
+import { discoverBackups, fetchBackupStatus, type BackupStatus } from '@/services/api'
 import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/ui/spinner'
 import { toast } from 'vue-sonner'
 import { ScanSearch } from 'lucide-vue-next'
 
-interface Props {
-  backupAPI: any
-  loadBackups: () => Promise<void>
-}
-
-const props = withDefaults(defineProps<Props>(), {})
-
 const isDiscovering = ref(false)
-const pollInterval = 2_000
-const pollTimer = ref<number | null>(null)
+let stop: (() => void) | undefined
 
-function stopPolling() {
-  if (pollTimer.value) {
-    clearInterval(pollTimer.value)
-    pollTimer.value = null
-  }
-}
-
-async function checkDiscoveryStatus() {
-  try {
-    const status = await props.backupAPI.action('platform_backup_status')
-    if (status.discovery_in_progress === false) {
-      stopPolling()
-      isDiscovering.value = false
-      await props.loadBackups()
-    }
-  } catch (error) {
-    console.error('Error checking discovery status:', error)
-  }
+function showStatus(status: BackupStatus) {
+  isDiscovering.value = status.discovery_in_progress
 }
 
 async function onClickDiscover() {
   isDiscovering.value = true
   try {
-    await props.backupAPI.action('discover')
+    await discoverBackups()
     toast.success('Looking for backups in S3')
-    pollTimer.value = window.setInterval(checkDiscoveryStatus, pollInterval)
   } catch (err) {
     toast.error(err instanceof Error ? err.message : 'Failed to look for backups')
     isDiscovering.value = false
   }
 }
 
-onUnmounted(stopPolling)
+onMounted(() => {
+  const status = watchState('backup-status', fetchBackupStatus, showStatus)
+  stop = status.stop
+  status.first.catch(error => console.error('Error checking discovery status:', error))
+})
+
+onUnmounted(() => stop?.())
 </script>
 
 <template>

@@ -1,108 +1,18 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { computed } from 'vue'
 
 import { Card, CardContent } from '@/components/ui/card'
 import { Spinner } from '@/components/ui/spinner'
 
-import {
-  fetchWorkerMetrics,
-  workersAPI,
-  type Worker,
-  type WorkerMetricsResponse,
-  type WorkerMetricSummary,
-} from '@/services/api'
+import { useAppStore } from '@/stores/app'
 import AddWorkerButton from './AddWorkerButton.vue'
 import WorkerCard from './WorkerCard.vue'
 
-const workers = ref<Worker[]>([])
-const workerMetrics = ref<Record<string, WorkerMetricSummary>>({})
-const isLoading = ref(true)
-const loadError = ref('')
-let pollInterval: ReturnType<typeof setInterval> | null = null
-let statusInterval: ReturnType<typeof setInterval> | null = null
-
-function summarizeWorkerMetrics(workerData: WorkerMetricsResponse): WorkerMetricSummary {
-  const latest = [...workerData.host].reverse().find(row => row.cpu_pct !== null)
-
-  return {
-    cpu: latest?.cpu_pct ?? null,
-    cores: workerData.meta.cpu_cores,
-    mem: latest?.mem_used_mb ?? null,
-    memTotal: workerData.meta.mem_total_mb,
-    disk: latest?.disk_used_gb ?? null,
-    diskTotal: workerData.meta.disk_total_gb,
-    netRx:
-      latest && latest.net_rx_kbps !== null
-        ? Math.round((latest.net_rx_kbps / 1000) * 10) / 10
-        : null,
-    netTx:
-      latest && latest.net_tx_kbps !== null
-        ? Math.round((latest.net_tx_kbps / 1000) * 10) / 10
-        : null,
-    containers: Object.keys(workerData.containers ?? {}).length,
-  }
-}
-
-async function loadWorkers() {
-  try {
-    const next = (await workersAPI.fetchAll()) as Worker[]
-    workers.value = next
-    loadError.value = ''
-  } catch (err) {
-    if (isLoading.value) {
-      workers.value = []
-      loadError.value = err instanceof Error ? err.message : 'Failed to load workers'
-    }
-  } finally {
-    isLoading.value = false
-  }
-}
-
-async function loadWorkerMetrics() {
-  if (workers.value.length === 0) {
-    workerMetrics.value = {}
-    return
-  }
-
-  const metricsEntries = await Promise.all(
-    workers.value.map(async worker => {
-      try {
-        const workerData = await fetchWorkerMetrics(worker.hostname, '1m')
-        return [worker.hostname, summarizeWorkerMetrics(workerData)] as const
-      } catch (err) {
-        console.error('Failed to fetch worker metrics for', worker.hostname, err)
-        return [
-          worker.hostname,
-          {
-            cpu: null,
-            cores: null,
-            mem: null,
-            memTotal: null,
-            disk: null,
-            diskTotal: null,
-            netRx: null,
-            netTx: null,
-            containers: null,
-          },
-        ] as const
-      }
-    })
-  )
-
-  workerMetrics.value = Object.fromEntries(metricsEntries)
-}
-
-onMounted(async () => {
-  await loadWorkers()
-  await loadWorkerMetrics()
-  pollInterval = setInterval(loadWorkerMetrics, 15_000)
-  statusInterval = setInterval(loadWorkers, 10_000)
-})
-
-onUnmounted(() => {
-  if (pollInterval) clearInterval(pollInterval)
-  if (statusInterval) clearInterval(statusInterval)
-})
+// The workers are the app store's: it follows the manager's `workers` topic for the whole app, and each worker
+// carries its newest minute of metrics.
+const appStore = useAppStore()
+const workers = computed(() => appStore.workers ?? [])
+const isLoading = computed(() => appStore.workers === null && !appStore.workersError)
 </script>
 
 <template>
@@ -119,13 +29,13 @@ onUnmounted(() => {
       <!-- Content -->
       <div v-else class="space-y-6">
         <div class="flex justify-end">
-          <AddWorkerButton :loadWorkers="loadWorkers" />
+          <AddWorkerButton />
         </div>
 
-        <Card v-if="loadError">
+        <Card v-if="appStore.workersError">
           <CardContent class="flex flex-col items-center justify-center py-12">
             <p class="text-muted-foreground text-lg">Failed to load workers</p>
-            <p class="text-sm text-muted-foreground">{{ loadError }}</p>
+            <p class="text-sm text-muted-foreground">{{ appStore.workersError }}</p>
           </CardContent>
         </Card>
 
@@ -141,12 +51,7 @@ onUnmounted(() => {
 
         <!-- Workers Grid -->
         <div v-else class="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
-          <WorkerCard
-            v-for="worker in workers"
-            :key="worker.hostname"
-            :worker="worker"
-            :metrics="workerMetrics[worker.hostname]"
-          />
+          <WorkerCard v-for="worker in workers" :key="worker.hostname" :worker="worker" />
         </div>
       </div>
     </div>

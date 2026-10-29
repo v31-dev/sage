@@ -23,13 +23,13 @@ logger = logging.getLogger(__name__)
 SSH_USER = "root"
 
 
-def next_online(was_online: bool, answered: bool, misses: int) -> tuple[bool, int]:
-  """A worker's online state after one check, and the checks missed in a row: online at the first answer,
-  offline once OFFLINE_AFTER_MISSED_CHECKS in a row have gone unanswered."""
+def next_online(was_online: bool | None, answered: bool, misses: int) -> tuple[bool | None, int]:
+  """A worker's online state after one check (None: not known yet), and the checks missed in a row: online at
+  the first answer, offline once OFFLINE_AFTER_MISSED_CHECKS in a row have gone unanswered, as it was until then."""
   if answered:
     return True, 0
   misses += 1
-  return was_online and misses < config.OFFLINE_AFTER_MISSED_CHECKS, misses
+  return (was_online if misses < config.OFFLINE_AFTER_MISSED_CHECKS else False), misses
 
 
 def ping_path(output: str) -> str | None:
@@ -158,10 +158,10 @@ class Tailscale(Base):
     paths = await asyncio.gather(*(self.ping(ip) for ip in ips))
     self._paths = {ip: path for ip, path in zip(ips, paths) if path}
 
-  async def online_states(self, peers: dict[str, bool]) -> dict[str, bool]:
-    """Whether each worker ({hostname: online now}) is online: its SSH server answers (`reachable`). The
-    state lags by one missed check (see `next_online`). When the manager's own node is cut off from the
-    tailnet a miss says nothing about the workers, so their states are left as they are."""
+  async def online_states(self, peers: dict[str, bool | None]) -> dict[str, bool | None]:
+    """Whether each worker ({hostname: online now, None if not known}) is online: its SSH server answers
+    (`reachable`). The state lags by one missed check (see `next_online`). When the manager's own node is cut
+    off from the tailnet a miss says nothing about the workers, so their states are left as they are."""
     results = await asyncio.gather(*(self.reachable(hostname) for hostname in peers))
     if not all(results) and not await run_in_executor_with_context(self.connected):
       logger.warning("The manager is not connected to the tailnet; worker states are left as they are.")

@@ -67,11 +67,12 @@ APPLICATION_ROUTING_TEMPLATES = templates_digest(
 )
 
 
-def routing_input_hash(domain_name: str, domains, containers) -> str:
+def routing_input_hash(domain_name: str, domains, containers, is_online) -> str:
   """Hash of everything that determines an application's rendered Traefik
-  files on any single worker. The receiving-worker set is deliberately
-  excluded: a worker that missed a sync is repaired through its own stamp,
-  and one worker going offline must not invalidate the others' stamps."""
+  files on any single worker; `is_online` says whether a worker (by hostname) is.
+  The receiving-worker set is deliberately excluded: a worker that missed a
+  sync is repaired through its own stamp, and one worker going offline must not
+  invalidate the others' stamps."""
   return content_hash({
       "templates": APPLICATION_ROUTING_TEMPLATES,
       "domain": domain_name,
@@ -80,6 +81,6 @@ def routing_input_hash(domain_name: str, domains, containers) -> str:
       "active": sorted(
           (c.worker.hostname, c.worker.ip, c.domain_tag or "")
           for c in containers
-          if c.worker.online and c.status == "active"
+          if is_online(c.worker.hostname) and c.status == "active"
       ),
   })

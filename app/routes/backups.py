@@ -6,6 +6,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Request
 import config
 from services.db import Backup
 from services.manager import Manager
+from services.updates import Updates, UpdateSource
 from utils.api import generic_delete, generic_get, generic_list, get_request_models
 from utils.queue import OnConflict
 
@@ -36,6 +37,11 @@ def inject_backup(request: Request):
   return None
 
 
+def list_platform_backups() -> list:
+  """The `backups` topic: what `GET /backups` returns."""
+  return generic_list(Backup, Backup.type == "platform")
+
+
 @router.get("/")
 def list_backups(request: Request):
   """List backups - platform backups by default, or volume backups if nested under volume."""
@@ -48,16 +54,13 @@ def list_backups(request: Request):
         & (Backup.source_volume_name == models["volume"].name),
     )
   else:
-    return generic_list(Backup, Backup.type == "platform")
+    return list_platform_backups()
 
 
-@router.post("/platform_backup_status")
-def get_platform_backup_status(request: Request):
+@router.get("/platform_backup_status")
+def get_platform_backup_status():
   """Get current platform backup and discovery status."""
-  return {
-      "platform_backup_in_progress": Manager().is_task_running(Manager().backup_database_s3),
-      "discovery_in_progress": Manager().has_task(Manager().discover_s3_backups),
-  }
+  return Manager().backup_status()
 
 
 def require_s3():
@@ -128,7 +131,7 @@ def download_filename(backup: Backup) -> str:
   return re.sub(r"[^A-Za-z0-9._-]", "_", name)
 
 
-@router.post("/{backup}/download", dependencies=[Depends(inject_backup)])
+@router.get("/{backup}/download", dependencies=[Depends(inject_backup)])
 def download_backup(request: Request):
   """A short-lived link that downloads the backup file straight from S3."""
   require_s3()
@@ -152,6 +155,7 @@ def delete_backup(request: Request):
 
   # Delete backup record from database
   generic_delete(Backup, backup)
+  Updates().changed(UpdateSource.BACKUPS)
 
   # Delete backup file from S3 asynchronously
   Manager().add_task(

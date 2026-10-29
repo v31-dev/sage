@@ -7,10 +7,12 @@ from croniter import croniter
 
 import config
 from services.db import APPLICATION_BUSY_STATUSES, Application, Backup, Container, Event, Volume
+from services.updates import Updates, UpdateSource
 from utils.common import get_env, utcnow
 from utils.logging import generate_task_id_token, task_id
 
 from ._common import BACKUP_TIMESTAMP_FORMAT, app_dir
+from .application import save_application, save_container
 
 logger = logging.getLogger(__name__)
 
@@ -98,12 +100,12 @@ class BackupsMixin:
 
   def _restore_application_backup_snapshot(self, application: Application, snapshot: dict):
     application.status = snapshot["application_status"]
-    application.save()
+    save_application(application)
 
     for container_state in snapshot["containers"]:
       container = Container.get_by_id(container_state["id"])
       container.status = container_state["status"]
-      container.save()
+      save_container(container)
 
   def _get_application_backup_unit_label(
       self,
@@ -141,10 +143,10 @@ class BackupsMixin:
           f"docker compose -f {container_dir}/docker-compose.yml up -d --wait",
       )
       container.status = "active"
-      container.save()
+      save_container(container)
     except Exception:
       container.status = "error"
-      container.save()
+      save_container(container)
       raise
 
   async def _restore_application_runtime_after_backup(self, application: Application, snapshot: dict):
@@ -159,7 +161,7 @@ class BackupsMixin:
     )
 
     application.status = "active"
-    application.save()
+    save_application(application)
 
   async def _backup_application_container_volume_to_s3(
       self,
@@ -210,6 +212,7 @@ class BackupsMixin:
           source_volume_name=volume.name,
           application=application,
       )
+      Updates().changed(UpdateSource.BACKUPS)
       self.notify(f"Backup created for {backup_unit_label} at {s3_path}.", "success")
     except Exception as exc:
       self.notify(f"Failed to create backup for {backup_unit_label}: {exc}", "error")
@@ -249,7 +252,7 @@ class BackupsMixin:
     offline_workers = sorted({
         container.worker.hostname
         for container in application.containers
-        if not container.worker.online
+        if not self.is_worker_online(container.worker.hostname)
     })
     if offline_workers:
       raise Exception(
@@ -260,11 +263,11 @@ class BackupsMixin:
 
     try:
       application.status = "backup"
-      application.save()
+      save_application(application)
       for container in application.containers:
         if container.status != "backup":
           container.status = "backup"
-          container.save()
+          save_container(container)
 
       if snapshot["application_status"] == "active":
         await asyncio.gather(
@@ -303,12 +306,12 @@ class BackupsMixin:
         logger.error(
             f"Failed to restore application {application.qualified_name} to its previous state after backup failure: {restore_exc}")
         application.status = "error"
-        application.save()
+        save_application(application)
         for entry in snapshot["containers"]:
           container = Container.get_by_id(entry["id"])
           if container.status in ["backup", "restoring"]:
             container.status = "error"
-            container.save()
+            save_container(container)
       raise
 
   async def delete_backup_s3(self, s3_path: str):
@@ -354,7 +357,7 @@ class BackupsMixin:
           f"Target worker {target_worker_hostname} is not attached to application {application.qualified_name}."
       )
 
-    if not target_container.worker.online:
+    if not self.is_worker_online(target_container.worker.hostname):
       raise ValueError(f"Target worker {target_worker_hostname} is offline.")
 
     restore_task_id = task_id.get()
@@ -382,10 +385,10 @@ class BackupsMixin:
 
     try:
       application.status = "restoring"
-      application.save()
+      save_application(application)
       if target_container.status != "restoring":
         target_container.status = "restoring"
-        target_container.save()
+        save_container(target_container)
 
       await self.tailscale.sync_file(
           target_container.worker.hostname,

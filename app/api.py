@@ -1,8 +1,10 @@
 import os
 
+import socketio
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 from starlette.applications import Starlette
+from starlette.datastructures import URL
 from starlette.exceptions import HTTPException
 from starlette.routing import Route
 from starlette.staticfiles import StaticFiles
@@ -14,18 +16,18 @@ from routes.notifications import router as notifications_router
 from routes.projects import router as projects_router
 from routes.settings import router as settings_router
 from routes.tasks import router as tasks_router
+from routes.updates import TOPICS, sio
 from routes.workers import router as workers_router
 from services.cloudflare import Cloudflare
 from services.manager import Manager
+from services.updates import Updates
 from utils.logging import fastapi_middleware
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, redirect_slashes=False)
 app.add_middleware(fastapi_middleware)
 
-# While Sage is paused, restoring or stopping, only reads are served: GETs, the POST routes that only
-# read, and pause/resume themselves.
+# While Sage is paused, restoring or stopping, only reads are served: GETs, and pause/resume themselves.
 _ALLOWED_WHILE_PAUSED = ("/api/settings/pause", "/api/settings/resume")
-_READ_ONLY_POSTS = ("/get_available_workers", "/metrics", "/platform_backup_status", "/download", "/test")
 
 
 @app.middleware("http")
@@ -33,8 +35,7 @@ async def refuse_changes_unless_running(request: Request, call_next):
   state = Manager().task_state()
   if (state != "running"
           and request.method not in ("GET", "HEAD", "OPTIONS")
-          and request.url.path not in _ALLOWED_WHILE_PAUSED
-          and not request.url.path.endswith(_READ_ONLY_POSTS)):
+          and request.url.path not in _ALLOWED_WHILE_PAUSED):
     detail = {
         "paused": "Sage is paused; resume it first.",
         "restoring": "Sage is restoring a backup; wait for it to finish.",
@@ -83,13 +84,32 @@ async def redirect_to_manager(request: Request):
       str(request.url.replace(scheme="https", netloc=Cloudflare().manager_hostname)), status_code=308)
 
 # Plain HTTP only sends browsers to the manager's address.
-redirect_app = Starlette(routes=[Route("/{path:path}", redirect_to_manager)])
+app_redirect = Starlette(routes=[Route("/{path:path}", redirect_to_manager)])
 
-# In production the UI and API answer only at the manager's address https://TS_NAME.core.domain
-# Other names for it redirect (the tailnet name or IP, after a certificate warning)
-if os.getenv("ENV") != "development":
-  @app.middleware("http")
-  async def only_manager_address(request: Request, call_next):
-    if (request.url.hostname or "").lower() != Cloudflare().manager_hostname.lower():
-      return await redirect_to_manager(request)
-    return await call_next(request)
+
+class OnlyManagerAddress:
+  """Answers only at the manager's address: another name gets a redirect to it, or for a WebSocket a refusal."""
+
+  def __init__(self, app):
+    self.app = app
+
+  async def __call__(self, scope, receive, send):
+    if scope["type"] in ("http", "websocket") and not Cloudflare().is_manager_hostname(URL(scope=scope).hostname):
+      if scope["type"] == "http":
+        await (await redirect_to_manager(Request(scope, receive)))(scope, receive, send)
+      else:
+        await send({"type": "websocket.close", "code": 1008})
+      return
+    await self.app(scope, receive, send)
+
+
+def build_asgi_app(only_manager_address: bool):
+  """What the servers serve: the Socket.IO server in front of the API, and in production only at the manager's
+  address https://TS_NAME.core.domain, other names for it redirecting (the tailnet name or IP, after a certificate
+  warning)."""
+  Updates().serve(TOPICS)
+  served = socketio.ASGIApp(sio, other_asgi_app=app, socketio_path="api/socket.io")
+  return OnlyManagerAddress(served) if only_manager_address else served
+
+
+app_asgi = build_asgi_app(os.getenv("ENV") != "development")

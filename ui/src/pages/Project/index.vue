@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/ui/spinner'
 import type { APIError } from '@/lib/api'
 
-import { projectAPI, getApplicationAPI, type Project } from '@/services/api'
+import { fetchProject, type Project } from '@/services/api'
 import ApplicationCard from './ApplicationCard.vue'
 import ProjectHeader from './ProjectHeader.vue'
 import AddApplicationButton from './AddApplicationButton.vue'
@@ -15,7 +15,6 @@ import SectionTitle from '@/components/SectionTitle.vue'
 const route = useRoute()
 const router = useRouter()
 const projectName = route.params.projectId as string
-const applicationAPI = getApplicationAPI(projectName)
 const project = ref<Project | null>(null)
 const isLoading = ref(true)
 const loadError = ref('')
@@ -30,7 +29,7 @@ async function loadProject() {
     isLoading.value = true
     loadError.value = ''
     isNotFound.value = false
-    project.value = (await projectAPI.fetchOne(projectName)) as Project
+    project.value = await fetchProject(projectName)
   } catch (err) {
     console.error('Failed to load project:', err)
     project.value = null
@@ -71,18 +70,13 @@ function goBack() {
 
       <div v-else-if="project" class="space-y-6">
         <!-- Project Header -->
-        <ProjectHeader
-          :project="project"
-          :projectAPI="projectAPI"
-          :applicationAPI="applicationAPI"
-          :loadProject="loadProject"
-        />
+        <ProjectHeader :project="project" :loadProject="loadProject" />
 
         <!-- Applications -->
         <div class="space-y-4">
           <div class="flex justify-between items-center">
             <SectionTitle title="Applications" :size="4" />
-            <AddApplicationButton :applicationAPI="applicationAPI" :loadProject="loadProject" />
+            <AddApplicationButton :project="project" :loadProject="loadProject" />
           </div>
 
           <!-- Empty Applications State -->

@@ -5,14 +5,9 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/ui/spinner'
 import type { APIError } from '@/lib/api'
+import { watchState } from '@/lib/updates'
 
-import {
-  getApplicationAPI,
-  getContainerAPI,
-  getDomainAPI,
-  getVolumeAPI,
-  type Application,
-} from '@/services/api'
+import { fetchApplication, type Application } from '@/services/api'
 import { useAppStore } from '@/stores/app'
 import ApplicationHeader from './ApplicationHeader.vue'
 import AddContainerButton from './AddContainerButton.vue'
@@ -29,62 +24,69 @@ const projectName = route.params.projectId as string
 const appName = route.params.appId as string
 const appStore = useAppStore()
 
-const applicationAPI = getApplicationAPI(projectName)
-const volumeAPI = getVolumeAPI(projectName, appName)
-const containersAPI = getContainerAPI(projectName, appName)
-const domainAPI = getDomainAPI(projectName, appName)
 const application = ref<Application | null>(null)
 const isLoading = ref(true)
 const loadError = ref('')
 const isNotFound = ref(false)
-let pollInterval: ReturnType<typeof setInterval> | null = null
+let stop: (() => void) | undefined
 
+function showLoadError(err: unknown) {
+  console.error('Failed to load application:', err)
+  const status = (err as APIError).status
+  if (status === 404) {
+    showNotFound()
+  } else {
+    application.value = null
+    loadError.value = err instanceof Error ? err.message : 'Failed to load application'
+  }
+}
+
+// Also when the application is deleted while the page is open.
+function showNotFound() {
+  application.value = null
+  isNotFound.value = true
+}
+
+// The application, loaded from its route and then pushed by the manager each time it changes.
 onMounted(async () => {
-  await loadApplication()
-  if (application.value) {
-    pollInterval = setInterval(loadApplicationStatus, 10_000)
+  const watch = watchState(
+    `application:${projectName}/${appName}`,
+    () => fetchApplication(projectName, appName),
+    showApplication,
+    showNotFound
+  )
+  stop = watch.stop
+  try {
+    await watch.first
+  } catch (err) {
+    showLoadError(err)
+  } finally {
+    isLoading.value = false
   }
 })
-onUnmounted(() => {
-  if (pollInterval) clearInterval(pollInterval)
-})
+onUnmounted(() => stop?.())
 
+// Each state replaces the one shown, and its status the one an action set; a dialog being edited keeps the values it
+// copied when it opened.
+function showApplication(next: Application) {
+  loadError.value = ''
+  isNotFound.value = false
+  application.value = next
+  appStore.updateApplicationDeployStatus(next.status)
+}
+
+// The whole application again, after an action on it.
 async function loadApplication() {
   try {
     isLoading.value = true
     loadError.value = ''
     isNotFound.value = false
-    application.value = (await applicationAPI.fetchOne(appName)) as Application
+    application.value = await fetchApplication(projectName, appName)
     appStore.updateApplicationDeployStatus(application.value.status)
   } catch (err) {
-    console.error('Failed to load application:', err)
-    application.value = null
-    const status = (err as APIError).status
-    if (status === 404) {
-      isNotFound.value = true
-    } else {
-      loadError.value = err instanceof Error ? err.message : 'Failed to load application'
-    }
+    showLoadError(err)
   } finally {
     isLoading.value = false
-  }
-}
-
-async function loadApplicationStatus() {
-  try {
-    const updatedApplication = (await applicationAPI.fetchOne(appName)) as Application
-    if (application.value) {
-      application.value.status = updatedApplication.status
-      application.value.containers = updatedApplication.containers
-      application.value.container_count = updatedApplication.container_count
-      application.value.updated_at = updatedApplication.updated_at
-      application.value.domains_synced = updatedApplication.domains_synced
-      application.value.deployed_at = updatedApplication.deployed_at
-      application.value.config_dirty = updatedApplication.config_dirty
-      appStore.updateApplicationDeployStatus(updatedApplication.status)
-    }
-  } catch (err) {
-    console.error('Failed to load application status:', err)
   }
 }
 
@@ -114,11 +116,7 @@ function goBack() {
 
       <div v-else-if="application" class="space-y-6">
         <!-- Application Header -->
-        <ApplicationHeader
-          :application="application"
-          :applicationAPI="applicationAPI"
-          :loadApplication="loadApplication"
-        />
+        <ApplicationHeader :application="application" :loadApplication="loadApplication" />
 
         <!-- Volumes -->
         <div class="space-y-4">
@@ -129,11 +127,7 @@ function goBack() {
               tooltip="Application needs to be deployed again if Volume configuration is modified."
             />
             <!-- Add Volume Button -->
-            <AddVolumeButton
-              :application="application"
-              :volumeAPI="volumeAPI"
-              :loadApplication="loadApplication"
-            />
+            <AddVolumeButton :application="application" :loadApplication="loadApplication" />
           </div>
 
           <!-- Empty Volumes State -->
@@ -155,7 +149,6 @@ function goBack() {
               :key="volume.name"
               :application="application"
               :volume="volume"
-              :volumeAPI="volumeAPI"
               :loadApplication="loadApplication"
             />
           </div>
@@ -170,11 +163,7 @@ function goBack() {
               tooltip="Domain configurations are automatically synced."
             />
             <!-- Add Domain Button -->
-            <AddDomainButton
-              :application="application"
-              :domainAPI="domainAPI"
-              :loadApplication="loadApplication"
-            />
+            <AddDomainButton :application="application" :loadApplication="loadApplication" />
           </div>
 
           <!-- Empty Domains State -->
@@ -196,7 +185,6 @@ function goBack() {
               :key="domain.name"
               :application="application"
               :domain="domain"
-              :domainAPI="domainAPI"
               :loadApplication="loadApplication"
             />
           </div>
@@ -211,12 +199,7 @@ function goBack() {
               tooltip="Application needs to be deployed again if configuration is modified."
             />
             <!-- Add Container Button -->
-            <AddContainerButton
-              :application="application"
-              :applicationAPI="applicationAPI"
-              :containersAPI="containersAPI"
-              :loadApplication="loadApplication"
-            />
+            <AddContainerButton :application="application" :loadApplication="loadApplication" />
           </div>
 
           <!-- Empty Containers State -->
@@ -236,8 +219,8 @@ function goBack() {
             <ContainerCard
               v-for="container in application.containers"
               :key="container.worker.hostname"
+              :application="application"
               :container="container"
-              :containersAPI="containersAPI"
               :loadApplication="loadApplication"
               class="flex flex-col"
             />

@@ -41,6 +41,9 @@ class Cloudflare(Base):
     # healthy, degraded, down or inactive; refreshed by the periodic settings check.
     self.tunnel_status = None
 
+  def is_manager_hostname(self, hostname: str | None) -> bool:
+    return (hostname or "").lower() == self.manager_hostname.lower()
+
   def request(self, method: str, path: str, token: str | None = None, **kwargs) -> dict:
     """One API call; returns the response body. Retries network errors, rate limits and
     server errors; raises CloudflareError when the API refuses the request."""

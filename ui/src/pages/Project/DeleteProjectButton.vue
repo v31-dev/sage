@@ -4,11 +4,10 @@ import { Trash } from 'lucide-vue-next'
 import { toast } from 'vue-sonner'
 
 import ConfirmationButton from '@/components/ConfirmationButton.vue'
-import { type Project } from '@/services/api'
+import { deleteProject, type Project } from '@/services/api'
 
 interface Props {
   project: Project
-  projectAPI: any
 }
 
 const props = withDefaults(defineProps<Props>(), {})
@@ -16,7 +15,7 @@ const props = withDefaults(defineProps<Props>(), {})
 const router = useRouter()
 
 async function onConfirmDelete() {
-  await props.projectAPI.delete(props.project.name)
+  await deleteProject(props.project.name)
   toast.success(`Project ${props.project.name} deleted successfully`)
   router.push('/projects')
 }

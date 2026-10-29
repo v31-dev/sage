@@ -8,8 +8,7 @@ import uvicorn
 from cryptography.fernet import InvalidToken
 
 import config
-from api import app as app_fastapi
-from api import redirect_app
+from api import app_asgi, app_redirect
 from api_ingest import app as app_fastapi_ingest
 from scheduler import shutdown as shutdown_scheduler
 from scheduler import start as start_scheduler
@@ -113,12 +112,12 @@ async def main():
   if os.getenv("ENV") == "development":
     # The dev Traefik terminates TLS for the manager's address and proxies here.
     servers = [Server(config=uvicorn.Config(
-        app_fastapi, host="0.0.0.0", port=int(os.getenv("PORT", 9000)), workers=1, loop="asyncio",
+        app_asgi, host="0.0.0.0", port=int(os.getenv("PORT", 9000)), workers=1, loop="asyncio",
         log_config=None))]
   else:
     # The UI and API only at https://<TS_NAME>.core.<DOMAIN>; plain HTTP redirects there.
     api_config = uvicorn.Config(
-        app_fastapi,
+        app_asgi,
         host="0.0.0.0",
         port=int(os.getenv("HTTPS_PORT", 443)),
         workers=1,
@@ -132,7 +131,7 @@ async def main():
     servers = [
         Server(api_config),
         BackgroundServer(config=uvicorn.Config(
-            redirect_app, host="0.0.0.0", port=int(os.getenv("PORT", 80)), workers=1, loop="asyncio",
+            app_redirect, host="0.0.0.0", port=int(os.getenv("PORT", 80)), workers=1, loop="asyncio",
             log_config=None)),
     ]
 

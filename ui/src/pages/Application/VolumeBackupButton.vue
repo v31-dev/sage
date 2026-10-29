@@ -5,7 +5,7 @@ import { CloudBackup } from 'lucide-vue-next'
 
 import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/ui/spinner'
-import { type Application, getVolumeBackupAPI, type Volume } from '@/services/api'
+import { type Application, createVolumeBackup, type Volume } from '@/services/api'
 import { useAppStore } from '@/stores/app'
 
 interface Props {
@@ -16,12 +16,6 @@ interface Props {
 const props = withDefaults(defineProps<Props>(), {})
 
 const appStore = useAppStore()
-const volumeBackupAPI = getVolumeBackupAPI(
-  props.application.project.name,
-  props.application.name,
-  props.volume.name
-)
-
 const isBackupInProgress = computed(() => {
   return [appStore.applicationDeployStatus, props.application.status].includes('backup')
 })
@@ -42,7 +36,11 @@ async function onClickCreateBackup() {
   )
 
   try {
-    await volumeBackupAPI.create({})
+    await createVolumeBackup(
+      props.application.project.name,
+      props.application.name,
+      props.volume.name
+    )
     toast.success(`Backup initiated for volume ${props.volume.name}`)
   } catch (err) {
     appStore.updateApplicationDeployStatus(previousStatus)

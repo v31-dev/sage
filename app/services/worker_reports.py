@@ -65,11 +65,31 @@ class Received:
 
 @dataclass(frozen=True)
 class Arrival:
-  """What a report changed: whether it is the first of the worker (or the first after a silence), and
-  the names of the containers that appeared, vanished or changed state, version or start since the
-  snapshot held before."""
+  """What a report changed: whether it is the first of the worker (or the first after a silence), the
+  names of the containers that appeared, vanished or changed state, version or start since the
+  snapshot held before, and the report now held."""
   resumed: bool
   changed: frozenset[str]
+  received: Received
+
+
+def is_current(arrived_at: datetime, now: datetime) -> bool:
+  """Whether a report that arrived at `arrived_at` is recent enough to describe the worker at `now`."""
+  return (now - arrived_at).total_seconds() <= config.REPORT_STALE_SECONDS
+
+
+def infra_of(received: Received) -> list[dict]:
+  """The state of each container of the worker's stack in a report ("missing" when the report does not list it)."""
+  containers = received.snapshot.containers
+  return [{"name": name, "status": containers[name].status if name in containers else "missing"}
+          for name in config.WORKER_STACK_SERVICES]
+
+
+def container_started_at(received: Received | None, container: str) -> int | None:
+  """When the container last started, on the worker's clock (nanoseconds), from a report. None when there is no
+  report or it does not list the container."""
+  reading = received.snapshot.containers.get(container) if received is not None else None
+  return reading.started_at if reading is not None else None
 
 
 def _fingerprint(container: ContainerReading):
@@ -185,11 +205,12 @@ def parse_batch(batch) -> list[Snapshot]:
 
 class WorkerReports(Base):
   """The newest snapshot Telegraf reported for each worker, in memory. The report route fills
-  it and decides nothing; the operation queue reads it."""
+  it and decides nothing; the operation queue reads it. `started` is when the manager started: a worker
+  that has not reported is given a grace after it."""
 
   def __init__(self):
     super().__init__()
-    self._started = utcnow()
+    self.started = utcnow()
     self._latest: dict[str, Received] = {}
     self._unknown: set[str] = set()
 
@@ -204,7 +225,8 @@ class WorkerReports(Base):
       current = self._latest.get(hostname)
       if current is not None and newest.at < current.snapshot.at:
         return None
-      self._latest[hostname] = Received(now, newest)
+      received = Received(now, newest)
+      self._latest[hostname] = received
     if current is None:
       changed = frozenset(newest.containers)
     else:
@@ -213,7 +235,7 @@ class WorkerReports(Base):
       changed = frozenset(name for name in before.keys() | after.keys() if before.get(name) != after.get(name))
     silence = config.REPORT_INTERVAL_SECONDS * 3
     resumed = current is None or (now - current.arrived_at).total_seconds() > silence
-    return Arrival(resumed, changed)
+    return Arrival(resumed, changed, received)
 
   def first_unknown(self, hostname: str) -> bool:
     """True the first time a name that is not a worker sends a report, so it is logged once. At most
@@ -233,7 +255,7 @@ class WorkerReports(Base):
   def current(self, hostname: str) -> Received | None:
     """The newest report, if it is recent enough to describe the worker now."""
     received = self.latest(hostname)
-    if received is None or (utcnow() - received.arrived_at).total_seconds() > config.REPORT_STALE_SECONDS:
+    if received is None or not is_current(received.arrived_at, utcnow()):
       return None
     return received
 
@@ -247,35 +269,15 @@ class WorkerReports(Base):
       return None
     return received.snapshot
 
-  def ready(self, hostname: str) -> bool | None:
-    """Whether the worker is reporting and Traefik answers on it. None for a worker that has not
-    reported yet while the manager has only just started."""
-    if self.latest(hostname) is None:
-      return None if (utcnow() - self._started).total_seconds() < config.REPORT_STARTUP_GRACE_SECONDS else False
-    received = self.current(hostname)
-    return received is not None and received.snapshot.traefik_reachable is not False
-
-  def infra(self, hostname: str) -> list[dict] | None:
-    """The state of each container of the worker's stack in its current report ("missing" when the
-    report does not list it), None when there is no current report."""
-    received = self.current(hostname)
-    if received is None:
-      return None
-    containers = received.snapshot.containers
-    return [{"name": name, "status": containers[name].status if name in containers else "missing"}
-            for name in config.WORKER_STACK_SERVICES]
-
   def started_at(self, hostname: str, container: str, current: bool = True) -> int | None:
     """When the container last started, on the worker's clock (nanoseconds), from the current report or,
     with `current` false, from the newest one however old. None when the report does not list it."""
-    received = self.current(hostname) if current else self.latest(hostname)
-    reading = received.snapshot.containers.get(container) if received is not None else None
-    return reading.started_at if reading is not None else None
+    return container_started_at(self.current(hostname) if current else self.latest(hostname), container)
 
   def silent_for(self, hostname: str) -> float:
     """Seconds since the worker last reported, or since the manager started if it has not."""
     received = self.latest(hostname)
-    since = received.arrived_at if received is not None else self._started
+    since = received.arrived_at if received is not None else self.started
     return (utcnow() - since).total_seconds()
 
   def forget(self, hostname: str):

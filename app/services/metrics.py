@@ -285,17 +285,22 @@ class Metrics(Base):
       for snapshot in snapshots:
         self._workers[hostname].fold(snapshot)
 
-  def flush_workers(self):
-    """Write the completed minutes of every worker that has reported."""
+  def flush_workers(self) -> dict[str, dict]:
+    """Write the completed minutes of every worker that has reported. Returns the newest minute written of each
+    worker that had one (`flush_worker`), by hostname."""
     with self.lock:
       hostnames = list(self._workers)
+    newest = {}
     for hostname in hostnames:
-      self.flush_worker(hostname)
+      if (minute := self.flush_worker(hostname)) is not None:
+        newest[hostname] = minute
+    return newest
 
-  def flush_worker(self, hostname: str):
+  def flush_worker(self, hostname: str) -> dict | None:
     """Write a worker's completed minutes to its shard. The minute in progress keeps
     accumulating; a minute with no reports simply gets no row. A worker that has gone
-    quiet is dropped once everything is written."""
+    quiet is dropped once everything is written. Returns the newest host row written, with the machine's size
+    (`cpu_cores`, `mem_total_mb`, `disk_total_gb`, None when no minute carried it), or None."""
     now_minute = utcnow().replace(second=0, microsecond=0)
     with self.lock:
       pending = self._workers.get(hostname)
@@ -304,7 +309,7 @@ class Metrics(Base):
         del self._workers[hostname]
 
     if not host_minutes and not container_minutes:
-      return
+      return None
 
     db_info = self.get_metrics_db(hostname)
     WorkerMeta = db_info["models"]["WorkerMeta"]
@@ -331,6 +336,10 @@ class Metrics(Base):
           ContainerMetrics.replace(**_container_row(name, minute, minutes[minute])).execute()
 
     logger.debug(f"Flushed metrics for {hostname}: {len(rows)} minute(s), {len(container_minutes)} container(s).")
+    if not rows:
+      return None
+    size = sized[-1] if sized else {}
+    return {**rows[-1], **{key: size.get(key) for key in ("cpu_cores", "mem_total_mb", "disk_total_gb")}}
 
   def _pending(self, hostname: str):
     """The minutes of a host not yet written to its shard, in memory: its own, and by container name."""

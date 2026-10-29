@@ -11,8 +11,8 @@ def domain(name="web", type="public", port=80):
   return SimpleNamespace(name=name, type=type, port=port)
 
 
-def container(hostname="w1", ip="100.64.0.1", online=True, status="active", tag=None):
-  return SimpleNamespace(domain_tag=tag, status=status, worker=SimpleNamespace(hostname=hostname, ip=ip, online=online))
+def container(hostname="w1", ip="100.64.0.1", status="active", tag=None):
+  return SimpleNamespace(domain_tag=tag, status=status, worker=SimpleNamespace(hostname=hostname, ip=ip))
 
 
 class TestContentHash:
@@ -110,8 +110,10 @@ class TestTemplatesDigest:
 
 
 class TestRoutingInputHash:
-  def hash(self, domains=None, containers=None, domain_name="example.test"):
-    return _common.routing_input_hash(domain_name, [domain()] if domains is None else domains, [container()] if containers is None else containers)
+  def hash(self, domains=None, containers=None, domain_name="example.test", offline=()):
+    return _common.routing_input_hash(domain_name, [domain()] if domains is None else domains,
+                                      [container()] if containers is None else containers,
+                                      lambda hostname: hostname not in offline)
 
   def test_does_not_depend_on_the_order_of_domains_or_containers(self):
     domains = [domain("a"), domain("b", "internal", 8080)]
@@ -145,7 +147,7 @@ class TestRoutingInputHash:
     assert self.hash(containers=[container(status="error")]) == self.hash(containers=[container(status="inactive")])
 
   def test_a_container_on_an_offline_worker_is_left_out(self):
-    assert self.hash(containers=[container(online=False)]) == self.hash(containers=[container(status="inactive")])
+    assert self.hash(containers=[container()], offline=("w1",)) == self.hash(containers=[container(status="inactive")])
 
   def test_a_domain_tag_counts_even_when_its_container_is_not_active(self):
     assert self.hash(containers=[container(status="inactive", tag="blue")]) != self.hash(containers=[container(status="inactive")])

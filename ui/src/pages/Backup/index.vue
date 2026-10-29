@@ -1,39 +1,57 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import { Spinner } from '@/components/ui/spinner'
 import { toast } from 'vue-sonner'
 import { Card, CardContent } from '@/components/ui/card'
+import { watchState } from '@/lib/updates'
 
-import { backupAPI } from '@/services/api'
 import BackupsItem from './BackupsItem.vue'
-import { type Backup } from '@/services/api'
+import { fetchBackups, type Backup } from '@/services/api'
 import CreateBackupButton from './CreateBackupButton.vue'
 import DiscoverBackupsButton from './DiscoverBackupsButton.vue'
 import SectionTitle from '@/components/SectionTitle.vue'
 
 const backups = ref<Backup[]>([])
-const isLoading = ref(false)
+const isLoading = ref(true)
 const error = ref('')
+let stop: (() => void) | undefined
 
+// Newest first.
+function showBackups(next: Backup[]) {
+  backups.value = [...next].reverse()
+}
+
+function showLoadError(err: unknown) {
+  error.value = err instanceof Error ? err.message : 'Failed to load backups'
+  toast.error('Failed to load backups')
+}
+
+// After a backup is deleted here, without waiting for the push.
 async function loadBackups() {
   isLoading.value = true
   error.value = ''
-
   try {
-    const backupsFromAPI = (await backupAPI.fetchAll()) as Backup[]
-    backupsFromAPI.reverse()
-    backups.value = backupsFromAPI
+    showBackups(await fetchBackups())
   } catch (err) {
-    error.value = err instanceof Error ? err.message : 'Failed to load backups'
-    toast.error('Failed to load backups')
+    showLoadError(err)
   } finally {
     isLoading.value = false
   }
 }
 
+// The backups, loaded from their route and then pushed by the manager each time a backup is written.
 onMounted(async () => {
-  await loadBackups()
+  const watch = watchState('backups', fetchBackups, showBackups)
+  stop = watch.stop
+  try {
+    await watch.first
+  } catch (err) {
+    showLoadError(err)
+  } finally {
+    isLoading.value = false
+  }
 })
+onUnmounted(() => stop?.())
 </script>
 
 <template>
@@ -54,8 +72,8 @@ onMounted(async () => {
           <CardContent class="flex flex-wrap justify-between items-center gap-2">
             <SectionTitle title="Available Backups" :size="4" />
             <div class="flex flex-wrap gap-2">
-              <DiscoverBackupsButton :backupAPI="backupAPI" :loadBackups="loadBackups" />
-              <CreateBackupButton :backupAPI="backupAPI" :loadBackups="loadBackups" />
+              <DiscoverBackupsButton />
+              <CreateBackupButton />
             </div>
           </CardContent>
         </Card>
@@ -75,7 +93,6 @@ onMounted(async () => {
             v-for="backup in backups"
             :key="backup.id"
             :backup="backup"
-            :backupAPI="backupAPI"
             :loadBackups="loadBackups"
           />
         </div>

@@ -25,12 +25,11 @@ import {
 import CustomInput from '@/components/CustomInput.vue'
 import FieldLabelHelp from '@/components/FieldLabelHelp.vue'
 
-import { type Application, getApplicationAPI } from '@/services/api'
+import { type Application, updateApplication } from '@/services/api'
 import { Edit } from 'lucide-vue-next'
 
 interface Props {
   application: Application
-  applicationAPI: ReturnType<typeof getApplicationAPI>
   loadApplication: () => Promise<void>
 }
 
@@ -81,7 +80,7 @@ async function handleUpdateApplication() {
 
   try {
     isClickedEditConfirm.value = true
-    await props.applicationAPI.update(props.application.name, {
+    await updateApplication(props.application.project.name, props.application.name, {
       label: editFormData.value.label || null,
       description: editFormData.value.description || null,
       type: editFormData.value.type || null,

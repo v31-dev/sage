@@ -169,7 +169,7 @@ class TestAvailableWorkers:
   def test_every_worker_when_none_is_used(self, client, application, worker):
     Worker.create(hostname="w2", ip="100.64.0.3")
 
-    response = client.post(f"{URL}/web/get_available_workers")
+    response = client.get(f"{URL}/web/get_available_workers")
 
     assert sorted(row["hostname"] for row in response.json()) == ["w1", "w2"]
 
@@ -177,7 +177,7 @@ class TestAvailableWorkers:
     Worker.create(hostname="w2", ip="100.64.0.3")
     Container.create(application=application, worker=worker)
 
-    response = client.post(f"{URL}/web/get_available_workers")
+    response = client.get(f"{URL}/web/get_available_workers")
 
     assert [row["hostname"] for row in response.json()] == ["w2"]
 
@@ -185,9 +185,15 @@ class TestAvailableWorkers:
     other = Application.create(project=application.project, name="api", label="Api")
     Container.create(application=other, worker=worker)
 
-    response = client.post(f"{URL}/web/get_available_workers")
+    response = client.get(f"{URL}/web/get_available_workers")
 
     assert [row["hostname"] for row in response.json()] == ["w1"]
 
   def test_no_workers_at_all(self, client, application):
-    assert client.post(f"{URL}/web/get_available_workers").json() == []
+    assert client.get(f"{URL}/web/get_available_workers").json() == []
+
+
+class TestMetrics:
+  def test_an_application_without_containers_has_none_and_they_are_read_with_a_get(self, client, application):
+    assert client.get(f"{URL}/web/metrics").json() == []
+    assert client.post(f"{URL}/web/metrics").status_code == 405

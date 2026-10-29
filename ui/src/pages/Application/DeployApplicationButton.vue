@@ -5,12 +5,11 @@ import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/ui/spinner'
 import { Play } from 'lucide-vue-next'
 
-import { APPLICATION_BUSY_STATUSES, type Application, getApplicationAPI } from '@/services/api'
+import { APPLICATION_BUSY_STATUSES, type Application, deployApplication } from '@/services/api'
 import { useAppStore } from '@/stores/app'
 
 interface Props {
   application: Application
-  applicationAPI: ReturnType<typeof getApplicationAPI>
 }
 
 const props = withDefaults(defineProps<Props>(), {})
@@ -37,7 +36,7 @@ async function onClickDeployApplication() {
     props.application.containers.map(container => container.worker.hostname)
   )
   try {
-    await props.applicationAPI.action(`${props.application.name}/deploy`)
+    await deployApplication(props.application.project.name, props.application.name)
   } catch (err) {
     // Deployment is a deferred operation so error means the deployment was rejected and not even triggered
     appStore.updateApplicationDeployStatus(props.application.status)

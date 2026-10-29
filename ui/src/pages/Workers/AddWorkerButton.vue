@@ -17,12 +17,6 @@ import { Input } from '@/components/ui/input'
 import { Spinner } from '@/components/ui/spinner'
 import { addWorker } from '@/services/api'
 
-interface Props {
-  loadWorkers: () => Promise<void>
-}
-
-const props = withDefaults(defineProps<Props>(), {})
-
 const isOpen = ref(false)
 const host = ref('')
 const errorMessage = ref('')
@@ -47,7 +41,6 @@ async function onConfirm() {
     const { hostname } = await addWorker(host.value.trim())
     isOpen.value = false
     toast.success(`Adding worker ${hostname}`)
-    await props.loadWorkers()
   } catch (err) {
     errorMessage.value = err instanceof Error ? err.message : 'Failed to add worker'
   } finally {

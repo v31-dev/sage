@@ -4,6 +4,7 @@ import httpx
 
 from services.notification import ChannelCheckFailed, Notifications
 from services.settings import SETTING_DEFINITIONS, Settings
+from services.updates import Fact, Updates, UpdateSource
 from utils.common import utcnow
 from utils.executor import run_in_executor_with_context
 from utils.retry import is_transient
@@ -109,12 +110,25 @@ class SettingsMixin:
       logger.warning(f"{key} check failed: {message}")
     self.setting_checks[key] = {"state": state, "message": message, "channels": channels,
                                 "checked_at": utcnow().isoformat()}
+    Updates().changed(UpdateSource.CHECKS)
 
-  def settings_status(self) -> dict:
-    """Per section: not_configured, applying (with the task), ok, retrying or error. A quiet
-    task is scheduled housekeeping and never makes a section applying."""
+  def applying_tasks(self) -> dict:
+    """Per section, the queued or running task that makes it apply, or None. A quiet task is
+    scheduled housekeeping and never does."""
     snapshot = self.task_snapshot()
     active = [task for task in (*snapshot["running"], *snapshot["queued"]) if not task["quiet"]]
+    return {key: next((t for t in active if _is_applying(t, key)), None) for key in SETTING_SECTIONS}
+
+  def applying_task_ids(self) -> tuple:
+    """The task that makes each section apply, or None, in the order of the sections."""
+    return tuple(task and task["task_id"] for task in self.applying_tasks().values())
+
+  def settings_queue_facts(self) -> list[Fact]:
+    return [Fact(self.applying_task_ids, UpdateSource.SETTINGS_APPLYING)]
+
+  def settings_status(self) -> dict:
+    """Per section: not_configured, applying (with the task), ok, retrying or error."""
+    applying_tasks = self.applying_tasks()
     status = {}
     for key in SETTING_SECTIONS:
       check = self.setting_checks.get(key) or {}
@@ -122,7 +136,7 @@ class SettingsMixin:
                "checked_at": check.get("checked_at"), "details": None,
                # Why each failing channel failed, by settings field (a section of channels).
                "channels": check.get("channels")}
-      applying = next((t for t in active if _is_applying(t, key)), None)
+      applying = applying_tasks[key]
 
       if not self.section_configured(key):
         entry.update(state="not_configured", message=None, channels=None)

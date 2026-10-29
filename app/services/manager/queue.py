@@ -1,7 +1,10 @@
 import logging
 from typing import Callable
 
+from playhouse.shortcuts import model_to_dict
+
 from services.db import Task
+from services.updates import Fact, UpdateFeed, Updates, UpdateSource
 from utils.common import utcnow
 
 logger = logging.getLogger(__name__)
@@ -45,13 +48,23 @@ class QueueMixin:
     """Running + queued tasks held in memory by the queue."""
     return self.task_queue.snapshot()
 
+  def tasks_queue_facts(self) -> list[Fact]:
+    """What the queue itself holds that topics show: its tasks and its state."""
+    return [Fact(self.task_snapshot, UpdateSource.TASKS), Fact(self.task_state, UpdateSource.QUEUE_STATE)]
+
+  def _queue_changed(self):
+    """TaskQueue change hook, called from any thread after the tasks or the state changed. Each owner's facts that come
+    from the queue (`queue_facts`) are checked."""
+    for fact in self.queue_facts:
+      fact.check()
+
   def _persist_task(self, task, status: str):
     """TaskQueue persistence hook: record a finished task in the Task table.
     Running tasks are tracked in memory only; only completed/failed/cancelled
     reach the DB, each as a single row. Best-effort so a DB hiccup never breaks
     the operation."""
     try:
-      Task.create(
+      row = Task.create(
           task_id=task.task_id,
           name=task.name,
           scopes=sorted(task.scopes),
@@ -62,3 +75,5 @@ class QueueMixin:
       )
     except Exception as e:
       logger.error(f"Failed to persist task {task.task_id} ({status}): {e}")
+    else:
+      Updates().publish(UpdateFeed.TASK_HISTORY, [model_to_dict(row, recurse=False)])

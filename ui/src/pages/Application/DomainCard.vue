@@ -38,7 +38,7 @@ import { Spinner } from '@/components/ui/spinner'
 import { ButtonGroup } from '@/components/ui/button-group'
 import { useAppStore } from '@/stores/app'
 
-import { type Domain, getDomainAPI, type Application } from '@/services/api'
+import { type Domain, type Application, deleteDomain, updateDomain } from '@/services/api'
 import SectionTitle from '@/components/SectionTitle.vue'
 import StateIndicator from '@/components/StateIndicator.vue'
 import ConfirmationButton from '@/components/ConfirmationButton.vue'
@@ -46,7 +46,6 @@ import ConfirmationButton from '@/components/ConfirmationButton.vue'
 interface Props {
   application: Application
   domain: Domain
-  domainAPI: ReturnType<typeof getDomainAPI>
   loadApplication: () => Promise<void>
 }
 
@@ -91,7 +90,12 @@ async function onClickEditDomainConfirm() {
 
   try {
     isClickedEditDomainConfirm.value = true
-    await props.domainAPI.update(`${props.domain.type}:${props.domain.name}`, domain.value)
+    await updateDomain(
+      props.application.project.name,
+      props.application.name,
+      `${props.domain.type}:${props.domain.name}`,
+      domain.value
+    )
     isEditDomainDialogOpen.value = false
     await props.loadApplication()
     toast.success('Domain updated successfully')
@@ -103,7 +107,11 @@ async function onClickEditDomainConfirm() {
 }
 
 async function onClickConfirmDelete() {
-  await props.domainAPI.delete(`${props.domain.type}:${props.domain.name}`)
+  await deleteDomain(
+    props.application.project.name,
+    props.application.name,
+    `${props.domain.type}:${props.domain.name}`
+  )
   await props.loadApplication()
   toast.success('Domain deleted successfully')
 }

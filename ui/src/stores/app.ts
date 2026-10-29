@@ -4,6 +4,7 @@ import { defineStore } from 'pinia'
 import {
   APPLICATION_BUSY_STATUSES,
   fetchAppInfo,
+  fetchWorkers,
   type AppInfo,
   type Application,
   type Container,
@@ -12,12 +13,10 @@ import {
   type InfraContainer,
   type SettingSection,
   type SettingState,
+  type WorkerListItem,
   type WorkerStatus,
 } from '@/services/api'
-
-const IDLE_POLL_MS = 30000
-// The restore overlay shows live progress.
-const RESTORING_POLL_MS = 2000
+import { watchState } from '@/lib/updates'
 
 const SETTING_INDICATORS: Record<SettingState, Indicator> = {
   not_configured: { state: 'idle', label: 'Not configured' },
@@ -31,29 +30,39 @@ const WORKER_INDICATORS: Record<WorkerStatus, Indicator> = {
   online: { state: 'ok', label: 'online' },
   'not ready': { state: 'warning', label: 'not ready' },
   offline: { state: 'error', label: 'offline' },
+  checking: { state: 'busy', label: 'checking' },
   adding: { state: 'busy', label: 'adding' },
   rebooting: { state: 'busy', label: 'rebooting' },
   removing: { state: 'busy', label: 'removing' },
 }
 
 // The manager's status, which the sidebar, the banner, the restore overlay and the
-// settings pages read. The store owns its one poll and the map from each status to the
-// indicator that shows it.
+// settings pages read, and the workers, which the sidebar and the pages of workers and
+// applications read. The store follows the manager's `info` and `workers` topics and owns
+// the map from each status to the indicator that shows it.
 export const useAppStore = defineStore('app', () => {
   const info = ref<AppInfo | null>(null)
+  // Null until the first load; the error is the first load failing, until a state arrives.
+  const workers = ref<WorkerListItem[] | null>(null)
+  const workersError = ref('')
 
-  // Immediate updates to block UI button till polling gives the real update
+  // Immediate updates to block UI button till the next push gives the real update
   const applicationDeployStatus = ref('inactive' as Application['status'])
   // The open application's containers by worker hostname, as the last action set them.
   const containerStatuses = ref<Record<string, Application['status']>>({})
 
   const workersIndicator = computed<Indicator | undefined>(() => {
-    const workers = info.value?.workers
-    if (!workers) return undefined
-    const { total, online } = workers
+    if (!workers.value) return undefined
+    const total = workers.value.length
+    const online = workers.value.filter(worker => worker.status === 'online').length
     if (total === 0) return { state: 'idle', label: 'No workers' }
     return { state: online === total ? 'ok' : 'error', label: `${online} of ${total} online` }
   })
+
+  // The status of the worker in the list, undefined before the list has loaded or for a name that is not in it.
+  function workerStatus(hostname: string): WorkerStatus | undefined {
+    return workers.value?.find(worker => worker.hostname === hostname)?.status
+  }
 
   function sectionIndicator(section: SettingSection): Indicator | undefined {
     const state = info.value?.settings?.[section]?.state
@@ -110,44 +119,38 @@ export const useAppStore = defineStore('app', () => {
     return { state, label: status }
   }
 
-  let timer: ReturnType<typeof setTimeout> | null = null
-  let started = false
+  let started: Promise<void> | null = null
 
   // A part the manager couldn't build comes as null; the last value stays.
-  async function load() {
-    const next = await fetchAppInfo()
-    info.value = {
-      ...next,
-      workers: next.workers ?? info.value?.workers ?? null,
-      settings: next.settings ?? info.value?.settings ?? null,
-    }
+  function apply(next: AppInfo) {
+    info.value = { ...next, settings: next.settings ?? info.value?.settings ?? null }
+  }
+
+  function showWorkers(next: WorkerListItem[]) {
+    workers.value = next
+    workersError.value = ''
   }
 
   async function refresh() {
-    if (timer) clearTimeout(timer)
     try {
-      await load()
+      apply(await fetchAppInfo())
     } catch (err) {
       console.error('Failed to refresh the app info:', err)
     }
-    if (timer) clearTimeout(timer)
-    timer = setTimeout(
-      refresh,
-      info.value?.state === 'restoring' ? RESTORING_POLL_MS : IDLE_POLL_MS
-    )
   }
 
-  // The first load, which the app waits for; then it keeps the info current, also when the
-  // window gets focus.
-  async function init() {
-    await load()
-    if (started) return
-    started = true
-    timer = setTimeout(refresh, IDLE_POLL_MS)
-    window.addEventListener('focus', refresh)
+  // The first info, which the app waits for, and the workers, which it does not; then the manager pushes each change.
+  function init() {
+    if (!started) {
+      watchState('workers', fetchWorkers, showWorkers).first.catch(err => {
+        workersError.value = err instanceof Error ? err.message : 'Failed to load workers'
+      })
+      started = watchState('info', fetchAppInfo, apply).first
+    }
+    return started
   }
 
-  // Immediate updates after an action; the next poll confirms them.
+  // Immediate updates after an action; the next push confirms them.
   function setState(state: AppInfo['state']) {
     if (info.value) info.value.state = state
   }
@@ -157,7 +160,7 @@ export const useAppStore = defineStore('app', () => {
     if (entry) entry.state = 'applying'
   }
 
-  // The containers named are shown with the status too; the others keep the polled one.
+  // The containers named are shown with the status too; the others keep the pushed one.
   function updateApplicationDeployStatus(status: Application['status'], hostnames: string[] = []) {
     applicationDeployStatus.value = status
     containerStatuses.value = Object.fromEntries(hostnames.map(hostname => [hostname, status]))
@@ -174,9 +177,12 @@ export const useAppStore = defineStore('app', () => {
   return {
     // State
     info,
+    workers,
+    workersError,
     applicationDeployStatus,
     // Getters
     workersIndicator,
+    workerStatus,
     sectionIndicator,
     applicationIndicator,
     workerIndicator,

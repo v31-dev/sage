@@ -1,6 +1,9 @@
 fastapi==0.143.0
 starlette==1.7.0
 uvicorn==0.34.0
+websockets==15.0.1
+python-socketio==5.17.0
+python-engineio==4.14.0
 pydantic<3.0.0
 APScheduler==3.11.3
 croniter==6.2.3

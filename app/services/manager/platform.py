@@ -9,20 +9,32 @@ from cryptography.fernet import InvalidToken
 from peewee import chunked
 
 import config
-from services.db import Application, Backup, Database, Event, Notification, Task, db
+from services.db import Application, Backup, Database, Event, Notification, Task, Worker, db
 from services.notification import Notifications
 from services.settings import Settings
+from services.updates import Fact, Updates, UpdateSource
 from utils.archive import BackupDecryptError, decrypt_file, encrypt_file
 from utils.common import utcnow
 from utils.executor import run_in_executor_with_context
 from utils.queue import OnConflict
 
 from ._common import BACKUP_TIMESTAMP_FORMAT, is_expired_backup_key, timestamp_from_key
+from .application import application_changed
 
 logger = logging.getLogger(__name__)
 
 
 class PlatformMixin:
+  def platform_queue_facts(self) -> list[Fact]:
+    return [Fact(self.restoring_from, UpdateSource.RESTORING), Fact(self.backup_status, UpdateSource.BACKUP_STATUS)]
+
+  def backup_status(self) -> dict:
+    """Whether a platform backup is running and whether backups are being discovered."""
+    return {
+        "platform_backup_in_progress": self.is_task_running(self.backup_database_s3),
+        "discovery_in_progress": self.has_task(self.discover_s3_backups),
+    }
+
   async def discover_s3_backups(self):
     """
     Make the Backup table match what's in S3 under the configured path: record the
@@ -83,6 +95,8 @@ class PlatformMixin:
       return added, removed, unmatched
 
     added, removed, unmatched = await run_in_executor_with_context(reconcile)
+    if sum(added.values()) or removed:
+      Updates().changed(UpdateSource.BACKUPS)
 
     logger.info(
         f"Backup discovery: {len(platform_keys)} platform and {len(volume_keys)} volume backup(s) in S3; "
@@ -120,6 +134,8 @@ class PlatformMixin:
 
     # Cleanup backups
     deleted_count = (Backup.delete().where(Backup.created_at < cutoff).execute())
+    if deleted_count:
+      Updates().changed(UpdateSource.BACKUPS)
     logger.info(
         f"Backups cleanup: removed {deleted_count} backups rows older than {days} days.")
 
@@ -189,6 +205,7 @@ class PlatformMixin:
         # Record backup in database
         full_backup_path = f"{self.s3.get_full_path(self.s3_backup_path_platform)}/{backup_file.name}"
         Backup.create(s3_path=full_backup_path, type="platform")
+        Updates().changed(UpdateSource.BACKUPS)
 
         self.notify(f"Database backup created at {timestamp}.")
       except Exception as e:
@@ -339,7 +356,13 @@ class PlatformMixin:
         # Services built from the settings pick up the restored values.
         self.s3.load()
         Notifications().load_notifications_config()
-        self.refresh_worker_summary()
+        self.load_workers()
+        # The pages of applications and workers followed the rows that were replaced.
+        for application in Application.select():
+          application_changed(application)
+        for worker in Worker.select():
+          Updates().changed(UpdateSource.WORKER_CONTAINERS, worker.hostname)
+        Updates().changed(UpdateSource.BACKUPS)
 
         self.notify(f"Platform restored from backup {s3_path} successfully.", "success")
         restored = True

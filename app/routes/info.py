@@ -32,13 +32,12 @@ def get():
       "start_time": start_time.isoformat(),
       "state": Manager().task_state(),
       "restoring_from": Manager().restoring_from(),
-      "workers": Manager().worker_summary,
       "settings": settings_status(),
   }
 
 
 @router.get("/release")
-async def get_release():
+def get_release():
   return Manager().get_latest_release()
 
 

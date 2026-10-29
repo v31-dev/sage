@@ -18,12 +18,12 @@ import { useAppStore } from '@/stores/app'
 import EventLogsButton from './EventLogsButton.vue'
 import EditContainerButton from './EditContainerButton.vue'
 import DeleteContainerButton from './DeleteContainerButton.vue'
-import { type Container, getContainerAPI } from '@/services/api'
+import { type Application, type Container } from '@/services/api'
 import StateIndicator from '@/components/StateIndicator.vue'
 
 interface Props {
+  application: Application
   container: Container
-  containersAPI: ReturnType<typeof getContainerAPI>
   loadApplication: () => Promise<void>
 }
 
@@ -31,9 +31,11 @@ const appStore = useAppStore()
 
 const props = withDefaults(defineProps<Props>(), {})
 
-const workerIndicator = computed(() =>
-  appStore.workerIndicator(props.container.worker.online ? 'online' : 'offline')
-)
+// The status of the container's worker in the list of workers; none before the list has loaded.
+const workerIndicator = computed(() => {
+  const status = appStore.workerStatus(props.container.worker.hostname)
+  return status ? appStore.workerIndicator(status) : undefined
+})
 </script>
 
 <template>
@@ -50,13 +52,13 @@ const workerIndicator = computed(() =>
       <CardAction>
         <ButtonGroup class="space-x-1">
           <EditContainerButton
+            :application="props.application"
             :container="props.container"
-            :containersAPI="props.containersAPI"
             :loadApplication="props.loadApplication"
           />
           <DeleteContainerButton
+            :application="props.application"
             :container="props.container"
-            :containersAPI="props.containersAPI"
             :loadApplication="props.loadApplication"
           />
         </ButtonGroup>
@@ -78,6 +80,7 @@ const workerIndicator = computed(() =>
           :title="`Worker: ${props.container.worker.hostname}`"
         >
           <StateIndicator
+            v-if="workerIndicator"
             dot
             class="size-2"
             :state="workerIndicator.state"

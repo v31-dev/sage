@@ -2,7 +2,9 @@ import logging
 import os
 import queue
 import re
+import shutil
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -31,6 +33,10 @@ class Logs(Base):
     self.db_path = config.DATA_DIR
     os.makedirs(f"{self.db_path}/logs", exist_ok=True)
     self._dbs = {"logs": {}}
+    # When the size of each shard, and of all together, was last looked at (monotonic seconds).
+    self._checked: dict[str, float] = {}
+    self._total_checked = float("-inf")
+    self._trim_lock = threading.Lock()
 
     # The handler enqueues formatted records; the drain thread writes them to the
     # `sage` shard off the calling thread (often the event loop).
@@ -85,6 +91,9 @@ class Logs(Base):
           stream = CharField()
           message = TextField()
 
+          class Meta:
+            indexes = ((("ts",), False),)
+
         class ContainerLogsIndex(FTS5Model):
           rowid = RowIDField()
           message = SearchField()
@@ -128,11 +137,12 @@ class Logs(Base):
   def write_logs(self, container: str, entries: list):
     shard = self.get_logs_db(container)
     ContainerLogs = shard["models"]["ContainerLogs"]
-    with shard["db"].atomic():
+    with shard["db"].atomic("IMMEDIATE"):
       ContainerLogs.insert_many(entries).execute()
       # FTS index updated automatically via containerlogs_ai trigger
 
     logger.info(f"Wrote {len(entries)} log entries for container {container}.")
+    self._check_sizes(container)
 
   def append_self_log(self, entry: dict):
     """Insert one of the manager's own log records into its `sage` shard. Quiet
@@ -140,6 +150,7 @@ class Logs(Base):
     here would recurse."""
     shard = self.get_logs_db("sage")
     shard["models"]["ContainerLogs"].insert(**entry).execute()
+    self._check_sizes("sage")
 
   def query_logs(
       self,
@@ -183,6 +194,132 @@ class Logs(Base):
 
     return list(rows)
 
+  def _check_sizes(self, container: str):
+    """After a write: trim the container's logs, and all logs together, if they are over their limits. Looked at
+    at most every LOG_SIZE_CHECK_SECONDS, by one thread at a time, and never an error for the write."""
+    now = time.monotonic()
+    with self.lock:
+      shard_due = now - self._checked.get(container, float("-inf")) >= config.LOG_SIZE_CHECK_SECONDS
+      total_due = now - self._total_checked >= config.LOG_SIZE_CHECK_SECONDS
+      if shard_due:
+        self._checked[container] = now
+      if total_due:
+        self._total_checked = now
+    if not (shard_due or total_due) or not self._trim_lock.acquire(blocking=False):
+      return
+    try:
+      if shard_due:
+        self.trim_shard(container)
+      if total_due:
+        self.trim_total()
+    except Exception:
+      logger.warning(f"Could not trim the logs of '{container}'.", exc_info=True)
+    finally:
+      self._trim_lock.release()
+
+  @staticmethod
+  def _scalar(db, sql: str):
+    """The first value of a query, with its cursor closed."""
+    cursor = db.execute_sql(sql)
+    try:
+      return cursor.fetchone()[0]
+    finally:
+      cursor.close()
+
+  def _pages(self, shard) -> tuple[int, int, int]:
+    """The page size, the pages of the shard, and how many of them are free."""
+    page_size, pages, free = (self._scalar(shard["db"], f"PRAGMA {name}")
+                              for name in ("page_size", "page_count", "freelist_count"))
+    return page_size, pages, free
+
+  def _live_bytes(self, shard) -> int:
+    """The data in a shard: its pages less the free ones."""
+    page_size, pages, free = self._pages(shard)
+    return (pages - free) * page_size
+
+  def _file_bytes(self, shard) -> int:
+    """The size the shard's file has, or will have once the write-ahead log is checkpointed."""
+    page_size, pages, _ = self._pages(shard)
+    return pages * page_size
+
+  def _count(self, shard) -> int:
+    return self._scalar(shard["db"], "SELECT COUNT(*) FROM containerlogs")
+
+  def _oldest_ts(self, shard) -> str | None:
+    return self._scalar(shard["db"], "SELECT MIN(ts) FROM containerlogs")
+
+  @staticmethod
+  def _delete_oldest(shard, rows: int):
+    """Delete the `rows` oldest lines by timestamp, a batch to a transaction."""
+    ContainerLogs = shard["models"]["ContainerLogs"]
+    done = 0
+    while done < rows:
+      step = min(config.LOG_TRIM_BATCH_ROWS, rows - done)
+      with shard["db"].atomic("IMMEDIATE"):
+        oldest = ContainerLogs.select(ContainerLogs.id).order_by(ContainerLogs.ts, ContainerLogs.id).limit(step)
+        ContainerLogs.delete().where(ContainerLogs.id.in_(oldest)).execute()
+      done += step
+
+  def _compact(self, container: str, shard):
+    """Merge the full-text index so the space of deleted lines is free, and rewrite a file that is far bigger
+    than a shard may be."""
+    db = shard["db"]
+    db.execute_sql("INSERT INTO containerlogsindex(containerlogsindex) VALUES('optimize')")
+    if self._file_bytes(shard) > config.LOG_SHARD_MAX_BYTES * config.LOG_SHARD_VACUUM_RATIO:
+      try:
+        db.execute_sql("VACUUM")
+        db.execute_sql("PRAGMA wal_checkpoint(TRUNCATE)")
+      except Exception:
+        logger.warning(f"Could not rewrite the logs shard '{container}' to give back its space.", exc_info=True)
+
+  def trim_shard(self, container: str) -> int:
+    """Keep a container's logs within LOG_SHARD_MAX_BYTES by deleting its oldest lines. Returns the lines deleted."""
+    shard = self.get_logs_db(container)
+    limit = config.LOG_SHARD_MAX_BYTES
+    live = self._live_bytes(shard)
+    removed = 0
+    if live > limit:
+      rows = self._count(shard)
+      keep = max(config.LOG_KEEP_NEWEST_ROWS, int(rows * limit * config.LOG_TRIM_TO_SHARE / live))
+      removed = max(rows - keep, 0)
+      self._delete_oldest(shard, removed)
+    if removed or self._file_bytes(shard) > limit * config.LOG_SHARD_VACUUM_RATIO:
+      self._compact(container, shard)
+    if removed:
+      logger.info(f"Trimmed {removed} of the oldest log lines of '{container}' to keep it within {limit // 2**20} MiB.")
+    return removed
+
+  def total_limit(self) -> int:
+    return min(config.LOG_TOTAL_MAX_BYTES, int(shutil.disk_usage(self.db_path).total * config.LOG_TOTAL_MAX_DISK_SHARE))
+
+  def trim_total(self) -> int:
+    """Keep all the logs together within `total_limit` by deleting the oldest lines of any container first, a
+    batch at a time. Returns the lines deleted."""
+    shards = {path.stem: self.get_logs_db(path.stem) for path in sorted((Path(self.db_path) / "logs").glob("*.db"))}
+    sizes = {name: self._live_bytes(shard) for name, shard in shards.items()}
+    limit = self.total_limit()
+    if sum(sizes.values()) <= limit:
+      return 0
+    excess = sum(sizes.values()) - limit * config.LOG_TRIM_TO_SHARE
+    rows = {name: self._count(shard) for name, shard in shards.items()}
+    bytes_per_row = {name: sizes[name] / max(rows[name], 1) for name in shards}
+    removed = dict.fromkeys(shards, 0)
+    while excess > 0:
+      oldest = {name: self._oldest_ts(shards[name]) for name in shards
+                if rows[name] - removed[name] > config.LOG_KEEP_NEWEST_ROWS}
+      if not oldest:
+        break
+      name = min(oldest, key=oldest.get)
+      step = min(config.LOG_TRIM_BATCH_ROWS, rows[name] - removed[name] - config.LOG_KEEP_NEWEST_ROWS)
+      self._delete_oldest(shards[name], step)
+      removed[name] += step
+      excess -= step * bytes_per_row[name]
+    for name, count in removed.items():
+      if count:
+        self._compact(name, shards[name])
+        logger.info(f"Trimmed {count} of the oldest log lines of '{name}' to keep all logs within {limit // 2**20} MiB.")
+    return sum(removed.values())
+
   def _drop_shard(self, key: str):
     """Close the cached connection for a shard and delete its files (`.db` plus
     the `-wal`/`-shm` siblings). Removing the file is how space for a deleted
@@ -224,8 +361,10 @@ class Logs(Base):
       ContainerLogs = db_info["models"]["ContainerLogs"]
       deleted += ContainerLogs.delete().where(ContainerLogs.ts < cutoff.isoformat()).execute()
       db_info["db"].execute_sql("INSERT INTO containerlogsindex(containerlogsindex) VALUES('optimize')")
+
+    trimmed = sum(self.trim_shard(container) for container in sorted(existing)) + self.trim_total()
     logger.info(
-        f"Logs cleanup: removed {deleted} log rows older than {days} days; "
+        f"Logs cleanup: removed {deleted} log rows older than {days} days and trimmed {trimmed} over the size limits; "
         f"dropped {len(orphans)} orphaned shard(s).")
 
 

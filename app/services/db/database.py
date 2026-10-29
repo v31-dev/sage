@@ -46,7 +46,8 @@ class Database(Base):
 
   def _sync_columns(self):
     """
-    Add any model field that is missing from its table as a new column.
+    Add any model field that is missing from its table as a new column, and drop any
+    column that no model field has any more.
 
     This is a dynamic, model-driven sync derived from the field definitions
     themselves, not hand-written per-column steps. Anything that cannot be
@@ -57,8 +58,12 @@ class Database(Base):
     for model in MODELS:
       table = model._meta.table_name
       existing = {column.name for column in db.get_columns(table)}
+      wanted = {field.column_name for field in model._meta.sorted_fields}
       for field in model._meta.sorted_fields:
         if field.column_name in existing:
           continue
         logger.info(f"Adding missing column {table}.{field.column_name}.")
         migrate(migrator.add_column(table, field.column_name, field))
+      for column in sorted(existing - wanted):
+        logger.info(f"Dropping column {table}.{column}, which no model has.")
+        migrate(migrator.drop_column(table, column))

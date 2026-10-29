@@ -14,14 +14,13 @@ import { toast } from 'vue-sonner'
 import { formatDate } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import ConfirmationButton from '@/components/ConfirmationButton.vue'
-import { type Backup, backupAPI as backupAPIClass, downloadBackup } from '@/services/api'
+import { type Backup, deleteBackup, downloadBackup, restoreBackup } from '@/services/api'
 import RestoreLogsDialog from '@/components/RestoreLogsDialog.vue'
 import { useAppStore } from '@/stores/app'
 import { TONES } from '@/lib/tone'
 
 interface Props {
   backup: Backup
-  backupAPI: typeof backupAPIClass
   loadBackups: () => Promise<void>
 }
 
@@ -32,15 +31,15 @@ const restoreDialogTaskId = ref<string>('')
 
 async function onClickDownload() {
   try {
-    await downloadBackup(props.backupAPI, props.backup.id)
+    await downloadBackup(props.backup.id)
   } catch (err) {
     toast.error(err instanceof Error ? err.message : 'Failed to download backup')
   }
 }
 
-async function onConfirmDeleteBackup(backupId: string) {
+async function onConfirmDeleteBackup(backupId: number) {
   try {
-    await props.backupAPI.delete(backupId)
+    await deleteBackup(backupId)
     toast.success('Backup deleted successfully')
     await props.loadBackups()
   } catch (err) {
@@ -48,9 +47,9 @@ async function onConfirmDeleteBackup(backupId: string) {
   }
 }
 
-async function onConfirmRestoreBackup(backupId: string) {
+async function onConfirmRestoreBackup(backupId: number) {
   try {
-    await props.backupAPI.action(`${backupId}/restore`)
+    await restoreBackup(backupId)
     toast.success('Backup restore initiated successfully')
     appStore.setState('restoring')
     await appStore.refresh()
@@ -84,7 +83,7 @@ async function onConfirmRestoreBackup(backupId: string) {
         body="Are you sure you want to restore this backup? This action cannot be undone."
         description="Restore Platform Backup"
         :icon="ArchiveRestore"
-        :onConfirm="() => onConfirmRestoreBackup(String(backup.id))"
+        :onConfirm="() => onConfirmRestoreBackup(backup.id)"
       />
       <ConfirmationButton
         triggerText="Delete"
@@ -93,7 +92,7 @@ async function onConfirmRestoreBackup(backupId: string) {
         description="Platform Backup"
         :icon="Trash"
         destructive
-        :onConfirm="() => onConfirmDeleteBackup(String(backup.id))"
+        :onConfirm="() => onConfirmDeleteBackup(backup.id)"
       />
     </ItemActions>
   </Item>

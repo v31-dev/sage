@@ -3,12 +3,12 @@ import { computed } from 'vue'
 import { Trash } from 'lucide-vue-next'
 
 import ConfirmationButton from '@/components/ConfirmationButton.vue'
-import { type Container, getContainerAPI } from '@/services/api'
+import { type Application, type Container, deleteContainer } from '@/services/api'
 import { useAppStore } from '@/stores/app'
 
 interface Props {
+  application: Application
   container: Container
-  containersAPI: ReturnType<typeof getContainerAPI>
   loadApplication: () => Promise<void>
 }
 
@@ -33,7 +33,7 @@ async function onConfirmDeleteContainer() {
   const hostname = props.container.worker.hostname
   appStore.updateContainerStatus(hostname, 'stopping')
   try {
-    await props.containersAPI.delete(hostname)
+    await deleteContainer(props.application.project.name, props.application.name, hostname)
   } catch (err) {
     appStore.updateContainerStatus(hostname, props.container.status)
     throw err

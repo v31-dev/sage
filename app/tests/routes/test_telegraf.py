@@ -7,6 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import config
+from services.db import Worker
 from services.manager import Manager
 from services.metrics import Metrics
 from services.worker_reports import WorkerReports, parse_batch
@@ -18,6 +19,14 @@ URL = "/api/telegraf/report"
 class FakeManager:
   def __init__(self):
     self.status_syncs = []
+    self.worker_reports = []
+    self.worker_list = []
+
+  def worker_entry(self, hostname):
+    return Manager.worker_entry(self, hostname)
+
+  def update_worker(self, hostname, **inputs):
+    self.worker_reports.append((hostname, inputs))
 
   def request_status_sync_for_containers(self, hostname, names):
     self.status_syncs.append((hostname, set(names)))
@@ -26,6 +35,13 @@ class FakeManager:
 @pytest.fixture
 def manager(register):
   return register(Manager, FakeManager())
+
+
+@pytest.fixture
+def worker(manager):
+  """A worker of this manager: its entry in the worker list, which is what the route asks."""
+  manager.worker_list = [{"hostname": "w1", "ip": "100.64.0.2"}]
+  return manager.worker_list[0]
 
 
 @pytest.fixture
@@ -103,6 +119,26 @@ class TestReport:
     post(client, b"not json")
     post(client, json.dumps(BATCH).encode(), node="stranger")
     assert manager.status_syncs == []
+    assert manager.worker_reports == []
+
+  def test_each_report_is_given_to_the_worker_list_as_the_newest_of_the_worker(self, client, worker, manager):
+    post(client, json.dumps(BATCH).encode())
+    first = WorkerReports().latest("w1")
+    post(client, json.dumps(self.later(BATCH)).encode())
+    assert [(hostname, inputs) for hostname, inputs in manager.worker_reports] == [
+        ("w1", {"report": first}), ("w1", {"report": WorkerReports().latest("w1")})]
+    assert first is not WorkerReports().latest("w1")
+
+  def test_a_report_older_than_the_one_held_is_not_given(self, client, worker, manager):
+    post(client, json.dumps(self.later(BATCH)).encode())
+    post(client, json.dumps(BATCH).encode())
+    assert len(manager.worker_reports) == 1
+
+  @staticmethod
+  def later(batch):
+    later = json.loads(json.dumps(batch))
+    later["metrics"] = [dict(m, timestamp=m["timestamp"] + 10_000) for m in later["metrics"]]
+    return later
 
   def test_the_first_report_is_logged_and_the_next_is_not(self, client, worker, caplog):
     with caplog.at_level(logging.INFO, logger="routes.telegraf"):
@@ -122,8 +158,12 @@ class TestReport:
       post(client, b"{}", node="stranger")
     assert len(caplog.records) == 1
 
-  def test_a_worker_that_was_removed_is_refused(self, client, worker):
-    worker.delete_instance()
+  def test_a_worker_that_was_removed_is_refused(self, client, worker, manager):
+    manager.worker_list = []
+    assert post(client, json.dumps(BATCH).encode()).status_code == 404
+
+  def test_a_name_with_a_row_but_no_entry_in_the_worker_list_is_refused(self, client, manager):
+    Worker.create(hostname="w1", ip="100.64.0.2")
     assert post(client, json.dumps(BATCH).encode()).status_code == 404
 
   @pytest.mark.parametrize("body", [b"not json", b"[]", b'{"metrics": 5}', b'{"metrics": [{"name": "cpu"}]}'])

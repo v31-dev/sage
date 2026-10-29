@@ -1,22 +1,59 @@
+import { flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   fetchAppInfo,
+  fetchWorkers,
   type AppInfo,
   type Application,
   type Container,
   type SettingSection,
   type SettingsStatus,
   type SettingState,
+  type WorkerListItem,
+  type WorkerStatus,
 } from '@/services/api'
+import { watchState } from '@/lib/updates'
 import { useAppStore } from '@/stores/app'
 
 vi.mock('@/services/api', async importOriginal => ({
   ...(await importOriginal<typeof import('@/services/api')>()),
   fetchAppInfo: vi.fn(),
+  fetchWorkers: vi.fn(),
 }))
+vi.mock('@/lib/updates', () => ({ watchState: vi.fn() }))
 
 const fetchInfo = vi.mocked(fetchAppInfo)
+const fetchWorkerList = vi.mocked(fetchWorkers)
+const watch = vi.mocked(watchState)
+
+const last = <T>(items: T[]) => items[items.length - 1]!
+
+// The topic as it is when the first state arrives at once. `onData()` is what the store gave to be called with each
+// state of the info, the last topic it follows.
+function onData() {
+  return last(watch.mock.calls)![2] as unknown as (info: AppInfo) => void
+}
+
+// What the store gave to be called with each state of the workers.
+function onWorkers() {
+  return watch.mock.calls.find(call => call[0] === 'workers')![2] as unknown as (
+    workers: WorkerListItem[]
+  ) => void
+}
+
+function worker(hostname: string, status: WorkerStatus = 'online'): WorkerListItem {
+  return {
+    hostname,
+    ip: '100.64.0.2',
+    online: status !== 'offline',
+    status,
+    path: null,
+    container_count: null,
+    infra: null,
+    metrics: null,
+  }
+}
 
 function settings(state: SettingState = 'ok'): SettingsStatus {
   const section = { state, message: null, task_id: null, checked_at: null, details: null }
@@ -38,7 +75,6 @@ function appInfo(overrides: Partial<AppInfo> = {}): AppInfo {
     start_time: '2026-10-24T10:00:00Z',
     state: 'running',
     restoring_from: null,
-    workers: { total: 2, online: 2 },
     settings: settings(),
     ...overrides,
   }
@@ -51,46 +87,116 @@ function container(hostname: string, status: Application['status'] = 'active'): 
 beforeEach(() => {
   setActivePinia(createPinia())
   vi.spyOn(console, 'error').mockImplementation(() => {})
+  fetchWorkerList.mockResolvedValue([])
+  watch.mockImplementation(((
+    _topic: string,
+    load: () => Promise<unknown>,
+    receive: (data: unknown) => void
+  ) => ({
+    stop: vi.fn(),
+    first: load().then(receive),
+  })) as unknown as typeof watchState)
 })
 
 afterEach(() => {
   vi.useRealTimers()
 })
 
+describe('the workers', () => {
+  it('are followed from their route, and loading them does not hold the app back', async () => {
+    fetchInfo.mockResolvedValue(appInfo())
+    fetchWorkerList.mockReturnValue(new Promise(() => {}))
+    const store = useAppStore()
+
+    await store.init()
+
+    expect(watch).toHaveBeenCalledWith('workers', fetchWorkers, expect.any(Function))
+    expect(store.workers).toBeNull()
+  })
+
+  it('are the list the manager sent, and each push replaces it', async () => {
+    fetchInfo.mockResolvedValue(appInfo())
+    fetchWorkerList.mockResolvedValue([worker('w1')])
+    const store = useAppStore()
+    await store.init()
+    await flushPromises()
+    expect(store.workers).toEqual([worker('w1')])
+
+    onWorkers()([worker('w1', 'offline'), worker('w2')])
+
+    expect(store.workers?.map(entry => entry.hostname)).toEqual(['w1', 'w2'])
+  })
+
+  it('say why the first load failed, until a state arrives', async () => {
+    fetchInfo.mockResolvedValue(appInfo())
+    fetchWorkerList.mockRejectedValue(new Error('Failed to fetch workers'))
+    const store = useAppStore()
+
+    await store.init()
+    await flushPromises()
+    expect(store.workersError).toBe('Failed to fetch workers')
+    expect(store.workers).toBeNull()
+
+    onWorkers()([worker('w1')])
+
+    expect(store.workersError).toBe('')
+    expect(store.workers).toEqual([worker('w1')])
+  })
+
+  it('give the status of each worker, and none for a name that is not listed or before the list has loaded', async () => {
+    fetchInfo.mockResolvedValue(appInfo())
+    fetchWorkerList.mockResolvedValue([worker('w1', 'rebooting'), worker('w2')])
+    const store = useAppStore()
+    expect(store.workerStatus('w1')).toBeUndefined()
+
+    await store.init()
+    await flushPromises()
+
+    expect(store.workerStatus('w1')).toBe('rebooting')
+    expect(store.workerStatus('w2')).toBe('online')
+    expect(store.workerStatus('w9')).toBeUndefined()
+  })
+})
+
 describe('workersIndicator', () => {
-  it('shows nothing until the info has arrived or when the manager sent no workers', async () => {
+  it('shows nothing until the workers have loaded', async () => {
+    fetchInfo.mockResolvedValue(appInfo())
+    fetchWorkerList.mockReturnValue(new Promise(() => {}))
     const store = useAppStore()
     expect(store.workersIndicator).toBeUndefined()
 
-    fetchInfo.mockResolvedValue(appInfo({ workers: null }))
     await store.init()
+
     expect(store.workersIndicator).toBeUndefined()
   })
 
   it.each([
-    [
-      { total: 0, online: 0 },
-      { state: 'idle', label: 'No workers' },
-    ],
-    [
-      { total: 3, online: 3 },
-      { state: 'ok', label: '3 of 3 online' },
-    ],
-    [
-      { total: 3, online: 2 },
-      { state: 'error', label: '2 of 3 online' },
-    ],
-    [
-      { total: 2, online: 0 },
-      { state: 'error', label: '0 of 2 online' },
-    ],
-  ])('shows %j as %j', async (workers, indicator) => {
-    fetchInfo.mockResolvedValue(appInfo({ workers }))
+    [[], { state: 'idle', label: 'No workers' }],
+    [['online', 'online', 'online'], { state: 'ok', label: '3 of 3 online' }],
+    [['online', 'online', 'offline'], { state: 'error', label: '2 of 3 online' }],
+    [['offline', 'offline'], { state: 'error', label: '0 of 2 online' }],
+    [['online', 'rebooting', 'not ready'], { state: 'error', label: '1 of 3 online' }],
+  ] as [WorkerStatus[], unknown][])('shows %j as %j', async (statuses, indicator) => {
+    fetchInfo.mockResolvedValue(appInfo())
+    fetchWorkerList.mockResolvedValue(statuses.map((status, index) => worker(`w${index}`, status)))
     const store = useAppStore()
 
     await store.init()
+    await flushPromises()
 
     expect(store.workersIndicator).toEqual(indicator)
+  })
+
+  it('follows the list when the manager pushes another', async () => {
+    fetchInfo.mockResolvedValue(appInfo())
+    fetchWorkerList.mockResolvedValue([worker('w1')])
+    const store = useAppStore()
+    await store.init()
+    await flushPromises()
+
+    onWorkers()([worker('w1'), worker('w2', 'offline')])
+
+    expect(store.workersIndicator).toEqual({ state: 'error', label: '1 of 2 online' })
   })
 })
 
@@ -154,6 +260,7 @@ describe('the indicators by status', () => {
     ['online', 'ok'],
     ['not ready', 'warning'],
     ['offline', 'error'],
+    ['checking', 'busy'],
     ['adding', 'busy'],
     ['rebooting', 'busy'],
     ['removing', 'busy'],
@@ -200,18 +307,14 @@ describe('the indicators by status', () => {
   })
 })
 
-describe('init and the polling', () => {
-  beforeEach(() => {
-    vi.useFakeTimers()
-  })
-
-  it('loads the info before it returns', async () => {
+describe('init and the info topic', () => {
+  it('follows the info topic and has the info when it returns', async () => {
     fetchInfo.mockResolvedValue(appInfo({ version: '2.0.0' }))
     const store = useAppStore()
 
     await store.init()
 
-    expect(fetchInfo).toHaveBeenCalledTimes(1)
+    expect(watch).toHaveBeenCalledWith('info', fetchAppInfo, expect.anything())
     expect(store.info?.version).toBe('2.0.0')
   })
 
@@ -221,120 +324,72 @@ describe('init and the polling', () => {
     await expect(useAppStore().init()).rejects.toThrow('Failed to fetch app info')
   })
 
-  it('polls every 30 seconds', async () => {
+  it('follows each topic once however often init is called', async () => {
     fetchInfo.mockResolvedValue(appInfo())
-    await useAppStore().init()
+    const store = useAppStore()
 
-    await vi.advanceTimersByTimeAsync(29999)
-    expect(fetchInfo).toHaveBeenCalledTimes(1)
+    await store.init()
+    await store.init()
 
-    await vi.advanceTimersByTimeAsync(1)
-    expect(fetchInfo).toHaveBeenCalledTimes(2)
-
-    await vi.advanceTimersByTimeAsync(30000)
-    expect(fetchInfo).toHaveBeenCalledTimes(3)
+    expect(watch.mock.calls.map(call => call[0])).toEqual(['workers', 'info'])
   })
 
-  it('polls every 2 seconds while a restore runs, and goes back to 30 when it is over', async () => {
-    fetchInfo.mockResolvedValue(appInfo({ state: 'restoring' }))
-    await useAppStore().init()
-    await vi.advanceTimersByTimeAsync(30000)
-    expect(fetchInfo).toHaveBeenCalledTimes(2)
+  it('takes each state the manager pushes', async () => {
+    fetchInfo.mockResolvedValue(appInfo({ version: '1.0.0' }))
+    const store = useAppStore()
+    await store.init()
 
-    await vi.advanceTimersByTimeAsync(2000)
-    await vi.advanceTimersByTimeAsync(2000)
-    expect(fetchInfo).toHaveBeenCalledTimes(4)
+    onData()(appInfo({ version: '1.1.0', state: 'paused' }))
 
-    fetchInfo.mockResolvedValue(appInfo({ state: 'running' }))
-    await vi.advanceTimersByTimeAsync(2000)
-    expect(fetchInfo).toHaveBeenCalledTimes(5)
-
-    await vi.advanceTimersByTimeAsync(2000)
-    expect(fetchInfo).toHaveBeenCalledTimes(5)
-    await vi.advanceTimersByTimeAsync(28000)
-    expect(fetchInfo).toHaveBeenCalledTimes(6)
+    expect(store.info?.version).toBe('1.1.0')
+    expect(store.info?.state).toBe('paused')
   })
 
-  it('does not start a second refresh while one is waiting for the manager', async () => {
+  it('keeps the last settings when the manager could not build them', async () => {
     fetchInfo.mockResolvedValue(appInfo())
-    const listen = vi.spyOn(window, 'addEventListener')
-    await useAppStore().init()
-    const onFocus = listen.mock.calls.find(([type]) => type === 'focus')![1] as () => Promise<void>
+    const store = useAppStore()
+    await store.init()
 
-    await vi.advanceTimersByTimeAsync(20000)
-    let answer: () => void = () => {}
-    fetchInfo.mockImplementationOnce(
-      () => new Promise(resolve => (answer = () => resolve(appInfo())))
-    )
-    const refreshing = onFocus()
-    expect(fetchInfo).toHaveBeenCalledTimes(2)
+    onData()(appInfo({ settings: null, version: '1.1.0' }))
 
-    await vi.advanceTimersByTimeAsync(15000)
-    expect(fetchInfo).toHaveBeenCalledTimes(2)
+    expect(store.info?.version).toBe('1.1.0')
+    expect(store.info?.settings).toEqual(settings())
+  })
+})
 
-    answer()
-    await refreshing
-    await vi.advanceTimersByTimeAsync(30000)
-    expect(fetchInfo).toHaveBeenCalledTimes(3)
+describe('refresh', () => {
+  it('loads the info once more', async () => {
+    fetchInfo.mockResolvedValueOnce(appInfo({ version: '1.0.0' }))
+    const store = useAppStore()
+    await store.init()
+
+    fetchInfo.mockResolvedValueOnce(appInfo({ version: '1.2.0' }))
+    await store.refresh()
+
+    expect(store.info?.version).toBe('1.2.0')
   })
 
-  it('keeps polling after a failed refresh and keeps the last info', async () => {
+  it('keeps the last info when the manager does not answer', async () => {
     fetchInfo.mockResolvedValueOnce(appInfo({ version: '1.0.0' }))
     const store = useAppStore()
     await store.init()
 
     fetchInfo.mockRejectedValueOnce(new Error('down'))
-    await vi.advanceTimersByTimeAsync(30000)
+    await store.refresh()
+
     expect(console.error).toHaveBeenCalledWith('Failed to refresh the app info:', expect.any(Error))
     expect(store.info?.version).toBe('1.0.0')
-
-    fetchInfo.mockResolvedValueOnce(appInfo({ version: '1.1.0' }))
-    await vi.advanceTimersByTimeAsync(30000)
-    expect(store.info?.version).toBe('1.1.0')
   })
 
-  it('keeps the last workers and settings when the manager could not build them', async () => {
-    fetchInfo.mockResolvedValueOnce(appInfo({ workers: { total: 3, online: 3 } }))
+  it('keeps the last settings when the manager could not build them', async () => {
+    fetchInfo.mockResolvedValueOnce(appInfo())
     const store = useAppStore()
     await store.init()
 
-    fetchInfo.mockResolvedValueOnce(appInfo({ workers: null, settings: null, version: '1.1.0' }))
-    await vi.advanceTimersByTimeAsync(30000)
+    fetchInfo.mockResolvedValueOnce(appInfo({ settings: null }))
+    await store.refresh()
 
-    expect(store.info?.version).toBe('1.1.0')
-    expect(store.info?.workers).toEqual({ total: 3, online: 3 })
     expect(store.info?.settings).toEqual(settings())
-  })
-
-  it('starts the polling once however often init is called', async () => {
-    fetchInfo.mockResolvedValue(appInfo())
-    const listen = vi.spyOn(window, 'addEventListener')
-    const store = useAppStore()
-
-    await store.init()
-    await store.init()
-    expect(fetchInfo).toHaveBeenCalledTimes(2)
-
-    fetchInfo.mockClear()
-    await vi.advanceTimersByTimeAsync(30000)
-    expect(fetchInfo).toHaveBeenCalledTimes(1)
-    expect(listen.mock.calls.filter(([type]) => type === 'focus')).toHaveLength(1)
-  })
-
-  it('refreshes at once when the window gets focus and restarts the wait', async () => {
-    fetchInfo.mockResolvedValue(appInfo())
-    const listen = vi.spyOn(window, 'addEventListener')
-    await useAppStore().init()
-    const onFocus = listen.mock.calls.find(([type]) => type === 'focus')![1] as () => Promise<void>
-
-    await vi.advanceTimersByTimeAsync(20000)
-    await onFocus()
-    expect(fetchInfo).toHaveBeenCalledTimes(2)
-
-    await vi.advanceTimersByTimeAsync(20000)
-    expect(fetchInfo).toHaveBeenCalledTimes(2)
-    await vi.advanceTimersByTimeAsync(10000)
-    expect(fetchInfo).toHaveBeenCalledTimes(3)
   })
 })
 

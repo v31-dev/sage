@@ -16,6 +16,27 @@ LATEST_RELEASE_URL = "https://api.github.com/repos/v31-dev/sage/releases/latest"
 # safety copies, and S3 platform and volume backups (the daily cleanup).
 RETENTION_DAYS = 14
 
+# The Socket.IO connection: the first change starts this wait, and the topics that depend on the changes made within it
+# are recomputed together once it ends.
+UPDATES_COALESCE_SECONDS = 3
+# The server pings every connection this often, and drops one that does not answer within the timeout.
+UPDATES_PING_INTERVAL_SECONDS = 10
+UPDATES_PING_TIMEOUT_SECONDS = 10
+
+# Log size limits. A container's logs are trimmed, oldest lines first, when their data passes LOG_SHARD_MAX_BYTES, and
+# all containers' logs when together they pass the smaller of LOG_TOTAL_MAX_BYTES and LOG_TOTAL_MAX_DISK_SHARE of the
+# data volume. A trim leaves LOG_TRIM_TO_SHARE of the limit and keeps each container's newest LOG_KEEP_NEWEST_ROWS
+# lines. Sizes are checked after a write at most every LOG_SIZE_CHECK_SECONDS, and lines go LOG_TRIM_BATCH_ROWS at a
+# time. A shard file bigger than LOG_SHARD_VACUUM_RATIO times its limit is rewritten.
+LOG_SHARD_MAX_BYTES = 256 * 1024 * 1024
+LOG_TOTAL_MAX_BYTES = 2 * 1024 * 1024 * 1024
+LOG_TOTAL_MAX_DISK_SHARE = 0.10
+LOG_TRIM_TO_SHARE = 0.9
+LOG_KEEP_NEWEST_ROWS = 1000
+LOG_SIZE_CHECK_SECONDS = 30
+LOG_TRIM_BATCH_ROWS = 10000
+LOG_SHARD_VACUUM_RATIO = 1.25
+
 # Cloudflare network errors, rate limits and server errors are retried after these delays (seconds).
 CLOUDFLARE_RETRY_DELAYS = (1, 2)
 # S3 deletes are retried after these delays (seconds).
@@ -46,6 +67,10 @@ REPORT_SETTLE_SECONDS = 15
 REPORT_STARTUP_GRACE_SECONDS = 60
 # The names of unknown senders remembered so that each is logged once.
 REPORT_UNKNOWN_LIMIT = 100
+# A worker's newest minute of metrics is shown in the worker list while it began less than this long ago: a minute is
+# written by the first minutely flush after it ends, so a worker that reports has one that began at most about 2
+# minutes ago.
+WORKER_METRICS_STALE_SECONDS = 180
 
 # The services of the worker stack, which `docker compose up -d` starts and which are also the names
 # of their containers.
