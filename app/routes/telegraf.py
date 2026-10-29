@@ -5,7 +5,6 @@ import zlib
 from fastapi import APIRouter, HTTPException, Request, Response
 
 import config
-from services.db import Worker
 from services.manager import Manager
 from services.metrics import Metrics
 from services.worker_reports import WorkerReports, parse_batch
@@ -38,11 +37,7 @@ async def _read_body(request: Request) -> bytes:
 @router.post("/report")
 async def telegraf_report(request: Request):
   hostname = request.headers.get("x-node-name", "")
-  try:
-    known = Worker.select().where(Worker.hostname == hostname).exists()
-  except ValueError:  # the model refuses a name that no worker can have
-    known = False
-  if not known:
+  if Manager().worker_entry(hostname) is None:
     if WorkerReports().first_unknown(hostname):
       logger.warning(f"Ignoring reports from unknown worker {hostname!r}.")
     raise HTTPException(status_code=404, detail="Unknown worker.")

@@ -7,6 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import config
+from services.db import Worker
 from services.manager import Manager
 from services.metrics import Metrics
 from services.worker_reports import WorkerReports, parse_batch
@@ -19,6 +20,10 @@ class FakeManager:
   def __init__(self):
     self.status_syncs = []
     self.worker_reports = []
+    self.worker_list = []
+
+  def worker_entry(self, hostname):
+    return Manager.worker_entry(self, hostname)
 
   def update_worker(self, hostname, **inputs):
     self.worker_reports.append((hostname, inputs))
@@ -30,6 +35,13 @@ class FakeManager:
 @pytest.fixture
 def manager(register):
   return register(Manager, FakeManager())
+
+
+@pytest.fixture
+def worker(manager):
+  """A worker of this manager: its entry in the worker list, which is what the route asks."""
+  manager.worker_list = [{"hostname": "w1", "ip": "100.64.0.2"}]
+  return manager.worker_list[0]
 
 
 @pytest.fixture
@@ -146,8 +158,12 @@ class TestReport:
       post(client, b"{}", node="stranger")
     assert len(caplog.records) == 1
 
-  def test_a_worker_that_was_removed_is_refused(self, client, worker):
-    worker.delete_instance()
+  def test_a_worker_that_was_removed_is_refused(self, client, worker, manager):
+    manager.worker_list = []
+    assert post(client, json.dumps(BATCH).encode()).status_code == 404
+
+  def test_a_name_with_a_row_but_no_entry_in_the_worker_list_is_refused(self, client, manager):
+    Worker.create(hostname="w1", ip="100.64.0.2")
     assert post(client, json.dumps(BATCH).encode()).status_code == 404
 
   @pytest.mark.parametrize("body", [b"not json", b"[]", b'{"metrics": 5}', b'{"metrics": [{"name": "cpu"}]}'])
