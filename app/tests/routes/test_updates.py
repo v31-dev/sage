@@ -22,7 +22,7 @@ import config
 import services.updates as updates_module
 from api import build_asgi_app
 from routes.applications import load_application
-from routes.backups import get_platform_backup_status
+from routes.backups import get_platform_backup_status, list_platform_backups
 from routes.info import get as info
 from routes.info import get_release
 from routes.notifications import list_notifications
@@ -30,7 +30,7 @@ from routes.tasks import list_tasks
 from routes.updates import TOPICS, same_origin, sio
 from routes.workers import get as list_workers
 from routes.workers import load_worker
-from services.db import Notification
+from services.db import Backup, Notification
 from services.updates import Feed, Topic, UpdateFeed, Updates, UpdateSource, UpdateTopic
 
 BOTH = ["polling", "websocket"]
@@ -157,8 +157,8 @@ def state(monkeypatch):
 
 class TestTopics:
   def test_the_topics_are_the_ones_the_pages_follow(self):
-    assert set(TOPICS) == {"info", "tasks", "backup-status", "release", "workers", "worker", "application", "notifications",
-                           "task-history"}
+    assert set(TOPICS) == {"info", "tasks", "backup-status", "backups", "release", "workers", "worker", "application",
+                           "notifications", "task-history"}
 
   def test_the_table_has_each_topic_and_each_feed_once(self):
     assert not set(UpdateTopic) & set(UpdateFeed)
@@ -174,7 +174,8 @@ class TestTopics:
                                       UpdateSource.CHECKS, UpdateSource.LATEST_VERSION}
 
   @pytest.mark.parametrize("topic, source", [("tasks", UpdateSource.TASKS), ("backup-status", UpdateSource.BACKUP_STATUS),
-                                             ("release", UpdateSource.RELEASE), ("workers", UpdateSource.WORKER_LIST)])
+                                             ("backups", UpdateSource.BACKUPS), ("release", UpdateSource.RELEASE),
+                                             ("workers", UpdateSource.WORKER_LIST)])
   def test_the_other_topics_follow_the_one_source_they_show(self, topic, source):
     assert TOPICS[topic].sources == {source}
 
@@ -182,11 +183,11 @@ class TestTopics:
     assert TOPICS["worker"].parameterised and TOPICS["application"].parameterised
     assert TOPICS["worker"].sources == {UpdateSource.WORKER_ENTRY, UpdateSource.WORKER_CONTAINERS}
     assert TOPICS["application"].sources == {UpdateSource.APPLICATION}
-    assert not any(TOPICS[name].parameterised for name in ("info", "tasks", "backup-status", "release", "workers"))
+    assert not any(TOPICS[name].parameterised for name in ("info", "tasks", "backup-status", "backups", "release", "workers"))
 
   @pytest.mark.parametrize("topic, route", [("info", info), ("tasks", list_tasks), ("backup-status", get_platform_backup_status),
-                                            ("release", get_release), ("workers", list_workers), ("worker", load_worker),
-                                            ("application", load_application)])
+                                            ("backups", list_platform_backups), ("release", get_release),
+                                            ("workers", list_workers), ("worker", load_worker), ("application", load_application)])
   def test_a_topic_is_loaded_by_the_function_of_its_route(self, topic, route):
     assert TOPICS[topic].load is route
 
@@ -439,6 +440,18 @@ class TestOneWorkerAndOneApplication:
     one = browser()
     one.subscribe(name)
     assert one.next() == ("topic_error", {"topic": name, "status": 404})
+
+
+class TestBackups:
+  def test_the_platform_backups_are_pushed_as_their_route_lists_them(self, browser, client, db):
+    one = browser()
+    one.subscribe("backups")
+    Backup.create(type="platform", s3_path="backups/platform/20260102_030405.db.enc")
+    Updates().changed(UpdateSource.BACKUPS)
+    event, message = one.next()
+    assert (event, message["topic"]) == ("state", "backups")
+    assert message["data"] == client.get("/api/backups/").json()
+    assert [backup["s3_path"] for backup in message["data"]] == ["backups/platform/20260102_030405.db.enc"]
 
 
 class TestLeaving:

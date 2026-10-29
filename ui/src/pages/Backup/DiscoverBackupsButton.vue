@@ -9,7 +9,6 @@ import { ScanSearch } from 'lucide-vue-next'
 
 interface Props {
   backupAPI: any
-  loadBackups: () => Promise<void>
 }
 
 const props = withDefaults(defineProps<Props>(), {})
@@ -17,10 +16,8 @@ const props = withDefaults(defineProps<Props>(), {})
 const isDiscovering = ref(false)
 let stop: (() => void) | undefined
 
-async function showStatus(status: BackupStatus) {
-  const wasDiscovering = isDiscovering.value
+function showStatus(status: BackupStatus) {
   isDiscovering.value = status.discovery_in_progress
-  if (wasDiscovering && !status.discovery_in_progress) await props.loadBackups()
 }
 
 async function onClickDiscover() {

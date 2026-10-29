@@ -2,7 +2,7 @@ import socketio
 
 import config
 from routes.applications import load_application
-from routes.backups import get_platform_backup_status
+from routes.backups import get_platform_backup_status, list_platform_backups
 from routes.info import get as info
 from routes.info import get_release
 from routes.tasks import list_tasks
@@ -15,6 +15,7 @@ TOPICS = {
                                              UpdateSource.CHECKS, UpdateSource.LATEST_VERSION})),
     UpdateTopic.TASKS: Topic(list_tasks, frozenset({UpdateSource.TASKS})),
     UpdateTopic.BACKUP_STATUS: Topic(get_platform_backup_status, frozenset({UpdateSource.BACKUP_STATUS})),
+    UpdateTopic.BACKUPS: Topic(list_platform_backups, frozenset({UpdateSource.BACKUPS})),
     UpdateTopic.RELEASE: Topic(get_release, frozenset({UpdateSource.RELEASE})),
     UpdateTopic.WORKERS: Topic(list_workers, frozenset({UpdateSource.WORKER_LIST})),
     # One worker, followed by hostname, and one application, followed by `<project>/<name>`: the sources are keyed by it.

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { toast } from 'vue-sonner'
 import { Plus } from 'lucide-vue-next'
 import {
@@ -23,44 +23,36 @@ import {
 import { Input } from '@/components/ui/input'
 import { Spinner } from '@/components/ui/spinner'
 
-import { type Application, type Worker, getApplicationAPI, getContainerAPI } from '@/services/api'
+import { type Application, getContainerAPI } from '@/services/api'
+import { useAppStore } from '@/stores/app'
 
 interface Props {
   application: Application
-  applicationAPI: ReturnType<typeof getApplicationAPI>
   containersAPI: ReturnType<typeof getContainerAPI>
   loadApplication: () => Promise<void>
 }
 
 const props = withDefaults(defineProps<Props>(), {})
+const appStore = useAppStore()
 
 const isAddContainerDialogOpen = ref(false)
-const availableWorkers = ref<Worker[]>([])
+// The workers in the app store's list that hold no container of the application.
+const availableWorkers = computed(() =>
+  (appStore.workers ?? []).filter(
+    worker =>
+      !props.application.containers.some(container => container.worker.hostname === worker.hostname)
+  )
+)
 const selectedWorker = ref('')
 const domainTag = ref('')
 const addContainerErrorMessage = ref('')
 const isClickedAddContainerConfirm = ref(false)
 
 function openAddContainerDialog() {
-  addContainerErrorMessage.value = ''
-  selectedWorker.value = ''
+  addContainerErrorMessage.value = appStore.workersError ? 'Failed to load available workers' : ''
+  selectedWorker.value = availableWorkers.value[0]?.hostname ?? ''
   domainTag.value = ''
-  loadAvailableWorkers()
   isAddContainerDialogOpen.value = true
-}
-
-async function loadAvailableWorkers() {
-  try {
-    availableWorkers.value = (await props.applicationAPI.action(
-      `${props.application.name}/get_available_workers`
-    )) as Worker[]
-    if (availableWorkers.value.length > 0) {
-      selectedWorker.value = availableWorkers.value[0]?.hostname || ''
-    }
-  } catch (err) {
-    console.error('Failed to load available workers:', err)
-    addContainerErrorMessage.value = 'Failed to load available workers'
-  }
 }
 
 async function onClickAddContainerConfirm() {

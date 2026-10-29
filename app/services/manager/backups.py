@@ -7,6 +7,7 @@ from croniter import croniter
 
 import config
 from services.db import APPLICATION_BUSY_STATUSES, Application, Backup, Container, Event, Volume
+from services.updates import Updates, UpdateSource
 from utils.common import get_env, utcnow
 from utils.logging import generate_task_id_token, task_id
 
@@ -211,6 +212,7 @@ class BackupsMixin:
           source_volume_name=volume.name,
           application=application,
       )
+      Updates().changed(UpdateSource.BACKUPS)
       self.notify(f"Backup created for {backup_unit_label} at {s3_path}.", "success")
     except Exception as exc:
       self.notify(f"Failed to create backup for {backup_unit_label}: {exc}", "error")

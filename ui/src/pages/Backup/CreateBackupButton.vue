@@ -9,7 +9,6 @@ import { CloudBackup } from 'lucide-vue-next'
 
 interface Props {
   backupAPI: any
-  loadBackups: () => Promise<void>
 }
 
 const props = withDefaults(defineProps<Props>(), {})
@@ -17,10 +16,8 @@ const props = withDefaults(defineProps<Props>(), {})
 const isBackupInProgress = ref(false)
 let stop: (() => void) | undefined
 
-async function showStatus(status: BackupStatus) {
-  const wasInProgress = isBackupInProgress.value
+function showStatus(status: BackupStatus) {
   isBackupInProgress.value = status.platform_backup_in_progress
-  if (wasInProgress && !status.platform_backup_in_progress) await props.loadBackups()
 }
 
 async function onClickCreateBackup() {

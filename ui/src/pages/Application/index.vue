@@ -237,7 +237,6 @@ function goBack() {
             <!-- Add Container Button -->
             <AddContainerButton
               :application="application"
-              :applicationAPI="applicationAPI"
               :containersAPI="containersAPI"
               :loadApplication="loadApplication"
             />

@@ -18,9 +18,8 @@ const status = (backup: boolean, discovery: boolean): BackupStatus => ({
 function setup(component: typeof CreateBackupButton | typeof DiscoverBackupsButton) {
   const topics = followTopics()
   const backupAPI = { action: vi.fn(), create: vi.fn() }
-  const loadBackups = vi.fn(async () => {})
-  const wrapper = mount(component, { props: { backupAPI, loadBackups } })
-  return { wrapper, topics, backupAPI, loadBackups, backups: topics.topic('backup-status') }
+  const wrapper = mount(component, { props: { backupAPI } })
+  return { wrapper, topics, backupAPI, backups: topics.topic('backup-status') }
 }
 
 const busy = (wrapper: ReturnType<typeof setup>['wrapper']) =>
@@ -79,28 +78,6 @@ describe.each([
 
     expect([busy(wrapper), disabled(wrapper)]).toEqual([false, false])
   })
-
-  it('loads the backups again when its work ends', async () => {
-    const { backups, loadBackups } = setup(component)
-    backups.push(inProgress(true))
-    await flushPromises()
-    expect(loadBackups).not.toHaveBeenCalled()
-
-    backups.push(inProgress(false))
-    await flushPromises()
-
-    expect(loadBackups).toHaveBeenCalledOnce()
-  })
-
-  it('does not load the backups for a status in which its work was not going on', async () => {
-    const { backups, loadBackups } = setup(component)
-
-    backups.push(inProgress(false))
-    backups.push(other(true))
-    await flushPromises()
-
-    expect(loadBackups).not.toHaveBeenCalled()
-  })
 })
 
 describe('the Create Backup button', () => {
@@ -130,7 +107,7 @@ describe('the Create Backup button', () => {
   it('logs a status that could not be loaded', async () => {
     const error = vi.spyOn(console, 'error').mockImplementation(() => {})
     const topics = followTopics({ pending: true })
-    mount(CreateBackupButton, { props: { backupAPI: {}, loadBackups: vi.fn() } })
+    mount(CreateBackupButton, { props: { backupAPI: {} } })
 
     topics.topic('backup-status').failed(new Error('down'))
     await flushPromises()
@@ -164,7 +141,7 @@ describe('the Discover Backups button', () => {
   })
 
   it('goes on when a status without the search arrives before the search is queued', async () => {
-    const { wrapper, backupAPI, backups, loadBackups } = setup(DiscoverBackupsButton)
+    const { wrapper, backupAPI, backups } = setup(DiscoverBackupsButton)
     backupAPI.action.mockResolvedValue({})
     await wrapper.get('button').trigger('click')
     await flushPromises()
@@ -176,6 +153,5 @@ describe('the Discover Backups button', () => {
     backups.push(status(false, false))
     await flushPromises()
     expect(busy(wrapper)).toBe(false)
-    expect(loadBackups).toHaveBeenCalledOnce()
   })
 })

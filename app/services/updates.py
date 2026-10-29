@@ -25,6 +25,7 @@ class UpdateSource(StrEnum):
   RESTORING = "restoring"            # the backup being restored
   SETTINGS_APPLYING = "settings_applying"  # the task that makes each settings section apply
   BACKUP_STATUS = "backup_status"    # whether a platform backup runs or backups are being discovered
+  BACKUPS = "backups"                # a backup row was written
   WORKER_LIST = "worker_list"        # each worker's status, path and container count
   CHECKS = "checks"                  # the result of checking a settings section
   LATEST_VERSION = "latest_version"  # the newest version released
@@ -40,6 +41,7 @@ class UpdateTopic(StrEnum):
   INFO = "info"
   TASKS = "tasks"
   BACKUP_STATUS = "backup-status"
+  BACKUPS = "backups"
   RELEASE = "release"
   WORKERS = "workers"
   WORKER = "worker"            # one worker: `worker:<hostname>`

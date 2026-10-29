@@ -1,3 +1,4 @@
+import ast
 import asyncio
 import inspect
 import random
@@ -6,15 +7,17 @@ import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from fastapi.encoders import jsonable_encoder
 
+import config
 from routes.notifications import list_notifications
 from routes.tasks import list_task_history
-from services.db import Application, Container, Notification, Task, Worker
+from services.db import Application, Backup, Container, Notification, Task, Worker
 from services.manager import Manager
 from services.manager.application import application_changed, application_key, container_changed, hosts_changed, save_application, save_container
 from services.manager.core import CoreMixin
@@ -27,6 +30,7 @@ from services.manager.workers import WorkersMixin
 from services.notification import Notifications
 from services.updates import Fact, UpdateFeed, Updates, UpdateSource
 from services.worker_reports import WorkerReports
+from utils.common import utcnow
 from utils.executor import active_executor
 from utils.queue import QueuedTask
 
@@ -462,6 +466,44 @@ class TestApplicationAndContainerChanges:
           deletes[path.name] = deletes.get(path.name, 0) + 1
           assert "container_changed(container)" in lines[number + 1]
     assert saves == {"application.py": 2} and deletes == {"application.py": 1}
+
+
+class TestBackupRows:
+  """The backups list is told whenever a backup row is written."""
+
+  class Platform(PlatformMixin):
+    s3 = SimpleNamespace(s3_config=None)
+
+  async def test_the_cleanup_that_removes_backups_says_so(self, db, changes):
+    Backup.create(type="platform", s3_path="old", created_at=utcnow() - timedelta(days=config.RETENTION_DAYS + 1))
+    Backup.create(type="platform", s3_path="new")
+    await self.Platform().cleanup()
+    assert [backup.s3_path for backup in Backup.select()] == ["new"]
+    assert changes.sources == [UpdateSource.BACKUPS]
+
+  async def test_the_cleanup_that_removes_none_says_nothing(self, db, changes):
+    Backup.create(type="platform", s3_path="new")
+    await self.Platform().cleanup()
+    assert changes.sources == []
+
+  def test_every_function_that_writes_a_backup_row_says_so(self):
+    """In the manager and the routes, a function with `Backup.create`, `insert_many` or `delete`, or a
+    `generic_delete(Backup, ...)`, also fires the `backups` source."""
+    write = re.compile(r"Backup\.(create|insert_many|delete)\(|generic_delete\(Backup\b")
+    writers = {}
+    folders = [Path(inspect.getsourcefile(Manager)).parent, Path(inspect.getsourcefile(Manager)).parents[1].parent / "routes"]
+    for path in (path for folder in folders for path in folder.glob("*.py")):
+      source = path.read_text()
+      for node in ast.walk(ast.parse(source)):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.col_offset <= 2:
+          body = ast.get_source_segment(source, node)
+          if write.search(body):
+            writers[f"{path.parent.name}/{path.name}:{node.name}"] = "UpdateSource.BACKUPS" in body
+    assert writers == {name: True for name in writers}
+    assert set(writers) == {"manager/backups.py:_backup_application_container_volume_to_s3",
+                            "manager/platform.py:discover_s3_backups",
+                            "manager/platform.py:cleanup", "manager/platform.py:backup_database_s3",
+                            "routes/backups.py:delete_backup"}
 
 
 class TestChecks:

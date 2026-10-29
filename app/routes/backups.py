@@ -6,6 +6,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Request
 import config
 from services.db import Backup
 from services.manager import Manager
+from services.updates import Updates, UpdateSource
 from utils.api import generic_delete, generic_get, generic_list, get_request_models
 from utils.queue import OnConflict
 
@@ -36,6 +37,11 @@ def inject_backup(request: Request):
   return None
 
 
+def list_platform_backups() -> list:
+  """The `backups` topic: what `GET /backups` returns."""
+  return generic_list(Backup, Backup.type == "platform")
+
+
 @router.get("/")
 def list_backups(request: Request):
   """List backups - platform backups by default, or volume backups if nested under volume."""
@@ -48,7 +54,7 @@ def list_backups(request: Request):
         & (Backup.source_volume_name == models["volume"].name),
     )
   else:
-    return generic_list(Backup, Backup.type == "platform")
+    return list_platform_backups()
 
 
 @router.post("/platform_backup_status")
@@ -149,6 +155,7 @@ def delete_backup(request: Request):
 
   # Delete backup record from database
   generic_delete(Backup, backup)
+  Updates().changed(UpdateSource.BACKUPS)
 
   # Delete backup file from S3 asynchronously
   Manager().add_task(

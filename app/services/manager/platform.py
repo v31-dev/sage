@@ -95,6 +95,8 @@ class PlatformMixin:
       return added, removed, unmatched
 
     added, removed, unmatched = await run_in_executor_with_context(reconcile)
+    if sum(added.values()) or removed:
+      Updates().changed(UpdateSource.BACKUPS)
 
     logger.info(
         f"Backup discovery: {len(platform_keys)} platform and {len(volume_keys)} volume backup(s) in S3; "
@@ -132,6 +134,8 @@ class PlatformMixin:
 
     # Cleanup backups
     deleted_count = (Backup.delete().where(Backup.created_at < cutoff).execute())
+    if deleted_count:
+      Updates().changed(UpdateSource.BACKUPS)
     logger.info(
         f"Backups cleanup: removed {deleted_count} backups rows older than {days} days.")
 
@@ -201,6 +205,7 @@ class PlatformMixin:
         # Record backup in database
         full_backup_path = f"{self.s3.get_full_path(self.s3_backup_path_platform)}/{backup_file.name}"
         Backup.create(s3_path=full_backup_path, type="platform")
+        Updates().changed(UpdateSource.BACKUPS)
 
         self.notify(f"Database backup created at {timestamp}.")
       except Exception as e:
@@ -357,6 +362,7 @@ class PlatformMixin:
           application_changed(application)
         for worker in Worker.select():
           Updates().changed(UpdateSource.WORKER_CONTAINERS, worker.hostname)
+        Updates().changed(UpdateSource.BACKUPS)
 
         self.notify(f"Platform restored from backup {s3_path} successfully.", "success")
         restored = True

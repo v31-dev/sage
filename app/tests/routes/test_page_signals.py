@@ -1,6 +1,6 @@
 import pytest
 
-from services.db import Application, Container, Project, Worker
+from services.db import Application, Backup, Container, Project, Worker
 from services.updates import Updates, UpdateSource
 
 APP = "/api/projects/demo/applications"
@@ -119,4 +119,15 @@ class TestProjects:
   def test_a_new_project_and_a_deleted_one_tell_nothing(self, client, changes):
     assert client.post("/api/projects/", json={"label": "Fresh"}).status_code == 200
     assert client.delete("/api/projects/fresh").status_code == 200
+    assert changes.signals == []
+
+
+class TestBackups:
+  def test_deleting_a_backup_tells_the_backups_list(self, client, db, manager, changes):
+    backup = Backup.create(type="platform", s3_path="backups/platform/20260102_030405.db.enc")
+    assert client.delete(f"/api/backups/{backup.id}").status_code == 200
+    assert said(changes) == [(UpdateSource.BACKUPS, None)]
+
+  def test_a_backup_that_is_not_there_tells_nothing(self, client, db, manager, changes):
+    assert client.delete("/api/backups/99").status_code == 404
     assert changes.signals == []
