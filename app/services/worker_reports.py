@@ -78,6 +78,13 @@ def is_current(arrived_at: datetime, now: datetime) -> bool:
   return (now - arrived_at).total_seconds() <= config.REPORT_STALE_SECONDS
 
 
+def infra_of(received: Received) -> list[dict]:
+  """The state of each container of the worker's stack in a report ("missing" when the report does not list it)."""
+  containers = received.snapshot.containers
+  return [{"name": name, "status": containers[name].status if name in containers else "missing"}
+          for name in config.WORKER_STACK_SERVICES]
+
+
 def container_started_at(received: Received | None, container: str) -> int | None:
   """When the container last started, on the worker's clock (nanoseconds), from a report. None when there is no
   report or it does not list the container."""
@@ -261,16 +268,6 @@ class WorkerReports(Base):
     if (received.arrived_at - since).total_seconds() < config.REPORT_SETTLE_SECONDS:
       return None
     return received.snapshot
-
-  def infra(self, hostname: str) -> list[dict] | None:
-    """The state of each container of the worker's stack in its current report ("missing" when the
-    report does not list it), None when there is no current report."""
-    received = self.current(hostname)
-    if received is None:
-      return None
-    containers = received.snapshot.containers
-    return [{"name": name, "status": containers[name].status if name in containers else "missing"}
-            for name in config.WORKER_STACK_SERVICES]
 
   def started_at(self, hostname: str, container: str, current: bool = True) -> int | None:
     """When the container last started, on the worker's clock (nanoseconds), from the current report or,

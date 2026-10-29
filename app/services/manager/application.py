@@ -5,6 +5,7 @@ import re
 import shlex
 
 from services.db import APPLICATION_BUSY_STATUSES, Application, Container, DeployConfig, Event, Project, Worker, db
+from services.updates import Updates, UpdateSource
 from services.worker_reports import WorkerReports
 from utils.common import format_yaml, parse_multiline_kv, utcnow
 from utils.logging import generate_task_id_token, task_id
@@ -22,6 +23,40 @@ _ROLLUP_NOTICES = {
     "active": ("is active as all containers are active.", "success"),
     "inactive": ("is inactive as all containers are inactive.", "warning"),
 }
+
+
+def application_key(application: Application) -> str:
+  """The name of an application as a topic follows it: `<project>/<name>`."""
+  return f"{application.project.name}/{application.name}"
+
+
+def application_changed(application: Application):
+  """The application, or a container, domain or volume of it, was written: the page of that application is sent again."""
+  Updates().changed(UpdateSource.APPLICATION, application_key(application))
+
+
+def container_changed(container: Container):
+  """A container was written: its application's page and its worker's page show it."""
+  application_changed(container.application)
+  Updates().changed(UpdateSource.WORKER_CONTAINERS, container.worker_id)
+
+
+def hosts_changed(application: Application):
+  """What the pages of the workers show of an application (its label, its project's) was written, besides the
+  application itself."""
+  application_changed(application)
+  for hostname in {container.worker_id for container in application.containers}:
+    Updates().changed(UpdateSource.WORKER_CONTAINERS, hostname)
+
+
+def save_application(application: Application):
+  application.save()
+  application_changed(application)
+
+
+def save_container(container: Container):
+  container.save()
+  container_changed(container)
 
 
 class ApplicationMixin:
@@ -45,13 +80,13 @@ class ApplicationMixin:
         application_qualified_name = application.qualified_name
         if not was_inactive:
           application.status = "inactive"
-          application.save()
+          save_application(application)
       else:
         application.status = "deploying"
         application.deployed_at = utcnow()
         config = application.deploy_config
         application.deployed_hash = config.content_hash
-        application.save()
+        save_application(application)
 
     if not containers:
       # A last-container delete can land before a queued deploy runs; deploying
@@ -79,14 +114,14 @@ class ApplicationMixin:
     # an inactive row the minutely status sync owns, not this deploy's outcome.
     if any(container.status == "error" for container in containers):
       application.status = "error"
-      application.save()
+      save_application(application)
       self.notify(
           f"Failed to deploy application {config.qualified_name}.",
           "error")
       raise Exception(f"Failed to deploy application {config.qualified_name}.")
     else:
       application.status = "active"
-      application.save()
+      save_application(application)
       self.notify(f"Application {config.qualified_name} deployed.", "success")
 
   async def deploy_application_container(self, container: Container, config: DeployConfig):
@@ -103,7 +138,7 @@ class ApplicationMixin:
           container_task_id=container_task_id,
       )
       container.status = "deploying"
-      container.save()
+      save_container(container)
       container_dir = f"{self.worker_home_dir}/applications/{config.qualified_name}"
       logger.info(
           f"Deploying application {config.qualified_name} container to worker {
@@ -252,7 +287,7 @@ class ApplicationMixin:
         task_id.reset(task_id_token)
 
     container.status = deployment_status
-    container.save()
+    save_container(container)
 
     if deployment_status == "active":
       self.notify(f"Application {config.qualified_name} container deployed to worker {container.worker.hostname}.")
@@ -279,7 +314,7 @@ class ApplicationMixin:
         container_task_id=task_id.get(),
     )
     container.status = "stopping"
-    container.save()
+    save_container(container)
 
     container_dir = f"{self.worker_home_dir}/applications/{container.application.qualified_name}"
 
@@ -320,6 +355,7 @@ class ApplicationMixin:
       # Delete database record
       application = container.application
       container.delete_instance()
+      container_changed(container)
       # Only a container that was in the routing pool needs a resync to drop it.
       if was_active:
         self.request_application_traefik_sync(application)
@@ -336,7 +372,7 @@ class ApplicationMixin:
                 container.worker.hostname}.", "success")
     except Exception as e:
       container.status = "error"
-      container.save()
+      save_container(container)
       self.notify(
           f"Failed to delete container of application {container.application.qualified_name} from worker {
               container.worker.hostname}: {e}", "error")
@@ -351,7 +387,7 @@ class ApplicationMixin:
     """
     application = Application.get_by_id(application_id)
     application.status = "stopping"
-    application.save()
+    save_application(application)
     logger.info(f"Stopping application {application.qualified_name}...")
 
     await asyncio.gather(
@@ -364,12 +400,12 @@ class ApplicationMixin:
 
     if any(container.status == "error" for container in application.containers):
       application.status = "error"
-      application.save()
+      save_application(application)
       self.notify(f"Failed to stop application {application.qualified_name}.", "error")
       raise Exception(f"Failed to stop application {application.qualified_name}.")
     else:
       application.status = "inactive"
-      application.save()
+      save_application(application)
       self.notify(f"Application {application.qualified_name} stopped.", "success")
 
   async def stop_application_container(self, container: Container):
@@ -387,7 +423,7 @@ class ApplicationMixin:
           container_task_id=container_task_id,
       )
       container.status = "stopping"
-      container.save()
+      save_container(container)
       logger.info(
           f"Stopping application {container.application.qualified_name} container on worker {
               container.worker.hostname} with task id {container_task_id}...")
@@ -416,7 +452,7 @@ class ApplicationMixin:
         task_id.reset(task_id_token)
 
     container.status = deployment_status
-    container.save()
+    save_container(container)
 
     if deployment_status == "inactive":
       self.notify(
@@ -451,7 +487,7 @@ class ApplicationMixin:
           f"running operation; status reset to error.",
           "error")
       application.status = "error"
-      application.save()
+      save_application(application)
 
     containers = list(application.containers)
     if not containers:
@@ -459,7 +495,7 @@ class ApplicationMixin:
       # any app left non-inactive with a zero container count.
       if application.status != "inactive":
         application.status = "inactive"
-        application.save()
+        save_application(application)
         self.request_application_traefik_sync(application)
         self.notify(f"Application {application.qualified_name} is inactive as it has no containers.", "warning")
       return
@@ -492,7 +528,7 @@ class ApplicationMixin:
               f"running operation; status reset to error.",
               "error")
         container.status = "error"
-        container.save()
+        save_container(container)
         routing_changed = True
 
       decision = reconcile_container(
@@ -511,7 +547,7 @@ class ApplicationMixin:
           level = "error"
       if status is not None and status != container.status:
         container.status = status
-        container.save()
+        save_container(container)
         routing_changed = True
       if message:
         self.notify(message, level)
@@ -523,7 +559,7 @@ class ApplicationMixin:
     status = rollup_status(container.status for container in application.containers)
     if status is not None and status != application.status:
       application.status = status
-      application.save()
+      save_application(application)
       notice, level = _ROLLUP_NOTICES[status]
       self.notify(f"Application {application.qualified_name} {notice}", level)
 

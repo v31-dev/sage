@@ -6,8 +6,9 @@ from playhouse.shortcuts import model_to_dict
 from routes.containers import router as container_router
 from routes.domains import router as domain_router
 from routes.volumes import router as volume_router
-from services.db import APPLICATION_BUSY_STATUSES, APPLICATION_STOP_ELIGIBLE_STATUSES, Application, Container, Worker
+from services.db import APPLICATION_BUSY_STATUSES, APPLICATION_STOP_ELIGIBLE_STATUSES, Application, Container, Project, Worker
 from services.manager import Manager
+from services.manager.application import application_changed, hosts_changed
 from services.metrics import Metrics
 from utils.api import generic_create, generic_delete, generic_get, generic_list, generic_update, get_request_models, parse_api_data
 from utils.db import AlphaNumericField
@@ -44,15 +45,28 @@ def create_application(
   data = parse_api_data(application_data, ["label", "description"])
   data["project"] = request.state.models["project"]
   data["name"] = AlphaNumericField.clean(data.get("label"))
-  return generic_create(Application, data)
+  result = generic_create(Application, data)
+  application_changed(Application.get_by_id(result["id"]))
+  return result
+
+
+def application_payload(application: Application) -> dict:
+  data = model_to_dict(application, backrefs=True, max_depth=2)
+  data["config_dirty"] = application.config_dirty
+  return data
+
+
+def load_application(name: str) -> dict:
+  """The `application` topic of `<project>/<name>`: what `GET /projects/<project>/applications/<name>` returns."""
+  project_name, _, application_name = name.partition("/")
+  project = generic_get(Project, Project.name == project_name, return_model=True)
+  return application_payload(
+      generic_get(Application, (Application.name == application_name) & (Application.project == project), return_model=True))
 
 
 @router.get("/{application}", dependencies=[Depends(inject_application)])
 def get_application(request: Request):
-  application = request.state.models["application"]
-  data = model_to_dict(application, backrefs=True, max_depth=2)
-  data["config_dirty"] = application.config_dirty
-  return data
+  return application_payload(request.state.models["application"])
 
 
 @router.put("/{application}", dependencies=[Depends(inject_application)])
@@ -62,7 +76,10 @@ def update_application(request: Request, application_data: dict = Body(...)):
       ["label", "description", "image", "env", "args", "build_secrets", "command", "type", "repo", "path"],
   )
 
-  return generic_update(Application, request.state.models["application"], data)
+  application = request.state.models["application"]
+  result = generic_update(Application, application, data)
+  hosts_changed(application)
+  return result
 
 
 @router.delete("/{application}", dependencies=[Depends(inject_application)])
@@ -77,7 +94,9 @@ def delete_application(request: Request):
         status_code=409,
         detail="Application has containers and cannot be deleted. Delete its containers first.",
     )
-  return generic_delete(Application, application)
+  result = generic_delete(Application, application)
+  application_changed(application)
+  return result
 
 
 @router.post("/{application}/get_available_workers", dependencies=[Depends(inject_application)])

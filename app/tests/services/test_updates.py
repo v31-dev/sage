@@ -44,6 +44,13 @@ class Source:
     self.fail = False
     self.block = None
 
+  def load_for(self, argument):
+    """The state for an argument of a parameterised topic."""
+    self.loads += 1
+    if self.fail:
+      raise RuntimeError("cannot load")
+    return {"value": self.value, "argument": argument}
+
   def load(self):
     """Reads the value when called, and holds the first call while `block` is set."""
     self.loads += 1
@@ -109,13 +116,14 @@ class World:
 @pytest.fixture
 def world(monkeypatch):
   monkeypatch.setattr(config, "UPDATES_COALESCE_SECONDS", 0.02)
-  sources = {"a": Source(), "b": Source(), "c": Source()}
+  sources = {"a": Source(), "b": Source(), "c": Source(), "p": Source()}
   table = Table()
   topics = {
       "f": Feed(),
       "a": Topic(sources["a"].load, frozenset({"x"})),
       "b": Topic(sources["b"].load, frozenset({"x", "y"})),
       "c": Topic(sources["c"].load, frozenset({"y"})),
+      "p": Topic(sources["p"].load_for, frozenset({"x"}), parameterised=True),
   }
   hub = Updates()
   sids = []
@@ -130,6 +138,111 @@ def world(monkeypatch):
   yield World(hub, sources, table, topics, connect)
   for sid in sids:
     hub.disconnect(sid)
+
+
+class TestParameterisedTopics:
+  """A parameterised topic follows keyed sources: a change of a source for a key sends the topic of that argument only."""
+
+  async def test_each_argument_is_a_topic_of_its_own_with_the_state_for_that_argument(self, world):
+    socket, sid = world.connect()
+    world.hub.subscribe(sid, "p:one")
+    world.hub.subscribe(sid, "p:demo/web")
+    world.hub.changed("x", "one")
+    world.hub.changed("x", "demo/web")
+    await until(lambda: socket.states("p:one") and socket.states("p:demo/web"))
+    assert socket.states("p:one") == [{"value": 1, "argument": "one"}]
+    assert socket.states("p:demo/web") == [{"value": 1, "argument": "demo/web"}]
+
+  async def test_a_change_for_a_key_computes_only_the_topic_of_that_key(self, world):
+    socket, sid = world.connect()
+    world.hub.subscribe(sid, "p:one")
+    world.hub.subscribe(sid, "p:two")
+    world.hub.changed("x", "two")
+    await until(lambda: socket.states("p:two"))
+    await asyncio.sleep(0.1)
+    assert socket.states("p:one") == [] and world.sources["p"].loads == 1
+
+  async def test_a_change_for_a_key_nobody_follows_computes_nothing(self, world):
+    socket, sid = world.connect()
+    world.hub.subscribe(sid, "p:one")
+    world.hub.changed("x", "three")
+    await asyncio.sleep(0.1)
+    assert world.sources["p"].loads == 0
+
+  async def test_a_change_without_a_key_does_not_reach_a_topic_that_takes_one(self, world):
+    socket, sid = world.connect()
+    world.hub.subscribe(sid, "p:one")
+    world.hub.changed("x")
+    await asyncio.sleep(0.1)
+    assert world.sources["p"].loads == 0
+
+  async def test_a_change_with_a_key_does_not_reach_a_topic_that_takes_none(self, world):
+    socket, sid = world.connect()
+    world.hub.subscribe(sid, "a")
+    world.hub.changed("x", "one")
+    await asyncio.sleep(0.1)
+    assert world.sources["a"].loads == 0
+
+  async def test_a_change_of_a_source_the_topic_does_not_follow_computes_nothing(self, world):
+    socket, sid = world.connect()
+    world.hub.subscribe(sid, "p:one")
+    world.hub.changed("y", "one")
+    await asyncio.sleep(0.1)
+    assert world.sources["p"].loads == 0
+
+  async def test_changes_for_one_key_in_a_window_are_one_computation(self, world):
+    socket, sid = world.connect()
+    world.hub.subscribe(sid, "p:one")
+    for _ in range(5):
+      world.hub.changed("x", "one")
+    await until(lambda: socket.states("p:one"))
+    await asyncio.sleep(0.1)
+    assert world.sources["p"].loads == 1
+
+  async def test_an_argument_may_hold_a_colon(self, world):
+    socket, sid = world.connect()
+    world.hub.subscribe(sid, "p:a:b")
+    world.hub.changed("x", "a:b")
+    await until(lambda: socket.states("p:a:b"))
+    assert socket.states("p:a:b") == [{"value": 1, "argument": "a:b"}]
+
+  @pytest.mark.parametrize("name", ["p", "p:", "a:one", "a:", "f:one", "nothing:one", ":one"])
+  async def test_a_name_with_an_argument_the_topic_does_not_take_or_without_one_it_needs_is_refused(self, world, name):
+    socket, sid = world.connect()
+    world.hub.subscribe(sid, name)
+    await until(lambda: socket.errors())
+    assert socket.errors() == [(name, 404)]
+    assert name not in world.hub._subscribers
+
+  async def test_a_topic_that_cannot_be_computed_for_one_argument_does_not_stop_the_others(self, world):
+    socket, sid = world.connect()
+    world.hub.subscribe(sid, "p:one")
+    world.hub.subscribe(sid, "a")
+    world.sources["p"].fail = True
+    world.hub.changed("x", "one")
+    world.hub.changed("x")
+    await until(lambda: socket.states("a"))
+    assert socket.states("p:one") == []
+
+  async def test_a_name_is_forgotten_when_its_last_follower_leaves(self, world):
+    one, one_sid = world.connect()
+    two, two_sid = world.connect()
+    for sid in (one_sid, two_sid):
+      world.hub.subscribe(sid, "p:demo/web")
+    world.hub.unsubscribe(one_sid, "p:demo/web")
+    assert world.hub._subscribers["p:demo/web"] == {world.hub._connections[two_sid]}
+    world.hub.disconnect(two_sid)
+    assert "p:demo/web" not in world.hub._subscribers
+
+  async def test_the_followers_of_an_argument_get_its_state_and_the_others_do_not(self, world):
+    one, one_sid = world.connect()
+    two, two_sid = world.connect()
+    world.hub.subscribe(one_sid, "p:one")
+    world.hub.subscribe(two_sid, "p:two")
+    world.hub.changed("x", "one")
+    world.hub.changed("x", "two")
+    await until(lambda: one.states("p:one") and two.states("p:two"))
+    assert one.states("p:two") == [] and two.states("p:one") == []
 
 
 class TestSubscribing:
@@ -272,7 +385,7 @@ class TestLeaving:
     world.hub.changed("x")
     await asyncio.sleep(0.1)
     assert world.sources["a"].loads == 0
-    assert world.hub._subscribers.get("a") == set()
+    assert "a" not in world.hub._subscribers
 
   async def test_a_connection_that_cannot_be_written_to_does_not_hold_up_the_others(self, world):
     broken, broken_sid = world.connect()

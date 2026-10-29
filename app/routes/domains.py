@@ -2,6 +2,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Request
 
 from services.db import Domain
 from services.manager import Manager
+from services.manager.application import application_changed
 from utils.api import generic_create, generic_delete, generic_get, generic_list, generic_update, get_request_models, parse_api_data
 
 
@@ -51,6 +52,7 @@ def create_domain(request: Request, domain_data: dict = Body(...)):
       "port": domain_data.get("port"),
   }
   result = generic_create(Domain, data)
+  application_changed(application)
   Manager().request_application_traefik_sync(application)
   return result
 
@@ -59,6 +61,7 @@ def create_domain(request: Request, domain_data: dict = Body(...)):
 def update_domain(request: Request, domain_data: dict = Body(...)):
   data = parse_api_data(domain_data, ["name", "type", "port"])
   result = generic_update(Domain, request.state.models["domain"], data)
+  application_changed(request.state.models["application"])
   Manager().request_application_traefik_sync(request.state.models["application"])
   return result
 
@@ -68,5 +71,6 @@ def delete_domain(request: Request):
   """Trigger domain deletion."""
   domain = request.state.models["domain"]
   result = generic_delete(Domain, domain)
+  application_changed(request.state.models["application"])
   Manager().request_application_traefik_sync(request.state.models["application"])
   return result

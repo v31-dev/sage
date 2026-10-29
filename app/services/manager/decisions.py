@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Iterable
 
 import config
-from services.worker_reports import Received, Snapshot, container_started_at, is_current
+from services.worker_reports import Received, Snapshot, container_started_at, infra_of, is_current
 
 # What a look at a worker's containers found for one application.
 SEEN = "seen"          # the container is there, in `state`
@@ -220,7 +220,8 @@ def worker_status(worker: WorkerInputs, now: datetime, started: datetime) -> str
 
 
 def worker_entry(hostname: str, worker: WorkerInputs, now: datetime, started: datetime) -> dict:
-  """The worker as the worker list shows it. `container_count` is the containers of its current report."""
+  """The worker as the worker list shows it. `container_count` and `infra` (the state of the containers of its stack)
+  are those of its current report."""
   current = _current_report(worker, now)
   return {
       "hostname": hostname,
@@ -229,6 +230,7 @@ def worker_entry(hostname: str, worker: WorkerInputs, now: datetime, started: da
       "status": worker_status(worker, now, started),
       "path": worker.path,
       "container_count": len(current.snapshot.containers) if current else None,
+      "infra": infra_of(current) if current else None,
   }
 
 

@@ -13,6 +13,7 @@ function listed(hostname: string, status: WorkerStatus): WorkerListItem {
     status,
     path: null,
     container_count: null,
+    infra: null,
   }
 }
 

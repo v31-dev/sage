@@ -9,16 +9,17 @@ from cryptography.fernet import InvalidToken
 from peewee import chunked
 
 import config
-from services.db import Application, Backup, Database, Event, Notification, Task, db
+from services.db import Application, Backup, Database, Event, Notification, Task, Worker, db
 from services.notification import Notifications
 from services.settings import Settings
-from services.updates import Fact, UpdateSource
+from services.updates import Fact, Updates, UpdateSource
 from utils.archive import BackupDecryptError, decrypt_file, encrypt_file
 from utils.common import utcnow
 from utils.executor import run_in_executor_with_context
 from utils.queue import OnConflict
 
 from ._common import BACKUP_TIMESTAMP_FORMAT, is_expired_backup_key, timestamp_from_key
+from .application import application_changed
 
 logger = logging.getLogger(__name__)
 
@@ -351,6 +352,11 @@ class PlatformMixin:
         self.s3.load()
         Notifications().load_notifications_config()
         self.load_workers()
+        # The pages of applications and workers followed the rows that were replaced.
+        for application in Application.select():
+          application_changed(application)
+        for worker in Worker.select():
+          Updates().changed(UpdateSource.WORKER_CONTAINERS, worker.hostname)
 
         self.notify(f"Platform restored from backup {s3_path} successfully.", "success")
         restored = True

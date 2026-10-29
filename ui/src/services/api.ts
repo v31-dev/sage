@@ -61,6 +61,8 @@ export interface WorkerListItem {
   status: WorkerStatus
   path: string | null
   container_count: number | null
+  // The state of the containers of its stack in its current report.
+  infra: InfraContainer[] | null
 }
 
 export async function fetchWorkers(): Promise<WorkerListItem[]> {

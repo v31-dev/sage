@@ -10,6 +10,7 @@ from utils.queue import OnConflict
 from utils.retry import is_transient, retry
 
 from ._common import app_dir, routing_input_hash
+from .application import application_changed, save_application
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +19,7 @@ class TraefikMixin:
   def request_application_traefik_sync(self, application):
     """Mark the app's Traefik config stale and enqueue an app-scoped resync."""
     Application.update(domains_synced=False).where(Application.id == application.id).execute()
+    application_changed(application)
     self.add_task(
         task=self.sync_application_traefik_domains_config,
         scopes={f"app:{application.qualified_name}"},
@@ -312,7 +314,7 @@ class TraefikMixin:
       )
 
     application.domains_synced = True
-    application.save()
+    save_application(application)
     logger.info(f"Traefik config synced for application {application.qualified_name}.")
 
   async def reconcile_traefik_configs(self):

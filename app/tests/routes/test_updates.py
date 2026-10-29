@@ -21,6 +21,7 @@ from socketio.exceptions import ConnectionError as SocketConnectionError
 import config
 import services.updates as updates_module
 from api import build_asgi_app
+from routes.applications import load_application
 from routes.backups import get_platform_backup_status
 from routes.info import get as info
 from routes.info import get_release
@@ -28,6 +29,7 @@ from routes.notifications import list_notifications
 from routes.tasks import list_tasks
 from routes.updates import TOPICS, same_origin, sio
 from routes.workers import get as list_workers
+from routes.workers import load_worker
 from services.db import Notification
 from services.updates import Feed, Topic, UpdateFeed, Updates, UpdateSource, UpdateTopic
 
@@ -155,7 +157,8 @@ def state(monkeypatch):
 
 class TestTopics:
   def test_the_topics_are_the_ones_the_pages_follow(self):
-    assert set(TOPICS) == {"info", "tasks", "backup-status", "release", "workers", "notifications", "task-history"}
+    assert set(TOPICS) == {"info", "tasks", "backup-status", "release", "workers", "worker", "application", "notifications",
+                           "task-history"}
 
   def test_the_table_has_each_topic_and_each_feed_once(self):
     assert not set(UpdateTopic) & set(UpdateFeed)
@@ -175,8 +178,15 @@ class TestTopics:
   def test_the_other_topics_follow_the_one_source_they_show(self, topic, source):
     assert TOPICS[topic].sources == {source}
 
+  def test_a_worker_and_an_application_are_parameterised_and_follow_the_sources_of_their_own_resource(self):
+    assert TOPICS["worker"].parameterised and TOPICS["application"].parameterised
+    assert TOPICS["worker"].sources == {UpdateSource.WORKER_ENTRY, UpdateSource.WORKER_CONTAINERS}
+    assert TOPICS["application"].sources == {UpdateSource.APPLICATION}
+    assert not any(TOPICS[name].parameterised for name in ("info", "tasks", "backup-status", "release", "workers"))
+
   @pytest.mark.parametrize("topic, route", [("info", info), ("tasks", list_tasks), ("backup-status", get_platform_backup_status),
-                                            ("release", get_release), ("workers", list_workers)])
+                                            ("release", get_release), ("workers", list_workers), ("worker", load_worker),
+                                            ("application", load_application)])
   def test_a_topic_is_loaded_by_the_function_of_its_route(self, topic, route):
     assert TOPICS[topic].load is route
 
@@ -351,6 +361,70 @@ class TestWhilePaused:
     one.close()
 
 
+class TestOneWorkerAndOneApplication:
+  def test_a_worker_is_followed_by_its_hostname_and_pushed_what_its_route_returns(self, browser, client, worker, manager):
+    manager.worker_list = [{"hostname": "w1", "ip": "100.64.0.2", "online": True, "status": "online", "path": None,
+                            "container_count": None, "infra": None}]
+    one = browser()
+    one.subscribe("worker:w1")
+    assert one.received.empty()
+    manager.worker_list = [{**manager.worker_list[0], "status": "rebooting"}]
+    Updates().changed(UpdateSource.WORKER_ENTRY, "w1")
+    event, message = one.next()
+    assert (event, message["topic"]) == ("state", "worker:w1")
+    assert message["data"] == jsonable_encoder(client.get("/api/workers/w1").json())
+    assert message["data"]["status"] == "rebooting"
+
+  def test_an_application_is_followed_by_its_project_and_name_and_pushed_what_its_route_returns(self, browser, client, application):
+    one = browser()
+    one.subscribe("application:demo/web")
+    application.status = "deploying"
+    application.save()
+    Updates().changed(UpdateSource.APPLICATION, "demo/web")
+    event, message = one.next()
+    assert (event, message["topic"]) == ("state", "application:demo/web")
+    assert message["data"] == client.get("/api/projects/demo/applications/web").json()
+    assert message["data"]["status"] == "deploying"
+
+  def test_another_application_is_not_pushed_to_this_ones_followers(self, browser, application):
+    from services.db import Application
+    Application.create(project=application.project, name="api", label="Api", image="nginx")
+    one = browser()
+    one.subscribe("application:demo/web")
+    Updates().changed(UpdateSource.APPLICATION, "demo/api")
+    Updates().changed(UpdateSource.APPLICATION, "demo/web")
+    event, message = one.next()
+    assert message["topic"] == "application:demo/web" and message["data"]["name"] == "web"
+    assert one.received.empty()
+
+  def test_another_worker_is_not_pushed_to_this_ones_followers(self, browser, worker, manager):
+    manager.worker_list = [{"hostname": "w1", "ip": "100.64.0.2", "online": True, "status": "online", "path": None,
+                            "container_count": None, "infra": None}]
+    one = browser()
+    one.subscribe("worker:w1")
+    Updates().changed(UpdateSource.WORKER_CONTAINERS, "w2")
+    Updates().changed(UpdateSource.WORKER_CONTAINERS, "w1")
+    assert one.next()[1]["topic"] == "worker:w1"
+    assert one.received.empty()
+
+  def test_two_projects_may_each_have_an_application_of_the_same_name(self, browser, application):
+    from services.db import Application, Project
+    other = Project.create(name="other", label="Other")
+    Application.create(project=other, name="web", label="Elsewhere", image="nginx")
+    here, there = browser(), browser()
+    here.subscribe("application:demo/web")
+    there.subscribe("application:other/web")
+    Updates().changed(UpdateSource.APPLICATION, "demo/web")
+    Updates().changed(UpdateSource.APPLICATION, "other/web")
+    assert (here.next()[1]["data"]["label"], there.next()[1]["data"]["label"]) == ("Web", "Elsewhere")
+
+  @pytest.mark.parametrize("name", ["worker", "worker:", "application", "application:", "info:demo", "tasks:1"])
+  def test_a_name_without_the_argument_it_needs_or_with_one_it_does_not_take_is_refused(self, browser, name):
+    one = browser()
+    one.subscribe(name)
+    assert one.next() == ("topic_error", {"topic": name, "status": 404})
+
+
 class TestLeaving:
   def test_a_browser_that_disconnects_is_forgotten(self, browser, state):
     one = browser()
@@ -358,6 +432,6 @@ class TestLeaving:
     assert Updates()._subscribers["info"]
     one.close()
     deadline = time.monotonic() + 5
-    while Updates()._subscribers["info"] and time.monotonic() < deadline:
+    while "info" in Updates()._subscribers and time.monotonic() < deadline:
       time.sleep(0.01)
-    assert Updates()._subscribers["info"] == set()
+    assert "info" not in Updates()._subscribers

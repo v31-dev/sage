@@ -84,10 +84,15 @@ class WorkersMixin:
     online = {worker["hostname"] for worker in self.worker_list if worker["online"]}
     return [worker for worker in Worker.select() if worker.hostname in online]
 
+  def worker_entry(self, hostname: str) -> dict | None:
+    """The worker's entry in `worker_list`, None for a name that is not in it."""
+    return next((worker for worker in self.worker_list if worker["hostname"] == hostname), None)
+
   def worker_status(self, hostname: str) -> str:
     """What the worker is shown as (`worker_status` in `decisions`), as of the last change of the worker list.
     "offline" for a name that is not in it."""
-    return next((worker["status"] for worker in self.worker_list if worker["hostname"] == hostname), "offline")
+    entry = self.worker_entry(hostname)
+    return entry["status"] if entry else "offline"
 
   def worker_counts(self) -> dict:
     """How many workers there are and how many are online, from `worker_list`: a worker counts as online when its
@@ -153,19 +158,22 @@ class WorkersMixin:
     """The one place the worker list is worked out. `edit` changes the records (hostname to `WorkerInputs`) under
     the lock; then each worker's entry is derived from its record and the clock, and the list is replaced. Nothing
     is read from the table, the queue, the reports or Tailscale here: their owners push. Fires `worker_list` when the
-    list differs. What only the clock changes (a report going stale, the start-up grace, the reboot limit) shows the
-    next time the list is worked out, which every push does."""
+    list differs, and `worker_entry` for each worker whose entry does. What only the clock changes (a report going
+    stale, the start-up grace, the reboot limit) shows the next time the list is worked out, which every push does."""
     with self._worker_list_lock:
       edit(self._worker_inputs)
       for hostname in [hostname for hostname, record in self._worker_inputs.items() if record == WorkerInputs()]:
         del self._worker_inputs[hostname]
       now, started = utcnow(), WorkerReports().started
       workers = [(hostname, record) for hostname, record in sorted(self._worker_inputs.items()) if record.ip is not None]
-      listed = self.worker_list
+      listed = {entry["hostname"]: entry for entry in self.worker_list}
       self.worker_list = [worker_entry(hostname, record, now, started) for hostname, record in workers]
-      differs = self.worker_list != listed
-    if differs:
+      now_listed = {entry["hostname"]: entry for entry in self.worker_list}
+    differing = [hostname for hostname in listed.keys() | now_listed.keys() if listed.get(hostname) != now_listed.get(hostname)]
+    if differing:
       Updates().changed(UpdateSource.WORKER_LIST)
+    for hostname in differing:
+      Updates().changed(UpdateSource.WORKER_ENTRY, hostname)
 
   async def start_worker_stack(self, worker) -> bool:
     """`docker compose up -d` for the worker's stack: it starts what is stopped and leaves what runs

@@ -3,6 +3,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Request
 
 from routes.backups import router as backups_router
 from services.db import Volume
+from services.manager.application import application_changed
 from utils.api import generic_create, generic_delete, generic_get, generic_list, generic_update, get_request_models, parse_api_data
 
 
@@ -60,7 +61,9 @@ def create_volume(request: Request, volume_data: dict = Body(...)):
       "backup_cron": validate_backup_cron(volume_data.get("backup_cron")),
   }
 
-  return generic_create(Volume, data)
+  result = generic_create(Volume, data)
+  application_changed(data["application"])
+  return result
 
 
 @router.put("/{volume}", dependencies=[Depends(inject_volume)])
@@ -71,12 +74,16 @@ def update_volume(request: Request, volume_data: dict = Body(...)):
   if "backup_cron" in data:
     data["backup_cron"] = validate_backup_cron(data["backup_cron"])
 
-  return generic_update(Volume, volume, data)
+  result = generic_update(Volume, volume, data)
+  application_changed(request.state.models["application"])
+  return result
 
 
 @router.delete("/{volume}", dependencies=[Depends(inject_volume)])
 def delete_volume(request: Request):
-  return generic_delete(Volume, request.state.models["volume"])
+  result = generic_delete(Volume, request.state.models["volume"])
+  application_changed(request.state.models["application"])
+  return result
 
 
 router.include_router(

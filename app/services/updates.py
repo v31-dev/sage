@@ -17,7 +17,8 @@ logger = logging.getLogger(__name__)
 
 @unique
 class UpdateSource(StrEnum):
-  """What can change a topic. An owner of state says that it changed, and fires only when what it owns differs from before."""
+  """What can change a topic. An owner of state says that it changed, and fires only when what it owns differs from before.
+  A source of one resource of a parameterised topic is keyed by that topic's argument and changes only the topic of that key."""
   TASKS = "tasks"                    # the running and queued tasks
   QUEUE_STATE = "queue_state"        # running, paused, restoring or stopping
   RESTORING = "restoring"            # the backup being restored
@@ -27,6 +28,9 @@ class UpdateSource(StrEnum):
   CHECKS = "checks"                  # the result of checking a settings section
   LATEST_VERSION = "latest_version"  # the newest version released
   RELEASE = "release"                # a release was fetched
+  APPLICATION = "application"        # keyed by `<project>/<name>`: the application, or a container, domain or volume of it, was written
+  WORKER_ENTRY = "worker_entry"      # keyed by hostname: the worker's entry in the worker list differs
+  WORKER_CONTAINERS = "worker_containers"  # keyed by hostname: a container of the worker, or what its page shows of its application, was written
 
 
 @unique
@@ -37,6 +41,8 @@ class UpdateTopic(StrEnum):
   BACKUP_STATUS = "backup-status"
   RELEASE = "release"
   WORKERS = "workers"
+  WORKER = "worker"            # one worker: `worker:<hostname>`
+  APPLICATION = "application"  # one application: `application:<project>/<name>`
 
 
 @unique
@@ -48,8 +54,9 @@ class UpdateFeed(StrEnum):
 
 @dataclass(frozen=True)
 class Topic:
-  load: Callable[[], object]  # the state, as the REST route for it returns it
-  sources: frozenset[UpdateSource]  # the sources whose change makes the state worth sending again
+  load: Callable[..., object]  # the state, as the REST route for it returns it; given the argument of a parameterised topic
+  sources: frozenset[UpdateSource]  # the sources whose change makes the state worth sending again (keyed by the argument of a parameterised topic)
+  parameterised: bool = False  # followed as `name:argument`, one topic for each argument
 
 
 @dataclass(frozen=True)
@@ -149,7 +156,7 @@ class Updates(Base):
     self._subscribers: dict[str, set[Connection]] = {}
     self._running: set[str] = set()
     self._rerun: set[str] = set()
-    self._changed: set[UpdateSource] = set()
+    self._changed: set[tuple[UpdateSource, str | None]] = set()
     self._timer = None
     self._loop = None
     self._tasks: set[asyncio.Task] = set()
@@ -164,14 +171,14 @@ class Updates(Base):
     if connection is None:
       return
     for topic in connection.topics:
-      self._subscribers.get(topic, set()).discard(connection)
+      self._leave(connection, topic)
     connection.close()
 
   def subscribe(self, sid: str, topic: str):
     connection = self._connections.get(sid)
     if connection is None:
       return
-    if topic not in self._topics:
+    if self._definition(topic) is None:
       connection.offer(topic, error_frame(topic, 404))
     else:
       connection.topics.add(topic)
@@ -182,16 +189,34 @@ class Updates(Base):
     if connection is None:
       return
     connection.topics.discard(topic)
-    self._subscribers.get(topic, set()).discard(connection)
+    self._leave(connection, topic)
     connection.forget(topic)
 
-  def changed(self, source: UpdateSource):
-    """A source changed. Safe to call from any thread."""
+  def _leave(self, connection: Connection, topic: str):
+    subscribers = self._subscribers.get(topic)
+    if subscribers is not None:
+      subscribers.discard(connection)
+      if not subscribers:
+        del self._subscribers[topic]
+
+  def _definition(self, name: str) -> tuple[Topic | Feed, str] | None:
+    """What a name that can be followed stands for, and its argument (empty for a topic with none). A parameterised
+    topic is followed as `name:argument`; a name with an argument that the topic does not take, or without one that it
+    does, stands for nothing."""
+    key, separator, argument = name.partition(":")
+    definition = self._topics.get(key)
+    if definition is None or (isinstance(definition, Topic) and definition.parameterised) != bool(argument) or (
+            separator and not argument):
+      return None
+    return definition, argument
+
+  def changed(self, source: UpdateSource, key: str | None = None):
+    """A source changed, a keyed one for the resource of that key. Safe to call from any thread."""
     loop = self._loop
     if loop is None:
       return
     try:
-      loop.call_soon_threadsafe(self._add_source, source)
+      loop.call_soon_threadsafe(self._add_source, source, key)
     except RuntimeError:
       logger.debug("A change was dropped: the event loop is closed.")
 
@@ -210,16 +235,17 @@ class Updates(Base):
     for connection in self._subscribers.get(feed, set()):
       connection.append(frame)
 
-  def _add_source(self, source: UpdateSource):
-    self._changed.add(source)
+  def _add_source(self, source: UpdateSource, key: str | None):
+    self._changed.add((source, key))
     if self._timer is None:
       self._timer = self._loop.call_later(config.UPDATES_COALESCE_SECONDS, self._flush)
 
   def _flush(self):
     self._timer = None
-    sources, self._changed = self._changed, set()
-    for name, topic in self._topics.items():
-      if isinstance(topic, Topic) and self._subscribers.get(name) and topic.sources & sources:
+    changed, self._changed = self._changed, set()
+    for name in list(self._subscribers):
+      topic, argument = self._definition(name)
+      if isinstance(topic, Topic) and any((source, argument or None) in changed for source in topic.sources):
         task = self._loop.create_task(self._refresh(name))
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
@@ -232,11 +258,12 @@ class Updates(Base):
       return
     self._running.add(name)
     try:
-      topic = self._topics[name]
+      topic, argument = self._definition(name)
       while True:
         self._rerun.discard(name)
         try:
-          data = await run_in_executor_with_context(lambda: jsonable_encoder(topic.load()), executor=UPDATES_EXECUTOR)
+          data = await run_in_executor_with_context(
+              lambda: jsonable_encoder(topic.load(argument) if topic.parameterised else topic.load()), executor=UPDATES_EXECUTOR)
         except Exception:
           logger.warning(f"Could not compute the '{name}' topic.", exc_info=True)
         else:

@@ -5,6 +5,7 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/ui/spinner'
 import type { APIError } from '@/lib/api'
+import { watchState } from '@/lib/updates'
 
 import {
   workersAPI,
@@ -25,25 +26,16 @@ const workerMetrics = ref<WorkerMetricsResponse | null>(null)
 const isLoading = ref(true)
 const loadError = ref('')
 const isNotFound = ref(false)
-let pollInterval: ReturnType<typeof setInterval> | null = null
+let stop: (() => void) | undefined
 
+const fetchWorker = () => workersAPI.fetchOne(hostname) as Promise<Worker>
+
+// The worker, loaded from its route and then pushed by the manager each time it changes.
 onMounted(async () => {
-  await loadWorker()
-  if (worker.value) {
-    pollInterval = setInterval(loadWorkerStatus, 10_000)
-  }
-})
-onUnmounted(() => {
-  if (pollInterval) clearInterval(pollInterval)
-})
-
-async function loadWorker() {
+  const watch = watchState(`worker:${hostname}`, fetchWorker, showWorker)
+  stop = watch.stop
   try {
-    isLoading.value = true
-    loadError.value = ''
-    isNotFound.value = false
-    const workerData = (await workersAPI.fetchOne(hostname)) as Worker
-    worker.value = workerData
+    await watch.first
     workerMetrics.value = await fetchWorkerMetrics(hostname, '1m')
   } catch (err) {
     console.error('Failed to load worker:', err)
@@ -58,11 +50,17 @@ async function loadWorker() {
   } finally {
     isLoading.value = false
   }
+})
+onUnmounted(() => stop?.())
+
+function showWorker(next: Worker) {
+  worker.value = next
 }
 
+// After an action on one of its containers, without waiting for the manager's push.
 async function loadWorkerStatus() {
   try {
-    worker.value = (await workersAPI.fetchOne(hostname)) as Worker
+    showWorker(await fetchWorker())
   } catch (err) {
     console.error('Failed to load worker status:', err)
   }

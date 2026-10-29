@@ -5,6 +5,7 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/ui/spinner'
 import type { APIError } from '@/lib/api'
+import { watchState } from '@/lib/updates'
 
 import {
   getApplicationAPI,
@@ -37,54 +38,70 @@ const application = ref<Application | null>(null)
 const isLoading = ref(true)
 const loadError = ref('')
 const isNotFound = ref(false)
-let pollInterval: ReturnType<typeof setInterval> | null = null
+let stop: (() => void) | undefined
 
+const fetchApplication = () => applicationAPI.fetchOne(appName) as Promise<Application>
+
+function showLoadError(err: unknown) {
+  console.error('Failed to load application:', err)
+  application.value = null
+  const status = (err as APIError).status
+  if (status === 404) {
+    isNotFound.value = true
+  } else {
+    loadError.value = err instanceof Error ? err.message : 'Failed to load application'
+  }
+}
+
+// The application, loaded from its route and then pushed by the manager each time it changes.
 onMounted(async () => {
-  await loadApplication()
-  if (application.value) {
-    pollInterval = setInterval(loadApplicationStatus, 10_000)
+  const watch = watchState(
+    `application:${projectName}/${appName}`,
+    fetchApplication,
+    showApplication
+  )
+  stop = watch.stop
+  try {
+    await watch.first
+  } catch (err) {
+    showLoadError(err)
+  } finally {
+    isLoading.value = false
   }
 })
-onUnmounted(() => {
-  if (pollInterval) clearInterval(pollInterval)
-})
+onUnmounted(() => stop?.())
 
+// The first state is the page's; a later one changes what shows of the application as it runs, and leaves the rest
+// (a volume, a domain or a variable being edited) to the reload after an action.
+function showApplication(next: Application) {
+  loadError.value = ''
+  isNotFound.value = false
+  if (application.value) {
+    application.value.status = next.status
+    application.value.containers = next.containers
+    application.value.container_count = next.container_count
+    application.value.updated_at = next.updated_at
+    application.value.domains_synced = next.domains_synced
+    application.value.deployed_at = next.deployed_at
+    application.value.config_dirty = next.config_dirty
+  } else {
+    application.value = next
+  }
+  appStore.updateApplicationDeployStatus(next.status)
+}
+
+// The whole application again, after an action on it.
 async function loadApplication() {
   try {
     isLoading.value = true
     loadError.value = ''
     isNotFound.value = false
-    application.value = (await applicationAPI.fetchOne(appName)) as Application
+    application.value = await fetchApplication()
     appStore.updateApplicationDeployStatus(application.value.status)
   } catch (err) {
-    console.error('Failed to load application:', err)
-    application.value = null
-    const status = (err as APIError).status
-    if (status === 404) {
-      isNotFound.value = true
-    } else {
-      loadError.value = err instanceof Error ? err.message : 'Failed to load application'
-    }
+    showLoadError(err)
   } finally {
     isLoading.value = false
-  }
-}
-
-async function loadApplicationStatus() {
-  try {
-    const updatedApplication = (await applicationAPI.fetchOne(appName)) as Application
-    if (application.value) {
-      application.value.status = updatedApplication.status
-      application.value.containers = updatedApplication.containers
-      application.value.container_count = updatedApplication.container_count
-      application.value.updated_at = updatedApplication.updated_at
-      application.value.domains_synced = updatedApplication.domains_synced
-      application.value.deployed_at = updatedApplication.deployed_at
-      application.value.config_dirty = updatedApplication.config_dirty
-      appStore.updateApplicationDeployStatus(updatedApplication.status)
-    }
-  } catch (err) {
-    console.error('Failed to load application status:', err)
   }
 }
 

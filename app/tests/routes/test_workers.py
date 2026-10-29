@@ -10,22 +10,27 @@ def report():
   return [Snapshot(at=datetime(2026, 1, 1, 12), host=HostReading(*([None] * 13)), containers={}, traefik_reachable=True)]
 
 
-class TestInfra:
-  def test_the_detail_carries_the_state_of_the_workers_stack(self, client, worker):
-    WorkerReports().accept("w1", report())
-    infra = client.get("/api/workers/w1").json()["infra"]
-    assert [item["name"] for item in infra] == ["traefik", "vector", "telegraf", "cloudflared"]
-    assert {item["status"] for item in infra} == {"missing"}
+def listed(hostname="w1", **overrides):
+  return {"hostname": hostname, "ip": "100.64.0.2", "online": True, "status": "online", "path": None, "container_count": None,
+          "infra": None, **overrides}
 
-  def test_the_detail_has_none_for_a_worker_with_no_current_report(self, client, worker):
+
+class TestInfra:
+  def test_the_detail_carries_the_state_of_the_workers_stack_that_the_list_holds(self, client, worker, manager):
+    stack = [{"name": "traefik", "status": "running"}, {"name": "vector", "status": "missing"}]
+    manager.worker_list = [listed(infra=stack)]
+    assert client.get("/api/workers/w1").json()["infra"] == stack
+
+  def test_the_detail_has_none_for_a_worker_with_no_current_report(self, client, worker, manager):
+    manager.worker_list = [listed()]
     assert client.get("/api/workers/w1").json()["infra"] is None
 
 
 class TestList:
   def test_the_list_is_what_the_manager_holds_of_the_workers(self, client, manager):
     manager.worker_list = [
-        {"hostname": "w1", "ip": "100.64.0.2", "status": "rebooting", "path": "direct", "container_count": 3},
-        {"hostname": "w2", "ip": "100.64.0.3", "status": "offline", "path": None, "container_count": None},
+        listed("w1", status="rebooting", path="direct", container_count=3),
+        listed("w2", ip="100.64.0.3", online=False, status="offline"),
     ]
     assert client.get("/api/workers/").json() == manager.worker_list
 
@@ -33,26 +38,26 @@ class TestList:
     assert client.get("/api/workers/").json() == []
 
 
-class TestStatus:
-  def test_the_detail_carries_the_status_the_manager_gives(self, client, worker, manager):
-    manager.worker_statuses["w1"] = "rebooting"
-    assert client.get("/api/workers/w1").json()["status"] == "rebooting"
+class TestEntry:
+  def test_the_detail_carries_the_status_online_and_path_the_list_holds(self, client, worker, manager):
+    manager.worker_list = [listed(status="rebooting", online=True, path="relay blr")]
+    detail = client.get("/api/workers/w1").json()
+    assert (detail["status"], detail["online"], detail["path"]) == ("rebooting", True, "relay blr")
 
-  def test_the_manager_is_asked_whether_the_worker_answers(self, client, worker, manager):
-    assert client.get("/api/workers/w1").json()["status"] == "offline"
-    assert client.get("/api/workers/w1").json()["online"] is False
-    manager.online.add("w1")
-    assert client.get("/api/workers/w1").json()["status"] == "online"
-    assert client.get("/api/workers/w1").json()["online"] is True
+  def test_a_worker_the_list_does_not_hold_is_offline_with_nothing_known(self, client, worker, manager):
+    detail = client.get("/api/workers/w1").json()
+    assert (detail["status"], detail["online"], detail["path"], detail["infra"]) == ("offline", False, None, None)
 
+  def test_it_is_the_workers_row_and_its_containers_besides(self, client, worker, manager, application):
+    Container.create(application=application, worker=worker)
+    manager.worker_list = [listed()]
+    detail = client.get("/api/workers/w1").json()
+    assert detail["hostname"] == "w1" and detail["ip"] == "100.64.0.2"
+    assert [container["application"]["name"] for container in detail["containers"]] == ["web"]
 
-class TestPath:
-  def test_the_detail_says_how_the_worker_is_reached(self, client, worker, tailscale):
-    tailscale.paths["100.64.0.2"] = "relay blr"
-    assert client.get("/api/workers/w1").json()["path"] == "relay blr"
-
-  def test_a_worker_that_has_not_answered_has_none(self, client, worker, tailscale):
-    assert client.get("/api/workers/w1").json()["path"] is None
+  def test_a_worker_that_is_not_in_the_table_is_not_found(self, client, manager):
+    manager.worker_list = [listed("w9")]
+    assert client.get("/api/workers/w9").status_code == 404
 
 
 class TestReboot:

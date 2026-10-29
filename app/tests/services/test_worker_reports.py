@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 import config
-from services.worker_reports import WorkerReports, container_started_at, is_current, parse_batch
+from services.worker_reports import WorkerReports, container_started_at, infra_of, is_current, parse_batch
 
 BATCH = json.loads((Path(__file__).parent.parent / "data" / "telegraf_batch.json").read_text())
 
@@ -300,22 +300,14 @@ class TestContainerStartedAt:
 
 class TestInfra:
   def test_each_container_of_the_stack_has_its_state_and_a_missing_one_says_so(self):
-    reports = WorkerReports()
-    reports.accept("w1", with_containers(10, reading("traefik"), reading("vector", status="restarting"),
-                                         reading("telegraf"), reading("web")))
-    assert reports.infra("w1") == [
+    received = WorkerReports().accept("w1", with_containers(10, reading("traefik"), reading("vector", status="restarting"),
+                                                            reading("telegraf"), reading("web"))).received
+    assert infra_of(received) == [
         {"name": "traefik", "status": "running"},
         {"name": "vector", "status": "restarting"},
         {"name": "telegraf", "status": "running"},
         {"name": "cloudflared", "status": "missing"},
     ]
-
-  def test_nothing_is_known_without_a_current_report(self, clock):
-    reports = WorkerReports()
-    assert reports.infra("w1") is None
-    reports.accept("w1", with_containers(10, reading("traefik")))
-    clock.advance(timedelta(seconds=config.REPORT_STALE_SECONDS + 1))
-    assert reports.infra("w1") is None
 
 
 class TestStartedAt:

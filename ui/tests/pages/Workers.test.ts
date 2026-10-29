@@ -25,6 +25,7 @@ function worker(hostname: string, overrides: Partial<WorkerListItem> = {}): Work
     status: 'online',
     path: 'direct',
     container_count: 3,
+    infra: null,
     ...overrides,
   }
 }

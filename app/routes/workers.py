@@ -66,9 +66,9 @@ def add_worker(request: Request, worker_data: dict = Body(...)):
   return {"status": "OK", "hostname": peer.hostname}
 
 
-@router.get("/{hostname}", dependencies=[Depends(inject_worker)])
-def get_worker(request: Request, hostname: str):
-  worker = request.state.models["worker"]
+def worker_payload(worker: Worker) -> dict:
+  """The worker with its containers and their applications, and what the worker list holds of it: `infra` (the state
+  of the containers of its stack), `online`, `status` and `path`."""
   data = model_to_dict(
       worker,
       backrefs=True,
@@ -85,11 +85,22 @@ def get_worker(request: Request, hostname: str):
           }
       ),
   )
-  data["infra"] = WorkerReports().infra(hostname)
-  data["online"] = Manager().is_worker_online(hostname)
-  data["status"] = Manager().worker_status(hostname)
-  data["path"] = Tailscale().path(worker.ip)
+  entry = Manager().worker_entry(worker.hostname) or {}
+  data["infra"] = entry.get("infra")
+  data["online"] = entry.get("online", False)
+  data["status"] = entry.get("status", "offline")
+  data["path"] = entry.get("path")
   return data
+
+
+def load_worker(hostname: str) -> dict:
+  """The `worker` topic of a hostname: what `GET /workers/{hostname}` returns."""
+  return worker_payload(generic_get(Worker, Worker.hostname == hostname, return_model=True))
+
+
+@router.get("/{hostname}", dependencies=[Depends(inject_worker)])
+def get_worker(request: Request, hostname: str):
+  return worker_payload(request.state.models["worker"])
 
 
 @router.get("/{hostname}/metrics", dependencies=[Depends(inject_worker)])

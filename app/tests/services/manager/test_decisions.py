@@ -319,12 +319,16 @@ class TestWorkerEntry:
 
   def test_it_holds_what_the_list_shows_of_the_worker(self):
     assert self.entry(online=True, path="direct", report=report(running=("traefik", "web", "telegraf"))) == {
-        "hostname": "w1", "ip": "100.64.0.2", "online": True, "status": "online", "path": "direct", "container_count": 3}
+        "hostname": "w1", "ip": "100.64.0.2", "online": True, "status": "online", "path": "direct", "container_count": 3,
+        "infra": [{"name": "traefik", "status": "running"}, {"name": "vector", "status": "missing"},
+                  {"name": "telegraf", "status": "running"}, {"name": "cloudflared", "status": "missing"}]}
 
-  def test_the_container_count_is_that_of_the_current_report_only(self):
+  def test_the_container_count_and_the_stack_are_those_of_the_current_report_only(self):
     assert self.entry(report=report())["container_count"] == 2
-    assert self.entry(report=report(), now=later(config.REPORT_STALE_SECONDS + 1))["container_count"] is None
-    assert self.entry()["container_count"] is None
+    assert self.entry(report=report())["infra"] is not None
+    stale = self.entry(report=report(), now=later(config.REPORT_STALE_SECONDS + 1))
+    assert (stale["container_count"], stale["infra"]) == (None, None)
+    assert (self.entry()["container_count"], self.entry()["infra"]) == (None, None)
 
 
 class TestWorkerRows:

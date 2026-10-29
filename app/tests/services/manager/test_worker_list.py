@@ -18,9 +18,10 @@ from tests.services.manager.test_decisions import report
 class Changes:
   def __init__(self):
     self.sources = []
+    self.keyed = []
 
-  def changed(self, source):
-    self.sources.append(source)
+  def changed(self, source, key=None):
+    (self.sources if key is None else self.keyed).append(source if key is None else (source, key))
 
 
 class Workers(WorkersMixin):
@@ -71,8 +72,11 @@ class TestEntries:
     workers.update_worker("w1", report=report(running=("traefik", "web", "telegraf")))
 
     assert workers.worker_list == [
-        {"hostname": "w1", "ip": "100.64.0.2", "online": True, "status": "online", "path": "direct", "container_count": 3},
-        {"hostname": "w2", "ip": "100.64.0.3", "online": False, "status": "offline", "path": None, "container_count": None},
+        {"hostname": "w1", "ip": "100.64.0.2", "online": True, "status": "online", "path": "direct", "container_count": 3,
+         "infra": [{"name": "traefik", "status": "running"}, {"name": "vector", "status": "missing"},
+                   {"name": "telegraf", "status": "running"}, {"name": "cloudflared", "status": "missing"}]},
+        {"hostname": "w2", "ip": "100.64.0.3", "online": False, "status": "offline", "path": None, "container_count": None,
+         "infra": None},
     ]
 
   def test_the_order_is_by_name(self, workers):
@@ -129,7 +133,7 @@ class TestPresence:
     workers.paths["100.64.0.9"] = "direct"
     workers._save_worker("w1", "100.64.0.9")
     assert entries(workers)["w1"] == {"hostname": "w1", "ip": "100.64.0.9", "online": True, "status": "online", "path": "direct",
-                                      "container_count": None}
+                                      "container_count": None, "infra": None}
     assert Worker.get(Worker.hostname == "w1").ip == "100.64.0.9"
 
   def test_forgetting_a_worker_deletes_its_row_and_its_entry(self, workers):
@@ -187,6 +191,11 @@ class TestOnline:
     workers._set_worker_tasks((("reboot_worker", "w2"),))
     assert workers.worker_counts() == {"total": 3, "online": 1}
 
+  def test_the_entry_of_a_worker_is_the_one_in_the_list_and_none_for_a_name_that_is_not_listed(self, workers):
+    workers.add("w1", True)
+    assert workers.worker_entry("w1") is workers.worker_list[0]
+    assert workers.worker_entry("w9") is None
+
   def test_the_status_of_a_name_that_is_not_listed_is_offline(self, workers):
     assert workers.worker_status("w9") == "offline"
 
@@ -224,6 +233,40 @@ class TestLoad:
     workers.update_worker("w1", path="direct")
     workers._set_worker_tasks(())
     assert [worker["hostname"] for worker in workers.worker_list] == ["w1"]
+
+
+class TestFiringForOneWorker:
+  def test_a_push_that_changes_one_workers_entry_fires_that_worker_only(self, workers, changes):
+    workers.add("w1", True)
+    workers.add("w2", True, "100.64.0.3")
+    changes.keyed.clear()
+    workers.update_worker("w2", path="relay blr")
+    assert changes.keyed == [(UpdateSource.WORKER_ENTRY, "w2")]
+
+  def test_a_new_worker_and_a_forgotten_one_fire_theirs(self, workers, changes):
+    workers.add("w1", True)
+    assert (UpdateSource.WORKER_ENTRY, "w1") in changes.keyed
+    changes.keyed.clear()
+    workers._forget_worker("w1")
+    assert changes.keyed == [(UpdateSource.WORKER_ENTRY, "w1")]
+
+  def test_what_the_clock_changed_fires_the_workers_it_changed(self, workers, clock, changes):
+    workers.add("w1", True)
+    workers.add("w2", True, "100.64.0.3")
+    workers.update_worker("w1", report=report(arrived_at=clock.current))
+    clock.advance(timedelta(seconds=config.REPORT_STALE_SECONDS - 5))
+    workers.update_worker("w2", report=report(arrived_at=clock.current))
+    changes.keyed.clear()
+    clock.advance(timedelta(seconds=10))
+    workers.update_workers({})
+    assert changes.keyed == [(UpdateSource.WORKER_ENTRY, "w1")]
+
+  def test_a_push_that_changes_nothing_fires_no_worker(self, workers, changes):
+    workers.add("w1", True)
+    changes.keyed.clear()
+    workers.update_worker("w1", online=True)
+    workers.update_worker("w9", online=True)
+    assert changes.keyed == []
 
 
 class TestFiring:
@@ -364,8 +407,9 @@ class TestFromManyThreads:
 
     expected = {name: {"hostname": name, "ip": f"100.64.0.{index + 2}", "online": finals[name][0],
                        "status": self.expected_status(finals[name][0], finals[name][1]), "path": finals[name][2],
-                       "container_count": None}
+                       "container_count": None, "infra": None}
                 for index, name in enumerate(names)}
     if flapper_present:
-      expected["wx"] = {"hostname": "wx", "ip": "100.64.0.99", "online": True, "status": "online", "path": None, "container_count": None}
+      expected["wx"] = {"hostname": "wx", "ip": "100.64.0.99", "online": True, "status": "online", "path": None, "container_count": None,
+                        "infra": None}
     assert workers.worker_list == [expected[name] for name in sorted(expected)]

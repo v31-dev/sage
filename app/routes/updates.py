@@ -1,11 +1,13 @@
 import socketio
 
 import config
+from routes.applications import load_application
 from routes.backups import get_platform_backup_status
 from routes.info import get as info
 from routes.info import get_release
 from routes.tasks import list_tasks
 from routes.workers import get as list_workers
+from routes.workers import load_worker
 from services.updates import Feed, Topic, UpdateFeed, Updates, UpdateSource, UpdateTopic
 
 TOPICS = {
@@ -15,6 +17,9 @@ TOPICS = {
     UpdateTopic.BACKUP_STATUS: Topic(get_platform_backup_status, frozenset({UpdateSource.BACKUP_STATUS})),
     UpdateTopic.RELEASE: Topic(get_release, frozenset({UpdateSource.RELEASE})),
     UpdateTopic.WORKERS: Topic(list_workers, frozenset({UpdateSource.WORKER_LIST})),
+    # One worker, followed by hostname, and one application, followed by `<project>/<name>`: the sources are keyed by it.
+    UpdateTopic.WORKER: Topic(load_worker, frozenset({UpdateSource.WORKER_ENTRY, UpdateSource.WORKER_CONTAINERS}), parameterised=True),
+    UpdateTopic.APPLICATION: Topic(load_application, frozenset({UpdateSource.APPLICATION}), parameterised=True),
     UpdateFeed.NOTIFICATIONS: Feed(),
     UpdateFeed.TASK_HISTORY: Feed(),
 }

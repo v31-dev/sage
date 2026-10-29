@@ -56,6 +56,7 @@ class FakeManager:
     self.worker_statuses = {}
     self.worker_list = []
     self.online = set()
+    self.traefik_syncs = []
 
   def __getattr__(self, name):
     if not callable(getattr(Manager, name, None)):
@@ -89,6 +90,12 @@ class FakeManager:
 
   def is_worker_online(self, hostname):
     return hostname in self.online
+
+  def request_application_traefik_sync(self, application):
+    self.traefik_syncs.append(application.id)
+
+  def worker_entry(self, hostname):
+    return Manager.worker_entry(self, hostname)
 
   def worker_status(self, hostname):
     return self.worker_statuses.get(hostname, "online" if self.is_worker_online(hostname) else "offline")
