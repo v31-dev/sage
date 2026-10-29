@@ -78,22 +78,12 @@ onMounted(async () => {
 })
 onUnmounted(() => stop?.())
 
-// The first state is the page's; a later one changes what shows of the application as it runs, and leaves the rest
-// (a volume, a domain or a variable being edited) to the reload after an action.
+// Each state replaces the one shown, and its status the one an action set; a dialog being edited keeps the values it
+// copied when it opened.
 function showApplication(next: Application) {
   loadError.value = ''
   isNotFound.value = false
-  if (application.value) {
-    application.value.status = next.status
-    application.value.containers = next.containers
-    application.value.container_count = next.container_count
-    application.value.updated_at = next.updated_at
-    application.value.domains_synced = next.domains_synced
-    application.value.deployed_at = next.deployed_at
-    application.value.config_dirty = next.config_dirty
-  } else {
-    application.value = next
-  }
+  application.value = next
   appStore.updateApplicationDeployStatus(next.status)
 }
 

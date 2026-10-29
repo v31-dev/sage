@@ -3,7 +3,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { watchState } from '@/lib/updates'
 import Application from '@/pages/Application/index.vue'
-import { getApplicationAPI } from '@/services/api'
+import { getApplicationAPI, type Container } from '@/services/api'
 import { useAppStore } from '@/stores/app'
 import { followTopics } from '../helpers/topics'
 
@@ -177,7 +177,7 @@ describe('what the manager pushes', () => {
     expect(useAppStore().applicationDeployStatus).toBe('active')
   })
 
-  it('leaves the volumes and the domains as they were loaded, for a reload after an action to change', async () => {
+  it('shows the volumes and the domains it pushes, changed elsewhere', async () => {
     const { wrapper, topics } = await mountPage()
     await loaded(topics)
 
@@ -186,8 +186,21 @@ describe('what the manager pushes', () => {
       .push(application({ volumes: [], domains: [{ name: 'other.example.test' }] }))
     await flushPromises()
 
-    expect(texts(wrapper, 'data-volume')).toEqual(['data'])
-    expect(texts(wrapper, 'data-domain')).toEqual(['web.example.test'])
+    expect(texts(wrapper, 'data-volume')).toEqual([])
+    expect(texts(wrapper, 'data-domain')).toEqual(['other.example.test'])
+  })
+
+  it('puts the status the manager sends over the one an action set', async () => {
+    const { topics } = await mountPage()
+    await loaded(topics)
+    useAppStore().updateApplicationDeployStatus('deploying', ['w1'])
+
+    topics.topic('application:demo/web').push(application({ status: 'inactive' }))
+    await flushPromises()
+
+    expect(useAppStore().applicationDeployStatus).toBe('inactive')
+    const container = { status: 'inactive', worker: { hostname: 'w1' } } as Container
+    expect(useAppStore().containerStatus(container)).toBe('inactive')
   })
 
   it('reloads all of it after an action', async () => {
