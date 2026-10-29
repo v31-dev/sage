@@ -32,7 +32,7 @@ const fetchWorker = () => workersAPI.fetchOne(hostname) as Promise<Worker>
 
 // The worker, loaded from its route and then pushed by the manager each time it changes.
 onMounted(async () => {
-  const watch = watchState(`worker:${hostname}`, fetchWorker, showWorker)
+  const watch = watchState(`worker:${hostname}`, fetchWorker, showWorker, showNotFound)
   stop = watch.stop
   try {
     await watch.first
@@ -41,9 +41,7 @@ onMounted(async () => {
     console.error('Failed to load worker:', err)
     const status = (err as APIError).status
     if (status === 404) {
-      worker.value = null
-      workerMetrics.value = null
-      isNotFound.value = true
+      showNotFound()
     } else {
       loadError.value = err instanceof Error ? err.message : 'Failed to load worker'
     }
@@ -55,6 +53,13 @@ onUnmounted(() => stop?.())
 
 function showWorker(next: Worker) {
   worker.value = next
+}
+
+// Also when the worker is removed while the page is open.
+function showNotFound() {
+  worker.value = null
+  workerMetrics.value = null
+  isNotFound.value = true
 }
 
 // After an action on one of its containers, without waiting for the manager's push.

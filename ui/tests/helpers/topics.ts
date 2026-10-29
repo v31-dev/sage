@@ -11,6 +11,8 @@ export interface Followed {
   /** Settle the page's first load. */
   loaded: () => void
   failed: (error: unknown) => void
+  /** The manager says the topic's resource is gone. */
+  gone: () => void
 }
 
 /**
@@ -19,7 +21,12 @@ export interface Followed {
  */
 export function followTopics({ pending = false } = {}) {
   const followed: Followed[] = []
-  const follow = (topic: string, load: () => Promise<any>, push: (data: any) => void) => {
+  const follow = (
+    topic: string,
+    load: () => Promise<any>,
+    push: (data: any) => void,
+    onNotFound?: () => void
+  ) => {
     let loaded!: () => void
     let failed!: (error: unknown) => void
     const first = new Promise<void>((resolve, reject) => {
@@ -28,7 +35,11 @@ export function followTopics({ pending = false } = {}) {
     })
     first.catch(() => {})
     if (!pending) loaded()
-    const entry: Followed = { topic, load, push, stop: vi.fn(), loaded, failed }
+    const gone = () => {
+      if (!onNotFound) throw new Error(`'${topic}' has no not-found handler`)
+      onNotFound()
+    }
+    const entry: Followed = { topic, load, push, stop: vi.fn(), loaded, failed, gone }
     followed.push(entry)
     return { stop: entry.stop, first }
   }

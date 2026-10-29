@@ -94,6 +94,7 @@ describe('what the page follows', () => {
     expect(watchState).toHaveBeenCalledWith(
       'application:demo/web',
       expect.any(Function),
+      expect.any(Function),
       expect.any(Function)
     )
     expect(getApplicationAPI).toHaveBeenCalledWith('demo')
@@ -147,6 +148,17 @@ describe('loading', () => {
 })
 
 describe('what the manager pushes', () => {
+  it('says an application that is deleted while the page is open is not found', async () => {
+    const { wrapper, topics } = await mountPage()
+    await loaded(topics)
+
+    topics.topic('application:demo/web').gone()
+    await flushPromises()
+
+    expect(wrapper.find('[data-header]').exists()).toBe(false)
+    expect(wrapper.text()).toContain('Application web not found')
+  })
+
   it('shows the status, the containers and the rest that change as it runs', async () => {
     const { wrapper, topics } = await mountPage()
     await loaded(topics)

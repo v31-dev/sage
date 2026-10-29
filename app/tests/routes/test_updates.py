@@ -418,6 +418,22 @@ class TestOneWorkerAndOneApplication:
     Updates().changed(UpdateSource.APPLICATION, "other/web")
     assert (here.next()[1]["data"]["label"], there.next()[1]["data"]["label"]) == ("Web", "Elsewhere")
 
+  def test_a_worker_that_is_removed_is_sent_to_its_followers_as_not_found(self, browser, worker, manager):
+    manager.worker_list = [{"hostname": "w1", "ip": "100.64.0.2", "online": True, "status": "removing", "path": None,
+                            "container_count": None, "infra": None}]
+    one = browser()
+    one.subscribe("worker:w1")
+    worker.delete_instance()
+    manager.worker_list = []
+    Updates().changed(UpdateSource.WORKER_ENTRY, "w1")
+    assert one.next() == ("topic_error", {"topic": "worker:w1", "status": 404})
+
+  def test_an_application_that_is_deleted_is_sent_to_its_followers_as_not_found(self, browser, client, application):
+    one = browser()
+    one.subscribe("application:demo/web")
+    assert client.delete("/api/projects/demo/applications/web").status_code == 200
+    assert one.next() == ("topic_error", {"topic": "application:demo/web", "status": 404})
+
   @pytest.mark.parametrize("name", ["worker", "worker:", "application", "application:", "info:demo", "tasks:1"])
   def test_a_name_without_the_argument_it_needs_or_with_one_it_does_not_take_is_refused(self, browser, name):
     one = browser()

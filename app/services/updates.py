@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from enum import StrEnum, unique
 from typing import Awaitable, Callable
 
+from fastapi import HTTPException
 from fastapi.encoders import jsonable_encoder
 
 import config
@@ -252,7 +253,8 @@ class Updates(Base):
 
   async def _refresh(self, name: str):
     """Compute the topic and send it to who follows it. One at a time per topic, so an older state never overtakes a
-    newer one."""
+    newer one. What the route answers instead of the state (a 404 for a resource that is gone) is sent as the topic's
+    error."""
     if name in self._running:
       self._rerun.add(name)
       return
@@ -262,13 +264,16 @@ class Updates(Base):
       while True:
         self._rerun.discard(name)
         try:
-          data = await run_in_executor_with_context(
-              lambda: jsonable_encoder(topic.load(argument) if topic.parameterised else topic.load()), executor=UPDATES_EXECUTOR)
+          frame = state_frame(name, await run_in_executor_with_context(
+              lambda: jsonable_encoder(topic.load(argument) if topic.parameterised else topic.load()), executor=UPDATES_EXECUTOR))
+        except HTTPException as answer:
+          frame = error_frame(name, answer.status_code)
         except Exception:
           logger.warning(f"Could not compute the '{name}' topic.", exc_info=True)
-        else:
+          frame = None
+        if frame is not None:
           for connection in self._subscribers.get(name, set()):
-            connection.offer(name, state_frame(name, data))
+            connection.offer(name, frame)
         if name not in self._rerun:
           return
     finally:

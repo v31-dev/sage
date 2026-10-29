@@ -69,7 +69,12 @@ afterEach(() => {
 describe('what the page follows', () => {
   it('follows the worker of its hostname, loaded from its route, and stops when it goes away', async () => {
     const { wrapper, topics } = await mountPage()
-    expect(watchState).toHaveBeenCalledWith('worker:w1', expect.any(Function), expect.any(Function))
+    expect(watchState).toHaveBeenCalledWith(
+      'worker:w1',
+      expect.any(Function),
+      expect.any(Function),
+      expect.any(Function)
+    )
     await topics.topic('worker:w1').load()
     expect(workersAPI.fetchOne).toHaveBeenCalledWith('w1')
 
@@ -130,6 +135,17 @@ describe('loading', () => {
 })
 
 describe('what the manager pushes', () => {
+  it('says a worker that is removed while the page is open is not found', async () => {
+    const { wrapper, topics } = await mountPage()
+    await loaded(topics)
+
+    topics.topic('worker:w1').gone()
+    await flushPromises()
+
+    expect(wrapper.find('[data-header]').exists()).toBe(false)
+    expect(wrapper.text()).toContain('Worker w1 not found')
+  })
+
   it('shows the worker it pushes, with its status and its containers now', async () => {
     const { wrapper, topics } = await mountPage()
     await loaded(topics)

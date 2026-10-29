@@ -109,6 +109,18 @@ function followingState(
   return { ...client.watchState(topic, load, onData), onData, load }
 }
 
+/** A state topic of one resource, which the manager can say is gone. */
+function followingResource(
+  client: UpdatesClient,
+  topic: string,
+  loadIt: () => Promise<any> = async () => 'loaded'
+) {
+  const load = vi.fn(loadIt)
+  const onData = vi.fn()
+  const onNotFound = vi.fn()
+  return { ...client.watchState(topic, load, onData, onNotFound), onData, onNotFound, load }
+}
+
 function followingFeed(
   client: UpdatesClient,
   topic: string,
@@ -334,6 +346,80 @@ describe('what the manager sends', () => {
     sockets[0]!.state('info', 1)
     expect(first.onData).toHaveBeenCalledWith(1)
     expect(second.onData).toHaveBeenCalledWith(1)
+  })
+
+  it('tells the watchers of a resource when the manager says it is gone, and no one else', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const { client, sockets } = setup()
+    const one = followingResource(client, 'worker:w1')
+    const other = followingResource(client, 'worker:w2')
+    sockets[0]!.serverConnects()
+
+    sockets[0]!.fire('topic_error', { topic: 'worker:w1', status: 404 })
+
+    expect(one.onNotFound).toHaveBeenCalledOnce()
+    expect(other.onNotFound).not.toHaveBeenCalled()
+    expect(warn).not.toHaveBeenCalled()
+  })
+
+  it('says so when the manager refuses a resource for any other reason', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const { client, sockets } = setup()
+    const one = followingResource(client, 'worker:w1')
+    sockets[0]!.serverConnects()
+
+    sockets[0]!.fire('topic_error', { topic: 'worker:w1', status: 400 })
+
+    expect(one.onNotFound).not.toHaveBeenCalled()
+    expect(warn).toHaveBeenCalledWith("The manager refused the topic 'worker:w1' (400).")
+  })
+
+  it('drops a state that was loaded before the manager said the resource is gone', async () => {
+    const { client, sockets } = setup()
+    const { load, finish } = slowLoad<string>()
+    const one = followingResource(client, 'worker:w1', load)
+    sockets[0]!.serverConnects()
+
+    sockets[0]!.fire('topic_error', { topic: 'worker:w1', status: 404 })
+    finish('older')
+    await settle()
+
+    expect(one.onData).not.toHaveBeenCalled()
+    expect(one.onNotFound).toHaveBeenCalledOnce()
+  })
+
+  it('tells the watcher when the load after it subscribed finds the resource gone, without an error', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const { client, sockets } = setup()
+    const calls: Array<() => Promise<string>> = [
+      async () => 'first',
+      async () => {
+        throw Object.assign(new Error('Worker not found'), { status: 404 })
+      },
+    ]
+    const one = followingResource(client, 'worker:w1', () => calls.shift()!())
+    await settle()
+    sockets[0]!.serverConnects()
+    sockets[0]!.acknowledgesSubscriptions()
+    await settle()
+
+    expect(one.onNotFound).toHaveBeenCalledOnce()
+    expect(error).not.toHaveBeenCalled()
+  })
+
+  it('does not tell a watcher that has stopped', async () => {
+    const { client, sockets } = setup()
+    const { load, pending } = slowLoad<string>()
+    const one = followingResource(client, 'worker:w1', load)
+    sockets[0]!.serverConnects()
+    sockets[0]!.acknowledgesSubscriptions()
+    one.stop()
+
+    pending[1]!.reject(Object.assign(new Error('Worker not found'), { status: 404 }))
+    sockets[0]!.fire('topic_error', { topic: 'worker:w1', status: 404 })
+    await settle()
+
+    expect(one.onNotFound).not.toHaveBeenCalled()
   })
 
   it('says so when the manager refuses a topic', () => {

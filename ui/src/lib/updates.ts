@@ -31,6 +31,7 @@ interface Watcher {
   topic: string
   load: () => Promise<any>
   onData: (data: any) => void
+  onNotFound?: () => void
   // A state that was loaded before one was pushed is older than it, and is dropped.
   dropsOlderLoads: boolean
   pushes: number
@@ -48,10 +49,16 @@ export class UpdatesClient {
 
   /**
    * Follow a state topic: `load` fetches its state, `onState` receives it, and then each state the manager pushes.
-   * `first` settles with the first load, or rejects if it fails.
+   * `onNotFound` is called when the manager answers 404 instead, pushed or to a load after the first: the resource is
+   * gone. `first` settles with the first load, or rejects if it fails.
    */
-  watchState<T>(topic: string, load: () => Promise<T>, onState: (state: T) => void) {
-    return this.watch(topic, load, onState, true)
+  watchState<T>(
+    topic: string,
+    load: () => Promise<T>,
+    onState: (state: T) => void,
+    onNotFound?: () => void
+  ) {
+    return this.watch(topic, load, onState, true, onNotFound)
   }
 
   /**
@@ -66,9 +73,10 @@ export class UpdatesClient {
     topic: string,
     load: () => Promise<any>,
     onData: (data: any) => void,
-    dropsOlderLoads: boolean
+    dropsOlderLoads: boolean,
+    onNotFound?: () => void
   ) {
-    const watcher: Watcher = { topic, load, onData, dropsOlderLoads, pushes: 0 }
+    const watcher: Watcher = { topic, load, onData, onNotFound, dropsOlderLoads, pushes: 0 }
     this.watchers.add(watcher)
     const socket = this.connect()
     if (socket.connected) this.subscribe(socket, watcher)
@@ -86,7 +94,7 @@ export class UpdatesClient {
       socket.on('connect_error', () => this.setState('disconnected'))
       socket.on('state', (message: { topic: string; data: unknown }) => this.onState(message))
       socket.on('topic_error', (message: { topic: string; status: number }) =>
-        console.warn(`The manager refused the topic '${message.topic}' (${message.status}).`)
+        this.onTopicError(message)
       )
       socket.io.on('ping', () => (connection.heartbeatAt = Date.now()))
       socket.io.on('reconnect_attempt', () => this.setState('connecting'))
@@ -110,9 +118,14 @@ export class UpdatesClient {
   // The manager answers once it has the subscription; what changed before that is in what the load returns.
   private subscribe(socket: SocketLike, watcher: Watcher) {
     socket.emit('subscribe', watcher.topic, () =>
-      this.refresh(watcher).catch(error =>
-        console.error(`Failed to load '${watcher.topic}' again:`, error)
-      )
+      this.refresh(watcher).catch(error => {
+        if (!this.watchers.has(watcher)) return
+        if ((error as { status?: number } | null)?.status === 404 && watcher.onNotFound) {
+          watcher.onNotFound()
+        } else {
+          console.error(`Failed to load '${watcher.topic}' again:`, error)
+        }
+      })
     )
   }
 
@@ -129,6 +142,15 @@ export class UpdatesClient {
       if (watcher.topic !== message.topic) continue
       watcher.pushes++
       watcher.onData(message.data)
+    }
+  }
+
+  private onTopicError(message: { topic: string; status: number }) {
+    for (const watcher of this.watchers) {
+      if (watcher.topic !== message.topic) continue
+      watcher.pushes++
+      if (message.status === 404 && watcher.onNotFound) watcher.onNotFound()
+      else console.warn(`The manager refused the topic '${message.topic}' (${message.status}).`)
     }
   }
 
@@ -156,8 +178,12 @@ const updates = new UpdatesClient(
   () => io({ path: '/api/socket.io', autoConnect: false }) as unknown as SocketLike
 )
 
-export const watchState = <T>(topic: string, load: () => Promise<T>, onState: (state: T) => void) =>
-  updates.watchState(topic, load, onState)
+export const watchState = <T>(
+  topic: string,
+  load: () => Promise<T>,
+  onState: (state: T) => void,
+  onNotFound?: () => void
+) => updates.watchState(topic, load, onState, onNotFound)
 
 export const watchFeed = <T>(
   topic: string,

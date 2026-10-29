@@ -44,13 +44,19 @@ const fetchApplication = () => applicationAPI.fetchOne(appName) as Promise<Appli
 
 function showLoadError(err: unknown) {
   console.error('Failed to load application:', err)
-  application.value = null
   const status = (err as APIError).status
   if (status === 404) {
-    isNotFound.value = true
+    showNotFound()
   } else {
+    application.value = null
     loadError.value = err instanceof Error ? err.message : 'Failed to load application'
   }
+}
+
+// Also when the application is deleted while the page is open.
+function showNotFound() {
+  application.value = null
+  isNotFound.value = true
 }
 
 // The application, loaded from its route and then pushed by the manager each time it changes.
@@ -58,7 +64,8 @@ onMounted(async () => {
   const watch = watchState(
     `application:${projectName}/${appName}`,
     fetchApplication,
-    showApplication
+    showApplication,
+    showNotFound
   )
   stop = watch.stop
   try {

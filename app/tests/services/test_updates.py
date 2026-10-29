@@ -1,10 +1,12 @@
 import asyncio
+import logging
 import random
 import threading
 import time
 from datetime import datetime, timezone
 
 import pytest
+from fastapi import HTTPException
 
 import config
 from services.updates import Fact, Feed, Topic, Updates, UpdateSource
@@ -42,13 +44,16 @@ class Source:
     self.value = 1
     self.loads = 0
     self.fail = False
+    self.gone = False
     self.block = None
 
   def load_for(self, argument):
-    """The state for an argument of a parameterised topic."""
+    """The state for an argument of a parameterised topic, or the route's 404 while the resource is `gone`."""
     self.loads += 1
     if self.fail:
       raise RuntimeError("cannot load")
+    if self.gone:
+      raise HTTPException(status_code=404, detail="Thing not found")
     return {"value": self.value, "argument": argument}
 
   def load(self):
@@ -223,6 +228,43 @@ class TestParameterisedTopics:
     world.hub.changed("x")
     await until(lambda: socket.states("a"))
     assert socket.states("p:one") == []
+
+  async def test_a_resource_that_is_gone_is_sent_to_its_followers_as_a_404_and_is_not_logged(self, world, caplog):
+    one, one_sid = world.connect()
+    two, two_sid = world.connect()
+    world.hub.subscribe(one_sid, "p:one")
+    world.hub.subscribe(two_sid, "p:two")
+    world.sources["p"].gone = True
+    with caplog.at_level(logging.WARNING, logger="services.updates"):
+      world.hub.changed("x", "one")
+      await until(lambda: one.errors())
+    assert one.errors() == [("p:one", 404)] and one.states("p:one") == []
+    assert two.frames == []
+    assert caplog.records == []
+
+  async def test_a_resource_that_comes_back_is_sent_its_state_again(self, world):
+    socket, sid = world.connect()
+    world.hub.subscribe(sid, "p:one")
+    world.sources["p"].gone = True
+    world.hub.changed("x", "one")
+    await until(lambda: socket.errors())
+    world.sources["p"].gone = False
+    world.hub.changed("x", "one")
+    await until(lambda: socket.states("p:one"))
+    assert socket.states("p:one") == [{"value": 1, "argument": "one"}]
+
+  async def test_a_404_replaces_the_state_a_slow_connection_has_not_been_sent(self, world):
+    socket, sid = world.connect()
+    socket.gate = asyncio.Event()
+    world.hub.subscribe(sid, "p:one")
+    for gone in (False, False, True):
+      world.sources["p"].gone = gone
+      world.hub.changed("x", "one")
+      await asyncio.sleep(0.05)
+    socket.gate.set()
+    await until(lambda: socket.errors())
+    await asyncio.sleep(0.05)
+    assert [event for event, _ in socket.frames] == ["state", "topic_error"], "the waiting state was replaced"
 
   async def test_a_name_is_forgotten_when_its_last_follower_leaves(self, world):
     one, one_sid = world.connect()
