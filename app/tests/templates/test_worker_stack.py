@@ -16,12 +16,26 @@ def telegraf_config():
   return tomllib.loads(re.sub(r"\$\{(\w+)\}", lambda m: {"INTERVAL": str(config.REPORT_INTERVAL_SECONDS)}.get(m[1], "x"), text))
 
 
+def vector_sink():
+  return yaml.safe_load((TEMPLATES / "vector" / "vector.yml").read_text())["sinks"]["fastapi_http"]
+
+
 def service(name):
   return yaml.safe_load((TEMPLATES / "docker-compose.yml").read_text())["services"][name]
 
 
 def telegraf_service():
   return service("telegraf")
+
+
+class TestVectorConfig:
+  def test_it_sends_the_logs_it_holds_at_least_every_ten_seconds(self):
+    assert vector_sink()["batch"]["timeout_secs"] == 10
+
+  def test_it_posts_to_the_log_route_with_the_workers_name(self):
+    sink = vector_sink()
+    assert sink["uri"].endswith(":9001/api/vector/logs")
+    assert sink["request"]["headers"]["X-Node-Name"] == "${HOSTNAME}"
 
 
 class TestTelegrafConfig:

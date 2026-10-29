@@ -16,7 +16,7 @@ sinks:
       method: newline_delimited
     batch:
       max_events: 1000
-      timeout_secs: 30
+      timeout_secs: 10
     buffer:
       type: disk
       max_size: 536870912

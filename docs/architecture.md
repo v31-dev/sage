@@ -8,7 +8,7 @@ Sage is a manager-and-workers platform designed for Docker workloads connected t
 - Workers run application containers and edge components.
 - Cloudflare is required (env vars): DNS records, the tunnel for public apps, and the DNS-01 challenge for Sage's certificates.
 - Traefik provides ingress on workers. The manager issues two certificates in-process (ACME DNS-01): its own for `<TS_NAME>.core.<domain>`, whose key never leaves it, and the workers' `*.int.<domain>` wildcard, synced to every worker.
-- Vector runs on workers and forwards their container logs to the manager; the manager captures its own logs in-process.
+- Vector runs on workers and forwards their container logs to the manager, a batch at least every 10 s; the manager captures its own logs in-process.
 - Telegraf runs on workers and pushes the host's and the containers' metrics and the containers' state to the manager every 10 s; the manager collects its own container metrics in-process.
 
 ## Manager Runtime
