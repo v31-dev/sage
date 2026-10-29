@@ -164,9 +164,12 @@ class Updates(Base):
     self._loop = None
     self._tasks: set[asyncio.Task] = set()
 
-  def connect(self, sid: str, emit: Emit, topics: dict[UpdateTopic | UpdateFeed, Topic | Feed]):
-    self._loop = asyncio.get_running_loop()
+  def serve(self, topics: dict[UpdateTopic | UpdateFeed, Topic | Feed]):
+    """The topics and feeds a connection can follow: the table of the Socket.IO server."""
     self._topics = topics
+
+  def connect(self, sid: str, emit: Emit):
+    self._loop = asyncio.get_running_loop()
     self._connections[sid] = Connection(emit)
 
   def disconnect(self, sid: str):

@@ -131,12 +131,13 @@ def world(monkeypatch):
       "p": Topic(sources["p"].load_for, frozenset({"x"}), parameterised=True),
   }
   hub = Updates()
+  hub.serve(topics)
   sids = []
 
   def connect(delay=0.0):
     socket = Socket(delay)
     sid = f"sid{len(sids)}"
-    hub.connect(sid, socket.emit, topics)
+    hub.connect(sid, socket.emit)
     sids.append(sid)
     return socket, sid
 

@@ -45,7 +45,7 @@ sio = socketio.AsyncServer(
 
 @sio.event
 async def connect(sid, environ, auth=None):
-  Updates().connect(sid, lambda event, payload: sio.emit(event, payload, to=sid), TOPICS)
+  Updates().connect(sid, lambda event, payload: sio.emit(event, payload, to=sid))
 
 
 @sio.event

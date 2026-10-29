@@ -19,7 +19,7 @@ from routes.notifications import list_notifications
 from routes.tasks import list_task_history
 from services.db import Application, Backup, Container, Notification, Task, Worker
 from services.manager import Manager
-from services.manager.application import application_changed, application_key, container_changed, hosts_changed, save_application, save_container
+from services.manager.application import application_changed, container_changed, hosts_changed, save_application, save_container
 from services.manager.core import CoreMixin
 from services.manager.decisions import WORKER_TASKS
 from services.manager.platform import PlatformMixin
@@ -404,9 +404,6 @@ class TestApplicationAndContainerChanges:
     other = Worker.create(hostname="w2", ip="100.64.0.3")
     return Container.create(application=application, worker=worker), Container.create(
         application=Application.create(project=application.project, name="api", label="Api"), worker=other)
-
-  def test_an_application_is_named_by_its_project_and_name(self, application):
-    assert application_key(application) == "demo/web"
 
   def test_a_change_of_an_application_tells_its_page_only(self, keyed, application):
     application_changed(application)

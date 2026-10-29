@@ -191,6 +191,10 @@ class TestTopics:
   def test_a_topic_is_loaded_by_the_function_of_its_route(self, topic, route):
     assert TOPICS[topic].load is route
 
+  def test_the_hub_serves_the_table_of_the_socket_server(self):
+    build_asgi_app(False)
+    assert Updates()._topics is TOPICS
+
   def test_the_server_pings_at_the_configured_interval(self):
     assert sio.eio.ping_interval == config.UPDATES_PING_INTERVAL_SECONDS
     assert sio.eio.ping_timeout == config.UPDATES_PING_TIMEOUT_SECONDS

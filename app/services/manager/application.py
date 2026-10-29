@@ -25,14 +25,9 @@ _ROLLUP_NOTICES = {
 }
 
 
-def application_key(application: Application) -> str:
-  """The name of an application as a topic follows it: `<project>/<name>`."""
-  return f"{application.project.name}/{application.name}"
-
-
 def application_changed(application: Application):
   """The application, or a container, domain or volume of it, was written: the page of that application is sent again."""
-  Updates().changed(UpdateSource.APPLICATION, application_key(application))
+  Updates().changed(UpdateSource.APPLICATION, f"{application.project.name}/{application.name}")
 
 
 def container_changed(container: Container):
