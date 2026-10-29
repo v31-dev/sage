@@ -10,8 +10,6 @@ import SectionTitle from '@/components/SectionTitle.vue'
 
 interface Props {
   project: Project
-  projectAPI: any
-  applicationAPI: any
   loadProject: () => Promise<void>
 }
 
@@ -24,12 +22,8 @@ const props = withDefaults(defineProps<Props>(), {})
       <CardTitle><SectionTitle :title="project.label" :size="3" /></CardTitle>
       <CardAction>
         <ButtonGroup class="space-x-1">
-          <EditProjectButton
-            :project="project"
-            :projectAPI="projectAPI"
-            :loadProject="loadProject"
-          />
-          <DeleteProjectButton :project="project" :projectAPI="projectAPI" />
+          <EditProjectButton :project="project" :loadProject="loadProject" />
+          <DeleteProjectButton :project="project" />
         </ButtonGroup>
       </CardAction>
     </CardHeader>

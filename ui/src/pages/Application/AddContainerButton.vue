@@ -23,12 +23,11 @@ import {
 import { Input } from '@/components/ui/input'
 import { Spinner } from '@/components/ui/spinner'
 
-import { type Application, getContainerAPI } from '@/services/api'
+import { type Application, createContainer } from '@/services/api'
 import { useAppStore } from '@/stores/app'
 
 interface Props {
   application: Application
-  containersAPI: ReturnType<typeof getContainerAPI>
   loadApplication: () => Promise<void>
 }
 
@@ -69,7 +68,7 @@ async function onClickAddContainerConfirm() {
     if (domainTag.value) {
       containerData.domain_tag = domainTag.value
     }
-    await props.containersAPI.create(containerData)
+    await createContainer(props.application.project.name, props.application.name, containerData)
     isAddContainerDialogOpen.value = false
     await props.loadApplication()
     toast.success('Container added')

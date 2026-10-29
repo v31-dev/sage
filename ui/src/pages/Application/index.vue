@@ -7,13 +7,7 @@ import { Spinner } from '@/components/ui/spinner'
 import type { APIError } from '@/lib/api'
 import { watchState } from '@/lib/updates'
 
-import {
-  getApplicationAPI,
-  getContainerAPI,
-  getDomainAPI,
-  getVolumeAPI,
-  type Application,
-} from '@/services/api'
+import { fetchApplication, type Application } from '@/services/api'
 import { useAppStore } from '@/stores/app'
 import ApplicationHeader from './ApplicationHeader.vue'
 import AddContainerButton from './AddContainerButton.vue'
@@ -30,17 +24,11 @@ const projectName = route.params.projectId as string
 const appName = route.params.appId as string
 const appStore = useAppStore()
 
-const applicationAPI = getApplicationAPI(projectName)
-const volumeAPI = getVolumeAPI(projectName, appName)
-const containersAPI = getContainerAPI(projectName, appName)
-const domainAPI = getDomainAPI(projectName, appName)
 const application = ref<Application | null>(null)
 const isLoading = ref(true)
 const loadError = ref('')
 const isNotFound = ref(false)
 let stop: (() => void) | undefined
-
-const fetchApplication = () => applicationAPI.fetchOne(appName) as Promise<Application>
 
 function showLoadError(err: unknown) {
   console.error('Failed to load application:', err)
@@ -63,7 +51,7 @@ function showNotFound() {
 onMounted(async () => {
   const watch = watchState(
     `application:${projectName}/${appName}`,
-    fetchApplication,
+    () => fetchApplication(projectName, appName),
     showApplication,
     showNotFound
   )
@@ -93,7 +81,7 @@ async function loadApplication() {
     isLoading.value = true
     loadError.value = ''
     isNotFound.value = false
-    application.value = await fetchApplication()
+    application.value = await fetchApplication(projectName, appName)
     appStore.updateApplicationDeployStatus(application.value.status)
   } catch (err) {
     showLoadError(err)
@@ -128,11 +116,7 @@ function goBack() {
 
       <div v-else-if="application" class="space-y-6">
         <!-- Application Header -->
-        <ApplicationHeader
-          :application="application"
-          :applicationAPI="applicationAPI"
-          :loadApplication="loadApplication"
-        />
+        <ApplicationHeader :application="application" :loadApplication="loadApplication" />
 
         <!-- Volumes -->
         <div class="space-y-4">
@@ -143,11 +127,7 @@ function goBack() {
               tooltip="Application needs to be deployed again if Volume configuration is modified."
             />
             <!-- Add Volume Button -->
-            <AddVolumeButton
-              :application="application"
-              :volumeAPI="volumeAPI"
-              :loadApplication="loadApplication"
-            />
+            <AddVolumeButton :application="application" :loadApplication="loadApplication" />
           </div>
 
           <!-- Empty Volumes State -->
@@ -169,7 +149,6 @@ function goBack() {
               :key="volume.name"
               :application="application"
               :volume="volume"
-              :volumeAPI="volumeAPI"
               :loadApplication="loadApplication"
             />
           </div>
@@ -184,11 +163,7 @@ function goBack() {
               tooltip="Domain configurations are automatically synced."
             />
             <!-- Add Domain Button -->
-            <AddDomainButton
-              :application="application"
-              :domainAPI="domainAPI"
-              :loadApplication="loadApplication"
-            />
+            <AddDomainButton :application="application" :loadApplication="loadApplication" />
           </div>
 
           <!-- Empty Domains State -->
@@ -210,7 +185,6 @@ function goBack() {
               :key="domain.name"
               :application="application"
               :domain="domain"
-              :domainAPI="domainAPI"
               :loadApplication="loadApplication"
             />
           </div>
@@ -225,11 +199,7 @@ function goBack() {
               tooltip="Application needs to be deployed again if configuration is modified."
             />
             <!-- Add Container Button -->
-            <AddContainerButton
-              :application="application"
-              :containersAPI="containersAPI"
-              :loadApplication="loadApplication"
-            />
+            <AddContainerButton :application="application" :loadApplication="loadApplication" />
           </div>
 
           <!-- Empty Containers State -->
@@ -249,8 +219,8 @@ function goBack() {
             <ContainerCard
               v-for="container in application.containers"
               :key="container.worker.hostname"
+              :application="application"
               :container="container"
-              :containersAPI="containersAPI"
               :loadApplication="loadApplication"
               class="flex flex-col"
             />

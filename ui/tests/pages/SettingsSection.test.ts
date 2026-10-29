@@ -4,7 +4,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import SettingsSection from '@/pages/Settings/SettingsSection.vue'
 import {
   fetchAppInfo,
-  settingsAPI,
+  fetchSetting,
+  updateSetting,
   type AppInfo,
   type SettingSectionStatus,
   type SettingState,
@@ -17,7 +18,8 @@ vi.mock('vue-sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
 vi.mock('@/services/api', async importOriginal => ({
   ...(await importOriginal<typeof import('@/services/api')>()),
   fetchAppInfo: vi.fn(),
-  settingsAPI: { fetchOne: vi.fn(), update: vi.fn(), action: vi.fn() },
+  fetchSetting: vi.fn(),
+  updateSetting: vi.fn(),
 }))
 
 const fields = [
@@ -42,7 +44,7 @@ const info = (s3: SettingState) =>
   }) as AppInfo
 
 async function mountSection(saved: Record<string, string | null>) {
-  vi.mocked(settingsAPI.fetchOne).mockResolvedValue({ key: 's3', value: saved } as never)
+  vi.mocked(fetchSetting).mockResolvedValue({ key: 's3', value: saved } as never)
   const wrapper = mount(SettingsSection, {
     props: { title: 'S3', description: 'Backups', section: 's3', fields },
   })
@@ -53,7 +55,7 @@ async function mountSection(saved: Record<string, string | null>) {
 async function save(wrapper: Awaited<ReturnType<typeof mountSection>>, values: string[]) {
   const inputs = wrapper.findAll('input')
   for (const [index, value] of values.entries()) await inputs[index]!.setValue(value)
-  vi.mocked(settingsAPI.update).mockResolvedValue({
+  vi.mocked(updateSetting).mockResolvedValue({
     key: 's3',
     value: { bucket: values[0] || null, endpoint: values[1] || null },
   } as never)

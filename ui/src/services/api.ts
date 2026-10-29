@@ -1,16 +1,9 @@
-import { CRUDAPI } from '@/lib/api'
+// Every call to the manager's API, each a function over `request`, and the shapes it answers with.
+import { request } from '@/lib/api'
 import { startDownload } from '@/lib/utils'
 
-const API_ROOT = '/api'
-
-function getLoadDelay() {
-  const rawDelay = import.meta.env.VITE_LOAD_DELAY
-  const parsedDelay = rawDelay ? Number(rawDelay) : 300
-
-  return Number.isFinite(parsedDelay) && parsedDelay >= 0 ? parsedDelay : 300
-}
-
-const LOAD_DELAY = getLoadDelay()
+// The fields a create or an update sends; the manager checks them.
+type Fields = Record<string, unknown>
 
 export interface AppInfo {
   version: string
@@ -70,12 +63,6 @@ export interface WorkerListItem {
   container_count: number | null
   // The state of the containers of its stack in its current report.
   infra: InfraContainer[] | null
-}
-
-export async function fetchWorkers(): Promise<WorkerListItem[]> {
-  const response = await fetch(`${API_ROOT}/workers/`)
-  if (!response.ok) throw new Error('Failed to fetch workers')
-  return await response.json()
 }
 
 export interface Project {
@@ -153,109 +140,117 @@ export interface Volume {
   name: string
   path: string
   backup_cron: string | null
-  project: Project
   application: Application
   created_at: Date
   updated_at: Date
 }
 
-export async function fetchAppInfo(): Promise<AppInfo> {
-  try {
-    await new Promise(resolve => setTimeout(resolve, LOAD_DELAY))
-    const response = await fetch(`${API_ROOT}`)
-    if (!response.ok) {
-      throw new Error('Failed to fetch app info')
-    }
-    return await response.json()
-  } catch (error) {
-    console.error('Error fetching app info:', error)
-    throw error
-  }
-}
+export const fetchAppInfo = () => request<AppInfo>('GET', '')
 
 // Cached release detail (version + notes + fetched_at), populated by the
 // scheduled/on-demand refresh job. It is a topic of its own and not part of the
 // app info, since the notes body is large.
-export async function fetchRelease(): Promise<Release> {
-  const response = await fetch(`${API_ROOT}/release`)
-  if (!response.ok) {
-    const data = await response.json().catch(() => ({}))
-    throw new Error(data.detail || 'Failed to fetch latest release')
-  }
-  return await response.json()
-}
+export const fetchRelease = () => request<Release>('GET', '/release')
 
 // Fire the refresh job (re-checks GitHub and updates the cache). Returns
 // immediately; the release topic pushes the result, with a new `fetched_at`.
-export async function refreshRelease(): Promise<void> {
-  const response = await fetch(`${API_ROOT}/release/refresh`, { method: 'POST' })
-  if (!response.ok) {
-    const data = await response.json().catch(() => ({}))
-    throw new Error(data.detail || 'Failed to refresh release')
-  }
-}
+export const refreshRelease = () => request<void>('POST', '/release/refresh')
 
-export const workersAPI = new CRUDAPI({
-  name: 'Workers',
-  path: `${API_ROOT}/workers`,
-  load_delay: LOAD_DELAY,
-})
+export const fetchWorkers = () => request<WorkerListItem[]>('GET', '/workers/')
+
+export const fetchWorker = (hostname: string) => request<Worker>('GET', `/workers/${hostname}`)
 
 // Adds a machine of the tailnet, by hostname or Tailscale IP, as a worker. It is set up in the
 // background and shows in the list once the manager has reached it.
-export async function addWorker(host: string): Promise<{ hostname: string }> {
-  await new Promise(resolve => setTimeout(resolve, LOAD_DELAY))
-  const response = await fetch(`${API_ROOT}/workers/`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ host }),
-  })
-  const data = await response.json().catch(() => ({}))
-  if (!response.ok) throw new Error(data.detail || 'Failed to add worker')
-  return data
-}
+export const addWorker = (host: string) =>
+  request<{ hostname: string }>('POST', '/workers/', { body: { host } })
 
-export const projectAPI = new CRUDAPI({
-  name: 'Project',
-  path: `${API_ROOT}/projects`,
-  load_delay: LOAD_DELAY,
-})
+export const rebootWorker = (hostname: string) =>
+  request<unknown>('POST', `/workers/${hostname}/reboot`)
 
-export function getApplicationAPI(projectName: string) {
-  return new CRUDAPI({
-    name: 'Application',
-    path: `${API_ROOT}/projects/{project}/applications`,
-    params: { project: projectName },
-    load_delay: LOAD_DELAY,
-  })
-}
+export const deleteWorker = (hostname: string) => request<unknown>('DELETE', `/workers/${hostname}`)
 
-export function getContainerAPI(projectName: string, applicationName: string) {
-  return new CRUDAPI({
-    name: 'Container',
-    path: `${API_ROOT}/projects/{project}/applications/{application}/containers`,
-    params: { project: projectName, application: applicationName },
-    load_delay: LOAD_DELAY,
-  })
-}
+export const fetchProjects = () => request<Project[]>('GET', '/projects/')
 
-export function getVolumeAPI(projectName: string, applicationName: string) {
-  return new CRUDAPI({
-    name: 'Volume',
-    path: `${API_ROOT}/projects/{project}/applications/{application}/volumes`,
-    params: { project: projectName, application: applicationName },
-    load_delay: LOAD_DELAY,
-  })
-}
+export const fetchProject = (name: string) => request<Project>('GET', `/projects/${name}`)
 
-export function getDomainAPI(projectName: string, applicationName: string) {
-  return new CRUDAPI({
-    name: 'Domain',
-    path: `${API_ROOT}/projects/{project}/applications/{application}/domains`,
-    params: { project: projectName, application: applicationName },
-    load_delay: LOAD_DELAY,
+export const createProject = (data: Fields) =>
+  request<Project>('POST', '/projects/', { body: data })
+
+export const updateProject = (name: string, data: Fields) =>
+  request<Project>('PUT', `/projects/${name}`, { body: data })
+
+export const deleteProject = (name: string) => request<unknown>('DELETE', `/projects/${name}`)
+
+const applicationPath = (project: string, application: string) =>
+  `/projects/${project}/applications/${application}`
+
+export const fetchApplication = (project: string, name: string) =>
+  request<Application>('GET', applicationPath(project, name))
+
+export const createApplication = (project: string, data: Fields) =>
+  request<Application>('POST', `/projects/${project}/applications/`, { body: data })
+
+export const updateApplication = (project: string, name: string, data: Fields) =>
+  request<Application>('PUT', applicationPath(project, name), { body: data })
+
+export const deleteApplication = (project: string, name: string) =>
+  request<unknown>('DELETE', applicationPath(project, name))
+
+export const deployApplication = (project: string, name: string) =>
+  request<unknown>('POST', `${applicationPath(project, name)}/deploy`)
+
+export const stopApplication = (project: string, name: string) =>
+  request<unknown>('POST', `${applicationPath(project, name)}/stop`)
+
+export const createContainer = (project: string, application: string, data: Fields) =>
+  request<Container>('POST', `${applicationPath(project, application)}/containers/`, {
+    body: data,
   })
-}
+
+export const updateContainer = (
+  project: string,
+  application: string,
+  hostname: string,
+  data: Fields
+) =>
+  request<Container>('PUT', `${applicationPath(project, application)}/containers/${hostname}`, {
+    body: data,
+  })
+
+// `force` removes the container from Sage without cleaning up after it on an offline worker.
+export const deleteContainer = (
+  project: string,
+  application: string,
+  hostname: string,
+  force = false
+) =>
+  request<unknown>('DELETE', `${applicationPath(project, application)}/containers/${hostname}`, {
+    query: { force: force || null },
+  })
+
+export const createVolume = (project: string, application: string, data: Fields) =>
+  request<Volume>('POST', `${applicationPath(project, application)}/volumes/`, { body: data })
+
+export const updateVolume = (project: string, application: string, name: string, data: Fields) =>
+  request<Volume>('PUT', `${applicationPath(project, application)}/volumes/${name}`, {
+    body: data,
+  })
+
+export const deleteVolume = (project: string, application: string, name: string) =>
+  request<unknown>('DELETE', `${applicationPath(project, application)}/volumes/${name}`)
+
+// A domain is named by its type and name, `<type>:<name>`.
+export const createDomain = (project: string, application: string, data: Fields) =>
+  request<Domain>('POST', `${applicationPath(project, application)}/domains/`, { body: data })
+
+export const updateDomain = (project: string, application: string, key: string, data: Fields) =>
+  request<Domain>('PUT', `${applicationPath(project, application)}/domains/${key}`, {
+    body: data,
+  })
+
+export const deleteDomain = (project: string, application: string, key: string) =>
+  request<unknown>('DELETE', `${applicationPath(project, application)}/domains/${key}`)
 
 export interface Setting {
   key: string
@@ -287,11 +282,23 @@ export interface SettingSectionStatus {
 
 export type SettingsStatus = Record<SettingSection, SettingSectionStatus>
 
-export const settingsAPI = new CRUDAPI({
-  name: 'Settings',
-  path: `${API_ROOT}/settings`,
-  load_delay: LOAD_DELAY,
-})
+export const fetchSetting = (section: SettingSection) =>
+  request<Setting>('GET', `/settings/${section}`)
+
+export const updateSetting = (section: SettingSection, value: Record<string, string | null>) =>
+  request<Setting>('PUT', `/settings/${section}`, { body: { value } })
+
+// Checks the values given, saved or not, against the provider.
+export const testSetting = (section: SettingSection, value: Record<string, string | null>) =>
+  request<{ message: string }>('POST', `/settings/${section}/test`, { body: { value } })
+
+export const pauseSage = () => request<{ state: AppInfo['state'] }>('POST', '/settings/pause')
+
+export const resumeSage = () => request<{ state: AppInfo['state'] }>('POST', '/settings/resume')
+
+export const resyncTraefik = () => request<unknown>('POST', '/settings/resync_traefik')
+
+export const resyncWorkers = () => request<unknown>('POST', '/settings/resync_workers')
 
 export type MetricsPeriod = '1m' | '1h' | '24h' | '1w'
 
@@ -344,22 +351,27 @@ export interface WorkerMetricSummary {
 
 export const METRICS_POLL_MS = 60_000
 
-export async function fetchWorkerMetrics(
-  hostname: string,
-  period: MetricsPeriod = '1h'
-): Promise<WorkerMetricsResponse> {
-  try {
-    await new Promise(resolve => setTimeout(resolve, LOAD_DELAY))
-    const response = await fetch(`${API_ROOT}/workers/${hostname}/metrics?period=${period}`)
-    if (!response.ok) {
-      throw new Error('Failed to fetch worker metrics')
-    }
-    return await response.json()
-  } catch (error) {
-    console.error('Error fetching worker metrics:', error)
-    throw error
-  }
+export const fetchWorkerMetrics = (hostname: string, period: MetricsPeriod = '1h') =>
+  request<WorkerMetricsResponse>('GET', `/workers/${hostname}/metrics`, { query: { period } })
+
+// The metrics of each container of an application, by worker.
+export interface ApplicationContainerMetrics {
+  hostname: string
+  metrics: ContainerMetricsPoint[]
 }
+
+export const fetchApplicationMetrics = (
+  project: string,
+  application: string,
+  period: MetricsPeriod
+) =>
+  request<ApplicationContainerMetrics[]>(
+    'GET',
+    `${applicationPath(project, application)}/metrics`,
+    {
+      query: { period },
+    }
+  )
 
 export interface LogEntry {
   id: number
@@ -369,32 +381,16 @@ export interface LogEntry {
   message: string
 }
 
-export async function fetchLogs(
+export const fetchLogs = (
   hostname: string,
   container: string,
   search: string = '',
   from_ts: string = '',
   to_ts: string = ''
-): Promise<LogEntry[]> {
-  try {
-    const params = new URLSearchParams()
-    if (search) params.set('search', search)
-    if (from_ts) params.set('from_ts', from_ts)
-    if (to_ts) params.set('to_ts', to_ts)
-
-    await new Promise(resolve => setTimeout(resolve, LOAD_DELAY))
-    const response = await fetch(`${API_ROOT}/workers/${hostname}/logs/${container}?${params}`)
-    if (!response.ok) {
-      const data = await response.json().catch(() => ({}))
-      const detail = data.detail || 'Failed to fetch logs'
-      throw new Error(detail)
-    }
-    return await response.json()
-  } catch (error) {
-    console.error('Error fetching logs:', error)
-    throw error
-  }
-}
+) =>
+  request<LogEntry[]>('GET', `/workers/${hostname}/logs/${container}`, {
+    query: { search, from_ts, to_ts },
+  })
 
 export interface Notification {
   id: number
@@ -441,23 +437,9 @@ export interface HomeSummary {
   critical_events_last_24h: Notification[]
 }
 
-export async function fetchHomeSummary(): Promise<HomeSummary> {
-  try {
-    await new Promise(resolve => setTimeout(resolve, LOAD_DELAY))
-    const response = await fetch(`${API_ROOT}/summary`)
-    if (!response.ok) {
-      const data = await response.json().catch(() => ({}))
-      const detail = data.detail || 'Failed to fetch home summary'
-      throw new Error(detail)
-    }
-    return await response.json()
-  } catch (error) {
-    console.error('Error fetching home summary:', error)
-    throw error
-  }
-}
+export const fetchHomeSummary = () => request<HomeSummary>('GET', '/summary')
 
-export async function fetchNotifications({
+export const fetchNotifications = ({
   limit = null,
   from_ts = null,
   to_ts = null,
@@ -465,26 +447,7 @@ export async function fetchNotifications({
   limit?: number | null
   from_ts?: string | null
   to_ts?: string | null
-} = {}): Promise<Notification[]> {
-  try {
-    const params = new URLSearchParams()
-    if (limit) params.set('limit', limit.toString())
-    if (from_ts) params.set('from_ts', from_ts)
-    if (to_ts) params.set('to_ts', to_ts)
-
-    await new Promise(resolve => setTimeout(resolve, LOAD_DELAY))
-    const response = await fetch(`${API_ROOT}/notifications/?${params}`)
-    if (!response.ok) {
-      const data = await response.json().catch(() => ({}))
-      const detail = data.detail || 'Failed to fetch notifications'
-      throw new Error(detail)
-    }
-    return await response.json()
-  } catch (error) {
-    console.error('Error fetching notifications:', error)
-    throw error
-  }
-}
+} = {}) => request<Notification[]>('GET', '/notifications/', { query: { limit, from_ts, to_ts } })
 
 export interface QueueTask {
   task_id: string
@@ -512,18 +475,10 @@ export interface QueueResponse {
 }
 
 // The tasks that are running or waiting, held in memory by the manager.
-export async function fetchTasks(): Promise<QueueResponse> {
-  const response = await fetch(`${API_ROOT}/tasks/`)
-  if (!response.ok) throw new Error('Failed to fetch tasks')
-  return await response.json()
-}
+export const fetchTasks = () => request<QueueResponse>('GET', '/tasks/')
 
 // The latest finished tasks, newest first.
-export async function fetchTaskHistory(): Promise<CompletedTask[]> {
-  const response = await fetch(`${API_ROOT}/tasks/history`)
-  if (!response.ok) throw new Error('Failed to fetch the finished tasks')
-  return await response.json()
-}
+export const fetchTaskHistory = () => request<CompletedTask[]>('GET', '/tasks/history')
 
 export interface Backup {
   id: number
@@ -533,29 +488,53 @@ export interface Backup {
   created_at: string
 }
 
-export const backupAPI = new CRUDAPI({
-  name: 'Backup',
-  path: `${API_ROOT}/backups`,
-  load_delay: LOAD_DELAY,
-})
+// The platform backups.
+export const fetchBackups = () => request<Backup[]>('GET', '/backups/')
 
-export async function downloadBackup(
-  api: { action: (action: string) => Promise<unknown> },
-  backupId: number | string
-) {
-  const { url } = (await api.action(`${backupId}/download`)) as { url: string }
+export const fetchBackupStatus = () =>
+  request<BackupStatus>('GET', '/backups/platform_backup_status')
+
+export const createBackup = () => request<unknown>('POST', '/backups/')
+
+// Lists the backups in S3 that are not listed yet.
+export const discoverBackups = () => request<unknown>('POST', '/backups/discover')
+
+export const deleteBackup = (id: number) => request<unknown>('DELETE', `/backups/${id}`)
+
+export const restoreBackup = (id: number) => request<unknown>('POST', `/backups/${id}/restore`)
+
+// A short-lived link to the file in S3, which the browser then saves.
+async function download(path: string) {
+  const { url } = await request<{ url: string }>('GET', path)
   startDownload(url)
 }
 
-export function getVolumeBackupAPI(
-  projectName: string,
-  applicationName: string,
-  volumeName: string
-) {
-  return new CRUDAPI({
-    name: 'Volume Backup',
-    path: `${API_ROOT}/projects/{project}/applications/{application}/volumes/{volume}/backups`,
-    params: { project: projectName, application: applicationName, volume: volumeName },
-    load_delay: LOAD_DELAY,
+export const downloadBackup = (id: number) => download(`/backups/${id}/download`)
+
+// The backups of a volume of an application.
+const volumeBackupsPath = (project: string, application: string, volume: string) =>
+  `${applicationPath(project, application)}/volumes/${volume}/backups`
+
+export const fetchVolumeBackups = (project: string, application: string, volume: string) =>
+  request<Backup[]>('GET', `${volumeBackupsPath(project, application, volume)}/`)
+
+export const createVolumeBackup = (project: string, application: string, volume: string) =>
+  request<unknown>('POST', `${volumeBackupsPath(project, application, volume)}/`)
+
+export const restoreVolumeBackup = (
+  project: string,
+  application: string,
+  volume: string,
+  id: number,
+  targetWorker: string
+) =>
+  request<unknown>('POST', `${volumeBackupsPath(project, application, volume)}/${id}/restore`, {
+    body: { target_worker: targetWorker },
   })
-}
+
+export const downloadVolumeBackup = (
+  project: string,
+  application: string,
+  volume: string,
+  id: number
+) => download(`${volumeBackupsPath(project, application, volume)}/${id}/download`)

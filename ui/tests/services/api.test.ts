@@ -1,28 +1,5 @@
 import { beforeEach, describe, expect, it, vi, type Mock } from 'vitest'
-import {
-  addWorker,
-  APPLICATION_BUSY_STATUSES,
-  APPLICATION_STOP_ELIGIBLE_STATUSES,
-  backupAPI,
-  downloadBackup,
-  fetchAppInfo,
-  fetchHomeSummary,
-  fetchLogs,
-  fetchNotifications,
-  fetchRelease,
-  fetchTaskHistory,
-  fetchTasks,
-  fetchWorkerMetrics,
-  getApplicationAPI,
-  getContainerAPI,
-  getDomainAPI,
-  getVolumeAPI,
-  getVolumeBackupAPI,
-  projectAPI,
-  refreshRelease,
-  settingsAPI,
-  workersAPI,
-} from '@/services/api'
+import * as api from '@/services/api'
 
 let fetchMock: Mock
 
@@ -33,322 +10,368 @@ function reply(body: unknown, status = 200) {
   })
 }
 
-// The path and the query parameters of the last call, whatever the order or a trailing "?".
+// The method, the path, the query parameters and the body of the last call.
 function lastCall() {
-  const [url, init] = fetchMock.mock.lastCall as [string, RequestInit | undefined]
+  const [url, init] = fetchMock.mock.lastCall as [string, RequestInit]
   const parsed = new URL(url, 'http://manager.test')
   return {
+    method: init.method,
     path: parsed.pathname,
     params: Object.fromEntries(parsed.searchParams),
-    init,
+    body: init.body === undefined ? undefined : JSON.parse(init.body as string),
   }
 }
 
 beforeEach(() => {
-  fetchMock = vi.fn()
+  fetchMock = vi.fn().mockResolvedValue(reply({}))
   vi.stubGlobal('fetch', fetchMock)
-  vi.spyOn(console, 'error').mockImplementation(() => {})
 })
 
 describe('the status lists', () => {
   it('names the statuses in which an application is busy', () => {
-    expect(APPLICATION_BUSY_STATUSES).toEqual(['deploying', 'stopping', 'backup', 'restoring'])
+    expect(api.APPLICATION_BUSY_STATUSES).toEqual(['deploying', 'stopping', 'backup', 'restoring'])
   })
 
   it('lets an application be stopped when it is active or in error', () => {
-    expect(APPLICATION_STOP_ELIGIBLE_STATUSES).toEqual(['active', 'error'])
+    expect(api.APPLICATION_STOP_ELIGIBLE_STATUSES).toEqual(['active', 'error'])
   })
 })
 
-describe('the APIs', () => {
-  it.each([
-    [workersAPI, 'Workers', '/api/workers'],
-    [projectAPI, 'Project', '/api/projects'],
-    [settingsAPI, 'Settings', '/api/settings'],
-    [backupAPI, 'Backup', '/api/backups'],
-  ])('%#: points at its path', (api, name, path) => {
-    expect([api.name, api.path]).toEqual([name, path])
+const APP = '/api/projects/demo/applications/web'
+
+// Each call: what it is given, and the method, path, query and body it sends.
+const CALLS: Array<[string, () => Promise<unknown>, string, string, object, unknown]> = [
+  ['fetchAppInfo', () => api.fetchAppInfo(), 'GET', '/api', {}, undefined],
+  ['fetchRelease', () => api.fetchRelease(), 'GET', '/api/release', {}, undefined],
+  ['refreshRelease', () => api.refreshRelease(), 'POST', '/api/release/refresh', {}, undefined],
+  ['fetchHomeSummary', () => api.fetchHomeSummary(), 'GET', '/api/summary', {}, undefined],
+  ['fetchWorkers', () => api.fetchWorkers(), 'GET', '/api/workers/', {}, undefined],
+  ['fetchWorker', () => api.fetchWorker('w1'), 'GET', '/api/workers/w1', {}, undefined],
+  [
+    'addWorker',
+    () => api.addWorker('100.64.0.2'),
+    'POST',
+    '/api/workers/',
+    {},
+    { host: '100.64.0.2' },
+  ],
+  ['rebootWorker', () => api.rebootWorker('w1'), 'POST', '/api/workers/w1/reboot', {}, undefined],
+  ['deleteWorker', () => api.deleteWorker('w1'), 'DELETE', '/api/workers/w1', {}, undefined],
+  ['fetchProjects', () => api.fetchProjects(), 'GET', '/api/projects/', {}, undefined],
+  ['fetchProject', () => api.fetchProject('demo'), 'GET', '/api/projects/demo', {}, undefined],
+  [
+    'createProject',
+    () => api.createProject({ label: 'Demo' }),
+    'POST',
+    '/api/projects/',
+    {},
+    { label: 'Demo' },
+  ],
+  [
+    'updateProject',
+    () => api.updateProject('demo', { env: null }),
+    'PUT',
+    '/api/projects/demo',
+    {},
+    { env: null },
+  ],
+  ['deleteProject', () => api.deleteProject('demo'), 'DELETE', '/api/projects/demo', {}, undefined],
+  ['fetchApplication', () => api.fetchApplication('demo', 'web'), 'GET', APP, {}, undefined],
+  [
+    'createApplication',
+    () => api.createApplication('demo', { label: 'Web' }),
+    'POST',
+    '/api/projects/demo/applications/',
+    {},
+    { label: 'Web' },
+  ],
+  [
+    'updateApplication',
+    () => api.updateApplication('demo', 'web', { image: 'nginx' }),
+    'PUT',
+    APP,
+    {},
+    { image: 'nginx' },
+  ],
+  ['deleteApplication', () => api.deleteApplication('demo', 'web'), 'DELETE', APP, {}, undefined],
+  [
+    'deployApplication',
+    () => api.deployApplication('demo', 'web'),
+    'POST',
+    `${APP}/deploy`,
+    {},
+    undefined,
+  ],
+  [
+    'stopApplication',
+    () => api.stopApplication('demo', 'web'),
+    'POST',
+    `${APP}/stop`,
+    {},
+    undefined,
+  ],
+  [
+    'fetchApplicationMetrics',
+    () => api.fetchApplicationMetrics('demo', 'web', '24h'),
+    'GET',
+    `${APP}/metrics`,
+    { period: '24h' },
+    undefined,
+  ],
+  [
+    'createContainer',
+    () => api.createContainer('demo', 'web', { worker: 'w1' }),
+    'POST',
+    `${APP}/containers/`,
+    {},
+    { worker: 'w1' },
+  ],
+  [
+    'updateContainer',
+    () => api.updateContainer('demo', 'web', 'w1', { domain_tag: null }),
+    'PUT',
+    `${APP}/containers/w1`,
+    {},
+    { domain_tag: null },
+  ],
+  [
+    'deleteContainer',
+    () => api.deleteContainer('demo', 'web', 'w1'),
+    'DELETE',
+    `${APP}/containers/w1`,
+    {},
+    undefined,
+  ],
+  [
+    'deleteContainer, forced',
+    () => api.deleteContainer('demo', 'web', 'w1', true),
+    'DELETE',
+    `${APP}/containers/w1`,
+    { force: 'true' },
+    undefined,
+  ],
+  [
+    'createVolume',
+    () => api.createVolume('demo', 'web', { name: 'data', path: '/data' }),
+    'POST',
+    `${APP}/volumes/`,
+    {},
+    { name: 'data', path: '/data' },
+  ],
+  [
+    'updateVolume',
+    () => api.updateVolume('demo', 'web', 'data', { backup_cron: '' }),
+    'PUT',
+    `${APP}/volumes/data`,
+    {},
+    { backup_cron: '' },
+  ],
+  [
+    'deleteVolume',
+    () => api.deleteVolume('demo', 'web', 'data'),
+    'DELETE',
+    `${APP}/volumes/data`,
+    {},
+    undefined,
+  ],
+  [
+    'createDomain',
+    () => api.createDomain('demo', 'web', { name: 'web', type: 'public', port: 80 }),
+    'POST',
+    `${APP}/domains/`,
+    {},
+    { name: 'web', type: 'public', port: 80 },
+  ],
+  [
+    'updateDomain',
+    () => api.updateDomain('demo', 'web', 'public:web', { port: 8080 }),
+    'PUT',
+    `${APP}/domains/public:web`,
+    {},
+    { port: 8080 },
+  ],
+  [
+    'deleteDomain',
+    () => api.deleteDomain('demo', 'web', 'public:web'),
+    'DELETE',
+    `${APP}/domains/public:web`,
+    {},
+    undefined,
+  ],
+  ['fetchSetting', () => api.fetchSetting('s3'), 'GET', '/api/settings/s3', {}, undefined],
+  [
+    'updateSetting',
+    () => api.updateSetting('s3', { bucket: 'b', path: null }),
+    'PUT',
+    '/api/settings/s3',
+    {},
+    { value: { bucket: 'b', path: null } },
+  ],
+  [
+    'testSetting',
+    () => api.testSetting('notifications', { discord: 'https://hooks.example.test' }),
+    'POST',
+    '/api/settings/notifications/test',
+    {},
+    { value: { discord: 'https://hooks.example.test' } },
+  ],
+  ['pauseSage', () => api.pauseSage(), 'POST', '/api/settings/pause', {}, undefined],
+  ['resumeSage', () => api.resumeSage(), 'POST', '/api/settings/resume', {}, undefined],
+  [
+    'resyncTraefik',
+    () => api.resyncTraefik(),
+    'POST',
+    '/api/settings/resync_traefik',
+    {},
+    undefined,
+  ],
+  [
+    'resyncWorkers',
+    () => api.resyncWorkers(),
+    'POST',
+    '/api/settings/resync_workers',
+    {},
+    undefined,
+  ],
+  [
+    'fetchWorkerMetrics, the hour by default',
+    () => api.fetchWorkerMetrics('w1'),
+    'GET',
+    '/api/workers/w1/metrics',
+    { period: '1h' },
+    undefined,
+  ],
+  [
+    'fetchWorkerMetrics, a period',
+    () => api.fetchWorkerMetrics('w1', '1w'),
+    'GET',
+    '/api/workers/w1/metrics',
+    { period: '1w' },
+    undefined,
+  ],
+  [
+    'fetchLogs, with no filter',
+    () => api.fetchLogs('w1', 'demo-web'),
+    'GET',
+    '/api/workers/w1/logs/demo-web',
+    {},
+    undefined,
+  ],
+  [
+    'fetchLogs, with only the filters that are set',
+    () => api.fetchLogs('w1', 'demo-web', 'a&b=c d', '', '2026-10-24T10:00:00Z'),
+    'GET',
+    '/api/workers/w1/logs/demo-web',
+    { search: 'a&b=c d', to_ts: '2026-10-24T10:00:00Z' },
+    undefined,
+  ],
+  [
+    'fetchNotifications, with no window',
+    () => api.fetchNotifications(),
+    'GET',
+    '/api/notifications/',
+    {},
+    undefined,
+  ],
+  [
+    'fetchNotifications, with a limit and a window',
+    () => api.fetchNotifications({ limit: 25, from_ts: '2026-10-24T10:00:00.123456', to_ts: null }),
+    'GET',
+    '/api/notifications/',
+    { limit: '25', from_ts: '2026-10-24T10:00:00.123456' },
+    undefined,
+  ],
+  ['fetchTasks', () => api.fetchTasks(), 'GET', '/api/tasks/', {}, undefined],
+  ['fetchTaskHistory', () => api.fetchTaskHistory(), 'GET', '/api/tasks/history', {}, undefined],
+  ['fetchBackups', () => api.fetchBackups(), 'GET', '/api/backups/', {}, undefined],
+  [
+    'fetchBackupStatus',
+    () => api.fetchBackupStatus(),
+    'GET',
+    '/api/backups/platform_backup_status',
+    {},
+    undefined,
+  ],
+  ['createBackup', () => api.createBackup(), 'POST', '/api/backups/', {}, undefined],
+  ['discoverBackups', () => api.discoverBackups(), 'POST', '/api/backups/discover', {}, undefined],
+  ['deleteBackup', () => api.deleteBackup(7), 'DELETE', '/api/backups/7', {}, undefined],
+  ['restoreBackup', () => api.restoreBackup(7), 'POST', '/api/backups/7/restore', {}, undefined],
+  [
+    'fetchVolumeBackups',
+    () => api.fetchVolumeBackups('demo', 'web', 'data'),
+    'GET',
+    `${APP}/volumes/data/backups/`,
+    {},
+    undefined,
+  ],
+  [
+    'createVolumeBackup',
+    () => api.createVolumeBackup('demo', 'web', 'data'),
+    'POST',
+    `${APP}/volumes/data/backups/`,
+    {},
+    undefined,
+  ],
+  [
+    'restoreVolumeBackup',
+    () => api.restoreVolumeBackup('demo', 'web', 'data', 7, 'w2'),
+    'POST',
+    `${APP}/volumes/data/backups/7/restore`,
+    {},
+    { target_worker: 'w2' },
+  ],
+]
+
+describe('every call', () => {
+  it.each(CALLS)('%s', async (_name, call, method, path, params, body) => {
+    await call()
+
+    expect(lastCall()).toEqual({ method, path, params, body })
   })
 
-  it.each([
-    ['application', getApplicationAPI('demo'), '/api/projects/demo/applications'],
-    ['container', getContainerAPI('demo', 'web'), '/api/projects/demo/applications/web/containers'],
-    ['volume', getVolumeAPI('demo', 'web'), '/api/projects/demo/applications/web/volumes'],
-    ['domain', getDomainAPI('demo', 'web'), '/api/projects/demo/applications/web/domains'],
-    [
-      'volume backup',
-      getVolumeBackupAPI('demo', 'web', 'data'),
-      '/api/projects/demo/applications/web/volumes/data/backups',
-    ],
-  ])('builds the %s path from the names', (_name, api, path) => {
-    expect(api.path).toBe(path)
-  })
-
-  it('makes a fresh API for every call', () => {
-    expect(getApplicationAPI('a')).not.toBe(getApplicationAPI('a'))
-    expect(getApplicationAPI('a').path).not.toBe(getApplicationAPI('b').path)
+  it('names every call the module exports', () => {
+    const named = new Set(CALLS.map(([name]) => name.split(',')[0]))
+    const calls = Object.entries(api)
+      .filter(([, value]) => typeof value === 'function')
+      .map(([name]) => name)
+      .filter(name => !['downloadBackup', 'downloadVolumeBackup'].includes(name))
+    expect(calls.filter(name => !named.has(name))).toEqual([])
   })
 })
 
-describe('the load delay', () => {
-  it.each([
-    [undefined, 300],
-    ['', 300],
-    ['0', 0],
-    ['50', 50],
-    ['abc', 300],
-    ['-5', 300],
-    ['Infinity', 300],
-  ])('reads VITE_LOAD_DELAY=%j as %j', async (value, delay) => {
-    vi.resetModules()
-    if (value === undefined) vi.stubEnv('VITE_LOAD_DELAY', '')
-    else vi.stubEnv('VITE_LOAD_DELAY', value)
-
-    const module = await import('@/services/api')
-
-    expect(module.projectAPI.load_delay).toBe(delay)
-  })
-})
-
-describe('fetchAppInfo', () => {
-  it('gets the manager info from /api', async () => {
-    fetchMock.mockResolvedValue(reply({ version: '1.0.0', state: 'running' }))
-
-    expect(await fetchAppInfo()).toEqual({ version: '1.0.0', state: 'running' })
-    expect(lastCall().path).toBe('/api')
-  })
-
-  it('throws when the call fails and logs it', async () => {
-    fetchMock.mockResolvedValue(reply({ detail: 'x' }, 500))
-
-    await expect(fetchAppInfo()).rejects.toThrow('Failed to fetch app info')
-    expect(console.error).toHaveBeenCalled()
-  })
-})
-
-describe('the task calls', () => {
-  it('fetchTasks gets the running and queued tasks', async () => {
-    fetchMock.mockResolvedValue(reply({ running: [{ task_id: 't1' }], queued: [] }))
-
-    expect(await fetchTasks()).toEqual({ running: [{ task_id: 't1' }], queued: [] })
-    expect(lastCall().path).toBe('/api/tasks/')
-  })
-
-  it('fetchTasks says what failed', async () => {
-    fetchMock.mockResolvedValue(reply({}, 500))
-    await expect(fetchTasks()).rejects.toThrow('Failed to fetch tasks')
-  })
-
-  it('fetchTaskHistory gets the finished tasks', async () => {
-    fetchMock.mockResolvedValue(reply([{ task_id: 't2' }]))
-
-    expect(await fetchTaskHistory()).toEqual([{ task_id: 't2' }])
-    expect(lastCall().path).toBe('/api/tasks/history')
-  })
-
-  it('fetchTaskHistory says what failed', async () => {
-    fetchMock.mockResolvedValue(reply({}, 500))
-    await expect(fetchTaskHistory()).rejects.toThrow('Failed to fetch the finished tasks')
-  })
-})
-
-describe('the release calls', () => {
-  it('fetchRelease gets the cached release', async () => {
-    fetchMock.mockResolvedValue(reply({ version: '1.2.3', body: 'notes' }))
-
-    expect(await fetchRelease()).toEqual({ version: '1.2.3', body: 'notes' })
-    expect(lastCall().path).toBe('/api/release')
-  })
-
-  it('fetchRelease throws the detail, or says what failed', async () => {
-    fetchMock.mockResolvedValueOnce(reply({ detail: 'No release known yet' }, 404))
-    await expect(fetchRelease()).rejects.toThrow('No release known yet')
-
-    fetchMock.mockResolvedValueOnce(reply({}, 500))
-    await expect(fetchRelease()).rejects.toThrow('Failed to fetch latest release')
-  })
-
-  it('refreshRelease posts to the refresh path', async () => {
-    fetchMock.mockResolvedValue(reply({ status: 'OK' }))
-
-    await refreshRelease()
-
-    expect(lastCall().path).toBe('/api/release/refresh')
-    expect(lastCall().init).toEqual({ method: 'POST' })
-  })
-
-  it('refreshRelease throws the detail, or says what failed', async () => {
-    fetchMock.mockResolvedValueOnce(reply({ detail: 'GitHub unreachable' }, 502))
-    await expect(refreshRelease()).rejects.toThrow('GitHub unreachable')
-
-    fetchMock.mockResolvedValueOnce(reply({}, 500))
-    await expect(refreshRelease()).rejects.toThrow('Failed to refresh release')
-  })
-})
-
-describe('addWorker', () => {
-  it('posts the host, and returns the hostname it resolved to', async () => {
-    fetchMock.mockResolvedValue(reply({ status: 'OK', hostname: 'worker-1' }))
-
-    await expect(addWorker('100.64.0.2')).resolves.toEqual({
-      status: 'OK',
-      hostname: 'worker-1',
-    })
-
-    expect(lastCall().path).toBe('/api/workers/')
-    expect(lastCall().init?.method).toBe('POST')
-    expect(JSON.parse(lastCall().init?.body as string)).toEqual({ host: '100.64.0.2' })
-  })
-
-  it("throws the manager's reason, or says what failed", async () => {
-    fetchMock.mockResolvedValueOnce(reply({ detail: 'Worker w1 is already added.' }, 409))
-    await expect(addWorker('w1')).rejects.toThrow('Worker w1 is already added.')
-
-    fetchMock.mockResolvedValueOnce(reply({}, 500))
-    await expect(addWorker('w1')).rejects.toThrow('Failed to add worker')
-  })
-})
-
-describe('fetchWorkerMetrics', () => {
-  it('asks for the hour by default', async () => {
-    fetchMock.mockResolvedValue(reply({ host: [], containers: {}, meta: {} }))
-
-    await fetchWorkerMetrics('w1')
-
-    expect(lastCall().path).toBe('/api/workers/w1/metrics')
-    expect(lastCall().params).toEqual({ period: '1h' })
-  })
-
-  it.each(['1m', '24h', '1w'] as const)('asks for the period %s', async period => {
-    fetchMock.mockResolvedValue(reply({}))
-
-    await fetchWorkerMetrics('w1', period)
-
-    expect(lastCall().params).toEqual({ period })
-  })
-
-  it('throws when the call fails', async () => {
-    fetchMock.mockResolvedValue(reply({}, 500))
-    await expect(fetchWorkerMetrics('w1')).rejects.toThrow('Failed to fetch worker metrics')
-  })
-})
-
-describe('fetchLogs', () => {
-  it('asks for a container of a worker with no parameters by default', async () => {
-    fetchMock.mockResolvedValue(reply([]))
-
-    await fetchLogs('w1', 'demo-web')
-
-    expect(lastCall().path).toBe('/api/workers/w1/logs/demo-web')
-    expect(lastCall().params).toEqual({})
-  })
-
-  it('sends only the filters that are set', async () => {
-    fetchMock.mockResolvedValue(reply([]))
-
-    await fetchLogs('w1', 'demo-web', 'error', '', '2026-10-24T10:00:00Z')
-
-    expect(lastCall().params).toEqual({ search: 'error', to_ts: '2026-10-24T10:00:00Z' })
-  })
-
-  it('encodes the search text', async () => {
-    fetchMock.mockResolvedValue(reply([]))
-
-    await fetchLogs('w1', 'demo-web', 'a&b=c d', '2026-10-24T10:00:00Z', '')
-
-    expect(lastCall().params).toEqual({ search: 'a&b=c d', from_ts: '2026-10-24T10:00:00Z' })
-  })
-
-  it('throws the detail, or says what failed', async () => {
-    fetchMock.mockResolvedValueOnce(reply({ detail: 'Worker w1 is offline' }, 503))
-    await expect(fetchLogs('w1', 'c')).rejects.toThrow('Worker w1 is offline')
-
-    fetchMock.mockResolvedValueOnce(reply({}, 500))
-    await expect(fetchLogs('w1', 'c')).rejects.toThrow('Failed to fetch logs')
-  })
-})
-
-describe('fetchHomeSummary', () => {
-  it('gets the summary', async () => {
-    fetchMock.mockResolvedValue(reply({ workers_total: 2 }))
-
-    expect(await fetchHomeSummary()).toEqual({ workers_total: 2 })
-    expect(lastCall().path).toBe('/api/summary')
-  })
-
-  it('throws the detail, or says what failed', async () => {
-    fetchMock.mockResolvedValueOnce(reply({ detail: 'Database locked' }, 500))
-    await expect(fetchHomeSummary()).rejects.toThrow('Database locked')
-
-    fetchMock.mockResolvedValueOnce(reply({}, 500))
-    await expect(fetchHomeSummary()).rejects.toThrow('Failed to fetch home summary')
-  })
-})
-
-describe('fetchNotifications', () => {
-  it('asks for the notifications with no parameters by default', async () => {
-    fetchMock.mockResolvedValue(reply([]))
-
-    await fetchNotifications()
-
-    expect(lastCall().path).toBe('/api/notifications/')
-    expect(lastCall().params).toEqual({})
-  })
-
-  it('sends the limit and the time window it is given', async () => {
-    fetchMock.mockResolvedValue(reply([]))
-
-    await fetchNotifications({
-      limit: 25,
-      from_ts: '2026-10-24T10:00:00.123456',
-      to_ts: '2026-10-24T11:00:00',
-    })
-
-    expect(lastCall().params).toEqual({
-      limit: '25',
-      from_ts: '2026-10-24T10:00:00.123456',
-      to_ts: '2026-10-24T11:00:00',
-    })
-  })
-
-  it('leaves out a null window end', async () => {
-    fetchMock.mockResolvedValue(reply([]))
-
-    await fetchNotifications({ limit: 10, from_ts: null, to_ts: null })
-
-    expect(lastCall().params).toEqual({ limit: '10' })
-  })
-
-  it('throws the detail, or says what failed', async () => {
-    fetchMock.mockResolvedValueOnce(reply({ detail: 'Bad window' }, 422))
-    await expect(fetchNotifications()).rejects.toThrow('Bad window')
-
-    fetchMock.mockResolvedValueOnce(reply({}, 500))
-    await expect(fetchNotifications()).rejects.toThrow('Failed to fetch notifications')
-  })
-})
-
-describe('downloadBackup', () => {
-  it('asks for the download link of the backup and then opens it', async () => {
-    const clicked: HTMLAnchorElement[] = []
+describe('downloading a backup', () => {
+  function clicks() {
+    const clicked: string[] = []
     vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (
       this: HTMLAnchorElement
     ) {
-      clicked.push(this)
+      clicked.push(this.href)
     })
-    const api = { action: vi.fn().mockResolvedValue({ url: 'https://s3.example.test/b.enc' }) }
+    return clicked
+  }
 
-    await downloadBackup(api, 7)
+  it.each([
+    ['a platform backup', () => api.downloadBackup(7), '/api/backups/7/download'],
+    [
+      'a volume backup',
+      () => api.downloadVolumeBackup('demo', 'web', 'data', 7),
+      `${APP}/volumes/data/backups/7/download`,
+    ],
+  ])('asks for the link of %s and then opens it', async (_name, call, path) => {
+    const clicked = clicks()
+    fetchMock.mockResolvedValue(reply({ url: 'https://s3.example.test/b.enc' }))
 
-    expect(api.action).toHaveBeenCalledWith('7/download')
-    expect(clicked.map(link => link.href)).toEqual(['https://s3.example.test/b.enc'])
+    await call()
+
+    expect([lastCall().method, lastCall().path]).toEqual(['GET', path])
+    expect(clicked).toEqual(['https://s3.example.test/b.enc'])
   })
 
   it('opens nothing when the link cannot be made', async () => {
-    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
-    const api = { action: vi.fn().mockRejectedValue(new Error('S3 is not configured.')) }
+    const clicked = clicks()
+    fetchMock.mockResolvedValue(reply({ detail: 'S3 is not configured.' }, 400))
 
-    await expect(downloadBackup(api, '3')).rejects.toThrow('S3 is not configured.')
-    expect(click).not.toHaveBeenCalled()
+    await expect(api.downloadBackup(3)).rejects.toThrow('S3 is not configured.')
+    expect(clicked).toEqual([])
   })
 })

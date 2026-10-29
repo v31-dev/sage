@@ -3,18 +3,18 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { toast } from 'vue-sonner'
 import { watchState } from '@/lib/updates'
 import Backups from '@/pages/Backup/index.vue'
-import { backupAPI, type Backup } from '@/services/api'
+import { fetchBackups, type Backup } from '@/services/api'
 import { followTopics } from '../helpers/topics'
 
 vi.mock('@/lib/updates', () => ({ watchState: vi.fn(), watchFeed: vi.fn() }))
 vi.mock('vue-sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
 vi.mock('@/services/api', async importOriginal => ({
   ...(await importOriginal<typeof import('@/services/api')>()),
-  backupAPI: { fetchAll: vi.fn() },
+  fetchBackups: vi.fn(),
 }))
 
 const item = {
-  props: ['backup', 'backupAPI', 'loadBackups'],
+  props: ['backup', 'loadBackups'],
   template: '<button data-backup @click="loadBackups()">{{ backup.s3_path }}</button>',
 }
 
@@ -40,7 +40,7 @@ const listed = (wrapper: Awaited<ReturnType<typeof mountPage>>['wrapper']) =>
   wrapper.findAll('[data-backup]').map(found => found.text())
 
 beforeEach(() => {
-  vi.mocked(backupAPI.fetchAll).mockReset()
+  vi.mocked(fetchBackups).mockReset()
   vi.mocked(toast.error).mockReset()
 })
 
@@ -48,9 +48,9 @@ describe('what the page follows', () => {
   it('follows the backups, loaded from their route, and stops when it goes away', async () => {
     const { wrapper, backups } = await mountPage()
     expect(watchState).toHaveBeenCalledWith('backups', expect.any(Function), expect.any(Function))
-    vi.mocked(backupAPI.fetchAll).mockResolvedValue([backup(1)])
+    vi.mocked(fetchBackups).mockResolvedValue([backup(1)])
     await backups.load()
-    expect(backupAPI.fetchAll).toHaveBeenCalledOnce()
+    expect(fetchBackups).toHaveBeenCalledOnce()
 
     wrapper.unmount()
 
@@ -101,7 +101,7 @@ describe('what the manager pushes', () => {
     backups.push([backup(1), backup(2)])
     backups.loaded()
     await flushPromises()
-    vi.mocked(backupAPI.fetchAll).mockResolvedValue([backup(1)])
+    vi.mocked(fetchBackups).mockResolvedValue([backup(1)])
 
     await wrapper.find('[data-backup]').trigger('click')
     await flushPromises()

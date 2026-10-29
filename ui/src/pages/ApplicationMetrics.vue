@@ -7,12 +7,11 @@ import { Spinner } from '@/components/ui/spinner'
 import { type ContainerMetricsPoint, type MetricsPeriod } from '@/services/api'
 import MetricChart from '@/components/MetricChart.vue'
 import { processContainerData } from '@/lib/metrics'
-import { getApplicationAPI, METRICS_POLL_MS } from '@/services/api'
+import { fetchApplicationMetrics, METRICS_POLL_MS } from '@/services/api'
 
 const route = useRoute()
 const projectName = route.params.projectId as string
 const appName = route.params.appId as string
-const applicationAPI = getApplicationAPI(projectName)
 
 const period = ref<MetricsPeriod>('1h')
 const periods: MetricsPeriod[] = ['1h', '24h', '1w']
@@ -25,9 +24,7 @@ async function load() {
   try {
     loadError.value = ''
     const nextData: Array<Array<ContainerMetricsPoint>> = []
-    const containersData = (await applicationAPI.action(
-      `${appName}/metrics?period=${period.value}`
-    )) as Array<{ hostname: string; metrics: Array<ContainerMetricsPoint> }>
+    const containersData = await fetchApplicationMetrics(projectName, appName, period.value)
     for (const containerData of containersData) {
       for (const point of containerData.metrics) {
         point.name = `${point.name} ${containerData.hostname}`

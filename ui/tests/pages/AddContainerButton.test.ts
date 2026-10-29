@@ -2,10 +2,14 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import AddContainerButton from '@/pages/Application/AddContainerButton.vue'
-import type { Application, WorkerListItem } from '@/services/api'
+import { createContainer, type Application, type WorkerListItem } from '@/services/api'
 import { useAppStore } from '@/stores/app'
 
 vi.mock('vue-sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
+vi.mock('@/services/api', async importOriginal => ({
+  ...(await importOriginal<typeof import('@/services/api')>()),
+  createContainer: vi.fn(async () => ({})),
+}))
 
 const inline = { template: '<div><slot /></div>' }
 const select = {
@@ -33,18 +37,18 @@ const worker = (hostname: string) => ({ hostname, status: 'online' }) as WorkerL
 const application = (hostnames: string[]) =>
   ({
     name: 'web',
+    project: { name: 'demo' },
     containers: hostnames.map(hostname => ({ worker: { hostname } })),
   }) as unknown as Application
 
 function setup(workers: WorkerListItem[] | null, onWorkers: string[] = []) {
-  const containersAPI = { create: vi.fn(async () => ({})) }
   const loadApplication = vi.fn(async () => {})
   const wrapper = mount(AddContainerButton, {
-    props: { application: application(onWorkers), containersAPI, loadApplication } as never,
+    props: { application: application(onWorkers), loadApplication } as never,
     global: { stubs },
   })
   useAppStore().workers = workers
-  return { wrapper, containersAPI, loadApplication }
+  return { wrapper, loadApplication }
 }
 
 async function open(wrapper: ReturnType<typeof setup>['wrapper']) {
@@ -97,7 +101,7 @@ describe('the workers it offers', () => {
 
 describe('adding', () => {
   it('adds a container on the chosen worker and loads the application again', async () => {
-    const { wrapper, containersAPI, loadApplication } = setup([worker('w1'), worker('w3')])
+    const { wrapper, loadApplication } = setup([worker('w1'), worker('w3')])
     await open(wrapper)
     wrapper.findComponent(select).vm.$emit('update:modelValue', 'w3')
 
@@ -107,7 +111,7 @@ describe('adding', () => {
       .trigger('click')
     await flushPromises()
 
-    expect(containersAPI.create).toHaveBeenCalledWith({ worker: 'w3' })
+    expect(createContainer).toHaveBeenCalledWith('demo', 'web', { worker: 'w3' })
     expect(loadApplication).toHaveBeenCalledOnce()
   })
 })

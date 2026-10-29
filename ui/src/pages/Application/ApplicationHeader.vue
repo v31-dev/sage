@@ -20,7 +20,7 @@ import DeployApplicationButton from './DeployApplicationButton.vue'
 import StopApplicationButton from './StopApplicationButton.vue'
 import EditApplicationButton from './EditApplicationButton.vue'
 import ConfirmationButton from '@/components/ConfirmationButton.vue'
-import { type Application, getApplicationAPI } from '@/services/api'
+import { type Application, deleteApplication } from '@/services/api'
 import SectionTitle from '@/components/SectionTitle.vue'
 import StateIndicator from '@/components/StateIndicator.vue'
 import { useAppStore } from '@/stores/app'
@@ -29,7 +29,6 @@ import { TONES } from '@/lib/tone'
 
 interface Props {
   application: Application
-  applicationAPI: ReturnType<typeof getApplicationAPI>
   loadApplication: () => Promise<void>
 }
 
@@ -47,7 +46,7 @@ function onClickMetrics() {
 }
 
 async function onConfirmDelete() {
-  await props.applicationAPI.delete(props.application.name)
+  await deleteApplication(props.application.project.name, props.application.name)
   toast.success(`Application ${props.application.name} deleted successfully`)
   router.push(`/projects/${props.application.project.name}`)
 }
@@ -87,7 +86,6 @@ const repoURL = computed(() => {
         <ButtonGroup class="space-x-1">
           <EditApplicationButton
             :application="props.application"
-            :applicationAPI="props.applicationAPI"
             :loadApplication="props.loadApplication"
           />
           <ConfirmationButton
@@ -169,14 +167,8 @@ const repoURL = computed(() => {
       class="border-t flex flex-col md:flex-row justify-between items-center gap-2 md:gap-0"
     >
       <ButtonGroup class="space-x-1 w-full md:w-auto flex">
-        <DeployApplicationButton
-          :application="props.application"
-          :applicationAPI="props.applicationAPI"
-        />
-        <StopApplicationButton
-          :application="props.application"
-          :applicationAPI="props.applicationAPI"
-        />
+        <DeployApplicationButton :application="props.application" />
+        <StopApplicationButton :application="props.application" />
       </ButtonGroup>
       <ButtonGroup class="space-x-1 w-full md:w-auto flex">
         <Button size="sm" class="flex-1 md:flex-initial" variant="outline" @click="onClickLogs">

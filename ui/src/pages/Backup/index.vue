@@ -5,9 +5,8 @@ import { toast } from 'vue-sonner'
 import { Card, CardContent } from '@/components/ui/card'
 import { watchState } from '@/lib/updates'
 
-import { backupAPI } from '@/services/api'
 import BackupsItem from './BackupsItem.vue'
-import { type Backup } from '@/services/api'
+import { fetchBackups, type Backup } from '@/services/api'
 import CreateBackupButton from './CreateBackupButton.vue'
 import DiscoverBackupsButton from './DiscoverBackupsButton.vue'
 import SectionTitle from '@/components/SectionTitle.vue'
@@ -16,8 +15,6 @@ const backups = ref<Backup[]>([])
 const isLoading = ref(true)
 const error = ref('')
 let stop: (() => void) | undefined
-
-const fetchBackups = () => backupAPI.fetchAll() as Promise<Backup[]>
 
 // Newest first.
 function showBackups(next: Backup[]) {
@@ -75,8 +72,8 @@ onUnmounted(() => stop?.())
           <CardContent class="flex flex-wrap justify-between items-center gap-2">
             <SectionTitle title="Available Backups" :size="4" />
             <div class="flex flex-wrap gap-2">
-              <DiscoverBackupsButton :backupAPI="backupAPI" />
-              <CreateBackupButton :backupAPI="backupAPI" />
+              <DiscoverBackupsButton />
+              <CreateBackupButton />
             </div>
           </CardContent>
         </Card>
@@ -96,7 +93,6 @@ onUnmounted(() => stop?.())
             v-for="backup in backups"
             :key="backup.id"
             :backup="backup"
-            :backupAPI="backupAPI"
             :loadBackups="loadBackups"
           />
         </div>

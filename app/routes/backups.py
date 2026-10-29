@@ -57,7 +57,7 @@ def list_backups(request: Request):
     return list_platform_backups()
 
 
-@router.post("/platform_backup_status")
+@router.get("/platform_backup_status")
 def get_platform_backup_status():
   """Get current platform backup and discovery status."""
   return Manager().backup_status()
@@ -131,7 +131,7 @@ def download_filename(backup: Backup) -> str:
   return re.sub(r"[^A-Za-z0-9._-]", "_", name)
 
 
-@router.post("/{backup}/download", dependencies=[Depends(inject_backup)])
+@router.get("/{backup}/download", dependencies=[Depends(inject_backup)])
 def download_backup(request: Request):
   """A short-lived link that downloads the backup file straight from S3."""
   require_s3()

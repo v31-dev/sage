@@ -18,12 +18,12 @@ import { useAppStore } from '@/stores/app'
 import EventLogsButton from './EventLogsButton.vue'
 import EditContainerButton from './EditContainerButton.vue'
 import DeleteContainerButton from './DeleteContainerButton.vue'
-import { type Container, getContainerAPI } from '@/services/api'
+import { type Application, type Container } from '@/services/api'
 import StateIndicator from '@/components/StateIndicator.vue'
 
 interface Props {
+  application: Application
   container: Container
-  containersAPI: ReturnType<typeof getContainerAPI>
   loadApplication: () => Promise<void>
 }
 
@@ -52,13 +52,13 @@ const workerIndicator = computed(() => {
       <CardAction>
         <ButtonGroup class="space-x-1">
           <EditContainerButton
+            :application="props.application"
             :container="props.container"
-            :containersAPI="props.containersAPI"
             :loadApplication="props.loadApplication"
           />
           <DeleteContainerButton
+            :application="props.application"
             :container="props.container"
-            :containersAPI="props.containersAPI"
             :loadApplication="props.loadApplication"
           />
         </ButtonGroup>

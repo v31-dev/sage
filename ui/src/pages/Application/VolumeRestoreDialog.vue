@@ -25,8 +25,9 @@ import { Spinner } from '@/components/ui/spinner'
 import {
   type Application,
   type Backup,
-  downloadBackup,
-  getVolumeBackupAPI,
+  downloadVolumeBackup,
+  fetchVolumeBackups,
+  restoreVolumeBackup,
   type Volume,
 } from '@/services/api'
 import { useAppStore } from '@/stores/app'
@@ -42,12 +43,6 @@ interface Props {
 const props = withDefaults(defineProps<Props>(), {})
 
 const appStore = useAppStore()
-const volumeBackupAPI = getVolumeBackupAPI(
-  props.application.project.name,
-  props.application.name,
-  props.volume.name
-)
-
 const isOpen = ref(false)
 const isLoading = ref(false)
 const isRestoring = ref(false)
@@ -100,7 +95,11 @@ async function loadBackups() {
   loadError.value = ''
 
   try {
-    const response = (await volumeBackupAPI.fetchAll()) as Backup[]
+    const response = await fetchVolumeBackups(
+      props.application.project.name,
+      props.application.name,
+      props.volume.name
+    )
     backups.value = [...response].reverse()
     selectedBackupId.value = backups.value[0] ? String(backups.value[0].id) : ''
   } catch (err) {
@@ -114,7 +113,12 @@ async function onClickDownload() {
   if (!selectedBackup.value) return
 
   try {
-    await downloadBackup(volumeBackupAPI, selectedBackup.value.id)
+    await downloadVolumeBackup(
+      props.application.project.name,
+      props.application.name,
+      props.volume.name,
+      selectedBackup.value.id
+    )
   } catch (err) {
     toast.error(err instanceof Error ? err.message : 'Failed to download backup')
   }
@@ -128,9 +132,13 @@ async function onClickRestore() {
   appStore.updateApplicationDeployStatus('restoring', [selectedTargetWorker.value])
 
   try {
-    await volumeBackupAPI.action(`${selectedBackup.value.id}/restore`, {
-      target_worker: selectedTargetWorker.value,
-    })
+    await restoreVolumeBackup(
+      props.application.project.name,
+      props.application.name,
+      props.volume.name,
+      selectedBackup.value.id,
+      selectedTargetWorker.value
+    )
     toast.success(`Restore completed for volume ${props.volume.name}`)
     isOpen.value = false
   } catch (err) {

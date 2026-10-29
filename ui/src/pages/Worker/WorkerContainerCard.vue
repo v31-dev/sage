@@ -7,7 +7,7 @@ import { toast } from 'vue-sonner'
 import { Card, CardAction, CardHeader, CardTitle } from '@/components/ui/card'
 
 import ConfirmationButton from '@/components/ConfirmationButton.vue'
-import { type Container, type Worker, getContainerAPI } from '@/services/api'
+import { type Container, type Worker, deleteContainer } from '@/services/api'
 import SectionTitle from '@/components/SectionTitle.vue'
 import StateIndicator from '@/components/StateIndicator.vue'
 import { useAppStore } from '@/stores/app'
@@ -34,15 +34,16 @@ watch(
   }
 )
 const status = computed(() => (forceDeleting.value ? 'stopping' : props.container.status))
-const containersAPI = getContainerAPI(
-  props.container.application.project.name,
-  props.container.application.name
-)
 
 async function onConfirmForceDelete() {
   forceDeleting.value = true
   try {
-    await containersAPI.delete(props.worker.hostname, { force: true })
+    await deleteContainer(
+      props.container.application.project.name,
+      props.container.application.name,
+      props.worker.hostname,
+      true
+    )
   } catch (err) {
     forceDeleting.value = false
     throw err

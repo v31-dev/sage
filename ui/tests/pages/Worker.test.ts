@@ -2,7 +2,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { watchState } from '@/lib/updates'
 import Worker from '@/pages/Worker/index.vue'
-import { fetchWorkerMetrics, workersAPI } from '@/services/api'
+import { fetchWorker, fetchWorkerMetrics } from '@/services/api'
 import { followTopics } from '../helpers/topics'
 
 vi.mock('@/lib/updates', () => ({ watchState: vi.fn(), watchFeed: vi.fn() }))
@@ -13,7 +13,7 @@ vi.mock('vue-router', () => ({
 vi.mock('@/services/api', async importOriginal => ({
   ...(await importOriginal<typeof import('@/services/api')>()),
   fetchWorkerMetrics: vi.fn(),
-  workersAPI: { fetchOne: vi.fn() },
+  fetchWorker: vi.fn(),
 }))
 
 const header = {
@@ -58,7 +58,7 @@ async function loaded(topics: Awaited<ReturnType<typeof mountPage>>['topics'], s
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'setTimeout', 'clearTimeout'] })
   vi.mocked(fetchWorkerMetrics).mockResolvedValue({ host: [] } as never)
-  vi.mocked(workersAPI.fetchOne).mockResolvedValue(worker() as never)
+  vi.mocked(fetchWorker).mockResolvedValue(worker() as never)
   vi.spyOn(console, 'error').mockImplementation(() => {})
 })
 
@@ -76,7 +76,7 @@ describe('what the page follows', () => {
       expect.any(Function)
     )
     await topics.topic('worker:w1').load()
-    expect(workersAPI.fetchOne).toHaveBeenCalledWith('w1')
+    expect(fetchWorker).toHaveBeenCalledWith('w1')
 
     wrapper.unmount()
 
@@ -168,7 +168,7 @@ describe('what the manager pushes', () => {
   it('shows what an action on a container changed at once, without waiting for the push', async () => {
     const { wrapper, topics } = await mountPage()
     await loaded(topics)
-    vi.mocked(workersAPI.fetchOne).mockResolvedValue(worker({ containers: [] }) as never)
+    vi.mocked(fetchWorker).mockResolvedValue(worker({ containers: [] }) as never)
 
     await wrapper.find('[data-container]').trigger('click')
     await flushPromises()

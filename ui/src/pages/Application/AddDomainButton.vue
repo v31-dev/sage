@@ -30,11 +30,10 @@ import {
 } from '@/components/ui/select'
 import { Spinner } from '@/components/ui/spinner'
 
-import { type Application, type Domain, getDomainAPI } from '@/services/api'
+import { type Application, createDomain } from '@/services/api'
 
 interface Props {
   application: Application
-  domainAPI: ReturnType<typeof getDomainAPI>
   loadApplication: () => Promise<void>
 }
 
@@ -69,7 +68,7 @@ async function onClickAddDomainConfirm() {
 
   try {
     isClickedAddDomainConfirm.value = true
-    ;(await props.domainAPI.create(domain.value)) as Domain
+    await createDomain(props.application.project.name, props.application.name, domain.value)
     isAddDomainDialogOpen.value = false
     await props.loadApplication()
     toast.success('Domain added successfully')

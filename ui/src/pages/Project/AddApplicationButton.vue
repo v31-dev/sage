@@ -15,9 +15,10 @@ import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { toast } from 'vue-sonner'
 import { Spinner } from '@/components/ui/spinner'
+import { createApplication, type Project } from '@/services/api'
 
 interface Props {
-  applicationAPI: any
+  project: Project
   loadProject: () => Promise<void>
 }
 
@@ -47,7 +48,7 @@ async function onClickCreateAppConfirm() {
 
   try {
     isClickedCreateAppConfirm.value = true
-    await props.applicationAPI.create({
+    await createApplication(props.project.name, {
       label: createAppFormData.value.label,
       description: createAppFormData.value.description || null,
     })

@@ -24,7 +24,7 @@ function mountCard(hostname = 'w1') {
     domain_tag: null,
   } as unknown as Container
   return mount(ContainerCard, {
-    props: { container, containersAPI: {} as never, loadApplication: async () => {} },
+    props: { application: {} as never, container, loadApplication: async () => {} },
     global: {
       stubs: {
         EditContainerButton: true,

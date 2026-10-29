@@ -164,7 +164,7 @@ without it and reruns on a change. Every file in `src/` counts, also the ones no
 per-file report is in `ui/coverage/lcov-report/index.html`. CI reports it in the job summary and
 uploads `ui/coverage` as an artifact; it doesn't fail a build on a coverage level.
 
-The tests run in UTC and `en-US` whatever the machine is set to, and the API client does not wait
+The tests run in UTC and `en-US` whatever the machine is set to, and `request` does not wait
 before a call (`VITE_LOAD_DELAY=0`). `fetch` is replaced in each test, and a store test mocks
 `fetchAppInfo`. `npm run typecheck:tests` type-checks the tests, which `npm run build` does not.
 So far the tests cover the pure logic: `src/lib/`, `src/services/api.ts`, the Pinia store and the
@@ -199,7 +199,7 @@ The top-level `Dockerfile` builds:
    with it)
 2. the Python app image that serves the built frontend from `/app/static` and exposes it at `/` while leaving `/api` on the backend
 
-`VITE_LOAD_DELAY` (milliseconds, 300 when unset) makes the API client wait before every call, so that development simulates a slow network: the instant status updates after an action and the protection against a second click can be seen and tried. Raise it (for example `VITE_LOAD_DELAY=2000`) to test them harder, and set it to 0 to judge how responsive the UI really is. The production UI build and the UI tests set it to 0.
+`VITE_LOAD_DELAY` (milliseconds, 300 when unset) makes `request` (`ui/src/lib/api.ts`) wait before every call, so that development simulates a slow network: the instant status updates after an action and the protection against a second click can be seen and tried. Raise it (for example `VITE_LOAD_DELAY=2000`) to test them harder, and set it to 0 to judge how responsive the UI really is. The production UI build and the UI tests set it to 0.
 
 ## CI And Release Notes
 

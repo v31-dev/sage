@@ -21,8 +21,9 @@ import { watchState } from '@/lib/updates'
 import {
   fetchRelease,
   fetchTasks,
+  pauseSage,
   refreshRelease,
-  settingsAPI,
+  resumeSage,
   type QueueResponse,
   type Release,
 } from '@/services/api'
@@ -127,7 +128,7 @@ async function onToggle() {
   pauseError.value = ''
   try {
     const next = state.value === 'paused' ? 'running' : 'paused'
-    await settingsAPI.action(next === 'running' ? 'resume' : 'pause')
+    await (next === 'running' ? resumeSage() : pauseSage())
     appStore.setState(next)
   } catch (err) {
     pauseError.value = err instanceof Error ? err.message : 'Failed to change state'

@@ -25,6 +25,7 @@ class TestChangesRefused:
       ("delete", "/api/projects/demo"),
       ("post", "/api/backups/"),
       ("post", "/api/projects/demo/applications/"),
+      ("post", "/api/settings/s3/test"),
   ])
   def test_a_change_is_a_503_that_says_why(self, client, manager, project, state, message, method, url):
     manager.state = state
@@ -51,25 +52,10 @@ class TestChangesRefused:
     manager.state = state
     assert [row["name"] for row in client.get("/api/projects/").json()] == ["demo"]
 
-  @pytest.mark.parametrize("url", [
-      "/api/projects/demo/applications/web/get_available_workers",
-      "/api/backups/platform_backup_status",
-      "/api/anything/metrics",
-      "/api/anything/download",
-      "/api/anything/test",
-  ])
-  def test_the_posts_that_only_read_still_work(self, client, manager, application, state, message, url):
-    manager.state = state
-    assert client.post(url).status_code != 503
-
   @pytest.mark.parametrize("url", ["/api/settings/pause", "/api/settings/resume"])
   def test_pause_and_resume_are_never_blocked(self, lenient, manager, state, message, url):
     manager.state = state
     assert lenient.post(url).status_code != 503
-
-  def test_only_the_exact_suffix_counts_as_reading(self, client, manager, project, state, message):
-    manager.state = state
-    assert client.post("/api/projects/demo/applications/web/deploy_download_all").status_code == 503
 
 
 class TestRunning:

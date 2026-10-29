@@ -25,7 +25,7 @@ import { Spinner } from '@/components/ui/spinner'
 import { ButtonGroup } from '@/components/ui/button-group'
 import { Label } from '@/components/ui/label'
 
-import { type Volume, getVolumeAPI, type Application } from '@/services/api'
+import { type Volume, type Application, deleteVolume, updateVolume } from '@/services/api'
 import SectionTitle from '@/components/SectionTitle.vue'
 import ConfirmationButton from '@/components/ConfirmationButton.vue'
 import VolumeBackupButton from './VolumeBackupButton.vue'
@@ -34,7 +34,6 @@ import VolumeRestoreDialog from './VolumeRestoreDialog.vue'
 interface Props {
   application: Application
   volume: Volume
-  volumeAPI: ReturnType<typeof getVolumeAPI>
   loadApplication: () => Promise<void>
 }
 
@@ -72,7 +71,12 @@ async function onClickEditVolumeConfirm() {
 
   try {
     isClickedEditVolumeConfirm.value = true
-    await props.volumeAPI.update(`${props.volume.name}`, volume.value)
+    await updateVolume(
+      props.application.project.name,
+      props.application.name,
+      props.volume.name,
+      volume.value
+    )
     isEditVolumeDialogOpen.value = false
     await props.loadApplication()
     toast.success('Volume updated successfully')
@@ -84,7 +88,7 @@ async function onClickEditVolumeConfirm() {
 }
 
 async function onClickConfirmDelete() {
-  await props.volumeAPI.delete(`${props.volume.name}`)
+  await deleteVolume(props.application.project.name, props.application.name, props.volume.name)
   await props.loadApplication()
   toast.success('Volume deleted successfully')
 }

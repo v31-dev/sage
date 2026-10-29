@@ -1,17 +1,11 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
 import { watchState } from '@/lib/updates'
-import type { BackupStatus } from '@/services/api'
+import { discoverBackups, fetchBackupStatus, type BackupStatus } from '@/services/api'
 import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/ui/spinner'
 import { toast } from 'vue-sonner'
 import { ScanSearch } from 'lucide-vue-next'
-
-interface Props {
-  backupAPI: any
-}
-
-const props = withDefaults(defineProps<Props>(), {})
 
 const isDiscovering = ref(false)
 let stop: (() => void) | undefined
@@ -23,7 +17,7 @@ function showStatus(status: BackupStatus) {
 async function onClickDiscover() {
   isDiscovering.value = true
   try {
-    await props.backupAPI.action('discover')
+    await discoverBackups()
     toast.success('Looking for backups in S3')
   } catch (err) {
     toast.error(err instanceof Error ? err.message : 'Failed to look for backups')
@@ -32,11 +26,7 @@ async function onClickDiscover() {
 }
 
 onMounted(() => {
-  const status = watchState(
-    'backup-status',
-    () => props.backupAPI.action('platform_backup_status'),
-    showStatus
-  )
+  const status = watchState('backup-status', fetchBackupStatus, showStatus)
   stop = status.stop
   status.first.catch(error => console.error('Error checking discovery status:', error))
 })

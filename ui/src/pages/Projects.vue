@@ -18,7 +18,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { Spinner } from '@/components/ui/spinner'
 import { Badge } from '@/components/ui/badge'
 
-import { projectAPI, type Project } from '@/services/api'
+import { createProject, fetchProjects, type Project } from '@/services/api'
 import CardDescription from '@/components/ui/card/CardDescription.vue'
 
 const router = useRouter()
@@ -41,7 +41,7 @@ onMounted(async () => {
 async function loadProjects() {
   try {
     isLoading.value = true
-    projects.value = (await projectAPI.fetchAll()) as Project[]
+    projects.value = await fetchProjects()
   } catch (err) {
     console.error('Failed to load projects:', err)
   } finally {
@@ -65,7 +65,7 @@ async function handleCreateProject() {
 
   try {
     isSubmitting.value = true
-    await projectAPI.create({
+    await createProject({
       label: formData.value.label,
       description: formData.value.description || null,
     })

@@ -99,7 +99,7 @@ def delete_application(request: Request):
   return result
 
 
-@router.post("/{application}/get_available_workers", dependencies=[Depends(inject_application)])
+@router.get("/{application}/get_available_workers", dependencies=[Depends(inject_application)])
 def get_available_workers(request: Request):
   """Get list of all workers excluding those already in this application."""
   application = request.state.models["application"]
@@ -187,7 +187,7 @@ def stop_application(request: Request):
   return {"status": "OK"}
 
 
-@router.post("/{application}/metrics", dependencies=[Depends(inject_application)])
+@router.get("/{application}/metrics", dependencies=[Depends(inject_application)])
 def get_metrics(request: Request, period: Literal["1h", "24h", "1w", "1m"] = "1h"):
   application = request.state.models["application"]
 

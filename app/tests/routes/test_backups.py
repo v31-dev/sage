@@ -57,7 +57,7 @@ class TestWithoutS3:
   @pytest.mark.parametrize("method, url", [
       ("post", f"{PLATFORM}/"),
       ("post", f"{PLATFORM}/discover"),
-      ("post", f"{PLATFORM}/1/download"),
+      ("get", f"{PLATFORM}/1/download"),
       ("delete", f"{PLATFORM}/1"),
       ("post", f"{PLATFORM}/1/restore"),
   ])
@@ -88,17 +88,17 @@ class TestList:
 
 class TestInjectBackup:
   def test_an_unknown_backup_is_a_404(self, client, db):
-    response = client.post(f"{PLATFORM}/99/download")
+    response = client.get(f"{PLATFORM}/99/download")
     assert (response.status_code, response.json()["detail"]) == (404, "Backup not found")
 
   def test_a_platform_backup_is_not_found_under_a_volume(self, client, platform_backup, volume):
-    assert client.post(f"{VOLUME}/{platform_backup.id}/download").status_code == 404
+    assert client.get(f"{VOLUME}/{platform_backup.id}/download").status_code == 404
 
   def test_a_backup_of_another_volume_is_not_found_even_if_its_file_exists(self, client, s3, volume_backup, application, volume):
     s3.keys.add(VOLUME_PATH)
     Volume.create(application=application, name="other", path="/other")
 
-    response = client.post(f"/api/projects/demo/applications/web/volumes/other/backups/{volume_backup.id}/download")
+    response = client.get(f"/api/projects/demo/applications/web/volumes/other/backups/{volume_backup.id}/download")
 
     assert (response.status_code, response.json()["detail"]) == (404, "Backup not found")
 
@@ -107,20 +107,20 @@ class TestInjectBackup:
     other = Application.create(project=volume_backup.application.project, name="api", label="Api")
     Volume.create(application=other, name="data", path="/data")
 
-    response = client.post(f"/api/projects/demo/applications/api/volumes/data/backups/{volume_backup.id}/download")
+    response = client.get(f"/api/projects/demo/applications/api/volumes/data/backups/{volume_backup.id}/download")
 
     assert (response.status_code, response.json()["detail"]) == (404, "Backup not found")
 
 
 class TestStatus:
   def test_neither_running_nor_discovering(self, client, manager):
-    assert client.post(f"{PLATFORM}/platform_backup_status").json() == {"platform_backup_in_progress": False, "discovery_in_progress": False}
+    assert client.get(f"{PLATFORM}/platform_backup_status").json() == {"platform_backup_in_progress": False, "discovery_in_progress": False}
 
   def test_each_flag_follows_its_task(self, client, manager):
     manager.running.add("backup_database_s3")
     manager.queued.add("discover_s3_backups")
 
-    assert client.post(f"{PLATFORM}/platform_backup_status").json() == {"platform_backup_in_progress": True, "discovery_in_progress": True}
+    assert client.get(f"{PLATFORM}/platform_backup_status").json() == {"platform_backup_in_progress": True, "discovery_in_progress": True}
 
 
 class TestCreatePlatformBackup:
@@ -191,7 +191,7 @@ class TestDownload:
   def test_it_returns_a_short_lived_link_named_after_the_backup(self, client, s3, platform_backup):
     s3.keys.add(PLATFORM_PATH)
 
-    response = client.post(f"{PLATFORM}/{platform_backup.id}/download")
+    response = client.get(f"{PLATFORM}/{platform_backup.id}/download")
 
     assert response.status_code == 200
     assert response.json() == {"url": f"https://s3.example.test/{PLATFORM_PATH}", "expires_in": config.BROWSER_LINK_SECONDS}
@@ -201,7 +201,7 @@ class TestDownload:
   def test_the_stored_path_is_used_as_it_is_not_joined_to_the_base_path(self, client, s3, platform_backup):
     s3.keys.add(PLATFORM_PATH)
 
-    client.post(f"{PLATFORM}/{platform_backup.id}/download")
+    client.get(f"{PLATFORM}/{platform_backup.id}/download")
 
     assert s3.checked == [{"s3_path": PLATFORM_PATH, "raw_path": True}]
     assert s3.links[0]["raw_path"] is True
@@ -209,12 +209,12 @@ class TestDownload:
   def test_a_volume_backup_is_named_after_its_volume(self, client, s3, volume_backup):
     s3.keys.add(VOLUME_PATH)
 
-    client.post(f"{VOLUME}/{volume_backup.id}/download")
+    client.get(f"{VOLUME}/{volume_backup.id}/download")
 
     assert s3.links[0]["filename"] == "demo-web-w1-data-20260102_030405.tar.gz.enc"
 
   def test_a_file_that_is_gone_from_s3_is_a_404_and_no_link_is_made(self, client, s3, platform_backup):
-    response = client.post(f"{PLATFORM}/{platform_backup.id}/download")
+    response = client.get(f"{PLATFORM}/{platform_backup.id}/download")
 
     assert response.status_code == 404
     assert response.json()["detail"] == "The backup file is no longer in S3."

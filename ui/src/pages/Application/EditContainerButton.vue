@@ -16,11 +16,11 @@ import { Field, FieldGroup, FieldLabel, FieldSet, FieldError } from '@/component
 import { Input } from '@/components/ui/input'
 import { Spinner } from '@/components/ui/spinner'
 
-import { type Container, getContainerAPI } from '@/services/api'
+import { type Application, type Container, updateContainer } from '@/services/api'
 
 interface Props {
+  application: Application
   container: Container
-  containersAPI: ReturnType<typeof getContainerAPI>
   loadApplication: () => Promise<void>
 }
 
@@ -45,7 +45,12 @@ async function onClickEditContainerConfirm() {
     const containerData: Record<string, string | null> = {
       domain_tag: domainTag.value || null,
     }
-    await props.containersAPI.update(`${props.container.worker.hostname}`, containerData)
+    await updateContainer(
+      props.application.project.name,
+      props.application.name,
+      props.container.worker.hostname,
+      containerData
+    )
     isEditContainerDialogOpen.value = false
     await props.loadApplication()
     toast.success('Container updated')

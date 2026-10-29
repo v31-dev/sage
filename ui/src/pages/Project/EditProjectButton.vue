@@ -16,13 +16,12 @@ import { Textarea } from '@/components/ui/textarea'
 import { toast } from 'vue-sonner'
 import { Spinner } from '@/components/ui/spinner'
 
-import { type Project } from '@/services/api'
+import { type Project, updateProject } from '@/services/api'
 import CustomInput from '@/components/CustomInput.vue'
 import FieldLabelHelp from '@/components/FieldLabelHelp.vue'
 
 interface Props {
   project: Project
-  projectAPI: any
   loadProject: () => Promise<void>
 }
 
@@ -53,7 +52,7 @@ async function handleUpdateProject() {
 
   try {
     isClickedEditConfirm.value = true
-    await props.projectAPI.update(props.project.name, {
+    await updateProject(props.project.name, {
       label: editFormData.value.label || null,
       description: editFormData.value.description || null,
       env: editFormData.value.env || null,

@@ -32,7 +32,13 @@ import CopyButton from '@/components/CopyButton.vue'
 import CustomInput from '@/components/CustomInput.vue'
 import StateIndicator from '@/components/StateIndicator.vue'
 import SettingField from './SettingField.vue'
-import { settingsAPI, type Setting, type SettingSection } from '@/services/api'
+import {
+  fetchSetting,
+  testSetting,
+  updateSetting,
+  type Setting,
+  type SettingSection,
+} from '@/services/api'
 import { useAppStore } from '@/stores/app'
 
 type SettingValues = Record<string, string>
@@ -120,7 +126,7 @@ async function load() {
   isLoading.value = true
   error.value = ''
   try {
-    const data = (await settingsAPI.fetchOne(props.section)) as Setting
+    const data = await fetchSetting(props.section)
     saved.value = valuesFrom(data.value)
     values.value = { ...saved.value }
   } catch (err) {
@@ -134,9 +140,7 @@ async function save() {
   saving.value = true
   error.value = ''
   try {
-    const data = (await settingsAPI.update(props.section, {
-      value: outgoingValue.value,
-    })) as Setting
+    const data = await updateSetting(props.section, outgoingValue.value)
     saved.value = valuesFrom(data.value)
     values.value = { ...saved.value }
     toast.success(`${props.title} settings saved`)
@@ -155,9 +159,7 @@ async function test() {
   testing.value = true
   error.value = ''
   try {
-    const result = (await settingsAPI.action(`${props.section}/test`, {
-      value: outgoingValue.value,
-    })) as unknown as { message: string }
+    const result = await testSetting(props.section, outgoingValue.value)
     toast.success(result.message)
   } catch (err) {
     error.value = errorMessage(err, `${props.title} test failed`)

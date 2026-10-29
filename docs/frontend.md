@@ -35,7 +35,7 @@ Initial app boot fetches `GET /api` through the Pinia store in `ui/src/stores/ap
 - `application:<project>/<name>`: the Application page (loading the application route). Each push replaces the whole application (volumes, domains and variables changed elsewhere too) and puts its status over the one an action set; an edit dialog keeps the values it copied when it opened. An action on the page reloads it at once through `loadApplication`. An application deleted while the page is open shows as not found.
 - `tasks`: the Tasks page, the Upgrade page (which tasks it waits for before a stop) and the restore overlay, which follows it only while restoring (loading `GET /tasks`).
 - `task-history`, a feed: the Tasks page's completed list (loading `GET /tasks/history`). It merges rows by `task_id`, newest first by `created_at`, and keeps the newest 100.
-- `backup-status`: the Create Backup and Discover Backups buttons, each mirroring its own flag (loading `POST /backups/platform_backup_status`).
+- `backup-status`: the Create Backup and Discover Backups buttons, each mirroring its own flag (loading `GET /backups/platform_backup_status`).
 - `backups`: the Backups page (loading `GET /backups`), newest first; each pushed list replaces the shown one. A delete on the page loads the list again at once.
 - `release`: the Upgrade page (loading `GET /release`). A check for updates is over when a release with a new `fetched_at` is pushed, or after 60 s with an error.
 - `notifications`, a feed: the header's list, whose `load` asks for the newest 20 while it has none and for the rows after its newest `created_at` otherwise, so it also recovers what it missed; it merges rows by id, newest first, so a row it has is not shown twice and one that arrives out of order lands in place. The bell's marker is on while the newest id is above the last one seen, which is kept in `localStorage` when the bell is opened.
@@ -126,12 +126,9 @@ drawn by `components/StateIndicator.vue` (see State Indicators).
 
 ## API Layer
 
-The frontend API types and CRUD helpers are defined mainly in:
+`ui/src/lib/api.ts` holds `request(method, path, { query, body })`, the only place the UI calls `fetch` for the API: it waits `LOAD_DELAY` (see the development guide), builds the URL under `/api` with the query (leaving out null, undefined and empty values), sends the body as JSON and returns the answer's JSON. A failed answer throws an `APIError` with the manager's `detail` as its message (or which call failed, when there is none) and its `status` and `response`; it logs nothing, the caller does.
 
-- `ui/src/services/api.ts`
-- `ui/src/lib/api.ts`
-- `ui/src/lib/logs.ts`
-- `ui/src/lib/metrics.ts`
+`ui/src/services/api.ts` has a named, typed function for every call, each a line over `request` (`fetchApplication(project, name)`, `deployApplication(project, name)`, `deleteContainer(project, application, hostname, force)`, …), even one that a single component uses. Components import these functions and pass the names of what they act on; they never write a method or a path, and no API client is passed down as a prop. `ui/src/lib/logs.ts` and `ui/src/lib/metrics.ts` shape what the logs and metrics calls return.
 
 The service typings mirror the backend models closely, including:
 

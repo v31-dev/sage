@@ -4,11 +4,17 @@ import { toast } from 'vue-sonner'
 import { watchState } from '@/lib/updates'
 import CreateBackupButton from '@/pages/Backup/CreateBackupButton.vue'
 import DiscoverBackupsButton from '@/pages/Backup/DiscoverBackupsButton.vue'
-import type { BackupStatus } from '@/services/api'
+import { createBackup, discoverBackups, fetchBackupStatus, type BackupStatus } from '@/services/api'
 import { followTopics } from '../helpers/topics'
 
 vi.mock('@/lib/updates', () => ({ watchState: vi.fn(), watchFeed: vi.fn() }))
 vi.mock('vue-sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
+vi.mock('@/services/api', async importOriginal => ({
+  ...(await importOriginal<typeof import('@/services/api')>()),
+  createBackup: vi.fn(),
+  discoverBackups: vi.fn(),
+  fetchBackupStatus: vi.fn(),
+}))
 
 const status = (backup: boolean, discovery: boolean): BackupStatus => ({
   platform_backup_in_progress: backup,
@@ -17,9 +23,8 @@ const status = (backup: boolean, discovery: boolean): BackupStatus => ({
 
 function setup(component: typeof CreateBackupButton | typeof DiscoverBackupsButton) {
   const topics = followTopics()
-  const backupAPI = { action: vi.fn(), create: vi.fn() }
-  const wrapper = mount(component, { props: { backupAPI } })
-  return { wrapper, topics, backupAPI, backups: topics.topic('backup-status') }
+  const wrapper = mount(component)
+  return { wrapper, topics, backups: topics.topic('backup-status') }
 }
 
 const busy = (wrapper: ReturnType<typeof setup>['wrapper']) =>
@@ -28,6 +33,9 @@ const disabled = (wrapper: ReturnType<typeof setup>['wrapper']) =>
   wrapper.get('button').attributes('disabled') !== undefined
 
 beforeEach(() => {
+  vi.mocked(createBackup).mockReset()
+  vi.mocked(discoverBackups).mockReset()
+  vi.mocked(fetchBackupStatus).mockReset()
   vi.mocked(toast.success).mockReset()
   vi.mocked(toast.error).mockReset()
 })
@@ -40,13 +48,13 @@ describe.each([
   const other = (on: boolean) => (which === 'backup' ? status(false, on) : status(on, false))
 
   it('follows the backup status, loaded from the status route of the backups', async () => {
-    const { backups, backupAPI } = setup(component)
+    const { backups } = setup(component)
 
-    expect(watchState).toHaveBeenCalledWith('backup-status', expect.anything(), expect.anything())
-    backupAPI.action.mockResolvedValue(status(false, false))
+    expect(watchState).toHaveBeenCalledWith('backup-status', fetchBackupStatus, expect.anything())
+    vi.mocked(fetchBackupStatus).mockResolvedValue(status(false, false))
     await backups.load()
 
-    expect(backupAPI.action).toHaveBeenCalledWith('platform_backup_status')
+    expect(fetchBackupStatus).toHaveBeenCalledOnce()
   })
 
   it('stops following when it goes away', () => {
@@ -82,20 +90,20 @@ describe.each([
 
 describe('the Create Backup button', () => {
   it('shows the work at once when clicked, and says it started', async () => {
-    const { wrapper, backupAPI } = setup(CreateBackupButton)
-    backupAPI.create.mockResolvedValue(undefined)
+    const { wrapper } = setup(CreateBackupButton)
+    vi.mocked(createBackup).mockResolvedValue(undefined)
 
     await wrapper.get('button').trigger('click')
     await flushPromises()
 
-    expect(backupAPI.create).toHaveBeenCalledOnce()
+    expect(createBackup).toHaveBeenCalledOnce()
     expect(toast.success).toHaveBeenCalledWith('Backup initiated successfully')
     expect(busy(wrapper)).toBe(true)
   })
 
   it('gives the button back, saying why, when the backup could not be started', async () => {
-    const { wrapper, backupAPI } = setup(CreateBackupButton)
-    backupAPI.create.mockRejectedValue(new Error('S3 is not configured.'))
+    const { wrapper } = setup(CreateBackupButton)
+    vi.mocked(createBackup).mockRejectedValue(new Error('S3 is not configured.'))
 
     await wrapper.get('button').trigger('click')
     await flushPromises()
@@ -107,7 +115,7 @@ describe('the Create Backup button', () => {
   it('logs a status that could not be loaded', async () => {
     const error = vi.spyOn(console, 'error').mockImplementation(() => {})
     const topics = followTopics({ pending: true })
-    mount(CreateBackupButton, { props: { backupAPI: {} } })
+    mount(CreateBackupButton)
 
     topics.topic('backup-status').failed(new Error('down'))
     await flushPromises()
@@ -118,20 +126,20 @@ describe('the Create Backup button', () => {
 
 describe('the Discover Backups button', () => {
   it('shows the work at once when clicked, and says it started', async () => {
-    const { wrapper, backupAPI } = setup(DiscoverBackupsButton)
-    backupAPI.action.mockResolvedValue({})
+    const { wrapper } = setup(DiscoverBackupsButton)
+    vi.mocked(discoverBackups).mockResolvedValue({})
 
     await wrapper.get('button').trigger('click')
     await flushPromises()
 
-    expect(backupAPI.action).toHaveBeenCalledWith('discover')
+    expect(discoverBackups).toHaveBeenCalledOnce()
     expect(toast.success).toHaveBeenCalledWith('Looking for backups in S3')
     expect(busy(wrapper)).toBe(true)
   })
 
   it('gives the button back, saying why, when the search could not be started', async () => {
-    const { wrapper, backupAPI } = setup(DiscoverBackupsButton)
-    backupAPI.action.mockRejectedValue(new Error('S3 is not configured.'))
+    const { wrapper } = setup(DiscoverBackupsButton)
+    vi.mocked(discoverBackups).mockRejectedValue(new Error('S3 is not configured.'))
 
     await wrapper.get('button').trigger('click')
     await flushPromises()
@@ -141,8 +149,8 @@ describe('the Discover Backups button', () => {
   })
 
   it('goes on when a status without the search arrives before the search is queued', async () => {
-    const { wrapper, backupAPI, backups } = setup(DiscoverBackupsButton)
-    backupAPI.action.mockResolvedValue({})
+    const { wrapper, backups } = setup(DiscoverBackupsButton)
+    vi.mocked(discoverBackups).mockResolvedValue({})
     await wrapper.get('button').trigger('click')
     await flushPromises()
 

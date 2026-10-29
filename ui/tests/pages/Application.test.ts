@@ -3,7 +3,11 @@ import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { watchState } from '@/lib/updates'
 import Application from '@/pages/Application/index.vue'
-import { getApplicationAPI, type Container } from '@/services/api'
+import {
+  fetchApplication,
+  type Application as ApplicationState,
+  type Container,
+} from '@/services/api'
 import { useAppStore } from '@/stores/app'
 import { followTopics } from '../helpers/topics'
 
@@ -13,10 +17,9 @@ vi.mock('vue-router', () => ({
   useRouter: () => ({ push: vi.fn() }),
 }))
 
-const fetchOne = vi.fn()
 vi.mock('@/services/api', async importOriginal => ({
   ...(await importOriginal<typeof import('@/services/api')>()),
-  getApplicationAPI: vi.fn(() => ({ fetchOne })),
+  fetchApplication: vi.fn(),
   getContainerAPI: vi.fn(() => ({})),
   getDomainAPI: vi.fn(() => ({})),
   getVolumeAPI: vi.fn(() => ({})),
@@ -32,19 +35,21 @@ const list = (attribute: string, key: string) => ({
   template: `<div ${attribute}>{{ ($props.container ?? $props.volume ?? $props.domain).${key} }}</div>`,
 })
 
-const application = (overrides: Record<string, unknown> = {}) => ({
-  name: 'web',
-  status: 'inactive',
-  container_count: 0,
-  updated_at: '2026-10-29T10:00:00',
-  domains_synced: true,
-  deployed_at: null,
-  config_dirty: false,
-  containers: [],
-  volumes: [{ name: 'data' }],
-  domains: [{ name: 'web.example.test' }],
-  ...overrides,
-})
+// The fields the page shows; the rest of an application is left out.
+const application = (overrides: Record<string, unknown> = {}) =>
+  ({
+    name: 'web',
+    status: 'inactive',
+    container_count: 0,
+    updated_at: '2026-10-29T10:00:00',
+    domains_synced: true,
+    deployed_at: null,
+    config_dirty: false,
+    containers: [],
+    volumes: [{ name: 'data' }],
+    domains: [{ name: 'web.example.test' }],
+    ...overrides,
+  }) as unknown as ApplicationState
 
 const stubs = {
   ApplicationHeader: header,
@@ -79,8 +84,8 @@ const texts = (wrapper: Awaited<ReturnType<typeof mountPage>>['wrapper'], attrib
 beforeEach(() => {
   setActivePinia(createPinia())
   vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'setTimeout', 'clearTimeout'] })
-  fetchOne.mockReset()
-  fetchOne.mockResolvedValue(application())
+  vi.mocked(fetchApplication).mockReset()
+  vi.mocked(fetchApplication).mockResolvedValue(application())
   vi.spyOn(console, 'error').mockImplementation(() => {})
 })
 
@@ -97,9 +102,8 @@ describe('what the page follows', () => {
       expect.any(Function),
       expect.any(Function)
     )
-    expect(getApplicationAPI).toHaveBeenCalledWith('demo')
     await topics.topic('application:demo/web').load()
-    expect(fetchOne).toHaveBeenCalledWith('web')
+    expect(fetchApplication).toHaveBeenCalledWith('demo', 'web')
 
     wrapper.unmount()
 
@@ -206,7 +210,7 @@ describe('what the manager pushes', () => {
   it('reloads all of it after an action', async () => {
     const { wrapper, topics } = await mountPage()
     await loaded(topics)
-    fetchOne.mockResolvedValue(application({ volumes: [], status: 'stopping' }))
+    vi.mocked(fetchApplication).mockResolvedValue(application({ volumes: [], status: 'stopping' }))
 
     await wrapper.find('[data-header]').trigger('click')
     await flushPromises()

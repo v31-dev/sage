@@ -8,7 +8,7 @@ import type { APIError } from '@/lib/api'
 import { watchState } from '@/lib/updates'
 
 import {
-  workersAPI,
+  fetchWorker as fetchWorkerByHostname,
   fetchWorkerMetrics,
   type Worker,
   type WorkerMetricsResponse,
@@ -28,7 +28,7 @@ const loadError = ref('')
 const isNotFound = ref(false)
 let stop: (() => void) | undefined
 
-const fetchWorker = () => workersAPI.fetchOne(hostname) as Promise<Worker>
+const fetchWorker = () => fetchWorkerByHostname(hostname)
 
 // The worker, loaded from its route and then pushed by the manager each time it changes.
 onMounted(async () => {

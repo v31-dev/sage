@@ -17,7 +17,8 @@ import { Label } from '@/components/ui/label'
 
 import ConfirmationButton from '@/components/ConfirmationButton.vue'
 import {
-  workersAPI,
+  deleteWorker,
+  rebootWorker,
   type Worker,
   type WorkerMetricsResponse,
   type WorkerStatus,
@@ -56,7 +57,7 @@ function goToMetrics() {
 }
 
 async function onConfirmDelete() {
-  await workersAPI.delete(props.worker.hostname)
+  await deleteWorker(props.worker.hostname)
   toast.success(`Worker ${props.worker.hostname} deleted successfully`)
   router.push('/workers')
 }
@@ -64,7 +65,7 @@ async function onConfirmDelete() {
 async function onConfirmRestart() {
   requested.value = 'rebooting'
   try {
-    await workersAPI.action(`${props.worker.hostname}/reboot`)
+    await rebootWorker(props.worker.hostname)
   } catch (err) {
     requested.value = null
     throw err

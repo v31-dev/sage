@@ -6,13 +6,12 @@ import ConfirmationButton from '@/components/ConfirmationButton.vue'
 import {
   APPLICATION_STOP_ELIGIBLE_STATUSES,
   type Application,
-  getApplicationAPI,
+  stopApplication,
 } from '@/services/api'
 import { useAppStore } from '@/stores/app'
 
 interface Props {
   application: Application
-  applicationAPI: ReturnType<typeof getApplicationAPI>
 }
 
 const props = withDefaults(defineProps<Props>(), {})
@@ -39,7 +38,7 @@ async function onConfirmStop() {
     props.application.containers.map(container => container.worker.hostname)
   )
   try {
-    await props.applicationAPI.action(`${props.application.name}/stop`)
+    await stopApplication(props.application.project.name, props.application.name)
   } catch (err) {
     appStore.updateApplicationDeployStatus('error')
     throw err
