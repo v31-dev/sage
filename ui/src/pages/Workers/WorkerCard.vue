@@ -13,7 +13,6 @@ import { TONES } from '@/lib/tone'
 
 interface Props {
   worker: WorkerListItem
-  metrics?: WorkerMetricSummary
 }
 
 const router = useRouter()
@@ -21,18 +20,23 @@ const appStore = useAppStore()
 
 const props = withDefaults(defineProps<Props>(), {})
 
-const emptyMetrics: WorkerMetricSummary = {
-  cpu: null,
-  cores: null,
-  mem: null,
-  memTotal: null,
-  disk: null,
-  diskTotal: null,
-  netRx: null,
-  netTx: null,
-}
+const mbps = (kbps: number | null | undefined) =>
+  kbps == null ? null : Math.round((kbps / 1000) * 10) / 10
 
-const metrics = computed(() => props.metrics ?? emptyMetrics)
+// The worker's newest minute of metrics, from the worker list; nothing while it has none that is recent.
+const metrics = computed<WorkerMetricSummary>(() => {
+  const minute = props.worker.metrics
+  return {
+    cpu: minute?.cpu_pct ?? null,
+    cores: minute?.cpu_cores ?? null,
+    mem: minute?.mem_used_mb ?? null,
+    memTotal: minute?.mem_total_mb ?? null,
+    disk: minute?.disk_used_gb ?? null,
+    diskTotal: minute?.disk_total_gb ?? null,
+    netRx: mbps(minute?.net_rx_kbps),
+    netTx: mbps(minute?.net_tx_kbps),
+  }
+})
 
 function goToMetrics(hostname: string) {
   router.push(`/workers/${hostname}`)

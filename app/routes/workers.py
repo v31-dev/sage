@@ -68,7 +68,7 @@ def add_worker(request: Request, worker_data: dict = Body(...)):
 
 def worker_payload(worker: Worker) -> dict:
   """The worker with its containers and their applications, and what the worker list holds of it: `infra` (the state
-  of the containers of its stack), `online`, `status` and `path`."""
+  of the containers of its stack), `online`, `status`, `path` and `metrics` (its newest minute)."""
   data = model_to_dict(
       worker,
       backrefs=True,
@@ -90,6 +90,7 @@ def worker_payload(worker: Worker) -> dict:
   data["online"] = entry.get("online", False)
   data["status"] = entry.get("status", "offline")
   data["path"] = entry.get("path")
+  data["metrics"] = entry.get("metrics")
   return data
 
 

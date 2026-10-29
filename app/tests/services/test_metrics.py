@@ -366,8 +366,36 @@ class TestFlushWorker:
     assert (row["net_rx_kbps"], row["net_tx_kbps"]) == (0.0, 0.0)
 
   def test_a_worker_that_never_reported_has_nothing_to_write(self, store, clock):
-    store.flush_worker("w1")
+    assert store.flush_worker("w1") is None
     assert store._dbs["metrics"] == {}
+
+  def test_it_returns_the_newest_row_it_wrote_with_the_machines_size(self, store, clock):
+    self.ingest_the_recorded_batch(store, clock)
+    minute = store.flush_worker("w1")
+    (row,) = self.rows(store, "WorkerMetrics")
+    (meta,) = self.rows(store, "WorkerMeta")
+    assert minute == {**{key: value for key, value in row.items() if key != "id"},
+                      "cpu_cores": meta["cpu_cores"], "mem_total_mb": meta["mem_total_mb"],
+                      "disk_total_gb": meta["disk_total_gb"]}
+
+  def test_it_returns_the_newest_of_the_minutes_it_wrote(self, store, clock):
+    store.ingest("w1", [snapshot(0, host(idle=80)), snapshot(60, host(idle=50))])
+    clock.set(MINUTE + timedelta(minutes=2))
+    minute = store.flush_worker("w1")
+    assert len(self.rows(store, "WorkerMetrics")) == 2
+    assert (minute["ts"], minute["cpu_pct"]) == (MINUTE + timedelta(minutes=1), 50.0)
+
+  def test_it_returns_nothing_while_the_minute_is_in_progress(self, store, clock):
+    snapshots = self.ingest_the_recorded_batch(store, clock)
+    clock.set(snapshots[0].at.replace(second=0) + timedelta(seconds=30))
+    assert store.flush_worker("w1") is None
+
+  def test_flush_workers_returns_the_newest_minute_of_each_worker_that_had_one(self, store, clock):
+    store.ingest("w1", [snapshot(0, host(idle=80))])
+    store.ingest("w2", [snapshot(0, host(idle=None))])
+    clock.set(MINUTE + timedelta(minutes=1))
+    newest = store.flush_workers()
+    assert list(newest) == ["w1"] and newest["w1"]["cpu_pct"] == 20.0
 
   def test_flush_workers_writes_every_worker_that_reported(self, store, clock):
     store.ingest("w1", [snapshot(0, host(idle=80))])

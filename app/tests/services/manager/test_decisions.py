@@ -340,7 +340,8 @@ class TestWorkerEntry:
     assert self.entry(online=True, path="direct", report=report(running=("traefik", "web", "telegraf"))) == {
         "hostname": "w1", "ip": "100.64.0.2", "online": True, "status": "online", "path": "direct", "container_count": 3,
         "infra": [{"name": "traefik", "status": "running"}, {"name": "vector", "status": "missing"},
-                  {"name": "telegraf", "status": "running"}, {"name": "cloudflared", "status": "missing"}]}
+                  {"name": "telegraf", "status": "running"}, {"name": "cloudflared", "status": "missing"}],
+        "metrics": None}
 
   def test_the_container_count_and_the_stack_are_those_of_the_current_report_only(self):
     assert self.entry(report=report())["container_count"] == 2
@@ -348,6 +349,13 @@ class TestWorkerEntry:
     stale = self.entry(report=report(), now=later(config.REPORT_STALE_SECONDS + 1))
     assert (stale["container_count"], stale["infra"]) == (None, None)
     assert (self.entry()["container_count"], self.entry()["infra"]) == (None, None)
+
+  def test_the_newest_minute_of_metrics_is_shown_until_it_began_the_stale_time_ago(self):
+    minute = {"ts": NOW, "cpu_pct": 12.5, "cpu_cores": 4}
+    assert self.entry(metrics=minute)["metrics"] == minute
+    assert self.entry(metrics=minute, now=later(config.WORKER_METRICS_STALE_SECONDS - 1))["metrics"] == minute
+    assert self.entry(metrics=minute, now=later(config.WORKER_METRICS_STALE_SECONDS))["metrics"] is None
+    assert self.entry()["metrics"] is None
 
 
 class TestWorkerRows:
@@ -363,5 +371,6 @@ class TestWorkerRows:
     assert (row.ip, row.online, row.reboot) == ("100.64.0.9", True, held.reboot)
 
   def test_a_worker_whose_row_is_gone_keeps_only_its_tasks(self):
-    held = WorkerInputs(ip="100.64.0.2", online=True, tasks=frozenset({"remove_worker"}), report=report(), path="direct")
+    held = WorkerInputs(ip="100.64.0.2", online=True, tasks=frozenset({"remove_worker"}), report=report(), path="direct",
+                        metrics={"ts": NOW})
     assert worker_without_row(held) == WorkerInputs(tasks=frozenset({"remove_worker"}))

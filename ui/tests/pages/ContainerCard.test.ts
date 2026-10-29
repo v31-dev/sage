@@ -14,6 +14,7 @@ function listed(hostname: string, status: WorkerStatus): WorkerListItem {
     path: null,
     container_count: null,
     infra: null,
+    metrics: null,
   }
 }
 

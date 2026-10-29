@@ -51,6 +51,7 @@ function worker(hostname: string, status: WorkerStatus = 'online'): WorkerListIt
     path: null,
     container_count: null,
     infra: null,
+    metrics: null,
   }
 }
 

@@ -48,6 +48,7 @@ export interface Worker {
   // How the manager's last ping reached the worker: "direct", or "relay" with its region.
   path: string | null
   infra?: InfraContainer[] | null
+  metrics: WorkerMinute | null
   created_at: Date
   updated_at: Date
   containers: Container[]
@@ -63,6 +64,15 @@ export interface WorkerListItem {
   container_count: number | null
   // The state of the containers of its stack in its current report.
   infra: InfraContainer[] | null
+  metrics: WorkerMinute | null
+}
+
+// A worker's newest minute of metrics, as the worker list holds it while it is recent: the minute's peaks and the
+// machine's size.
+export interface WorkerMinute extends MetricsPoint {
+  cpu_cores: number | null
+  mem_total_mb: number | null
+  disk_total_gb: number | null
 }
 
 export interface Project {

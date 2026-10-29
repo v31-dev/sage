@@ -3,7 +3,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import Workers from '@/pages/Workers/index.vue'
 import WorkerCard from '@/pages/Workers/WorkerCard.vue'
-import { fetchWorkerMetrics, METRICS_POLL_MS, type WorkerListItem } from '@/services/api'
+import { fetchWorkerMetrics, type WorkerListItem, type WorkerMinute } from '@/services/api'
 import { useAppStore } from '@/stores/app'
 
 vi.mock('vue-router', () => ({ useRouter: () => ({ push: vi.fn() }) }))
@@ -13,7 +13,7 @@ vi.mock('@/services/api', async importOriginal => ({
 }))
 
 const card = {
-  props: ['worker', 'metrics'],
+  props: ['worker'],
   template: '<div data-card>{{ worker.hostname }}:{{ worker.status }}</div>',
 }
 
@@ -26,6 +26,7 @@ function worker(hostname: string, overrides: Partial<WorkerListItem> = {}): Work
     path: 'direct',
     container_count: 3,
     infra: null,
+    metrics: null,
     ...overrides,
   }
 }
@@ -56,16 +57,10 @@ afterEach(() => {
 })
 
 describe('timers', () => {
-  it('has none for the workers, only the one for the metrics, and leaves it behind no more', async () => {
+  it('has none: the workers and their metrics come with the list the store follows', async () => {
     const set = vi.spyOn(globalThis, 'setInterval')
-    const clear = vi.spyOn(globalThis, 'clearInterval')
-    const { wrapper } = await mountPage([worker('w1')])
-    expect(set).toHaveBeenCalledTimes(1)
-    expect(set.mock.calls[0]![1]).toBe(METRICS_POLL_MS)
-
-    wrapper.unmount()
-
-    expect(clear).toHaveBeenCalledWith(set.mock.results[0]!.value)
+    await mountPage([worker('w1')])
+    expect(set).not.toHaveBeenCalled()
   })
 })
 
@@ -125,35 +120,13 @@ describe('what the store holds', () => {
 })
 
 describe('the metrics', () => {
-  it('are asked for every worker once a minute, and the workers are not', async () => {
-    await mountPage([worker('w1'), worker('w2')])
-    vi.mocked(fetchWorkerMetrics).mockClear()
-
-    await vi.advanceTimersByTimeAsync(60_000)
-
-    expect(vi.mocked(fetchWorkerMetrics).mock.calls.map(call => call[0])).toEqual(['w1', 'w2'])
-  })
-
-  it('are asked for when the workers are first known and when one is added, not when only a status changes', async () => {
-    const { store } = await mountPage()
-    expect(fetchWorkerMetrics).not.toHaveBeenCalled()
-
-    store.workers = [worker('w1')]
-    await flushPromises()
-    expect(vi.mocked(fetchWorkerMetrics).mock.calls.map(call => call[0])).toEqual(['w1'])
-
-    store.workers = [worker('w1', { status: 'rebooting' })]
-    await flushPromises()
-    expect(fetchWorkerMetrics).toHaveBeenCalledTimes(1)
-
+  it('are not asked for, not even when a worker is added', async () => {
+    const { store } = await mountPage([worker('w1')])
     store.workers = [worker('w1'), worker('w2')]
     await flushPromises()
-    expect(
-      vi
-        .mocked(fetchWorkerMetrics)
-        .mock.calls.slice(1)
-        .map(call => call[0])
-    ).toEqual(['w1', 'w2'])
+    await vi.advanceTimersByTimeAsync(120_000)
+
+    expect(fetchWorkerMetrics).not.toHaveBeenCalled()
   })
 })
 
@@ -174,5 +147,38 @@ describe('a worker card', () => {
   it('shows a worker without containers as none and not as unknown', () => {
     const text = mountCard(worker('w1', { container_count: 0 })).text()
     expect(text).toMatch(/Containers\s*0/)
+  })
+
+  // The newest minute of a worker with 4 cores, 8000 MB of memory and 100 GB of disk.
+  const minute = (overrides: Partial<WorkerMinute> = {}): WorkerMinute => ({
+    ts: '2026-10-29T12:00:00+00:00',
+    cpu_pct: 37.5,
+    mem_used_mb: 2000,
+    mem_cached_mb: 500,
+    disk_used_gb: 25,
+    load_avg_1m: 0.5,
+    load_avg_5m: 0.4,
+    load_avg_15m: 0.3,
+    net_rx_kbps: 1234,
+    net_tx_kbps: 56,
+    cpu_cores: 4,
+    mem_total_mb: 8000,
+    disk_total_gb: 100,
+    ...overrides,
+  })
+
+  it('shows the newest minute of metrics the list holds, the network in Mbps', () => {
+    const text = mountCard(worker('w1', { metrics: minute() })).text()
+    expect(text).toContain('4 cores')
+    expect(text).toContain('2000 / 8000 MB')
+    expect(text).toContain('25 / 100 GB')
+    expect(text).toContain('1.2 Mbps')
+    expect(text).toContain('0.1 Mbps')
+  })
+
+  it('shows no metrics for a worker whose list entry has none', () => {
+    const text = mountCard(worker('w1', { metrics: null })).text()
+    expect(text).not.toContain('cores')
+    expect(text).not.toContain('MB')
   })
 })

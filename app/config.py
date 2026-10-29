@@ -67,6 +67,10 @@ REPORT_SETTLE_SECONDS = 15
 REPORT_STARTUP_GRACE_SECONDS = 60
 # The names of unknown senders remembered so that each is logged once.
 REPORT_UNKNOWN_LIMIT = 100
+# A worker's newest minute of metrics is shown in the worker list while it began less than this long ago: a minute is
+# written by the first minutely flush after it ends, so a worker that reports has one that began at most about 2
+# minutes ago.
+WORKER_METRICS_STALE_SECONDS = 180
 
 # The services of the worker stack, which `docker compose up -d` starts and which are also the names
 # of their containers.

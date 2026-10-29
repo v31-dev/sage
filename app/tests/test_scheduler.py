@@ -129,6 +129,11 @@ async def test_the_triggers_that_need_s3_add_nothing_without_it(monkeypatch, tri
   assert manager.tasks() == []
 
 
+async def test_the_minutely_metrics_job_hands_the_workers_newest_minutes_to_the_worker_list(manager):
+  await scheduler.collect_metrics()
+  assert [task["name"] for task in manager.tasks()] == ["collect_self", "flush_worker_metrics"]
+
+
 async def test_a_task_is_named_after_the_method_it_runs(manager):
   await scheduler.send_summary_notification()
   await scheduler.refresh_latest_release()

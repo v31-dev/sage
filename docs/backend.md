@@ -41,7 +41,7 @@ Nested routes cover:
 - volumes
 - volume backups
 
-The ingestion API is separate in `app/api_ingest.py` and serves what the workers push on port 9001: Telegraf's reports at `/api/telegraf/report` (kept in memory by `services/worker_reports.py`, read by the operation queue) and Vector's logs at `/api/vector/logs`.
+The ingestion API is separate in `app/api_ingest.py` and serves what the workers push on port 9001: Telegraf's reports at `/api/telegraf/report` (kept in memory by `services/worker_reports.py`, read by the operation queue; a report from a name that is not in the worker list is refused with a 404 and logged once) and Vector's logs at `/api/vector/logs`.
 
 ## Pushed Updates
 

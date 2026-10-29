@@ -12,7 +12,7 @@ def report():
 
 def listed(hostname="w1", **overrides):
   return {"hostname": hostname, "ip": "100.64.0.2", "online": True, "status": "online", "path": None, "container_count": None,
-          "infra": None, **overrides}
+          "infra": None, "metrics": None, **overrides}
 
 
 class TestInfra:
@@ -47,6 +47,13 @@ class TestEntry:
   def test_a_worker_the_list_does_not_hold_is_offline_with_nothing_known(self, client, worker, manager):
     detail = client.get("/api/workers/w1").json()
     assert (detail["status"], detail["online"], detail["path"], detail["infra"]) == ("offline", False, None, None)
+    assert detail["metrics"] is None
+
+  def test_the_detail_and_the_list_carry_the_newest_minute_the_list_holds(self, client, worker, manager):
+    minute = {"ts": "2026-01-01T12:00:00+00:00", "cpu_pct": 12.5, "cpu_cores": 4}
+    manager.worker_list = [listed(metrics=minute)]
+    assert client.get("/api/workers/w1").json()["metrics"] == minute
+    assert client.get("/api/workers/").json()[0]["metrics"] == minute
 
   def test_it_is_the_workers_row_and_its_containers_besides(self, client, worker, manager, application):
     Container.create(application=application, worker=worker)

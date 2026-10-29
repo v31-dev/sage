@@ -10,9 +10,11 @@ import config
 from services.db import Worker
 from services.manager.decisions import WorkerInputs, WorkerReboot, worker_entry, worker_with_row, worker_without_row
 from services.manager.workers import WorkersMixin
+from services.metrics import Metrics
 from services.updates import Updates, UpdateSource
 from services.worker_reports import WorkerReports
 from tests.services.manager.test_decisions import report
+from utils.common import utcnow
 
 
 class Changes:
@@ -74,9 +76,10 @@ class TestEntries:
     assert workers.worker_list == [
         {"hostname": "w1", "ip": "100.64.0.2", "online": True, "status": "online", "path": "direct", "container_count": 3,
          "infra": [{"name": "traefik", "status": "running"}, {"name": "vector", "status": "missing"},
-                   {"name": "telegraf", "status": "running"}, {"name": "cloudflared", "status": "missing"}]},
+                   {"name": "telegraf", "status": "running"}, {"name": "cloudflared", "status": "missing"}],
+         "metrics": None},
         {"hostname": "w2", "ip": "100.64.0.3", "online": False, "status": "offline", "path": None, "container_count": None,
-         "infra": None},
+         "infra": None, "metrics": None},
     ]
 
   def test_the_order_is_by_name(self, workers):
@@ -106,6 +109,47 @@ class TestEntries:
     assert {worker["status"] for worker in workers.worker_list} == {"online"}
 
 
+class TestMetrics:
+  """The minutely flush gives each listed worker its newest minute of metrics."""
+
+  @pytest.fixture
+  def flushed(self, register):
+    class Flushed:
+      newest = {}
+
+      def flush_workers(self):
+        return self.newest
+    return register(Metrics, Flushed())
+
+  def test_each_listed_worker_gets_its_newest_minute_in_one_change_of_the_list(self, workers, flushed, changes):
+    workers.add("w1", True)
+    workers.add("w2", True, "100.64.0.3")
+    changes.sources.clear()
+    flushed.newest = {"w1": {"ts": utcnow(), "cpu_pct": 10.0}, "w2": {"ts": utcnow(), "cpu_pct": 20.0}}
+    workers.flush_worker_metrics()
+    assert {name: entry["metrics"]["cpu_pct"] for name, entry in entries(workers).items()} == {"w1": 10.0, "w2": 20.0}
+    assert changes.sources == [UpdateSource.WORKER_LIST]
+
+  def test_a_name_that_is_not_listed_gets_no_record(self, workers, flushed):
+    flushed.newest = {"gone": {"ts": utcnow(), "cpu_pct": 10.0}}
+    workers.flush_worker_metrics()
+    assert workers._worker_inputs == {}
+
+  def test_a_flush_that_wrote_nothing_changes_nothing(self, workers, flushed, changes):
+    workers.add("w1", True)
+    changes.sources.clear()
+    workers.flush_worker_metrics()
+    assert changes.sources == [] and entries(workers)["w1"]["metrics"] is None
+
+  def test_a_worker_that_stops_reporting_shows_no_metrics_once_its_minute_is_stale(self, workers, flushed, clock):
+    workers.add("w1", True)
+    flushed.newest = {"w1": {"ts": utcnow(), "cpu_pct": 10.0}}
+    workers.flush_worker_metrics()
+    clock.advance(timedelta(seconds=config.WORKER_METRICS_STALE_SECONDS))
+    workers.update_workers({})
+    assert entries(workers)["w1"]["metrics"] is None
+
+
 class TestPresence:
   def test_pushes_for_a_name_without_a_row_make_no_worker(self, workers):
     workers.update_worker("w9", online=True, path="direct", report=report())
@@ -133,7 +177,7 @@ class TestPresence:
     workers.paths["100.64.0.9"] = "direct"
     workers._save_worker("w1", "100.64.0.9")
     assert entries(workers)["w1"] == {"hostname": "w1", "ip": "100.64.0.9", "online": True, "status": "online", "path": "direct",
-                                      "container_count": None, "infra": None}
+                                      "container_count": None, "infra": None, "metrics": None}
     assert Worker.get(Worker.hostname == "w1").ip == "100.64.0.9"
 
   def test_forgetting_a_worker_deletes_its_row_and_its_entry(self, workers):
@@ -407,9 +451,9 @@ class TestFromManyThreads:
 
     expected = {name: {"hostname": name, "ip": f"100.64.0.{index + 2}", "online": finals[name][0],
                        "status": self.expected_status(finals[name][0], finals[name][1]), "path": finals[name][2],
-                       "container_count": None, "infra": None}
+                       "container_count": None, "infra": None, "metrics": None}
                 for index, name in enumerate(names)}
     if flapper_present:
       expected["wx"] = {"hostname": "wx", "ip": "100.64.0.99", "online": True, "status": "online", "path": None, "container_count": None,
-                        "infra": None}
+                        "infra": None, "metrics": None}
     assert workers.worker_list == [expected[name] for name in sorted(expected)]

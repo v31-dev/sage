@@ -92,9 +92,10 @@ async def collect_metrics():
       quiet=True,
   )
 
-  # The workers' metrics arrive in their reports; this writes the minutes that have completed.
+  # The workers' metrics arrive in their reports; this writes the minutes that have completed, and gives the
+  # worker list each worker's newest.
   Manager().add_task(
-      task=Metrics().flush_workers,
+      task=Manager().flush_worker_metrics,
       scopes={"metrics:workers"},
       executor="metrics",
       quiet=True,

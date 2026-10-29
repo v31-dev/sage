@@ -116,6 +116,14 @@ class WorkersMixin:
   def update_worker(self, hostname: str, **inputs):
     self.update_workers({hostname: inputs})
 
+  def flush_worker_metrics(self):
+    """Write the completed minutes of the workers' metrics, and give the worker list each listed worker's newest one."""
+    newest = Metrics().flush_workers()
+    listed = {entry["hostname"] for entry in self.worker_list}
+    changes = {hostname: {"metrics": minute} for hostname, minute in newest.items() if hostname in listed}
+    if changes:
+      self.update_workers(changes)
+
   def _set_worker_tasks(self, busy: tuple):
     tasks = {}
     for task, hostname in busy:

@@ -188,6 +188,7 @@ class WorkerInputs:
   reboot: WorkerReboot | None = None    # the last reboot asked of it
   report: Received | None = None        # the newest report of its Telegraf
   path: str | None = None               # how the manager reaches it
+  metrics: dict | None = None           # its newest minute of metrics written, with the machine's size
 
 
 def _current_report(worker: WorkerInputs, now: datetime) -> Received | None:
@@ -224,8 +225,12 @@ def worker_status(worker: WorkerInputs, now: datetime, started: datetime) -> str
 
 def worker_entry(hostname: str, worker: WorkerInputs, now: datetime, started: datetime) -> dict:
   """The worker as the worker list shows it. `container_count` and `infra` (the state of the containers of its stack)
-  are those of its current report."""
+  are those of its current report, and `metrics` its newest minute while that began less than
+  WORKER_METRICS_STALE_SECONDS ago."""
   current = _current_report(worker, now)
+  metrics = worker.metrics
+  if metrics is not None and (now - metrics["ts"]).total_seconds() >= config.WORKER_METRICS_STALE_SECONDS:
+    metrics = None
   return {
       "hostname": hostname,
       "ip": worker.ip,
@@ -234,6 +239,7 @@ def worker_entry(hostname: str, worker: WorkerInputs, now: datetime, started: da
       "path": worker.path,
       "container_count": len(current.snapshot.containers) if current else None,
       "infra": infra_of(current) if current else None,
+      "metrics": metrics,
   }
 
 
