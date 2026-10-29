@@ -123,10 +123,10 @@ class TestPresence:
     workers.add("w1")
     assert entries(workers)["w1"]["status"] == "adding"
 
-  def test_a_worker_that_gets_a_row_is_not_online_and_not_rebooting_whatever_was_pushed_before(self, workers):
+  def test_a_worker_that_gets_a_row_is_checking_and_not_rebooting_whatever_was_pushed_before(self, workers):
     workers.update_worker("w1", online=True, reboot=WorkerReboot(WorkerReports().started, None))
     workers.add("w1")
-    assert (entries(workers)["w1"]["online"], entries(workers)["w1"]["status"]) == (False, "offline")
+    assert (entries(workers)["w1"]["online"], entries(workers)["w1"]["status"]) == (None, "checking")
 
   def test_writing_the_row_of_a_worker_again_keeps_it_online_and_follows_the_ip(self, workers):
     workers.add("w1", True)
@@ -148,7 +148,7 @@ class TestPresence:
     workers.update_worker("w1", online=True)
     assert workers.worker_list == []
     workers.add("w1")
-    assert entries(workers)["w1"]["online"] is False
+    assert entries(workers)["w1"]["online"] is None
 
   def test_a_name_with_nothing_left_to_hold_has_no_record(self, workers):
     workers._set_worker_tasks((("add_worker", "w1"),))
@@ -212,20 +212,20 @@ class TestLoad:
     workers.paths["100.64.0.2"] = "direct"
     workers.load_workers()
     assert [(worker["hostname"], worker["path"], worker["online"]) for worker in workers.worker_list] == [
-        ("w1", "direct", False), ("w2", None, False)]
+        ("w1", "direct", None), ("w2", None, None)]
 
   def test_a_worker_that_is_in_the_table_before_and_after_keeps_its_online(self, workers):
     workers.add("w1", True)
     workers.load_workers()
     assert workers.is_worker_online("w1") is True
 
-  def test_a_worker_the_table_no_longer_has_goes_and_a_new_one_is_not_online(self, workers):
+  def test_a_worker_the_table_no_longer_has_goes_and_a_new_one_is_not_known_yet(self, workers):
     workers.add("w1", True)
     Worker.delete().execute()
     Worker.create(hostname="w2", ip="100.64.0.3")
     workers.update_worker("w2", online=True)
     workers.load_workers()
-    assert [(worker["hostname"], worker["online"]) for worker in workers.worker_list] == [("w2", False)]
+    assert [(worker["hostname"], worker["online"]) for worker in workers.worker_list] == [("w2", None)]
 
   def test_it_is_the_only_read_of_the_table(self, workers):
     workers.add("w1", True)

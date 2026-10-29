@@ -84,7 +84,7 @@ def rollup_status(statuses: Iterable[str]) -> str | None:
 class WorkerRow:
   hostname: str
   ip: str
-  online: bool
+  online: bool | None  # None: not known yet
 
 
 @dataclass(frozen=True)
@@ -99,16 +99,17 @@ class WorkerAction:
 def plan_worker_sync(known: list[WorkerRow], peers: list[WorkerRow], force: bool, check_stamps: bool) -> list[WorkerAction]:
   """What the worker sync does, from the workers in the database and the tailnet's machines among
   them (`peers`, with `online` as the pings found them). A machine that is not a known worker is
-  left alone: workers are added by hand. A worker that does not answer is never set up."""
+  left alone: workers are added by hand. A worker that does not answer is never set up. A worker
+  whose state is not known yet is taken out once it is found offline and set up once it answers."""
   known_by_name = {row.hostname: row for row in known}
   actions = []
 
   for peer in peers:
     row = known_by_name[peer.hostname]
-    if row.online and not peer.online:
-      actions.append(WorkerAction("offline", peer, "went offline"))
-    elif not row.online and peer.online:
-      actions.append(WorkerAction("setup", peer, "came back online"))
+    if row.online is not False and peer.online is False:
+      actions.append(WorkerAction("offline", peer, "went offline" if row.online else "found offline"))
+    elif row.online is not True and peer.online:
+      actions.append(WorkerAction("setup", peer, "came back online" if row.online is False else "found online"))
     elif peer.online and row.ip != peer.ip:
       actions.append(WorkerAction("setup", peer, f"IP changed from {row.ip} to {peer.ip}"))
     elif peer.online and force:
@@ -118,7 +119,7 @@ def plan_worker_sync(known: list[WorkerRow], peers: list[WorkerRow], force: bool
 
   listed = {peer.hostname for peer in peers}
   for row in known:
-    if row.hostname not in listed and row.online:
+    if row.hostname not in listed and row.online is not False:
       actions.append(WorkerAction("offline", row, "not found in the tailnet"))
   return actions
 
@@ -182,7 +183,7 @@ class WorkerInputs:
   """What the worker marker knows of one worker, each field written by the one owner of that fact. A record
   without an `ip` is not a worker, as the table has no row for it: a push can arrive before the row does."""
   ip: str | None = None                 # the row in the Worker table
-  online: bool = False                  # at the last sync its SSH server answered and it was set up
+  online: bool | None = None            # at the last sync its SSH server answered and it was set up; None until a sync has looked
   tasks: frozenset[str] = frozenset()   # the `WORKER_TASKS` queued or running for it
   reboot: WorkerReboot | None = None    # the last reboot asked of it
   report: Received | None = None        # the newest report of its Telegraf
@@ -205,8 +206,8 @@ def worker_ready(worker: WorkerInputs, now: datetime, started: datetime) -> bool
 def worker_status(worker: WorkerInputs, now: datetime, started: datetime) -> str:
   """What the worker is shown as: "removing" while its removal is queued or running, "adding" while its
   addition is, "rebooting" from the request until it reports again after the reboot (`is_worker_rebooting`),
-  "offline" when its SSH server did not answer (`online`), "not ready" when it is not ready (`worker_ready`),
-  otherwise "online"."""
+  "checking" until a sync has looked at it (`online` is None), "offline" when its SSH server did not answer,
+  "not ready" when it is not ready (`worker_ready`), otherwise "online"."""
   if "remove_worker" in worker.tasks:
     return "removing"
   if "add_worker" in worker.tasks:
@@ -214,6 +215,8 @@ def worker_status(worker: WorkerInputs, now: datetime, started: datetime) -> str
   started_at = container_started_at(_current_report(worker, now), "telegraf")
   if "reboot_worker" in worker.tasks or (worker.reboot is not None and is_worker_rebooting(worker.reboot, now, started_at)):
     return "rebooting"
+  if worker.online is None:
+    return "checking"
   if not worker.online:
     return "offline"
   return "online" if worker_ready(worker, now, started) else "not ready"
@@ -235,10 +238,10 @@ def worker_entry(hostname: str, worker: WorkerInputs, now: datetime, started: da
 
 
 def worker_with_row(worker: WorkerInputs, ip: str, path: str | None) -> WorkerInputs:
-  """The record of a worker whose row has this `ip`. One that had no row yet starts not online and not rebooting,
-  whatever an earlier worker of the same name left."""
+  """The record of a worker whose row has this `ip`. One that had no row yet starts not known to be online or
+  offline and not rebooting, whatever an earlier worker of the same name left."""
   if worker.ip is None:
-    worker = replace(worker, online=False, reboot=None)
+    worker = replace(worker, online=None, reboot=None)
   return replace(worker, ip=ip, path=path)
 
 

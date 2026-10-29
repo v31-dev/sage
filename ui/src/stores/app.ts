@@ -30,6 +30,7 @@ const WORKER_INDICATORS: Record<WorkerStatus, Indicator> = {
   online: { state: 'ok', label: 'online' },
   'not ready': { state: 'warning', label: 'not ready' },
   offline: { state: 'error', label: 'offline' },
+  checking: { state: 'busy', label: 'checking' },
   adding: { state: 'busy', label: 'adding' },
   rebooting: { state: 'busy', label: 'rebooting' },
   removing: { state: 'busy', label: 'removing' },

@@ -323,15 +323,18 @@ class ApplicationMixin:
             container.worker.hostname}")
 
     try:
-      skip_remote_cleanup = force and not self.is_worker_online(container.worker.hostname)
+      online = self.worker_online(container.worker.hostname)
+      skip_remote_cleanup = force and online is False
 
       if skip_remote_cleanup:
         logger.warning(
             f"Force deleting container of application {container.application.qualified_name} from offline worker {
                 container.worker.hostname}; skipping remote cleanup.")
-      elif not self.is_worker_online(container.worker.hostname):
+      elif online is False:
         raise Exception(
             f"Worker {container.worker.hostname} is offline; use force delete to remove the container record anyway.")
+      elif online is None:
+        raise Exception(f"Worker {container.worker.hostname} is still being checked; try again once it is online.")
       else:
         # Stop container on worker
         await self.tailscale.exec_command(
@@ -565,10 +568,11 @@ class ApplicationMixin:
 
   def observe_application(self, application, worker, last_write) -> Observation:
     """How the application's container stands on a worker, from the worker's report. A worker out of
-    the pool is OFFLINE. With no report that can be compared with rows last written at `last_write`
-    (`WorkerReports.trusted`) nothing is known: the containers keep their status until the next report or the
-    next minute's sync. A container with no label has an empty version, which matches no deploy stamp."""
-    if not self.is_worker_online(worker.hostname):
+    the pool is OFFLINE; one that no sync has looked at yet is decided from its report. With no report that can be
+    compared with rows last written at `last_write` (`WorkerReports.trusted`) nothing is known: the containers keep
+    their status until the next report or the next minute's sync. A container with no label has an empty version,
+    which matches no deploy stamp."""
+    if self.worker_online(worker.hostname) is False:
       return Observation(OFFLINE)
     snapshot = WorkerReports().trusted(worker.hostname, last_write)
     if snapshot is None:

@@ -48,6 +48,7 @@ describe('the dot of the worker', () => {
     ['online', 'Worker online'],
     ['not ready', 'Worker not ready'],
     ['offline', 'Worker offline'],
+    ['checking', 'Worker checking'],
     ['rebooting', 'Worker rebooting'],
     ['adding', 'Worker adding'],
     ['removing', 'Worker removing'],

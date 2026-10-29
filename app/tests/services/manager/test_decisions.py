@@ -128,6 +128,19 @@ class TestPlanWorkerSync:
     result = plan([row("w1", False)], [row("w1", True)], force=True)
     assert result == [("setup", "w1", "came back online", False)]
 
+  def test_a_worker_not_known_yet_that_answers_is_set_up(self):
+    assert plan([row("w1", None)], [row("w1", True)]) == [("setup", "w1", "found online", False)]
+    assert plan([row("w1", None)], [row("w1", True)], check_stamps=True) == [("setup", "w1", "found online", False)]
+
+  def test_a_worker_not_known_yet_that_is_found_offline_is_taken_out(self):
+    assert plan([row("w1", None)], [row("w1", False)]) == [("offline", "w1", "found offline", False)]
+
+  def test_a_worker_still_not_known_is_left_alone(self):
+    assert plan([row("w1", None)], [row("w1", None)], force=True, check_stamps=True) == []
+
+  def test_a_worker_not_known_yet_that_the_tailnet_does_not_list_is_taken_out(self):
+    assert plan([row("w1", None)], []) == [("offline", "w1", "not found in the tailnet", False)]
+
 
 def snapshot(running=("traefik", "vector", "telegraf", "cloudflared"), traefik_reachable=True):
   def reading(name, status):
@@ -245,6 +258,7 @@ class TestWorkerStatus:
   def test_each_task_the_queue_is_watched_for_gives_the_worker_a_status(self, task, expected):
     assert status(online=True, tasks=frozenset({task})) == expected
     assert status(online=False, tasks=frozenset({task})) == expected
+    assert status(online=None, tasks=frozenset({task})) == expected
 
   def test_the_tasks_are_the_ones_the_statuses_are_given_for(self):
     assert WORKER_TASKS == ("add_worker", "remove_worker", "reboot_worker")
@@ -270,6 +284,11 @@ class TestWorkerStatus:
 
   def test_a_worker_that_does_not_answer_is_offline_whatever_its_report_says(self):
     assert status(online=False, report=report(traefik_reachable=False)) == "offline"
+
+  def test_a_worker_no_sync_has_looked_at_is_checking_whatever_its_report_says(self):
+    assert status() == "checking"
+    assert status(online=None, report=report()) == "checking"
+    assert status(online=None, report=report(traefik_reachable=False)) == "checking"
 
   def test_removing_wins_over_rebooting_and_adding(self):
     assert status(online=True, tasks=frozenset(WORKER_TASKS)) == "removing"
@@ -332,10 +351,10 @@ class TestWorkerEntry:
 
 
 class TestWorkerRows:
-  def test_a_worker_that_gets_a_row_starts_not_online_and_not_rebooting(self):
+  def test_a_worker_that_gets_a_row_starts_not_known_to_be_online_and_not_rebooting(self):
     kept = WorkerInputs(online=True, reboot=WorkerReboot(NOW, 1), tasks=frozenset({"add_worker"}), report=report())
     row = worker_with_row(kept, "100.64.0.2", "direct")
-    assert (row.ip, row.online, row.reboot, row.path) == ("100.64.0.2", False, None, "direct")
+    assert (row.ip, row.online, row.reboot, row.path) == ("100.64.0.2", None, None, "direct")
     assert row.tasks == kept.tasks and row.report == kept.report
 
   def test_a_worker_that_had_a_row_keeps_what_it_has_when_the_row_is_written_again(self):

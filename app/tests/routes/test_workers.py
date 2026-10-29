@@ -132,6 +132,12 @@ class TestDelete:
     assert (response.status_code, response.json()["detail"]) == (400, "Worker is online and has containers; delete them first.")
     assert manager.tasks == []
 
+  def test_a_worker_no_sync_has_looked_at_with_containers_is_refused_too(self, client, worker, application, manager):
+    manager.checking.add("w1")
+    Container.create(application=application, worker=worker)
+    assert client.delete("/api/workers/w1").status_code == 400
+    assert manager.tasks == []
+
   def test_an_offline_worker_with_containers_is_removed_with_them(self, client, worker, application, manager):
     Container.create(application=application, worker=worker)
     assert client.delete("/api/workers/w1").status_code == 200

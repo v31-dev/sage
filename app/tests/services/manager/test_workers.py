@@ -168,6 +168,20 @@ class TestSyncWorkers:
     self.sync(harness)
     assert harness.tailscale.asked == {"w1": True, "w2": False}
 
+  def test_a_worker_no_sync_has_looked_at_is_checked_as_not_known_and_set_up_once_it_answers(self, harness):
+    add(harness, "w1", None)
+    harness.tailscale.listed = [("w1", "100.64.0.2")]
+    harness.tailscale.answering = {"w1"}
+    self.sync(harness)
+    assert harness.tailscale.asked == {"w1": None}
+    assert harness.setups == [("w1", False)] and harness.offlined == []
+
+  def test_a_worker_no_sync_has_looked_at_that_is_found_offline_is_taken_out(self, harness):
+    add(harness, "w1", None)
+    harness.tailscale.listed = [("w1", "100.64.0.2")]
+    self.sync(harness)
+    assert harness.offlined == ["w1"] and harness.setups == []
+
   def test_a_forced_sync_is_passed_on(self, harness):
     add(harness, "w1", True)
     harness.tailscale.listed = [("w1", "100.64.0.2")]
@@ -621,6 +635,13 @@ class TestRemoveWorker:
     with pytest.raises(TaskFailed):
       self.remove(harness)
     assert Worker.get_or_none(Worker.hostname == "w1") is not None
+    assert harness.deleted_containers == [] and harness.tailscale.commands == []
+
+  def test_a_worker_no_sync_has_looked_at_with_containers_is_refused_like_an_online_one(self, harness, application):
+    add(harness, "w1", None)
+    Container.create(application=application, worker="w1")
+    with pytest.raises(TaskFailed):
+      self.remove(harness)
     assert harness.deleted_containers == [] and harness.tailscale.commands == []
 
   def test_an_offline_worker_has_its_containers_force_deleted_with_it(self, harness, application):

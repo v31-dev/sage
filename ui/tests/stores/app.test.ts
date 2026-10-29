@@ -259,6 +259,7 @@ describe('the indicators by status', () => {
     ['online', 'ok'],
     ['not ready', 'warning'],
     ['offline', 'error'],
+    ['checking', 'busy'],
     ['adding', 'busy'],
     ['rebooting', 'busy'],
     ['removing', 'busy'],

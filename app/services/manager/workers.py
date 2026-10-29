@@ -34,15 +34,16 @@ class WorkersMixin:
     - Recently online workers (previously offline but now answering)
     After that, a worker whose reports say its stack is down gets it started.
     """
-    known = [WorkerRow(w.hostname, w.ip, self.is_worker_online(w.hostname)) for w in Worker.select()]
+    known = [WorkerRow(w.hostname, w.ip, self.worker_online(w.hostname)) for w in Worker.select()]
     names = {row.hostname for row in known}
     listed = [peer for peer in await run_in_executor_with_context(self.tailscale.peers) if peer.hostname in names]
     was_online = {row.hostname: row.online for row in known}
-    online = await self.tailscale.online_states({w.hostname: was_online.get(w.hostname, False) for w in listed})
+    online = await self.tailscale.online_states({w.hostname: was_online[w.hostname] for w in listed})
     peers = [WorkerRow(w.hostname, w.ip, online[w.hostname]) for w in listed]
 
-    logger.info(f"Existing workers: {[(w.hostname, w.ip, 'online' if w.online else 'offline') for w in known]}")
-    logger.info(f"Tailscale workers: {[(w.hostname, w.ip, 'online' if w.online else 'offline') for w in peers]}")
+    states = {True: "online", False: "offline", None: "not known"}
+    logger.info(f"Existing workers: {[(w.hostname, w.ip, states[w.online]) for w in known]}")
+    logger.info(f"Tailscale workers: {[(w.hostname, w.ip, states[w.online]) for w in peers]}")
 
     for action in plan_worker_sync(known, peers, force, check_stamps):
       hostname = action.worker.hostname
@@ -75,10 +76,14 @@ class WorkersMixin:
     """The worker tasks are given to the worker list when the set of them differs; they fire no source of their own."""
     return [Fact(self.worker_tasks_busy, on_change=self._set_worker_tasks)]
 
+  def worker_online(self, hostname: str) -> bool | None:
+    """Whether the worker answered the last sync and was set up (`online` in `worker_list`): None until a sync has
+    looked at it, False for a name that is not in the list."""
+    entry = self.worker_entry(hostname)
+    return entry["online"] if entry else False
+
   def is_worker_online(self, hostname: str) -> bool:
-    """Whether the worker answered the last sync and was set up (`online` in `worker_list`). Not known, so not
-    online, until a sync has looked at it."""
-    return any(worker["online"] for worker in self.worker_list if worker["hostname"] == hostname)
+    return self.worker_online(hostname) is True
 
   def online_workers(self) -> list[Worker]:
     online = {worker["hostname"] for worker in self.worker_list if worker["online"]}
@@ -543,7 +548,7 @@ class WorkersMixin:
     # Re-check under the scope lock: a deploy could have placed a container here
     # between the route's check and this task running. Fail loudly so it surfaces
     # in the task table rather than vanishing.
-    if self.is_worker_online(worker_hostname) and worker.containers.count() > 0:
+    if self.worker_online(worker_hostname) is not False and worker.containers.count() > 0:
       logger.error(f"Worker {worker_hostname} gained containers before removal; aborting.")
       raise TaskFailed()
 

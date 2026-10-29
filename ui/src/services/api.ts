@@ -38,12 +38,19 @@ export interface InfraContainer {
   status: string
 }
 
-export type WorkerStatus = 'online' | 'not ready' | 'offline' | 'adding' | 'rebooting' | 'removing'
+export type WorkerStatus =
+  | 'online'
+  | 'not ready'
+  | 'offline'
+  | 'checking'
+  | 'adding'
+  | 'rebooting'
+  | 'removing'
 
 export interface Worker {
   hostname: string
   ip: string
-  online: boolean
+  online: boolean | null
   status: WorkerStatus
   // How the manager's last ping reached the worker: "direct", or "relay" with its region.
   path: string | null
@@ -57,7 +64,7 @@ export interface Worker {
 export interface WorkerListItem {
   hostname: string
   ip: string
-  online: boolean
+  online: boolean | null
   status: WorkerStatus
   path: string | null
   container_count: number | null

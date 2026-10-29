@@ -161,7 +161,7 @@ def delete_worker(request: Request, hostname: str):
 
   # An online worker is cleaned up when it goes, so its containers are deleted first; an offline one is
   # force-deleted with them.
-  if Manager().is_worker_online(hostname) and worker.containers.count() > 0:
+  if Manager().worker_online(hostname) is not False and worker.containers.count() > 0:
     raise HTTPException(status_code=400, detail="Worker is online and has containers; delete them first.")
   if Manager().worker_status(hostname) == "removing":
     raise HTTPException(status_code=409, detail="Worker is already being removed.")

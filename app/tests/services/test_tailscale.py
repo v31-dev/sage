@@ -535,7 +535,7 @@ class TestForget:
 
 
 class TestNextOnline:
-  @pytest.mark.parametrize("was_online", [True, False])
+  @pytest.mark.parametrize("was_online", [True, False, None])
   def test_an_answer_makes_it_online_and_clears_the_misses(self, was_online):
     assert next_online(was_online, True, 5) == (True, 0)
 
@@ -547,6 +547,10 @@ class TestNextOnline:
 
   def test_a_worker_that_is_offline_stays_offline_however_it_misses(self):
     assert next_online(False, False, 0) == (False, 1)
+
+  def test_a_worker_not_known_yet_stays_not_known_until_the_misses_reach_the_limit_and_then_is_offline(self):
+    assert next_online(None, False, 0) == (None, 1)
+    assert next_online(None, False, config.OFFLINE_AFTER_MISSED_CHECKS - 1) == (False, config.OFFLINE_AFTER_MISSED_CHECKS)
 
 
 class FakePing:
@@ -772,7 +776,7 @@ class TestOnlineStates:
 
   def test_when_the_manager_is_cut_off_nobody_changes_and_the_misses_are_not_counted(self, tailscale, answers):
     answers.connected = False
-    assert self.states(tailscale, a=True, b=False) == {"a": True, "b": False}
+    assert self.states(tailscale, a=True, b=False, c=None) == {"a": True, "b": False, "c": None}
     answers.connected = True
     assert self.states(tailscale, a=True) == {"a": True}
 

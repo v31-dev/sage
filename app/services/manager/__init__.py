@@ -58,8 +58,8 @@ class Manager(
       # Last check result per settings section (services/manager/settings.py).
       self.setting_checks = {}
       # The workers: what their owners pushed (`WorkerInputs` by hostname), the entry derived from each (status, path,
-      # container count, and whether it answered the last sync and was set up, `online`; nothing is known at start,
-      # so none is until the first sync has looked at it) (services/manager/workers.py).
+      # container count, and whether it answered the last sync and was set up, `online`, which is not known until a
+      # sync has looked at it) (services/manager/workers.py).
       self._worker_inputs = {}
       self.worker_list = []
       self._worker_list_lock = threading.Lock()

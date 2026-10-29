@@ -29,6 +29,8 @@ class FakeTailscale:
 
 
 class Harness(ApplicationMixin):
+  worker_entry = WorkersMixin.worker_entry
+  worker_online = WorkersMixin.worker_online
   is_worker_online = WorkersMixin.is_worker_online
 
   worker_home_dir = "/opt/sage"
@@ -174,6 +176,30 @@ class TestAWorkerOutOfThePool:
     assert ("error", "Application container w1-demo-web is in error state (worker offline).") in harness.notices
 
 
+class TestAWorkerNoSyncHasLookedAt:
+  """As at the manager's start, before the first worker sync has set the worker up."""
+
+  def test_its_report_of_a_running_container_leaves_everything_as_it_is(self, harness, deployed, worker):
+    harness.set_online(worker.hostname, None)
+    WorkerReports().accept("w1", report(reading()))
+    harness.sync(deployed)
+    assert statuses(deployed) == ("active", ["active"])
+    assert harness.notices == [] and harness.traefik_syncs == []
+
+  def test_its_report_decides_as_for_an_online_worker(self, harness, deployed, worker):
+    harness.set_online(worker.hostname, None)
+    WorkerReports().accept("w1", report(reading("exited")))
+    harness.sync(deployed)
+    assert statuses(deployed) == ("error", ["error"])
+    assert ("error", "Application container w1-demo-web is in error state (exited).") in harness.notices
+
+  def test_without_a_report_its_containers_keep_their_status(self, harness, deployed, worker):
+    harness.set_online(worker.hostname, None)
+    harness.sync(deployed)
+    assert statuses(deployed) == ("active", ["active"])
+    assert harness.notices == []
+
+
 class TestAStaleVersion:
   def test_it_is_stopped_and_becomes_inactive(self, harness, deployed):
     WorkerReports().accept("w1", report(reading(deployed_at="2025-01-01T00:00:00.000000")))
@@ -219,6 +245,12 @@ class TestObserveApplication:
   def test_an_offline_worker(self, harness, deployed, worker):
     harness.set_online(worker.hostname, False)
     assert self.observe(harness, deployed, worker) == Observation(OFFLINE)
+
+  def test_a_worker_no_sync_has_looked_at_is_observed_from_its_report(self, harness, deployed, worker):
+    harness.set_online(worker.hostname, None)
+    assert self.observe(harness, deployed, worker) == Observation(UNKNOWN)
+    WorkerReports().accept("w1", report(reading("paused", deployed_at="v1")))
+    assert self.observe(harness, deployed, worker) == Observation(SEEN, "paused", "v1")
 
   def test_the_report_gives_the_state_and_the_version(self, harness, deployed, worker):
     WorkerReports().accept("w1", report(reading("paused", deployed_at="v1")))

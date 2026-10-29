@@ -56,6 +56,7 @@ class FakeManager:
     self.worker_statuses = {}
     self.worker_list = []
     self.online = set()
+    self.checking = set()   # workers no sync has looked at yet
     self.traefik_syncs = []
 
   def __getattr__(self, name):
@@ -88,8 +89,11 @@ class FakeManager:
   def task_snapshot(self):
     return {"running": [{"task_id": "t-1"}], "queued": []}
 
+  def worker_online(self, hostname):
+    return None if hostname in self.checking else hostname in self.online
+
   def is_worker_online(self, hostname):
-    return hostname in self.online
+    return self.worker_online(hostname) is True
 
   def request_application_traefik_sync(self, application):
     self.traefik_syncs.append(application.id)
