@@ -206,7 +206,8 @@ The top-level `Dockerfile` builds:
 Current GitHub workflows:
 
 - `ci.yml`
-  - runs on every pull request; a newer run on the same ref cancels the older one
+  - runs on every pull request that is not a draft, and when a draft is marked ready for review; a newer run on the
+    same ref cancels the older one
   - two independent jobs that run in parallel
   - backend: `ruff check`, `isort --check-only .`, `autopep8 --diff --recursive --exit-code .` and `pytest` with coverage on Python 3.14
   - UI: `npm ci`, `npm run format:check`, `npm run build`, `npm run typecheck:tests` and `npm test` with
