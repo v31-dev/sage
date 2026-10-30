@@ -7,8 +7,6 @@ import uuid
 from collections.abc import Callable
 from contextvars import ContextVar
 
-from starlette.middleware.base import BaseHTTPMiddleware
-
 LOG_FORMAT = "[%(asctime)s] [%(levelname)-8s] [%(name)-19s] [%(task_id)s] %(message)s"
 task_id = ContextVar("task_id", default="")
 # One container's part of a task (its deploy, stop or backup), logged inside the task.
@@ -41,7 +39,8 @@ task_lines: ContextVar[TaskLines | None] = ContextVar("task_lines", default=None
 
 fastapi_exclude_log_paths = [
     "/api",  # Healthcheck
-    "/api/vector/logs",  # Logs ingeestion
+    "/api/vector/logs",  # Logs ingestion
+    "/api/telegraf/report",  # Worker reports, every few seconds from each worker
     "/api/workers/*/logs/*",  # Logs query
     "/api/tasks/*/logs",  # Task logs query
     "/api/workers/*/metrics",  # Metrics query
@@ -58,27 +57,6 @@ class ContextVarFilter(logging.Filter):
     sub = sub_task_id.get()
     record.task_id = f"{task_id.get()}/{sub}" if sub else task_id.get()
     return True
-
-
-uvicorn_access_logger = logging.getLogger("uvicorn.access")
-
-
-class fastapi_middleware(BaseHTTPMiddleware):
-  async def dispatch(self, request, call_next):
-    token = generate_task_id_token()
-
-    task_id.set(token)
-    request.state.task_id = token
-
-    client = f"{request.client.host}:{request.client.port}" if request.client else "-"
-    full_path = request.url.path + (f"?{request.url.query}" if request.url.query else "")
-    response = await call_next(request)
-    status_code = response.status_code
-    uvicorn_access_logger.info(
-        f'{client} - "{request.method} {full_path} HTTP/{request.scope["http_version"]}" {status_code}'
-    )
-    response.headers["X-Task-ID"] = token
-    return response
 
 
 class TaskFailed(Exception):

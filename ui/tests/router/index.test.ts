@@ -4,7 +4,6 @@ import ApplicationLogs from '@/pages/ApplicationLogs.vue'
 import ApplicationMetrics from '@/pages/ApplicationMetrics.vue'
 import Backup from '@/pages/Backup'
 import CloudflareSettings from '@/pages/Settings/CloudflareSettings.vue'
-import DebugSettings from '@/pages/Settings/DebugSettings.vue'
 import Home from '@/pages/Home.vue'
 import NotificationsSettings from '@/pages/Settings/NotificationsSettings.vue'
 import Project from '@/pages/Project'
@@ -63,7 +62,6 @@ describe('resolving an address', () => {
     ['/s3', 'S3Settings', {}],
     ['/notifications', 'NotificationsSettings', {}],
     ['/upgrade', 'Upgrade', {}],
-    ['/debug', 'DebugSettings', {}],
   ])('%s is the page %s', (path, name, params) => {
     const resolved = router.resolve(path)
 
@@ -90,13 +88,12 @@ describe('resolving an address', () => {
     ['S3Settings', S3Settings],
     ['NotificationsSettings', NotificationsSettings],
     ['Upgrade', Upgrade],
-    ['DebugSettings', DebugSettings],
   ])('shows the page of its own for the route %s', (name, page) => {
     expect(router.getRoutes().find(route => route.name === name)?.components?.default).toBe(page)
   })
 
   it('has a route for each of those pages and no other', () => {
-    expect(router.getRoutes()).toHaveLength(19)
+    expect(router.getRoutes()).toHaveLength(18)
   })
 
   it('does not mistake a longer address for a shorter page', () => {

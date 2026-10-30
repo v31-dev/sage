@@ -42,7 +42,7 @@ def get():
 
 
 @router.post("/")
-def add_worker(request: Request, worker_data: dict = Body(...)):
+def add_worker(worker_data: dict = Body(...)):
   """Add a machine of the tailnet, given by hostname or Tailscale IP, as a worker."""
   host = str(worker_data.get("host") or "").strip()
   peer = Tailscale().find_peer(host) if host else None
@@ -59,7 +59,6 @@ def add_worker(request: Request, worker_data: dict = Body(...)):
       scopes={"platform"},
       params={"worker_hostname": peer.hostname},
       executor="platform",
-      task_id=request.state.task_id,
       on_conflict=OnConflict.QUEUE,
   )
 
@@ -146,7 +145,6 @@ def reboot_worker(request: Request, hostname: str):
       scopes={"platform", "app"},
       params={"worker_hostname": worker.hostname},
       executor="platform",
-      task_id=request.state.task_id,
       on_conflict=OnConflict.QUEUE,
   )
 
@@ -174,7 +172,6 @@ def delete_worker(request: Request, hostname: str):
       scopes={"platform", "app"},
       params={"worker_hostname": worker.hostname},
       executor="platform",
-      task_id=request.state.task_id,
       on_conflict=OnConflict.QUEUE,
   )
 

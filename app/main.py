@@ -94,8 +94,9 @@ async def main():
   # here, so it runs while the servers below are already serving.
   start_scheduler()
 
-  # What the workers push: Telegraf's reports and Vector's logs. The access log is off: a
-  # report arrives every few seconds from every worker, and the routes log what matters.
+  # What the workers push: Telegraf's reports and Vector's logs. Both are left out of the access
+  # log (`fastapi_exclude_log_paths`): a report arrives every few seconds from every worker. Its
+  # `access_log` stays on, since turning it off silences the access logger every server shares.
   ingest_server = BackgroundServer(
       config=uvicorn.Config(
           app_fastapi_ingest,
@@ -104,7 +105,6 @@ async def main():
           workers=1,
           loop="asyncio",
           log_config=None,
-          access_log=False,
           timeout_keep_alive=config.REPORT_KEEP_ALIVE_SECONDS,
       )
   )

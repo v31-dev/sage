@@ -1,29 +1,23 @@
 import asyncio
 import itertools
 import logging
-import os
 import queue
 import random
-import re
 import sqlite3
 import threading
-import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from types import SimpleNamespace
 
 import pytest
 
 import config
 import services.logs as logs_module
-from services.base import Singleton
 from services.logs import Logs, _CaptureHandler
-from services.settings import Settings
-from services.updates import Updates, UpdateSource
 from utils.common import utcnow
 from utils.executor import run_in_executor_with_context
-from utils.logging import TaskFailed, TaskLines, sub_task_id, task_id, task_lines
+from utils.logging import TaskFailed, sub_task_id, task_id
 from utils.queue import TaskQueue
 
 log = logging.getLogger("tests.task")
@@ -131,7 +125,7 @@ class Tasks:
   def __init__(self, logs):
     self.logs = logs
     self.captured = queue.SimpleQueue()
-    self.handler = _CaptureHandler(self.captured, lambda: False)
+    self.handler = _CaptureHandler(self.captured)
     self.pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="lane")
     self.queue = TaskQueue(frozenset(["app"]), {"app": self.pool}, record=lambda task, status: None, notify=lambda: None)
 
@@ -144,7 +138,7 @@ class Tasks:
       await asyncio.sleep(0)
       self.queue.dispatch_tick()
     while not self.captured.empty():
-      _, entry = self.captured.get()
+      entry = self.captured.get()
       self.logs.write_task_line(entry)
 
   def messages(self, task_id, sub_task_id=""):
@@ -586,306 +580,3 @@ class TestUnderLoad:
       writer.join()
     assert errors == [], errors[0] if errors else ""
     assert logs.get_logs_db("web")["db"].execute_sql("PRAGMA integrity_check").fetchone()[0] == "ok"
-
-
-debug_log = logging.getLogger("tests.debug")
-
-
-def eventually(check, timeout=5.0):
-  """Wait for the drain thread to have done what `check` looks for."""
-  deadline = time.monotonic() + timeout
-  while not check():
-    assert time.monotonic() < deadline, "the drain thread did not get there in time"
-    time.sleep(0.01)
-
-
-def age(path, when: datetime):
-  """Set when a file was last written, a UTC time."""
-  seconds = when.replace(tzinfo=timezone.utc).timestamp()
-  os.utime(path, (seconds, seconds))
-
-
-class Capture:
-  """The service as the manager starts it, once the settings are loaded: its capture on its own thread."""
-
-  def __init__(self):
-    self.started = []
-    self.logs = self._start()
-
-  def _start(self):
-    logs = Logs()
-    logs.start_capture()
-    self.started.append(logs)
-    return logs
-
-  def restart(self):
-    """Sage stops and starts again on the same data."""
-    self.stop()
-    Singleton._instances.pop(Logs)
-    Singleton._instances.pop(Settings)
-    self.logs = self._start()
-    return self.logs
-
-  def stop(self):
-    for handler in [h for h in logging.getLogger().handlers if isinstance(h, _CaptureHandler)]:
-      logging.getLogger().removeHandler(handler)
-    for logs in self.started:
-      logs._queue.put(("close", None))
-
-  def text(self, name=None) -> str:
-    path = self.logs.debug_dir / (name or self.logs.debug_file)
-    return path.read_text() if path.exists() else ""
-
-
-@pytest.fixture
-def capture(db, clock, caplog):
-  caplog.set_level(logging.INFO)
-  capture = Capture()
-  yield capture
-  capture.stop()
-  for logs in capture.started:
-    for shard in logs._dbs["logs"].values():
-      shard["db"].close()
-
-
-@pytest.fixture
-def fired(register):
-  """The sources the service fires."""
-  fired = []
-  register(Updates, SimpleNamespace(changed=fired.append))
-  return fired
-
-
-FIRST_FILE = "sage-debug-2026-01-01T12-00-00Z.log"
-
-
-class TestDebugCapture:
-  def test_every_line_goes_to_its_file_with_its_prefix_until_the_capture_is_stopped(self, capture):
-    logs = capture.logs
-    logs.set_debug_stop("2026-01-01T13:00:00")
-    token = task_id.set("abc12345")
-    try:
-      debug_log.info("inside a task")
-    finally:
-      task_id.reset(token)
-    debug_log.warning("outside of one")
-    logs.set_debug_stop(None)
-    debug_log.info("after the stop")
-
-    assert logs.debug_file is None
-    assert Settings().get("debug", "stop_at") is None
-    eventually(lambda: "Debug capture stopped" in capture.text(FIRST_FILE))
-    text = capture.text(FIRST_FILE)
-    assert re.search(r"^\[.+\] \[INFO +\] \[tests\.debug +\] \[abc12345\] inside a task$", text, re.M)
-    assert re.search(r"^\[.+\] \[WARNING +\] \[tests\.debug +\] \[\] outside of one$", text, re.M)
-    assert "after the stop" not in text
-
-  @pytest.mark.parametrize("quiet", [False, True], ids=["task", "quiet task"])
-  def test_a_task_line_is_in_the_file_when_it_is_logged(self, capture, quiet):
-    logs = capture.logs
-    logs.set_debug_stop("2026-01-01T13:00:00")
-    tokens = task_id.set("t1"), task_lines.set(TaskLines(quiet=quiet))
-    try:
-      debug_log.info("a task line")
-    finally:
-      task_lines.reset(tokens[1])
-      task_id.reset(tokens[0])
-
-    eventually(lambda: "[t1] a task line" in capture.text())
-    if quiet:
-      assert logs.query_task_logs("t1")["lines"] == []
-    else:
-      eventually(lambda: [line["message"] for line in logs.query_task_logs("t1")["lines"]] == ["a task line"])
-
-  @pytest.mark.parametrize("stop_at", ["2026-01-01T12:00:00", "2026-01-01T11:30:00Z", "tomorrow"])
-  def test_a_stop_time_that_is_not_ahead_or_not_a_time_is_refused(self, capture, stop_at):
-    with pytest.raises(ValueError):
-      capture.logs.set_debug_stop(stop_at)
-    assert capture.logs.debug_file is None
-    assert Settings().get("debug", "stop_at") is None
-
-  @pytest.mark.parametrize("stop_at", ["2026-01-01T18:30:00+05:30", "2026-01-01T13:00:00.000Z"])
-  def test_a_stop_time_with_a_zone_is_kept_in_utc(self, capture, stop_at):
-    capture.logs.set_debug_stop(stop_at)
-    assert Settings().get("debug", "stop_at") == "2026-01-01T13:00:00"
-
-  def test_moving_the_stop_time_keeps_the_capture_in_its_file(self, capture, clock):
-    logs = capture.logs
-    logs.set_debug_stop("2026-01-01T13:00:00")
-    clock.advance(timedelta(minutes=5))
-    logs.set_debug_stop("2026-01-01T14:00:00")
-
-    assert logs.debug_file == FIRST_FILE
-    eventually(lambda: "on until 2026-01-01T14:00:00" in capture.text())
-    assert [file["name"] for file in logs.debug_files()] == [FIRST_FILE]
-
-  def test_each_capture_has_its_own_file_and_they_are_listed_newest_first(self, capture, clock):
-    logs = capture.logs
-    logs.set_debug_stop("2026-01-01T13:00:00")
-    logs.set_debug_stop(None)
-    clock.advance(timedelta(minutes=1))
-    logs.set_debug_stop("2026-01-01T13:00:00")
-
-    eventually(lambda: len(logs.debug_files()) == 2)
-    assert [(file["name"], file["active"]) for file in logs.debug_files()] == [
-        ("sage-debug-2026-01-01T12-01-00Z.log", True), (FIRST_FILE, False)]
-
-  def test_the_minutely_check_stops_a_capture_whose_time_has_passed(self, capture, clock):
-    logs = capture.logs
-    logs.set_debug_stop("2026-01-01T12:30:00")
-    clock.advance(timedelta(minutes=29))
-    logs.follow_debug_setting()
-    assert logs.debug_file == FIRST_FILE
-
-    clock.advance(timedelta(minutes=1))
-    logs.follow_debug_setting()
-    debug_log.info("after the stop")
-
-    assert logs.debug_file is None
-    assert Settings().get("debug", "stop_at") is None
-    eventually(lambda: "Debug capture stopped" in capture.text(FIRST_FILE))
-    assert "after the stop" not in capture.text(FIRST_FILE)
-
-  def test_the_check_follows_a_setting_changed_under_it(self, capture):
-    """A restore puts back the backup's setting, which the capture follows from the next check."""
-    logs = capture.logs
-    logs.set_debug_stop("2026-01-01T13:00:00")
-    Settings().set("debug", {"stop_at": None})
-    logs.follow_debug_setting()
-    assert logs.debug_file is None
-
-    Settings().set("debug", {"stop_at": "2026-01-01T11:00:00"})
-    logs.follow_debug_setting()
-    assert logs.debug_file is None
-    assert Settings().get("debug", "stop_at") is None
-
-    Settings().set("debug", {"stop_at": "2026-01-01T13:00:00"})
-    logs.follow_debug_setting()
-    assert logs.debug_file == FIRST_FILE
-
-  def test_a_capture_resumes_in_its_file_after_a_restart(self, capture, clock):
-    capture.logs.set_debug_stop("2026-01-01T13:00:00")
-    debug_log.info("before the restart")
-    eventually(lambda: "before the restart" in capture.text(FIRST_FILE))
-
-    clock.advance(timedelta(minutes=10))
-    logs = capture.restart()
-    debug_log.info("after the restart")
-
-    assert logs.debug_file == FIRST_FILE
-    eventually(lambda: "after the restart" in capture.text(FIRST_FILE))
-    assert capture.text(FIRST_FILE).count("before the restart") == 1
-
-  def test_a_capture_whose_time_passed_while_sage_was_down_is_over(self, capture, clock):
-    capture.logs.set_debug_stop("2026-01-01T13:00:00")
-    clock.advance(timedelta(hours=2))
-    logs = capture.restart()
-
-    assert logs.debug_file is None
-    assert Settings().get("debug", "stop_at") is None
-
-  def test_a_capture_stops_when_its_file_reaches_the_size_limit(self, capture, monkeypatch):
-    monkeypatch.setattr(config, "LOG_SHARD_MAX_BYTES", 4096)
-    logs = capture.logs
-    logs.set_debug_stop("2026-01-01T13:00:00")
-    for index in range(100):
-      debug_log.info(f"line {index} " + "x" * 80)
-
-    eventually(lambda: logs.debug_file is None)
-    assert Settings().get("debug", "stop_at") is None
-    assert 4096 <= (logs.debug_dir / FIRST_FILE).stat().st_size < 4096 + 200
-
-  def test_files_past_the_retention_go_but_not_the_one_being_written(self, capture):
-    logs = capture.logs
-    old = logs.debug_dir / "sage-debug-2025-12-01T00-00-00Z.log"
-    recent = logs.debug_dir / "sage-debug-2025-12-31T00-00-00Z.log"
-    for path in (old, recent):
-      path.write_text("a line\n")
-    logs.set_debug_stop("2026-01-01T13:00:00")
-    eventually(lambda: "Debug capture on" in capture.text())
-    age(old, datetime(2025, 12, 1))
-    age(recent, datetime(2025, 12, 31))
-    age(logs.debug_dir / FIRST_FILE, datetime(2025, 12, 1))
-
-    logs.cleanup()
-
-    assert [file["name"] for file in logs.debug_files()] == [FIRST_FILE, recent.name]
-
-  def test_a_file_can_be_deleted_but_not_the_one_being_written(self, capture):
-    logs = capture.logs
-    done = logs.debug_dir / "sage-debug-2025-12-31T00-00-00Z.log"
-    done.write_text("a line\n")
-    logs.set_debug_stop("2026-01-01T13:00:00")
-
-    with pytest.raises(ValueError, match="stop it first"):
-      logs.delete_debug_file(FIRST_FILE)
-    logs.delete_debug_file(done.name)
-
-    assert not done.exists()
-
-  @pytest.mark.parametrize("name", ["../data.db", "sage-debug-today.log", "tasks.db", ""])
-  def test_a_name_that_is_not_a_capture_file_is_refused(self, logs, name):
-    with pytest.raises(ValueError):
-      logs.debug_file_path(name)
-
-
-class TestDebugCaptureTopic:
-  def test_it_is_told_each_time_a_capture_starts_moves_or_stops(self, capture, fired):
-    fired.clear()
-    for stop_at in ("2026-01-01T13:00:00", "2026-01-01T14:00:00", None):
-      capture.logs.set_debug_stop(stop_at)
-      assert fired == [UpdateSource.DEBUG_CAPTURE]
-      fired.clear()
-
-  def test_the_minutely_check_tells_it_while_the_file_grows_and_not_once_nothing_changes(self, capture, fired):
-    logs = capture.logs
-    logs.follow_debug_setting()
-    logs.set_debug_stop("2026-01-01T13:00:00")
-    debug_log.info("a line")
-    eventually(lambda: "a line" in capture.text())
-    fired.clear()
-
-    logs.follow_debug_setting()
-    logs.follow_debug_setting()
-
-    assert fired == [UpdateSource.DEBUG_CAPTURE]
-
-  def test_it_is_told_when_a_capture_ends_at_its_stop_time(self, capture, clock, fired):
-    logs = capture.logs
-    logs.set_debug_stop("2026-01-01T12:30:00")
-    fired.clear()
-    clock.advance(timedelta(minutes=30))
-
-    logs.follow_debug_setting()
-
-    assert fired == [UpdateSource.DEBUG_CAPTURE]
-    assert logs.debug_capture()["stop_at"] is None
-
-  def test_it_is_told_when_a_capture_ends_at_the_size_limit(self, capture, monkeypatch, fired):
-    monkeypatch.setattr(config, "LOG_SHARD_MAX_BYTES", 4096)
-    logs = capture.logs
-    logs.set_debug_stop("2026-01-01T13:00:00")
-    fired.clear()
-
-    for index in range(100):
-      debug_log.info(f"line {index} " + "x" * 80)
-
-    eventually(lambda: fired)
-    assert fired == [UpdateSource.DEBUG_CAPTURE]
-    assert logs.debug_capture()["stop_at"] is None
-
-  def test_it_is_told_when_a_file_is_deleted_or_goes_with_the_retention(self, capture, fired):
-    logs = capture.logs
-    deleted = logs.debug_dir / "sage-debug-2025-12-30T00-00-00Z.log"
-    old = logs.debug_dir / "sage-debug-2025-12-01T00-00-00Z.log"
-    for path in (deleted, old):
-      path.write_text("a line\n")
-    age(old, datetime(2025, 12, 1))
-    fired.clear()
-
-    logs.delete_debug_file(deleted.name)
-    assert fired == [UpdateSource.DEBUG_CAPTURE]
-    logs.cleanup()
-    assert fired == [UpdateSource.DEBUG_CAPTURE] * 2
-    logs.cleanup()
-    assert fired == [UpdateSource.DEBUG_CAPTURE] * 2

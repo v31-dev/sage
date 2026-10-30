@@ -151,7 +151,6 @@ def deploy_application(request: Request):
       scopes={f"app:{application.qualified_name}"},
       params={"application_id": application.id},
       executor="app",
-      task_id=request.state.task_id,
   ):
     raise HTTPException(status_code=409, detail="Application already has an operation in progress.")
 
@@ -180,7 +179,6 @@ def stop_application(request: Request):
       scopes={f"app:{application.qualified_name}"},
       params={"application_id": application.id},
       executor="app",
-      task_id=request.state.task_id,
   ):
     raise HTTPException(status_code=409, detail="Application already has an operation in progress.")
 

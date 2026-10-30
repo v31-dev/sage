@@ -21,10 +21,8 @@ from routes.workers import router as workers_router
 from services.cloudflare import Cloudflare
 from services.manager import Manager
 from services.updates import Updates
-from utils.logging import fastapi_middleware
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, redirect_slashes=False)
-app.add_middleware(fastapi_middleware)
 
 # While Sage is paused, restoring or stopping, only reads are served: GETs, and pause/resume themselves.
 _ALLOWED_WHILE_PAUSED = ("/api/settings/pause", "/api/settings/resume")

@@ -2,10 +2,8 @@ import logging
 import re
 
 import pytest
-from fastapi import FastAPI, Request
-from fastapi.testclient import TestClient
 
-from utils.logging import (ContextVarFilter, ExactPathFilter, SuppressTracebackFilter, TaskFailed, fastapi_exclude_log_paths, fastapi_middleware,
+from utils.logging import (ContextVarFilter, ExactPathFilter, SuppressTracebackFilter, TaskFailed, fastapi_exclude_log_paths,
                            generate_task_id_token, get_log_level, sub_task_id, task_id)
 
 
@@ -20,6 +18,7 @@ class TestExactPathFilter:
       "/api",
       "/api?ts=1",
       "/api/vector/logs",
+      "/api/telegraf/report",
       "/api/workers/w1/logs/web",
       "/api/tasks/abc12345/logs?sub_task_id=def67890",
       "/api/workers/w1/metrics",
@@ -117,41 +116,3 @@ def test_task_ids_are_eight_hex_characters_and_differ():
   tokens = {generate_task_id_token() for _ in range(50)}
   assert len(tokens) == 50
   assert all(re.fullmatch(r"[0-9a-f]{8}", token) for token in tokens)
-
-
-class TestRequestMiddleware:
-  @pytest.fixture
-  def client(self):
-    app = FastAPI()
-    app.add_middleware(fastapi_middleware)
-
-    @app.get("/ping")
-    async def ping(request: Request):
-      return {"state": request.state.task_id, "context": task_id.get()}
-
-    @app.get("/sync-ping")
-    def sync_ping():
-      return {"context": task_id.get()}
-
-    return TestClient(app)
-
-  def test_every_response_carries_its_task_id(self, client):
-    response = client.get("/ping")
-    assert re.fullmatch(r"[0-9a-f]{8}", response.headers["X-Task-ID"])
-
-  def test_the_task_id_reaches_the_handler_and_its_context(self, client):
-    response = client.get("/ping")
-    assert response.json() == {"state": response.headers["X-Task-ID"], "context": response.headers["X-Task-ID"]}
-
-  def test_the_task_id_reaches_a_handler_that_runs_in_a_thread(self, client):
-    response = client.get("/sync-ping")
-    assert response.json()["context"] == response.headers["X-Task-ID"]
-
-  def test_each_request_gets_its_own_task_id(self, client):
-    assert client.get("/ping").headers["X-Task-ID"] != client.get("/ping").headers["X-Task-ID"]
-
-  def test_the_request_is_logged_as_an_access_line(self, client, caplog):
-    with caplog.at_level(logging.INFO, logger="uvicorn.access"):
-      client.get("/ping?x=1")
-    messages = [record.getMessage() for record in caplog.records if record.name == "uvicorn.access"]
-    assert messages == ['testclient:50000 - "GET /ping?x=1 HTTP/1.1" 200']

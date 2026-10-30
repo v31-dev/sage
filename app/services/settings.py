@@ -10,7 +10,6 @@ logger = logging.getLogger(__name__)
 SETTING_DEFINITIONS = {
     "s3": ("access_key", "secret_key", "bucket", "endpoint", "path"),
     "notifications": ("discord_webhook",),
-    "debug": ("stop_at",),
 }
 
 # Sections of independent optional channels: configured once any one field is set. In the

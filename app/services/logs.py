@@ -5,7 +5,6 @@ import re
 import shutil
 import threading
 import time
-from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from functools import partial
 from pathlib import Path
@@ -16,28 +15,20 @@ from playhouse.sqlite_ext import FTS5Model, RowIDField, SearchField
 import config
 from services.base import Base
 from services.db import Application, Project
-from services.settings import Settings
-from services.updates import Fact, UpdateSource
 from utils.common import utcnow
-from utils.logging import LOG_FORMAT, ContextVarFilter, SuppressTracebackFilter, sub_task_id, task_id, task_lines
+from utils.logging import ContextVarFilter, SuppressTracebackFilter, sub_task_id, task_id, task_lines
 
 logger = logging.getLogger(__name__)
 
 _SYSTEM_LOG_CONTAINERS = {"cloudflared", "traefik", "telegraf"}
 # The task logs' file, beside the container shards. An application's shard is named `project-app`, so none is this.
 _TASKS = "tasks"
-# A debug capture's file is named by its start time, so the newest is the one a capture on appends to.
-_DEBUG_FILE = re.compile(r"sage-debug-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z\.log")
-
-
-def _new_debug_file() -> str:
-  return f"sage-debug-{utcnow():%Y-%m-%dT%H-%M-%SZ}.log"
 
 
 class Logs(Base):
-  """Per-container log shards (one SQLite DB each, with an FTS5 message index), the task logs (the lines the manager
-  logs inside its queued tasks) and the debug capture (every line it logs, in a file, until the `debug` setting's stop
-  time). A handler on the root logger hands the manager's lines to a drain thread to write."""
+  """Per-container log shards (one SQLite DB each, with an FTS5 message index) and the task logs (the lines the
+  manager logs inside its queued tasks). A handler on the root logger hands a task's lines to a drain thread to
+  write."""
 
   def __init__(self):
     super().__init__()
@@ -50,46 +41,19 @@ class Logs(Base):
     self._total_checked = float("-inf")
     self._trim_lock = threading.Lock()
 
-    self.debug_dir = Path(self.db_path) / "debug"
-    os.makedirs(self.debug_dir, exist_ok=True)
-
     # The handler enqueues the lines; the drain thread writes them off the calling thread (often the event loop).
     self._queue = queue.SimpleQueue()
-    # The file of the debug capture on, which the drain thread holds open.
-    self.debug_file: str | None = None
-    self._debug_lock = threading.Lock()
-    self._debug_capture = Fact(self.debug_capture, UpdateSource.DEBUG_CAPTURE)
 
   def start_capture(self):
-    """Write the manager's lines from now on, and resume a debug capture whose stop time is still ahead. Runs once
-    the settings are loaded; the lines before it are in stdout only."""
+    """Write the lines of queued tasks from now on: the handler on the root logger, and the drain thread."""
     threading.Thread(target=self._capture_loop, name="sage-log-capture", daemon=True).start()
-    logging.getLogger().addHandler(_CaptureHandler(self._queue, lambda: self.debug_file is not None))
-    self.follow_debug_setting()
+    logging.getLogger().addHandler(_CaptureHandler(self._queue))
 
   def _capture_loop(self):
-    file, name = None, None
     while True:
-      kind, item = self._queue.get()
+      entry = self._queue.get()
       try:
-        if kind == "task":
-          self.write_task_line(item)
-        elif kind == "open":
-          if file is not None:
-            file.close()
-          file, name = open(self.debug_dir / item, "ab"), item
-        elif kind == "close":
-          if file is not None:
-            file.close()
-          file, name = None, None
-        elif kind == "line" and file is not None:
-          file.write(item.encode())
-          if file.tell() >= config.LOG_SHARD_MAX_BYTES:
-            file.close()
-            file = None
-            self._debug_file_full(name)
-        if file is not None and self._queue.empty():
-          file.flush()
+        self.write_task_line(entry)
       except Exception:
         pass  # never let a write error kill the drain thread
 
@@ -258,86 +222,6 @@ class Logs(Base):
       query = query.where(TaskLogs.sub_task_id == sub_task_id)
     rows = list(query.order_by(TaskLogs.id.desc()).limit(config.LOG_QUERY_MAX_ROWS + 1).dicts())
     return {"lines": rows[:config.LOG_QUERY_MAX_ROWS][::-1], "more": len(rows) > config.LOG_QUERY_MAX_ROWS}
-
-  def set_debug_stop(self, stop_at: str | None):
-    """Start a debug capture in a new file until `stop_at`, move the stop time of the one on, or stop it (None)."""
-    if stop_at is not None:
-      when = datetime.fromisoformat(stop_at)
-      if when.tzinfo is not None:
-        when = when.astimezone(timezone.utc).replace(tzinfo=None)
-      if when <= utcnow():
-        raise ValueError("The stop time has passed.")
-      stop_at = when.isoformat()
-    with self._debug_lock:
-      Settings().set("debug", {"stop_at": stop_at})
-      if stop_at is not None and self.debug_file is None:
-        self._open_debug_file(_new_debug_file())
-      elif stop_at is not None:
-        logger.info(f"Debug capture on until {stop_at} UTC: {self.debug_file}.")
-    self.follow_debug_setting()
-
-  def follow_debug_setting(self):
-    """Make the debug capture follow the `debug` setting: on while its stop time is ahead, appending to the newest
-    file, and off once it is cleared or has passed, which clears it. Run every minute, it also pushes the growth of
-    the file being written."""
-    with self._debug_lock:
-      stop_at = Settings().get("debug", "stop_at")
-      if stop_at is not None and datetime.fromisoformat(stop_at) <= utcnow():
-        Settings().set("debug", {"stop_at": None})
-        stop_at = None
-      if stop_at is not None and self.debug_file is None:
-        files = self.debug_files()
-        self._open_debug_file(files[0]["name"] if files else _new_debug_file())
-      elif stop_at is None and self.debug_file is not None:
-        logger.info(f"Debug capture stopped: {self.debug_file}.")
-        self.debug_file = None
-        self._queue.put(("close", None))
-    self._debug_capture.check()
-
-  def _open_debug_file(self, name: str):
-    # Listed from the start, before the drain thread opens it.
-    (self.debug_dir / name).touch()
-    self._queue.put(("open", name))
-    self.debug_file = name
-    logger.info(f"Debug capture on until {Settings().get('debug', 'stop_at')} UTC: {name}.")
-
-  def _debug_file_full(self, name: str):
-    """The drain thread closed the file at its size limit: the capture is over."""
-    with self._debug_lock:
-      if self.debug_file != name:
-        return
-      self.debug_file = None
-      Settings().set("debug", {"stop_at": None})
-    logger.warning(f"Debug capture stopped: {name} reached {config.LOG_SHARD_MAX_BYTES // 2**20} MiB.")
-    self._debug_capture.check()
-
-  def debug_capture(self) -> dict:
-    return {"stop_at": Settings().get("debug", "stop_at"), "files": self.debug_files()}
-
-  def debug_files(self) -> list[dict]:
-    """The debug captures' files, newest first."""
-    files = []
-    for path in sorted(self.debug_dir.glob("sage-debug-*.log"), reverse=True):
-      stat = path.stat()
-      files.append({
-          "name": path.name,
-          "size": stat.st_size,
-          "modified_at": datetime.fromtimestamp(stat.st_mtime, timezone.utc).replace(tzinfo=None),
-          "active": path.name == self.debug_file,
-      })
-    return files
-
-  def debug_file_path(self, name: str) -> Path:
-    if not _DEBUG_FILE.fullmatch(name):
-      raise ValueError(f"Not a debug capture file: {name!r}")
-    return self.debug_dir / name
-
-  def delete_debug_file(self, name: str):
-    path = self.debug_file_path(name)
-    if name == self.debug_file:
-      raise ValueError("The debug capture is writing this file; stop it first.")
-    path.unlink()
-    self._debug_capture.check()
 
   def _check_sizes(self, name: str):
     """After a write: trim the file's logs, and all logs together, if they are over their limits. Looked at at most
@@ -510,42 +394,32 @@ class Logs(Base):
 
     trimmed = sum(self.trim_shard(name) for name in sorted(existing)) + self.trim_total()
 
-    old_files = [file["name"] for file in self.debug_files() if not file["active"] and file["modified_at"] < cutoff]
-    for name in old_files:
-      (self.debug_dir / name).unlink(missing_ok=True)
-    self._debug_capture.check()
-
     logger.info(
         f"Logs cleanup: removed {deleted} log rows older than {days} days and trimmed {trimmed} over the size limits; "
-        f"dropped {len(orphans)} orphaned shard(s) and {len(old_files)} debug file(s).")
+        f"dropped {len(orphans)} orphaned shard(s).")
 
 
 class _CaptureHandler(logging.Handler):
-  """Hands every line to the drain thread while a debug capture is on, and the lines of a queued task, so the calling
-  thread never blocks on a write."""
+  """Hands the lines of a queued task to the drain thread, so the calling thread never blocks on a write."""
 
-  def __init__(self, q: queue.SimpleQueue, debugging: Callable[[], bool]):
+  def __init__(self, q: queue.SimpleQueue):
     super().__init__()
     self._queue = q
-    self._debugging = debugging
     self.setFormatter(logging.Formatter("%(message)s"))
-    self._debug_formatter = logging.Formatter(LOG_FORMAT)
     self.addFilter(ContextVarFilter())
     self.addFilter(SuppressTracebackFilter())
 
   def emit(self, record):
     try:
-      if self._debugging():
-        self._queue.put(("line", self._debug_formatter.format(record) + "\n"))
       lines = task_lines.get()
       if lines is not None:
-        lines.write(partial(self._queue.put, ("task", {
+        lines.write(partial(self._queue.put, {
             "task_id": task_id.get(),
             "sub_task_id": sub_task_id.get(),
             "ts": datetime.fromtimestamp(record.created, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z",
             "level": record.levelname,
             "logger": record.name,
             "message": self.format(record),
-        })))
+        }))
     except Exception:
       self.handleError(record)

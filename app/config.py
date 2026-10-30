@@ -28,7 +28,7 @@ UPDATES_PING_TIMEOUT_SECONDS = 10
 # LOG_TOTAL_MAX_DISK_SHARE of the data volume. A trim leaves LOG_TRIM_TO_SHARE of the limit and keeps each file's newest
 # LOG_KEEP_NEWEST_ROWS lines. Sizes are checked after a write at most every LOG_SIZE_CHECK_SECONDS, and lines go
 # LOG_TRIM_BATCH_ROWS at a time. A file bigger than LOG_SHARD_VACUUM_RATIO times its limit is rewritten. A query returns
-# the newest LOG_QUERY_MAX_ROWS lines at most. A debug capture stops when its file reaches LOG_SHARD_MAX_BYTES.
+# the newest LOG_QUERY_MAX_ROWS lines at most.
 LOG_SHARD_MAX_BYTES = 256 * 1024 * 1024
 LOG_TOTAL_MAX_BYTES = 2 * 1024 * 1024 * 1024
 LOG_TOTAL_MAX_DISK_SHARE = 0.10

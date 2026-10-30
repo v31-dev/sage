@@ -30,7 +30,6 @@ class UpdateSource(StrEnum):
   CHECKS = "checks"                  # the result of checking a settings section
   LATEST_VERSION = "latest_version"  # the newest version released
   RELEASE = "release"                # a release was fetched
-  DEBUG_CAPTURE = "debug_capture"    # the debug capture's stop time, or its files
   APPLICATION = "application"        # keyed by `<project>/<name>`: the application, or a container, domain or volume of it, was written
   WORKER_ENTRY = "worker_entry"      # keyed by hostname: the worker's entry in the worker list differs
   WORKER_CONTAINERS = "worker_containers"  # keyed by hostname: a container of the worker, or what its page shows of its application, was written
@@ -45,7 +44,6 @@ class UpdateTopic(StrEnum):
   BACKUPS = "backups"
   RELEASE = "release"
   WORKERS = "workers"
-  DEBUG = "debug"
   WORKER = "worker"            # one worker: `worker:<hostname>`
   APPLICATION = "application"  # one application: `application:<project>/<name>`
 

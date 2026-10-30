@@ -24,7 +24,7 @@ This is a living project-context file for AI coding agents. Keep it concise, cur
 
 ## Project Summary
 
-Sage is a lightweight manager-and-workers micro-PaaS that uses Tailscale for node connectivity, Cloudflare (required) for the domain, DNS and tunnels, Traefik for ingress, Vector for worker logs (the manager captures its own in-process: a queued task's lines into the task logs, every line into a debug capture's file while one is on), Telegraf for worker metrics and container state (the manager self-collects its own container metrics in-process), SQLite for persistence, APScheduler as a cron/interval trigger feeding an in-memory operation queue, and Vue 3 for the UI.
+Sage is a lightweight manager-and-workers micro-PaaS that uses Tailscale for node connectivity, Cloudflare (required) for the domain, DNS and tunnels, Traefik for ingress, Vector for worker logs (the manager stores its queued tasks' lines in-process; its other lines are in stdout, for `docker logs`), Telegraf for worker metrics and container state (the manager self-collects its own container metrics in-process), SQLite for persistence, APScheduler as a cron/interval trigger feeding an in-memory operation queue, and Vue 3 for the UI.
 
 ## Core Context To Preserve
 
@@ -87,9 +87,9 @@ If this context may have been lost, reread this file plus the relevant `docs/` p
 ### Logging And `task_id`
 
 - `task_id` flows through `ContextVar` in `app/utils/logging.py`.
-- FastAPI middleware creates the request `task_id`; the queue's `run_task` sets it per queued task.
+- The queue's `run_task` sets it for each queued task; a request has none.
 - The offload helpers copy the context, so worker threads keep the originating `task_id`.
-- Do not pass `task_id` through regular function parameters; the one boundary is `add_task(task_id=...)` for route correlation.
+- Do not pass `task_id` through regular function parameters.
 
 ### Async Boundaries
 
@@ -105,7 +105,7 @@ If this context may have been lost, reread this file plus the relevant `docs/` p
 - Main state is stored in SQLite with WAL mode. The database is deferred: `Database` opens it at `config.DB_PATH` at startup, and importing the models touches no disk.
 - Metrics are stored in per-host SQLite files.
 - Times are naive UTC, the way the UI reads a timestamp that has no zone. Read the clock through `utils.common.utcnow()`; ruff (`DTZ003`, `DTZ005`) rejects `datetime.utcnow()` and a `datetime.now()` without a zone. Retry with backoff goes through `utils.retry` (`retry`, `retry_async`, and `is_transient` as the one meaning of "transient").
-- Logs are stored in per-container SQLite files with FTS5 search; a queued task's lines in `logs/tasks.db`, read by task id. The manager's other lines are in stdout only, unless a debug capture is on.
+- Logs are stored in per-container SQLite files with FTS5 search; a queued task's lines in `logs/tasks.db`, read by task id. The manager's other lines are in stdout only (`docker logs`).
 - Preserve the existing lightweight storage approach unless the task explicitly requires otherwise.
 
 ### Migrations And One-Off Changes

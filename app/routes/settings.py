@@ -1,13 +1,8 @@
-from pathlib import Path
-
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
-from fastapi.responses import StreamingResponse
 from playhouse.shortcuts import model_to_dict
 
 from services.db import Setting
-from services.logs import Logs
 from services.manager import Manager
-from services.manager.settings import SETTING_SECTIONS
 from services.notification import Notifications
 from services.s3 import S3
 from services.settings import SETTING_DEFINITIONS, Settings
@@ -82,10 +77,7 @@ def update_setting(request: Request, setting_data: dict = Body(...)):
     Settings().set("notifications", merged_setting_value)
     Notifications().load_notifications_config()
 
-  elif setting_key == "debug":
-    Logs().set_debug_stop(merged_setting_value.get("stop_at"))
-
-  if setting_key in SETTING_SECTIONS and Settings().is_configured(setting_key):
+  if Settings().is_configured(setting_key):
     Manager().add_task(
         task=Manager().check_setting,
         name=f"check_{setting_key}",
@@ -111,40 +103,6 @@ def test_setting(request: Request, setting_data: dict = Body(...)):
     raise HTTPException(status_code=400, detail=Manager().describe_check_error(e)[0])
 
 
-def debug_file(name: str) -> Path:
-  path = Logs().debug_file_path(name)
-  if not path.is_file():
-    raise HTTPException(status_code=404, detail=f"No debug capture file {name}.")
-  return path
-
-
-def read_to(path: Path, size: int):
-  """The first `size` bytes of a file, which may still be growing."""
-  with path.open("rb") as file:
-    while size > 0 and (chunk := file.read(min(size, 1024 * 1024))):
-      size -= len(chunk)
-      yield chunk
-
-
-@router.get("/debug/capture")
-def get_debug_capture():
-  return Logs().debug_capture()
-
-
-@router.get("/debug/files/{name}")
-def download_debug_file(name: str):
-  path = debug_file(name)
-  size = path.stat().st_size
-  return StreamingResponse(read_to(path, size), media_type="text/plain", headers={
-      "Content-Disposition": f'attachment; filename="{name}"', "Content-Length": str(size)})
-
-
-@router.delete("/debug/files/{name}")
-def delete_debug_file(name: str):
-  Logs().delete_debug_file(debug_file(name).name)
-  return {"message": f"Deleted {name}."}
-
-
 @router.post("/pause")
 def pause():
   """Pause Sage before stopping it: queued tasks wait, running ones finish, and user
@@ -160,7 +118,7 @@ def resume():
 
 
 @router.post("/resync_traefik")
-async def resync_traefik(request: Request):
+async def resync_traefik():
   """
   Force a full Traefik state resync to manager and workers via the
   refresh_traefik task (re-pushes the current cert + configs; re-issues only if
@@ -170,7 +128,6 @@ async def resync_traefik(request: Request):
       task=Manager().refresh_traefik,
       scopes={"platform", "app"},
       executor="platform",
-      task_id=request.state.task_id,
   ):
     raise HTTPException(
         status_code=409,
@@ -181,7 +138,7 @@ async def resync_traefik(request: Request):
 
 
 @router.post("/resync_workers")
-async def resync_workers(request: Request):
+async def resync_workers():
   """
   Queue a force re-sync of all online workers. REPLACE supersedes any pending
   sync so the latest request wins, and waits behind a running sync rather than
@@ -192,7 +149,6 @@ async def resync_workers(request: Request):
       scopes={"platform"},
       params={"force": True},
       executor="platform",
-      task_id=request.state.task_id,
       on_conflict=OnConflict.REPLACE,
   )
   return {"message": "Worker resync queued."}

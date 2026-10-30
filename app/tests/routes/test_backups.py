@@ -133,7 +133,6 @@ class TestCreatePlatformBackup:
     assert queued["scopes"] == {"platform", "app"}
     assert queued["executor"] == "platform"
     assert queued["on_conflict"] is OnConflict.REPLACE
-    assert queued["task_id"] == response.headers["X-Task-ID"]
 
 
 class TestCreateVolumeBackup:
@@ -146,7 +145,6 @@ class TestCreateVolumeBackup:
     assert queued["scopes"] == {"app:demo-web"}
     assert queued["params"] == {"application_id": volume.application_id, "volume_ids": [volume.id]}
     assert queued["executor"] == "app"
-    assert queued["task_id"] == response.headers["X-Task-ID"]
 
   @pytest.mark.parametrize("status", ["active", "error", "deploying", "backup"])
   def test_only_an_inactive_application_can_be_backed_up_by_hand(self, client, manager, application, volume, with_container, status):
@@ -184,7 +182,6 @@ class TestDiscover:
     assert queued["task"].__name__ == "discover_s3_backups"
     assert queued["scopes"] == {"platform", "app"}
     assert queued["executor"] == "platform"
-    assert queued["task_id"] == response.headers["X-Task-ID"]
 
 
 class TestDownload:
@@ -233,7 +230,6 @@ class TestDelete:
     assert queued["scopes"] == {"common"}
     assert queued["executor"] == "common"
     assert queued["on_conflict"] is OnConflict.QUEUE
-    assert queued["task_id"] == response.headers["X-Task-ID"]
 
   def test_a_volume_backup_is_deleted_the_same_way(self, client, manager, volume_backup):
     client.delete(f"{VOLUME}/{volume_backup.id}")
@@ -257,7 +253,6 @@ class TestRestorePlatform:
     assert queued["scopes"] == {"platform", "app"}
     assert queued["executor"] == "platform"
     assert queued["restore"] is True
-    assert queued["task_id"] == response.headers["X-Task-ID"]
 
   def test_a_refused_task_is_a_409(self, client, manager, platform_backup):
     manager.admits = False
@@ -290,7 +285,6 @@ class TestRestoreVolume:
     }
     assert queued["scopes"] == {"app:demo-web"}
     assert queued["executor"] == "app"
-    assert queued["task_id"] == response.headers["X-Task-ID"]
 
   @pytest.mark.parametrize("status", ["active", "error", "deploying", "restoring"])
   def test_only_an_inactive_application_can_be_restored_into(self, client, manager, application, volume_backup, status):
