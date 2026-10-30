@@ -8,12 +8,13 @@ from services.manager import Manager
 from services.metrics import Metrics
 from services.worker_reports import WorkerReports, parse_batch
 from utils.api import read_body
+from utils.logging import NO_ACCESS_LOG
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-@router.post("/report")
+@router.post("/report", openapi_extra=NO_ACCESS_LOG)  # a report every few seconds from each worker
 async def telegraf_report(request: Request):
   hostname = request.headers.get("x-node-name", "")
   if Manager().worker_entry(hostname) is None:

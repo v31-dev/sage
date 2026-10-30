@@ -15,6 +15,7 @@ from services.manager.application import application_changed, hosts_changed
 from services.metrics import Metrics
 from utils.api import generic_create, generic_delete, generic_get, generic_list, generic_update, get_request_models, parse_api_data
 from utils.db import AlphaNumericField
+from utils.logging import NO_ACCESS_LOG
 
 
 def inject_application(request: Request):
@@ -72,7 +73,7 @@ def get_application(request: Request):
   return application_payload(request.state.models["application"])
 
 
-@router.get("/{application}/logs", dependencies=[Depends(inject_application)])
+@router.get("/{application}/logs", dependencies=[Depends(inject_application)], openapi_extra=NO_ACCESS_LOG)  # what the logs view loads
 def get_application_logs(request: Request, hostname: str = "", search: str = "", from_ts: datetime | None = None,
                          to_ts: datetime | None = None, after_id: int = 0,
                          limit: Annotated[int, Query(ge=1, le=config.LIST_MAX_ROWS)] = config.LIST_MAX_ROWS):

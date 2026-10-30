@@ -8,14 +8,17 @@ import uvicorn
 from cryptography.fernet import InvalidToken
 
 import config
+from api import SOCKET_IO_PATH
+from api import app as app_fastapi
 from api import app_asgi, app_redirect
 from api_ingest import app as app_fastapi_ingest
 from scheduler import shutdown as shutdown_scheduler
 from scheduler import start as start_scheduler
 from services.manager import Manager
-from utils.logging import setup_logger
+from utils.logging import setup_logger, unlogged_paths
 
-setup_logger()
+# The access log leaves out what is asked every few seconds or more: the routes marked so, and Socket.IO's polling.
+setup_logger(unlogged_paths([app_fastapi, app_fastapi_ingest], [SOCKET_IO_PATH]))
 
 logger = logging.getLogger(__name__)
 
@@ -95,7 +98,7 @@ async def main():
   start_scheduler()
 
   # What the workers push: Telegraf's reports and Vector's logs. Both are left out of the access
-  # log (`fastapi_exclude_log_paths`): a report arrives every few seconds from every worker. Its
+  # log (`no_access_log`): a report arrives every few seconds from every worker. Its
   # `access_log` stays on, since turning it off silences the access logger every server shares.
   ingest_server = BackgroundServer(
       config=uvicorn.Config(

@@ -11,6 +11,7 @@ from services.tailscale import Tailscale
 from services.worker_reports import WorkerReports
 from utils.api import generic_get, get_request_models
 from utils.common import get_env
+from utils.logging import NO_ACCESS_LOG
 from utils.queue import OnConflict
 
 router = APIRouter()
@@ -102,7 +103,7 @@ def get_worker(request: Request, hostname: str):
   return worker_payload(request.state.models["worker"])
 
 
-@router.get("/{hostname}/metrics", dependencies=[Depends(inject_worker)])
+@router.get("/{hostname}/metrics", dependencies=[Depends(inject_worker)], openapi_extra=NO_ACCESS_LOG)  # the graphs poll it every minute
 def get_metrics(request: Request, hostname: str, period: Literal["1h", "24h", "1w", "1m"] = "1h"):
   worker = get_request_models(request, ["worker"], none_allowed=True)["worker"]
 

@@ -1,11 +1,12 @@
-import fnmatch
 import logging
 import os
 import re
 import sys
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from contextvars import ContextVar
+
+from starlette.routing import compile_path
 
 LOG_FORMAT = "[%(asctime)s] [%(levelname)-8s] [%(name)-19s] [%(task_id)s] %(message)s"
 task_id = ContextVar("task_id", default="")
@@ -37,23 +38,15 @@ class TaskLines:
 # Set while a queued task runs, and nowhere else: a request's own lines are not a task's.
 task_lines: ContextVar[TaskLines | None] = ContextVar("task_lines", default=None)
 
-fastapi_exclude_log_paths = [
-    "/api",  # Healthcheck
-    "/api/vector/logs",  # Logs ingestion
-    "/api/telegraf/report",  # Worker reports, every few seconds from each worker
-    "/api/projects/*/applications/*/logs",  # Application logs query
-    "/api/requests/",  # Requests query
-    "/api/tasks/*/logs",  # Task logs query
-    "/api/workers/*/metrics",  # Metrics query
-    "/api/socket.io/",  # Socket.IO long-polling, a request every few seconds
-]
-
 
 def new_task_id():
   return str(uuid.uuid4())[:8]
 
 
-class ContextVarFilter(logging.Filter):
+class TaskIdFilter(logging.Filter):
+  """Gives each record the id of the task it is logged in, `task/part` inside a container's part, for the stdout
+  format."""
+
   def filter(self, record):
     sub = sub_task_id.get()
     record.task_id = f"{task_id.get()}/{sub}" if sub else task_id.get()
@@ -65,53 +58,48 @@ class TaskFailed(Exception):
   pass
 
 
-class SuppressTracebackFilter(logging.Filter):
-  """Strip exception tracebacks from TaskFailed log records."""
-
-  def filter(self, record):
-    if record.exc_info and record.exc_info[0] is TaskFailed:
-      record.exc_info = None
-      record.exc_text = None
-    return True
+# The mark of a route whose requests the access log leaves out, one asked every few seconds or more:
+# `@router.get(path, openapi_extra=NO_ACCESS_LOG)`.
+NO_ACCESS_LOG = {"x-no-access-log": True}
 
 
-class ExactPathFilter(logging.Filter):
-  def __init__(self, paths: list[str]):
+def unlogged_paths(apps: Iterable, prefixes: Iterable[str] = ()) -> list[re.Pattern]:
+  """The paths the access log leaves out: those of the routes of `apps` marked with `NO_ACCESS_LOG`, read from the
+  apps' OpenAPI description (which lists the routes of every router they include), and those under each of
+  `prefixes`."""
+  marked = [path for app in apps for path, operations in app.openapi()["paths"].items()
+            if any(operation.get("x-no-access-log") for operation in operations.values())]
+  return ([compile_path(path)[0] for path in marked]
+          + [re.compile(f"^{re.escape(prefix)}(/.*)?$") for prefix in prefixes])
+
+
+class AccessLogFilter(logging.Filter):
+  """Leaves out of uvicorn's access log the requests whose path is one of `paths`."""
+
+  def __init__(self, paths: list[re.Pattern]):
     super().__init__()
     self.paths = paths
 
-  def filter(self, record: logging.LogRecord) -> bool:
-    try:
-      message = record.getMessage()
-      match = re.search(r'"[A-Z]+ ([^\s]+) HTTP', message)
-      if match:
-        raw_path = match.group(1)
-        base_path = raw_path.split("?")[0]
-        # Check each pattern against the path
-        for pattern in self.paths:
-          if fnmatch.fnmatch(base_path, pattern):
-            return False
-    except (AttributeError, IndexError):
-      # Fallback for logs that don't match the expected uvicorn format
-      pass
-    return True
+  def filter(self, record):
+    # uvicorn's access line: the client, the method, the path with its query, the HTTP version and the status.
+    if not isinstance(record.args, tuple) or len(record.args) < 3:
+      return True
+    path = str(record.args[2]).partition("?")[0]
+    return not any(pattern.match(path) for pattern in self.paths)
 
 
 def get_log_level() -> int:
-  level_name = (os.getenv("LOG_LEVEL") or "INFO").strip().upper()
-  level = logging.getLevelNamesMapping().get(level_name)
-  if level is None:
-    level = logging.INFO
-  return level
+  name = (os.getenv("LOG_LEVEL") or "INFO").strip().upper()
+  return logging.getLevelNamesMapping().get(name, logging.INFO)
 
 
-def setup_logger():
+def setup_logger(unlogged: list[re.Pattern]):
+  """Every line to stdout, with its task's id; the access log without the requests to the `unlogged` paths."""
   handler = logging.StreamHandler(sys.stdout)
   handler.setFormatter(logging.Formatter(LOG_FORMAT))
   # Filter on the handler runs once for every record it processes,
   # covering propagated child-logger records that bypass parent logger filters.
-  handler.addFilter(ContextVarFilter())
-  handler.addFilter(SuppressTracebackFilter())
+  handler.addFilter(TaskIdFilter())
 
   root_logger = logging.getLogger()
   root_logger.setLevel(get_log_level())
@@ -123,15 +111,4 @@ def setup_logger():
   # APScheduler logs every job run at INFO; keep only warnings/errors (missed
   # runs, job exceptions) so the 1s dispatch tick doesn't flood the logs.
   logging.getLogger("apscheduler").setLevel(logging.WARNING)
-  # Exclude some paths from logs
-  logging.getLogger("uvicorn.access").addFilter(ExactPathFilter(fastapi_exclude_log_paths))
-
-  for logger_name in [
-      "apscheduler",
-      "uvicorn",
-      "uvicorn.access",
-      "uvicorn.error",
-  ]:
-    logger = logging.getLogger(logger_name)
-    logger.handlers.clear()
-    logger.propagate = True
+  logging.getLogger("uvicorn.access").addFilter(AccessLogFilter(unlogged))

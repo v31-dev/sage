@@ -9,7 +9,7 @@ from functools import partial
 from peewee import CharField, Model, SqliteDatabase, TextField, fn
 
 from services.updates import UpdateFeed, Updates
-from utils.logging import SuppressTracebackFilter, sub_task_id, task_id, task_lines
+from utils.logging import sub_task_id, task_id, task_lines
 
 from .store import Store, stored_time
 
@@ -91,7 +91,6 @@ class _CaptureHandler(logging.Handler):
     super().__init__()
     self._captured = captured
     self.setFormatter(logging.Formatter("%(message)s"))
-    self.addFilter(SuppressTracebackFilter())
 
   def emit(self, record):
     try:

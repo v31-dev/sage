@@ -25,6 +25,9 @@ from services.updates import Updates
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, redirect_slashes=False)
 
+# Where the Socket.IO server answers, in front of the API.
+SOCKET_IO_PATH = "/api/socket.io"
+
 # While Sage is paused, restoring or stopping, only reads are served: GETs, and pause/resume themselves.
 _ALLOWED_WHILE_PAUSED = ("/api/settings/pause", "/api/settings/resume")
 
@@ -108,7 +111,7 @@ def build_asgi_app(only_manager_address: bool):
   address https://TS_NAME.core.domain, other names for it redirecting (the tailnet name or IP, after a certificate
   warning)."""
   Updates().serve(TOPICS)
-  served = socketio.ASGIApp(sio, other_asgi_app=app, socketio_path="api/socket.io")
+  served = socketio.ASGIApp(sio, other_asgi_app=app, socketio_path=SOCKET_IO_PATH.lstrip("/"))
   return OnlyManagerAddress(served) if only_manager_address else served
 
 

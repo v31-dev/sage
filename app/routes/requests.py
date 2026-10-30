@@ -5,11 +5,12 @@ from fastapi import APIRouter, Query
 
 import config
 from services.logs import Logs
+from utils.logging import NO_ACCESS_LOG
 
 router = APIRouter()
 
 
-@router.get("/")
+@router.get("/", openapi_extra=NO_ACCESS_LOG)  # what the Requests page loads
 def list_requests(worker: str = "", host: str = "", method: str = "",
                   status: Literal["", "2xx", "3xx", "4xx", "5xx"] = "", path: str = "",
                   min_duration_ms: Annotated[float | None, Query(ge=0)] = None,

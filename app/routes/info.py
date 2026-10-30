@@ -5,6 +5,7 @@ from fastapi import APIRouter
 from services.manager import Manager
 from services.tailscale import Tailscale
 from utils.common import get_env, utcnow
+from utils.logging import NO_ACCESS_LOG
 from utils.queue import OnConflict
 
 logger = logging.getLogger(__name__)
@@ -21,7 +22,7 @@ def settings_status():
     return None
 
 
-@router.get("")
+@router.get("", openapi_extra=NO_ACCESS_LOG)  # the healthcheck, and each page's app info
 def get():
   return {
       "version": Manager().version,

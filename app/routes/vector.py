@@ -6,12 +6,13 @@ import config
 from services.logs import Logs
 from utils.api import read_body
 from utils.executor import LOGS_EXECUTOR, run_in_executor_with_context
+from utils.logging import NO_ACCESS_LOG
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-@router.post("/logs")
+@router.post("/logs", openapi_extra=NO_ACCESS_LOG)  # a push every 10 s from each worker
 async def vector_logs(request: Request):
   """A worker's Vector pushes its lines here. It sends a batch again on a 5xx, and drops it on a 4xx."""
   hostname = request.headers.get("x-node-name", "")

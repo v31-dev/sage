@@ -2,17 +2,26 @@ import logging
 import re
 
 import pytest
+from fastapi import APIRouter, FastAPI
 
-from utils.logging import (ContextVarFilter, ExactPathFilter, SuppressTracebackFilter, TaskFailed, fastapi_exclude_log_paths, get_log_level,
-                           new_task_id, sub_task_id, task_id)
+from utils.logging import NO_ACCESS_LOG, AccessLogFilter, TaskIdFilter, get_log_level, new_task_id, sub_task_id, task_id, unlogged_paths
 
 
 def access_record(path, method="GET"):
-  return logging.makeLogRecord({"msg": f'127.0.0.1:50000 - "{method} {path} HTTP/1.1" 200'})
+  """A line of uvicorn's access log, as it logs it."""
+  return logging.LogRecord("uvicorn.access", logging.INFO, "", 0, '%s - "%s %s HTTP/%s" %d',
+                           ("127.0.0.1:50000", method, path, "1.1", 200), None)
 
 
-class TestExactPathFilter:
-  filter = ExactPathFilter(fastapi_exclude_log_paths)
+@pytest.fixture(scope="module")
+def apps_filter():
+  """The access log's filter as Sage sets it up: its two apps' marked routes, and the Socket.IO path."""
+  from api import SOCKET_IO_PATH, app
+  from api_ingest import app as ingest
+  return AccessLogFilter(unlogged_paths([app, ingest], [SOCKET_IO_PATH]))
+
+
+class TestTheAppsUnloggedPaths:
 
   @pytest.mark.parametrize("path", [
       "/api",
@@ -20,58 +29,74 @@ class TestExactPathFilter:
       "/api/vector/logs",
       "/api/telegraf/report",
       "/api/projects/demo/applications/web/logs",
+      "/api/projects/demo/applications/web/logs?hostname=w1&search=a%20b",
       "/api/requests/",
       "/api/tasks/abc12345/logs?sub_task_id=def67890",
       "/api/workers/w1/metrics",
       "/api/workers/w1/metrics?period=1h",
+      "/api/socket.io/?EIO=4&transport=polling",
   ])
-  def test_drops_the_noisy_requests(self, path):
-    assert self.filter.filter(access_record(path)) is False
+  def test_leave_out_the_requests_asked_every_few_seconds(self, apps_filter, path):
+    assert apps_filter.filter(access_record(path)) is False
 
-  @pytest.mark.parametrize("path", ["/api/", "/api/projects", "/api/workers/w1", "/api/workers/w1/reboot", "/api/tasks/history",
-                                    "/"])
-  def test_keeps_every_other_request(self, path):
-    assert self.filter.filter(access_record(path)) is True
+  @pytest.mark.parametrize("path", [
+      "/",
+      "/api/tasks/",
+      "/api/tasks/abc12345/parts",
+      "/api/workers/w1",
+      "/api/projects/demo/applications/web",
+      "/api/projects/demo/applications/web/logs/extra",
+      "/api/socket.iox",
+  ])
+  def test_keep_every_other_request(self, apps_filter, path):
+    assert apps_filter.filter(access_record(path)) is True
+
+
+class TestAccessLogFilter:
+  def app(self, prefix):
+    """A router with a marked route and one that is not, in another router, as the projects hold the applications."""
+    inner = APIRouter()
+
+    @inner.get("/{name}/logs", openapi_extra=NO_ACCESS_LOG)
+    def logs(name: str):
+      return []
+
+    @inner.get("/{name}")
+    def one(name: str):
+      return {}
+
+    outer = APIRouter()
+    outer.include_router(inner, prefix="/{group}/things")
+    app = FastAPI(openapi_url=None)
+    app.include_router(outer, prefix=prefix)
+    return app
+
+  def test_a_marked_route_is_left_out_wherever_it_is_included(self):
+    for prefix in ("/api", "/api/v2"):
+      filter = AccessLogFilter(unlogged_paths([self.app(prefix)]))
+      assert filter.filter(access_record(f"{prefix}/g/things/a/logs")) is False
+      assert filter.filter(access_record(f"{prefix}/g/things/a")) is True
 
   def test_the_method_does_not_matter(self):
-    assert self.filter.filter(access_record("/api/vector/logs", "POST")) is False
+    filter = AccessLogFilter(unlogged_paths([self.app("/api")]))
+    assert filter.filter(access_record("/api/g/things/a/logs", method="POST")) is False
 
-  def test_a_message_that_is_not_an_access_line_is_kept(self):
-    assert self.filter.filter(logging.makeLogRecord({"msg": "Started server process"})) is True
+  def test_a_record_that_is_not_an_access_line_is_kept(self):
+    filter = AccessLogFilter(unlogged_paths([self.app("/api")]))
+    assert filter.filter(logging.makeLogRecord({"msg": "GET /api/g/things/a/logs"})) is True
 
-  def test_patterns_are_matched_as_given(self):
-    only_status = ExactPathFilter(["/status", "/files/*"])
-    assert only_status.filter(access_record("/status")) is False
-    assert only_status.filter(access_record("/files/a.txt")) is False
-    assert only_status.filter(access_record("/status/extra")) is True
-
-
-class TestSuppressTracebackFilter:
-  def record(self, error):
-    return logging.makeLogRecord({"msg": "x", "exc_info": (type(error), error, None), "exc_text": "Traceback ..."})
-
-  def test_removes_the_traceback_of_a_failed_task(self):
-    record = self.record(TaskFailed())
-    assert SuppressTracebackFilter().filter(record) is True
-    assert record.exc_info is None
-    assert record.exc_text is None
-
-  def test_keeps_the_traceback_of_any_other_error(self):
-    record = self.record(ValueError("boom"))
-    assert SuppressTracebackFilter().filter(record) is True
-    assert record.exc_info[0] is ValueError
-    assert record.exc_text == "Traceback ..."
-
-  def test_a_record_without_an_error_passes(self):
-    assert SuppressTracebackFilter().filter(logging.makeLogRecord({"msg": "x"})) is True
+  def test_a_path_under_a_prefix_is_left_out_and_the_prefix_itself(self):
+    filter = AccessLogFilter(unlogged_paths([], ["/api/socket.io"]))
+    assert [filter.filter(access_record(path)) for path in ("/api/socket.io", "/api/socket.io/", "/api/socket.io/x", "/api/socket")] == [
+        False, False, False, True]
 
 
-class TestContextVarFilter:
+class TestTaskIdFilter:
   def test_puts_the_task_id_on_the_record(self):
     token = task_id.set("abc12345")
     try:
       record = logging.makeLogRecord({"msg": "x"})
-      assert ContextVarFilter().filter(record) is True
+      assert TaskIdFilter().filter(record) is True
       assert record.task_id == "abc12345"
     finally:
       task_id.reset(token)
@@ -80,7 +105,7 @@ class TestContextVarFilter:
     tokens = task_id.set("abc12345"), sub_task_id.set("def67890")
     try:
       record = logging.makeLogRecord({"msg": "x"})
-      ContextVarFilter().filter(record)
+      TaskIdFilter().filter(record)
       assert record.task_id == "abc12345/def67890"
     finally:
       sub_task_id.reset(tokens[1])
@@ -88,7 +113,7 @@ class TestContextVarFilter:
 
   def test_is_empty_outside_a_task(self):
     record = logging.makeLogRecord({"msg": "x"})
-    ContextVarFilter().filter(record)
+    TaskIdFilter().filter(record)
     assert record.task_id == ""
 
 
