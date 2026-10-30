@@ -3,7 +3,8 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, Query
 
-from services.logs import Logs, timestamp
+from services.logs import Logs
+from services.logs.requests import timestamp
 
 router = APIRouter()
 

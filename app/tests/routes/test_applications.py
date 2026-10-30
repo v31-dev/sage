@@ -202,11 +202,11 @@ class TestMetrics:
 class TestLogs:
   def test_they_are_the_applications_own_lines_filtered_as_asked(self, client, application):
     from services.logs import Logs
-    Logs().write_logs(application.qualified_name, [
+    Logs().write_application_lines(application.qualified_name, [
         {"hostname": host, "ts": f"2026-01-01T12:00:0{index}.000000000Z", "stream": "stdout", "message": message}
         for index, (host, message) in enumerate([("w1", "Started"), ("w2", "started again"), ("w2", "stopped")])])
-    Logs().write_logs("other-app", [{"hostname": "w2", "ts": "2026-01-01T12:00:00.000000000Z", "stream": "stdout",
-                                     "message": "started elsewhere"}])
+    Logs().write_application_lines("other-app", [{"hostname": "w2", "ts": "2026-01-01T12:00:00.000000000Z", "stream": "stdout",
+                                                  "message": "started elsewhere"}])
 
     response = client.get(f"{URL}/web/logs", params={"hostname": "w2", "search": "START"})
 
@@ -216,7 +216,7 @@ class TestLogs:
 
   def test_a_view_gets_the_lines_after_the_last_one_it_holds(self, client, application):
     from services.logs import Logs
-    Logs().write_logs(application.qualified_name, [
+    Logs().write_application_lines(application.qualified_name, [
         {"hostname": "w1", "ts": f"2026-01-01T12:00:0{index}.000000000Z", "stream": "stdout", "message": message}
         for index, message in enumerate(["first", "second"])])
     held = client.get(f"{URL}/web/logs").json()["lines"][0]["id"]

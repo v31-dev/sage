@@ -75,8 +75,8 @@ def get_application_logs(request: Request, hostname: str = "", search: str = "",
                          after_id: int = 0):
   """The application's lines from its containers: the newest 1000 that match (after the line `after_id`, if given),
   and whether there were more."""
-  return Logs().query_logs(request.state.models["application"].qualified_name, hostname=hostname, search=search,
-                           from_ts=from_ts, to_ts=to_ts, after_id=after_id)
+  return Logs().query_application_lines(request.state.models["application"].qualified_name, hostname=hostname,
+                                        search=search, from_ts=from_ts, to_ts=to_ts, after_id=after_id)
 
 
 @router.put("/{application}", dependencies=[Depends(inject_application)])

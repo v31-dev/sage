@@ -3,8 +3,8 @@ import re
 
 import pytest
 
-from utils.logging import (ContextVarFilter, ExactPathFilter, SuppressTracebackFilter, TaskFailed, fastapi_exclude_log_paths,
-                           generate_task_id_token, get_log_level, sub_task_id, task_id)
+from utils.logging import (ContextVarFilter, ExactPathFilter, SuppressTracebackFilter, TaskFailed, fastapi_exclude_log_paths, get_log_level,
+                           new_task_id, sub_task_id, task_id)
 
 
 def access_record(path, method="GET"):
@@ -114,6 +114,6 @@ class TestGetLogLevel:
 
 
 def test_task_ids_are_eight_hex_characters_and_differ():
-  tokens = {generate_task_id_token() for _ in range(50)}
+  tokens = {new_task_id() for _ in range(50)}
   assert len(tokens) == 50
   assert all(re.fullmatch(r"[0-9a-f]{8}", token) for token in tokens)

@@ -10,7 +10,7 @@ from typing import Callable
 
 from utils.common import utcnow
 from utils.executor import active_executor, run_in_executor_with_context
-from utils.logging import TaskFailed, TaskLines, generate_task_id_token, task_id, task_lines
+from utils.logging import TaskFailed, TaskLines, new_task_id, task_id, task_lines
 
 logger = logging.getLogger(__name__)
 
@@ -213,7 +213,7 @@ class TaskQueue:
     name = name or task.__name__
     scopes = frozenset(scopes)
     self._validate(scopes, executor)
-    task_id = task_id or generate_task_id_token()
+    task_id = task_id or new_task_id()
     new_task = QueuedTask(name=name, scopes=scopes, task=task,
                           params=params or {}, executor=executor, task_id=task_id,
                           quiet=quiet, restore=restore)

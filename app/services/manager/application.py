@@ -10,7 +10,7 @@ from services.logs import Logs
 from services.updates import Updates, UpdateSource
 from services.worker_reports import WorkerReports
 from utils.common import format_yaml, parse_multiline_kv, utcnow
-from utils.logging import generate_task_id_token, sub_task_id, task_id
+from utils.logging import new_task_id, sub_task_id, task_id
 from utils.queue import OnConflict
 
 from ._common import app_dir
@@ -60,7 +60,7 @@ def save_container(container: Container):
 def container_part(container: Container, kind: str):
   """One container's part of the running task (its deploy, stop, delete, backup or restore): records its `Event`, and
   the lines logged inside carry the part's id, which it yields."""
-  part = generate_task_id_token()
+  part = new_task_id()
   Event.create(container=container, type=kind, application_task_id=task_id.get(), container_task_id=part)
   token = sub_task_id.set(part)
   try:

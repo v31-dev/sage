@@ -49,7 +49,7 @@ fastapi_exclude_log_paths = [
 ]
 
 
-def generate_task_id_token():
+def new_task_id():
   return str(uuid.uuid4())[:8]
 
 

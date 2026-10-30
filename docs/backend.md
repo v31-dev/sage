@@ -98,8 +98,12 @@ Most high-level backend behavior ultimately flows through this service, and almo
   - metrics (workers' per-minute peaks from Telegraf's reports, written by the queue; the manager's own container in-process). A minute is written to its shard once it has ended; the queries add the minutes still in memory, so the latest reading is at most one report old and the `1m` view is the last two minutes
 - `services/worker_reports.py`
   - Telegraf's reports: parsing a batch into snapshots, and the newest snapshot of each worker in memory
-- `services/logs.py`
-  - per-application log storage and FTS search, Traefik's access lines as requests in columns, and the lines of the manager's queued tasks captured in-process into the task logs
+- `services/logs/`: the one `Logs()`, a mixin for each concept
+  - `store.py`: the files of the logs directory, each opened once, their size limits, the retention and the orphan sweep
+  - `applications.py`: each application's shard and its full-text search
+  - `requests.py`: Traefik's access lines as requests in columns
+  - `tasks.py`: the lines of the manager's queued tasks, captured in-process into the task logs
+  - `intake.py`: a Vector push split between the requests and the applications
 - `services/s3.py`
   - S3 validation, upload, delete, and presigned URL support
 - `services/notification.py`

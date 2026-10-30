@@ -6,7 +6,6 @@ from fastapi.encoders import jsonable_encoder
 from services.db import Container, Event, Task
 from services.logs import Logs
 
-
 T0 = datetime(2026, 1, 1, 12, 0)
 
 
