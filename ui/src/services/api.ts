@@ -394,8 +394,15 @@ export interface LogEntry {
   message: string
 }
 
-// A worker (all if empty), text anywhere in a line in any case, and a time at or after `from_ts` and before `to_ts`.
-export type LogQuery = { hostname?: string; search?: string; from_ts?: string; to_ts?: string }
+// A worker (all if empty), text anywhere in a line in any case, and a time at or after `from_ts` and before `to_ts`;
+// only the lines after `after_id`, if given.
+export type LogQuery = {
+  hostname?: string
+  search?: string
+  from_ts?: string
+  to_ts?: string
+  after_id?: number | null
+}
 
 // The newest lines that match, in the order they were stored, and whether there were more.
 export const fetchApplicationLogs = (project: string, application: string, query: LogQuery = {}) =>
@@ -424,7 +431,7 @@ export interface ServedRequest {
 export type StatusClass = '2xx' | '3xx' | '4xx' | '5xx'
 
 // A worker and a method exactly, text anywhere in the host or the path, a status class, as slow or slower, and a start
-// at or after `from_ts` and before `to_ts`.
+// at or after `from_ts` and before `to_ts`; only the requests after `after_id`, if given.
 export type RequestQuery = {
   worker?: string
   host?: string
@@ -434,6 +441,7 @@ export type RequestQuery = {
   min_duration_ms?: number | null
   from_ts?: string
   to_ts?: string
+  after_id?: number | null
 }
 
 // The newest requests that match, newest first, and whether there were more.
@@ -582,9 +590,11 @@ export interface TaskLogs {
   more: boolean
 }
 
-// A task's lines, or only those of one container's part of it.
-export const fetchTaskLogs = (taskId: string, subTaskId = '') =>
-  request<TaskLogs>('GET', `/tasks/${taskId}/logs`, { query: { sub_task_id: subTaskId } })
+// A task's lines, or only those of one container's part of it; after the line `afterId`, if given.
+export const fetchTaskLogs = (taskId: string, subTaskId = '', afterId = 0) =>
+  request<TaskLogs>('GET', `/tasks/${taskId}/logs`, {
+    query: { sub_task_id: subTaskId, after_id: afterId || null },
+  })
 
 export interface Backup {
   id: number

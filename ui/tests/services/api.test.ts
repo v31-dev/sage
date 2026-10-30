@@ -265,10 +265,11 @@ const CALLS: Array<[string, () => Promise<unknown>, string, string, object, unkn
         search: 'a&b=c d',
         from_ts: '',
         to_ts: '2026-10-24T10:00:00Z',
+        after_id: 42,
       }),
     'GET',
     '/api/projects/demo/applications/web/logs',
-    { hostname: 'w1', search: 'a&b=c d', to_ts: '2026-10-24T10:00:00Z' },
+    { hostname: 'w1', search: 'a&b=c d', to_ts: '2026-10-24T10:00:00Z', after_id: '42' },
     undefined,
   ],
   [
@@ -348,6 +349,14 @@ const CALLS: Array<[string, () => Promise<unknown>, string, string, object, unkn
     'GET',
     '/api/tasks/abc12345/logs',
     {},
+    undefined,
+  ],
+  [
+    'fetchTaskLogs, after a line',
+    () => api.fetchTaskLogs('abc12345', '', 42),
+    'GET',
+    '/api/tasks/abc12345/logs',
+    { after_id: '42' },
     undefined,
   ],
   [

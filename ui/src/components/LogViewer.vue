@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, nextTick, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { Search, Filter, CircleMinus } from 'lucide-vue-next'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -19,18 +19,19 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { Spinner } from '@/components/ui/spinner'
-import { formatDate } from '@/lib/utils'
+import { watchFeed } from '@/lib/updates'
+import { formatDate, parseDate } from '@/lib/utils'
 
 import { fetchApplicationLogs, type LogEntry } from '@/services/api'
 
-// An application's logs, from all its containers or one worker's.
+// An application's logs, from all its containers or one worker's, followed as they are stored.
 const props = defineProps<{ project: string; application: string }>()
 
 const MAX_LOGS_ON_UI = 1000
-const POLL_INTERVAL = 5_000
 
 const logs = ref<LogEntry[]>([])
-// The manager had more lines than it sent since the search was applied.
+// Lines that match are not shown, since the search was applied: the manager sent the newest, or the oldest were
+// dropped here.
 const more = ref(false)
 const isLoading = ref(true)
 const inputSearch = ref('')
@@ -42,8 +43,15 @@ const activeToDate = ref<string>('')
 const desktopViewport = ref<HTMLElement | null>(null)
 const mobileScroll = ref<HTMLElement | null>(null)
 const error = ref<string>('')
-let pollTimer: ReturnType<typeof setInterval> | null = null
 const hostnameFilter = ref('')
+let stop: (() => void) | undefined
+// Moved on each time the filters are applied, so that a load asked for the filters before is dropped.
+let generation = 0
+
+const fromUTC = computed(() =>
+  activeFromDate.value ? new Date(activeFromDate.value).toISOString() : ''
+)
+const toUTC = computed(() => (activeToDate.value ? new Date(activeToDate.value).toISOString() : ''))
 
 function isNearBottom(threshold: number = 50): boolean {
   if (desktopViewport.value) {
@@ -74,9 +82,9 @@ async function scrollToBottom() {
   }
 }
 
-// Watch logs array and scroll when it changes (if near bottom)
+// Follow new lines (if near bottom); the count stays at the cap once it is reached, the last line does not.
 watch(
-  () => logs.value.length,
+  () => logs.value[logs.value.length - 1]?.id,
   async () => {
     if (isNearBottom()) {
       await scrollToBottom()
@@ -84,61 +92,59 @@ watch(
   }
 )
 
-async function load() {
-  // Don't load if the current query gives an error
-  if (error.value != '') {
-    return
-  }
-
-  isLoading.value = true
-
-  const fromDateUTC = activeFromDate.value ? new Date(activeFromDate.value).toISOString() : ''
-  const toDateUTC = activeToDate.value ? new Date(activeToDate.value).toISOString() : ''
-
-  try {
-    if (toDateUTC != '' && toDateUTC < new Date().toISOString()) {
-      // toDate is in the past - no new logs
-    } else {
-      const result = await fetchApplicationLogs(props.project, props.application, {
-        hostname: hostnameFilter.value,
-        search: activeSearch.value,
-        from_ts: fromDateUTC,
-        to_ts: toDateUTC,
-      })
-      logs.value.push(...result.lines)
-      more.value ||= result.more
-      // Keep only last 1000 logs on UI
-      if (logs.value.length > MAX_LOGS_ON_UI) {
-        logs.value = logs.value.slice(-MAX_LOGS_ON_UI)
-      }
-    }
-
-    // Update for polling
-    if (logs.value.length > 0) {
-      const lastLog = logs.value[logs.value.length - 1]
-      if (lastLog) {
-        activeFromDate.value = lastLog.ts
-      }
-    }
-  } catch (err) {
-    if (err instanceof Error) {
-      error.value = err.message
-    } else {
-      error.value = 'Failed to fetch logs'
-    }
-  } finally {
-    isLoading.value = false
-  }
+// The rules of the logs route: the worker, the text anywhere in any case, and the window.
+function matches(entry: LogEntry) {
+  const search = activeSearch.value.toLowerCase()
+  return (
+    (!hostnameFilter.value || entry.hostname === hostnameFilter.value) &&
+    (!search || entry.message.toLowerCase().includes(search)) &&
+    (!fromUTC.value || parseDate(entry.ts) >= new Date(fromUTC.value)) &&
+    (!toUTC.value || parseDate(entry.ts) < new Date(toUTC.value))
+  )
 }
 
-function applySearch() {
+// The lines this view does not have yet: the newest that match at first, then those after the last one it holds.
+async function load() {
+  const asked = generation
+  const result = await fetchApplicationLogs(props.project, props.application, {
+    hostname: hostnameFilter.value,
+    search: activeSearch.value,
+    from_ts: fromUTC.value,
+    to_ts: toUTC.value,
+    after_id: logs.value[logs.value.length - 1]?.id ?? 0,
+  })
+  if (asked !== generation) return []
+  more.value ||= result.more
+  return result.lines
+}
+
+// Merged in the order they were stored, each once, when the filters let them through; the newest are kept.
+function addLines(rows: LogEntry[]) {
+  const known = new Set(logs.value.map(entry => entry.id))
+  const fresh = rows.filter(entry => matches(entry) && !known.has(entry.id))
+  if (!fresh.length) return
+  const merged = [...logs.value, ...fresh].sort((a, b) => a.id - b.id)
+  more.value ||= merged.length > MAX_LOGS_ON_UI
+  logs.value = merged.slice(-MAX_LOGS_ON_UI)
+}
+
+async function applySearch() {
   activeSearch.value = inputSearch.value.trim()
   activeFromDate.value = inputFromDate.value
   activeToDate.value = inputToDate.value
   logs.value = []
   more.value = false
   error.value = ''
-  load()
+  const current = ++generation
+  isLoading.value = true
+  try {
+    addLines(await load())
+  } catch (err) {
+    if (current === generation)
+      error.value = err instanceof Error ? err.message : 'Failed to fetch logs'
+  } finally {
+    if (current === generation) isLoading.value = false
+  }
 }
 
 function onSearchKeypress(e: KeyboardEvent) {
@@ -172,16 +178,18 @@ onMounted(async () => {
   inputFromDate.value = `${year}-${month}-${day}T${hours}:${minutes}`
   activeFromDate.value = inputFromDate.value
 
-  // Load initial logs
-  await load()
-
-  // Start polling every X seconds
-  pollTimer = setInterval(load, POLL_INTERVAL)
+  const feed = watchFeed(`application-logs:${props.project}-${props.application}`, load, addLines)
+  stop = feed.stop
+  try {
+    await feed.first
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : 'Failed to fetch logs'
+  } finally {
+    isLoading.value = false
+  }
 })
 
-onUnmounted(() => {
-  if (pollTimer !== null) clearInterval(pollTimer)
-})
+onUnmounted(() => stop?.())
 </script>
 
 <template>

@@ -1,12 +1,14 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import Requests from '@/pages/Requests.vue'
 import { formatDate } from '@/lib/utils'
 import { TONES } from '@/lib/tone'
 import { fetchRequests, type ServedRequest, type WorkerListItem } from '@/services/api'
 import { useAppStore } from '@/stores/app'
+import { followTopics, type Followed } from '../helpers/topics'
 
+vi.mock('@/lib/updates', () => ({ watchState: vi.fn(), watchFeed: vi.fn() }))
 vi.mock('@/services/api', async importOriginal => ({
   ...(await importOriginal<typeof import('@/services/api')>()),
   fetchRequests: vi.fn(),
@@ -49,17 +51,29 @@ function served(id: number, fields: Partial<ServedRequest> = {}): ServedRequest 
 
 const answer = (requests: ServedRequest[], more = false) => ({ requests, more })
 
-async function mountPage() {
-  useAppStore().workers = [{ hostname: 'w1' }, { hostname: 'w2' }] as WorkerListItem[]
-  const wrapper = mount(Requests, { global: { stubs } })
+// What the library does each time the socket connects: load, and hand over what came back.
+async function connect(feed: Followed) {
+  feed.push(await feed.load())
   await flushPromises()
-  return wrapper
 }
 
-type Page = Awaited<ReturnType<typeof mountPage>>
+async function mountPage(first: ServedRequest[] = [], more = false) {
+  useAppStore().workers = [{ hostname: 'w1' }, { hostname: 'w2' }] as WorkerListItem[]
+  const topics = followTopics()
+  const wrapper = mount(Requests, { global: { stubs } })
+  await flushPromises()
+  const feed = topics.topic('requests')
+  vi.mocked(fetchRequests).mockResolvedValueOnce(answer(first, more))
+  await connect(feed)
+  return { wrapper, feed }
+}
+
+type Page = Awaited<ReturnType<typeof mountPage>>['wrapper']
 
 const rows = (wrapper: Page) =>
   wrapper.findAll('tbody tr').map(row => row.findAll('td').map(cell => cell.text()))
+
+const paths = (wrapper: Page) => rows(wrapper).map(row => row[4])
 
 const lastQuery = () => vi.mocked(fetchRequests).mock.lastCall![0]
 
@@ -80,20 +94,14 @@ beforeEach(() => {
   setActivePinia(createPinia())
   vi.mocked(fetchRequests).mockReset()
   vi.mocked(fetchRequests).mockResolvedValue(answer([]))
-  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
-})
-
-afterEach(() => {
-  vi.useRealTimers()
 })
 
 describe('the requests', () => {
   it('show each in its columns, newest first as the manager sends them', async () => {
-    vi.mocked(fetchRequests).mockResolvedValue(
-      answer([served(2, { status: 503, duration_ms: 1250, size: 512 }), served(1)])
-    )
-
-    const wrapper = await mountPage()
+    const { wrapper } = await mountPage([
+      served(2, { status: 503, duration_ms: 1250, size: 512 }),
+      served(1),
+    ])
 
     expect(rows(wrapper)).toEqual([
       [
@@ -127,25 +135,82 @@ describe('the requests', () => {
   })
 
   it('say when only the newest are shown', async () => {
-    vi.mocked(fetchRequests).mockResolvedValue(answer([served(1), served(2)], true))
-
-    const wrapper = await mountPage()
+    const { wrapper } = await mountPage([served(2), served(1)], true)
 
     expect(wrapper.text()).toContain('Showing the newest 2 requests that match.')
   })
 
   it('show why they could not be loaded', async () => {
-    vi.mocked(fetchRequests).mockRejectedValue(new Error('down'))
+    const topics = followTopics({ pending: true })
+    const wrapper = mount(Requests, { global: { stubs } })
+    await flushPromises()
 
-    const wrapper = await mountPage()
+    topics.topic('requests').failed(new Error('down'))
+    await flushPromises()
 
     expect(wrapper.text()).toContain('down')
   })
 })
 
+describe('the feed', () => {
+  it('is followed, and its requests are merged newest first, each once', async () => {
+    const { wrapper, feed } = await mountPage([served(2)])
+
+    feed.push([served(3), served(4)])
+    feed.push([served(2), served(1)])
+    await flushPromises()
+
+    expect(paths(wrapper)).toEqual(['/items/4', '/items/3', '/items/2', '/items/1'])
+  })
+
+  it('is loaded after the newest request held when the socket connects again', async () => {
+    const { wrapper, feed } = await mountPage([served(5), served(4)])
+
+    vi.mocked(fetchRequests).mockResolvedValueOnce(answer([served(6)]))
+    await connect(feed)
+
+    expect(lastQuery()).toMatchObject({ after_id: 5 })
+    expect(paths(wrapper)).toEqual(['/items/6', '/items/5', '/items/4'])
+  })
+
+  it.each([
+    ['another worker', { worker: 'w2' }],
+    ['another method', { method: 'POST' }],
+    ['another status class', { status: 404 }],
+    ['a host without the text', { host: 'api.other.org' }],
+    ['a path without the text', { path: '/health' }],
+    ['a quicker answer', { duration_ms: 499 }],
+    ['a start before the window', { ts: '2026-01-01T11:59:59.999999999Z' }],
+    ['a start at the end of the window', { ts: '2026-01-01T13:30:00.000000000Z' }],
+  ])('leaves out a pushed request with %s', async (_case, fields) => {
+    const { wrapper, feed } = await mountPage()
+    await choose(wrapper, 0, 'w1')
+    await choose(wrapper, 1, 'GET')
+    await choose(wrapper, 2, '2xx')
+    await commit(wrapper, 'host', 'EXAMPLE.com')
+    await commit(wrapper, 'path', '/ITEMS')
+    await commit(wrapper, 'slower', '500')
+    await commit(wrapper, 'from', '2026-01-01T12:00')
+    await commit(wrapper, 'to', '2026-01-01T13:30')
+
+    feed.push([served(1, { duration_ms: 500 }), served(2, { duration_ms: 500, ...fields })])
+    await flushPromises()
+
+    expect(paths(wrapper)).toEqual(['/items/1'])
+  })
+
+  it('stops when the page goes away', async () => {
+    const { wrapper, feed } = await mountPage()
+
+    wrapper.unmount()
+
+    expect(feed.stop).toHaveBeenCalledOnce()
+  })
+})
+
 describe('the filters', () => {
   it('offer the workers and the methods and status classes', async () => {
-    const wrapper = await mountPage()
+    const { wrapper } = await mountPage()
 
     const options = wrapper
       .findAll('[data-select]')
@@ -156,8 +221,8 @@ describe('the filters', () => {
     expect(options[2]).toEqual(['any', '2xx', '3xx', '4xx', '5xx'])
   })
 
-  it('are sent as each is chosen or committed, the times in UTC', async () => {
-    const wrapper = await mountPage()
+  it('are sent as each is chosen or committed, the times in UTC, from the start', async () => {
+    const { wrapper } = await mountPage([served(1)])
     expect(lastQuery()).toEqual({
       worker: '',
       method: '',
@@ -167,6 +232,7 @@ describe('the filters', () => {
       min_duration_ms: null,
       from_ts: '',
       to_ts: '',
+      after_id: 0,
     })
 
     await choose(wrapper, 0, 'w2')
@@ -187,37 +253,23 @@ describe('the filters', () => {
       min_duration_ms: 500,
       from_ts: '2026-01-01T12:00:00.000Z',
       to_ts: '2026-01-01T13:30:00.000Z',
+      after_id: 0,
     })
   })
-})
 
-describe('loading', () => {
-  it('loads again 5 s after each load ends, until the page goes away', async () => {
-    const wrapper = await mountPage()
-    expect(fetchRequests).toHaveBeenCalledTimes(1)
-
-    await vi.advanceTimersByTimeAsync(4_999)
-    expect(fetchRequests).toHaveBeenCalledTimes(1)
-    await vi.advanceTimersByTimeAsync(1)
-    expect(fetchRequests).toHaveBeenCalledTimes(2)
-
-    wrapper.unmount()
-    await vi.advanceTimersByTimeAsync(20_000)
-    expect(fetchRequests).toHaveBeenCalledTimes(2)
-  })
-
-  it('shows what was asked last, whichever answer comes first', async () => {
-    const wrapper = await mountPage()
+  it('show what was asked last, whichever answer comes first', async () => {
+    const { wrapper } = await mountPage()
     let answerFirst!: (value: ReturnType<typeof answer>) => void
     vi.mocked(fetchRequests)
       .mockImplementationOnce(() => new Promise(resolve => (answerFirst = resolve)))
-      .mockResolvedValueOnce(answer([served(9, { path: '/newer' })]))
+      .mockResolvedValueOnce(answer([served(9, { path: '/newer', status: 503 })]))
 
     await choose(wrapper, 2, '4xx')
     await choose(wrapper, 2, '5xx')
-    answerFirst(answer([served(8, { path: '/older' })]))
+    answerFirst(answer([served(8, { path: '/older', status: 404 })], true))
     await flushPromises()
 
-    expect(rows(wrapper).map(row => row[4])).toEqual(['/newer'])
+    expect(paths(wrapper)).toEqual(['/newer'])
+    expect(wrapper.text()).not.toContain('Showing the newest')
   })
 })

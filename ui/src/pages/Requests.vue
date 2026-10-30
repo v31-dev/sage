@@ -20,7 +20,8 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { formatDate } from '@/lib/utils'
+import { watchFeed } from '@/lib/updates'
+import { formatDate, parseDate } from '@/lib/utils'
 import { TONES, type Tone } from '@/lib/tone'
 import {
   fetchRequests,
@@ -30,7 +31,7 @@ import {
 } from '@/services/api'
 import { useAppStore } from '@/stores/app'
 
-const POLL_INTERVAL = 5_000
+const MAX_REQUESTS = 1000
 // A dropdown's choice for no filter, since a select item cannot have an empty value.
 const ANY = 'any'
 const METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']
@@ -58,9 +59,9 @@ const filters = reactive({
   from: '',
   to: '',
 })
-let timer: ReturnType<typeof setTimeout> | undefined
-let loads = 0
-let stopped = false
+let stop: (() => void) | undefined
+// Moved on each time the filters change, so that a load asked for the filters before is dropped.
+let generation = 0
 
 const dropdowns = computed(() => [
   {
@@ -111,33 +112,69 @@ function commit(key: (typeof fields)[number]['key'], event: Event) {
   filters[key] = (event.target as HTMLInputElement).value.trim()
 }
 
-// One chain: a load started later wins over one under way, and the next is timed from the end of the last.
+// The rules of the requests route: the worker and the method exactly, the status class, the host and the path
+// holding the text in any case, at least the duration, and the window.
+function matches(row: ServedRequest) {
+  const { worker, method, status, host, path, min_duration_ms, from_ts, to_ts } = query.value
+  return (
+    (!worker || row.worker === worker) &&
+    (!method || row.method === method) &&
+    (!status || String(row.status)[0] === status[0]) &&
+    (!host || row.host.toLowerCase().includes(host.toLowerCase())) &&
+    (!path || row.path.toLowerCase().includes(path.toLowerCase())) &&
+    (min_duration_ms === null ||
+      min_duration_ms === undefined ||
+      row.duration_ms >= min_duration_ms) &&
+    (!from_ts || parseDate(row.ts) >= new Date(from_ts)) &&
+    (!to_ts || parseDate(row.ts) < new Date(to_ts))
+  )
+}
+
+// The requests this page does not have yet: the newest that match at first, then those after the newest it holds.
 async function load() {
-  const current = ++loads
-  clearTimeout(timer)
+  const asked = generation
+  const result = await fetchRequests({ ...query.value, after_id: requests.value[0]?.id ?? 0 })
+  if (asked !== generation) return []
+  more.value ||= result.more
+  return result.requests
+}
+
+// Merged newest first, each once, when the filters let them through; the newest are kept.
+function addRequests(rows: ServedRequest[]) {
+  const known = new Set(requests.value.map(row => row.id))
+  const fresh = rows.filter(row => matches(row) && !known.has(row.id))
+  if (!fresh.length) return
+  const merged = [...fresh, ...requests.value].sort((a, b) => b.id - a.id)
+  more.value ||= merged.length > MAX_REQUESTS
+  requests.value = merged.slice(0, MAX_REQUESTS)
+}
+
+async function reload() {
+  const current = ++generation
+  requests.value = []
+  more.value = false
   try {
-    const result = await fetchRequests(query.value)
-    if (current !== loads) return
-    requests.value = result.requests
-    more.value = result.more
+    addRequests(await load())
     error.value = ''
   } catch (err) {
-    if (current === loads)
+    if (current === generation)
       error.value = err instanceof Error ? err.message : 'Failed to load requests'
-  } finally {
-    if (current === loads) {
-      loaded.value = true
-      if (!stopped) timer = setTimeout(load, POLL_INTERVAL)
-    }
   }
 }
 
-watch(query, load)
-onMounted(load)
-onUnmounted(() => {
-  stopped = true
-  clearTimeout(timer)
+watch(query, reload)
+onMounted(async () => {
+  const feed = watchFeed('requests', load, addRequests)
+  stop = feed.stop
+  try {
+    await feed.first
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : 'Failed to load requests'
+  } finally {
+    loaded.value = true
+  }
 })
+onUnmounted(() => stop?.())
 </script>
 
 <template>

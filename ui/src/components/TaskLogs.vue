@@ -10,53 +10,66 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
+import { watchFeed } from '@/lib/updates'
 import { formatDate, levelClass } from '@/lib/utils'
 import { fetchTaskLogs, type TaskLogLine } from '@/services/api'
 
-// A task's lines, or one container's part of it, loaded again every 2 s while shown.
+// A task's lines, or one container's part of it, followed as they are written.
 const props = defineProps<{ taskId: string; subTaskId?: string }>()
 
-const POLL_INTERVAL = 2_000
+const MAX_LINES = 1000
 
 const lines = ref<TaskLogLine[]>([])
+// Lines that were written are not shown: the manager sent the newest, or the oldest were dropped here.
 const more = ref(false)
 const loaded = ref(false)
 const error = ref('')
 const viewport = ref<HTMLElement | null>(null)
-let timer: ReturnType<typeof setTimeout> | undefined
-let stopped = false
+let stop: (() => void) | undefined
+
+// A part recorded under the task's own id is the whole task.
+const part = props.subTaskId && props.subTaskId !== props.taskId ? props.subTaskId : ''
+const topic = `task-logs:${part ? `${props.taskId}/${part}` : props.taskId}`
 
 function atBottom() {
   const view = viewport.value
   return !view || view.scrollHeight - (view.scrollTop + view.clientHeight) <= 50
 }
 
-// One chain: the next load is timed from the end of this one. The view follows new lines while it is at the bottom.
+// The lines this view does not have yet: the newest at first, then those after the last one it holds.
 async function load() {
+  const logs = await fetchTaskLogs(props.taskId, part, lines.value[lines.value.length - 1]?.id ?? 0)
+  more.value ||= logs.more
+  return logs.lines
+}
+
+// Merged in the order they were written, each once; the view follows new lines while it is at the bottom.
+async function addLines(rows: TaskLogLine[]) {
   const follow = atBottom()
+  const known = new Set(lines.value.map(line => line.id))
+  const fresh = rows.filter(line => !known.has(line.id))
+  if (!fresh.length) return
+  const merged = [...lines.value, ...fresh].sort((a, b) => a.id - b.id)
+  more.value ||= merged.length > MAX_LINES
+  lines.value = merged.slice(-MAX_LINES)
+  if (follow && viewport.value) {
+    await nextTick()
+    viewport.value.scrollTop = viewport.value.scrollHeight
+  }
+}
+
+onMounted(async () => {
+  const watch = watchFeed(topic, load, addLines)
+  stop = watch.stop
   try {
-    const logs = await fetchTaskLogs(props.taskId, props.subTaskId)
-    lines.value = logs.lines
-    more.value = logs.more
-    error.value = ''
+    await watch.first
   } catch (err) {
     error.value = err instanceof Error ? err.message : 'Failed to load the logs'
   } finally {
     loaded.value = true
   }
-  if (stopped) return
-  if (follow && viewport.value) {
-    await nextTick()
-    viewport.value.scrollTop = viewport.value.scrollHeight
-  }
-  timer = setTimeout(load, POLL_INTERVAL)
-}
-
-onMounted(load)
-onUnmounted(() => {
-  stopped = true
-  clearTimeout(timer)
 })
+onUnmounted(() => stop?.())
 </script>
 
 <template>
