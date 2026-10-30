@@ -214,5 +214,16 @@ class TestLogs:
     assert [row["message"] for row in response.json()["lines"]] == ["started again"]
     assert response.json()["more"] is False
 
+  def test_a_view_gets_the_lines_after_the_last_one_it_holds(self, client, application):
+    from services.logs import Logs
+    Logs().write_logs(application.qualified_name, [
+        {"hostname": "w1", "ts": f"2026-01-01T12:00:0{index}.000000000Z", "stream": "stdout", "message": message}
+        for index, message in enumerate(["first", "second"])])
+    held = client.get(f"{URL}/web/logs").json()["lines"][0]["id"]
+
+    response = client.get(f"{URL}/web/logs", params={"after_id": held})
+
+    assert [row["message"] for row in response.json()["lines"]] == ["second"]
+
   def test_an_unknown_application_has_none(self, client, project):
     assert client.get(f"{URL}/missing/logs").status_code == 404

@@ -43,6 +43,11 @@ class TestRequests:
   def test_the_filters_reach_the_query_with_times_in_any_zone(self, client, stored, params, found):
     assert paths(client.get(URL, params=params)) == found
 
+  def test_a_view_gets_the_requests_after_the_last_one_it_holds(self, client, stored):
+    held = client.get(URL).json()["requests"][1]["id"]
+
+    assert paths(client.get(URL, params={"after_id": held})) == ["/broken"]
+
   @pytest.mark.parametrize("params", [{"status": "6xx"}, {"status": "404"}, {"min_duration_ms": -1}])
   def test_a_filter_that_cannot_match_anything_is_refused(self, client, db, params):
     assert client.get(URL, params=params).status_code == 422

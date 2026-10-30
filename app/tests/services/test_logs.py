@@ -17,6 +17,7 @@ from peewee import OperationalError
 import config
 import services.logs as logs_module
 from services.logs import Logs, _CaptureHandler
+from services.updates import UpdateFeed, Updates
 from utils.common import utcnow
 from utils.executor import run_in_executor_with_context
 from utils.logging import TaskFailed, sub_task_id, task_id
@@ -438,6 +439,67 @@ class TestRequests:
     logs.ingest("w1", push(event("traefik", access_line(StartUTC="2026-01-01T12:00:00.1Z", RequestPath="/tenth")),
                            event("traefik", access_line(StartUTC="2026-01-01T12:00:00.123Z", RequestPath="/later"))))
     assert requested(logs, from_ts="2026-01-01T12:00:00.110000000Z") == ["/later"]
+
+
+@pytest.fixture
+def published(register):
+  """What the service publishes, as (feed, rows, key)."""
+  sent = []
+  register(Updates, SimpleNamespace(publish=lambda feed, rows, key=None: sent.append((feed, rows, key))))
+  return sent
+
+
+class TestFeeds:
+  def test_a_task_line_goes_to_its_tasks_feed_and_a_parts_line_to_its_parts_too(self, logs, published):
+    logs.write_task_line(task_entries(0, 1, task="t1")[0])
+    logs.write_task_line(task_entries(1, 1, task="t1", sub="c1")[0])
+    logs.write_task_line(task_entries(2, 1, task="t2", sub="t2")[0])
+
+    assert [(feed, key, [row["ts"] for row in rows]) for feed, rows, key in published] == [
+        (UpdateFeed.TASK_LOGS, "t1", [stamp(0)]), (UpdateFeed.TASK_LOGS, "t1", [stamp(1)]),
+        (UpdateFeed.TASK_LOGS, "t1/c1", [stamp(1)]), (UpdateFeed.TASK_LOGS, "t2", [stamp(2)])]
+
+  def test_a_published_task_line_is_the_line_its_route_returns(self, logs, published):
+    logs.write_task_line(task_entries(0, 1)[0])
+
+    [(_, rows, _)] = published
+    assert rows == logs.query_task_logs("t1")["lines"]
+
+  def test_a_push_publishes_each_files_rows_as_their_routes_return_them(self, logs, published):
+    logs.ingest("w1", push(event("demo-web", "one", 0), event("demo-web", "two", 1), event("traefik", access_line(2))))
+
+    by_feed = {(feed, key): rows for feed, rows, key in published}
+    assert by_feed == {(UpdateFeed.APPLICATION_LOGS, "demo-web"): logs.query_logs("demo-web")["lines"],
+                       (UpdateFeed.REQUESTS, None): logs.query_requests()["requests"]}
+
+  def test_a_file_that_could_not_be_written_publishes_nothing(self, logs, published):
+    (logs.db_path / "logs" / "demo-web.db").mkdir()
+
+    with pytest.raises(OperationalError):
+      logs.ingest("w1", push(event("demo-web", "lost"), event("demo-api", "kept")))
+
+    assert [(feed, key) for feed, _, key in published] == [(UpdateFeed.APPLICATION_LOGS, "demo-api")]
+
+
+class TestAfter:
+  """What a view loads when the socket connects again: the rows written after the last one it holds."""
+
+  def test_an_applications_lines(self, logs):
+    logs.write_logs("web", lines(0, 5))
+    held = logs.query_logs("web")["lines"][2]["id"]
+    assert [row["ts"] for row in logs.query_logs("web", after_id=held)["lines"]] == [stamp(3), stamp(4)]
+    assert [row["ts"] for row in logs.query_logs("web", search="line", after_id=held)["lines"]] == [stamp(3), stamp(4)]
+
+  def test_a_tasks_lines(self, logs):
+    for entry in task_entries(0, 4):
+      logs.write_task_line(entry)
+    held = logs.query_task_logs("t1")["lines"][1]["id"]
+    assert [line["ts"] for line in logs.query_task_logs("t1", after_id=held)["lines"]] == [stamp(2), stamp(3)]
+
+  def test_the_requests(self, logs):
+    logs.ingest("w1", push(*(request_at(index) for index in range(4))))
+    held = logs.query_requests()["requests"][2]["id"]
+    assert [row["ts"] for row in logs.query_requests(after_id=held)["requests"]] == [stamp(3), stamp(2)]
 
 
 class TestTrimShard:

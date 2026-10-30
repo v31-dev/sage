@@ -175,5 +175,14 @@ class TestLogs:
         "task_id": "t1", "sub_task_id": "c2", "ts": "2026-01-01T12:00:00.000000Z", "level": "INFO",
         "logger": "services.manager", "message": "deploying db"}
 
+  def test_a_view_gets_the_lines_after_the_last_one_it_holds(self, client, db):
+    line("t1", "", "first")
+    line("t1", "", "second")
+    held = client.get("/api/tasks/t1/logs").json()["lines"][0]["id"]
+
+    response = client.get("/api/tasks/t1/logs", params={"after_id": held})
+
+    assert [row["message"] for row in response.json()["lines"]] == ["second"]
+
   def test_a_task_that_logged_nothing_has_no_lines(self, client, db):
     assert client.get("/api/tasks/t1/logs").json() == {"lines": [], "more": False}

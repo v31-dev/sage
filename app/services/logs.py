@@ -16,6 +16,7 @@ from playhouse.sqlite_ext import FTS5Model, RowIDField, SearchField
 import config
 from services.base import Base
 from services.db import Application, Project
+from services.updates import UpdateFeed, Updates
 from utils.common import utcnow
 from utils.logging import ContextVarFilter, SuppressTracebackFilter, sub_task_id, task_id, task_lines
 
@@ -216,11 +217,11 @@ class Logs(Base):
             {"hostname": hostname, "ts": ts, "stream": event.get("stream", ""), "message": message})
 
     failed = None
-    writes = [(_REQUESTS, self.requests_db, requests)] if requests else []
-    writes += [(container, partial(self.get_logs_db, container), rows) for container, rows in by_container.items()]
-    for name, store, rows in writes:
+    writes = [(_REQUESTS, requests, self.write_requests)] if requests else []
+    writes += [(container, rows, partial(self.write_logs, container)) for container, rows in by_container.items()]
+    for name, rows, write in writes:
       try:
-        self._insert(name, store(), rows)
+        write(rows)
       except ValueError:
         skipped += len(rows)
       except Exception as e:
@@ -230,23 +231,38 @@ class Logs(Base):
       raise failed
     return skipped
 
-  def _insert(self, name: str, store: dict, rows: list):
+  def _insert(self, name: str, store: dict, rows: list) -> list[dict]:
+    """The rows, written in one transaction, with their ids. The one writer takes the next ids in order, so the ids
+    in order are the rows'."""
+    lines = store["lines"]
     with store["db"].atomic("IMMEDIATE"):
-      store["lines"].insert_many(rows).execute()
+      ids = sorted(row_id for (row_id,) in lines.insert_many(rows).returning(lines.id).tuples().execute())
     self._check_sizes(name)
+    return [{"id": row_id, **row} for row_id, row in zip(ids, rows)]
 
   def write_logs(self, container: str, entries: list):
-    self._insert(container, self.get_logs_db(container), entries)
+    """An application's lines, to its shard and its feed."""
+    stored = self._insert(container, self.get_logs_db(container), entries)
+    Updates().publish(UpdateFeed.APPLICATION_LOGS, stored, key=container)
+
+  def write_requests(self, rows: list):
+    stored = self._insert(_REQUESTS, self.requests_db(), rows)
+    Updates().publish(UpdateFeed.REQUESTS, stored)
 
   def write_task_line(self, entry: dict):
-    self.task_logs_db()["lines"].insert(**entry).execute()
+    """A task's line, to the task logs and to the feeds of the task and of its part."""
+    row = {"id": self.task_logs_db()["lines"].insert(**entry).execute(), **entry}
     self._check_sizes(_TASKS)
+    task, part = entry["task_id"], entry["sub_task_id"]
+    Updates().publish(UpdateFeed.TASK_LOGS, [row], key=task)
+    if part and part != task:
+      Updates().publish(UpdateFeed.TASK_LOGS, [row], key=f"{task}/{part}")
 
-  def query_logs(self, container: str, hostname: str = "", search: str = "", from_ts: str = "",
-                 to_ts: str = "") -> dict:
-    """An application's lines, in the order they were stored: the newest LOG_QUERY_MAX_ROWS from `hostname` (all
-    workers if empty) that contain `search` anywhere, in any case, and whose time is at or after `from_ts` and before
-    `to_ts`, and whether there were more. The search walks the message index newest first (the trigram tokenizer
+  def query_logs(self, container: str, hostname: str = "", search: str = "", from_ts: str = "", to_ts: str = "",
+                 after_id: int = 0) -> dict:
+    """An application's lines, in the order they were stored: the newest LOG_QUERY_MAX_ROWS (after the line
+    `after_id`, if given) from `hostname` (all workers if empty) that contain `search` anywhere, in any case, and whose
+    time is at or after `from_ts` and before `to_ts`, and whether there were more. The search walks the message index newest first (the trigram tokenizer
     finds three characters or more through it; shorter text, or a shard indexed before it, is scanned) and stops at
     the cap."""
     shard = self.get_logs_db(container)
@@ -262,13 +278,15 @@ class Logs(Base):
       query = query.where(lines.ts >= from_ts)
     if to_ts:
       query = query.where(lines.ts < to_ts)
+    if after_id:
+      query = query.where(lines.id > after_id)
     rows = list(query.order_by(order).limit(config.LOG_QUERY_MAX_ROWS + 1).dicts())
     return {"lines": rows[:config.LOG_QUERY_MAX_ROWS][::-1], "more": len(rows) > config.LOG_QUERY_MAX_ROWS}
 
   def query_requests(self, worker: str = "", host: str = "", method: str = "", status_class: int | None = None,
-                     path: str = "", min_duration_ms: float | None = None, from_ts: str = "",
-                     to_ts: str = "") -> dict:
-    """The newest LOG_QUERY_MAX_ROWS requests, newest first, that match: `worker` and `method` exactly, `host` and
+                     path: str = "", min_duration_ms: float | None = None, from_ts: str = "", to_ts: str = "",
+                     after_id: int = 0) -> dict:
+    """The newest LOG_QUERY_MAX_ROWS requests (after the request `after_id`, if given), newest first, that match: `worker` and `method` exactly, `host` and
     `path` anywhere in any case, `status_class` the first digit of the status (4 for 4xx), `min_duration_ms` or
     slower, and a start at or after `from_ts` and before `to_ts`; and whether there were more."""
     requests = self.requests_db()["lines"]
@@ -289,17 +307,21 @@ class Logs(Base):
       query = query.where(requests.ts >= from_ts)
     if to_ts:
       query = query.where(requests.ts < to_ts)
+    if after_id:
+      query = query.where(requests.id > after_id)
     rows = list(query.order_by(requests.id.desc()).limit(config.LOG_QUERY_MAX_ROWS + 1).dicts())
     return {"requests": rows[:config.LOG_QUERY_MAX_ROWS], "more": len(rows) > config.LOG_QUERY_MAX_ROWS}
 
-  def query_task_logs(self, task_id: str, sub_task_id: str = "") -> dict:
-    """A task's lines, or one container's part of it, in the order they were written: the newest LOG_QUERY_MAX_ROWS,
-    and whether there were more. A part recorded under the task's own id (a delete, a volume restore) is the whole
-    task."""
+  def query_task_logs(self, task_id: str, sub_task_id: str = "", after_id: int = 0) -> dict:
+    """A task's lines, or one container's part of it, in the order they were written: the newest LOG_QUERY_MAX_ROWS
+    (after the line `after_id`, if given), and whether there were more. A part recorded under the task's own id (a
+    delete, a volume restore) is the whole task."""
     TaskLogs = self.task_logs_db()["lines"]
     query = TaskLogs.select().where(TaskLogs.task_id == task_id)
     if sub_task_id and sub_task_id != task_id:
       query = query.where(TaskLogs.sub_task_id == sub_task_id)
+    if after_id:
+      query = query.where(TaskLogs.id > after_id)
     rows = list(query.order_by(TaskLogs.id.desc()).limit(config.LOG_QUERY_MAX_ROWS + 1).dicts())
     return {"lines": rows[:config.LOG_QUERY_MAX_ROWS][::-1], "more": len(rows) > config.LOG_QUERY_MAX_ROWS}
 

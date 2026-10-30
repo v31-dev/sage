@@ -66,6 +66,6 @@ def task_history_filters():
 
 
 @router.get("/{task_id}/logs")
-def get_task_logs(task_id: str, sub_task_id: str = ""):
-  """The lines a task logged, or one container's part of it (`sub_task_id`)."""
-  return Logs().query_task_logs(task_id, sub_task_id)
+def get_task_logs(task_id: str, sub_task_id: str = "", after_id: int = 0):
+  """The lines a task logged, or one container's part of it (`sub_task_id`); after the line `after_id`, if given."""
+  return Logs().query_task_logs(task_id, sub_task_id, after_id)
