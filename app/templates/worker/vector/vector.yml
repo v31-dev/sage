@@ -4,10 +4,22 @@ sources:
   container_logs:
     type: docker_logs
 
+transforms:
+  # Traefik's and the applications' lines, by exact name (the source's exclude list matches name prefixes), each
+  # with only what the manager stores.
+  shipped:
+    type: remap
+    inputs: ["container_logs"]
+    source: |
+      if includes(["cloudflared", "telegraf", "vector"], .container_name) {
+        abort
+      }
+      . = {"container_name": .container_name, "timestamp": .timestamp, "stream": .stream, "message": .message}
+
 sinks:
   fastapi_http:
     type: http
-    inputs: ["container_logs"]
+    inputs: ["shipped"]
     uri: "http://${IP}:9001/api/vector/logs"
     method: post
     encoding:
@@ -16,6 +28,7 @@ sinks:
       method: newline_delimited
     batch:
       max_events: 1000
+      max_bytes: 4194304
       timeout_secs: 10
     buffer:
       type: disk

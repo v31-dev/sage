@@ -1,5 +1,6 @@
 import asyncio
 import itertools
+import json
 import logging
 import queue
 import random
@@ -11,6 +12,7 @@ from datetime import timedelta
 from types import SimpleNamespace
 
 import pytest
+from peewee import OperationalError
 
 import config
 import services.logs as logs_module
@@ -266,6 +268,69 @@ class TestTaskLines:
     assert result["more"] is True
 
 
+def event(container, message, index=0, stream="stdout"):
+  """A line as a worker's Vector pushes it."""
+  return {"container_name": container, "timestamp": stamp(index), "stream": stream, "message": message}
+
+
+def access_line(index=0, **fields):
+  """One of Traefik's access lines, as its JSON access log writes it."""
+  return json.dumps({"ClientHost": "100.64.0.9", "DownstreamContentSize": 1543, "DownstreamStatus": 200,
+                     "Duration": 12_500_000, "RequestHost": "web.example.com", "RequestMethod": "GET",
+                     "RequestPath": f"/items/{index}?page=2", "RouterName": "demo-web@file",
+                     "ServiceName": "demo-web@file", "StartUTC": stamp(index), "entryPointName": "websecure",
+                     "level": "info", "msg": "", **fields})
+
+
+def push(*events) -> bytes:
+  return "\n".join(each if isinstance(each, str) else json.dumps(each) for each in events).encode()
+
+
+class TestIngest:
+  def test_an_applications_lines_go_to_its_shard_with_the_worker(self, logs):
+    skipped = logs.ingest("w1", push(event("demo-web", "hello", 0), event("demo-web", "world", 1, "stderr"),
+                                     event("demo-api", "other", 2)))
+
+    assert skipped == 0
+    assert [(row["hostname"], row["ts"], row["stream"], row["message"]) for row in logs.query_logs("demo-web")] == [
+        ("w1", stamp(0), "stdout", "hello"), ("w1", stamp(1), "stderr", "world")]
+    assert [row["message"] for row in logs.query_logs("demo-api")] == ["other"]
+
+  def test_traefiks_access_lines_are_requests_in_columns(self, logs):
+    logs.ingest("w1", push(event("traefik", access_line(3))))
+
+    [row] = logs.requests_db()["lines"].select().dicts()
+    assert {key: value for key, value in row.items() if key != "id"} == {
+        "ts": stamp(3), "worker": "w1", "host": "web.example.com", "method": "GET", "path": "/items/3?page=2",
+        "status": 200, "duration_ms": 12.5, "router": "demo-web@file", "service": "demo-web@file",
+        "client": "100.64.0.9", "size": 1543}
+
+  def test_traefiks_own_lines_are_dropped(self, logs):
+    logs.ingest("w1", push(event("traefik", "2026-01-01T12:00:00Z INF Configuration loaded from file"),
+                           event("traefik", json.dumps({"level": "error", "msg": "a JSON line of its own"})),
+                           event("traefik", access_line())))
+
+    assert len(rows(logs, "requests")) == 1
+    assert not (logs.db_path / "logs" / "traefik.db").exists()
+
+  def test_a_line_that_is_not_an_event_or_of_a_name_that_cannot_be_a_file_is_skipped(self, logs):
+    skipped = logs.ingest("w1", push("not json", json.dumps({"container_name": "demo-web"}), "[1, 2]",
+                                     event("Not_A_Name", "x"), event("tasks", "x"), event("requests", "x"),
+                                     event("demo-web", "kept")))
+
+    assert skipped == 6
+    assert [row["message"] for row in logs.query_logs("demo-web")] == ["kept"]
+
+  def test_a_write_that_fails_is_raised_once_the_other_files_are_written(self, logs):
+    (logs.db_path / "logs" / "demo-web.db").mkdir()
+
+    with pytest.raises(OperationalError):
+      logs.ingest("w1", push(event("demo-web", "lost"), event("demo-api", "kept"), event("traefik", access_line())))
+
+    assert [row["message"] for row in logs.query_logs("demo-api")] == ["kept"]
+    assert len(rows(logs, "requests")) == 1
+
+
 class TestTrimShard:
   def test_a_shard_within_its_limit_is_left_alone(self, logs, small, limit):
     logs.write_logs("web", lines(0, 200))
@@ -464,20 +529,24 @@ class TestTrimTotal:
 
 
 class TestCleanup:
-  def test_lines_past_the_retention_and_the_shards_of_removed_applications_go(self, logs, application):
+  def test_lines_past_the_retention_and_the_shards_of_anything_but_an_application_go(self, logs, application):
     kept = application.qualified_name
     old = (utcnow() - timedelta(days=config.RETENTION_DAYS + 1)).isoformat()
     fresh = utcnow().isoformat()
     logs.write_logs(kept, [{"hostname": "w1", "ts": old, "stream": "stdout", "message": "stale"},
                            {"hostname": "w1", "ts": fresh, "stream": "stdout", "message": "recent"}])
-    logs.write_logs("deleted-app", lines(0, 5))
-    logs.write_logs("sage", lines(0, 5))
-    logs.write_logs("traefik", lines(0, 5))
+    for name in ("deleted-app", "sage", "traefik", "cloudflared", "telegraf"):
+      logs.write_logs(name, lines(0, 5))
     logs.cleanup()
     assert [row["message"] for row in logs.query_logs(kept)] == ["recent"]
-    assert not (logs.db_path / "logs" / "deleted-app.db").exists()
-    assert not (logs.db_path / "logs" / "sage.db").exists()
-    assert (logs.db_path / "logs" / "traefik.db").exists()
+    assert [path.stem for path in (logs.db_path / "logs").glob("*.db")] == [kept]
+
+  def test_the_requests_are_kept_and_lose_their_rows_past_the_retention(self, logs, db):
+    old = (utcnow() - timedelta(days=config.RETENTION_DAYS + 1)).isoformat()
+    logs.ingest("w1", push(event("traefik", access_line(StartUTC=old, RequestPath="/stale")),
+                           event("traefik", access_line(StartUTC=utcnow().isoformat(), RequestPath="/recent"))))
+    logs.cleanup()
+    assert [row.path for row in logs.requests_db()["lines"].select()] == ["/recent"]
 
   def test_the_task_logs_are_kept_and_lose_their_lines_past_the_retention(self, logs, db):
     old = (utcnow() - timedelta(days=config.RETENTION_DAYS + 1)).isoformat()
@@ -489,11 +558,11 @@ class TestCleanup:
   def test_it_applies_the_size_limits(self, logs, application, small, limit):
     name = application.qualified_name
     logs.write_logs(name, lines(0, 3000))
-    logs.write_logs("traefik", lines(0, 3000))
-    limit(shard=logs._live_bytes(logs.get_logs_db("traefik")) // 2)
+    logs.ingest("w1", push(*(event("traefik", access_line(index)) for index in range(3000))))
+    limit(shard=logs._live_bytes(logs.requests_db()) // 2)
     logs.cleanup(days=36500)
     assert 0 < len(rows(logs, name)) < 3000
-    assert 0 < len(rows(logs, "traefik")) < 3000
+    assert 0 < len(rows(logs, "requests")) < 3000
 
 
 class TestUnderLoad:

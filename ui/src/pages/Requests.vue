@@ -1,4 +1,5 @@
 <script setup lang="ts">
+// TODO(01 step 3B): the requests are stored in their own columns now; this page reads them from part B.
 import LogViewer from '@/components/LogViewer.vue'
 import { formatDate } from '@/lib/utils'
 

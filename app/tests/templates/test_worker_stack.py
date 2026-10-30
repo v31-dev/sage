@@ -16,8 +16,12 @@ def telegraf_config():
   return tomllib.loads(re.sub(r"\$\{(\w+)\}", lambda m: {"INTERVAL": str(config.REPORT_INTERVAL_SECONDS)}.get(m[1], "x"), text))
 
 
+def vector_config():
+  return yaml.safe_load((TEMPLATES / "vector" / "vector.yml").read_text())
+
+
 def vector_sink():
-  return yaml.safe_load((TEMPLATES / "vector" / "vector.yml").read_text())["sinks"]["fastapi_http"]
+  return vector_config()["sinks"]["fastapi_http"]
 
 
 def service(name):
@@ -36,6 +40,19 @@ class TestVectorConfig:
     sink = vector_sink()
     assert sink["uri"].endswith(":9001/api/vector/logs")
     assert sink["request"]["headers"]["X-Node-Name"] == "${HOSTNAME}"
+
+  def test_it_ships_the_containers_through_the_transform_that_picks_them(self):
+    config_ = vector_config()
+    assert config_["transforms"]["shipped"]["inputs"] == ["container_logs"]
+    assert vector_sink()["inputs"] == ["shipped"]
+
+  def test_it_drops_every_container_of_the_stack_but_traefik_by_its_exact_name(self):
+    source = vector_config()["transforms"]["shipped"]["source"]
+    dropped = yaml.safe_load(re.search(r"includes\((\[[^\]]*\])", source)[1])
+    assert set(dropped) == set(yaml.safe_load((TEMPLATES / "docker-compose.yml").read_text())["services"]) - {"traefik"}
+
+  def test_its_batches_stay_well_within_what_the_intake_takes(self):
+    assert vector_sink()["batch"]["max_bytes"] * 2 <= config.LOG_INTAKE_MAX_BYTES
 
 
 class TestTelegrafConfig:

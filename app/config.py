@@ -59,6 +59,8 @@ METRICS_SAMPLE_INTERVAL = 5
 REPORT_INTERVAL_SECONDS = 10
 REPORT_KEEP_ALIVE_SECONDS = 30
 REPORT_MAX_BYTES = 8 * 1024 * 1024
+# A push of logs from a worker's Vector is refused above this; Vector's batches are capped at half of it.
+LOG_INTAKE_MAX_BYTES = 8 * 1024 * 1024
 
 # A worker's report is current for this long. A snapshot can stand for how things are now only if
 # it arrived this long after the last change the manager made to the rows it is compared with

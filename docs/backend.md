@@ -41,7 +41,7 @@ Nested routes cover:
 - volumes
 - volume backups
 
-The ingestion API is separate in `app/api_ingest.py` and serves what the workers push on port 9001: Telegraf's reports at `/api/telegraf/report` (kept in memory by `services/worker_reports.py`, read by the operation queue; a report from a name that is not in the worker list is refused with a 404 and logged once) and Vector's logs at `/api/vector/logs`.
+The ingestion API is separate in `app/api_ingest.py` and serves what the workers push on port 9001: Telegraf's reports at `/api/telegraf/report` (kept in memory by `services/worker_reports.py`, read by the operation queue; a report from a name that is not in the worker list is refused with a 404 and logged once) and Vector's logs at `/api/vector/logs`: Traefik's and the applications' lines (the worker's Vector drops the stack's other containers by exact name, and sends each event with only the container's name, the time, the stream and the message, in batches of at most 4 MB). The intake refuses a push over `LOG_INTAKE_MAX_BYTES` with a 413, and decodes and writes it on `LOGS_EXECUTOR` (`Logs.ingest`), off the event loop, one write per file: Traefik's access lines go to the requests in columns and its own lines are dropped, each application's lines to its shard. A line that is not an event is skipped and counted in a warning. A write that fails answers 503, which Vector sends again after; a file already written then gets that batch twice.
 
 ## Pushed Updates
 
@@ -99,7 +99,7 @@ Most high-level backend behavior ultimately flows through this service, and almo
 - `services/worker_reports.py`
   - Telegraf's reports: parsing a batch into snapshots, and the newest snapshot of each worker in memory
 - `services/logs.py`
-  - per-container log storage and FTS search; the lines of the manager's queued tasks captured in-process into the task logs
+  - per-application log storage and FTS search, Traefik's access lines as requests in columns, and the lines of the manager's queued tasks captured in-process into the task logs
 - `services/s3.py`
   - S3 validation, upload, delete, and presigned URL support
 - `services/notification.py`
@@ -228,7 +228,7 @@ Main database:
 Additional storage:
 
 - metrics SQLite shards
-- log SQLite shards with FTS5 (worker containers via Vector ingestion), and the task logs (`logs/tasks.db`, without a full-text index: the lines the manager logs inside its queued tasks, read by task id: `GET /tasks/{task_id}/logs`, with `sub_task_id` for one container's part, returns the newest 1000 lines and whether there were more)
+- log SQLite shards with FTS5 (each application's lines, via Vector), the requests (`logs/requests.db`: Traefik's access lines parsed into start time, worker, host, method, path, status, duration, router, service, client and size; no full-text index), and the task logs (`logs/tasks.db`, without a full-text index: the lines the manager logs inside its queued tasks, read by task id: `GET /tasks/{task_id}/logs`, with `sub_task_id` for one container's part, returns the newest 1000 lines and whether there were more)
   - A shard is bounded by size as well as age (`Logs.trim_shard`, `Logs.trim_total`; limits in `config.py`, see architecture.md). A shard file does not shrink when rows are deleted, but later writes reuse the freed pages, so the limit applies to the data (pages less free pages) and a file that is far bigger than the limit is rewritten (`VACUUM`). Deleting by `ts` uses an index on it, which also serves the time-range queries of the log view. Writes use `BEGIN IMMEDIATE`: the full-text index trigger reads before it writes, and a plain `BEGIN` fails with "database is locked" when another connection writes at the same time (the trim or the cleanup).
 - on each worker, Traefik config and revision stamps under `/opt/sage`
 

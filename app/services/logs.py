@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import queue
@@ -9,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from functools import partial
 from pathlib import Path
 
-from peewee import CharField, Model, SqliteDatabase, TextField
+from peewee import CharField, FloatField, IntegerField, Model, SqliteDatabase, TextField
 from playhouse.sqlite_ext import FTS5Model, RowIDField, SearchField
 
 import config
@@ -20,15 +21,18 @@ from utils.logging import ContextVarFilter, SuppressTracebackFilter, sub_task_id
 
 logger = logging.getLogger(__name__)
 
-_SYSTEM_LOG_CONTAINERS = {"cloudflared", "traefik", "telegraf"}
-# The task logs' file, beside the container shards. An application's shard is named `project-app`, so none is this.
+# The files beside the applications' shards: the task logs and Traefik's requests. An application's shard is named
+# `project-app`, so neither is one.
 _TASKS = "tasks"
+_REQUESTS = "requests"
+# The container whose access lines are the requests.
+_TRAEFIK = "traefik"
 
 
 class Logs(Base):
-  """Per-container log shards (one SQLite DB each, with an FTS5 message index) and the task logs (the lines the
-  manager logs inside its queued tasks). A handler on the root logger hands a task's lines to a drain thread to
-  write."""
+  """Per-application log shards (one SQLite DB each, with an FTS5 message index), the requests (Traefik's access
+  lines, in columns) and the task logs (the lines the manager logs inside its queued tasks). A handler on the root
+  logger hands a task's lines to a drain thread to write."""
 
   def __init__(self):
     super().__init__()
@@ -78,7 +82,7 @@ class Logs(Base):
     """
     # container is a qualified application name; reject anything that could escape
     # the logs directory when interpolated into the shard file path.
-    if not re.fullmatch(r"[a-z0-9-]+", container or "") or container == _TASKS:
+    if not re.fullmatch(r"[a-z0-9-]+", container or "") or container in (_TASKS, _REQUESTS):
       raise ValueError(f"Invalid container name: {container!r}")
 
     with self.lock:
@@ -153,18 +157,86 @@ class Logs(Base):
 
     return self._dbs["logs"][_TASKS]
 
+  def requests_db(self):
+    with self.lock:
+      if _REQUESTS not in self._dbs["logs"]:
+        db = self._open(_REQUESTS)
+
+        class Requests(Model):
+          ts = CharField()
+          worker = CharField()
+          host = CharField()
+          method = CharField()
+          path = TextField()
+          status = IntegerField()
+          duration_ms = FloatField()
+          router = CharField()
+          service = CharField()
+          client = CharField()
+          size = IntegerField()
+
+          class Meta:
+            database = db
+            indexes = ((("ts",), False),)
+
+        db.create_tables([Requests], safe=True)
+        self._dbs["logs"][_REQUESTS] = {"db": db, "lines": Requests, "index": None}
+
+    return self._dbs["logs"][_REQUESTS]
+
   def _store(self, name: str):
-    """The task logs or a container's shard, by its file's name."""
-    return self.task_logs_db() if name == _TASKS else self.get_logs_db(name)
+    """The task logs, the requests or an application's shard, by its file's name."""
+    if name == _TASKS:
+      return self.task_logs_db()
+    if name == _REQUESTS:
+      return self.requests_db()
+    return self.get_logs_db(name)
+
+  def ingest(self, hostname: str, body: bytes) -> int:
+    """A push from a worker's Vector, one event a line: Traefik's access lines to the requests, and each application's
+    lines to its shard, one write per file. Traefik's own lines are dropped. Returns how many lines were skipped (not
+    an event, or of a container whose name cannot be a file); raises after the other writes when one fails."""
+    by_container: dict[str, list] = {}
+    requests = []
+    skipped = 0
+    for line in body.splitlines():
+      if not line.strip():
+        continue
+      try:
+        event = json.loads(line)
+        container, ts, message = event["container_name"], event["timestamp"], event["message"]
+      except (ValueError, KeyError, TypeError):
+        skipped += 1
+        continue
+      if container == _TRAEFIK:
+        if (request := _request(hostname, message)) is not None:
+          requests.append(request)
+      else:
+        by_container.setdefault(container, []).append(
+            {"hostname": hostname, "ts": ts, "stream": event.get("stream", ""), "message": message})
+
+    failed = None
+    writes = [(_REQUESTS, self.requests_db, requests)] if requests else []
+    writes += [(container, partial(self.get_logs_db, container), rows) for container, rows in by_container.items()]
+    for name, store, rows in writes:
+      try:
+        self._insert(name, store(), rows)
+      except ValueError:
+        skipped += len(rows)
+      except Exception as e:
+        logger.warning(f"Could not write {len(rows)} log lines of '{name}': {e}")
+        failed = failed or e
+    if failed is not None:
+      raise failed
+    return skipped
+
+  def _insert(self, name: str, store: dict, rows: list):
+    with store["db"].atomic("IMMEDIATE"):
+      store["lines"].insert_many(rows).execute()
+    self._check_sizes(name)
 
   def write_logs(self, container: str, entries: list):
-    shard = self.get_logs_db(container)
-    with shard["db"].atomic("IMMEDIATE"):
-      shard["lines"].insert_many(entries).execute()
-      # FTS index updated automatically via containerlogs_ai trigger
-
-    logger.info(f"Wrote {len(entries)} log entries for container {container}.")
-    self._check_sizes(container)
+    self._insert(container, self.get_logs_db(container), entries)
 
   def write_task_line(self, entry: dict):
     self.task_logs_db()["lines"].insert(**entry).execute()
@@ -370,8 +442,8 @@ class Logs(Base):
     cutoff = utcnow() - timedelta(days=days)
 
     # Drop the files of apps that no longer exist (logs keyed by app qualified_name) and of any other name; the task
-    # logs and the worker stack's containers are always kept.
-    live = _SYSTEM_LOG_CONTAINERS | {_TASKS} | {
+    # logs and the requests are always kept.
+    live = {_TASKS, _REQUESTS} | {
         application.qualified_name
         for application in Application.select(Application, Project).join(Project)
     }
@@ -423,3 +495,27 @@ class _CaptureHandler(logging.Handler):
         }))
     except Exception:
       self.handleError(record)
+
+
+def _request(hostname: str, message: str) -> dict | None:
+  """Traefik's access line (JSON) as a request; None for one of its own lines."""
+  try:
+    line = json.loads(message)
+  except ValueError:
+    return None
+  if not isinstance(line, dict) or "RequestMethod" not in line:
+    return None
+  return {
+      "ts": line.get("StartUTC", ""),
+      "worker": hostname,
+      "host": line.get("RequestHost", ""),
+      "method": line["RequestMethod"],
+      "path": line.get("RequestPath", ""),
+      "status": int(line.get("DownstreamStatus") or 0),
+      # A Go duration, in nanoseconds.
+      "duration_ms": (line.get("Duration") or 0) / 1e6,
+      "router": line.get("RouterName", ""),
+      "service": line.get("ServiceName", ""),
+      "client": line.get("ClientHost", ""),
+      "size": int(line.get("DownstreamContentSize") or 0),
+  }
