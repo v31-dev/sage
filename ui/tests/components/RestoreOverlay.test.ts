@@ -21,7 +21,17 @@ const stubs = {
 }
 
 function task(id: string, name: string): QueueTask {
-  return { task_id: id, name, scopes: [], params: {}, executor: 'platform', status: 'running' }
+  return {
+    task_id: id,
+    name,
+    scopes: [],
+    params: {},
+    executor: 'platform',
+    status: 'running',
+    queued_at: '2026-01-01T12:00:00',
+    started_at: '2026-01-01T12:00:00',
+    quiet: false,
+  }
 }
 
 const reload = vi.fn()

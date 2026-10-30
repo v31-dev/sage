@@ -13,9 +13,9 @@ import {
 import { TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Spinner } from '@/components/ui/spinner'
 import { watchFeed } from '@/lib/updates'
-import { formatDate, parseDate } from '@/lib/utils'
+import { formatDate } from '@/lib/utils'
 
-import { fetchApplicationLogs, type LogEntry } from '@/services/api'
+import { fetchApplicationLogs, matchesLogQuery, type LogEntry, type LogQuery } from '@/services/api'
 
 // An application's logs, from all its containers or one worker's, followed as they are stored.
 const props = defineProps<{ project: string; application: string }>()
@@ -45,6 +45,12 @@ const fromUTC = computed(() =>
   activeFromDate.value ? new Date(activeFromDate.value).toISOString() : ''
 )
 const toUTC = computed(() => (activeToDate.value ? new Date(activeToDate.value).toISOString() : ''))
+const query = computed<LogQuery>(() => ({
+  hostname: hostnameFilter.value,
+  search: activeSearch.value,
+  from_ts: fromUTC.value,
+  to_ts: toUTC.value,
+}))
 
 function isNearBottom(threshold: number = 50): boolean {
   if (desktopViewport.value) {
@@ -85,25 +91,11 @@ watch(
   }
 )
 
-// The rules of the logs route: the worker, the text anywhere in any case, and the window.
-function matches(entry: LogEntry) {
-  const search = activeSearch.value.toLowerCase()
-  return (
-    (!hostnameFilter.value || entry.hostname === hostnameFilter.value) &&
-    (!search || entry.message.toLowerCase().includes(search)) &&
-    (!fromUTC.value || parseDate(entry.ts) >= new Date(fromUTC.value)) &&
-    (!toUTC.value || parseDate(entry.ts) < new Date(toUTC.value))
-  )
-}
-
 // The lines this view does not have yet: the newest that match at first, then those after the last one it holds.
 async function load() {
   const asked = generation
   const result = await fetchApplicationLogs(props.project, props.application, {
-    hostname: hostnameFilter.value,
-    search: activeSearch.value,
-    from_ts: fromUTC.value,
-    to_ts: toUTC.value,
+    ...query.value,
     after_id: logs.value[logs.value.length - 1]?.id ?? 0,
   })
   if (asked !== generation) return []
@@ -114,7 +106,7 @@ async function load() {
 // Merged in the order they were stored, each once, when the filters let them through; the newest are kept.
 function addLines(rows: LogEntry[]) {
   const known = new Set(logs.value.map(entry => entry.id))
-  const fresh = rows.filter(entry => matches(entry) && !known.has(entry.id))
+  const fresh = rows.filter(entry => matchesLogQuery(query.value, entry) && !known.has(entry.id))
   if (!fresh.length) return
   const merged = [...logs.value, ...fresh].sort((a, b) => a.id - b.id)
   more.value ||= merged.length > MAX_LOGS_ON_UI

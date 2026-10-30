@@ -17,11 +17,11 @@ import {
 import TaskCard from './TaskCard.vue'
 import TaskTable from './TaskTable.vue'
 import { watchFeed, watchState } from '@/lib/updates'
-import { parseDate } from '@/lib/utils'
 import {
   fetchTaskHistory,
   fetchTaskHistoryFilters,
   fetchTasks,
+  matchesTaskHistoryQuery,
   type FinishedTask,
   type QueueResponse,
   type TaskHistoryFilters,
@@ -72,26 +72,6 @@ const pageLabel = computed(
   () => `${offset.value + 1}–${Math.min(offset.value + PAGE_SIZE, total.value)} of ${total.value}`
 )
 
-// A scope matches the filter or is one of its children; `*` matches any characters, in any case.
-const scopePattern = computed(() => {
-  const literal = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  return new RegExp(`^${query.value.scope.split('*').map(literal).join('.*')}(:.*)?$`, 'i')
-})
-
-// The rules of GET /tasks/history: a name, executor and status match exactly, a scope as above, and From and To
-// match a task active at any point between them.
-function matches(task: FinishedTask) {
-  const { name, executor, status, scope, from_ts, to_ts } = query.value
-  return (
-    (!name || task.name === name) &&
-    (!executor || task.executor === executor) &&
-    (!status || task.status === status) &&
-    (!scope || task.scopes.some(each => scopePattern.value.test(each))) &&
-    (!from_ts || parseDate(task.finished_at) >= new Date(from_ts)) &&
-    (!to_ts || parseDate(task.created_at) <= new Date(to_ts))
-  )
-}
-
 function newestFinishedFirst(a: FinishedTask, b: FinishedTask) {
   if (a.finished_at !== b.finished_at) return a.finished_at < b.finished_at ? 1 : -1
   return a.task_id < b.task_id ? 1 : -1
@@ -102,7 +82,9 @@ function addFinished(rows: FinishedTask[]) {
   if (offset.value !== 0) return
   pushedDuringLoad?.push(...rows)
   const known = new Set(finished.value.map(task => task.task_id))
-  const fresh = rows.filter(task => matches(task) && !known.has(task.task_id))
+  const fresh = rows.filter(
+    task => matchesTaskHistoryQuery(query.value, task) && !known.has(task.task_id)
+  )
   if (!fresh.length) return
   total.value += fresh.length
   finished.value = [...fresh, ...finished.value].sort(newestFinishedFirst).slice(0, PAGE_SIZE)

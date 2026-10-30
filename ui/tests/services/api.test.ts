@@ -426,7 +426,9 @@ describe('every call', () => {
     const calls = Object.entries(api)
       .filter(([, value]) => typeof value === 'function')
       .map(([name]) => name)
+      // The downloads are tested below, and a `matches` function calls nothing (tests/services/api/).
       .filter(name => !['downloadBackup', 'downloadVolumeBackup'].includes(name))
+      .filter(name => !name.startsWith('matches'))
     expect(calls.filter(name => !named.has(name))).toEqual([])
   })
 })

@@ -21,10 +21,11 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { watchFeed } from '@/lib/updates'
-import { formatDate, parseDate } from '@/lib/utils'
+import { formatDate } from '@/lib/utils'
 import { TONES, type Tone } from '@/lib/tone'
 import {
   fetchRequests,
+  matchesRequestQuery,
   type RequestQuery,
   type ServedRequest,
   type StatusClass,
@@ -112,24 +113,6 @@ function commit(key: (typeof fields)[number]['key'], event: Event) {
   filters[key] = (event.target as HTMLInputElement).value.trim()
 }
 
-// The rules of the requests route: the worker and the method exactly, the status class, the host and the path
-// holding the text in any case, at least the duration, and the window.
-function matches(row: ServedRequest) {
-  const { worker, method, status, host, path, min_duration_ms, from_ts, to_ts } = query.value
-  return (
-    (!worker || row.worker === worker) &&
-    (!method || row.method === method) &&
-    (!status || String(row.status)[0] === status[0]) &&
-    (!host || row.host.toLowerCase().includes(host.toLowerCase())) &&
-    (!path || row.path.toLowerCase().includes(path.toLowerCase())) &&
-    (min_duration_ms === null ||
-      min_duration_ms === undefined ||
-      row.duration_ms >= min_duration_ms) &&
-    (!from_ts || parseDate(row.ts) >= new Date(from_ts)) &&
-    (!to_ts || parseDate(row.ts) < new Date(to_ts))
-  )
-}
-
 // The requests this page does not have yet: the newest that match at first, then those after the newest it holds.
 async function load() {
   const asked = generation
@@ -142,7 +125,7 @@ async function load() {
 // Merged newest first, each once, when the filters let them through; the newest are kept.
 function addRequests(rows: ServedRequest[]) {
   const known = new Set(requests.value.map(row => row.id))
-  const fresh = rows.filter(row => matches(row) && !known.has(row.id))
+  const fresh = rows.filter(row => matchesRequestQuery(query.value, row) && !known.has(row.id))
   if (!fresh.length) return
   const merged = [...fresh, ...requests.value].sort((a, b) => b.id - a.id)
   more.value ||= merged.length > MAX_REQUESTS

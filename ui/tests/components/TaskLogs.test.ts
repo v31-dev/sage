@@ -2,12 +2,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import TaskLogs from '@/components/TaskLogs.vue'
 import { formatDate } from '@/lib/utils'
-import {
-  fetchTaskLogs,
-  type TaskLogLine,
-  type TaskLogs as Logs,
-  type TaskPart,
-} from '@/services/api'
+import { fetchTaskLogs, type TaskLogLine, type TaskLogPage, type TaskPart } from '@/services/api'
 import { followTopics, type Followed } from '../helpers/topics'
 
 vi.mock('@/lib/updates', () => ({ watchState: vi.fn(), watchFeed: vi.fn() }))
@@ -28,7 +23,7 @@ const line = (id: number, message = `line ${id}`, level = 'INFO'): TaskLogLine =
   message,
 })
 
-const logs = (lines: TaskLogLine[], more = false): Logs => ({ lines, more })
+const logs = (lines: TaskLogLine[], more = false): TaskLogPage => ({ lines, more })
 
 const rows = (wrapper: ReturnType<typeof mount>) =>
   wrapper.findAll('tbody tr').map(row => row.findAll('td').map(cell => cell.text()))
