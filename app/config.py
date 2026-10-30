@@ -27,8 +27,7 @@ UPDATES_PING_TIMEOUT_SECONDS = 10
 # LOG_SHARD_MAX_BYTES, and all the logs when together they pass the smaller of LOG_TOTAL_MAX_BYTES and
 # LOG_TOTAL_MAX_DISK_SHARE of the data volume. A trim leaves LOG_TRIM_TO_SHARE of the limit and keeps each file's newest
 # LOG_KEEP_NEWEST_ROWS lines. Sizes are checked after a write at most every LOG_SIZE_CHECK_SECONDS, and lines go
-# LOG_TRIM_BATCH_ROWS at a time. A file bigger than LOG_SHARD_VACUUM_RATIO times its limit is rewritten. A query returns
-# the newest LOG_QUERY_MAX_ROWS lines at most.
+# LOG_TRIM_BATCH_ROWS at a time. A file bigger than LOG_SHARD_VACUUM_RATIO times its limit is rewritten.
 LOG_SHARD_MAX_BYTES = 256 * 1024 * 1024
 LOG_TOTAL_MAX_BYTES = 2 * 1024 * 1024 * 1024
 LOG_TOTAL_MAX_DISK_SHARE = 0.10
@@ -37,7 +36,10 @@ LOG_KEEP_NEWEST_ROWS = 1000
 LOG_SIZE_CHECK_SECONDS = 30
 LOG_TRIM_BATCH_ROWS = 10000
 LOG_SHARD_VACUUM_RATIO = 1.25
-LOG_QUERY_MAX_ROWS = 1000
+
+# The most rows a list route (an application's logs, the requests, the finished tasks) returns, and what it returns
+# when a view does not ask for fewer.
+LIST_MAX_ROWS = 1000
 
 # Cloudflare network errors, rate limits and server errors are retried after these delays (seconds).
 CLOUDFLARE_RETRY_DELAYS = (1, 2)

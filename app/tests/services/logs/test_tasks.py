@@ -169,16 +169,13 @@ class TestTaskLines:
     failed = tasks.messages("q1")[-1]
     assert failed.startswith("sync: failed\nTraceback") and "RuntimeError: boom" in failed
 
-  def test_a_query_gives_the_newest_lines_and_says_when_there_were_more(self, logs, monkeypatch):
-    monkeypatch.setattr(config, "LOG_QUERY_MAX_ROWS", 5)
-    for entry in task_entries(0, 5):
-      logs.write_task_line(entry)
-    assert logs.query_task_logs("t1")["more"] is False
-    for entry in task_entries(5, 2):
+  def test_a_query_gives_every_line_of_the_task_more_than_a_list_ever_holds(self, logs, monkeypatch):
+    monkeypatch.setattr(config, "LIST_MAX_ROWS", 5)
+    for entry in task_entries(0, 7):
       logs.write_task_line(entry)
     result = logs.query_task_logs("t1")
-    assert [line["ts"] for line in result["lines"]] == [stamp(index) for index in range(2, 7)]
-    assert result["more"] is True
+    assert set(result) == {"lines"}
+    assert [line["ts"] for line in result["lines"]] == [stamp(index) for index in range(7)]
 
   async def test_a_task_line_is_kept_with_nine_digits(self, tasks):
     async def deploy():

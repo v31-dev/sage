@@ -3,6 +3,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Query
 
+import config
 from services.logs import Logs
 from services.manager import Manager
 from services.manager.application import task_parts
@@ -20,9 +21,9 @@ def list_tasks():
 @router.get("/history")
 def list_task_history(name: str = "", scope: str = "", executor: str = "", status: str = "",
                       from_ts: datetime | None = None, to_ts: datetime | None = None,
-                      limit: Annotated[int, Query(ge=1, le=500)] = 50, offset: Annotated[int, Query(ge=0)] = 0):
-  """Finished tasks, newest finished first: a page of them and how many match."""
-  return task_history(name, scope, executor, status, from_ts, to_ts, limit, offset)
+                      limit: Annotated[int, Query(ge=1, le=config.LIST_MAX_ROWS)] = config.LIST_MAX_ROWS):
+  """Finished tasks, newest finished first: the newest `limit` that match, and how many match."""
+  return task_history(name, scope, executor, status, from_ts, to_ts, limit)
 
 
 @router.get("/history/filters")
@@ -39,5 +40,5 @@ def get_task_parts(task_id: str):
 
 @router.get("/{task_id}/logs")
 def get_task_logs(task_id: str, sub_task_id: str = "", after_id: int = 0):
-  """The lines a task logged, or one container's part of it (`sub_task_id`); after the line `after_id`, if given."""
+  """Every line a task logged, or one container's part of it (`sub_task_id`); after the line `after_id`, if given."""
   return Logs().query_task_logs(task_id, sub_task_id, after_id)

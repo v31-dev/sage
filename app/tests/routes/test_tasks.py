@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 import pytest
 from fastapi.encoders import jsonable_encoder
 
+import config
 from services.db import Container, Event, Task
 from services.logs import Logs
 
@@ -51,26 +52,26 @@ class TestHistory:
 
     assert listed(client) == ["t-0"]
 
-  def test_a_page_is_so_many_from_an_offset_with_how_many_match(self, client, db):
+  def test_the_newest_asked_for_come_back_with_how_many_match(self, client, db):
     for index in range(5):
       finished(f"t-{index}", ended=index)
 
-    page = history(client, limit=2, offset=2)
+    page = history(client, limit=2)
 
-    assert [task["task_id"] for task in page["tasks"]] == ["t-2", "t-1"]
+    assert [task["task_id"] for task in page["tasks"]] == ["t-4", "t-3"]
     assert page["total"] == 5
 
-  def test_fifty_come_back_unless_asked_otherwise(self, client, db):
-    for index in range(51):
-      finished(f"t-{index}", ended=index)
+  def test_the_most_a_list_holds_come_back_unless_asked_otherwise(self, client, db):
+    Task.insert_many([{"task_id": f"t-{index}", "name": "deploy", "scopes": ["platform"], "params": {}, "executor": "app",
+                       "status": "completed", "created_at": T0, "finished_at": T0} for index in range(config.LIST_MAX_ROWS + 1)]).execute()
 
     page = history(client)
 
-    assert len(page["tasks"]) == 50 and page["total"] == 51
+    assert len(page["tasks"]) == config.LIST_MAX_ROWS and page["total"] == config.LIST_MAX_ROWS + 1
 
-  @pytest.mark.parametrize("params", [{"limit": 0}, {"limit": 501}, {"offset": -1}])
-  def test_a_page_out_of_bounds_is_refused(self, client, db, params):
-    assert client.get("/api/tasks/history", params=params).status_code == 422
+  @pytest.mark.parametrize("limit", [0, config.LIST_MAX_ROWS + 1])
+  def test_a_limit_out_of_bounds_is_refused(self, client, db, limit):
+    assert client.get("/api/tasks/history", params={"limit": limit}).status_code == 422
 
   def test_a_row_has_the_fields_of_a_finished_task(self, client, db):
     finished("t-0", status="failed")
@@ -167,7 +168,6 @@ class TestLogs:
     response = client.get("/api/tasks/t1/logs")
 
     assert [row["message"] for row in response.json()["lines"]] == ["queued", "deploying web", "deploying db"]
-    assert response.json()["more"] is False
 
   def test_a_part_has_its_own_lines(self, client, db):
     line("t1", "c1", "deploying web")
@@ -190,7 +190,7 @@ class TestLogs:
     assert [row["message"] for row in response.json()["lines"]] == ["second"]
 
   def test_a_task_that_logged_nothing_has_no_lines(self, client, db):
-    assert client.get("/api/tasks/t1/logs").json() == {"lines": [], "more": False}
+    assert client.get("/api/tasks/t1/logs").json() == {"lines": []}
 
 
 class TestParts:

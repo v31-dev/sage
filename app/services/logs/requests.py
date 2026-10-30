@@ -4,6 +4,7 @@ from datetime import datetime
 
 from peewee import CharField, FloatField, IntegerField, Model, SqliteDatabase, TextField
 
+import config
 from services.updates import UpdateFeed, Updates
 
 from .store import Store, contains, newest, stored_time
@@ -66,8 +67,8 @@ class RequestsMixin:
 
   def query_requests(self, worker: str = "", host: str = "", method: str = "", status_class: int | None = None,
                      path: str = "", min_duration_ms: float | None = None, from_ts: datetime | None = None,
-                     to_ts: datetime | None = None, after_id: int = 0) -> dict:
-    """The newest LOG_QUERY_MAX_ROWS requests (after the request `after_id`, if given), newest first, that match:
+                     to_ts: datetime | None = None, after_id: int = 0, limit: int = config.LIST_MAX_ROWS) -> dict:
+    """The newest `limit` requests (after the request `after_id`, if given), newest first, that match:
     `worker` and `method` exactly, `host` and `path` anywhere in any case, `status_class` the first digit of the status
     (4 for 4xx), `min_duration_ms` or slower, and a start at or after `from_ts` and before `to_ts`; and whether there
     were more."""
@@ -91,5 +92,5 @@ class RequestsMixin:
       query = query.where(requests.ts < stored_time(to_ts))
     if after_id:
       query = query.where(requests.id > after_id)
-    rows, more = newest(query, requests.id.desc())
+    rows, more = newest(query, requests.id.desc(), limit)
     return {"requests": rows, "more": more}

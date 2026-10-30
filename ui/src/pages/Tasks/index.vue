@@ -90,6 +90,7 @@ function addFinished(rows: FinishedTask[]) {
   finished.value = [...fresh, ...finished.value].sort(newestFinishedFirst).slice(0, PAGE_SIZE)
 }
 
+// TODO(02 step 3C): the route ignores the offset since step 3B, so Prev and Next show the first page; the paging goes.
 // The page of the filters and the offset. A load started later wins over one still under way, and what was pushed
 // while it loaded is merged into it.
 async function loadPage() {

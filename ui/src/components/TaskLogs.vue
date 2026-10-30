@@ -17,7 +17,7 @@ const props = withDefaults(
 const MAX_LINES = 1000
 
 const lines = ref<TaskLogLine[]>([])
-// Lines that were written are not shown: the manager sent the newest, or the oldest were dropped here.
+// Lines that were written are not shown: the oldest were dropped here.
 const more = ref(false)
 const loaded = ref(false)
 const error = ref('')
@@ -43,7 +43,6 @@ async function load() {
     props.subTaskId,
     lines.value[lines.value.length - 1]?.id ?? 0
   )
-  more.value ||= logs.more
   return logs.lines
 }
 

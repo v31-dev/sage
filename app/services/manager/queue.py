@@ -5,6 +5,7 @@ from typing import Callable
 from peewee import SQL, NodeList
 from playhouse.shortcuts import model_to_dict
 
+import config
 from services.db import Task
 from services.updates import Fact, UpdateFeed, Updates, UpdateSource
 from utils.common import utcnow
@@ -98,9 +99,9 @@ def _in_scope(scope: str):
 
 
 def task_history(name: str = "", scope: str = "", executor: str = "", status: str = "", from_ts: datetime | None = None,
-                 to_ts: datetime | None = None, limit: int = 50, offset: int = 0) -> dict:
-  """The finished tasks `_persist_task` stored, newest finished first: a page of them and how many match. A name, an
-  executor and a status match exactly, a scope as `_in_scope` says, and a window holds a task active at any point in
+                 to_ts: datetime | None = None, limit: int = config.LIST_MAX_ROWS) -> dict:
+  """The finished tasks `_persist_task` stored, newest finished first: the newest `limit` and how many match. A name,
+  an executor and a status match exactly, a scope as `_in_scope` says, and a window holds a task active at any point in
   it, from queued to finished."""
   query = Task.select().where(Task.status != "running")
   if name:
@@ -115,8 +116,8 @@ def task_history(name: str = "", scope: str = "", executor: str = "", status: st
     query = query.where(Task.finished_at >= _naive_utc(from_ts))
   if to_ts:
     query = query.where(Task.created_at <= _naive_utc(to_ts))
-  page = query.order_by(Task.finished_at.desc(), Task.task_id.desc()).limit(limit).offset(offset)
-  return {"tasks": list(page.dicts()), "total": query.count()}
+  newest = query.order_by(Task.finished_at.desc(), Task.task_id.desc()).limit(limit)
+  return {"tasks": list(newest.dicts()), "total": query.count()}
 
 
 def task_history_filters() -> dict:

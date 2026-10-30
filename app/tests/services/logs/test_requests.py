@@ -2,8 +2,6 @@ from datetime import datetime, timezone
 
 import pytest
 
-import config
-
 from .builders import access_line, event, moment, push, request_at, stamp
 
 
@@ -43,10 +41,9 @@ class TestRequests:
   def test_each_filter_narrows_them(self, stored, filters, found):
     assert requested(stored, **filters) == found
 
-  def test_a_query_gives_the_newest_and_says_when_there_were_more(self, logs, monkeypatch):
-    monkeypatch.setattr(config, "LOG_QUERY_MAX_ROWS", 3)
+  def test_a_query_gives_the_newest_asked_for_and_says_when_there_were_more(self, logs):
     logs.ingest("w1", push(*(request_at(index) for index in range(4))))
-    result = logs.query_requests()
+    result = logs.query_requests(limit=3)
     assert [row["ts"] for row in result["requests"]] == [stamp(3), stamp(2), stamp(1)]
     assert result["more"] is True
 

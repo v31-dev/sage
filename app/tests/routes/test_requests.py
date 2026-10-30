@@ -1,5 +1,6 @@
 import pytest
 
+import config
 from services.logs import Logs
 from tests.services.logs.builders import access_line, event, push
 
@@ -46,6 +47,13 @@ class TestRequests:
 
     assert paths(client.get(URL, params={"after_id": held})) == ["/broken"]
 
-  @pytest.mark.parametrize("params", [{"status": "6xx"}, {"status": "404"}, {"min_duration_ms": -1}])
-  def test_a_filter_that_cannot_match_anything_is_refused(self, client, db, params):
+  def test_a_view_gets_the_newest_it_asks_for_and_whether_there_were_more(self, client, stored):
+    response = client.get(URL, params={"limit": 2})
+
+    assert paths(response) == ["/broken", "/missing"]
+    assert response.json()["more"] is True
+
+  @pytest.mark.parametrize("params", [{"status": "6xx"}, {"status": "404"}, {"min_duration_ms": -1}, {"limit": 0},
+                                      {"limit": config.LIST_MAX_ROWS + 1}])
+  def test_a_filter_that_cannot_match_anything_or_a_limit_out_of_bounds_is_refused(self, client, db, params):
     assert client.get(URL, params=params).status_code == 422

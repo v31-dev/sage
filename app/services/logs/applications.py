@@ -6,6 +6,7 @@ from datetime import datetime
 from peewee import CharField, Model, SqliteDatabase, TextField
 from playhouse.sqlite_ext import FTS5Model, RowIDField, SearchField
 
+import config
 from services.db import Application, Project
 from services.updates import UpdateFeed, Updates
 
@@ -73,9 +74,9 @@ class ApplicationsMixin:
     Updates().publish(UpdateFeed.APPLICATION_LOGS, stored, key=name)
 
   def query_application_lines(self, name: str, hostname: str = "", search: str = "", from_ts: datetime | None = None,
-                              to_ts: datetime | None = None, after_id: int = 0) -> dict:
-    """An application's lines, in the order they were stored: the newest LOG_QUERY_MAX_ROWS (after the line
-    `after_id`, if given) from `hostname` (all workers if empty) that contain `search` anywhere, in any case, and whose
+                              to_ts: datetime | None = None, after_id: int = 0, limit: int = config.LIST_MAX_ROWS) -> dict:
+    """An application's lines, in the order they were stored: the newest `limit` (after the line `after_id`, if
+    given) from `hostname` (all workers if empty) that contain `search` anywhere, in any case, and whose
     time is at or after `from_ts` and before `to_ts`, and whether there were more. The search walks the message index
     newest first (the trigram tokenizer finds three characters or more through it; shorter text, or a shard indexed
     before it, is scanned) and stops at the cap."""
@@ -94,5 +95,5 @@ class ApplicationsMixin:
       query = query.where(lines.ts < stored_time(to_ts))
     if after_id:
       query = query.where(lines.id > after_id)
-    rows, more = newest(query, order)
+    rows, more = newest(query, order, limit)
     return {"lines": rows[::-1], "more": more}

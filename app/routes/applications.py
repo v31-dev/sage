@@ -1,9 +1,10 @@
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Literal
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from playhouse.shortcuts import model_to_dict
 
+import config
 from routes.containers import router as container_router
 from routes.domains import router as domain_router
 from routes.volumes import router as volume_router
@@ -73,11 +74,12 @@ def get_application(request: Request):
 
 @router.get("/{application}/logs", dependencies=[Depends(inject_application)])
 def get_application_logs(request: Request, hostname: str = "", search: str = "", from_ts: datetime | None = None,
-                         to_ts: datetime | None = None, after_id: int = 0):
-  """The application's lines from its containers: the newest 1000 that match (after the line `after_id`, if given),
-  and whether there were more."""
+                         to_ts: datetime | None = None, after_id: int = 0,
+                         limit: Annotated[int, Query(ge=1, le=config.LIST_MAX_ROWS)] = config.LIST_MAX_ROWS):
+  """The application's lines from its containers: the newest `limit` that match (after the line `after_id`, if
+  given), and whether there were more."""
   return Logs().query_application_lines(request.state.models["application"].qualified_name, hostname=hostname,
-                                        search=search, from_ts=from_ts, to_ts=to_ts, after_id=after_id)
+                                        search=search, from_ts=from_ts, to_ts=to_ts, after_id=after_id, limit=limit)
 
 
 @router.put("/{application}", dependencies=[Depends(inject_application)])

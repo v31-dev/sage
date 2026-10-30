@@ -1,5 +1,6 @@
 import pytest
 
+import config
 from services.db import Application, Container, Project, Volume, Worker
 
 URL = "/api/projects/demo/applications"
@@ -239,8 +240,20 @@ class TestLogs:
 
     assert [row["message"] for row in response.json()["lines"]] == found
 
-  def test_a_time_that_is_not_one_is_refused(self, client, application):
-    assert client.get(f"{URL}/web/logs", params={"from_ts": "yesterday"}).status_code == 422
+  def test_a_view_gets_the_newest_it_asks_for_and_whether_there_were_more(self, client, application):
+    from services.logs import Logs
+    Logs().write_application_lines(application.qualified_name, [
+        {"hostname": "w1", "ts": f"2026-01-01T12:00:0{index}.000000000Z", "stream": "stdout", "message": message}
+        for index, message in enumerate(["started", "started again", "stopped"])])
+
+    response = client.get(f"{URL}/web/logs", params={"limit": 2})
+
+    assert [row["message"] for row in response.json()["lines"]] == ["started again", "stopped"]
+    assert response.json()["more"] is True
+
+  @pytest.mark.parametrize("params", [{"from_ts": "yesterday"}, {"limit": 0}, {"limit": config.LIST_MAX_ROWS + 1}])
+  def test_a_time_that_is_not_one_or_a_limit_out_of_bounds_is_refused(self, client, application, params):
+    assert client.get(f"{URL}/web/logs", params=params).status_code == 422
 
   def test_an_unknown_application_has_none(self, client, project):
     assert client.get(f"{URL}/missing/logs").status_code == 404

@@ -23,7 +23,7 @@ const line = (id: number, message = `line ${id}`, level = 'INFO'): TaskLogLine =
   message,
 })
 
-const logs = (lines: TaskLogLine[], more = false): TaskLogPage => ({ lines, more })
+const logs = (lines: TaskLogLine[]): TaskLogPage => ({ lines })
 
 const rows = (wrapper: ReturnType<typeof mount>) =>
   wrapper.findAll('tbody tr').map(row => row.findAll('td').map(cell => cell.text()))
@@ -127,15 +127,6 @@ describe('the lines', () => {
     expect(messages(wrapper)).toHaveLength(1000)
     expect([messages(wrapper)[0], messages(wrapper)[999]]).toEqual(['line 2', 'line 1001'])
     expect(wrapper.text()).toContain('Showing the newest 1000 lines.')
-  })
-
-  it('say so when the manager had more than it sent', async () => {
-    const { wrapper, topics } = await open()
-    vi.mocked(fetchTaskLogs).mockResolvedValue(logs([line(1), line(2)], true))
-
-    await connect(topics.topic('task-logs:t1'))
-
-    expect(wrapper.text()).toContain('Showing the newest 2 lines.')
   })
 
   it('say so when there are none, and why when they could not be loaded', async () => {

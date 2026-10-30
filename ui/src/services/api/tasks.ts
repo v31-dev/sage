@@ -44,6 +44,7 @@ export type TaskHistoryQuery = {
   from_ts?: string
   to_ts?: string
   limit?: number
+  // TODO(02 step 3C): the route has no offset since step 3B, so every page is the first; the paging goes in step 3C.
   offset?: number
 }
 
@@ -52,7 +53,7 @@ export interface TaskHistoryPage {
   total: number
 }
 
-// A page of the finished tasks, newest finished first, and how many match.
+// The newest `limit` finished tasks that match, newest finished first, and how many match.
 export const fetchTaskHistory = (query: TaskHistoryQuery = {}) =>
   request<TaskHistoryPage>('GET', '/tasks/history', { query })
 
@@ -97,10 +98,9 @@ export interface TaskLogLine {
   message: string
 }
 
-// The newest lines, in the order they were written, and whether there were more.
+// Every line, in the order they were written.
 export interface TaskLogPage {
   lines: TaskLogLine[]
-  more: boolean
 }
 
 // A container's part of a task; its kind and worker are null when its event went with its container.

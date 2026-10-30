@@ -2,8 +2,6 @@ import sqlite3
 
 import pytest
 
-import config
-
 from .builders import lines, moment, stamp
 
 
@@ -18,13 +16,12 @@ class TestStoring:
     logs.write_application_lines("web", lines(0, 20))
     assert [row["ts"] for row in logs.query_application_lines("web", search="line7")["lines"]] == [stamp(7)]
 
-  def test_a_query_gives_the_newest_lines_and_says_when_there_were_more(self, logs, monkeypatch):
-    monkeypatch.setattr(config, "LOG_QUERY_MAX_ROWS", 5)
+  def test_a_query_gives_the_newest_lines_asked_for_and_says_when_there_were_more(self, logs):
     logs.write_application_lines("web", lines(0, 5))
-    assert logs.query_application_lines("web")["more"] is False
+    assert logs.query_application_lines("web", limit=5)["more"] is False
     logs.write_application_lines("web", lines(5, 2))
     for search in ("", "line"):
-      result = logs.query_application_lines("web", search=search)
+      result = logs.query_application_lines("web", search=search, limit=5)
       assert [row["ts"] for row in result["lines"]] == [stamp(index) for index in range(2, 7)]
       assert result["more"] is True
 

@@ -11,7 +11,7 @@ from peewee import CharField, Model, SqliteDatabase, TextField, fn
 from services.updates import UpdateFeed, Updates
 from utils.logging import SuppressTracebackFilter, sub_task_id, task_id, task_lines
 
-from .store import Store, newest, stored_time
+from .store import Store, stored_time
 
 logger = logging.getLogger(__name__)
 
@@ -65,16 +65,15 @@ class TasksMixin:
       Updates().publish(UpdateFeed.TASK_LOGS, [row], key=f"{task}/{part}")
 
   def query_task_logs(self, task_id: str, sub_task_id: str = "", after_id: int = 0) -> dict:
-    """A task's lines, or one container's part of it, in the order they were written: the newest LOG_QUERY_MAX_ROWS
-    (after the line `after_id`, if given), and whether there were more."""
+    """All of a task's lines, or of one container's part of it, in the order they were written (after the line
+    `after_id`, if given)."""
     lines = self._store(TASKS).lines
     query = lines.select().where(lines.task_id == task_id)
     if sub_task_id:
       query = query.where(lines.sub_task_id == sub_task_id)
     if after_id:
       query = query.where(lines.id > after_id)
-    rows, more = newest(query, lines.id.desc())
-    return {"lines": rows[::-1], "more": more}
+    return {"lines": list(query.order_by(lines.id).dicts())}
 
   def query_task_parts(self, task_id: str) -> list[str]:
     """The ids of the parts of a task that logged lines, in the order of their first line."""

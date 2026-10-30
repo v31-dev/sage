@@ -96,10 +96,10 @@ def open_db(path: Path) -> SqliteDatabase:
   return db
 
 
-def newest(query, order) -> tuple[list[dict], bool]:
-  """The newest LOG_QUERY_MAX_ROWS rows of a query, newest first by `order`, and whether there were more."""
-  rows = list(query.order_by(order).limit(config.LOG_QUERY_MAX_ROWS + 1).dicts())
-  return rows[:config.LOG_QUERY_MAX_ROWS], len(rows) > config.LOG_QUERY_MAX_ROWS
+def newest(query, order, limit: int) -> tuple[list[dict], bool]:
+  """The newest `limit` rows of a query, newest first by `order`, and whether there were more."""
+  rows = list(query.order_by(order).limit(limit + 1).dicts())
+  return rows[:limit], len(rows) > limit
 
 
 def contains(field, text: str):
