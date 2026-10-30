@@ -167,8 +167,8 @@ uploads `ui/coverage` as an artifact; it doesn't fail a build on a coverage leve
 The tests run in UTC and `en-US` whatever the machine is set to, and `request` does not wait
 before a call (`VITE_LOAD_DELAY=0`). `fetch` is replaced in each test, and a store test mocks
 `fetchAppInfo`. `npm run typecheck:tests` type-checks the tests, which `npm run build` does not.
-So far the tests cover the pure logic: `src/lib/`, `src/services/api.ts`, the Pinia store and the
-route table. Components are not tested yet.
+The tests cover the pure logic (`src/lib/`, `src/services/api/`, the Pinia store, the route table) and
+the pages and components.
 
 Without the pinned Node on the machine, `dev/test-ui.sh` runs the same tests in a Docker container
 and passes its arguments to vitest (`dev/test-ui.sh tests/lib --coverage.enabled=false`). It keeps

@@ -6,13 +6,12 @@ from pathlib import Path
 from croniter import croniter
 
 import config
-from services.db import APPLICATION_BUSY_STATUSES, Application, Backup, Container, Event, Volume
+from services.db import APPLICATION_BUSY_STATUSES, Application, Backup, Container, Volume
 from services.updates import Updates, UpdateSource
 from utils.common import get_env, utcnow
-from utils.logging import generate_task_id_token, task_id
 
 from ._common import BACKUP_TIMESTAMP_FORMAT, app_dir
-from .application import save_application, save_container
+from .application import container_part, mark, save_application, save_container
 
 logger = logging.getLogger(__name__)
 
@@ -126,10 +125,15 @@ class BackupsMixin:
     logger.info(
         f"Stopping application {container.application.qualified_name} container on worker {container.worker.hostname} for backup."
     )
-    await self.tailscale.exec_command(
-        container.worker.hostname,
-        f"docker compose -f {container_dir}/docker-compose.yml down",
-    )
+    try:
+      await self.tailscale.exec_command(
+          container.worker.hostname,
+          f"docker compose -f {container_dir}/docker-compose.yml down",
+      )
+    except Exception as e:
+      await mark(container, f"Failed to stop for a backup: {e}")
+      raise
+    await mark(container, "Stopped for a backup")
 
   async def _start_container_after_backup(self, container: Container):
     container_dir = f"{self.worker_home_dir}/applications/{container.application.qualified_name}"
@@ -144,10 +148,12 @@ class BackupsMixin:
       )
       container.status = "active"
       save_container(container)
-    except Exception:
+    except Exception as e:
       container.status = "error"
       save_container(container)
+      await mark(container, f"Failed to start again after the backup: {e}")
       raise
+    await mark(container, "Started again after the backup")
 
   async def _restore_application_runtime_after_backup(self, application: Application, snapshot: dict):
     if snapshot["application_status"] != "active":
@@ -170,7 +176,6 @@ class BackupsMixin:
       volume: Volume,
       timestamp: str,
   ):
-    container_task_id = generate_task_id_token()
     object_key = (
         f"{self.s3_backup_path_applications}/{application.project.name}/{application.name}/"
         f"{container.worker.hostname}/{volume.name}/{timestamp}.tar.gz.enc"
@@ -178,47 +183,37 @@ class BackupsMixin:
     archive_name = Path(object_key).name.removesuffix(".tar.gz.enc")
     upload_url = self.s3.create_presigned_upload_url(object_key, expires_in=config.WORKER_LINK_SECONDS)
     backup_unit_label = self._get_application_backup_unit_label(application, container, volume)
-    remote_script_path = f"/tmp/sage-backup-{container_task_id}.sh"
 
-    Event.create(
-        container=container,
-        type="backup",
-        application_task_id=task_id.get(),
-        container_task_id=container_task_id,
-    )
-
-    logger.info(f"Starting backup for {backup_unit_label} with task id {container_task_id}.")
-
-    task_id_token = task_id.set(container_task_id)
-    try:
-      await self.tailscale.sync_file(
-          container.worker.hostname,
-          app_dir / "templates/worker/application/backup.sh",
-          remote_script_path,
-          {
-              "WORKER_HOME_DIR": self.worker_home_dir,
-              "APP_NAME": application.qualified_name,
-              "VOLUME_NAME": volume.name,
-              "ARCHIVE_NAME": archive_name,
-              "ENCRYPTION_KEY": get_env("ENCRYPTION_KEY"),
-              "UPLOAD_URL": upload_url,
-          },
-          mode=0o700)
-      await self.tailscale.exec_command(container.worker.hostname, remote_script_path, 900)
-      s3_path = self.s3.get_full_path(object_key)
-      Backup.create(
-          s3_path=s3_path,
-          type="application",
-          source_volume_name=volume.name,
-          application=application,
-      )
-      Updates().changed(UpdateSource.BACKUPS)
-      self.notify(f"Backup created for {backup_unit_label} at {s3_path}.", "success")
-    except Exception as exc:
-      self.notify(f"Failed to create backup for {backup_unit_label}: {exc}", "error")
-      raise
-    finally:
-      task_id.reset(task_id_token)
+    with container_part(container, "backup") as part:
+      remote_script_path = f"/tmp/sage-backup-{part}.sh"
+      logger.info(f"Starting backup for {backup_unit_label} with task id {part}.")
+      try:
+        await self.tailscale.sync_file(
+            container.worker.hostname,
+            app_dir / "templates/worker/application/backup.sh",
+            remote_script_path,
+            {
+                "WORKER_HOME_DIR": self.worker_home_dir,
+                "APP_NAME": application.qualified_name,
+                "VOLUME_NAME": volume.name,
+                "ARCHIVE_NAME": archive_name,
+                "ENCRYPTION_KEY": get_env("ENCRYPTION_KEY"),
+                "UPLOAD_URL": upload_url,
+            },
+            mode=0o700)
+        await self.tailscale.exec_command(container.worker.hostname, remote_script_path, 900)
+        s3_path = self.s3.get_full_path(object_key)
+        Backup.create(
+            s3_path=s3_path,
+            type="application",
+            source_volume_name=volume.name,
+            application=application,
+        )
+        Updates().changed(UpdateSource.BACKUPS)
+        self.notify(f"Backup created for {backup_unit_label} at {s3_path}.", "success")
+      except Exception as exc:
+        self.notify(f"Failed to create backup for {backup_unit_label}: {exc}", "error")
+        raise
 
   async def backup_application_s3(self, application_id: int, volume_ids: list[int] | None = None):
     application = Application.get_or_none(Application.id == application_id)
@@ -360,62 +355,49 @@ class BackupsMixin:
     if not self.is_worker_online(target_container.worker.hostname):
       raise ValueError(f"Target worker {target_worker_hostname} is offline.")
 
-    restore_task_id = task_id.get()
-    task_id_token = None
-    if not restore_task_id:
-      restore_task_id = generate_task_id_token()
-      task_id_token = task_id.set(restore_task_id)
-
     snapshot = self._get_application_backup_snapshot(application)
     restore_unit_label = self._get_application_backup_unit_label(application, target_container, volume)
-    remote_script_path = f"/tmp/sage-restore-{restore_task_id}.sh"
     download_url = self.s3.create_presigned_download_url(
         backup.s3_path, expires_in=config.WORKER_LINK_SECONDS, raw_path=True)
 
-    Event.create(
-        container=target_container,
-        type="restore",
-        application_task_id=restore_task_id,
-        container_task_id=restore_task_id,
-    )
-
-    logger.info(
-        f"Starting restore for {restore_unit_label} from {backup.s3_path} with task id {restore_task_id}."
-    )
-
-    try:
-      application.status = "restoring"
-      save_application(application)
-      if target_container.status != "restoring":
-        target_container.status = "restoring"
-        save_container(target_container)
-
-      await self.tailscale.sync_file(
-          target_container.worker.hostname,
-          app_dir / "templates/worker/application/restore.sh",
-          remote_script_path,
-          {
-              "WORKER_HOME_DIR": self.worker_home_dir,
-              "APP_NAME": application.qualified_name,
-              "VOLUME_NAME": volume.name,
-              "ENCRYPTION_KEY": get_env("ENCRYPTION_KEY"),
-              "DOWNLOAD_URL": download_url,
-          },
-          mode=0o700,
+    with container_part(target_container, "restore") as part:
+      remote_script_path = f"/tmp/sage-restore-{part}.sh"
+      logger.info(
+          f"Starting restore for {restore_unit_label} from {backup.s3_path} with task id {part}."
       )
-      await self.tailscale.exec_command(target_container.worker.hostname, remote_script_path, 900)
-      self.notify(
-          f"Restore completed for {restore_unit_label} from {backup.s3_path}.",
-          "success",
-      )
-    except Exception as exc:
-      self.notify(
-          f"Failed to restore {restore_unit_label} from {backup.s3_path}: {exc}. "
-          "The volume may be partially restored; run the restore again before deploying.",
-          "error",
-      )
-      raise Exception(f"Failed to restore {restore_unit_label}: {exc}") from exc
-    finally:
-      self._restore_application_backup_snapshot(application, snapshot)
-      if task_id_token is not None:
-        task_id.reset(task_id_token)
+      try:
+        application.status = "restoring"
+        save_application(application)
+        if target_container.status != "restoring":
+          target_container.status = "restoring"
+          save_container(target_container)
+
+        await self.tailscale.sync_file(
+            target_container.worker.hostname,
+            app_dir / "templates/worker/application/restore.sh",
+            remote_script_path,
+            {
+                "WORKER_HOME_DIR": self.worker_home_dir,
+                "APP_NAME": application.qualified_name,
+                "VOLUME_NAME": volume.name,
+                "ENCRYPTION_KEY": get_env("ENCRYPTION_KEY"),
+                "DOWNLOAD_URL": download_url,
+            },
+            mode=0o700,
+        )
+        await self.tailscale.exec_command(target_container.worker.hostname, remote_script_path, 900)
+        await mark(target_container, f"Volume {volume.name} restored from {Path(backup.s3_path).name}")
+        self.notify(
+            f"Restore completed for {restore_unit_label} from {backup.s3_path}.",
+            "success",
+        )
+      except Exception as exc:
+        await mark(target_container, f"Restore of volume {volume.name} failed: {exc}")
+        self.notify(
+            f"Failed to restore {restore_unit_label} from {backup.s3_path}: {exc}. "
+            "The volume may be partially restored; run the restore again before deploying.",
+            "error",
+        )
+        raise Exception(f"Failed to restore {restore_unit_label}: {exc}") from exc
+      finally:
+        self._restore_application_backup_snapshot(application, snapshot)

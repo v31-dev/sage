@@ -1,63 +1,28 @@
-import asyncio
-import json
 import logging
 
-from fastapi import APIRouter, Request, Response
+from fastapi import APIRouter, HTTPException, Request, Response
 
+import config
 from services.logs import Logs
+from utils.api import read_body
 from utils.executor import LOGS_EXECUTOR, run_in_executor_with_context
+from utils.logging import NO_ACCESS_LOG
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-@router.post("/logs")
+@router.post("/logs", openapi_extra=NO_ACCESS_LOG)  # a push every 10 s from each worker
 async def vector_logs(request: Request):
-  body = await request.body()
-  node = request.headers.get("x-node-name", "")
-  client = f"{request.client.host}:{request.client.port}" if request.client else "-"
-  line_count = sum(1 for l in body.splitlines() if l.strip())
-  logger.info(f"{client} [{node or '-'}] - Received {line_count} lines of logs")
-
-  by_container: dict[str, list] = {}
-
-  for line in body.splitlines():
-    line = line.strip()
-    if not line:
-      continue
-    try:
-      payload = json.loads(line)
-    except Exception:
-      continue
-
-    container = payload.get("container_name", "")
-    ts = payload.get("timestamp", "")
-    message = payload.get("message", "")
-
-    if not container or not node or not ts or not message:
-      continue
-
-    by_container.setdefault(container, []).append(
-        {
-            "hostname": node,
-            "ts": ts,
-            "stream": payload.get("stream", ""),
-            "message": message,
-        }
-    )
-
-  if by_container:
-    await asyncio.gather(
-        *[
-            run_in_executor_with_context(
-                Logs().write_logs,
-                container,
-                entries,
-                executor=LOGS_EXECUTOR,
-            )
-            for container, entries in by_container.items()
-        ],
-        return_exceptions=True,
-    )
-
+  """A worker's Vector pushes its lines here. It sends a batch again on a 5xx, and drops it on a 4xx."""
+  hostname = request.headers.get("x-node-name", "")
+  if not hostname:
+    raise HTTPException(status_code=400, detail="No X-Node-Name.")
+  body = await read_body(request, config.LOG_INTAKE_MAX_BYTES, "Logs too large.")
+  try:
+    skipped = await run_in_executor_with_context(Logs().ingest, hostname, body, executor=LOGS_EXECUTOR)
+  except Exception:
+    raise HTTPException(status_code=503, detail="The logs could not be stored.")
+  if skipped:
+    logger.warning(f"Skipped {skipped} log lines from {hostname} that were not events of a container.")
   return Response(status_code=204)

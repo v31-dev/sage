@@ -1,14 +1,16 @@
 import asyncio
 import logging
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
+from datetime import datetime
 from enum import Enum
 from inspect import iscoroutinefunction
 from threading import Lock
 from typing import Callable
 
+from utils.common import utcnow
 from utils.executor import active_executor, run_in_executor_with_context
-from utils.logging import TaskFailed, generate_task_id_token, task_id
+from utils.logging import TaskFailed, TaskLines, new_task_id, task_id, task_lines
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +77,8 @@ class QueuedTask:
   task_id: str | None = None
   quiet: bool = False           # persist only on failure (high-frequency housekeeping)
   restore: bool = False         # the platform restore: the one task that starts while restoring
+  queued_at: datetime = field(default_factory=utcnow)
+  started_at: datetime | None = None
 
 
 class Admit(Enum):
@@ -209,7 +213,7 @@ class TaskQueue:
     name = name or task.__name__
     scopes = frozenset(scopes)
     self._validate(scopes, executor)
-    task_id = task_id or generate_task_id_token()
+    task_id = task_id or new_task_id()
     new_task = QueuedTask(name=name, scopes=scopes, task=task,
                           params=params or {}, executor=executor, task_id=task_id,
                           quiet=quiet, restore=restore)
@@ -341,6 +345,8 @@ class TaskQueue:
         "executor": task.executor,
         "quiet": task.quiet,
         "status": status,
+        "queued_at": task.queued_at,
+        "started_at": task.started_at,
     }
 
   def _validate(self, scopes: frozenset[str], executor: str):
@@ -360,6 +366,7 @@ class TaskQueue:
       starting = next_to_start(self._state, self._queue, self._running)
       for task in starting:
         self._queue.remove(task)
+        task = replace(task, started_at=utcnow())
         self._running.append(task)
         handle = asyncio.create_task(self.run_task(task))
         self._tasks.add(handle)
@@ -385,6 +392,8 @@ class TaskQueue:
 
   async def run_task(self, task: QueuedTask):
     token = task_id.set(task.task_id)
+    lines = TaskLines(quiet=task.quiet)
+    lines_token = task_lines.set(lines)
     # Bind the task's pool so blocking offloads inside it (and the sync task
     # itself) flow to that executor without each call site naming it.
     executor_token = active_executor.set(self._executors[task.executor])
@@ -401,17 +410,21 @@ class TaskQueue:
         self._record(task, "completed")
     except TaskFailed:
       logger.error(f"{task.name}: failed")
+      lines.release()
       self._record(task, "failed")
     except asyncio.CancelledError:
       # Loop shutdown mid-task. Records as failed
       logger.warning(f"{task.name}: failed (interrupted by shutdown)")
+      lines.release()
       self._record(task, "failed")
       raise
     except Exception:
       logger.exception(f"{task.name}: failed")
+      lines.release()
       self._record(task, "failed")
     finally:
       active_executor.reset(executor_token)
+      task_lines.reset(lines_token)
       task_id.reset(token)
       with self._lock:
         self._running.remove(task)

@@ -8,6 +8,7 @@ import pytest
 
 import config
 from services.db import Container, Worker
+from services.logs import Logs
 from services.manager._common import routing_input_hash
 from services.manager.decisions import WorkerReboot
 from services.manager.workers import WorkersMixin
@@ -673,6 +674,16 @@ class TestRebootAndRemove:
     asyncio.run(harness.reboot_worker("w1"))
     assert harness._worker_inputs["w1"].reboot == WorkerReboot(clock.current, 777)
     assert "reboot" in harness.tailscale.commands[0][1]
+
+  def test_a_reboot_is_marked_in_the_logs_of_each_container_of_the_worker(self, harness, application, thread_connections):
+    worker = add(harness, "w1", True)
+    Container.create(application=application, worker=worker)
+
+    asyncio.run(harness.reboot_worker("w1"))
+
+    assert [(line["hostname"], line["stream"], line["message"])
+            for line in Logs().query_application_lines(application.qualified_name)["lines"]] == [
+        ("w1", "sage", "Worker rebooted by Sage")]
 
   def test_the_start_before_the_reboot_is_taken_from_a_report_that_is_a_little_old_too(self, harness, clock):
     add(harness, "w1", True)

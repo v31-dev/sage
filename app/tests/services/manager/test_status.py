@@ -5,6 +5,7 @@ import pytest
 
 import config
 from services.db import Application, Container, Worker
+from services.logs import Logs
 from services.manager.application import ApplicationMixin
 from services.manager.decisions import ABSENT, OFFLINE, SEEN, UNKNOWN, Observation
 from services.manager.workers import WorkersMixin
@@ -200,19 +201,26 @@ class TestAWorkerNoSyncHasLookedAt:
     assert harness.notices == []
 
 
+def markers(application):
+  return [(line["hostname"], line["message"]) for line in Logs().query_application_lines(application.qualified_name)["lines"]
+          if line["stream"] == "sage"]
+
+
 class TestAStaleVersion:
-  def test_it_is_stopped_and_becomes_inactive(self, harness, deployed):
+  def test_it_is_stopped_and_becomes_inactive(self, harness, deployed, thread_connections):
     WorkerReports().accept("w1", report(reading(deployed_at="2025-01-01T00:00:00.000000")))
     harness.sync(deployed)
     assert any(" down" in c and "demo-web" in c for c in harness.tailscale.commands)
     assert statuses(deployed) == ("inactive", ["inactive"])
     assert any("stale version" in message for _, message in harness.notices)
+    assert markers(deployed) == [("w1", "Stopped: it ran a stale version; deploy to update it")]
 
-  def test_one_that_cannot_be_stopped_is_an_error(self, harness, deployed):
+  def test_one_that_cannot_be_stopped_is_an_error(self, harness, deployed, thread_connections):
     harness.tailscale.stop_error = Exception("boom")
     WorkerReports().accept("w1", report(reading(deployed_at="2025-01-01T00:00:00.000000")))
     harness.sync(deployed)
     assert statuses(deployed) == ("error", ["error"])
+    assert markers(deployed) == [("w1", "Could not stop the stale version: boom")]
     assert any("could not be stopped: boom" in message for _, message in harness.notices)
 
 

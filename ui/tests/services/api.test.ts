@@ -250,19 +250,49 @@ const CALLS: Array<[string, () => Promise<unknown>, string, string, object, unkn
     undefined,
   ],
   [
-    'fetchLogs, with no filter',
-    () => api.fetchLogs('w1', 'demo-web'),
+    'fetchApplicationLogs, with no filter',
+    () => api.fetchApplicationLogs('demo', 'web'),
     'GET',
-    '/api/workers/w1/logs/demo-web',
+    '/api/projects/demo/applications/web/logs',
     {},
     undefined,
   ],
   [
-    'fetchLogs, with only the filters that are set',
-    () => api.fetchLogs('w1', 'demo-web', 'a&b=c d', '', '2026-10-24T10:00:00Z'),
+    'fetchApplicationLogs, with only the filters that are set',
+    () =>
+      api.fetchApplicationLogs('demo', 'web', {
+        hostname: 'w1',
+        search: 'a&b=c d',
+        from_ts: '',
+        to_ts: '2026-10-24T10:00:00Z',
+        after_id: 42,
+      }),
     'GET',
-    '/api/workers/w1/logs/demo-web',
-    { search: 'a&b=c d', to_ts: '2026-10-24T10:00:00Z' },
+    '/api/projects/demo/applications/web/logs',
+    { hostname: 'w1', search: 'a&b=c d', to_ts: '2026-10-24T10:00:00Z', after_id: '42' },
+    undefined,
+  ],
+  [
+    'fetchRequests, with no filter',
+    () => api.fetchRequests(),
+    'GET',
+    '/api/requests/',
+    {},
+    undefined,
+  ],
+  [
+    'fetchRequests, with only the filters that are set',
+    () =>
+      api.fetchRequests({
+        worker: 'w1',
+        status: '5xx',
+        path: '',
+        min_duration_ms: 250,
+        from_ts: '2026-10-24T10:00:00.000Z',
+      }),
+    'GET',
+    '/api/requests/',
+    { worker: 'w1', status: '5xx', min_duration_ms: '250', from_ts: '2026-10-24T10:00:00.000Z' },
     undefined,
   ],
   [
@@ -283,6 +313,66 @@ const CALLS: Array<[string, () => Promise<unknown>, string, string, object, unkn
   ],
   ['fetchTasks', () => api.fetchTasks(), 'GET', '/api/tasks/', {}, undefined],
   ['fetchTaskHistory', () => api.fetchTaskHistory(), 'GET', '/api/tasks/history', {}, undefined],
+  [
+    'fetchTaskHistory, filtered, the newest 100',
+    () =>
+      api.fetchTaskHistory({
+        name: 'deploy',
+        scope: 'app',
+        executor: '',
+        from_ts: '2026-01-01T12:00:00.000Z',
+        limit: 100,
+      }),
+    'GET',
+    '/api/tasks/history',
+    {
+      name: 'deploy',
+      scope: 'app',
+      from_ts: '2026-01-01T12:00:00.000Z',
+      limit: '100',
+    },
+    undefined,
+  ],
+  [
+    'fetchTaskHistoryFilters',
+    () => api.fetchTaskHistoryFilters(),
+    'GET',
+    '/api/tasks/history/filters',
+    {},
+    undefined,
+  ],
+  [
+    'fetchTaskLogs',
+    () => api.fetchTaskLogs('abc12345'),
+    'GET',
+    '/api/tasks/abc12345/logs',
+    {},
+    undefined,
+  ],
+  [
+    'fetchTaskLogs, after a line',
+    () => api.fetchTaskLogs('abc12345', '', 42),
+    'GET',
+    '/api/tasks/abc12345/logs',
+    { after_id: '42' },
+    undefined,
+  ],
+  [
+    'fetchTaskLogs, of a part',
+    () => api.fetchTaskLogs('abc12345', 'def67890'),
+    'GET',
+    '/api/tasks/abc12345/logs',
+    { sub_task_id: 'def67890' },
+    undefined,
+  ],
+  [
+    'fetchTaskParts',
+    () => api.fetchTaskParts('abc12345'),
+    'GET',
+    '/api/tasks/abc12345/parts',
+    {},
+    undefined,
+  ],
   ['fetchBackups', () => api.fetchBackups(), 'GET', '/api/backups/', {}, undefined],
   [
     'fetchBackupStatus',
@@ -334,7 +424,9 @@ describe('every call', () => {
     const calls = Object.entries(api)
       .filter(([, value]) => typeof value === 'function')
       .map(([name]) => name)
+      // The downloads are tested below, and a `matches` function calls nothing (tests/services/api/).
       .filter(name => !['downloadBackup', 'downloadVolumeBackup'].includes(name))
+      .filter(name => !name.startsWith('matches'))
     expect(calls.filter(name => !named.has(name))).toEqual([])
   })
 })

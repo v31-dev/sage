@@ -7,7 +7,7 @@ import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -16,14 +16,13 @@ from fastapi.encoders import jsonable_encoder
 
 import config
 from routes.notifications import list_notifications
-from routes.tasks import list_task_history
 from services.db import Application, Backup, Container, Notification, Task, Worker
 from services.manager import Manager
 from services.manager.application import application_changed, container_changed, hosts_changed, save_application, save_container
 from services.manager.core import CoreMixin
 from services.manager.decisions import WORKER_TASKS
 from services.manager.platform import PlatformMixin
-from services.manager.queue import QueueMixin
+from services.manager.queue import QueueMixin, task_history
 from services.manager.settings import SettingsMixin
 from services.manager.traefik import TraefikMixin
 from services.manager.workers import WorkersMixin
@@ -236,7 +235,16 @@ class TestTaskHistory:
   def test_the_published_row_is_the_row_the_history_returns(self, db, changes):
     QueueMixin()._persist_task(self.task(), "completed")
     [(_, rows)] = changes.published
-    assert jsonable_encoder(rows) == jsonable_encoder(list_task_history())
+    assert jsonable_encoder(rows) == jsonable_encoder(task_history()["tasks"])
+
+  def test_the_row_keeps_when_the_task_was_queued_started_and_finished(self, db, changes, clock):
+    clock.advance(timedelta(minutes=3))
+    QueueMixin()._persist_task(self.task(queued_at=datetime(2026, 1, 1, 12, 0), started_at=datetime(2026, 1, 1, 12, 1)),
+                               "completed")
+
+    row = Task.get_by_id("t-1")
+    assert (row.created_at, row.started_at, row.finished_at) == (
+        datetime(2026, 1, 1, 12, 0), datetime(2026, 1, 1, 12, 1), datetime(2026, 1, 1, 12, 3))
 
   def test_a_task_that_could_not_be_stored_is_not_published(self, db, changes, monkeypatch):
     def fails(**fields):

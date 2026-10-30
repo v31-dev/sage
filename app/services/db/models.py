@@ -269,14 +269,16 @@ class Backup(BaseModel):
 class Task(BaseModel):
   # Log of finished operations from the in-memory queue. Running tasks live in
   # memory only (see the live snapshot); a row is written once a task reaches a
-  # terminal state -- completed, failed, or cancelled.
+  # terminal state -- completed, failed, or cancelled. `created_at` is when the
+  # task was queued.
   task_id = CharField(primary_key=True)
   name = CharField()
   scopes = JSONField(null=True)
   params = JSONField(null=True)
   executor = CharField()
   status = CharField(choices=["completed", "failed", "cancelled"])
+  started_at = DateTimeField(null=True)  # none for a task cancelled before it started
   finished_at = DateTimeField(null=True)
 
   class Meta:
-    indexes = ((("created_at",), False),)
+    indexes = ((("created_at",), False), (("finished_at",), False))

@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import { ref } from 'vue'
 import {
   Item,
   ItemMedia,
@@ -15,7 +14,6 @@ import { formatDate } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import ConfirmationButton from '@/components/ConfirmationButton.vue'
 import { type Backup, deleteBackup, downloadBackup, restoreBackup } from '@/services/api'
-import RestoreLogsDialog from '@/components/RestoreLogsDialog.vue'
 import { useAppStore } from '@/stores/app'
 import { TONES } from '@/lib/tone'
 
@@ -27,7 +25,6 @@ interface Props {
 const props = withDefaults(defineProps<Props>(), {})
 
 const appStore = useAppStore()
-const restoreDialogTaskId = ref<string>('')
 
 async function onClickDownload() {
   try {
@@ -54,11 +51,6 @@ async function onConfirmRestoreBackup(backupId: number) {
     appStore.setState('restoring')
     await appStore.refresh()
   } catch (err) {
-    // Extract task_id from error response headers and open logs dialog
-    const taskId = (err as any)?.response?.headers?.get('X-Task-Id') || ''
-    if (taskId) {
-      restoreDialogTaskId.value = taskId
-    }
     toast.error(err instanceof Error ? err.message : 'Failed to restore backup')
   }
 }
@@ -96,8 +88,4 @@ async function onConfirmRestoreBackup(backupId: number) {
       />
     </ItemActions>
   </Item>
-  <RestoreLogsDialog
-    :taskId="restoreDialogTaskId"
-    :objectTitle="'platform database ' + formatDate(backup.created_at)"
-  />
 </template>

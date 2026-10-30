@@ -1,5 +1,6 @@
 import pytest
 
+import config
 from services.db import Application, Container, Project, Volume, Worker
 
 URL = "/api/projects/demo/applications"
@@ -197,3 +198,62 @@ class TestMetrics:
   def test_an_application_without_containers_has_none_and_they_are_read_with_a_get(self, client, application):
     assert client.get(f"{URL}/web/metrics").json() == []
     assert client.post(f"{URL}/web/metrics").status_code == 405
+
+
+class TestLogs:
+  def test_they_are_the_applications_own_lines_filtered_as_asked(self, client, application):
+    from services.logs import Logs
+    Logs().write_application_lines(application.qualified_name, [
+        {"hostname": host, "ts": f"2026-01-01T12:00:0{index}.000000000Z", "stream": "stdout", "message": message}
+        for index, (host, message) in enumerate([("w1", "Started"), ("w2", "started again"), ("w2", "stopped")])])
+    Logs().write_application_lines("other-app", [{"hostname": "w2", "ts": "2026-01-01T12:00:00.000000000Z", "stream": "stdout",
+                                                  "message": "started elsewhere"}])
+
+    response = client.get(f"{URL}/web/logs", params={"hostname": "w2", "search": "START"})
+
+    assert response.status_code == 200
+    assert [row["message"] for row in response.json()["lines"]] == ["started again"]
+    assert response.json()["more"] is False
+
+  def test_a_view_gets_the_lines_after_the_last_one_it_holds(self, client, application):
+    from services.logs import Logs
+    Logs().write_application_lines(application.qualified_name, [
+        {"hostname": "w1", "ts": f"2026-01-01T12:00:0{index}.000000000Z", "stream": "stdout", "message": message}
+        for index, message in enumerate(["first", "second"])])
+    held = client.get(f"{URL}/web/logs").json()["lines"][0]["id"]
+
+    response = client.get(f"{URL}/web/logs", params={"after_id": held})
+
+    assert [row["message"] for row in response.json()["lines"]] == ["second"]
+
+  @pytest.mark.parametrize("params, found", [
+      ({"from_ts": "2026-01-01T12:00:01Z", "to_ts": "2026-01-01T12:00:02.000Z"}, ["started again"]),
+      ({"from_ts": "2026-01-01T17:30:01.5+05:30"}, ["stopped"]),
+  ])
+  def test_a_window_is_taken_in_utc_from_any_zone(self, client, application, params, found):
+    from services.logs import Logs
+    Logs().write_application_lines(application.qualified_name, [
+        {"hostname": "w1", "ts": f"2026-01-01T12:00:0{index}.000000000Z", "stream": "stdout", "message": message}
+        for index, message in enumerate(["started", "started again", "stopped"])])
+
+    response = client.get(f"{URL}/web/logs", params=params)
+
+    assert [row["message"] for row in response.json()["lines"]] == found
+
+  def test_a_view_gets_the_newest_it_asks_for_and_whether_there_were_more(self, client, application):
+    from services.logs import Logs
+    Logs().write_application_lines(application.qualified_name, [
+        {"hostname": "w1", "ts": f"2026-01-01T12:00:0{index}.000000000Z", "stream": "stdout", "message": message}
+        for index, message in enumerate(["started", "started again", "stopped"])])
+
+    response = client.get(f"{URL}/web/logs", params={"limit": 2})
+
+    assert [row["message"] for row in response.json()["lines"]] == ["started again", "stopped"]
+    assert response.json()["more"] is True
+
+  @pytest.mark.parametrize("params", [{"from_ts": "yesterday"}, {"limit": 0}, {"limit": config.LIST_MAX_ROWS + 1}])
+  def test_a_time_that_is_not_one_or_a_limit_out_of_bounds_is_refused(self, client, application, params):
+    assert client.get(f"{URL}/web/logs", params=params).status_code == 422
+
+  def test_an_unknown_application_has_none(self, client, project):
+    assert client.get(f"{URL}/missing/logs").status_code == 404

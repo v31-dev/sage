@@ -118,7 +118,7 @@ def resume():
 
 
 @router.post("/resync_traefik")
-async def resync_traefik(request: Request):
+async def resync_traefik():
   """
   Force a full Traefik state resync to manager and workers via the
   refresh_traefik task (re-pushes the current cert + configs; re-issues only if
@@ -128,7 +128,6 @@ async def resync_traefik(request: Request):
       task=Manager().refresh_traefik,
       scopes={"platform", "app"},
       executor="platform",
-      task_id=request.state.task_id,
   ):
     raise HTTPException(
         status_code=409,
@@ -139,7 +138,7 @@ async def resync_traefik(request: Request):
 
 
 @router.post("/resync_workers")
-async def resync_workers(request: Request):
+async def resync_workers():
   """
   Queue a force re-sync of all online workers. REPLACE supersedes any pending
   sync so the latest request wins, and waits behind a running sync rather than
@@ -150,7 +149,6 @@ async def resync_workers(request: Request):
       scopes={"platform"},
       params={"force": True},
       executor="platform",
-      task_id=request.state.task_id,
       on_conflict=OnConflict.REPLACE,
   )
   return {"message": "Worker resync queued."}

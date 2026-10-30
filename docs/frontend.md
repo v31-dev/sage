@@ -24,7 +24,7 @@ The shell is assembled in `ui/src/App.vue`:
 - reload dialog on initialization failure
 - toast notifications
 
-Initial app boot fetches `GET /api` through the Pinia store in `ui/src/stores/app.ts`. That store owns the manager's status and follows its `info` topic: the version, the queue state (the pause banner and the restore overlay) and the settings status (the sidebar indicators and the settings pages). It also follows the `workers` topic (`workers`, null until loaded, and `workersError` if the first load fails) without holding the app back: the sidebar count (`workersIndicator`), the Workers page, the worker dot of an application's container cards (`workerStatus(hostname)`) and the Add Container dialog (the workers without a container of the application) all read that one list. The manager pushes each change (see Pushed Updates below). After an action the page updates the store at once (`setState` for pause and resume, `setSettingApplying` after a save, or `refresh()` after a save that empties a section, since nothing checks an empty one) and the next push confirms it, as with `applicationDeployStatus`, which the deploy, stop, backup and restore buttons set together with the statuses of the containers they touch (`containerStatus` for a card), and which the application header shows; deleting a container sets only that container (`updateContainerStatus`); `refresh()` fetches right away. A part the manager couldn't build comes as `null` and the store keeps the last value. The metrics views poll while they are open.
+Initial app boot fetches `GET /api` through the Pinia store in `ui/src/stores/app.ts`. That store owns the manager's status and follows its `info` topic: the version, the queue state (the pause banner and the restore overlay) and the settings status (the sidebar indicators and the settings pages). It also follows the `workers` topic (`workers`, null until loaded, and `workersError` if the first load fails) without holding the app back: the sidebar count (`workersIndicator`), the Workers page, the worker dot of an application's container cards (`workerStatus(hostname)`) and the Add Container dialog (the workers without a container of the application) all read that one list. The manager pushes each change (see Pushed Updates below). After an action the page updates the store at once (`setState` for pause and resume, `setSettingApplying` after a save, or `refresh()` after a save that empties a section, since nothing checks an empty one) and the next push confirms it, as with `applicationDeployStatus`, which the deploy, stop, backup and restore buttons set together with the statuses of the containers they touch (`containerStatus` for a card), and which the application header shows; deleting a container sets only that container (`updateContainerStatus`); `refresh()` fetches right away. A part the manager couldn't build comes as `null` and the store keeps the last value. The metrics views poll while they are open; the log views follow feeds (below).
 
 ## Pushed Updates
 
@@ -34,11 +34,29 @@ Initial app boot fetches `GET /api` through the Pinia store in `ui/src/stores/ap
 - `worker:<hostname>`: the Worker page (loading `GET /workers/{hostname}`): the worker with its containers, its stack and its status. The page has no timer; an action on a container reloads it at once through `loadWorkerStatus`. A worker removed while the page is open shows as not found.
 - `application:<project>/<name>`: the Application page (loading the application route). Each push replaces the whole application (volumes, domains and variables changed elsewhere too) and puts its status over the one an action set; an edit dialog keeps the values it copied when it opened. An action on the page reloads it at once through `loadApplication`. An application deleted while the page is open shows as not found.
 - `tasks`: the Tasks page, the Upgrade page (which tasks it waits for before a stop) and the restore overlay, which follows it only while restoring (loading `GET /tasks`).
-- `task-history`, a feed: the Tasks page's completed list (loading `GET /tasks/history`). It merges rows by `task_id`, newest first by `created_at`, and keeps the newest 100.
+- `task-history`, a feed: the Tasks page's finished tasks (`GET /tasks/history`), a list (below).
+  - Filtered by name, executor and status (dropdowns from `GET /tasks/history/filters`), a scope (its children too, `*` for any characters) and a From/To window the task was active in.
+  - The newest 100 that match at first, newest finished first, and the list grows with the tasks pushed, up to 1000; the title counts all that match, and a note says when not all are shown. There is no paging.
+  - The tables show when each task was queued, started and finished.
 - `backup-status`: the Create Backup and Discover Backups buttons, each mirroring its own flag (loading `GET /backups/platform_backup_status`).
 - `backups`: the Backups page (loading `GET /backups`), newest first; each pushed list replaces the shown one. A delete on the page loads the list again at once.
 - `release`: the Upgrade page (loading `GET /release`). A check for updates is over when a release with a new `fetched_at` is pushed, or after 60 s with an error.
+- `task-logs:<task>` and `task-logs:<task>/<part>`, feeds: the task log dialogs (`components/TaskLogs.vue`), a task's on the Tasks page and a container's part from its Event Logs; a list (below), of every line, oldest first, with no ceiling (a dialog has no filters).
+  - The Tasks page's dialog reads the task's parts (`GET /tasks/{task_id}/parts`) when it opens: a select shows all the lines or one part's, and all the lines carry a Part column (the worker, or the part's id when its event is gone).
+- `application-logs:<project>-<app>`, a feed: the application logs page (`pages/ApplicationLogs.vue`); a list (below), of the newest 1000 lines that match, oldest first, up to 1000, in one scroll container that follows new lines while it is at the bottom.
+  - Filtered by the worker (a dropdown, or a click on a line's worker), the search and the From/To window (From starts five minutes back).
+  - A marker of what Sage did (`MARKER_STREAM`, `sage`: deployed, stopped, stopped for a backup, …, with its task's id) is drawn apart from the container's lines, with a flag.
+- `requests`, a feed: the Requests page; a list (below), of the newest 1000 requests that match, newest first, up to 1000.
 - `notifications`, a feed: the header's list, whose `load` asks for the newest 20 while it has none and for the rows after its newest `created_at` otherwise, so it also recovers what it missed; it merges rows by id, newest first, so a row it has is not shown twice and one that arrives out of order lands in place. The bell's marker is on while the newest id is above the last one seen, which is kept in `localStorage` when the bell is opened.
+
+The four lists follow one contract, `useFeedList` (`lib/feedList.ts`):
+- The first load is what the route returns for the filters (the newest that match, as many as the list asks).
+- A pushed row is kept when the filters let it through, by the `matches` beside the list's query type in `services/api/` (the dialogs keep every line), merged by key in the list's order, each once.
+- Each time the socket connects, what the route returns given the newest row held is merged in: the rows after it (`after_id`), or for the finished tasks the newest again.
+- A change of filter starts the list again with a fresh load, and a load asked for filters since changed is dropped.
+- A list with a ceiling keeps its newest rows; a note says when the route had more or the oldest were dropped, and its tooltip that only the latest are shown and how to see older ones.
+
+The Requests page, the Tasks page and the application logs share one filter bar (`components/FilterBar.vue`): a dropdown with a choice for any applies when chosen, a field once it is committed (Enter, or leaving it) and only when its value changed; the page holds the filters, `''` for none. The From/To fields hold local times, which `localTimeToUTC` (`lib/utils`) turns into the UTC the routes take, and `toLocalTime` back.
 
 The indicator at the top left of the sidebar (`components/layout/SocketStatus.vue`, on the icon of the manager's name) shows the connection from the reactive `connection` object of `lib/updates.ts`: connecting, connected over a WebSocket, connected over the slower fallback, or not connected. It pulses each time the manager's heartbeat (its ping, every 10 s) arrives, and its tooltip says when the last one was.
 
@@ -54,7 +72,6 @@ Routes in `ui/src/router/index.ts` currently cover:
 - `/projects/:projectId/:appId/metrics`
 - `/requests`
 - `/system`
-- `/logs`
 - `/workers`
 - `/workers/:hostname`
 - `/workers/:hostname/metrics`
@@ -128,7 +145,7 @@ drawn by `components/StateIndicator.vue` (see State Indicators).
 
 `ui/src/lib/api.ts` holds `request(method, path, { query, body })`, the only place the UI calls `fetch` for the API: it waits `LOAD_DELAY` (see the development guide), builds the URL under `/api` with the query (leaving out null, undefined and empty values), sends the body as JSON and returns the answer's JSON. A failed answer throws an `APIError` with the manager's `detail` as its message (or which call failed, when there is none) and its `status` and `response`; it logs nothing, the caller does.
 
-`ui/src/services/api.ts` has a named, typed function for every call, each a line over `request` (`fetchApplication(project, name)`, `deployApplication(project, name)`, `deleteContainer(project, application, hostname, force)`, …), even one that a single component uses. Components import these functions and pass the names of what they act on; they never write a method or a path, and no API client is passed down as a prop. `ui/src/lib/logs.ts` and `ui/src/lib/metrics.ts` shape what the logs and metrics calls return.
+`ui/src/services/api/` has a named, typed function for every call, each a line over `request` (`fetchApplication(project, name)`, `deployApplication(project, name)`, `deleteContainer(project, application, hostname, force)`, …), even one that a single component uses, in a module for each resource (`applications.ts`, `tasks.ts`, …) with the shapes it answers with. Everything imports from `@/services/api` (its `index.ts` re-exports every module), never a module, so that a test's mock of it reaches every caller; `_common.ts` holds what the modules share and is not exported. Components import these functions and pass the names of what they act on; they never write a method or a path, and no API client is passed down as a prop. A list's query type has its `matches` beside it (`matchesLogQuery`, `matchesRequestQuery`, `matchesTaskHistoryQuery`): whether its route lets a row through the query, which is what a view keeps of the rows pushed to it. `ui/src/lib/metrics.ts` shapes what the metrics calls return.
 
 The service typings mirror the backend models closely, including:
 

@@ -3,7 +3,6 @@ import Home from '@/pages/Home.vue'
 import Projects from '@/pages/Projects.vue'
 import Project from '@/pages/Project'
 import System from '@/pages/System.vue'
-import Logs from '@/pages/Logs.vue'
 import Application from '@/pages/Application'
 import ApplicationLogs from '@/pages/ApplicationLogs.vue'
 import ApplicationMetrics from '@/pages/ApplicationMetrics.vue'
@@ -33,7 +32,6 @@ const routes = [
   { path: '/requests', name: 'Requests', component: Requests },
   { path: '/system', name: 'System', component: System },
   { path: '/tasks', name: 'Tasks', component: Tasks },
-  { path: '/logs', name: 'Logs', component: Logs },
   { path: '/workers', name: 'Workers', component: Workers },
   { path: '/workers/:hostname', name: 'Worker', component: Worker },
   { path: '/workers/:hostname/metrics', name: 'WorkerMetrics', component: WorkerMetrics },

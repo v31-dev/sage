@@ -14,6 +14,7 @@ from routes.backups import router as backup_router
 from routes.info import router as info_router
 from routes.notifications import router as notifications_router
 from routes.projects import router as projects_router
+from routes.requests import router as requests_router
 from routes.settings import router as settings_router
 from routes.tasks import router as tasks_router
 from routes.updates import TOPICS, sio
@@ -21,10 +22,11 @@ from routes.workers import router as workers_router
 from services.cloudflare import Cloudflare
 from services.manager import Manager
 from services.updates import Updates
-from utils.logging import fastapi_middleware
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, redirect_slashes=False)
-app.add_middleware(fastapi_middleware)
+
+# Where the Socket.IO server answers, in front of the API.
+SOCKET_IO_PATH = "/api/socket.io"
 
 # While Sage is paused, restoring or stopping, only reads are served: GETs, and pause/resume themselves.
 _ALLOWED_WHILE_PAUSED = ("/api/settings/pause", "/api/settings/resume")
@@ -70,6 +72,7 @@ app.include_router(workers_router, prefix="/api/workers")
 app.include_router(projects_router, prefix="/api/projects")
 app.include_router(notifications_router, prefix="/api/notifications")
 app.include_router(tasks_router, prefix="/api/tasks")
+app.include_router(requests_router, prefix="/api/requests")
 
 if (config.STATIC_DIR / "index.html").is_file():
   app.mount("/", SpaStaticFiles(directory=config.STATIC_DIR, html=False, check_dir=False), name="ui")
@@ -108,7 +111,7 @@ def build_asgi_app(only_manager_address: bool):
   address https://TS_NAME.core.domain, other names for it redirecting (the tailnet name or IP, after a certificate
   warning)."""
   Updates().serve(TOPICS)
-  served = socketio.ASGIApp(sio, other_asgi_app=app, socketio_path="api/socket.io")
+  served = socketio.ASGIApp(sio, other_asgi_app=app, socketio_path=SOCKET_IO_PATH.lstrip("/"))
   return OnlyManagerAddress(served) if only_manager_address else served
 
 

@@ -1,50 +1,35 @@
 import itertools
 import logging
 import random
-import sqlite3
 import threading
 import traceback
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
 
 import config
-import services.logs as logs_module
-from services.logs import Logs, _CaptureHandler
+import services.logs.store as store_module
+from services.logs.store import stored_time
 from utils.common import utcnow
 
-
-def stamp(index):
-  """A timestamp that sorts with `index`, in the form Docker gives (nanoseconds)."""
-  return f"2026-01-{1 + index // 86400:02d}T{(index // 3600) % 24:02d}:{(index // 60) % 60:02d}:{index % 60:02d}.000000000Z"
+from .builders import access_line, event, lines, push, stamp, task_entries
 
 
-def lines(first, count, host="w1", word="line"):
-  return [{"hostname": host, "ts": stamp(index), "stream": "stdout",
-           "message": f"{word}{index} GET /api/v1/items/{index} status=200 latency={index % 97}ms upstream=app"}
-          for index in range(first, first + count)]
+def rows(logs, name):
+  shard = logs._store(name)
+  return [row.ts for row in shard.lines.select().order_by(shard.lines.ts)]
 
 
-@pytest.fixture
-def logs(data_dir):
-  """The service without its capture of the manager's own logs, which would write from another thread."""
-  logs = Logs()
-  for handler in [h for h in logging.getLogger().handlers if isinstance(h, _CaptureHandler)]:
-    logging.getLogger().removeHandler(handler)
-  yield logs
-  for shard in logs._dbs["logs"].values():
-    shard["db"].close()
-
-
-def rows(logs, container):
-  shard = logs.get_logs_db(container)
-  return [row.ts for row in shard["models"]["ContainerLogs"].select().order_by(shard["models"]["ContainerLogs"].ts)]
+def close_connections(logs):
+  """Close the connections the calling thread opened: one to each file it used."""
+  for shard in list(logs._stores.values()):
+    shard.db.close()
 
 
 def file_bytes(logs, container):
   """What the file takes on disk, once the write-ahead log is folded into it."""
-  logs.get_logs_db(container)["db"].execute_sql("PRAGMA wal_checkpoint(TRUNCATE)")
+  logs.application_store(container).db.execute_sql("PRAGMA wal_checkpoint(TRUNCATE)")
   return (logs.db_path / "logs" / f"{container}.db").stat().st_size
 
 
@@ -68,61 +53,41 @@ def limit(monkeypatch):
   return set_limits
 
 
-class TestStoring:
-  def test_lines_come_back_oldest_first_and_can_be_filtered(self, logs):
-    logs.write_logs("web", lines(0, 5, host="w1") + lines(5, 5, host="w2"))
-    assert [row["ts"] for row in logs.query_logs("web")] == [stamp(i) for i in range(10)]
-    assert {row["hostname"] for row in logs.query_logs("web", hostname="w2")} == {"w2"}
-    assert [row["ts"] for row in logs.query_logs("web", from_ts=stamp(2), to_ts=stamp(4))] == [stamp(2), stamp(3)]
-
-  def test_the_message_is_searchable(self, logs):
-    logs.write_logs("web", lines(0, 20))
-    assert [row["ts"] for row in logs.query_logs("web", search="line7")] == [stamp(7)]
-
-  @pytest.mark.parametrize("name", ["", "../etc", "Web", "a b", "a/b"])
-  def test_a_container_name_that_could_leave_the_logs_directory_is_refused(self, logs, name):
-    with pytest.raises(ValueError):
-      logs.get_logs_db(name)
-
-  def test_the_timestamp_is_indexed(self, logs):
-    shard = logs.get_logs_db("web")
-    indexes = [row[1] for row in shard["db"].execute_sql("PRAGMA index_list('containerlogs')").fetchall()]
-    assert "containerlogs_ts" in indexes
-
-  def test_a_shard_made_before_the_index_gets_it_when_opened(self, logs):
-    path = logs.db_path / "logs" / "old.db"
-    old = sqlite3.connect(path)
-    old.execute("CREATE TABLE containerlogs (id INTEGER PRIMARY KEY AUTOINCREMENT, hostname VARCHAR(255) NOT NULL, "
-                "ts VARCHAR(255) NOT NULL, stream VARCHAR(255) NOT NULL, message TEXT NOT NULL)")
-    old.commit()
-    old.close()
-    shard = logs.get_logs_db("old")
-    indexes = [row[1] for row in shard["db"].execute_sql("PRAGMA index_list('containerlogs')").fetchall()]
-    assert "containerlogs_ts" in indexes
+class TestStoredTime:
+  @pytest.mark.parametrize("given, kept", [
+      ("2026-01-01T12:00:00.1Z", "2026-01-01T12:00:00.100000000Z"),
+      ("2026-01-01T12:00:00Z", "2026-01-01T12:00:00.000000000Z"),
+      ("2026-01-01T12:00:00.123456789Z", "2026-01-01T12:00:00.123456789Z"),
+      (datetime(2026, 1, 1, 12, 0, 0, 500000), "2026-01-01T12:00:00.500000000Z"),
+      (datetime(2026, 1, 1, 14, 0, tzinfo=timezone(timedelta(hours=2))), "2026-01-01T12:00:00.000000000Z"),
+      ("not a time", "not a time"),
+  ])
+  def test_is_utc_with_nine_digits_of_fraction(self, given, kept):
+    assert stored_time(given) == kept
 
 
 class TestTrimShard:
   def test_a_shard_within_its_limit_is_left_alone(self, logs, small, limit):
-    logs.write_logs("web", lines(0, 200))
+    logs.write_application_lines("web", lines(0, 200))
     limit(shard=10**9)
     assert logs.trim_shard("web") == 0
     assert len(rows(logs, "web")) == 200
 
   def test_a_shard_over_its_limit_loses_its_oldest_lines_and_ends_below_it(self, logs, small, limit):
-    logs.write_logs("web", lines(0, 3000))
-    full = logs._live_bytes(logs.get_logs_db("web"))
+    logs.write_application_lines("web", lines(0, 3000))
+    full = logs.application_store("web").live_bytes()
     limit(shard=full // 2)
     removed = logs.trim_shard("web")
     left = rows(logs, "web")
     assert removed == 3000 - len(left) > 0
     assert left == [stamp(i) for i in range(removed, 3000)], "what is left is the newest lines, whole"
-    live = logs._live_bytes(logs.get_logs_db("web"))
+    live = logs.application_store("web").live_bytes()
     assert 0.75 * config.LOG_SHARD_MAX_BYTES < live <= config.LOG_SHARD_MAX_BYTES
 
   def test_the_oldest_by_timestamp_go_first_not_the_first_written(self, logs, small, limit):
-    logs.write_logs("web", lines(2000, 2000))
-    logs.write_logs("web", lines(0, 1000))
-    limit(shard=logs._live_bytes(logs.get_logs_db("web")) // 2)
+    logs.write_application_lines("web", lines(2000, 2000))
+    logs.write_application_lines("web", lines(0, 1000))
+    limit(shard=logs.application_store("web").live_bytes() // 2)
     logs.trim_shard("web")
     left = rows(logs, "web")
     assert left[0] > stamp(1000), "history written later is the oldest, and goes first"
@@ -130,42 +95,42 @@ class TestTrimShard:
     assert set(stamp(i) for i in range(3500, 4000)) <= set(left)
 
   def test_a_tiny_limit_still_leaves_the_newest_lines(self, logs, small, limit):
-    logs.write_logs("web", lines(0, 1000))
+    logs.write_application_lines("web", lines(0, 1000))
     limit(shard=1000)
     logs.trim_shard("web")
     assert rows(logs, "web") == [stamp(i) for i in range(950, 1000)]
 
   def test_the_search_finds_only_the_lines_that_are_left(self, logs, small, limit):
-    logs.write_logs("web", lines(0, 3000))
-    limit(shard=logs._live_bytes(logs.get_logs_db("web")) // 2)
+    logs.write_application_lines("web", lines(0, 3000))
+    limit(shard=logs.application_store("web").live_bytes() // 2)
     removed = logs.trim_shard("web")
-    assert logs.query_logs("web", search="line0") == []
-    assert len(logs.query_logs("web", search=f"line{removed - 1}")) == 0
-    assert len(logs.query_logs("web", search=f"line{removed + 5}")) == 1
-    assert len(logs.query_logs("web", search="line2999")) == 1
+    assert logs.query_application_lines("web", search="line0")["lines"] == []
+    assert len(logs.query_application_lines("web", search=f"line{removed - 1}")["lines"]) == 0
+    assert len(logs.query_application_lines("web", search=f"line{removed + 5}")["lines"]) == 1
+    assert len(logs.query_application_lines("web", search="line2999")["lines"]) == 1
 
   def test_trimming_twice_does_nothing_the_second_time(self, logs, small, limit):
-    logs.write_logs("web", lines(0, 3000))
-    limit(shard=logs._live_bytes(logs.get_logs_db("web")) // 2)
+    logs.write_application_lines("web", lines(0, 3000))
+    limit(shard=logs.application_store("web").live_bytes() // 2)
     assert logs.trim_shard("web") > 0
     assert logs.trim_shard("web") == 0
 
   def test_the_space_of_a_shard_far_bigger_than_its_limit_is_given_back(self, logs, small, limit):
-    logs.write_logs("web", lines(0, 6000))
+    logs.write_application_lines("web", lines(0, 6000))
     big = file_bytes(logs, "web")
-    shard = logs.get_logs_db("web")
-    shard["models"]["ContainerLogs"].delete().where(shard["models"]["ContainerLogs"].ts < stamp(5500)).execute()
-    shard["db"].execute_sql("INSERT INTO containerlogsindex(containerlogsindex) VALUES('optimize')")
+    shard = logs.application_store("web")
+    shard.lines.delete().where(shard.lines.ts < stamp(5500)).execute()
+    shard.db.execute_sql("INSERT INTO containerlogsindex(containerlogsindex) VALUES('optimize')")
     limit(shard=big // 3)
-    assert logs._live_bytes(shard) < config.LOG_SHARD_MAX_BYTES < big / config.LOG_SHARD_VACUUM_RATIO
+    assert shard.live_bytes() < config.LOG_SHARD_MAX_BYTES < big / config.LOG_SHARD_VACUUM_RATIO
     assert logs.trim_shard("web") == 0
     assert file_bytes(logs, "web") < big / 2
     assert len(rows(logs, "web")) == 500
 
   def test_a_file_only_a_little_over_its_limit_is_not_rewritten(self, logs, small, limit):
-    logs.write_logs("web", lines(0, 2000))
-    shard = logs.get_logs_db("web")
-    shard["models"]["ContainerLogs"].delete().where(shard["models"]["ContainerLogs"].ts < stamp(1500)).execute()
+    logs.write_application_lines("web", lines(0, 2000))
+    shard = logs.application_store("web")
+    shard.lines.delete().where(shard.lines.ts < stamp(1500)).execute()
     before = file_bytes(logs, "web")
     limit(shard=before)
     assert logs.trim_shard("web") == 0
@@ -176,40 +141,40 @@ class TestSizeCheckAfterWrites:
   @pytest.fixture
   def clock(self, monkeypatch):
     now = [1000.0]
-    monkeypatch.setattr(logs_module, "time", SimpleNamespace(monotonic=lambda: now[0]))
+    monkeypatch.setattr(store_module, "time", SimpleNamespace(monotonic=lambda: now[0]))
     return now
 
   def test_a_write_that_takes_a_shard_over_its_limit_trims_it(self, logs, small, limit, clock):
     limit(shard=300_000)
-    logs.write_logs("web", lines(0, 100))
+    logs.write_application_lines("web", lines(0, 100))
     clock[0] += config.LOG_SIZE_CHECK_SECONDS
-    logs.write_logs("web", lines(100, 3000))
+    logs.write_application_lines("web", lines(100, 3000))
     assert len(rows(logs, "web")) < 3100
     assert rows(logs, "web")[-1] == stamp(3099)
 
   def test_the_check_is_made_at_most_once_in_the_interval(self, logs, small, limit, clock):
     limit(shard=300_000)
-    logs.write_logs("web", lines(0, 100))
-    logs.write_logs("web", lines(100, 3000))
+    logs.write_application_lines("web", lines(0, 100))
+    logs.write_application_lines("web", lines(100, 3000))
     assert len(rows(logs, "web")) == 3100, "the second write came too soon after the check"
     clock[0] += config.LOG_SIZE_CHECK_SECONDS
-    logs.write_logs("web", lines(3100, 10))
+    logs.write_application_lines("web", lines(3100, 10))
     assert len(rows(logs, "web")) < 3100
 
   def test_each_shard_has_its_own_interval(self, logs, small, limit, clock):
     limit(shard=300_000)
-    logs.write_logs("web", lines(0, 100))
-    logs.write_logs("api", lines(0, 3000))
+    logs.write_application_lines("web", lines(0, 100))
+    logs.write_application_lines("api", lines(0, 3000))
     assert len(rows(logs, "api")) < 3000, "the first write to a shard is checked at once"
 
-  def test_the_manager_own_logs_are_trimmed_too(self, logs, small, limit, clock):
+  def test_the_task_logs_are_trimmed_too(self, logs, small, limit, clock):
     limit(shard=300_000)
-    for entry in lines(0, 3000):
-      logs.append_self_log(entry)
-    assert len(rows(logs, "sage")) == 3000
+    for entry in task_entries(0, 3000):
+      logs.write_task_line(entry)
+    assert len(rows(logs, "tasks")) == 3000
     clock[0] += config.LOG_SIZE_CHECK_SECONDS
-    logs.append_self_log(lines(3000, 1)[0])
-    left = rows(logs, "sage")
+    logs.write_task_line(task_entries(3000, 1)[0])
+    left = rows(logs, "tasks")
     assert len(left) < 3000 and left[-1] == stamp(3000)
 
   def test_an_error_while_trimming_never_fails_the_write(self, logs, small, clock, monkeypatch, caplog):
@@ -218,7 +183,7 @@ class TestSizeCheckAfterWrites:
 
     monkeypatch.setattr(logs, "trim_shard", broken)
     with caplog.at_level(logging.WARNING):
-      logs.write_logs("web", lines(0, 10))
+      logs.write_application_lines("web", lines(0, 10))
     assert len(rows(logs, "web")) == 10
     assert any("Could not trim" in record.getMessage() and record.exc_info for record in caplog.records)
 
@@ -227,7 +192,7 @@ class TestSizeCheckAfterWrites:
     monkeypatch.setattr(logs, "trim_shard", lambda container: called.append(container))
     logs._trim_lock.acquire()
     try:
-      logs.write_logs("web", lines(0, 10))
+      logs.write_application_lines("web", lines(0, 10))
     finally:
       logs._trim_lock.release()
     assert called == []
@@ -235,12 +200,12 @@ class TestSizeCheckAfterWrites:
 
 class TestTrimTotal:
   def fill(self, logs):
-    logs.write_logs("old-app", lines(0, 1500, word="old"))
-    logs.write_logs("busy-app", lines(1000, 1500, word="busy"))
-    logs.write_logs("new-app", lines(2000, 1500, word="new"))
+    logs.write_application_lines("old-app", lines(0, 1500, word="old"))
+    logs.write_application_lines("busy-app", lines(1000, 1500, word="busy"))
+    logs.write_application_lines("new-app", lines(2000, 1500, word="new"))
 
   def total(self, logs):
-    return sum(logs._live_bytes(logs.get_logs_db(name)) for name in ("old-app", "busy-app", "new-app"))
+    return sum(logs.application_store(name).live_bytes() for name in ("old-app", "busy-app", "new-app"))
 
   def test_all_the_logs_within_the_limit_are_left_alone(self, logs, small, limit):
     self.fill(logs)
@@ -276,41 +241,73 @@ class TestTrimTotal:
 
   def test_the_limit_is_the_smaller_of_the_size_and_a_share_of_the_disk(self, logs, monkeypatch):
     monkeypatch.setattr(config, "LOG_TOTAL_MAX_BYTES", 2 * 2**30)
-    monkeypatch.setattr(logs_module.shutil, "disk_usage", lambda path: SimpleNamespace(total=100 * 2**30))
+    monkeypatch.setattr(store_module.shutil, "disk_usage", lambda path: SimpleNamespace(total=100 * 2**30))
     assert logs.total_limit() == 2 * 2**30
-    monkeypatch.setattr(logs_module.shutil, "disk_usage", lambda path: SimpleNamespace(total=10 * 2**30))
+    monkeypatch.setattr(store_module.shutil, "disk_usage", lambda path: SimpleNamespace(total=10 * 2**30))
     assert logs.total_limit() == 2**30
+
+  def test_the_task_logs_count_and_lose_their_oldest_lines_like_a_container(self, logs, small, limit):
+    self.fill(logs)
+    for entry in task_entries(0, 1500):
+      logs.write_task_line(entry)
+    limit(total=(self.total(logs) + logs._store("tasks").live_bytes()) // 2)
+    assert logs.trim_total() > 0
+    assert config.LOG_KEEP_NEWEST_ROWS <= len(rows(logs, "tasks")) < 1500
+    assert len(rows(logs, "new-app")) == 1500
 
   def test_the_total_is_checked_after_a_write(self, logs, small, limit, monkeypatch):
     self.fill(logs)
     limit(total=self.total(logs) // 2)
     monkeypatch.setattr(logs, "_total_checked", float("-inf"))
-    logs.write_logs("new-app", lines(3500, 10, word="new"))
+    logs.write_application_lines("new-app", lines(3500, 10, word="new"))
     assert self.total(logs) <= config.LOG_TOTAL_MAX_BYTES * 1.05
 
 
 class TestCleanup:
-  def test_lines_past_the_retention_and_the_shards_of_removed_applications_go(self, logs, application):
+  def test_lines_past_the_retention_and_the_shards_of_anything_but_an_application_go(self, logs, application):
     kept = application.qualified_name
     old = (utcnow() - timedelta(days=config.RETENTION_DAYS + 1)).isoformat()
     fresh = utcnow().isoformat()
-    logs.write_logs(kept, [{"hostname": "w1", "ts": old, "stream": "stdout", "message": "stale"},
-                           {"hostname": "w1", "ts": fresh, "stream": "stdout", "message": "recent"}])
-    logs.write_logs("deleted-app", lines(0, 5))
-    logs.write_logs("traefik", lines(0, 5))
+    logs.write_application_lines(kept, [{"hostname": "w1", "ts": old, "stream": "stdout", "message": "stale"},
+                                        {"hostname": "w1", "ts": fresh, "stream": "stdout", "message": "recent"}])
+    for name in ("deleted-app", "sage", "traefik", "cloudflared", "telegraf"):
+      logs.write_application_lines(name, lines(0, 5))
     logs.cleanup()
-    assert [row["message"] for row in logs.query_logs(kept)] == ["recent"]
-    assert not (logs.db_path / "logs" / "deleted-app.db").exists()
-    assert (logs.db_path / "logs" / "traefik.db").exists()
+    assert [row["message"] for row in logs.query_application_lines(kept)["lines"]] == ["recent"]
+    assert [path.stem for path in (logs.db_path / "logs").glob("*.db")] == [kept]
+
+  def test_a_line_older_than_the_cutoff_goes_whatever_the_precision_of_its_time(self, logs, application, clock):
+    clock.set(datetime(2026, 1, 15, 12, 0, 0, 500000))
+    name = application.qualified_name
+    logs.ingest("w1", push({**event(name, "half a second too old"), "timestamp": "2026-01-01T12:00:00Z"},
+                           {**event(name, "just in time"), "timestamp": "2026-01-01T12:00:00.6Z"}))
+
+    logs.cleanup(days=14)
+
+    assert [row["message"] for row in logs.query_application_lines(name)["lines"]] == ["just in time"]
+
+  def test_the_requests_are_kept_and_lose_their_rows_past_the_retention(self, logs, db):
+    old = (utcnow() - timedelta(days=config.RETENTION_DAYS + 1)).isoformat()
+    logs.ingest("w1", push(event("traefik", access_line(StartUTC=old, RequestPath="/stale")),
+                           event("traefik", access_line(StartUTC=utcnow().isoformat(), RequestPath="/recent"))))
+    logs.cleanup()
+    assert [row.path for row in logs._store("requests").lines.select()] == ["/recent"]
+
+  def test_the_task_logs_are_kept_and_lose_their_lines_past_the_retention(self, logs, db):
+    old = (utcnow() - timedelta(days=config.RETENTION_DAYS + 1)).isoformat()
+    logs.write_task_line({**task_entries(0, 1)[0], "ts": old, "message": "stale"})
+    logs.write_task_line({**task_entries(1, 1)[0], "ts": utcnow().isoformat(), "message": "recent"})
+    logs.cleanup()
+    assert [line["message"] for line in logs.query_task_logs("t1")["lines"]] == ["recent"]
 
   def test_it_applies_the_size_limits(self, logs, application, small, limit):
     name = application.qualified_name
-    logs.write_logs(name, lines(0, 3000))
-    logs.write_logs("traefik", lines(0, 3000))
-    limit(shard=logs._live_bytes(logs.get_logs_db("traefik")) // 2)
+    logs.write_application_lines(name, lines(0, 3000))
+    logs.ingest("w1", push(*(event("traefik", access_line(index)) for index in range(3000))))
+    limit(shard=logs._store("requests").live_bytes() // 2)
     logs.cleanup(days=36500)
     assert 0 < len(rows(logs, name)) < 3000
-    assert 0 < len(rows(logs, "traefik")) < 3000
+    assert 0 < len(rows(logs, "requests")) < 3000
 
 
 class TestUnderLoad:
@@ -336,20 +333,25 @@ class TestUnderLoad:
       try:
         for _ in range(60):
           container = rng.choice(containers)
-          logs.write_logs(container, next_lines(rng, container))
-      except Exception as error:
+          logs.write_application_lines(container, next_lines(rng, container))
+      except Exception:
         errors.append(traceback.format_exc())
+      finally:
+        close_connections(logs)
 
-    def self_logger():
+    def task_logger():
       rng = random.Random(99)
       try:
         for _ in range(25):
-          for entry in next_lines(rng, "sage"):
-            logs.append_self_log(entry)
-      except Exception as error:
+          for entry in next_lines(rng, "tasks"):
+            logs.write_task_line({"task_id": "t1", "sub_task_id": "", "ts": entry["ts"], "level": "INFO",
+                                  "logger": "tests.task", "message": entry["message"]})
+      except Exception:
         errors.append(traceback.format_exc())
+      finally:
+        close_connections(logs)
 
-    workers = [threading.Thread(target=writer, args=(seed,)) for seed in range(4)] + [threading.Thread(target=self_logger)]
+    workers = [threading.Thread(target=writer, args=(seed,)) for seed in range(4)] + [threading.Thread(target=task_logger)]
     for worker in workers:
       worker.start()
     for worker in workers:
@@ -357,35 +359,38 @@ class TestUnderLoad:
     assert errors == [], errors[0]
 
     logs.trim_total()
-    for container in containers + ["sage"]:
-      shard = logs.get_logs_db(container)
-      assert shard["db"].execute_sql("PRAGMA integrity_check").fetchone()[0] == "ok"
-      shard["db"].execute_sql("INSERT INTO containerlogsindex(containerlogsindex, rank) VALUES('integrity-check', 1)")
-      assert logs._live_bytes(shard) <= config.LOG_SHARD_MAX_BYTES, container
-      assert rows(logs, container)[-1] == newest[container], f"the newest line of {container} was trimmed"
-      assert len(rows(logs, container)) >= config.LOG_KEEP_NEWEST_ROWS
-    assert sum(logs._live_bytes(logs.get_logs_db(name)) for name in containers + ["sage"]) <= config.LOG_TOTAL_MAX_BYTES
+    for name in containers + ["tasks"]:
+      shard = logs._store(name)
+      assert shard.db.execute_sql("PRAGMA integrity_check").fetchone()[0] == "ok"
+      if shard.index is not None:
+        shard.db.execute_sql("INSERT INTO containerlogsindex(containerlogsindex, rank) VALUES('integrity-check', 1)")
+      assert shard.live_bytes() <= config.LOG_SHARD_MAX_BYTES, name
+      assert rows(logs, name)[-1] == newest[name], f"the newest line of {name} was trimmed"
+      assert len(rows(logs, name)) >= config.LOG_KEEP_NEWEST_ROWS
+    assert sum(logs._store(name).live_bytes() for name in containers + ["tasks"]) <= config.LOG_TOTAL_MAX_BYTES
 
   def test_a_trim_while_another_thread_writes_the_same_shard(self, logs, small, limit, monkeypatch):
     monkeypatch.setattr(config, "LOG_SIZE_CHECK_SECONDS", 10**9)
     monkeypatch.setattr(config, "LOG_TRIM_BATCH_ROWS", 10)
-    logs.write_logs("web", lines(0, 400))
+    logs.write_application_lines("web", lines(0, 400))
     errors = []
 
     def write():
       try:
         for index in range(400):
-          logs.write_logs("web", lines(400 + index * 5, 5))
+          logs.write_application_lines("web", lines(400 + index * 5, 5))
       except Exception:
         errors.append(traceback.format_exc())
+      finally:
+        close_connections(logs)
 
     writer = threading.Thread(target=write)
     writer.start()
     try:
       while writer.is_alive():
-        limit(shard=logs._live_bytes(logs.get_logs_db("web")) * 3 // 4)
+        limit(shard=logs.application_store("web").live_bytes() * 3 // 4)
         logs.trim_shard("web")
     finally:
       writer.join()
     assert errors == [], errors[0] if errors else ""
-    assert logs.get_logs_db("web")["db"].execute_sql("PRAGMA integrity_check").fetchone()[0] == "ok"
+    assert logs.application_store("web").db.execute_sql("PRAGMA integrity_check").fetchone()[0] == "ok"

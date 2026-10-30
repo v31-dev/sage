@@ -93,7 +93,6 @@ def create_backup(request: Request):
         scopes={f"app:{application.qualified_name}"},
         params={"application_id": application.id, "volume_ids": [volume.id]},
         executor="app",
-        task_id=request.state.task_id,
     ):
       raise HTTPException(status_code=409, detail="Application already has an operation in progress.")
   else:
@@ -104,7 +103,6 @@ def create_backup(request: Request):
         task=Manager().backup_database_s3,
         scopes={"platform", "app"},
         executor="platform",
-        task_id=request.state.task_id,
         on_conflict=OnConflict.REPLACE,
     )
 
@@ -112,14 +110,13 @@ def create_backup(request: Request):
 
 
 @router.post("/discover")
-def discover_backups(request: Request):
+def discover_backups():
   """List the platform backups and volume archives in S3 that aren't listed yet."""
   require_s3()
   Manager().add_task(
       task=Manager().discover_s3_backups,
       scopes={"platform", "app"},
       executor="platform",
-      task_id=request.state.task_id,
   )
   return {"status": "OK"}
 
@@ -163,7 +160,6 @@ def delete_backup(request: Request):
       scopes={"common"},
       params={"s3_path": backup.s3_path},
       executor="common",
-      task_id=request.state.task_id,
       on_conflict=OnConflict.QUEUE,
   )
 
@@ -201,7 +197,6 @@ async def restore_backup(request: Request, restore_data: dict = Body(default={})
             "target_worker_hostname": target_worker.strip(),
         },
         executor="app",
-        task_id=request.state.task_id,
     ):
       raise HTTPException(status_code=409, detail="Application already has an operation in progress.")
 
@@ -216,7 +211,6 @@ async def restore_backup(request: Request, restore_data: dict = Body(default={})
       scopes={"platform", "app"},
       params={"s3_path": backup.s3_path},
       executor="platform",
-      task_id=request.state.task_id,
       restore=True,
   ):
     raise HTTPException(status_code=409, detail="A platform operation is already in progress.")

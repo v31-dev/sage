@@ -1,55 +1,113 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { Spinner } from '@/components/ui/spinner'
 import { toast } from 'vue-sonner'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import FieldHelp from '@/components/FieldHelp.vue'
+import FilterBar, { type FilterDropdown, type FilterField } from '@/components/FilterBar.vue'
 import TaskCard from './TaskCard.vue'
 import TaskTable from './TaskTable.vue'
-import { watchFeed, watchState } from '@/lib/updates'
+import { useFeedList } from '@/lib/feedList'
+import { watchState } from '@/lib/updates'
+import { localTimeToUTC } from '@/lib/utils'
 import {
   fetchTaskHistory,
+  fetchTaskHistoryFilters,
   fetchTasks,
-  type CompletedTask,
+  matchesTaskHistoryQuery,
+  type FinishedTask,
   type QueueResponse,
+  type TaskHistoryFilters,
+  type TaskHistoryQuery,
 } from '@/services/api'
 
-const HISTORY_SHOWN = 100
+// The finished tasks: the newest load at first, and the list grows as tasks finish, up to the ceiling.
+const FIRST = 100
+const CEILING = 1000
 
 const queue = ref<QueueResponse>({ running: [], queued: [] })
-const completed = ref<CompletedTask[]>([])
-const isLoading = ref(true)
-let stops: Array<() => void> = []
+const choices = ref<TaskHistoryFilters>({ names: [], executors: [], statuses: [] })
+// From and To are local times, as their fields hold them.
+const filters = ref({ name: '', executor: '', status: '', scope: '', from: '', to: '' })
+const queueLoaded = ref(false)
+const failed = ref(false)
+let stopQueue: (() => void) | undefined
 
 const queueSections = computed(() => [
-  { title: 'Running', rows: queue.value.running },
-  { title: 'Queued', rows: queue.value.queued },
+  { title: 'Running', section: 'running' as const, rows: queue.value.running },
+  { title: 'Queued', section: 'queued' as const, rows: queue.value.queued },
 ])
 
-function addCompleted(rows: CompletedTask[]) {
-  const known = new Set(completed.value.map(task => task.task_id))
-  const fresh = rows.filter(task => !known.has(task.task_id))
-  if (fresh.length === 0) return
-  completed.value = [...completed.value, ...fresh]
-    .sort((a, b) => (a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : 0))
-    .slice(0, HISTORY_SHOWN)
+const dropdowns = computed<FilterDropdown[]>(() => [
+  { key: 'name', label: 'Name', any: 'Any name', options: choices.value.names },
+  { key: 'executor', label: 'Executor', any: 'Any executor', options: choices.value.executors },
+  { key: 'status', label: 'Status', any: 'Any status', options: choices.value.statuses },
+])
+
+const fields: FilterField[] = [
+  { key: 'scope', label: 'Scope', type: 'text', placeholder: 'e.g. app:demo-web or app:demo*' },
+  { key: 'from', label: 'From', type: 'datetime-local' },
+  { key: 'to', label: 'To', type: 'datetime-local' },
+]
+
+const query = computed<TaskHistoryQuery>(() => {
+  const { name, executor, status, scope, from, to } = filters.value
+  return { name, executor, status, scope, from_ts: localTimeToUTC(from), to_ts: localTimeToUTC(to) }
+})
+
+function newestFinishedFirst(a: FinishedTask, b: FinishedTask) {
+  if (a.finished_at !== b.finished_at) return a.finished_at < b.finished_at ? 1 : -1
+  return a.task_id < b.task_id ? 1 : -1
 }
 
+const {
+  rows: finished,
+  total,
+  loading: finishedLoading,
+  error: finishedError,
+} = useFeedList<FinishedTask, TaskHistoryQuery>({
+  topic: 'task-history',
+  order: newestFinishedFirst,
+  newestFirst: true,
+  key: task => task.task_id,
+  query: () => query.value,
+  matches: matchesTaskHistoryQuery,
+  ceiling: CEILING,
+  // The newest that match, also each time the socket connects: what the list holds is merged with them.
+  load: async filters => {
+    const page = await fetchTaskHistory({ ...filters, limit: FIRST })
+    return { rows: page.tasks, total: page.total }
+  },
+})
+
+// Until the queue and the finished tasks have loaded the first time, or one could not be.
+const finishedLoaded = ref(false)
+watch(finishedLoading, loading => (finishedLoaded.value ||= !loading))
+const isLoading = computed(() => !failed.value && (!queueLoaded.value || !finishedLoaded.value))
+
+watch(finishedError, error => {
+  if (!error) return
+  failed.value = true
+  toast.error('Failed to load tasks')
+})
+
 onMounted(async () => {
-  const watches = [
-    watchState('tasks', fetchTasks, next => (queue.value = next)),
-    watchFeed('task-history', fetchTaskHistory, addCompleted),
-  ]
-  stops = watches.map(watch => watch.stop)
+  const watched = watchState('tasks', fetchTasks, next => (queue.value = next))
+  stopQueue = watched.stop
+  fetchTaskHistoryFilters()
+    .then(next => (choices.value = next))
+    .catch(() => toast.error('Failed to load tasks'))
   try {
-    await Promise.all(watches.map(watch => watch.first))
+    await watched.first
   } catch {
+    failed.value = true
     toast.error('Failed to load tasks')
   } finally {
-    isLoading.value = false
+    queueLoaded.value = true
   }
 })
 
-onUnmounted(() => stops.forEach(stop => stop()))
+onUnmounted(() => stopQueue?.())
 </script>
 
 <template>
@@ -71,36 +129,53 @@ onUnmounted(() => stops.forEach(stop => stop()))
           <CardContent>
             <!-- Desktop table (md+) -->
             <div class="hidden md:block">
-              <TaskTable :rows="section.rows" :emptyLabel="section.title.toLowerCase()" />
+              <TaskTable :rows="section.rows" :section="section.section" />
             </div>
 
             <!-- Mobile cards (< md) -->
             <div class="md:hidden space-y-2">
               <p v-if="!section.rows.length" class="py-4 text-center text-sm text-muted-foreground">
-                No {{ section.title.toLowerCase() }} tasks
+                No {{ section.section }} tasks
               </p>
-              <TaskCard v-for="t in section.rows" :key="t.task_id" :task="t" />
+              <TaskCard
+                v-for="t in section.rows"
+                :key="t.task_id"
+                :task="t"
+                :section="section.section"
+              />
             </div>
           </CardContent>
         </Card>
 
-        <!-- Completed / failed / cancelled tasks (from the DB) -->
+        <!-- Completed, failed and cancelled tasks (from the DB) -->
         <Card>
           <CardHeader>
-            <CardTitle>Completed ({{ completed.length }})</CardTitle>
+            <CardTitle>Finished ({{ total ?? 0 }})</CardTitle>
           </CardHeader>
-          <CardContent>
+          <CardContent class="space-y-4">
+            <FilterBar id="task" v-model="filters" :dropdowns="dropdowns" :fields="fields" />
+
+            <p
+              v-if="total !== null && total > finished.length"
+              class="flex items-center gap-1 text-xs text-muted-foreground"
+            >
+              Showing the latest {{ finished.length }} of {{ total }}.
+              <FieldHelp
+                :text="`The latest ${FIRST} load at first, and the list grows as tasks finish, up to ${CEILING}. Narrow the filters to see older ones.`"
+              />
+            </p>
+
             <!-- Desktop table (md+) -->
             <div class="hidden md:block">
-              <TaskTable :rows="completed" emptyLabel="completed" :showTimestamps="true" />
+              <TaskTable :rows="finished" section="finished" />
             </div>
 
             <!-- Mobile cards (< md) -->
             <div class="md:hidden space-y-2">
-              <p v-if="!completed.length" class="py-4 text-center text-sm text-muted-foreground">
-                No completed tasks
+              <p v-if="!finished.length" class="py-4 text-center text-sm text-muted-foreground">
+                No finished tasks
               </p>
-              <TaskCard v-for="t in completed" :key="t.task_id" :task="t" :showTimestamps="true" />
+              <TaskCard v-for="t in finished" :key="t.task_id" :task="t" section="finished" />
             </div>
           </CardContent>
         </Card>
