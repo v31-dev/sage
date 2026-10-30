@@ -10,6 +10,7 @@ from services.logs import Logs
 from services.updates import Updates, UpdateSource
 from services.worker_reports import WorkerReports
 from utils.common import format_yaml, parse_multiline_kv, utcnow
+from utils.executor import LOGS_EXECUTOR, run_in_executor_with_context
 from utils.logging import new_task_id, sub_task_id, task_id
 from utils.queue import OnConflict
 
@@ -67,6 +68,18 @@ def container_part(container: Container, kind: str):
     yield part
   finally:
     sub_task_id.reset(token)
+
+
+async def mark(container: Container, text: str):
+  """Writes into the container's application logs what Sage did to it, with the running task's id. A marker that
+  cannot be written is a warning, never the action's failure."""
+  task = task_id.get()
+  try:
+    await run_in_executor_with_context(
+        Logs().write_marker, container.application.qualified_name, container.worker_id,
+        f"{text} (task {task})" if task else text, executor=LOGS_EXECUTOR)
+  except Exception:
+    logger.warning(f"Could not mark '{text}' in the logs of {container.application.qualified_name}.", exc_info=True)
 
 
 def task_parts(task_id: str) -> list[dict]:
@@ -296,8 +309,10 @@ class ApplicationMixin:
       save_container(container)
 
       if deployment_status == "active":
+        await mark(container, "Deployed")
         self.notify(f"Application {config.qualified_name} container deployed to worker {container.worker.hostname}.")
       else:
+        await mark(container, f"Deploy failed: {exception_message}")
         self.notify(
             f"Failed to deploy application {
                 config.qualified_name} container to worker {
@@ -363,6 +378,8 @@ class ApplicationMixin:
         if was_active:
           self.request_application_traefik_sync(application)
 
+        await mark(container, "Removed from Sage; the offline worker was not cleaned up" if skip_remote_cleanup
+                   else "Removed from this worker")
         if skip_remote_cleanup:
           self.notify(
               f"Container of application {container.application.qualified_name} force-deleted from offline worker {
@@ -376,6 +393,7 @@ class ApplicationMixin:
       except Exception as e:
         container.status = "error"
         save_container(container)
+        await mark(container, f"Delete failed: {e}")
         self.notify(
             f"Failed to delete container of application {container.application.qualified_name} from worker {
                 container.worker.hostname}: {e}", "error")
@@ -445,9 +463,12 @@ class ApplicationMixin:
       save_container(container)
 
       if deployment_status == "inactive":
+        if not was_inactive:
+          await mark(container, "Stopped")
         self.notify(
             f"Application {container.application.qualified_name} container stopped on worker {container.worker.hostname}.")
       else:
+        await mark(container, f"Stop failed: {exception_message}")
         self.notify(
             f"Failed to stop application {
                 container.application.qualified_name} container on worker {
@@ -531,10 +552,12 @@ class ApplicationMixin:
               f"docker compose -f {self.worker_home_dir}/applications/{application.qualified_name}/docker-compose.yml down",
               timeout=60,
           )
+          await mark(container, "Stopped: it ran a stale version; deploy to update it")
         except Exception as e:
           status = "error"
           message = f"Application container {worker_container_name} is running a stale version and could not be stopped: {e}"
           level = "error"
+          await mark(container, f"Could not stop the stale version: {e}")
       if status is not None and status != container.status:
         container.status = status
         save_container(container)

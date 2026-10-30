@@ -9,8 +9,12 @@ from playhouse.sqlite_ext import FTS5Model, RowIDField, SearchField
 import config
 from services.db import Application, Project
 from services.updates import UpdateFeed, Updates
+from utils.common import utcnow
 
 from .store import Store, contains, newest, stored_time
+
+# The stream of the lines Sage writes into an application's logs: what it did to a container.
+MARKER_STREAM = "sage"
 
 
 def application_schema(db: SqliteDatabase) -> Store:
@@ -72,6 +76,11 @@ class ApplicationsMixin:
     """An application's lines, to its shard and its feed."""
     stored = self._insert(self._shard(name), rows)
     Updates().publish(UpdateFeed.APPLICATION_LOGS, stored, key=name)
+
+  def write_marker(self, name: str, hostname: str, text: str):
+    """What Sage did to the application's container on `hostname`: a line of its own, at the manager's time."""
+    self.write_application_lines(
+        name, [{"hostname": hostname, "ts": stored_time(utcnow()), "stream": MARKER_STREAM, "message": text}])
 
   def query_application_lines(self, name: str, hostname: str = "", search: str = "", from_ts: datetime | None = None,
                               to_ts: datetime | None = None, after_id: int = 0, limit: int = config.LIST_MAX_ROWS) -> dict:

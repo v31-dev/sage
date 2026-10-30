@@ -2,7 +2,11 @@ import { request } from '@/lib/api'
 import { parseDate } from '@/lib/utils'
 import { applicationPath } from './_common'
 
-// A line one of an application's containers wrote.
+// The stream of the lines Sage writes into an application's logs: what it did to a container (deployed it, stopped
+// it, …), with the task's id.
+export const MARKER_STREAM = 'sage'
+
+// A line one of an application's containers wrote, or a marker of what Sage did to it.
 export interface LogEntry {
   id: number
   hostname: string

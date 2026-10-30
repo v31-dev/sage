@@ -1,7 +1,10 @@
+import asyncio
+
 import pytest
 
 from services.db import Container, Event
-from services.manager.application import container_part
+from services.logs import Logs
+from services.manager.application import container_part, mark
 from utils.logging import sub_task_id, task_id
 
 
@@ -43,3 +46,29 @@ class TestContainerPart:
 
     assert sub_task_id.get() == ""
     assert Event.get().type == "stop"
+
+
+class TestMark:
+  def lines(self, application):
+    return [(line["hostname"], line["stream"], line["message"])
+            for line in Logs().query_application_lines(application.qualified_name)["lines"]]
+
+  def test_writes_what_sage_did_with_the_task_into_the_containers_application_logs(self, container, application, in_task,
+                                                                                   thread_connections):
+    asyncio.run(mark(container, "Deployed"))
+
+    assert self.lines(application) == [("w1", "sage", "Deployed (task t1)")]
+
+  def test_outside_a_task_it_is_the_text_alone(self, container, application, thread_connections):
+    asyncio.run(mark(container, "Stopped"))
+
+    assert self.lines(application) == [("w1", "sage", "Stopped")]
+
+  def test_a_marker_that_cannot_be_written_is_a_warning_and_not_the_actions_failure(self, container, monkeypatch, caplog):
+    def broken(self, *args):
+      raise OSError("disk full")
+
+    monkeypatch.setattr(Logs, "write_marker", broken)
+    asyncio.run(mark(container, "Deployed"))
+
+    assert "Could not mark 'Deployed' in the logs of demo-web." in caplog.text

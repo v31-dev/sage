@@ -2,6 +2,8 @@ import sqlite3
 
 import pytest
 
+from services.updates import UpdateFeed
+
 from .builders import lines, moment, stamp
 
 
@@ -92,3 +94,13 @@ class TestAfter:
     held = logs.query_application_lines("web")["lines"][2]["id"]
     assert [row["ts"] for row in logs.query_application_lines("web", after_id=held)["lines"]] == [stamp(3), stamp(4)]
     assert [row["ts"] for row in logs.query_application_lines("web", search="line", after_id=held)["lines"]] == [stamp(3), stamp(4)]
+
+
+class TestMarkers:
+  def test_a_marker_is_a_line_of_its_own_from_the_worker_at_the_managers_time_and_pushed(self, logs, clock, published):
+    logs.write_marker("demo-web", "w2", "Deployed (task t1)")
+
+    [line] = logs.query_application_lines("demo-web")["lines"]
+    assert {key: line[key] for key in ("hostname", "ts", "stream", "message")} == {
+        "hostname": "w2", "ts": "2026-01-01T12:00:00.000000000Z", "stream": "sage", "message": "Deployed (task t1)"}
+    assert [(feed, key) for feed, _, key in published] == [(UpdateFeed.APPLICATION_LOGS, "demo-web")]

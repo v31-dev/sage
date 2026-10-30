@@ -45,6 +45,7 @@ Initial app boot fetches `GET /api` through the Pinia store in `ui/src/stores/ap
   - The Tasks page's dialog reads the task's parts (`GET /tasks/{task_id}/parts`) when it opens: a select shows all the lines or one part's, and all the lines carry a Part column (the worker, or the part's id when its event is gone).
 - `application-logs:<project>-<app>`, a feed: the application logs page (`pages/ApplicationLogs.vue`); a list (below), of the newest 1000 lines that match, oldest first, up to 1000, in one scroll container that follows new lines while it is at the bottom.
   - Filtered by the worker (a dropdown, or a click on a line's worker), the search and the From/To window (From starts five minutes back).
+  - A marker of what Sage did (`MARKER_STREAM`, `sage`: deployed, stopped, stopped for a backup, …, with its task's id) is drawn apart from the container's lines, with a flag.
 - `requests`, a feed: the Requests page; a list (below), of the newest 1000 requests that match, newest first, up to 1000.
 - `notifications`, a feed: the header's list, whose `load` asks for the newest 20 while it has none and for the rows after its newest `created_at` otherwise, so it also recovers what it missed; it merges rows by id, newest first, so a row it has is not shown twice and one that arrives out of order lands in place. The bell's marker is on while the newest id is above the last one seen, which is kept in `localStorage` when the bell is opened.
 

@@ -209,6 +209,19 @@ describe('the application logs page', () => {
     expect(wrapper.text()).toContain('Showing the latest 1000 lines that match.')
   })
 
+  it('draw a marker of what Sage did apart from the lines of the container', async () => {
+    const { wrapper } = await open([
+      line(1, 'w1', 'listening'),
+      { ...line(2, 'w1', 'Deployed (task t1)'), stream: 'sage' },
+    ])
+
+    const rows = wrapper.findAll('tbody tr')
+    expect(messages(wrapper)).toEqual(['listening', 'Deployed (task t1)'])
+    expect(rows.map(row => row.find('[data-marker]').exists())).toEqual([false, true])
+    expect(rows[1]!.classes()).toContain('bg-primary/5')
+    expect(rows[0]!.classes()).not.toContain('bg-primary/5')
+  })
+
   it('stop following when the page goes away', async () => {
     const { wrapper, feed } = await open()
 

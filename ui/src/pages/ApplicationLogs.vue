@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import { Filter } from 'lucide-vue-next'
+import { Filter, Flag } from 'lucide-vue-next'
 import { Card, CardContent } from '@/components/ui/card'
 import { Spinner } from '@/components/ui/spinner'
 import { TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
@@ -9,7 +9,13 @@ import FieldHelp from '@/components/FieldHelp.vue'
 import FilterBar, { type FilterDropdown, type FilterField } from '@/components/FilterBar.vue'
 import { useFeedList } from '@/lib/feedList'
 import { formatDate, localTimeToUTC, toLocalTime } from '@/lib/utils'
-import { fetchApplicationLogs, matchesLogQuery, type LogEntry, type LogQuery } from '@/services/api'
+import {
+  fetchApplicationLogs,
+  matchesLogQuery,
+  MARKER_STREAM,
+  type LogEntry,
+  type LogQuery,
+} from '@/services/api'
 import { useAppStore } from '@/stores/app'
 
 // An application's logs, from all its containers or one worker's, followed as they are stored.
@@ -73,6 +79,19 @@ const {
   },
 })
 
+// A marker of what Sage did stands apart from the container's lines, and an error line too.
+function rowClass(entry: LogEntry) {
+  if (entry.stream === MARKER_STREAM) return 'bg-primary/5 hover:bg-primary/10 align-top'
+  if (entry.stream === 'stderr') return 'bg-destructive/5 hover:bg-destructive/10 align-top'
+  return 'hover:bg-muted/30 align-top'
+}
+
+function cardClass(entry: LogEntry) {
+  if (entry.stream === MARKER_STREAM) return 'border-primary/40 bg-primary/5'
+  if (entry.stream === 'stderr') return 'border-destructive/40 bg-destructive/5'
+  return ''
+}
+
 function filterByWorker(hostname: string) {
   filters.value = { ...filters.value, worker: hostname }
 }
@@ -133,15 +152,7 @@ watch(
               </TableRow>
             </TableHeader>
             <TableBody>
-              <TableRow
-                v-for="entry in logs"
-                :key="entry.id"
-                :class="
-                  entry.stream === 'stderr'
-                    ? 'bg-destructive/5 hover:bg-destructive/10 align-top'
-                    : 'hover:bg-muted/30 align-top'
-                "
-              >
+              <TableRow v-for="entry in logs" :key="entry.id" :class="rowClass(entry)">
                 <TableCell
                   class="pl-4 py-2 text-xs w-px font-mono text-muted-foreground whitespace-nowrap"
                 >
@@ -158,19 +169,25 @@ watch(
                   </button>
                 </TableCell>
                 <TableCell class="py-2 text-xs">
-                  <pre class="font-mono break-all whitespace-pre-wrap">{{ entry.message }}</pre>
+                  <div class="flex items-start gap-1.5">
+                    <Flag
+                      v-if="entry.stream === MARKER_STREAM"
+                      class="w-3 h-3 mt-0.5 shrink-0 text-primary"
+                      data-marker
+                    />
+                    <pre
+                      class="font-mono break-all whitespace-pre-wrap"
+                      :class="{ 'font-medium text-primary': entry.stream === MARKER_STREAM }"
+                      >{{ entry.message }}</pre
+                    >
+                  </div>
                 </TableCell>
               </TableRow>
             </TableBody>
           </table>
 
           <!-- Mobile cards (< md) -->
-          <Card
-            v-for="entry in logs"
-            :key="entry.id"
-            class="md:hidden"
-            :class="entry.stream === 'stderr' ? 'border-destructive/40 bg-destructive/5' : ''"
-          >
+          <Card v-for="entry in logs" :key="entry.id" class="md:hidden" :class="cardClass(entry)">
             <CardContent class="px-3 py-2 space-y-2 text-xs">
               <div class="flex flex-wrap items-center gap-x-3 font-mono text-muted-foreground">
                 <span>{{ formatDate(entry.ts) }}</span>
@@ -182,9 +199,11 @@ watch(
                   <Filter class="w-3 h-3 shrink-0" />{{ entry.hostname }}
                 </button>
               </div>
-              <pre class="font-mono break-all whitespace-pre-wrap leading-relaxed">{{
-                entry.message
-              }}</pre>
+              <pre
+                class="font-mono break-all whitespace-pre-wrap leading-relaxed"
+                :class="{ 'font-medium text-primary': entry.stream === MARKER_STREAM }"
+                >{{ entry.message }}</pre
+              >
             </CardContent>
           </Card>
         </div>

@@ -11,7 +11,7 @@ from services.updates import Updates, UpdateSource
 from utils.common import get_env, utcnow
 
 from ._common import BACKUP_TIMESTAMP_FORMAT, app_dir
-from .application import container_part, save_application, save_container
+from .application import container_part, mark, save_application, save_container
 
 logger = logging.getLogger(__name__)
 
@@ -125,10 +125,15 @@ class BackupsMixin:
     logger.info(
         f"Stopping application {container.application.qualified_name} container on worker {container.worker.hostname} for backup."
     )
-    await self.tailscale.exec_command(
-        container.worker.hostname,
-        f"docker compose -f {container_dir}/docker-compose.yml down",
-    )
+    try:
+      await self.tailscale.exec_command(
+          container.worker.hostname,
+          f"docker compose -f {container_dir}/docker-compose.yml down",
+      )
+    except Exception as e:
+      await mark(container, f"Failed to stop for a backup: {e}")
+      raise
+    await mark(container, "Stopped for a backup")
 
   async def _start_container_after_backup(self, container: Container):
     container_dir = f"{self.worker_home_dir}/applications/{container.application.qualified_name}"
@@ -143,10 +148,12 @@ class BackupsMixin:
       )
       container.status = "active"
       save_container(container)
-    except Exception:
+    except Exception as e:
       container.status = "error"
       save_container(container)
+      await mark(container, f"Failed to start again after the backup: {e}")
       raise
+    await mark(container, "Started again after the backup")
 
   async def _restore_application_runtime_after_backup(self, application: Application, snapshot: dict):
     if snapshot["application_status"] != "active":
@@ -379,11 +386,13 @@ class BackupsMixin:
             mode=0o700,
         )
         await self.tailscale.exec_command(target_container.worker.hostname, remote_script_path, 900)
+        await mark(target_container, f"Volume {volume.name} restored from {Path(backup.s3_path).name}")
         self.notify(
             f"Restore completed for {restore_unit_label} from {backup.s3_path}.",
             "success",
         )
       except Exception as exc:
+        await mark(target_container, f"Restore of volume {volume.name} failed: {exc}")
         self.notify(
             f"Failed to restore {restore_unit_label} from {backup.s3_path}: {exc}. "
             "The volume may be partially restored; run the restore again before deploying.",
