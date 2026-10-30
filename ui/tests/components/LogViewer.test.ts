@@ -77,6 +77,7 @@ describe('the application logs', () => {
       from_ts: '2026-01-01T11:55:00.000Z',
       to_ts: '',
       after_id: 0,
+      limit: 1000,
     })
     expect(messages(wrapper)).toEqual(['started', 'Traceback:\n  boom'])
   })
@@ -150,16 +151,30 @@ describe('the application logs', () => {
     await flushPromises()
 
     expect(messages(wrapper)).toEqual(['new search'])
-    expect(wrapper.text()).not.toContain('Showing the newest')
+    expect(wrapper.text()).not.toContain('Showing the latest')
   })
 
-  it('say when only the newest that match are shown, until a search shows them all', async () => {
+  it('say when only the latest that match are shown, until a search shows them all', async () => {
     const { wrapper } = await open([line(1)], true)
-    expect(wrapper.text()).toContain('Showing the newest 1000 lines that match.')
+    expect(wrapper.text()).toContain('Showing the latest 1000 lines that match.')
 
     await search(wrapper, 'line')
 
-    expect(wrapper.text()).not.toContain('Showing the newest')
+    expect(wrapper.text()).not.toContain('Showing the latest')
+  })
+
+  it('keep the latest 1000, and say so once the oldest are dropped', async () => {
+    const { wrapper, feed } = await open(
+      Array.from({ length: 1000 }, (_, index) => line(index + 1))
+    )
+    expect(wrapper.text()).not.toContain('Showing the latest')
+
+    feed.push([line(1001, 'w1', 'line 1001', 59)])
+    await flushPromises()
+
+    expect(messages(wrapper)).toHaveLength(1000)
+    expect([messages(wrapper)[0], messages(wrapper)[999]]).toEqual(['line 2', 'line 1001'])
+    expect(wrapper.text()).toContain('Showing the latest 1000 lines that match.')
   })
 
   it('stop following when the page goes away', async () => {

@@ -132,10 +132,10 @@ describe('the requests', () => {
     expect(statuses[1]).toContain(TONES.success.text)
   })
 
-  it('say when only the newest are shown', async () => {
+  it('say when only the latest are shown', async () => {
     const { wrapper } = await mountPage([served(2), served(1)], true)
 
-    expect(wrapper.text()).toContain('Showing the newest 2 requests that match.')
+    expect(wrapper.text()).toContain('Showing the latest 2 requests that match.')
   })
 
   it('show why they could not be loaded', async () => {
@@ -231,6 +231,7 @@ describe('the filters', () => {
       from_ts: '',
       to_ts: '',
       after_id: 0,
+      limit: 1000,
     })
 
     await choose(wrapper, 0, 'w2')
@@ -252,6 +253,7 @@ describe('the filters', () => {
       from_ts: '2026-01-01T12:00:00.000Z',
       to_ts: '2026-01-01T13:30:00.000Z',
       after_id: 0,
+      limit: 1000,
     })
   })
 
@@ -268,6 +270,6 @@ describe('the filters', () => {
     await flushPromises()
 
     expect(paths(wrapper)).toEqual(['/newer'])
-    expect(wrapper.text()).not.toContain('Showing the newest')
+    expect(wrapper.text()).not.toContain('Showing the latest')
   })
 })

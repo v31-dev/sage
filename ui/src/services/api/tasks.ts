@@ -44,8 +44,6 @@ export type TaskHistoryQuery = {
   from_ts?: string
   to_ts?: string
   limit?: number
-  // TODO(02 step 3C): the route has no offset since step 3B, so every page is the first; the paging goes in step 3C.
-  offset?: number
 }
 
 export interface TaskHistoryPage {

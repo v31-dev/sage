@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { computed, reactive } from 'vue'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -20,7 +20,8 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { watchFeed } from '@/lib/updates'
+import FieldHelp from '@/components/FieldHelp.vue'
+import { useFeedList } from '@/lib/feedList'
 import { formatDate } from '@/lib/utils'
 import { TONES, type Tone } from '@/lib/tone'
 import {
@@ -32,7 +33,7 @@ import {
 } from '@/services/api'
 import { useAppStore } from '@/stores/app'
 
-const MAX_REQUESTS = 1000
+const CEILING = 1000
 // A dropdown's choice for no filter, since a select item cannot have an empty value.
 const ANY = 'any'
 const METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']
@@ -45,10 +46,6 @@ const STATUS_TONES: Record<string, Tone> = {
 }
 
 const appStore = useAppStore()
-const requests = ref<ServedRequest[]>([])
-const more = ref(false)
-const loaded = ref(false)
-const error = ref('')
 // From and To are local times, as their fields hold them.
 const filters = reactive({
   worker: ANY,
@@ -60,9 +57,6 @@ const filters = reactive({
   from: '',
   to: '',
 })
-let stop: (() => void) | undefined
-// Moved on each time the filters change, so that a load asked for the filters before is dropped.
-let generation = 0
 
 const dropdowns = computed(() => [
   {
@@ -113,51 +107,24 @@ function commit(key: (typeof fields)[number]['key'], event: Event) {
   filters[key] = (event.target as HTMLInputElement).value.trim()
 }
 
-// The requests this page does not have yet: the newest that match at first, then those after the newest it holds.
-async function load() {
-  const asked = generation
-  const result = await fetchRequests({ ...query.value, after_id: requests.value[0]?.id ?? 0 })
-  if (asked !== generation) return []
-  more.value ||= result.more
-  return result.requests
-}
-
-// Merged newest first, each once, when the filters let them through; the newest are kept.
-function addRequests(rows: ServedRequest[]) {
-  const known = new Set(requests.value.map(row => row.id))
-  const fresh = rows.filter(row => matchesRequestQuery(query.value, row) && !known.has(row.id))
-  if (!fresh.length) return
-  const merged = [...fresh, ...requests.value].sort((a, b) => b.id - a.id)
-  more.value ||= merged.length > MAX_REQUESTS
-  requests.value = merged.slice(0, MAX_REQUESTS)
-}
-
-async function reload() {
-  const current = ++generation
-  requests.value = []
-  more.value = false
-  try {
-    addRequests(await load())
-    error.value = ''
-  } catch (err) {
-    if (current === generation)
-      error.value = err instanceof Error ? err.message : 'Failed to load requests'
-  }
-}
-
-watch(query, reload)
-onMounted(async () => {
-  const feed = watchFeed('requests', load, addRequests)
-  stop = feed.stop
-  try {
-    await feed.first
-  } catch (err) {
-    error.value = err instanceof Error ? err.message : 'Failed to load requests'
-  } finally {
-    loaded.value = true
-  }
+const {
+  rows: requests,
+  more,
+  loading,
+  error,
+} = useFeedList<ServedRequest, RequestQuery>({
+  topic: 'requests',
+  order: (a, b) => b.id - a.id,
+  newestFirst: true,
+  key: row => row.id,
+  query: () => query.value,
+  matches: matchesRequestQuery,
+  ceiling: CEILING,
+  load: async (filters, newest) => {
+    const page = await fetchRequests({ ...filters, after_id: newest?.id ?? 0, limit: CEILING })
+    return { rows: page.requests, more: page.more }
+  },
 })
-onUnmounted(() => stop?.())
 </script>
 
 <template>
@@ -192,12 +159,14 @@ onUnmounted(() => stop?.())
       </div>
 
       <p v-if="error" class="text-sm text-destructive">{{ error }}</p>
-      <p v-if="more" class="text-xs text-muted-foreground">
-        Showing the newest {{ requests.length }} requests that match. Narrow the filters to see the
-        others.
+      <p v-if="more" class="flex items-center gap-1 text-xs text-muted-foreground">
+        Showing the latest {{ requests.length }} requests that match.
+        <FieldHelp
+          :text="`Only the latest ${CEILING} requests are shown. Narrow the filters or the window to see older ones.`"
+        />
       </p>
 
-      <div v-if="!loaded" class="flex justify-center py-12">
+      <div v-if="loading" class="flex justify-center py-12">
         <Spinner class="animate-spin" />
       </div>
       <template v-else>

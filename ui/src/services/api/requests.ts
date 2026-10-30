@@ -20,7 +20,8 @@ export interface ServedRequest {
 export type StatusClass = '2xx' | '3xx' | '4xx' | '5xx'
 
 // A worker and a method exactly, text anywhere in the host or the path, a status class, as slow or slower, and a start
-// at or after `from_ts` and before `to_ts`; only the requests after `after_id`, if given.
+// at or after `from_ts` and before `to_ts`; only the requests after `after_id`, if given, and the newest `limit` of
+// them.
 export type RequestQuery = {
   worker?: string
   host?: string
@@ -31,6 +32,7 @@ export type RequestQuery = {
   from_ts?: string
   to_ts?: string
   after_id?: number | null
+  limit?: number
 }
 
 // The newest requests that match, newest first, and whether there were more.

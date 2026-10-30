@@ -1,9 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, reactive, watch, onMounted, onUnmounted } from 'vue'
-import { ChevronLeft, ChevronRight } from 'lucide-vue-next'
 import { Spinner } from '@/components/ui/spinner'
 import { toast } from 'vue-sonner'
-import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -14,9 +12,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import FieldHelp from '@/components/FieldHelp.vue'
 import TaskCard from './TaskCard.vue'
 import TaskTable from './TaskTable.vue'
-import { watchFeed, watchState } from '@/lib/updates'
+import { useFeedList } from '@/lib/feedList'
+import { watchState } from '@/lib/updates'
 import {
   fetchTaskHistory,
   fetchTaskHistoryFilters,
@@ -25,23 +25,22 @@ import {
   type FinishedTask,
   type QueueResponse,
   type TaskHistoryFilters,
+  type TaskHistoryQuery,
 } from '@/services/api'
 
-const PAGE_SIZE = 50
+// The finished tasks: the newest load at first, and the list grows as tasks finish, up to the ceiling.
+const FIRST = 100
+const CEILING = 1000
 // A dropdown's choice for no filter, since a select item cannot have an empty value.
 const ANY = 'any'
 
 const queue = ref<QueueResponse>({ running: [], queued: [] })
-const finished = ref<FinishedTask[]>([])
-const total = ref(0)
-const offset = ref(0)
 const choices = ref<TaskHistoryFilters>({ names: [], executors: [], statuses: [] })
 // From and To are local times, as their fields hold them.
 const filters = reactive({ name: ANY, executor: ANY, status: ANY, scope: '', from: '', to: '' })
-const isLoading = ref(true)
-let loads = 0
-let pushedDuringLoad: FinishedTask[] | null = null
-let stops: Array<() => void> = []
+const queueLoaded = ref(false)
+const failed = ref(false)
+let stopQueue: (() => void) | undefined
 
 const queueSections = computed(() => [
   { title: 'Running', section: 'running' as const, rows: queue.value.running },
@@ -59,7 +58,7 @@ const dropdowns = computed(() => [
   { key: 'status' as const, label: 'Status', any: 'Any status', options: choices.value.statuses },
 ])
 
-const query = computed(() => ({
+const query = computed<TaskHistoryQuery>(() => ({
   name: filters.name === ANY ? '' : filters.name,
   executor: filters.executor === ANY ? '' : filters.executor,
   status: filters.status === ANY ? '' : filters.status,
@@ -68,82 +67,64 @@ const query = computed(() => ({
   to_ts: filters.to ? new Date(filters.to).toISOString() : '',
 }))
 
-const pageLabel = computed(
-  () => `${offset.value + 1}–${Math.min(offset.value + PAGE_SIZE, total.value)} of ${total.value}`
-)
-
 function newestFinishedFirst(a: FinishedTask, b: FinishedTask) {
   if (a.finished_at !== b.finished_at) return a.finished_at < b.finished_at ? 1 : -1
   return a.task_id < b.task_id ? 1 : -1
 }
 
-// What the feed pushes is merged into page 1 when the filters let it through; a later page holds still.
-function addFinished(rows: FinishedTask[]) {
-  if (offset.value !== 0) return
-  pushedDuringLoad?.push(...rows)
-  const known = new Set(finished.value.map(task => task.task_id))
-  const fresh = rows.filter(
-    task => matchesTaskHistoryQuery(query.value, task) && !known.has(task.task_id)
-  )
-  if (!fresh.length) return
-  total.value += fresh.length
-  finished.value = [...fresh, ...finished.value].sort(newestFinishedFirst).slice(0, PAGE_SIZE)
-}
+const {
+  rows: finished,
+  total,
+  loading: finishedLoading,
+  error: finishedError,
+} = useFeedList<FinishedTask, TaskHistoryQuery>({
+  topic: 'task-history',
+  order: newestFinishedFirst,
+  newestFirst: true,
+  key: task => task.task_id,
+  query: () => query.value,
+  matches: matchesTaskHistoryQuery,
+  ceiling: CEILING,
+  // The newest that match, also each time the socket connects: what the list holds is merged with them.
+  load: async filters => {
+    const page = await fetchTaskHistory({ ...filters, limit: FIRST })
+    return { rows: page.tasks, total: page.total }
+  },
+})
 
-// TODO(02 step 3C): the route ignores the offset since step 3B, so Prev and Next show the first page; the paging goes.
-// The page of the filters and the offset. A load started later wins over one still under way, and what was pushed
-// while it loaded is merged into it.
-async function loadPage() {
-  const load = ++loads
-  const pushed: FinishedTask[] = []
-  pushedDuringLoad = pushed
-  try {
-    const page = await fetchTaskHistory({ ...query.value, limit: PAGE_SIZE, offset: offset.value })
-    if (load !== loads) return
-    pushedDuringLoad = null
-    finished.value = page.tasks
-    total.value = page.total
-    addFinished(pushed)
-  } finally {
-    if (load === loads) pushedDuringLoad = null
-  }
-}
+// Until the queue and the finished tasks have loaded the first time, or one could not be.
+const finishedLoaded = ref(false)
+watch(finishedLoading, loading => (finishedLoaded.value ||= !loading))
+const isLoading = computed(() => !failed.value && (!queueLoaded.value || !finishedLoaded.value))
 
-function showPage(at: number) {
-  offset.value = at
-  loadPage().catch(() => toast.error('Failed to load tasks'))
-}
-
-// Page 1 is loaded again each time the socket connects, which brings what was missed meanwhile.
-async function reloadFirstPage(): Promise<FinishedTask[]> {
-  if (offset.value === 0) await loadPage()
-  return []
-}
+watch(finishedError, error => {
+  if (!error) return
+  failed.value = true
+  toast.error('Failed to load tasks')
+})
 
 // A field's value once it is committed (Enter, or leaving the field), not at each key.
 function commit(key: 'scope' | 'from' | 'to', event: Event) {
   filters[key] = (event.target as HTMLInputElement).value.trim()
 }
 
-watch(query, () => showPage(0))
-
 onMounted(async () => {
-  const watches = [
-    watchState('tasks', fetchTasks, next => (queue.value = next)),
-    watchFeed('task-history', reloadFirstPage, addFinished),
-  ]
-  stops = watches.map(watch => watch.stop)
-  const loadChoices = fetchTaskHistoryFilters().then(next => (choices.value = next))
+  const watched = watchState('tasks', fetchTasks, next => (queue.value = next))
+  stopQueue = watched.stop
+  fetchTaskHistoryFilters()
+    .then(next => (choices.value = next))
+    .catch(() => toast.error('Failed to load tasks'))
   try {
-    await Promise.all([loadChoices, ...watches.map(watch => watch.first)])
+    await watched.first
   } catch {
+    failed.value = true
     toast.error('Failed to load tasks')
   } finally {
-    isLoading.value = false
+    queueLoaded.value = true
   }
 })
 
-onUnmounted(() => stops.forEach(stop => stop()))
+onUnmounted(() => stopQueue?.())
 </script>
 
 <template>
@@ -186,7 +167,7 @@ onUnmounted(() => stops.forEach(stop => stop()))
         <!-- Completed, failed and cancelled tasks (from the DB) -->
         <Card>
           <CardHeader>
-            <CardTitle>Finished ({{ total }})</CardTitle>
+            <CardTitle>Finished ({{ total ?? 0 }})</CardTitle>
           </CardHeader>
           <CardContent class="space-y-4">
             <div class="grid gap-3 sm:grid-cols-3 lg:grid-cols-6">
@@ -233,6 +214,16 @@ onUnmounted(() => stops.forEach(stop => stop()))
               </div>
             </div>
 
+            <p
+              v-if="total !== null && total > finished.length"
+              class="flex items-center gap-1 text-xs text-muted-foreground"
+            >
+              Showing the latest {{ finished.length }} of {{ total }}.
+              <FieldHelp
+                :text="`The latest ${FIRST} load at first, and the list grows as tasks finish, up to ${CEILING}. Narrow the filters to see older ones.`"
+              />
+            </p>
+
             <!-- Desktop table (md+) -->
             <div class="hidden md:block">
               <TaskTable :rows="finished" section="finished" />
@@ -244,26 +235,6 @@ onUnmounted(() => stops.forEach(stop => stop()))
                 No finished tasks
               </p>
               <TaskCard v-for="t in finished" :key="t.task_id" :task="t" section="finished" />
-            </div>
-
-            <div v-if="total" class="flex items-center justify-end gap-2 text-sm">
-              <span class="text-muted-foreground">{{ pageLabel }}</span>
-              <Button
-                variant="outline"
-                size="sm"
-                :disabled="offset === 0"
-                @click="showPage(Math.max(0, offset - PAGE_SIZE))"
-              >
-                <ChevronLeft />Previous
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                :disabled="offset + PAGE_SIZE >= total"
-                @click="showPage(offset + PAGE_SIZE)"
-              >
-                Next<ChevronRight />
-              </Button>
             </div>
           </CardContent>
         </Card>

@@ -96,9 +96,6 @@ const shown = (wrapper: Page) => tables(wrapper)[2]
 
 const lastQuery = () => vi.mocked(fetchTaskHistory).mock.lastCall![0]
 
-const button = (wrapper: Page, text: string) =>
-  wrapper.findAll('button').find(found => found.text() === text)!
-
 // The dropdowns, in the order of the page: name, executor, status.
 async function choose(wrapper: Page, index: number, value: string) {
   wrapper.findAllComponents(select)[index]!.vm.$emit('update:modelValue', value)
@@ -124,7 +121,7 @@ beforeEach(() => {
 })
 
 describe('what the page follows', () => {
-  it('follows the queue and the finished tasks, whose load is the first page of the history', async () => {
+  it('follows the queue and the finished tasks, whose load is the newest 100 of the history', async () => {
     const { topics } = await mountPage()
 
     expect(watchState).toHaveBeenCalledWith('tasks', fetchTasks, expect.anything())
@@ -137,8 +134,7 @@ describe('what the page follows', () => {
       scope: '',
       from_ts: '',
       to_ts: '',
-      limit: 50,
-      offset: 0,
+      limit: 100,
     })
   })
 
@@ -218,21 +214,26 @@ describe('the queue', () => {
 })
 
 describe('the finished tasks', () => {
-  it('show a page and how many match', async () => {
+  it('show the newest and how many match, and say when they are not all', async () => {
     const { wrapper } = await mountPage(page([finished('t2'), finished('t1')], 312))
 
     expect(shown(wrapper)).toBe('t2,t1')
     expect(wrapper.text()).toContain('Finished (312)')
-    expect(wrapper.text()).toContain('1–50 of 312')
+    expect(wrapper.text()).toContain('Showing the latest 2 of 312.')
   })
 
-  it('are loaded from page 1 with each filter chosen or committed', async () => {
+  it('say nothing more when all that match are shown', async () => {
+    const { wrapper } = await mountPage(page([finished('t2'), finished('t1')]))
+
+    expect(wrapper.text()).toContain('Finished (2)')
+    expect(wrapper.text()).not.toContain('Showing the latest')
+  })
+
+  it('are loaded again with each filter chosen or committed', async () => {
     const { wrapper } = await mountPage(page([], 120))
-    await button(wrapper, 'Next').trigger('click')
-    await flushPromises()
 
     await choose(wrapper, 0, 'deploy')
-    expect(lastQuery()).toMatchObject({ name: 'deploy', offset: 0 })
+    expect(lastQuery()).toMatchObject({ name: 'deploy', limit: 100 })
     await choose(wrapper, 1, 'platform')
     await choose(wrapper, 2, 'failed')
     await commit(wrapper, 'task-scope', ' app:demo-web ')
@@ -246,31 +247,11 @@ describe('the finished tasks', () => {
       scope: 'app:demo-web',
       from_ts: '2026-01-01T12:00:00.000Z',
       to_ts: '2026-01-01T13:30:00.000Z',
-      limit: 50,
-      offset: 0,
+      limit: 100,
     })
   })
 
-  it('page by 50, with Previous and Next only where there is a page', async () => {
-    const { wrapper } = await mountPage(page([], 120))
-    const disabled = (text: string) => button(wrapper, text).attributes('disabled') !== undefined
-    expect([disabled('Previous'), disabled('Next')]).toEqual([true, false])
-
-    vi.mocked(fetchTaskHistory).mockResolvedValue(page([], 120))
-    await button(wrapper, 'Next').trigger('click')
-    await button(wrapper, 'Next').trigger('click')
-    await flushPromises()
-
-    expect(lastQuery()).toMatchObject({ offset: 100 })
-    expect(wrapper.text()).toContain('101–120 of 120')
-    expect([disabled('Previous'), disabled('Next')]).toEqual([false, true])
-
-    await button(wrapper, 'Previous').trigger('click')
-    await flushPromises()
-    expect(lastQuery()).toMatchObject({ offset: 50 })
-  })
-
-  it('show the page loaded last, whichever answer comes first', async () => {
+  it('show what was asked last, whichever answer comes first', async () => {
     const { wrapper } = await mountPage()
     let answerFirst!: (value: TaskHistoryPage) => void
     vi.mocked(fetchTaskHistory)
@@ -286,7 +267,7 @@ describe('the finished tasks', () => {
   })
 })
 
-describe('what the manager pushes onto page 1', () => {
+describe('what the manager pushes', () => {
   it('is added newest finished first and counted, each task once', async () => {
     const { wrapper, history } = await mountPage(page([finished('t2', { finished_at: at(20) })], 1))
 
@@ -298,19 +279,21 @@ describe('what the manager pushes onto page 1', () => {
     expect(wrapper.text()).toContain('Finished (3)')
   })
 
-  it('keeps the newest 50', async () => {
-    const tasks = Array.from({ length: 50 }, (_, index) =>
-      finished(`t${index}`, { finished_at: `2026-01-01T12:00:${String(index).padStart(2, '0')}` })
+  it('grows the list up to the newest 1000', async () => {
+    const second = (index: number) =>
+      `2026-01-01T12:${String(Math.floor(index / 60)).padStart(2, '0')}:${String(index % 60).padStart(2, '0')}`
+    const tasks = Array.from({ length: 1000 }, (_, index) =>
+      finished(`t${String(index).padStart(4, '0')}`, { finished_at: second(index) })
     ).reverse()
-    const { wrapper, history } = await mountPage(page(tasks, 80))
+    const { wrapper, history } = await mountPage(page(tasks, 1030))
 
-    history.push([finished('newest', { finished_at: at(59) })])
+    history.push([finished('newest', { finished_at: second(1000) })])
     await flushPromises()
 
     const ids = shown(wrapper)!.split(',')
-    expect(ids).toHaveLength(50)
-    expect([ids[0], ids[49]]).toEqual(['newest', 't1'])
-    expect(wrapper.text()).toContain('Finished (81)')
+    expect(ids).toHaveLength(1000)
+    expect([ids[0], ids[999]]).toEqual(['newest', 't0001'])
+    expect(wrapper.text()).toContain('Finished (1031)')
   })
 
   it.each([
@@ -379,7 +362,7 @@ describe('what the manager pushes onto page 1', () => {
     expect(shown(wrapper)).toBe('closes,opens')
   })
 
-  it('is kept when it arrives while page 1 loads', async () => {
+  it('is kept when it arrives while the list loads', async () => {
     const { wrapper, history } = await mountPage()
     let answer!: (value: TaskHistoryPage) => void
     vi.mocked(fetchTaskHistory).mockImplementationOnce(
@@ -395,29 +378,19 @@ describe('what the manager pushes onto page 1', () => {
     expect(wrapper.text()).toContain('Finished (2)')
   })
 
-  it('changes nothing on a later page', async () => {
-    const { wrapper, history } = await mountPage(page([], 120))
-    vi.mocked(fetchTaskHistory).mockResolvedValue(page([finished('on-page-2')], 120))
-    await button(wrapper, 'Next').trigger('click')
+  it('is merged with the newest loaded again when the socket connects again', async () => {
+    const { wrapper, history } = await mountPage(page([finished('t2', { finished_at: at(20) })], 5))
+    history.push([finished('t3', { finished_at: at(30) })])
     await flushPromises()
 
-    history.push([finished('pushed', { finished_at: at(30) })])
-    await flushPromises()
-
-    expect(shown(wrapper)).toBe('on-page-2')
-    expect(wrapper.text()).toContain('Finished (120)')
-  })
-
-  it('is loaded again on page 1 when the socket connects again, and not on a later page', async () => {
-    const { wrapper, history } = await mountPage(page([], 120))
-    vi.mocked(fetchTaskHistory).mockResolvedValue(page([], 120))
+    vi.mocked(fetchTaskHistory).mockResolvedValueOnce(
+      page([finished('t4', { finished_at: at(40) }), finished('t3', { finished_at: at(30) })], 7)
+    )
     await history.load()
+    await flushPromises()
+
     expect(fetchTaskHistory).toHaveBeenCalledTimes(2)
-
-    await button(wrapper, 'Next').trigger('click')
-    await flushPromises()
-    await history.load()
-
-    expect(fetchTaskHistory).toHaveBeenCalledTimes(3)
+    expect(shown(wrapper)).toBe('t4,t3,t2')
+    expect(wrapper.text()).toContain('Finished (7)')
   })
 })

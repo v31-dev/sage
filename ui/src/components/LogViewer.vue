@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
+import { ref, computed, nextTick, watch } from 'vue'
 import { Search, Filter, CircleMinus } from 'lucide-vue-next'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -12,7 +12,8 @@ import {
 } from '@/components/ui/input-group'
 import { TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Spinner } from '@/components/ui/spinner'
-import { watchFeed } from '@/lib/updates'
+import FieldHelp from '@/components/FieldHelp.vue'
+import { useFeedList } from '@/lib/feedList'
 import { formatDate } from '@/lib/utils'
 
 import { fetchApplicationLogs, matchesLogQuery, type LogEntry, type LogQuery } from '@/services/api'
@@ -20,26 +21,29 @@ import { fetchApplicationLogs, matchesLogQuery, type LogEntry, type LogQuery } f
 // An application's logs, from all its containers or one worker's, followed as they are stored.
 const props = defineProps<{ project: string; application: string }>()
 
-const MAX_LOGS_ON_UI = 1000
+const CEILING = 1000
 
-const logs = ref<LogEntry[]>([])
-// Lines that match are not shown, since the search was applied: the manager sent the newest, or the oldest were
-// dropped here.
-const more = ref(false)
-const isLoading = ref(true)
+// From starts five minutes back, in local time as its field holds it.
+function fiveMinutesAgo() {
+  const now = new Date()
+  now.setMinutes(now.getMinutes() - 5)
+  const year = now.getFullYear()
+  const month = String(now.getMonth() + 1).padStart(2, '0')
+  const day = String(now.getDate()).padStart(2, '0')
+  const hours = String(now.getHours()).padStart(2, '0')
+  const minutes = String(now.getMinutes()).padStart(2, '0')
+  return `${year}-${month}-${day}T${hours}:${minutes}`
+}
+
 const inputSearch = ref('')
 const activeSearch = ref('')
-const inputFromDate = ref<string>('')
-const activeFromDate = ref<string>('')
+const inputFromDate = ref(fiveMinutesAgo())
+const activeFromDate = ref(inputFromDate.value)
 const inputToDate = ref<string>('')
 const activeToDate = ref<string>('')
 const desktopViewport = ref<HTMLElement | null>(null)
 const mobileScroll = ref<HTMLElement | null>(null)
-const error = ref<string>('')
 const hostnameFilter = ref('')
-let stop: (() => void) | undefined
-// Moved on each time the filters are applied, so that a load asked for the filters before is dropped.
-let generation = 0
 
 const fromUTC = computed(() =>
   activeFromDate.value ? new Date(activeFromDate.value).toISOString() : ''
@@ -51,6 +55,29 @@ const query = computed<LogQuery>(() => ({
   from_ts: fromUTC.value,
   to_ts: toUTC.value,
 }))
+
+const {
+  rows: logs,
+  more,
+  loading,
+  error,
+} = useFeedList<LogEntry, LogQuery>({
+  topic: `application-logs:${props.project}-${props.application}`,
+  order: (a, b) => a.id - b.id,
+  newestFirst: false,
+  key: entry => entry.id,
+  query: () => query.value,
+  matches: matchesLogQuery,
+  ceiling: CEILING,
+  load: async (filters, newest) => {
+    const page = await fetchApplicationLogs(props.project, props.application, {
+      ...filters,
+      after_id: newest?.id ?? 0,
+      limit: CEILING,
+    })
+    return { rows: page.lines, more: page.more }
+  },
+})
 
 function isNearBottom(threshold: number = 50): boolean {
   if (desktopViewport.value) {
@@ -92,44 +119,11 @@ watch(
 )
 
 // The lines this view does not have yet: the newest that match at first, then those after the last one it holds.
-async function load() {
-  const asked = generation
-  const result = await fetchApplicationLogs(props.project, props.application, {
-    ...query.value,
-    after_id: logs.value[logs.value.length - 1]?.id ?? 0,
-  })
-  if (asked !== generation) return []
-  more.value ||= result.more
-  return result.lines
-}
-
-// Merged in the order they were stored, each once, when the filters let them through; the newest are kept.
-function addLines(rows: LogEntry[]) {
-  const known = new Set(logs.value.map(entry => entry.id))
-  const fresh = rows.filter(entry => matchesLogQuery(query.value, entry) && !known.has(entry.id))
-  if (!fresh.length) return
-  const merged = [...logs.value, ...fresh].sort((a, b) => a.id - b.id)
-  more.value ||= merged.length > MAX_LOGS_ON_UI
-  logs.value = merged.slice(-MAX_LOGS_ON_UI)
-}
-
-async function applySearch() {
+// The filters as typed apply at once; the list starts again when they changed.
+function applySearch() {
   activeSearch.value = inputSearch.value.trim()
   activeFromDate.value = inputFromDate.value
   activeToDate.value = inputToDate.value
-  logs.value = []
-  more.value = false
-  error.value = ''
-  const current = ++generation
-  isLoading.value = true
-  try {
-    addLines(await load())
-  } catch (err) {
-    if (current === generation)
-      error.value = err instanceof Error ? err.message : 'Failed to fetch logs'
-  } finally {
-    if (current === generation) isLoading.value = false
-  }
 }
 
 function onSearchKeypress(e: KeyboardEvent) {
@@ -150,31 +144,6 @@ function filterByWorker(hostname: string) {
   hostnameFilter.value = hostname
   applySearch()
 }
-
-onMounted(async () => {
-  // Set inputFromDate to today - 5 min (local timezone)
-  const now = new Date()
-  now.setMinutes(now.getMinutes() - 5)
-  const year = now.getFullYear()
-  const month = String(now.getMonth() + 1).padStart(2, '0')
-  const day = String(now.getDate()).padStart(2, '0')
-  const hours = String(now.getHours()).padStart(2, '0')
-  const minutes = String(now.getMinutes()).padStart(2, '0')
-  inputFromDate.value = `${year}-${month}-${day}T${hours}:${minutes}`
-  activeFromDate.value = inputFromDate.value
-
-  const feed = watchFeed(`application-logs:${props.project}-${props.application}`, load, addLines)
-  stop = feed.stop
-  try {
-    await feed.first
-  } catch (err) {
-    error.value = err instanceof Error ? err.message : 'Failed to fetch logs'
-  } finally {
-    isLoading.value = false
-  }
-})
-
-onUnmounted(() => stop?.())
 </script>
 
 <template>
@@ -227,9 +196,9 @@ onUnmounted(() => stop?.())
             size="sm"
             @click="applySearch"
             class="whitespace-nowrap"
-            :disabled="isLoading"
+            :disabled="loading"
           >
-            <Spinner class="animate-spin" v-if="isLoading" />
+            <Spinner class="animate-spin" v-if="loading" />
             Search
           </Button>
           <Button
@@ -237,7 +206,7 @@ onUnmounted(() => stop?.())
             variant="ghost"
             size="sm"
             @click="clearSearch"
-            :disabled="isLoading"
+            :disabled="loading"
             class="whitespace-nowrap"
             >Clear</Button
           >
@@ -248,9 +217,11 @@ onUnmounted(() => stop?.())
     <!-- Content -->
     <div class="flex-1 flex flex-col overflow-hidden px-2 sm:pb-4 sm:px-4">
       <div class="max-w-7xl mx-auto w-full flex flex-col flex-1 overflow-hidden gap-2">
-        <p v-if="more" class="text-xs text-muted-foreground">
-          Showing the newest {{ MAX_LOGS_ON_UI }} lines that match. Narrow the search or the time
-          range to see the others.
+        <p v-if="more" class="flex items-center gap-1 text-xs text-muted-foreground">
+          Showing the latest {{ CEILING }} lines that match.
+          <FieldHelp
+            :text="`Only the latest ${CEILING} lines are shown. Narrow the search or the window to see older ones.`"
+          />
         </p>
         <Card v-if="logs.length === 0" class="flex-1">
           <CardContent class="flex items-center justify-center py-12">

@@ -34,23 +34,26 @@ Initial app boot fetches `GET /api` through the Pinia store in `ui/src/stores/ap
 - `worker:<hostname>`: the Worker page (loading `GET /workers/{hostname}`): the worker with its containers, its stack and its status. The page has no timer; an action on a container reloads it at once through `loadWorkerStatus`. A worker removed while the page is open shows as not found.
 - `application:<project>/<name>`: the Application page (loading the application route). Each push replaces the whole application (volumes, domains and variables changed elsewhere too) and puts its status over the one an action set; an edit dialog keeps the values it copied when it opened. An action on the page reloads it at once through `loadApplication`. An application deleted while the page is open shows as not found.
 - `tasks`: the Tasks page, the Upgrade page (which tasks it waits for before a stop) and the restore overlay, which follows it only while restoring (loading `GET /tasks`).
-- `task-history`, a feed: the Tasks page's finished tasks, a page of 50 at a time (`GET /tasks/history`), filtered by name, executor and status (dropdowns from `GET /tasks/history/filters`), a scope (its children too, `*` for any characters) and a From/To window the task was active in. Only page 1 is live: its `load` reloads it with the filters, and each pushed row the filters let through (`matches`, the route's rules) is merged by `task_id`, newest finished first, kept to 50 and counted in the total; a row pushed while page 1 loads is merged into what loads. A later page holds still, and a load started later wins over one under way. The tables show when each task was queued, started and finished.
+- `task-history`, a feed: the Tasks page's finished tasks (`GET /tasks/history`), a list (below).
+  - Filtered by name, executor and status (dropdowns from `GET /tasks/history/filters`), a scope (its children too, `*` for any characters) and a From/To window the task was active in.
+  - The newest 100 that match at first, newest finished first, and the list grows with the tasks pushed, up to 1000; the title counts all that match, and a note says when not all are shown. There is no paging.
+  - The tables show when each task was queued, started and finished.
 - `backup-status`: the Create Backup and Discover Backups buttons, each mirroring its own flag (loading `GET /backups/platform_backup_status`).
 - `backups`: the Backups page (loading `GET /backups`), newest first; each pushed list replaces the shown one. A delete on the page loads the list again at once.
 - `release`: the Upgrade page (loading `GET /release`). A check for updates is over when a release with a new `fetched_at` is pushed, or after 60 s with an error.
-- `task-logs:<task>` and `task-logs:<task>/<part>`, feeds: the task log dialogs (`components/TaskLogs.vue`), a task's on the Tasks page and a container's part from its Event Logs.
+- `task-logs:<task>` and `task-logs:<task>/<part>`, feeds: the task log dialogs (`components/TaskLogs.vue`), a task's on the Tasks page and a container's part from its Event Logs; a list (below), of every line, oldest first, with no ceiling (a dialog has no filters).
   - The Tasks page's dialog reads the task's parts (`GET /tasks/{task_id}/parts`) when it opens: a select shows all the lines or one part's, and all the lines carry a Part column (the worker, or the part's id when its event is gone).
-  - The `load` asks for the newest 1000 lines at first, and for those after the last one held after that.
-  - Lines are merged by id in the order they were written and the newest 1000 kept; the dialog says when the manager had more or it dropped the oldest.
-- `application-logs:<project>-<app>`, a feed: the application logs (`components/LogViewer.vue`).
-  - The `load` asks the application's logs route with the worker, the search and the From/To window (From starts five minutes back), and for the lines after the last one held when the socket connects again.
-  - A pushed line is kept when it matches those filters by the route's rules (`matches`: the worker, the text anywhere in any case, the window).
-  - Applying a search starts over and drops a load asked for the filters before it. The newest 1000 are kept, in the order they were stored.
-- `requests`, a feed: the Requests page.
-  - The `load` asks `GET /requests/` with its filters, and for the requests after the newest one held when the socket connects again.
-  - A pushed request is kept when it matches them by the route's rules (`matches`), merged newest first, the newest 1000 kept.
-  - A change of filter starts over and drops a load asked for the filters before it.
+- `application-logs:<project>-<app>`, a feed: the application logs (`components/LogViewer.vue`); a list (below), of the newest 1000 lines that match, oldest first, up to 1000.
+  - Filtered by the worker, the search and the From/To window (From starts five minutes back), applied together.
+- `requests`, a feed: the Requests page; a list (below), of the newest 1000 requests that match, newest first, up to 1000.
 - `notifications`, a feed: the header's list, whose `load` asks for the newest 20 while it has none and for the rows after its newest `created_at` otherwise, so it also recovers what it missed; it merges rows by id, newest first, so a row it has is not shown twice and one that arrives out of order lands in place. The bell's marker is on while the newest id is above the last one seen, which is kept in `localStorage` when the bell is opened.
+
+The four lists follow one contract, `useFeedList` (`lib/feedList.ts`):
+- The first load is what the route returns for the filters (the newest that match, as many as the list asks).
+- A pushed row is kept when the filters let it through, by the `matches` beside the list's query type in `services/api/` (the dialogs keep every line), merged by key in the list's order, each once.
+- Each time the socket connects, what the route returns given the newest row held is merged in: the rows after it (`after_id`), or for the finished tasks the newest again.
+- A change of filter starts the list again with a fresh load, and a load asked for filters since changed is dropped.
+- A list with a ceiling keeps its newest rows; a note says when the route had more or the oldest were dropped, and its tooltip that only the latest are shown and how to see older ones.
 
 The indicator at the top left of the sidebar (`components/layout/SocketStatus.vue`, on the icon of the manager's name) shows the connection from the reactive `connection` object of `lib/updates.ts`: connecting, connected over a WebSocket, connected over the slower fallback, or not connected. It pulses each time the manager's heartbeat (its ping, every 10 s) arrives, and its tooltip says when the last one was.
 

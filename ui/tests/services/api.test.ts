@@ -314,15 +314,14 @@ const CALLS: Array<[string, () => Promise<unknown>, string, string, object, unkn
   ['fetchTasks', () => api.fetchTasks(), 'GET', '/api/tasks/', {}, undefined],
   ['fetchTaskHistory', () => api.fetchTaskHistory(), 'GET', '/api/tasks/history', {}, undefined],
   [
-    'fetchTaskHistory, filtered and paged',
+    'fetchTaskHistory, filtered, the newest 100',
     () =>
       api.fetchTaskHistory({
         name: 'deploy',
         scope: 'app',
         executor: '',
         from_ts: '2026-01-01T12:00:00.000Z',
-        limit: 50,
-        offset: 100,
+        limit: 100,
       }),
     'GET',
     '/api/tasks/history',
@@ -330,8 +329,7 @@ const CALLS: Array<[string, () => Promise<unknown>, string, string, object, unkn
       name: 'deploy',
       scope: 'app',
       from_ts: '2026-01-01T12:00:00.000Z',
-      limit: '50',
-      offset: '100',
+      limit: '100',
     },
     undefined,
   ],

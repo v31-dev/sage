@@ -112,21 +112,20 @@ describe('the lines', () => {
     expect(messages(wrapper)).toEqual(['line 1', 'line 2', 'line 3'])
   })
 
-  it('are the newest 1000, and say so when there were more', async () => {
+  it('are every line of the task, however many', async () => {
     const { wrapper, topics } = await open()
     const feed = topics.topic('task-logs:t1')
     vi.mocked(fetchTaskLogs).mockResolvedValue(
       logs(Array.from({ length: 1000 }, (_, index) => line(index + 1)))
     )
     await connect(feed)
-    expect(wrapper.text()).not.toContain('Showing the newest')
 
     feed.push([line(1001)])
     await flushPromises()
 
-    expect(messages(wrapper)).toHaveLength(1000)
-    expect([messages(wrapper)[0], messages(wrapper)[999]]).toEqual(['line 2', 'line 1001'])
-    expect(wrapper.text()).toContain('Showing the newest 1000 lines.')
+    expect(messages(wrapper)).toHaveLength(1001)
+    expect([messages(wrapper)[0], messages(wrapper)[1000]]).toEqual(['line 1', 'line 1001'])
+    expect(wrapper.text()).not.toContain('Showing')
   })
 
   it('say so when there are none, and why when they could not be loaded', async () => {

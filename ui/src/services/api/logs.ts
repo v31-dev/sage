@@ -12,13 +12,14 @@ export interface LogEntry {
 }
 
 // A worker (all if empty), text anywhere in a line in any case, and a time at or after `from_ts` and before `to_ts`;
-// only the lines after `after_id`, if given.
+// only the lines after `after_id`, if given, and the newest `limit` of them.
 export type LogQuery = {
   hostname?: string
   search?: string
   from_ts?: string
   to_ts?: string
   after_id?: number | null
+  limit?: number
 }
 
 // The newest lines that match, in the order they were stored, and whether there were more.

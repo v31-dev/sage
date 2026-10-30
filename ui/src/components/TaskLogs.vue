@@ -1,87 +1,60 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { Card, CardContent } from '@/components/ui/card'
 import { Spinner } from '@/components/ui/spinner'
 import { TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { watchFeed } from '@/lib/updates'
+import { useFeedList } from '@/lib/feedList'
 import { formatDate, levelClass } from '@/lib/utils'
 import { fetchTaskLogs, type TaskLogLine, type TaskPart } from '@/services/api'
 
-// A task's lines, or one container's part of it, followed as they are written. All of a task's lines show which of
-// its `parts` each is from.
+// Every line of a task, or of one container's part of it, oldest first, followed as they are written. All of a task's
+// lines show which of its `parts` each is from.
 const props = withDefaults(
   defineProps<{ taskId: string; subTaskId?: string; parts?: TaskPart[] }>(),
   { subTaskId: '', parts: () => [] }
 )
 
-const MAX_LINES = 1000
-
-const lines = ref<TaskLogLine[]>([])
-// Lines that were written are not shown: the oldest were dropped here.
-const more = ref(false)
-const loaded = ref(false)
-const error = ref('')
 const viewport = ref<HTMLElement | null>(null)
-let stop: (() => void) | undefined
 
 const showParts = computed(() => !props.subTaskId && props.parts.length > 0)
 const partsById = computed(() => new Map(props.parts.map(part => [part.id, part])))
 
 const partLabel = (id: string) => (id ? (partsById.value.get(id)?.worker ?? id) : '')
 
-const topic = `task-logs:${props.subTaskId ? `${props.taskId}/${props.subTaskId}` : props.taskId}`
+const {
+  rows: lines,
+  loading,
+  error,
+} = useFeedList<TaskLogLine>({
+  topic: `task-logs:${props.subTaskId ? `${props.taskId}/${props.subTaskId}` : props.taskId}`,
+  order: (a, b) => a.id - b.id,
+  newestFirst: false,
+  key: line => line.id,
+  load: async (_query, newest) => ({
+    rows: (await fetchTaskLogs(props.taskId, props.subTaskId, newest?.id ?? 0)).lines,
+  }),
+})
 
 function atBottom() {
   const view = viewport.value
   return !view || view.scrollHeight - (view.scrollTop + view.clientHeight) <= 50
 }
 
-// The lines this view does not have yet: the newest at first, then those after the last one it holds.
-async function load() {
-  const logs = await fetchTaskLogs(
-    props.taskId,
-    props.subTaskId,
-    lines.value[lines.value.length - 1]?.id ?? 0
-  )
-  return logs.lines
-}
-
-// Merged in the order they were written, each once; the view follows new lines while it is at the bottom.
-async function addLines(rows: TaskLogLine[]) {
-  const follow = atBottom()
-  const known = new Set(lines.value.map(line => line.id))
-  const fresh = rows.filter(line => !known.has(line.id))
-  if (!fresh.length) return
-  const merged = [...lines.value, ...fresh].sort((a, b) => a.id - b.id)
-  more.value ||= merged.length > MAX_LINES
-  lines.value = merged.slice(-MAX_LINES)
-  if (follow && viewport.value) {
+// The view follows new lines while it is at the bottom (measured before they are shown).
+watch(
+  () => lines.value[lines.value.length - 1]?.id,
+  async () => {
+    if (!atBottom() || !viewport.value) return
     await nextTick()
     viewport.value.scrollTop = viewport.value.scrollHeight
   }
-}
-
-onMounted(async () => {
-  const watch = watchFeed(topic, load, addLines)
-  stop = watch.stop
-  try {
-    await watch.first
-  } catch (err) {
-    error.value = err instanceof Error ? err.message : 'Failed to load the logs'
-  } finally {
-    loaded.value = true
-  }
-})
-onUnmounted(() => stop?.())
+)
 </script>
 
 <template>
   <div class="flex flex-col min-h-0 gap-2">
     <p v-if="error" class="text-sm text-destructive">{{ error }}</p>
-    <p v-if="more" class="text-xs text-muted-foreground">
-      Showing the newest {{ lines.length }} lines.
-    </p>
-    <div v-if="!loaded" class="flex justify-center py-12">
+    <div v-if="loading" class="flex justify-center py-12">
       <Spinner class="animate-spin" />
     </div>
     <Card v-else-if="!lines.length">
