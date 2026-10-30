@@ -21,7 +21,7 @@ const props = defineProps<{
       <div class="space-y-1">
         <Label class="text-muted-foreground text-xs">Task ID</Label>
         <div class="flex items-center justify-between gap-2">
-          <TaskLogsButton :taskId="props.task.task_id" />
+          <TaskLogsButton :task="props.task" />
           <StateIndicator
             v-if="props.section === 'finished'"
             v-bind="appStore.taskIndicator(props.task.status)"

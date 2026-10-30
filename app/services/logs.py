@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from functools import partial
 from pathlib import Path
 
-from peewee import SQL, CharField, FloatField, IntegerField, Model, NodeList, SqliteDatabase, TextField
+from peewee import SQL, CharField, FloatField, IntegerField, Model, NodeList, SqliteDatabase, TextField, fn
 from playhouse.sqlite_ext import FTS5Model, RowIDField, SearchField
 
 import config
@@ -18,6 +18,7 @@ from services.base import Base
 from services.db import Application, Project
 from services.updates import UpdateFeed, Updates
 from utils.common import utcnow
+from utils.db import like_literal
 from utils.logging import ContextVarFilter, SuppressTracebackFilter, sub_task_id, task_id, task_lines
 
 logger = logging.getLogger(__name__)
@@ -324,6 +325,14 @@ class Logs(Base):
     rows = list(query.order_by(TaskLogs.id.desc()).limit(config.LOG_QUERY_MAX_ROWS + 1).dicts())
     return {"lines": rows[:config.LOG_QUERY_MAX_ROWS][::-1], "more": len(rows) > config.LOG_QUERY_MAX_ROWS}
 
+  def query_task_parts(self, task_id: str) -> list[str]:
+    """The ids of the parts of a task that logged lines, in the order of their first line."""
+    TaskLogs = self.task_logs_db()["lines"]
+    query = (TaskLogs.select(TaskLogs.sub_task_id)
+             .where((TaskLogs.task_id == task_id) & (TaskLogs.sub_task_id != ""))
+             .group_by(TaskLogs.sub_task_id).order_by(fn.MIN(TaskLogs.id)))
+    return [part for (part,) in query.tuples()]
+
   def _check_sizes(self, name: str):
     """After a write: trim the file's logs, and all logs together, if they are over their limits. Looked at at most
     every LOG_SIZE_CHECK_SECONDS, by one thread at a time, and never an error for the write."""
@@ -559,6 +568,5 @@ def timestamp(text: str) -> str:
 
 
 def _contains(field, text: str):
-  """`field` contains `text`, in any case: a LIKE with the wildcards in `text` escaped."""
-  escaped = text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-  return NodeList((field, SQL("LIKE ? ESCAPE '\\'", (f"%{escaped}%",))))
+  """`field` contains `text`, in any case."""
+  return NodeList((field, SQL("LIKE ? ESCAPE '\\'", (f"%{like_literal(text)}%",))))

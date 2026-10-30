@@ -44,7 +44,7 @@ const finished = computed(() => props.section === 'finished')
         No {{ props.section }} tasks
       </TableEmpty>
       <TableRow v-for="t in props.rows" :key="t.task_id" class="align-top">
-        <TableCell><TaskLogsButton :taskId="t.task_id" /></TableCell>
+        <TableCell><TaskLogsButton :task="t" /></TableCell>
         <TableCell class="text-xs">{{ t.name }}</TableCell>
         <TableCell class="max-w-[12rem] font-mono text-xs break-all whitespace-pre-wrap">{{
           t.scopes.join(', ')

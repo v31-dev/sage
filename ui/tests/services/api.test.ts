@@ -367,6 +367,14 @@ const CALLS: Array<[string, () => Promise<unknown>, string, string, object, unkn
     { sub_task_id: 'def67890' },
     undefined,
   ],
+  [
+    'fetchTaskParts',
+    () => api.fetchTaskParts('abc12345'),
+    'GET',
+    '/api/tasks/abc12345/parts',
+    {},
+    undefined,
+  ],
   ['fetchBackups', () => api.fetchBackups(), 'GET', '/api/backups/', {}, undefined],
   [
     'fetchBackupStatus',

@@ -2,7 +2,12 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import TaskLogs from '@/components/TaskLogs.vue'
 import { formatDate } from '@/lib/utils'
-import { fetchTaskLogs, type TaskLogLine, type TaskLogs as Logs } from '@/services/api'
+import {
+  fetchTaskLogs,
+  type TaskLogLine,
+  type TaskLogs as Logs,
+  type TaskPart,
+} from '@/services/api'
 import { followTopics, type Followed } from '../helpers/topics'
 
 vi.mock('@/lib/updates', () => ({ watchState: vi.fn(), watchFeed: vi.fn() }))
@@ -36,7 +41,9 @@ async function connect(feed: Followed) {
   await flushPromises()
 }
 
-async function open(props: { taskId: string; subTaskId?: string } = { taskId: 't1' }) {
+async function open(
+  props: { taskId: string; subTaskId?: string; parts?: TaskPart[] } = { taskId: 't1' }
+) {
   const topics = followTopics()
   const wrapper = mount(TaskLogs, { props })
   await flushPromises()
@@ -146,5 +153,36 @@ describe('the lines', () => {
 
     expect(wrapper.text()).toContain('down')
     expect(wrapper.text()).toContain('No logs found')
+  })
+})
+
+describe('the parts', () => {
+  const parts: TaskPart[] = [
+    { id: 'c1', type: 'deploy', worker: 'w1' },
+    { id: 'c2', type: null, worker: null },
+  ]
+  const partLines = [line(1), { ...line(2), sub_task_id: 'c1' }, { ...line(3), sub_task_id: 'c2' }]
+
+  it("show which part each of the task's lines is from: its worker, or its id when its event is gone", async () => {
+    const { wrapper, topics } = await open({ taskId: 't1', parts })
+    vi.mocked(fetchTaskLogs).mockResolvedValue(logs(partLines))
+
+    await connect(topics.topic('task-logs:t1'))
+
+    expect(wrapper.findAll('thead th').map(cell => cell.text())).toContain('Part')
+    expect(rows(wrapper).map(row => row[3])).toEqual(['', 'w1', 'c2'])
+  })
+
+  it.each([
+    ["one part's lines", { taskId: 't1', subTaskId: 'c1', parts }, 'task-logs:t1/c1'],
+    ['a task without parts', { taskId: 't1' }, 'task-logs:t1'],
+  ])('are not shown for %s', async (_case, props, topic) => {
+    const { wrapper, topics } = await open(props)
+    vi.mocked(fetchTaskLogs).mockResolvedValue(logs(partLines))
+
+    await connect(topics.topic(topic))
+
+    expect(wrapper.findAll('thead th').map(cell => cell.text())).not.toContain('Part')
+    expect(rows(wrapper)[0]).toHaveLength(4)
   })
 })

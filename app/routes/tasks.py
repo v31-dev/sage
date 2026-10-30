@@ -8,6 +8,8 @@ from peewee import SQL, NodeList
 from services.db import Task
 from services.logs import Logs
 from services.manager import Manager
+from services.manager.application import task_parts
+from utils.db import like_literal
 
 logger = logging.getLogger(__name__)
 
@@ -28,9 +30,11 @@ def utc(value: datetime | None) -> datetime | None:
 
 
 def in_scope(scope: str):
-  """A task with the scope or one of its children (`app` matches `app:demo-web`)."""
+  """A task with a scope that matches `scope` or is one of its children (`app` matches `app:demo-web`), where `*`
+  matches any characters and case does not matter (`app:test*` matches `app:test-nginx`)."""
+  pattern = "%".join(like_literal(part) for part in scope.split("*"))
   return NodeList((SQL("EXISTS (SELECT 1 FROM json_each("), Task.scopes,
-                   SQL(") WHERE value = ? OR substr(value, 1, ?) = ?)", (scope, len(scope) + 1, f"{scope}:"))), glue="")
+                   SQL(") WHERE value LIKE ? ESCAPE '\\' OR value LIKE ? ESCAPE '\\')", (pattern, f"{pattern}:%"))), glue="")
 
 
 @router.get("/history")
@@ -63,6 +67,13 @@ def task_history_filters():
     return [value for (value,) in Task.select(field).distinct().order_by(field).tuples()]
 
   return {"names": stored(Task.name), "executors": stored(Task.executor), "statuses": list(Task.status.choices)}
+
+
+@router.get("/{task_id}/parts")
+def get_task_parts(task_id: str):
+  """The parts of a task that logged lines (one container's deploy, stop, delete, backup or restore each), in the
+  order of their first line, with their kind and worker."""
+  return task_parts(task_id)
 
 
 @router.get("/{task_id}/logs")

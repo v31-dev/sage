@@ -1,16 +1,18 @@
 <script setup lang="ts">
-import { nextTick, onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { Card, CardContent } from '@/components/ui/card'
 import { Spinner } from '@/components/ui/spinner'
 import { TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { watchFeed } from '@/lib/updates'
 import { formatDate, levelClass } from '@/lib/utils'
-import { fetchTaskLogs, type TaskLogLine } from '@/services/api'
+import { fetchTaskLogs, type TaskLogLine, type TaskPart } from '@/services/api'
 
-// A task's lines, or one container's part of it, followed as they are written.
-const props = withDefaults(defineProps<{ taskId: string; subTaskId?: string }>(), {
-  subTaskId: '',
-})
+// A task's lines, or one container's part of it, followed as they are written. All of a task's lines show which of
+// its `parts` each is from.
+const props = withDefaults(
+  defineProps<{ taskId: string; subTaskId?: string; parts?: TaskPart[] }>(),
+  { subTaskId: '', parts: () => [] }
+)
 
 const MAX_LINES = 1000
 
@@ -21,6 +23,11 @@ const loaded = ref(false)
 const error = ref('')
 const viewport = ref<HTMLElement | null>(null)
 let stop: (() => void) | undefined
+
+const showParts = computed(() => !props.subTaskId && props.parts.length > 0)
+const partsById = computed(() => new Map(props.parts.map(part => [part.id, part])))
+
+const partLabel = (id: string) => (id ? (partsById.value.get(id)?.worker ?? id) : '')
 
 const topic = `task-logs:${props.subTaskId ? `${props.taskId}/${props.subTaskId}` : props.taskId}`
 
@@ -91,6 +98,7 @@ onUnmounted(() => stop?.())
             <TableHead class="pl-4 text-xs w-40">Timestamp</TableHead>
             <TableHead class="text-xs w-20">Level</TableHead>
             <TableHead class="text-xs w-44">Logger</TableHead>
+            <TableHead v-if="showParts" class="text-xs w-36">Part</TableHead>
             <TableHead class="text-xs">Message</TableHead>
           </TableRow>
         </TableHeader>
@@ -108,6 +116,13 @@ onUnmounted(() => stop?.())
             >
               {{ line.logger }}
             </TableCell>
+            <TableCell
+              v-if="showParts"
+              class="text-xs font-mono text-muted-foreground truncate"
+              :title="line.sub_task_id"
+            >
+              {{ partLabel(line.sub_task_id) }}
+            </TableCell>
             <TableCell class="text-xs">
               <pre class="font-mono break-all whitespace-pre-wrap">{{ line.message }}</pre>
             </TableCell>
@@ -123,6 +138,7 @@ onUnmounted(() => stop?.())
               <span>{{ formatDate(line.ts) }}</span>
               <span :class="levelClass(line.level)">{{ line.level }}</span>
               <span class="truncate">{{ line.logger }}</span>
+              <span v-if="showParts && line.sub_task_id">{{ partLabel(line.sub_task_id) }}</span>
             </div>
             <pre class="font-mono break-all whitespace-pre-wrap leading-relaxed">{{
               line.message

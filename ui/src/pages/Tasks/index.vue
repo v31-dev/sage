@@ -72,15 +72,21 @@ const pageLabel = computed(
   () => `${offset.value + 1}–${Math.min(offset.value + PAGE_SIZE, total.value)} of ${total.value}`
 )
 
-// The rules of GET /tasks/history: a name, executor and status match exactly, a scope matches itself and its
-// children, and From and To match a task active at any point between them.
+// A scope matches the filter or is one of its children; `*` matches any characters, in any case.
+const scopePattern = computed(() => {
+  const literal = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return new RegExp(`^${query.value.scope.split('*').map(literal).join('.*')}(:.*)?$`, 'i')
+})
+
+// The rules of GET /tasks/history: a name, executor and status match exactly, a scope as above, and From and To
+// match a task active at any point between them.
 function matches(task: FinishedTask) {
   const { name, executor, status, scope, from_ts, to_ts } = query.value
   return (
     (!name || task.name === name) &&
     (!executor || task.executor === executor) &&
     (!status || task.status === status) &&
-    (!scope || task.scopes.some(each => each === scope || each.startsWith(`${scope}:`))) &&
+    (!scope || task.scopes.some(each => scopePattern.value.test(each))) &&
     (!from_ts || parseDate(task.finished_at) >= new Date(from_ts)) &&
     (!to_ts || parseDate(task.created_at) <= new Date(to_ts))
   )
@@ -220,7 +226,7 @@ onUnmounted(() => stops.forEach(stop => stop()))
                 <Input
                   id="task-scope"
                   :model-value="filters.scope"
-                  placeholder="e.g. app:demo-web"
+                  placeholder="e.g. app:demo-web or app:demo*"
                   @change="commit('scope', $event)"
                 />
               </div>

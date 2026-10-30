@@ -590,7 +590,17 @@ export interface TaskLogs {
   more: boolean
 }
 
+// A container's part of a task; its kind and worker are null when its event went with its container.
+export interface TaskPart {
+  id: string
+  type: Event['type'] | null
+  worker: string | null
+}
+
 // A task's lines, or only those of one container's part of it; after the line `afterId`, if given.
+export const fetchTaskParts = (taskId: string) =>
+  request<TaskPart[]>('GET', `/tasks/${taskId}/parts`)
+
 export const fetchTaskLogs = (taskId: string, subTaskId = '', afterId = 0) =>
   request<TaskLogs>('GET', `/tasks/${taskId}/logs`, {
     query: { sub_task_id: subTaskId, after_id: afterId || null },

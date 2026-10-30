@@ -348,6 +348,23 @@ describe('what the manager pushes onto page 1', () => {
     expect(shown(wrapper)).toBe('across')
   })
 
+  it.each([
+    ['app:demo*', ['app:demo-web'], ['app:other']],
+    ['*WEB', ['app:demo-web'], ['app:demo-web2']],
+    ['app:demo.web', ['app:demo.web'], ['app:demo-web']],
+  ])(
+    'with the scope %s, is let through by %j and left out by %j',
+    async (scope, inScopes, outScopes) => {
+      const { wrapper, history } = await mountPage()
+      await commit(wrapper, 'task-scope', scope)
+
+      history.push([finished('in', { scopes: inScopes }), finished('out', { scopes: outScopes })])
+      await flushPromises()
+
+      expect(shown(wrapper)).toBe('in')
+    }
+  )
+
   it('is let through when it finished as the window opens, or was queued as it closes', async () => {
     const { wrapper, history } = await mountPage()
     await commit(wrapper, 'task-from', '2026-01-01T12:00')

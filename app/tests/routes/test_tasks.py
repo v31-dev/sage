@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 import pytest
 from fastapi.encoders import jsonable_encoder
 
-from services.db import Task
+from services.db import Container, Event, Task
 from services.logs import Logs
 
 
@@ -100,8 +100,14 @@ class TestHistory:
       ("app:demo-web", ["t-web"]),
       ("platform", ["t-both"]),
       ("app:a_b", []),
+      ("app:a%b", []),
+      ("app:demo*", ["t-web", "t-web2"]),
+      ("*web", ["t-web"]),
+      ("APP:Demo-Web", ["t-web"]),
+      ("*", ["t-app", "t-web", "t-web2", "t-both", "t-metrics", "t-apps", "t-under"]),
   ])
-  def test_a_scope_matches_itself_and_its_children(self, client, db, scope, expected):
+  def test_a_scope_matches_itself_and_its_children_in_any_case_with_star_for_any_characters(self, client, db, scope,
+                                                                                            expected):
     for index, (task_id, scopes) in enumerate([("t-app", ["app"]), ("t-web", ["app:demo-web"]),
                                                ("t-web2", ["app:demo-web2"]), ("t-both", ["app:x", "platform"]),
                                                ("t-metrics", ["metrics"]), ("t-apps", ["apps"]),
@@ -186,3 +192,24 @@ class TestLogs:
 
   def test_a_task_that_logged_nothing_has_no_lines(self, client, db):
     assert client.get("/api/tasks/t1/logs").json() == {"lines": [], "more": False}
+
+
+class TestParts:
+  def test_the_parts_that_logged_come_in_the_order_of_their_first_line_with_their_events_kind_and_worker(
+          self, client, application, worker):
+    container = Container.create(application=application, worker=worker)
+    Event.create(container=container, type="deploy", application_task_id="t1", container_task_id="c2")
+    Event.create(container=container, type="backup", application_task_id="t1", container_task_id="c9")
+    line("t1", "", "queued")
+    line("t1", "c2", "deploying web")
+    line("t1", "c1", "deleting db")
+    line("t1", "c2", "deployed web")
+    line("t2", "c3", "another task")
+
+    assert client.get("/api/tasks/t1/parts").json() == [
+        {"id": "c2", "type": "deploy", "worker": "w1"}, {"id": "c1", "type": None, "worker": None}]
+
+  def test_a_task_without_parts_has_none(self, client, db):
+    line("t1", "", "queued")
+
+    assert client.get("/api/tasks/t1/parts").json() == []
