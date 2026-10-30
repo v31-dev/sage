@@ -4,11 +4,12 @@ import json
 import logging
 import queue
 import random
+import re
 import sqlite3
 import threading
 import traceback
 from concurrent.futures import ThreadPoolExecutor
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -17,6 +18,7 @@ from peewee import OperationalError
 import config
 import services.logs.store as store_module
 from services.logs import Logs
+from services.logs.store import stored_time
 from services.logs.tasks import _CaptureHandler
 from services.updates import UpdateFeed, Updates
 from utils.common import utcnow
@@ -30,6 +32,11 @@ log = logging.getLogger("tests.task")
 def stamp(index):
   """A timestamp that sorts with `index`, in the form Docker gives (nanoseconds)."""
   return f"2026-01-{1 + index // 86400:02d}T{(index // 3600) % 24:02d}:{(index // 60) % 60:02d}:{index % 60:02d}.000000000Z"
+
+
+def moment(index):
+  """The time of `stamp(index)`."""
+  return datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(seconds=index)
 
 
 def lines(first, count, host="w1", word="line"):
@@ -95,7 +102,7 @@ class TestStoring:
     logs.write_application_lines("web", lines(0, 5, host="w1") + lines(5, 5, host="w2"))
     assert [row["ts"] for row in logs.query_application_lines("web")["lines"]] == [stamp(i) for i in range(10)]
     assert {row["hostname"] for row in logs.query_application_lines("web", hostname="w2")["lines"]} == {"w2"}
-    assert [row["ts"] for row in logs.query_application_lines("web", from_ts=stamp(2), to_ts=stamp(4))["lines"]] == [stamp(2), stamp(3)]
+    assert [row["ts"] for row in logs.query_application_lines("web", from_ts=moment(2), to_ts=moment(4))["lines"]] == [stamp(2), stamp(3)]
 
   def test_the_message_is_searchable(self, logs):
     logs.write_application_lines("web", lines(0, 20))
@@ -136,7 +143,7 @@ class TestSearch:
 
   def test_it_goes_with_the_worker_and_the_window(self, logs):
     logs.write_application_lines("web", lines(0, 5, host="w1", word="hit") + lines(5, 5, host="w2", word="hit"))
-    result = logs.query_application_lines("web", search="hit", hostname="w2", from_ts=stamp(6), to_ts=stamp(8))
+    result = logs.query_application_lines("web", search="hit", hostname="w2", from_ts=moment(6), to_ts=moment(8))
     assert [row["ts"] for row in result["lines"]] == [stamp(6), stamp(7)]
 
   def test_a_shard_indexed_before_the_trigram_tokenizer_is_searched_the_same_way(self, logs):
@@ -429,7 +436,7 @@ class TestRequests:
       ({"path": "%"}, ["/b?q=100%"]),
       ({"path": "_"}, ["/c_d"]),
       ({"min_duration_ms": 250}, ["/e", "/b?q=100%"]),
-      ({"from_ts": stamp(1), "to_ts": stamp(3)}, ["/c_d", "/b?q=100%"]),
+      ({"from_ts": moment(1), "to_ts": moment(3)}, ["/c_d", "/b?q=100%"]),
       ({"host": "web", "status_class": 4}, ["/c_d"]),
   ])
   def test_each_filter_narrows_them(self, stored, filters, found):
@@ -454,7 +461,38 @@ class TestRequests:
   def test_a_window_holds_the_starts_it_covers_whatever_their_precision(self, logs):
     logs.ingest("w1", push(event("traefik", access_line(StartUTC="2026-01-01T12:00:00.1Z", RequestPath="/tenth")),
                            event("traefik", access_line(StartUTC="2026-01-01T12:00:00.123Z", RequestPath="/later"))))
-    assert requested(logs, from_ts="2026-01-01T12:00:00.110000000Z") == ["/later"]
+    assert requested(logs, from_ts=datetime(2026, 1, 1, 12, 0, 0, 110000, tzinfo=timezone.utc)) == ["/later"]
+
+
+class TestStoredTime:
+  @pytest.mark.parametrize("given, kept", [
+      ("2026-01-01T12:00:00.1Z", "2026-01-01T12:00:00.100000000Z"),
+      ("2026-01-01T12:00:00Z", "2026-01-01T12:00:00.000000000Z"),
+      ("2026-01-01T12:00:00.123456789Z", "2026-01-01T12:00:00.123456789Z"),
+      (datetime(2026, 1, 1, 12, 0, 0, 500000), "2026-01-01T12:00:00.500000000Z"),
+      (datetime(2026, 1, 1, 14, 0, tzinfo=timezone(timedelta(hours=2))), "2026-01-01T12:00:00.000000000Z"),
+      ("not a time", "not a time"),
+  ])
+  def test_is_utc_with_nine_digits_of_fraction(self, given, kept):
+    assert stored_time(given) == kept
+
+  def test_an_applications_lines_keep_vectors_times_with_nine_digits_and_a_window_holds_the_lines_it_covers(self, logs):
+    logs.ingest("w1", push({**event("demo-web", "tenth"), "timestamp": "2026-01-01T12:00:00.1Z"},
+                           {**event("demo-web", "later"), "timestamp": "2026-01-01T12:00:00.123Z"}))
+
+    assert [row["ts"] for row in logs.query_application_lines("demo-web")["lines"]] == [
+        "2026-01-01T12:00:00.100000000Z", "2026-01-01T12:00:00.123000000Z"]
+    window = logs.query_application_lines("demo-web", from_ts=datetime(2026, 1, 1, 12, 0, 0, 110000, tzinfo=timezone.utc))
+    assert [row["message"] for row in window["lines"]] == ["later"]
+
+  async def test_a_task_line_is_kept_with_nine_digits(self, tasks):
+    async def deploy():
+      log.info("deploying")
+
+    tasks.add(deploy, task_id="t1")
+    await tasks.run()
+    stored = [line["ts"] for line in tasks.logs.query_task_logs("t1")["lines"]]
+    assert stored and all(re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{9}Z", ts) for ts in stored)
 
 
 @pytest.fixture
@@ -726,6 +764,16 @@ class TestCleanup:
     logs.cleanup()
     assert [row["message"] for row in logs.query_application_lines(kept)["lines"]] == ["recent"]
     assert [path.stem for path in (logs.db_path / "logs").glob("*.db")] == [kept]
+
+  def test_a_line_older_than_the_cutoff_goes_whatever_the_precision_of_its_time(self, logs, application, clock):
+    clock.set(datetime(2026, 1, 15, 12, 0, 0, 500000))
+    name = application.qualified_name
+    logs.ingest("w1", push({**event(name, "half a second too old"), "timestamp": "2026-01-01T12:00:00Z"},
+                           {**event(name, "just in time"), "timestamp": "2026-01-01T12:00:00.6Z"}))
+
+    logs.cleanup(days=14)
+
+    assert [row["message"] for row in logs.query_application_lines(name)["lines"]] == ["just in time"]
 
   def test_the_requests_are_kept_and_lose_their_rows_past_the_retention(self, logs, db):
     old = (utcnow() - timedelta(days=config.RETENTION_DAYS + 1)).isoformat()

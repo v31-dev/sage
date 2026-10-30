@@ -225,5 +225,22 @@ class TestLogs:
 
     assert [row["message"] for row in response.json()["lines"]] == ["second"]
 
+  @pytest.mark.parametrize("params, found", [
+      ({"from_ts": "2026-01-01T12:00:01Z", "to_ts": "2026-01-01T12:00:02.000Z"}, ["started again"]),
+      ({"from_ts": "2026-01-01T17:30:01.5+05:30"}, ["stopped"]),
+  ])
+  def test_a_window_is_taken_in_utc_from_any_zone(self, client, application, params, found):
+    from services.logs import Logs
+    Logs().write_application_lines(application.qualified_name, [
+        {"hostname": "w1", "ts": f"2026-01-01T12:00:0{index}.000000000Z", "stream": "stdout", "message": message}
+        for index, message in enumerate(["started", "started again", "stopped"])])
+
+    response = client.get(f"{URL}/web/logs", params=params)
+
+    assert [row["message"] for row in response.json()["lines"]] == found
+
+  def test_a_time_that_is_not_one_is_refused(self, client, application):
+    assert client.get(f"{URL}/web/logs", params={"from_ts": "yesterday"}).status_code == 422
+
   def test_an_unknown_application_has_none(self, client, project):
     assert client.get(f"{URL}/missing/logs").status_code == 404

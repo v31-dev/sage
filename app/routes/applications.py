@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Literal
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
@@ -71,8 +72,8 @@ def get_application(request: Request):
 
 
 @router.get("/{application}/logs", dependencies=[Depends(inject_application)])
-def get_application_logs(request: Request, hostname: str = "", search: str = "", from_ts: str = "", to_ts: str = "",
-                         after_id: int = 0):
+def get_application_logs(request: Request, hostname: str = "", search: str = "", from_ts: datetime | None = None,
+                         to_ts: datetime | None = None, after_id: int = 0):
   """The application's lines from its containers: the newest 1000 that match (after the line `after_id`, if given),
   and whether there were more."""
   return Logs().query_application_lines(request.state.models["application"].qualified_name, hostname=hostname,

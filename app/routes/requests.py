@@ -1,21 +1,11 @@
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Query
 
 from services.logs import Logs
-from services.logs.requests import timestamp
 
 router = APIRouter()
-
-
-def at(value: datetime | None) -> str:
-  """A time from a query as the request store writes it; UTC if it has no zone."""
-  if value is None:
-    return ""
-  if value.tzinfo is not None:
-    value = value.astimezone(timezone.utc)
-  return timestamp(f"{value:%Y-%m-%dT%H:%M:%S.%f}Z")
 
 
 @router.get("/")
@@ -27,5 +17,5 @@ def list_requests(worker: str = "", host: str = "", method: str = "",
   given), and whether there were more."""
   return Logs().query_requests(worker=worker, host=host, method=method,
                                status_class=int(status[0]) if status else None, path=path,
-                               min_duration_ms=min_duration_ms, from_ts=at(from_ts), to_ts=at(to_ts),
+                               min_duration_ms=min_duration_ms, from_ts=from_ts, to_ts=to_ts,
                                after_id=after_id)

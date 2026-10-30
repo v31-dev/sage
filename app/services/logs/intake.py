@@ -4,6 +4,7 @@ import logging
 from functools import partial
 
 from .requests import REQUESTS, TRAEFIK, access_line
+from .store import stored_time
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +22,7 @@ class IntakeMixin:
         continue
       try:
         event = json.loads(line)
-        container, ts, message = event["container_name"], event["timestamp"], event["message"]
+        container, ts, message = event["container_name"], stored_time(event["timestamp"]), event["message"]
       except (ValueError, KeyError, TypeError):
         skipped += 1
         continue

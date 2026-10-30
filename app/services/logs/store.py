@@ -3,11 +3,12 @@ for each application, each opened once and kept within its size, all of them wit
 older than the retention."""
 import logging
 import os
+import re
 import shutil
 import threading
 import time
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from peewee import SQL, Model, NodeList, SqliteDatabase
@@ -66,6 +67,19 @@ class Store:
         oldest = lines.select(lines.id).order_by(lines.ts, lines.id).limit(step)
         lines.delete().where(lines.id.in_(oldest)).execute()
       done += step
+
+
+def stored_time(value: datetime | str) -> str:
+  """A time as the logs keep it, so that times compare as text: UTC with nine digits of fraction and `Z`. A datetime
+  without a zone is UTC; text is an RFC 3339 time in UTC, as Vector and Traefik write it (they leave out trailing
+  zeros), and is kept as it is when it is not one."""
+  if isinstance(value, datetime):
+    if value.tzinfo is not None:
+      value = value.astimezone(timezone.utc)
+    return f"{value:%Y-%m-%dT%H:%M:%S.%f}000Z"
+  if not (match := re.fullmatch(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?Z", value)):
+    return value
+  return f"{match[1]}.{(match[2] or '').ljust(9, '0')}Z"
 
 
 def open_db(path: Path) -> SqliteDatabase:
@@ -235,7 +249,7 @@ class StoreMixin:
     deleted = 0
     for name in sorted(existing):
       store = self._store(name)
-      deleted += store.lines.delete().where(store.lines.ts < cutoff.isoformat()).execute()
+      deleted += store.lines.delete().where(store.lines.ts < stored_time(cutoff)).execute()
       if store.index is not None:
         store.index.optimize()
 

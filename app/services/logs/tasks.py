@@ -11,7 +11,7 @@ from peewee import CharField, Model, SqliteDatabase, TextField, fn
 from services.updates import UpdateFeed, Updates
 from utils.logging import SuppressTracebackFilter, sub_task_id, task_id, task_lines
 
-from .store import Store, newest
+from .store import Store, newest, stored_time
 
 logger = logging.getLogger(__name__)
 
@@ -101,7 +101,7 @@ class _CaptureHandler(logging.Handler):
         lines.write(partial(self._captured.put, {
             "task_id": task_id.get(),
             "sub_task_id": sub_task_id.get(),
-            "ts": datetime.fromtimestamp(record.created, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z",
+            "ts": stored_time(datetime.fromtimestamp(record.created, timezone.utc)),
             "level": record.levelname,
             "logger": record.name,
             "message": self.format(record),

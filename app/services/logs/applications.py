@@ -1,6 +1,7 @@
 """Each application's lines, as Vector sends them from its containers: a shard for each application, named by its
 qualified name (`logs/<project>-<app>.db`), with a full-text index of the messages."""
 import re
+from datetime import datetime
 
 from peewee import CharField, Model, SqliteDatabase, TextField
 from playhouse.sqlite_ext import FTS5Model, RowIDField, SearchField
@@ -8,7 +9,7 @@ from playhouse.sqlite_ext import FTS5Model, RowIDField, SearchField
 from services.db import Application, Project
 from services.updates import UpdateFeed, Updates
 
-from .store import Store, contains, newest
+from .store import Store, contains, newest, stored_time
 
 
 def application_schema(db: SqliteDatabase) -> Store:
@@ -71,8 +72,8 @@ class ApplicationsMixin:
     stored = self._insert(self._shard(name), rows)
     Updates().publish(UpdateFeed.APPLICATION_LOGS, stored, key=name)
 
-  def query_application_lines(self, name: str, hostname: str = "", search: str = "", from_ts: str = "",
-                              to_ts: str = "", after_id: int = 0) -> dict:
+  def query_application_lines(self, name: str, hostname: str = "", search: str = "", from_ts: datetime | None = None,
+                              to_ts: datetime | None = None, after_id: int = 0) -> dict:
     """An application's lines, in the order they were stored: the newest LOG_QUERY_MAX_ROWS (after the line
     `after_id`, if given) from `hostname` (all workers if empty) that contain `search` anywhere, in any case, and whose
     time is at or after `from_ts` and before `to_ts`, and whether there were more. The search walks the message index
@@ -88,9 +89,9 @@ class ApplicationsMixin:
     if hostname:
       query = query.where(lines.hostname == hostname)
     if from_ts:
-      query = query.where(lines.ts >= from_ts)
+      query = query.where(lines.ts >= stored_time(from_ts))
     if to_ts:
-      query = query.where(lines.ts < to_ts)
+      query = query.where(lines.ts < stored_time(to_ts))
     if after_id:
       query = query.where(lines.id > after_id)
     rows, more = newest(query, order)
