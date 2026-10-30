@@ -1,6 +1,7 @@
 from fastapi.encoders import jsonable_encoder
 
 from services.db import Task
+from services.logs import Logs
 from utils.common import utcnow
 
 
@@ -55,3 +56,35 @@ class TestHistory:
     assert {"task_id", "name", "scopes", "params", "executor", "status", "created_at", "updated_at",
             "finished_at"} <= set(row)
     assert jsonable_encoder(row) == row
+
+
+def line(task_id, sub_task_id, message):
+  Logs().write_task_line({"task_id": task_id, "sub_task_id": sub_task_id, "ts": "2026-01-01T12:00:00.000000Z",
+                          "level": "INFO", "logger": "services.manager", "message": message})
+
+
+class TestLogs:
+  def test_a_task_has_its_lines_and_its_parts_in_the_order_they_were_written(self, client, db):
+    line("t1", "", "queued")
+    line("t1", "c1", "deploying web")
+    line("t2", "", "another task")
+    line("t1", "c2", "deploying db")
+
+    response = client.get("/api/tasks/t1/logs")
+
+    assert [row["message"] for row in response.json()["lines"]] == ["queued", "deploying web", "deploying db"]
+    assert response.json()["more"] is False
+
+  def test_a_part_has_its_own_lines(self, client, db):
+    line("t1", "c1", "deploying web")
+    line("t1", "c2", "deploying db")
+
+    response = client.get("/api/tasks/t1/logs", params={"sub_task_id": "c2"})
+
+    [row] = response.json()["lines"]
+    assert {key: row[key] for key in ("task_id", "sub_task_id", "ts", "level", "logger", "message")} == {
+        "task_id": "t1", "sub_task_id": "c2", "ts": "2026-01-01T12:00:00.000000Z", "level": "INFO",
+        "logger": "services.manager", "message": "deploying db"}
+
+  def test_a_task_that_logged_nothing_has_no_lines(self, client, db):
+    assert client.get("/api/tasks/t1/logs").json() == {"lines": [], "more": False}

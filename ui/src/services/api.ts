@@ -130,7 +130,9 @@ export interface Domain {
   updated_at: Date
 }
 
+// A container's part of a task: its lines are the task's `application_task_id` and part `container_task_id`.
 export interface Event {
+  application_task_id: string
   container_task_id: string
   type: 'deploy' | 'stop' | 'delete' | 'backup' | 'restore'
   created_at: Date
@@ -522,6 +524,27 @@ export const fetchTasks = () => request<QueueResponse>('GET', '/tasks/')
 
 // The latest finished tasks, newest first.
 export const fetchTaskHistory = () => request<CompletedTask[]>('GET', '/tasks/history')
+
+// A line a queued task logged; `sub_task_id` is the container's part it belongs to, if any.
+export interface TaskLogLine {
+  id: number
+  task_id: string
+  sub_task_id: string
+  ts: string
+  level: string
+  logger: string
+  message: string
+}
+
+// The newest lines, in the order they were written, and whether there were more.
+export interface TaskLogs {
+  lines: TaskLogLine[]
+  more: boolean
+}
+
+// A task's lines, or only those of one container's part of it.
+export const fetchTaskLogs = (taskId: string, subTaskId = '') =>
+  request<TaskLogs>('GET', `/tasks/${taskId}/logs`, { query: { sub_task_id: subTaskId } })
 
 export interface Backup {
   id: number

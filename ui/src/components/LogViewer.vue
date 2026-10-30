@@ -25,8 +25,6 @@ import { fetchLogs, type LogEntry } from '@/services/api'
 interface Props {
   container: string
   hostname: string
-  // if provided then it will disable search controls and use this value as search query on initial load
-  search?: string
   parseMessage: (
     raw: string,
     entry: LogEntry
@@ -46,24 +44,17 @@ interface Props {
     formatter?: (value: any) => string
     hostnameFilter?: boolean
   }[]
-  pollInterval?: number
-  poll?: boolean
-  pollIntervalDelayStop?: number
 }
 
-const props = withDefaults(defineProps<Props>(), {
-  search: '',
-  pollInterval: 5_000,
-  poll: true,
-  pollIntervalDelayStop: 0,
-})
+const props = defineProps<Props>()
 
 const MAX_LOGS_ON_UI = 1000
+const POLL_INTERVAL = 5_000
 
 const logs = ref<LogEntry[]>([])
 const isLoading = ref(true)
-const inputSearch = ref(props.search)
-const activeSearch = ref(props.search)
+const inputSearch = ref('')
+const activeSearch = ref('')
 const inputFromDate = ref<string>('')
 const activeFromDate = ref<string>('')
 const inputToDate = ref<string>('')
@@ -72,7 +63,6 @@ const desktopViewport = ref<HTMLElement | null>(null)
 const mobileScroll = ref<HTMLElement | null>(null)
 const error = ref<string>('')
 let pollTimer: ReturnType<typeof setInterval> | null = null
-let stopPollTimeout: ReturnType<typeof setTimeout> | null = null
 const hostnameFilter = ref('')
 
 const parsedLogs = computed(() =>
@@ -117,44 +107,6 @@ watch(
     if (isNearBottom()) {
       await scrollToBottom()
     }
-  }
-)
-
-// Watch poll prop and start/stop polling accordingly
-watch(
-  () => props.poll,
-  newVal => {
-    // Cancel an existing stop poll timeout if poll is toggled again before it executes
-    if (stopPollTimeout !== null) {
-      clearTimeout(stopPollTimeout)
-      stopPollTimeout = null
-    }
-
-    if (newVal) {
-      if (pollTimer === null) {
-        pollTimer = setInterval(load, props.pollInterval)
-      }
-      return
-    }
-
-    if (pollTimer === null) {
-      return
-    }
-
-    if (props.pollIntervalDelayStop > 0) {
-      const timerToStop = pollTimer
-      stopPollTimeout = setTimeout(() => {
-        if (!props.poll && pollTimer === timerToStop) {
-          clearInterval(timerToStop)
-          pollTimer = null
-        }
-        stopPollTimeout = null
-      }, props.pollIntervalDelayStop)
-      return
-    }
-
-    clearInterval(pollTimer)
-    pollTimer = null
   }
 )
 
@@ -236,38 +188,33 @@ function filterBy(column: (typeof props.columns)[number], value: string) {
 }
 
 onMounted(async () => {
-  if (props.search == '') {
-    // Set inputFromDate to today - 5 min (local timezone)
-    const now = new Date()
-    now.setMinutes(now.getMinutes() - 5)
-    const year = now.getFullYear()
-    const month = String(now.getMonth() + 1).padStart(2, '0')
-    const day = String(now.getDate()).padStart(2, '0')
-    const hours = String(now.getHours()).padStart(2, '0')
-    const minutes = String(now.getMinutes()).padStart(2, '0')
-    inputFromDate.value = `${year}-${month}-${day}T${hours}:${minutes}`
-    activeFromDate.value = inputFromDate.value
-  }
+  // Set inputFromDate to today - 5 min (local timezone)
+  const now = new Date()
+  now.setMinutes(now.getMinutes() - 5)
+  const year = now.getFullYear()
+  const month = String(now.getMonth() + 1).padStart(2, '0')
+  const day = String(now.getDate()).padStart(2, '0')
+  const hours = String(now.getHours()).padStart(2, '0')
+  const minutes = String(now.getMinutes()).padStart(2, '0')
+  inputFromDate.value = `${year}-${month}-${day}T${hours}:${minutes}`
+  activeFromDate.value = inputFromDate.value
 
   // Load initial logs
   await load()
 
   // Start polling every X seconds
-  if (props.poll) {
-    pollTimer = setInterval(load, props.pollInterval)
-  }
+  pollTimer = setInterval(load, POLL_INTERVAL)
 })
 
 onUnmounted(() => {
   if (pollTimer !== null) clearInterval(pollTimer)
-  if (stopPollTimeout !== null) clearTimeout(stopPollTimeout)
 })
 </script>
 
 <template>
   <main class="flex flex-col flex-1 overflow-hidden">
     <!-- Controls -->
-    <div v-if="props.search == ''" class="flex-shrink-0 px-0 sm:px-4 py-2 sm:py-4">
+    <div class="flex-shrink-0 px-0 sm:px-4 py-2 sm:py-4">
       <div class="max-w-7xl mx-auto space-y-3 bg-muted/30 p-2 rounded-lg">
         <div class="grid grid-cols-2 gap-2">
           <div>

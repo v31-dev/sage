@@ -31,13 +31,11 @@ import {
   type Volume,
 } from '@/services/api'
 import { useAppStore } from '@/stores/app'
-import RestoreLogsDialog from '@/components/RestoreLogsDialog.vue'
 import { formatDate } from '@/lib/utils'
 
 interface Props {
   application: Application
   volume: Volume
-  loadApplication: () => Promise<void>
 }
 
 const props = withDefaults(defineProps<Props>(), {})
@@ -50,7 +48,6 @@ const loadError = ref('')
 const backups = ref<Backup[]>([])
 const selectedBackupId = ref('')
 const selectedTargetWorker = ref('')
-const restoreDialogTaskId = ref('')
 
 const canStartRestore = computed(() => {
   return [
@@ -139,19 +136,13 @@ async function onClickRestore() {
       selectedBackup.value.id,
       selectedTargetWorker.value
     )
-    toast.success(`Restore completed for volume ${props.volume.name}`)
+    toast.success(`Restore initiated for volume ${props.volume.name}`)
     isOpen.value = false
   } catch (err) {
-    const response = (err as any)?.response
-    const taskId = response?.status >= 500 ? response?.headers?.get('X-Task-ID') || '' : ''
-    if (taskId) {
-      restoreDialogTaskId.value = taskId
-    }
+    appStore.updateApplicationDeployStatus(previousStatus)
     toast.error(err instanceof Error ? err.message : 'Failed to restore volume')
   } finally {
     isRestoring.value = false
-    appStore.updateApplicationDeployStatus(previousStatus)
-    await props.loadApplication()
   }
 }
 
@@ -256,9 +247,4 @@ watch(isOpen, async open => {
       </DialogFooter>
     </DialogContent>
   </Dialog>
-
-  <RestoreLogsDialog
-    :taskId="restoreDialogTaskId"
-    :objectTitle="`${props.volume.name} on ${selectedTargetWorker || 'selected worker'}`"
-  />
 </template>

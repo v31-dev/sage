@@ -14,7 +14,6 @@ import {
   HardDrive,
   Home,
   ListTodo,
-  Logs,
   Network,
   Server,
   CloudBackup,
@@ -91,11 +90,6 @@ const menu = computed<MenuInterface[]>(() => [
         name: 'Tasks',
         path: '/tasks',
         icon: ListTodo,
-      },
-      {
-        name: 'Logs',
-        path: '/logs',
-        icon: Logs,
       },
       {
         name: 'Backups',

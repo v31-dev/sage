@@ -43,6 +43,7 @@ fastapi_exclude_log_paths = [
     "/api",  # Healthcheck
     "/api/vector/logs",  # Logs ingeestion
     "/api/workers/*/logs/*",  # Logs query
+    "/api/tasks/*/logs",  # Task logs query
     "/api/workers/*/metrics",  # Metrics query
     "/api/socket.io/",  # Socket.IO long-polling, a request every few seconds
 ]

@@ -3,6 +3,7 @@ import logging
 from fastapi import APIRouter
 
 from services.db import Task
+from services.logs import Logs
 from services.manager import Manager
 
 logger = logging.getLogger(__name__)
@@ -26,3 +27,9 @@ def list_task_history(limit: int = 100):
       .limit(limit)
       .dicts()
   )
+
+
+@router.get("/{task_id}/logs")
+def get_task_logs(task_id: str, sub_task_id: str = ""):
+  """The lines a task logged, or one container's part of it (`sub_task_id`)."""
+  return Logs().query_task_logs(task_id, sub_task_id)

@@ -315,6 +315,22 @@ const CALLS: Array<[string, () => Promise<unknown>, string, string, object, unkn
   ],
   ['fetchTasks', () => api.fetchTasks(), 'GET', '/api/tasks/', {}, undefined],
   ['fetchTaskHistory', () => api.fetchTaskHistory(), 'GET', '/api/tasks/history', {}, undefined],
+  [
+    'fetchTaskLogs',
+    () => api.fetchTaskLogs('abc12345'),
+    'GET',
+    '/api/tasks/abc12345/logs',
+    {},
+    undefined,
+  ],
+  [
+    'fetchTaskLogs, of a part',
+    () => api.fetchTaskLogs('abc12345', 'def67890'),
+    'GET',
+    '/api/tasks/abc12345/logs',
+    { sub_task_id: 'def67890' },
+    undefined,
+  ],
   ['fetchBackups', () => api.fetchBackups(), 'GET', '/api/backups/', {}, undefined],
   [
     'fetchBackupStatus',

@@ -21,13 +21,15 @@ class TestExactPathFilter:
       "/api?ts=1",
       "/api/vector/logs",
       "/api/workers/w1/logs/web",
+      "/api/tasks/abc12345/logs?sub_task_id=def67890",
       "/api/workers/w1/metrics",
       "/api/workers/w1/metrics?period=1h",
   ])
   def test_drops_the_noisy_requests(self, path):
     assert self.filter.filter(access_record(path)) is False
 
-  @pytest.mark.parametrize("path", ["/api/", "/api/projects", "/api/workers/w1", "/api/workers/w1/reboot", "/"])
+  @pytest.mark.parametrize("path", ["/api/", "/api/projects", "/api/workers/w1", "/api/workers/w1/reboot", "/api/tasks/history",
+                                    "/"])
   def test_keeps_every_other_request(self, path):
     assert self.filter.filter(access_record(path)) is True
 
