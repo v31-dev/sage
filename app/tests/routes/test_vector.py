@@ -1,4 +1,3 @@
-import json
 import threading
 
 import pytest
@@ -6,6 +5,7 @@ from fastapi.testclient import TestClient
 
 import config
 from services.logs import Logs
+from tests.services.logs.builders import event, push
 
 URL = "/api/vector/logs"
 
@@ -17,8 +17,7 @@ def client(db, thread_connections):
 
 
 def body(*messages, container="demo-web"):
-  return "\n".join(json.dumps({"container_name": container, "timestamp": "2026-01-01T12:00:00.000000000Z",
-                               "stream": "stdout", "message": message}) for message in messages).encode()
+  return push(*(event(container, message) for message in messages))
 
 
 def stored(container="demo-web"):

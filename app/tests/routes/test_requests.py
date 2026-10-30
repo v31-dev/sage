@@ -1,23 +1,21 @@
-import json
-
 import pytest
 
 from services.logs import Logs
+from tests.services.logs.builders import access_line, event, push
 
 URL = "/api/requests/"
 
 
 def access(path, start, status=200, duration_ms=1):
-  return json.dumps({"container_name": "traefik", "timestamp": start, "stream": "stdout", "message": json.dumps({
-      "StartUTC": start, "RequestHost": "web.example.com", "RequestMethod": "GET", "RequestPath": path,
-      "DownstreamStatus": status, "Duration": duration_ms * 1_000_000})})
+  return event("traefik", access_line(RequestPath=path, StartUTC=start, DownstreamStatus=status,
+                                      Duration=duration_ms * 1_000_000))
 
 
 @pytest.fixture
 def stored(db):
-  Logs().ingest("w1", "\n".join([access("/ok", "2026-01-01T12:00:00Z"),
-                                 access("/missing", "2026-01-01T12:30:00.5Z", status=404, duration_ms=300),
-                                 access("/broken", "2026-01-01T13:00:00Z", status=502)]).encode())
+  Logs().ingest("w1", push(access("/ok", "2026-01-01T12:00:00Z"),
+                           access("/missing", "2026-01-01T12:30:00.5Z", status=404, duration_ms=300),
+                           access("/broken", "2026-01-01T13:00:00Z", status=502)))
 
 
 def paths(response):
