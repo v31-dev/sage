@@ -255,7 +255,7 @@ class Logs(Base):
     self._check_sizes(_TASKS)
     task, part = entry["task_id"], entry["sub_task_id"]
     Updates().publish(UpdateFeed.TASK_LOGS, [row], key=task)
-    if part and part != task:
+    if part:
       Updates().publish(UpdateFeed.TASK_LOGS, [row], key=f"{task}/{part}")
 
   def query_logs(self, container: str, hostname: str = "", search: str = "", from_ts: str = "", to_ts: str = "",
@@ -314,11 +314,10 @@ class Logs(Base):
 
   def query_task_logs(self, task_id: str, sub_task_id: str = "", after_id: int = 0) -> dict:
     """A task's lines, or one container's part of it, in the order they were written: the newest LOG_QUERY_MAX_ROWS
-    (after the line `after_id`, if given), and whether there were more. A part recorded under the task's own id (a
-    delete, a volume restore) is the whole task."""
+    (after the line `after_id`, if given), and whether there were more."""
     TaskLogs = self.task_logs_db()["lines"]
     query = TaskLogs.select().where(TaskLogs.task_id == task_id)
-    if sub_task_id and sub_task_id != task_id:
+    if sub_task_id:
       query = query.where(TaskLogs.sub_task_id == sub_task_id)
     if after_id:
       query = query.where(TaskLogs.id > after_id)

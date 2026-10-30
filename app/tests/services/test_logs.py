@@ -275,7 +275,6 @@ class TestTaskLines:
     whole = ["deploy: started", "deploying two containers", "container p1", "container p2", "deploy: completed"]
     assert tasks.messages("t1") == whole
     assert tasks.messages("t1", "p2") == ["container p2"]
-    assert tasks.messages("t1", "t1") == whole, "a part recorded under the task's own id is the whole task"
 
   async def test_a_quiet_task_that_succeeds_leaves_no_lines(self, tasks):
     async def sync():
@@ -453,11 +452,10 @@ class TestFeeds:
   def test_a_task_line_goes_to_its_tasks_feed_and_a_parts_line_to_its_parts_too(self, logs, published):
     logs.write_task_line(task_entries(0, 1, task="t1")[0])
     logs.write_task_line(task_entries(1, 1, task="t1", sub="c1")[0])
-    logs.write_task_line(task_entries(2, 1, task="t2", sub="t2")[0])
 
     assert [(feed, key, [row["ts"] for row in rows]) for feed, rows, key in published] == [
         (UpdateFeed.TASK_LOGS, "t1", [stamp(0)]), (UpdateFeed.TASK_LOGS, "t1", [stamp(1)]),
-        (UpdateFeed.TASK_LOGS, "t1/c1", [stamp(1)]), (UpdateFeed.TASK_LOGS, "t2", [stamp(2)])]
+        (UpdateFeed.TASK_LOGS, "t1/c1", [stamp(1)])]
 
   def test_a_published_task_line_is_the_line_its_route_returns(self, logs, published):
     logs.write_task_line(task_entries(0, 1)[0])

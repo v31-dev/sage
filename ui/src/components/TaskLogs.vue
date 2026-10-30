@@ -8,7 +8,9 @@ import { formatDate, levelClass } from '@/lib/utils'
 import { fetchTaskLogs, type TaskLogLine } from '@/services/api'
 
 // A task's lines, or one container's part of it, followed as they are written.
-const props = defineProps<{ taskId: string; subTaskId?: string }>()
+const props = withDefaults(defineProps<{ taskId: string; subTaskId?: string }>(), {
+  subTaskId: '',
+})
 
 const MAX_LINES = 1000
 
@@ -20,9 +22,7 @@ const error = ref('')
 const viewport = ref<HTMLElement | null>(null)
 let stop: (() => void) | undefined
 
-// A part recorded under the task's own id is the whole task.
-const part = props.subTaskId && props.subTaskId !== props.taskId ? props.subTaskId : ''
-const topic = `task-logs:${part ? `${props.taskId}/${part}` : props.taskId}`
+const topic = `task-logs:${props.subTaskId ? `${props.taskId}/${props.subTaskId}` : props.taskId}`
 
 function atBottom() {
   const view = viewport.value
@@ -31,7 +31,11 @@ function atBottom() {
 
 // The lines this view does not have yet: the newest at first, then those after the last one it holds.
 async function load() {
-  const logs = await fetchTaskLogs(props.taskId, part, lines.value[lines.value.length - 1]?.id ?? 0)
+  const logs = await fetchTaskLogs(
+    props.taskId,
+    props.subTaskId,
+    lines.value[lines.value.length - 1]?.id ?? 0
+  )
   more.value ||= logs.more
   return logs.lines
 }

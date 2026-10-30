@@ -52,7 +52,6 @@ describe('the feed it follows', () => {
   it.each([
     ['a task', { taskId: 't1' }, 'task-logs:t1'],
     ['a part of it', { taskId: 't1', subTaskId: 'c1' }, 'task-logs:t1/c1'],
-    ['a part recorded under the task itself', { taskId: 't1', subTaskId: 't1' }, 'task-logs:t1'],
   ])("is %s's", async (_case, props, topic) => {
     const { topics } = await open(props)
 
