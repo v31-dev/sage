@@ -14,6 +14,7 @@ from routes.backups import router as backup_router
 from routes.info import router as info_router
 from routes.notifications import router as notifications_router
 from routes.projects import router as projects_router
+from routes.requests import router as requests_router
 from routes.settings import router as settings_router
 from routes.tasks import router as tasks_router
 from routes.updates import TOPICS, sio
@@ -68,6 +69,7 @@ app.include_router(workers_router, prefix="/api/workers")
 app.include_router(projects_router, prefix="/api/projects")
 app.include_router(notifications_router, prefix="/api/notifications")
 app.include_router(tasks_router, prefix="/api/tasks")
+app.include_router(requests_router, prefix="/api/requests")
 
 if (config.STATIC_DIR / "index.html").is_file():
   app.mount("/", SpaStaticFiles(directory=config.STATIC_DIR, html=False, check_dir=False), name="ui")

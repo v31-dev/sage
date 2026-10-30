@@ -91,13 +91,60 @@ def limit(monkeypatch):
 class TestStoring:
   def test_lines_come_back_oldest_first_and_can_be_filtered(self, logs):
     logs.write_logs("web", lines(0, 5, host="w1") + lines(5, 5, host="w2"))
-    assert [row["ts"] for row in logs.query_logs("web")] == [stamp(i) for i in range(10)]
-    assert {row["hostname"] for row in logs.query_logs("web", hostname="w2")} == {"w2"}
-    assert [row["ts"] for row in logs.query_logs("web", from_ts=stamp(2), to_ts=stamp(4))] == [stamp(2), stamp(3)]
+    assert [row["ts"] for row in logs.query_logs("web")["lines"]] == [stamp(i) for i in range(10)]
+    assert {row["hostname"] for row in logs.query_logs("web", hostname="w2")["lines"]} == {"w2"}
+    assert [row["ts"] for row in logs.query_logs("web", from_ts=stamp(2), to_ts=stamp(4))["lines"]] == [stamp(2), stamp(3)]
 
   def test_the_message_is_searchable(self, logs):
     logs.write_logs("web", lines(0, 20))
-    assert [row["ts"] for row in logs.query_logs("web", search="line7")] == [stamp(7)]
+    assert [row["ts"] for row in logs.query_logs("web", search="line7")["lines"]] == [stamp(7)]
+
+  def test_a_query_gives_the_newest_lines_and_says_when_there_were_more(self, logs, monkeypatch):
+    monkeypatch.setattr(config, "LOG_QUERY_MAX_ROWS", 5)
+    logs.write_logs("web", lines(0, 5))
+    assert logs.query_logs("web")["more"] is False
+    logs.write_logs("web", lines(5, 2))
+    for search in ("", "line"):
+      result = logs.query_logs("web", search=search)
+      assert [row["ts"] for row in result["lines"]] == [stamp(index) for index in range(2, 7)]
+      assert result["more"] is True
+
+
+def messages(*texts):
+  return [{"hostname": "w1", "ts": stamp(index), "stream": "stdout", "message": text} for index, text in enumerate(texts)]
+
+
+SAID = ["GET /items/42 a-b", 'he said "hi"', "100% done", "snake_case value", "UPPER Case", "plain"]
+
+
+class TestSearch:
+  @pytest.mark.parametrize("search, found", [
+      ("ITEMS/4", ["GET /items/42 a-b"]),
+      ("a-b", ["GET /items/42 a-b"]),
+      ('"hi"', ['he said "hi"']),
+      ("%", ["100% done"]),
+      ("_", ["snake_case value"]),
+      ("upper c", ["UPPER Case"]),
+      ("ak", ["snake_case value"]),
+      ("nowhere", []),
+  ])
+  def test_it_finds_the_text_anywhere_in_a_line_in_any_case_whatever_it_holds(self, logs, search, found):
+    logs.write_logs("web", messages(*SAID))
+    assert [row["message"] for row in logs.query_logs("web", search=search)["lines"]] == found
+
+  def test_it_goes_with_the_worker_and_the_window(self, logs):
+    logs.write_logs("web", lines(0, 5, host="w1", word="hit") + lines(5, 5, host="w2", word="hit"))
+    result = logs.query_logs("web", search="hit", hostname="w2", from_ts=stamp(6), to_ts=stamp(8))
+    assert [row["ts"] for row in result["lines"]] == [stamp(6), stamp(7)]
+
+  def test_a_shard_indexed_before_the_trigram_tokenizer_is_searched_the_same_way(self, logs):
+    db = logs.get_logs_db("web")["db"]
+    db.execute_sql("DROP TABLE containerlogsindex")
+    db.execute_sql("CREATE VIRTUAL TABLE containerlogsindex USING fts5(message, content=containerlogs, content_rowid=id)")
+    logs.write_logs("web", messages(*SAID))
+    assert "trigram" not in db.execute_sql("SELECT sql FROM sqlite_master WHERE name = 'containerlogsindex'").fetchone()[0]
+    for search, found in [("ITEMS/4", ["GET /items/42 a-b"]), ("%", ["100% done"]), ("ak", ["snake_case value"])]:
+      assert [row["message"] for row in logs.query_logs("web", search=search)["lines"]] == found
 
   @pytest.mark.parametrize("name", ["", "../etc", "Web", "a b", "a/b", "tasks"])
   def test_a_container_name_that_could_leave_the_logs_directory_or_is_the_task_logs_is_refused(self, logs, name):
@@ -292,9 +339,9 @@ class TestIngest:
                                      event("demo-api", "other", 2)))
 
     assert skipped == 0
-    assert [(row["hostname"], row["ts"], row["stream"], row["message"]) for row in logs.query_logs("demo-web")] == [
+    assert [(row["hostname"], row["ts"], row["stream"], row["message"]) for row in logs.query_logs("demo-web")["lines"]] == [
         ("w1", stamp(0), "stdout", "hello"), ("w1", stamp(1), "stderr", "world")]
-    assert [row["message"] for row in logs.query_logs("demo-api")] == ["other"]
+    assert [row["message"] for row in logs.query_logs("demo-api")["lines"]] == ["other"]
 
   def test_traefiks_access_lines_are_requests_in_columns(self, logs):
     logs.ingest("w1", push(event("traefik", access_line(3))))
@@ -319,7 +366,7 @@ class TestIngest:
                                      event("demo-web", "kept")))
 
     assert skipped == 6
-    assert [row["message"] for row in logs.query_logs("demo-web")] == ["kept"]
+    assert [row["message"] for row in logs.query_logs("demo-web")["lines"]] == ["kept"]
 
   def test_a_write_that_fails_is_raised_once_the_other_files_are_written(self, logs):
     (logs.db_path / "logs" / "demo-web.db").mkdir()
@@ -327,8 +374,70 @@ class TestIngest:
     with pytest.raises(OperationalError):
       logs.ingest("w1", push(event("demo-web", "lost"), event("demo-api", "kept"), event("traefik", access_line())))
 
-    assert [row["message"] for row in logs.query_logs("demo-api")] == ["kept"]
+    assert [row["message"] for row in logs.query_logs("demo-api")["lines"]] == ["kept"]
     assert len(rows(logs, "requests")) == 1
+
+
+def request_at(index, **fields):
+  return event("traefik", access_line(index, **fields), index)
+
+
+def requested(logs, **filters):
+  return [row["path"] for row in logs.query_requests(**filters)["requests"]]
+
+
+class TestRequests:
+  @pytest.fixture
+  def stored(self, logs):
+    logs.ingest("w1", push(request_at(0, RequestHost="web.example.com", RequestPath="/a", DownstreamStatus=200,
+                                      Duration=5_000_000),
+                           request_at(1, RequestHost="API.example.com", RequestPath="/b?q=100%",
+                                      RequestMethod="POST", DownstreamStatus=201, Duration=250_000_000),
+                           request_at(2, RequestHost="web.example.com", RequestPath="/c_d", DownstreamStatus=404,
+                                      Duration=1_000_000)))
+    logs.ingest("w2", push(request_at(3, RequestHost="web.example.com", RequestPath="/e", DownstreamStatus=503,
+                                      Duration=2_000_000_000)))
+    return logs
+
+  def test_they_come_newest_first(self, stored):
+    assert requested(stored) == ["/e", "/c_d", "/b?q=100%", "/a"]
+
+  @pytest.mark.parametrize("filters, found", [
+      ({"worker": "w2"}, ["/e"]),
+      ({"host": "api.EXAMPLE"}, ["/b?q=100%"]),
+      ({"method": "POST"}, ["/b?q=100%"]),
+      ({"status_class": 2}, ["/b?q=100%", "/a"]),
+      ({"status_class": 4}, ["/c_d"]),
+      ({"status_class": 5}, ["/e"]),
+      ({"path": "%"}, ["/b?q=100%"]),
+      ({"path": "_"}, ["/c_d"]),
+      ({"min_duration_ms": 250}, ["/e", "/b?q=100%"]),
+      ({"from_ts": stamp(1), "to_ts": stamp(3)}, ["/c_d", "/b?q=100%"]),
+      ({"host": "web", "status_class": 4}, ["/c_d"]),
+  ])
+  def test_each_filter_narrows_them(self, stored, filters, found):
+    assert requested(stored, **filters) == found
+
+  def test_a_query_gives_the_newest_and_says_when_there_were_more(self, logs, monkeypatch):
+    monkeypatch.setattr(config, "LOG_QUERY_MAX_ROWS", 3)
+    logs.ingest("w1", push(*(request_at(index) for index in range(4))))
+    result = logs.query_requests()
+    assert [row["ts"] for row in result["requests"]] == [stamp(3), stamp(2), stamp(1)]
+    assert result["more"] is True
+
+  @pytest.mark.parametrize("given, kept", [
+      ("2026-01-01T12:00:00.1Z", "2026-01-01T12:00:00.100000000Z"),
+      ("2026-01-01T12:00:00Z", "2026-01-01T12:00:00.000000000Z"),
+      ("2026-01-01T12:00:00.123456789Z", "2026-01-01T12:00:00.123456789Z"),
+  ])
+  def test_a_start_is_kept_with_nine_digits_so_that_times_compare_as_text(self, logs, given, kept):
+    logs.ingest("w1", push(event("traefik", access_line(StartUTC=given))))
+    assert [row["ts"] for row in logs.query_requests()["requests"]] == [kept]
+
+  def test_a_window_holds_the_starts_it_covers_whatever_their_precision(self, logs):
+    logs.ingest("w1", push(event("traefik", access_line(StartUTC="2026-01-01T12:00:00.1Z", RequestPath="/tenth")),
+                           event("traefik", access_line(StartUTC="2026-01-01T12:00:00.123Z", RequestPath="/later"))))
+    assert requested(logs, from_ts="2026-01-01T12:00:00.110000000Z") == ["/later"]
 
 
 class TestTrimShard:
@@ -369,10 +478,10 @@ class TestTrimShard:
     logs.write_logs("web", lines(0, 3000))
     limit(shard=logs._live_bytes(logs.get_logs_db("web")) // 2)
     removed = logs.trim_shard("web")
-    assert logs.query_logs("web", search="line0") == []
-    assert len(logs.query_logs("web", search=f"line{removed - 1}")) == 0
-    assert len(logs.query_logs("web", search=f"line{removed + 5}")) == 1
-    assert len(logs.query_logs("web", search="line2999")) == 1
+    assert logs.query_logs("web", search="line0")["lines"] == []
+    assert len(logs.query_logs("web", search=f"line{removed - 1}")["lines"]) == 0
+    assert len(logs.query_logs("web", search=f"line{removed + 5}")["lines"]) == 1
+    assert len(logs.query_logs("web", search="line2999")["lines"]) == 1
 
   def test_trimming_twice_does_nothing_the_second_time(self, logs, small, limit):
     logs.write_logs("web", lines(0, 3000))
@@ -538,7 +647,7 @@ class TestCleanup:
     for name in ("deleted-app", "sage", "traefik", "cloudflared", "telegraf"):
       logs.write_logs(name, lines(0, 5))
     logs.cleanup()
-    assert [row["message"] for row in logs.query_logs(kept)] == ["recent"]
+    assert [row["message"] for row in logs.query_logs(kept)["lines"]] == ["recent"]
     assert [path.stem for path in (logs.db_path / "logs").glob("*.db")] == [kept]
 
   def test_the_requests_are_kept_and_lose_their_rows_past_the_retention(self, logs, db):

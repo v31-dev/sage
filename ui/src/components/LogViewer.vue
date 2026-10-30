@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
+import { ref, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { Search, Filter, CircleMinus } from 'lucide-vue-next'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -19,39 +19,19 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { Spinner } from '@/components/ui/spinner'
+import { formatDate } from '@/lib/utils'
 
-import { fetchLogs, type LogEntry } from '@/services/api'
+import { fetchApplicationLogs, type LogEntry } from '@/services/api'
 
-interface Props {
-  container: string
-  hostname: string
-  parseMessage: (
-    raw: string,
-    entry: LogEntry
-  ) => {
-    ts: string
-    message: string
-    [key: string]: any
-  }
-  filterMessage?: (raw: string, entry: LogEntry) => boolean
-  columns: {
-    key: string
-    label: string
-    headerClass: string
-    rowClass: string
-    cellClass?: (entry: any) => string
-    filter?: boolean
-    formatter?: (value: any) => string
-    hostnameFilter?: boolean
-  }[]
-}
-
-const props = defineProps<Props>()
+// An application's logs, from all its containers or one worker's.
+const props = defineProps<{ project: string; application: string }>()
 
 const MAX_LOGS_ON_UI = 1000
 const POLL_INTERVAL = 5_000
 
 const logs = ref<LogEntry[]>([])
+// The manager had more lines than it sent since the search was applied.
+const more = ref(false)
 const isLoading = ref(true)
 const inputSearch = ref('')
 const activeSearch = ref('')
@@ -64,12 +44,6 @@ const mobileScroll = ref<HTMLElement | null>(null)
 const error = ref<string>('')
 let pollTimer: ReturnType<typeof setInterval> | null = null
 const hostnameFilter = ref('')
-
-const parsedLogs = computed(() =>
-  logs.value
-    .filter(e => (props.filterMessage ? props.filterMessage(e.message, e) : true))
-    .map(e => ({ entry: e, parsed: props.parseMessage(e.message, e) }))
-)
 
 function isNearBottom(threshold: number = 50): boolean {
   if (desktopViewport.value) {
@@ -125,11 +99,14 @@ async function load() {
     if (toDateUTC != '' && toDateUTC < new Date().toISOString()) {
       // toDate is in the past - no new logs
     } else {
-      // fetch logs
-      const hostname = hostnameFilter.value || props.hostname
-      logs.value.push(
-        ...(await fetchLogs(hostname, props.container, activeSearch.value, fromDateUTC, toDateUTC))
-      )
+      const result = await fetchApplicationLogs(props.project, props.application, {
+        hostname: hostnameFilter.value,
+        search: activeSearch.value,
+        from_ts: fromDateUTC,
+        to_ts: toDateUTC,
+      })
+      logs.value.push(...result.lines)
+      more.value ||= result.more
       // Keep only last 1000 logs on UI
       if (logs.value.length > MAX_LOGS_ON_UI) {
         logs.value = logs.value.slice(-MAX_LOGS_ON_UI)
@@ -159,6 +136,7 @@ function applySearch() {
   activeFromDate.value = inputFromDate.value
   activeToDate.value = inputToDate.value
   logs.value = []
+  more.value = false
   error.value = ''
   load()
 }
@@ -177,13 +155,8 @@ function clearHostnameFilter() {
   applySearch()
 }
 
-function filterBy(column: (typeof props.columns)[number], value: string) {
-  if (!value) return
-  if (column.hostnameFilter) {
-    hostnameFilter.value = value
-  } else {
-    inputSearch.value = value
-  }
+function filterByWorker(hostname: string) {
+  hostnameFilter.value = hostname
   applySearch()
 }
 
@@ -281,7 +254,11 @@ onUnmounted(() => {
 
     <!-- Content -->
     <div class="flex-1 flex flex-col overflow-hidden px-2 sm:pb-4 sm:px-4">
-      <div class="max-w-7xl mx-auto w-full flex flex-col flex-1 overflow-hidden">
+      <div class="max-w-7xl mx-auto w-full flex flex-col flex-1 overflow-hidden gap-2">
+        <p v-if="more" class="text-xs text-muted-foreground">
+          Showing the newest {{ MAX_LOGS_ON_UI }} lines that match. Narrow the search or the time
+          range to see the others.
+        </p>
         <Card v-if="logs.length === 0" class="flex-1">
           <CardContent class="flex items-center justify-center py-12">
             <p class="text-muted-foreground">{{ error || 'No logs found' }}</p>
@@ -294,9 +271,9 @@ onUnmounted(() => {
             <Table class="table-fixed">
               <TableHeader class="bg-muted/50">
                 <TableRow class="hover:bg-muted/50">
-                  <TableHead v-for="column in columns" :key="column.key" :class="column.headerClass"
-                    >{{ column.label }}
-                  </TableHead>
+                  <TableHead class="pl-4 py-2 text-xs w-40">Timestamp</TableHead>
+                  <TableHead class="py-2 text-xs w-24">Worker</TableHead>
+                  <TableHead class="py-2 text-xs">Message</TableHead>
                 </TableRow>
               </TableHeader>
             </Table>
@@ -304,7 +281,7 @@ onUnmounted(() => {
               <table class="w-full caption-bottom text-sm table-fixed">
                 <TableBody>
                   <TableRow
-                    v-for="{ entry, parsed } in parsedLogs"
+                    v-for="entry in logs"
                     :key="entry.id"
                     :class="
                       entry.stream === 'stderr'
@@ -312,32 +289,23 @@ onUnmounted(() => {
                         : 'hover:bg-muted/30 align-top'
                     "
                   >
-                    <TableCell v-for="column in columns" :key="column.key" :class="column.rowClass">
-                      <template v-if="column.filter && column.filter == true">
-                        <button
-                          v-if="parsed[column.key]"
-                          class="flex items-center gap-0.5 text-violet-600 dark:text-violet-400 hover:underline underline-offset-2"
-                          :title="`Filter by ${column.label} ${parsed[column.key]}`"
-                          @click="filterBy(column, parsed[column.key])"
-                        >
-                          <Filter class="w-3 h-3 shrink-0" />
-                          {{
-                            column.formatter
-                              ? column.formatter(parsed[column.key])
-                              : parsed[column.key] || '-'
-                          }}
-                        </button>
-                        <span v-else class="text-muted-foreground">-</span>
-                      </template>
-                      <template v-else>
-                        <span :class="column.cellClass ? column.cellClass(parsed[column.key]) : ''">
-                          {{
-                            column.formatter
-                              ? column.formatter(parsed[column.key])
-                              : parsed[column.key] || '-'
-                          }}
-                        </span>
-                      </template>
+                    <TableCell
+                      class="pl-4 py-2 text-xs w-40 font-mono text-muted-foreground whitespace-nowrap"
+                    >
+                      {{ formatDate(entry.ts) }}
+                    </TableCell>
+                    <TableCell class="py-2 text-xs w-24 font-mono whitespace-nowrap">
+                      <button
+                        class="flex items-center gap-0.5 text-violet-600 dark:text-violet-400 hover:underline underline-offset-2"
+                        :title="`Filter by worker ${entry.hostname}`"
+                        @click="filterByWorker(entry.hostname)"
+                      >
+                        <Filter class="w-3 h-3 shrink-0" />
+                        {{ entry.hostname }}
+                      </button>
+                    </TableCell>
+                    <TableCell class="py-2 text-xs">
+                      <pre class="font-mono break-all whitespace-pre-wrap">{{ entry.message }}</pre>
                     </TableCell>
                   </TableRow>
                 </TableBody>
@@ -348,68 +316,24 @@ onUnmounted(() => {
           <!-- Mobile cards (< md) -->
           <div ref="mobileScroll" class="md:hidden overflow-y-auto flex-1 space-y-2">
             <Card
-              v-for="{ entry, parsed } in parsedLogs"
+              v-for="entry in logs"
               :key="entry.id"
               :class="entry.stream === 'stderr' ? 'border-destructive/40 bg-destructive/5' : ''"
             >
-              <CardContent class="px-3 py-2 space-y-2">
-                <div class="grid grid-cols-2 gap-4 text-xs">
-                  <template v-for="column in columns" :key="column.key">
-                    <template v-if="column.key === 'message'">
-                      <div class="col-span-2">
-                        <dt class="text-[10px] text-muted-foreground font-medium mb-1">
-                          {{ column.label }}
-                        </dt>
-                        <dd class="font-mono text-xs break-all whitespace-pre-wrap leading-relaxed">
-                          {{
-                            column.formatter
-                              ? column.formatter(parsed[column.key])
-                              : parsed[column.key] || '-'
-                          }}
-                        </dd>
-                      </div>
-                    </template>
-                    <template v-else-if="column.filter && column.filter == true">
-                      <div>
-                        <dt class="text-muted-foreground font-medium text-[10px]">
-                          {{ column.label }}
-                        </dt>
-                        <dd class="font-mono">
-                          <button
-                            v-if="parsed[column.key]"
-                            class="flex items-center gap-0.5 text-violet-600 dark:text-violet-400 hover:underline underline-offset-2"
-                            :title="`Filter by ${column.label} ${parsed[column.key]}`"
-                            @click="filterBy(column, parsed[column.key])"
-                          >
-                            <Filter class="w-3 h-3 shrink-0" />{{
-                              column.formatter
-                                ? column.formatter(parsed[column.key])
-                                : parsed[column.key] || '-'
-                            }}
-                          </button>
-                          <span v-else class="text-muted-foreground">-</span>
-                        </dd>
-                      </div>
-                    </template>
-                    <template v-else>
-                      <div>
-                        <dt class="text-muted-foreground font-medium text-[10px]">
-                          {{ column.label }}
-                        </dt>
-                        <dd
-                          class="font-mono text-muted-foreground"
-                          :class="column.cellClass ? column.cellClass(parsed[column.key]) : ''"
-                        >
-                          {{
-                            column.formatter
-                              ? column.formatter(parsed[column.key])
-                              : parsed[column.key] || '-'
-                          }}
-                        </dd>
-                      </div>
-                    </template>
-                  </template>
+              <CardContent class="px-3 py-2 space-y-2 text-xs">
+                <div class="flex flex-wrap items-center gap-x-3 font-mono text-muted-foreground">
+                  <span>{{ formatDate(entry.ts) }}</span>
+                  <button
+                    class="flex items-center gap-0.5 text-violet-600 dark:text-violet-400 hover:underline underline-offset-2"
+                    :title="`Filter by worker ${entry.hostname}`"
+                    @click="filterByWorker(entry.hostname)"
+                  >
+                    <Filter class="w-3 h-3 shrink-0" />{{ entry.hostname }}
+                  </button>
                 </div>
+                <pre class="font-mono break-all whitespace-pre-wrap leading-relaxed">{{
+                  entry.message
+                }}</pre>
               </CardContent>
             </Card>
           </div>

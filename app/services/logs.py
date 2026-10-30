@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from functools import partial
 from pathlib import Path
 
-from peewee import CharField, FloatField, IntegerField, Model, SqliteDatabase, TextField
+from peewee import SQL, CharField, FloatField, IntegerField, Model, NodeList, SqliteDatabase, TextField
 from playhouse.sqlite_ext import FTS5Model, RowIDField, SearchField
 
 import config
@@ -108,7 +108,7 @@ class Logs(Base):
 
           class Meta:
             database = db
-            options = {"content": ContainerLogs, "content_rowid": "id"}
+            options = {"content": ContainerLogs, "content_rowid": "id", "tokenize": "trigram"}
 
         db.create_tables([ContainerLogs, ContainerLogsIndex], safe=True)
         # Trigger keeps FTS index in sync incrementally — O(new rows) per insert,
@@ -242,47 +242,55 @@ class Logs(Base):
     self.task_logs_db()["lines"].insert(**entry).execute()
     self._check_sizes(_TASKS)
 
-  def query_logs(
-      self,
-      container: str,
-      hostname: str = "",
-      search: str = "",
-      from_ts: str = "",
-      to_ts: str = "",
-  ) -> list:
-    """
-    If `hostname` is provided, filters to only that host's entries.
-    If `search` is provided, filters via FTS5 full-text index on message.
-    If `from_ts` and `to_ts` are provided, returns logs within that range.
-    """
+  def query_logs(self, container: str, hostname: str = "", search: str = "", from_ts: str = "",
+                 to_ts: str = "") -> dict:
+    """An application's lines, in the order they were stored: the newest LOG_QUERY_MAX_ROWS from `hostname` (all
+    workers if empty) that contain `search` anywhere, in any case, and whose time is at or after `from_ts` and before
+    `to_ts`, and whether there were more. The search walks the message index newest first (the trigram tokenizer
+    finds three characters or more through it; shorter text, or a shard indexed before it, is scanned) and stops at
+    the cap."""
     shard = self.get_logs_db(container)
-    ContainerLogs = shard["lines"]
-    ContainerLogsIndex = shard["index"]
-
-    # Build base query with FTS if searching
+    lines, index = shard["lines"], shard["index"]
+    query = lines.select()
+    order = lines.id.desc()
     if search:
-      query = (
-          ContainerLogs.select()
-          .join(
-              ContainerLogsIndex,
-              on=(ContainerLogs.id == ContainerLogsIndex.rowid),
-          )
-          .where(ContainerLogsIndex.match(search))
-      )
-    else:
-      query = ContainerLogs.select()
-
-    # Apply common filters
+      query = query.join(index, on=(lines.id == index.rowid)).where(_contains(index.message, search))
+      order = index.rowid.desc()
     if hostname:
-      query = query.where(ContainerLogs.hostname == hostname)
+      query = query.where(lines.hostname == hostname)
     if from_ts:
-      query = query.where(ContainerLogs.ts >= from_ts)
+      query = query.where(lines.ts >= from_ts)
     if to_ts:
-      query = query.where(ContainerLogs.ts < to_ts)
+      query = query.where(lines.ts < to_ts)
+    rows = list(query.order_by(order).limit(config.LOG_QUERY_MAX_ROWS + 1).dicts())
+    return {"lines": rows[:config.LOG_QUERY_MAX_ROWS][::-1], "more": len(rows) > config.LOG_QUERY_MAX_ROWS}
 
-    rows = query.order_by(ContainerLogs.ts.asc()).dicts()
-
-    return list(rows)
+  def query_requests(self, worker: str = "", host: str = "", method: str = "", status_class: int | None = None,
+                     path: str = "", min_duration_ms: float | None = None, from_ts: str = "",
+                     to_ts: str = "") -> dict:
+    """The newest LOG_QUERY_MAX_ROWS requests, newest first, that match: `worker` and `method` exactly, `host` and
+    `path` anywhere in any case, `status_class` the first digit of the status (4 for 4xx), `min_duration_ms` or
+    slower, and a start at or after `from_ts` and before `to_ts`; and whether there were more."""
+    requests = self.requests_db()["lines"]
+    query = requests.select()
+    if worker:
+      query = query.where(requests.worker == worker)
+    if host:
+      query = query.where(_contains(requests.host, host))
+    if method:
+      query = query.where(requests.method == method)
+    if status_class is not None:
+      query = query.where((requests.status >= status_class * 100) & (requests.status < (status_class + 1) * 100))
+    if path:
+      query = query.where(_contains(requests.path, path))
+    if min_duration_ms is not None:
+      query = query.where(requests.duration_ms >= min_duration_ms)
+    if from_ts:
+      query = query.where(requests.ts >= from_ts)
+    if to_ts:
+      query = query.where(requests.ts < to_ts)
+    rows = list(query.order_by(requests.id.desc()).limit(config.LOG_QUERY_MAX_ROWS + 1).dicts())
+    return {"requests": rows[:config.LOG_QUERY_MAX_ROWS], "more": len(rows) > config.LOG_QUERY_MAX_ROWS}
 
   def query_task_logs(self, task_id: str, sub_task_id: str = "") -> dict:
     """A task's lines, or one container's part of it, in the order they were written: the newest LOG_QUERY_MAX_ROWS,
@@ -506,7 +514,7 @@ def _request(hostname: str, message: str) -> dict | None:
   if not isinstance(line, dict) or "RequestMethod" not in line:
     return None
   return {
-      "ts": line.get("StartUTC", ""),
+      "ts": timestamp(line.get("StartUTC", "")),
       "worker": hostname,
       "host": line.get("RequestHost", ""),
       "method": line["RequestMethod"],
@@ -519,3 +527,17 @@ def _request(hostname: str, message: str) -> dict | None:
       "client": line.get("ClientHost", ""),
       "size": int(line.get("DownstreamContentSize") or 0),
   }
+
+
+def timestamp(text: str) -> str:
+  """A UTC time as the request store keeps it, with nine digits of fraction, so that times compare as text: Traefik
+  leaves out trailing zeros."""
+  if not (match := re.fullmatch(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?Z", text)):
+    return text
+  return f"{match[1]}.{(match[2] or '').ljust(9, '0')}Z"
+
+
+def _contains(field, text: str):
+  """`field` contains `text`, in any case: a LIKE with the wildcards in `text` escaped."""
+  escaped = text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+  return NodeList((field, SQL("LIKE ? ESCAPE '\\'", (f"%{escaped}%",))))

@@ -197,3 +197,22 @@ class TestMetrics:
   def test_an_application_without_containers_has_none_and_they_are_read_with_a_get(self, client, application):
     assert client.get(f"{URL}/web/metrics").json() == []
     assert client.post(f"{URL}/web/metrics").status_code == 405
+
+
+class TestLogs:
+  def test_they_are_the_applications_own_lines_filtered_as_asked(self, client, application):
+    from services.logs import Logs
+    Logs().write_logs(application.qualified_name, [
+        {"hostname": host, "ts": f"2026-01-01T12:00:0{index}.000000000Z", "stream": "stdout", "message": message}
+        for index, (host, message) in enumerate([("w1", "Started"), ("w2", "started again"), ("w2", "stopped")])])
+    Logs().write_logs("other-app", [{"hostname": "w2", "ts": "2026-01-01T12:00:00.000000000Z", "stream": "stdout",
+                                     "message": "started elsewhere"}])
+
+    response = client.get(f"{URL}/web/logs", params={"hostname": "w2", "search": "START"})
+
+    assert response.status_code == 200
+    assert [row["message"] for row in response.json()["lines"]] == ["started again"]
+    assert response.json()["more"] is False
+
+  def test_an_unknown_application_has_none(self, client, project):
+    assert client.get(f"{URL}/missing/logs").status_code == 404

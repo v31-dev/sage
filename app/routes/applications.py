@@ -7,6 +7,7 @@ from routes.containers import router as container_router
 from routes.domains import router as domain_router
 from routes.volumes import router as volume_router
 from services.db import APPLICATION_BUSY_STATUSES, APPLICATION_STOP_ELIGIBLE_STATUSES, Application, Container, Project, Worker
+from services.logs import Logs
 from services.manager import Manager
 from services.manager.application import application_changed, hosts_changed
 from services.metrics import Metrics
@@ -67,6 +68,13 @@ def load_application(name: str) -> dict:
 @router.get("/{application}", dependencies=[Depends(inject_application)])
 def get_application(request: Request):
   return application_payload(request.state.models["application"])
+
+
+@router.get("/{application}/logs", dependencies=[Depends(inject_application)])
+def get_application_logs(request: Request, hostname: str = "", search: str = "", from_ts: str = "", to_ts: str = ""):
+  """The application's lines from its containers: the newest 1000 that match, and whether there were more."""
+  return Logs().query_logs(request.state.models["application"].qualified_name, hostname=hostname, search=search,
+                           from_ts=from_ts, to_ts=to_ts)
 
 
 @router.put("/{application}", dependencies=[Depends(inject_application)])

@@ -22,7 +22,7 @@ def body(*messages, container="demo-web"):
 
 
 def stored(container="demo-web"):
-  return [row["message"] for row in Logs().query_logs(container)]
+  return [row["message"] for row in Logs().query_logs(container)["lines"]]
 
 
 class TestIntake:

@@ -385,6 +385,7 @@ export const fetchApplicationMetrics = (
     }
   )
 
+// A line one of an application's containers wrote.
 export interface LogEntry {
   id: number
   hostname: string
@@ -393,16 +394,51 @@ export interface LogEntry {
   message: string
 }
 
-export const fetchLogs = (
-  hostname: string,
-  container: string,
-  search: string = '',
-  from_ts: string = '',
-  to_ts: string = ''
-) =>
-  request<LogEntry[]>('GET', `/workers/${hostname}/logs/${container}`, {
-    query: { search, from_ts, to_ts },
-  })
+// A worker (all if empty), text anywhere in a line in any case, and a time at or after `from_ts` and before `to_ts`.
+export type LogQuery = { hostname?: string; search?: string; from_ts?: string; to_ts?: string }
+
+// The newest lines that match, in the order they were stored, and whether there were more.
+export const fetchApplicationLogs = (project: string, application: string, query: LogQuery = {}) =>
+  request<{ lines: LogEntry[]; more: boolean }>(
+    'GET',
+    `/projects/${project}/applications/${application}/logs`,
+    { query }
+  )
+
+// A request one of the workers' Traefik served; `duration_ms` is from when it arrived to when it was answered.
+export interface ServedRequest {
+  id: number
+  ts: string
+  worker: string
+  host: string
+  method: string
+  path: string
+  status: number
+  duration_ms: number
+  router: string
+  service: string
+  client: string
+  size: number
+}
+
+export type StatusClass = '2xx' | '3xx' | '4xx' | '5xx'
+
+// A worker and a method exactly, text anywhere in the host or the path, a status class, as slow or slower, and a start
+// at or after `from_ts` and before `to_ts`.
+export type RequestQuery = {
+  worker?: string
+  host?: string
+  method?: string
+  status?: StatusClass | ''
+  path?: string
+  min_duration_ms?: number | null
+  from_ts?: string
+  to_ts?: string
+}
+
+// The newest requests that match, newest first, and whether there were more.
+export const fetchRequests = (query: RequestQuery = {}) =>
+  request<{ requests: ServedRequest[]; more: boolean }>('GET', '/requests/', { query })
 
 export interface Notification {
   id: number

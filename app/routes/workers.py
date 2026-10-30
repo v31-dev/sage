@@ -5,7 +5,6 @@ from playhouse.shortcuts import model_to_dict
 
 from routes.containers import router as container_router
 from services.db import Application, Container, Project, Worker
-from services.logs import Logs
 from services.manager import Manager
 from services.metrics import Metrics
 from services.tailscale import Tailscale
@@ -22,7 +21,7 @@ def inject_worker(request: Request):
 
   hostname = request.path_params.get("hostname")
 
-  if hostname == get_env("TS_NAME") or hostname == "*":
+  if hostname == get_env("TS_NAME"):
     models["worker"] = None
   else:
     # Fetch and store worker
@@ -115,19 +114,6 @@ def get_metrics(request: Request, hostname: str, period: Literal["1h", "24h", "1
     data["meta"]["ip"] = Tailscale().ip()
 
   return data
-
-
-@router.get("/{hostname}/logs/{container}", dependencies=[Depends(inject_worker)])
-def get_logs(hostname: str, container: str, search: str = "", from_ts: str = "", to_ts: str = ""):
-  if hostname == "*":
-    hostname = ""
-
-  try:
-    return Logs().query_logs(
-        container, hostname=hostname, search=search, from_ts=from_ts, to_ts=to_ts
-    )
-  except Exception as e:
-    raise HTTPException(status_code=400, detail=f"Invalid search query: {str(e)}")
 
 
 @router.post("/{hostname}/reboot", dependencies=[Depends(inject_worker)])

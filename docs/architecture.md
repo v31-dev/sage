@@ -155,7 +155,7 @@ Metrics and logs are intentionally sharded:
 - Metrics: one SQLite database per hostname under `/app/data/metrics/`
 - Logs: one SQLite database per application under `/app/data/logs/`, and beside them the requests (`requests.db`, Traefik's access lines in columns) and the task logs (`tasks.db`)
 
-Application log search uses SQLite FTS5. Worker metric shards are populated from
+Application log search uses SQLite FTS5 with the `trigram` tokenizer, so text is found anywhere in a line. Worker metric shards are populated from
 the workers' Telegraf reports (per-minute peaks of 10 s readings); the manager's own shard is populated in-process from cgroup v2 and the data
 volume (its single sage container, so no host load average). Traefik's and the applications' logs
 arrive via each worker's Vector (the `:9001` ingestion API); the manager keeps the lines of its queued
