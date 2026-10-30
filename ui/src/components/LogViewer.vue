@@ -10,14 +10,7 @@ import {
   InputGroupButton,
   InputGroupInput,
 } from '@/components/ui/input-group'
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table'
+import { TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Spinner } from '@/components/ui/spinner'
 import { watchFeed } from '@/lib/updates'
 import { formatDate, parseDate } from '@/lib/utils'
@@ -274,51 +267,50 @@ onUnmounted(() => stop?.())
         </Card>
 
         <template v-else>
-          <!-- Desktop table (md+) -->
-          <div class="hidden md:flex md:flex-col min-h-0 flex-1 border rounded-lg bg-card">
-            <Table class="table-fixed">
-              <TableHeader class="bg-muted/50">
-                <TableRow class="hover:bg-muted/50">
-                  <TableHead class="pl-4 py-2 text-xs w-40">Timestamp</TableHead>
-                  <TableHead class="py-2 text-xs w-24">Worker</TableHead>
+          <!-- Desktop table (md+): the time and the worker as wide as they are, the message the rest -->
+          <div
+            ref="desktopViewport"
+            class="hidden md:block min-h-0 flex-1 overflow-y-auto border rounded-lg bg-card"
+          >
+            <table class="w-full caption-bottom text-sm">
+              <TableHeader class="sticky top-0 z-10 bg-muted">
+                <TableRow class="hover:bg-muted">
+                  <TableHead class="pl-4 py-2 text-xs w-px whitespace-nowrap">Timestamp</TableHead>
+                  <TableHead class="py-2 text-xs w-px whitespace-nowrap">Worker</TableHead>
                   <TableHead class="py-2 text-xs">Message</TableHead>
                 </TableRow>
               </TableHeader>
-            </Table>
-            <div ref="desktopViewport" class="flex-1 min-h-0 overflow-y-auto">
-              <table class="w-full caption-bottom text-sm table-fixed">
-                <TableBody>
-                  <TableRow
-                    v-for="entry in logs"
-                    :key="entry.id"
-                    :class="
-                      entry.stream === 'stderr'
-                        ? 'bg-destructive/5 hover:bg-destructive/10 align-top'
-                        : 'hover:bg-muted/30 align-top'
-                    "
+              <TableBody>
+                <TableRow
+                  v-for="entry in logs"
+                  :key="entry.id"
+                  :class="
+                    entry.stream === 'stderr'
+                      ? 'bg-destructive/5 hover:bg-destructive/10 align-top'
+                      : 'hover:bg-muted/30 align-top'
+                  "
+                >
+                  <TableCell
+                    class="pl-4 py-2 text-xs w-px font-mono text-muted-foreground whitespace-nowrap"
                   >
-                    <TableCell
-                      class="pl-4 py-2 text-xs w-40 font-mono text-muted-foreground whitespace-nowrap"
+                    {{ formatDate(entry.ts) }}
+                  </TableCell>
+                  <TableCell class="py-2 text-xs w-px font-mono whitespace-nowrap">
+                    <button
+                      class="flex items-center gap-0.5 text-violet-600 dark:text-violet-400 hover:underline underline-offset-2"
+                      :title="`Filter by worker ${entry.hostname}`"
+                      @click="filterByWorker(entry.hostname)"
                     >
-                      {{ formatDate(entry.ts) }}
-                    </TableCell>
-                    <TableCell class="py-2 text-xs w-24 font-mono whitespace-nowrap">
-                      <button
-                        class="flex items-center gap-0.5 text-violet-600 dark:text-violet-400 hover:underline underline-offset-2"
-                        :title="`Filter by worker ${entry.hostname}`"
-                        @click="filterByWorker(entry.hostname)"
-                      >
-                        <Filter class="w-3 h-3 shrink-0" />
-                        {{ entry.hostname }}
-                      </button>
-                    </TableCell>
-                    <TableCell class="py-2 text-xs">
-                      <pre class="font-mono break-all whitespace-pre-wrap">{{ entry.message }}</pre>
-                    </TableCell>
-                  </TableRow>
-                </TableBody>
-              </table>
-            </div>
+                      <Filter class="w-3 h-3 shrink-0" />
+                      {{ entry.hostname }}
+                    </button>
+                  </TableCell>
+                  <TableCell class="py-2 text-xs">
+                    <pre class="font-mono break-all whitespace-pre-wrap">{{ entry.message }}</pre>
+                  </TableCell>
+                </TableRow>
+              </TableBody>
+            </table>
           </div>
 
           <!-- Mobile cards (< md) -->

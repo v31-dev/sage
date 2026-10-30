@@ -2,14 +2,7 @@
 import { nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { Card, CardContent } from '@/components/ui/card'
 import { Spinner } from '@/components/ui/spinner'
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table'
+import { TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { watchFeed } from '@/lib/updates'
 import { formatDate, levelClass } from '@/lib/utils'
 import { fetchTaskLogs, type TaskLogLine } from '@/services/api'
@@ -88,8 +81,8 @@ onUnmounted(() => stop?.())
     </Card>
     <div v-else ref="viewport" class="min-h-0 overflow-y-auto md:border md:rounded-lg md:bg-card">
       <!-- Desktop table (md+) -->
-      <Table class="hidden md:table table-fixed">
-        <TableHeader class="sticky top-0 bg-muted">
+      <table class="hidden md:table w-full caption-bottom text-sm table-fixed">
+        <TableHeader class="sticky top-0 z-10 bg-muted">
           <TableRow class="hover:bg-muted">
             <TableHead class="pl-4 text-xs w-40">Timestamp</TableHead>
             <TableHead class="text-xs w-20">Level</TableHead>
@@ -116,7 +109,7 @@ onUnmounted(() => stop?.())
             </TableCell>
           </TableRow>
         </TableBody>
-      </Table>
+      </table>
 
       <!-- Mobile cards (< md) -->
       <div class="md:hidden space-y-2">
