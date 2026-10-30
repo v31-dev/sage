@@ -1,10 +1,13 @@
 import { flushPromises, mount } from '@vue/test-utils'
+import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import LogViewer from '@/components/LogViewer.vue'
-import { fetchApplicationLogs, type LogEntry } from '@/services/api'
+import ApplicationLogs from '@/pages/ApplicationLogs.vue'
+import { fetchApplicationLogs, type LogEntry, type WorkerListItem } from '@/services/api'
+import { useAppStore } from '@/stores/app'
 import { followTopics, type Followed } from '../helpers/topics'
 
 vi.mock('@/lib/updates', () => ({ watchState: vi.fn(), watchFeed: vi.fn() }))
+vi.mock('vue-router', () => ({ useRoute: () => ({ params: { projectId: 'demo', appId: 'web' } }) }))
 vi.mock('@/services/api', async importOriginal => ({
   ...(await importOriginal<typeof import('@/services/api')>()),
   fetchApplicationLogs: vi.fn(),
@@ -20,6 +23,21 @@ const line = (id: number, hostname = 'w1', message = `line ${id}`, second = id):
 
 const answer = (lines: LogEntry[], more = false) => ({ lines, more })
 
+const inline = { template: '<div><slot /></div>' }
+const select = {
+  props: ['modelValue'],
+  emits: ['update:modelValue'],
+  template: '<div data-select><slot /></div>',
+}
+const option = { props: ['value'], template: '<div data-option>{{ value }}</div>' }
+const stubs = {
+  Select: select,
+  SelectTrigger: inline,
+  SelectValue: inline,
+  SelectContent: inline,
+  SelectItem: option,
+}
+
 type Viewer = ReturnType<typeof mount>
 
 const messages = (wrapper: Viewer) =>
@@ -34,8 +52,9 @@ async function connect(feed: Followed) {
 }
 
 async function open(first: LogEntry[] = [], more = false) {
+  useAppStore().workers = [{ hostname: 'w1' }, { hostname: 'w2' }] as WorkerListItem[]
   const topics = followTopics()
-  const wrapper = mount(LogViewer, { props: { project: 'demo', application: 'web' } })
+  const wrapper = mount(ApplicationLogs, { global: { stubs } })
   await flushPromises()
   const feed = topics.topic('application-logs:demo-web')
   vi.mocked(fetchApplicationLogs).mockResolvedValueOnce(answer(first, more))
@@ -44,15 +63,14 @@ async function open(first: LogEntry[] = [], more = false) {
 }
 
 async function search(wrapper: Viewer, text: string) {
-  await wrapper.get('input[placeholder="Search logs…"]').setValue(text)
-  await wrapper
-    .findAll('button')
-    .find(found => found.text() === 'Search')!
-    .trigger('click')
+  const field = wrapper.get('#logs-search')
+  await field.setValue(text)
+  await field.trigger('change')
   await flushPromises()
 }
 
 beforeEach(() => {
+  setActivePinia(createPinia())
   vi.mocked(fetchApplicationLogs).mockReset()
   vi.mocked(fetchApplicationLogs).mockResolvedValue(answer([]))
   vi.useFakeTimers({ toFake: ['Date'] })
@@ -63,7 +81,7 @@ afterEach(() => {
   vi.useRealTimers()
 })
 
-describe('the application logs', () => {
+describe('the application logs page', () => {
   it("follow the application's feed, from the newest that match since five minutes ago", async () => {
     const { wrapper, topics } = await open([
       line(1, 'w1', 'started'),
@@ -113,6 +131,20 @@ describe('the application logs', () => {
     await flushPromises()
 
     expect(messages(wrapper)).toEqual(['line 1', 'line 3'])
+  })
+
+  it('offer the workers, and leave out a pushed line from another than the one chosen', async () => {
+    const { wrapper, feed } = await open()
+    const options = wrapper.get('[data-select]').findAll('[data-option]')
+    expect(options.map(found => found.text())).toEqual(['any', 'w1', 'w2'])
+
+    wrapper.findComponent(select).vm.$emit('update:modelValue', 'w2')
+    await flushPromises()
+    feed.push([line(1, 'w1'), line(2, 'w2')])
+    await flushPromises()
+
+    expect(lastQuery()).toMatchObject({ hostname: 'w2', after_id: 0 })
+    expect(messages(wrapper)).toEqual(['line 2'])
   })
 
   it('leave out a pushed line without the text searched, matched anywhere in any case', async () => {

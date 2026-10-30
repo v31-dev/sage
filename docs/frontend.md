@@ -43,8 +43,8 @@ Initial app boot fetches `GET /api` through the Pinia store in `ui/src/stores/ap
 - `release`: the Upgrade page (loading `GET /release`). A check for updates is over when a release with a new `fetched_at` is pushed, or after 60 s with an error.
 - `task-logs:<task>` and `task-logs:<task>/<part>`, feeds: the task log dialogs (`components/TaskLogs.vue`), a task's on the Tasks page and a container's part from its Event Logs; a list (below), of every line, oldest first, with no ceiling (a dialog has no filters).
   - The Tasks page's dialog reads the task's parts (`GET /tasks/{task_id}/parts`) when it opens: a select shows all the lines or one part's, and all the lines carry a Part column (the worker, or the part's id when its event is gone).
-- `application-logs:<project>-<app>`, a feed: the application logs (`components/LogViewer.vue`); a list (below), of the newest 1000 lines that match, oldest first, up to 1000.
-  - Filtered by the worker, the search and the From/To window (From starts five minutes back), applied together.
+- `application-logs:<project>-<app>`, a feed: the application logs page (`pages/ApplicationLogs.vue`); a list (below), of the newest 1000 lines that match, oldest first, up to 1000, in one scroll container that follows new lines while it is at the bottom.
+  - Filtered by the worker (a dropdown, or a click on a line's worker), the search and the From/To window (From starts five minutes back).
 - `requests`, a feed: the Requests page; a list (below), of the newest 1000 requests that match, newest first, up to 1000.
 - `notifications`, a feed: the header's list, whose `load` asks for the newest 20 while it has none and for the rows after its newest `created_at` otherwise, so it also recovers what it missed; it merges rows by id, newest first, so a row it has is not shown twice and one that arrives out of order lands in place. The bell's marker is on while the newest id is above the last one seen, which is kept in `localStorage` when the bell is opened.
 
@@ -54,6 +54,8 @@ The four lists follow one contract, `useFeedList` (`lib/feedList.ts`):
 - Each time the socket connects, what the route returns given the newest row held is merged in: the rows after it (`after_id`), or for the finished tasks the newest again.
 - A change of filter starts the list again with a fresh load, and a load asked for filters since changed is dropped.
 - A list with a ceiling keeps its newest rows; a note says when the route had more or the oldest were dropped, and its tooltip that only the latest are shown and how to see older ones.
+
+The Requests page, the Tasks page and the application logs share one filter bar (`components/FilterBar.vue`): a dropdown with a choice for any applies when chosen, a field once it is committed (Enter, or leaving it) and only when its value changed; the page holds the filters, `''` for none. The From/To fields hold local times, which `localTimeToUTC` (`lib/utils`) turns into the UTC the routes take, and `toLocalTime` back.
 
 The indicator at the top left of the sidebar (`components/layout/SocketStatus.vue`, on the icon of the manager's name) shows the connection from the reactive `connection` object of `lib/updates.ts`: connecting, connected over a WebSocket, connected over the slower fallback, or not connected. It pulses each time the manager's heartbeat (its ping, every 10 s) arrives, and its tooltip says when the last one was.
 

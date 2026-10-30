@@ -1,22 +1,15 @@
 <script setup lang="ts">
-import { ref, computed, reactive, watch, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { Spinner } from '@/components/ui/spinner'
 import { toast } from 'vue-sonner'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
 import FieldHelp from '@/components/FieldHelp.vue'
+import FilterBar, { type FilterDropdown, type FilterField } from '@/components/FilterBar.vue'
 import TaskCard from './TaskCard.vue'
 import TaskTable from './TaskTable.vue'
 import { useFeedList } from '@/lib/feedList'
 import { watchState } from '@/lib/updates'
+import { localTimeToUTC } from '@/lib/utils'
 import {
   fetchTaskHistory,
   fetchTaskHistoryFilters,
@@ -31,13 +24,11 @@ import {
 // The finished tasks: the newest load at first, and the list grows as tasks finish, up to the ceiling.
 const FIRST = 100
 const CEILING = 1000
-// A dropdown's choice for no filter, since a select item cannot have an empty value.
-const ANY = 'any'
 
 const queue = ref<QueueResponse>({ running: [], queued: [] })
 const choices = ref<TaskHistoryFilters>({ names: [], executors: [], statuses: [] })
 // From and To are local times, as their fields hold them.
-const filters = reactive({ name: ANY, executor: ANY, status: ANY, scope: '', from: '', to: '' })
+const filters = ref({ name: '', executor: '', status: '', scope: '', from: '', to: '' })
 const queueLoaded = ref(false)
 const failed = ref(false)
 let stopQueue: (() => void) | undefined
@@ -47,25 +38,22 @@ const queueSections = computed(() => [
   { title: 'Queued', section: 'queued' as const, rows: queue.value.queued },
 ])
 
-const dropdowns = computed(() => [
-  { key: 'name' as const, label: 'Name', any: 'Any name', options: choices.value.names },
-  {
-    key: 'executor' as const,
-    label: 'Executor',
-    any: 'Any executor',
-    options: choices.value.executors,
-  },
-  { key: 'status' as const, label: 'Status', any: 'Any status', options: choices.value.statuses },
+const dropdowns = computed<FilterDropdown[]>(() => [
+  { key: 'name', label: 'Name', any: 'Any name', options: choices.value.names },
+  { key: 'executor', label: 'Executor', any: 'Any executor', options: choices.value.executors },
+  { key: 'status', label: 'Status', any: 'Any status', options: choices.value.statuses },
 ])
 
-const query = computed<TaskHistoryQuery>(() => ({
-  name: filters.name === ANY ? '' : filters.name,
-  executor: filters.executor === ANY ? '' : filters.executor,
-  status: filters.status === ANY ? '' : filters.status,
-  scope: filters.scope,
-  from_ts: filters.from ? new Date(filters.from).toISOString() : '',
-  to_ts: filters.to ? new Date(filters.to).toISOString() : '',
-}))
+const fields: FilterField[] = [
+  { key: 'scope', label: 'Scope', type: 'text', placeholder: 'e.g. app:demo-web or app:demo*' },
+  { key: 'from', label: 'From', type: 'datetime-local' },
+  { key: 'to', label: 'To', type: 'datetime-local' },
+]
+
+const query = computed<TaskHistoryQuery>(() => {
+  const { name, executor, status, scope, from, to } = filters.value
+  return { name, executor, status, scope, from_ts: localTimeToUTC(from), to_ts: localTimeToUTC(to) }
+})
 
 function newestFinishedFirst(a: FinishedTask, b: FinishedTask) {
   if (a.finished_at !== b.finished_at) return a.finished_at < b.finished_at ? 1 : -1
@@ -102,11 +90,6 @@ watch(finishedError, error => {
   failed.value = true
   toast.error('Failed to load tasks')
 })
-
-// A field's value once it is committed (Enter, or leaving the field), not at each key.
-function commit(key: 'scope' | 'from' | 'to', event: Event) {
-  filters[key] = (event.target as HTMLInputElement).value.trim()
-}
 
 onMounted(async () => {
   const watched = watchState('tasks', fetchTasks, next => (queue.value = next))
@@ -170,49 +153,7 @@ onUnmounted(() => stopQueue?.())
             <CardTitle>Finished ({{ total ?? 0 }})</CardTitle>
           </CardHeader>
           <CardContent class="space-y-4">
-            <div class="grid gap-3 sm:grid-cols-3 lg:grid-cols-6">
-              <div v-for="dropdown in dropdowns" :key="dropdown.key" class="space-y-1">
-                <Label :for="`task-${dropdown.key}`" class="text-xs">{{ dropdown.label }}</Label>
-                <Select v-model="filters[dropdown.key]">
-                  <SelectTrigger :id="`task-${dropdown.key}`" class="w-full">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem :value="ANY">{{ dropdown.any }}</SelectItem>
-                    <SelectItem v-for="option in dropdown.options" :key="option" :value="option">
-                      {{ option }}
-                    </SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div class="space-y-1">
-                <Label for="task-scope" class="text-xs">Scope</Label>
-                <Input
-                  id="task-scope"
-                  :model-value="filters.scope"
-                  placeholder="e.g. app:demo-web or app:demo*"
-                  @change="commit('scope', $event)"
-                />
-              </div>
-              <div class="space-y-1">
-                <Label for="task-from" class="text-xs">From</Label>
-                <Input
-                  id="task-from"
-                  type="datetime-local"
-                  :model-value="filters.from"
-                  @change="commit('from', $event)"
-                />
-              </div>
-              <div class="space-y-1">
-                <Label for="task-to" class="text-xs">To</Label>
-                <Input
-                  id="task-to"
-                  type="datetime-local"
-                  :model-value="filters.to"
-                  @change="commit('to', $event)"
-                />
-              </div>
-            </div>
+            <FilterBar id="task" v-model="filters" :dropdowns="dropdowns" :fields="fields" />
 
             <p
               v-if="total !== null && total > finished.length"
