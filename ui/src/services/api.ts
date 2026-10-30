@@ -1,5 +1,5 @@
 // Every call to the manager's API, each a function over `request`, and the shapes it answers with.
-import { request } from '@/lib/api'
+import { API_ROOT, request } from '@/lib/api'
 import { startDownload } from '@/lib/utils'
 
 // The fields a create or an update sends; the manager checks them.
@@ -309,6 +309,39 @@ export const resumeSage = () => request<{ state: AppInfo['state'] }>('POST', '/s
 export const resyncTraefik = () => request<unknown>('POST', '/settings/resync_traefik')
 
 export const resyncWorkers = () => request<unknown>('POST', '/settings/resync_workers')
+
+// The debug capture: every line the manager logs, written to a file until the setting's stop time.
+export interface DebugSetting extends Setting {
+  value: { stop_at: string | null }
+}
+
+export interface DebugFile {
+  name: string
+  size: number
+  modified_at: string
+  // The file the capture on writes.
+  active: boolean
+}
+
+// The capture is on while `stop_at` is set. The `debug` topic.
+export interface DebugCapture {
+  stop_at: string | null
+  files: DebugFile[]
+}
+
+export const fetchDebugCapture = () => request<DebugCapture>('GET', '/settings/debug/capture')
+
+// Starts a capture until `stopAt`, moves the stop time of the one on, or stops it (null).
+export const setDebugStop = (stopAt: string | null) =>
+  request<DebugSetting>('PUT', '/settings/debug', { body: { value: { stop_at: stopAt } } })
+
+const debugFilePath = (name: string) => `/settings/debug/files/${encodeURIComponent(name)}`
+
+// The manager sends the file itself, which the browser saves.
+export const downloadDebugFile = (name: string) =>
+  startDownload(`${API_ROOT}${debugFilePath(name)}`)
+
+export const deleteDebugFile = (name: string) => request<unknown>('DELETE', debugFilePath(name))
 
 export type MetricsPeriod = '1m' | '1h' | '24h' | '1w'
 

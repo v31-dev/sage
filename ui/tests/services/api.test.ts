@@ -234,6 +234,38 @@ const CALLS: Array<[string, () => Promise<unknown>, string, string, object, unkn
     undefined,
   ],
   [
+    'fetchDebugCapture',
+    () => api.fetchDebugCapture(),
+    'GET',
+    '/api/settings/debug/capture',
+    {},
+    undefined,
+  ],
+  [
+    'setDebugStop',
+    () => api.setDebugStop('2026-01-01T13:00:00.000Z'),
+    'PUT',
+    '/api/settings/debug',
+    {},
+    { value: { stop_at: '2026-01-01T13:00:00.000Z' } },
+  ],
+  [
+    'setDebugStop, to stop',
+    () => api.setDebugStop(null),
+    'PUT',
+    '/api/settings/debug',
+    {},
+    { value: { stop_at: null } },
+  ],
+  [
+    'deleteDebugFile',
+    () => api.deleteDebugFile('sage-debug-2026-01-01T12-00-00Z.log'),
+    'DELETE',
+    '/api/settings/debug/files/sage-debug-2026-01-01T12-00-00Z.log',
+    {},
+    undefined,
+  ],
+  [
     'fetchWorkerMetrics, the hour by default',
     () => api.fetchWorkerMetrics('w1'),
     'GET',
@@ -334,7 +366,9 @@ describe('every call', () => {
     const calls = Object.entries(api)
       .filter(([, value]) => typeof value === 'function')
       .map(([name]) => name)
-      .filter(name => !['downloadBackup', 'downloadVolumeBackup'].includes(name))
+      .filter(
+        name => !['downloadBackup', 'downloadVolumeBackup', 'downloadDebugFile'].includes(name)
+      )
     expect(calls.filter(name => !named.has(name))).toEqual([])
   })
 })
@@ -373,5 +407,21 @@ describe('downloading a backup', () => {
 
     await expect(api.downloadBackup(3)).rejects.toThrow('S3 is not configured.')
     expect(clicked).toEqual([])
+  })
+})
+
+describe('downloading a debug capture file', () => {
+  it('opens the file the manager sends, without asking for a link first', () => {
+    const clicked: string[] = []
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (
+      this: HTMLAnchorElement
+    ) {
+      clicked.push(new URL(this.href).pathname)
+    })
+
+    api.downloadDebugFile('sage-debug-2026-01-01T12-00-00Z.log')
+
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(clicked).toEqual(['/api/settings/debug/files/sage-debug-2026-01-01T12-00-00Z.log'])
   })
 })

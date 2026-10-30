@@ -77,9 +77,9 @@ class Manager(
                                   notify=self._queue_changed)
 
       # Initialize all services
-      Logs()
       Database()
       Settings()
+      Logs().start_capture()
       Notifications()
       Metrics().start_sampler()
       WorkerReports()

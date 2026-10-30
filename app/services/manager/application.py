@@ -8,7 +8,7 @@ from services.db import APPLICATION_BUSY_STATUSES, Application, Container, Deplo
 from services.updates import Updates, UpdateSource
 from services.worker_reports import WorkerReports
 from utils.common import format_yaml, parse_multiline_kv, utcnow
-from utils.logging import generate_task_id_token, task_id
+from utils.logging import generate_task_id_token, sub_task_id, task_id
 from utils.queue import OnConflict
 
 from ._common import app_dir
@@ -123,7 +123,7 @@ class ApplicationMixin:
     # Create an event for tracking with a different task id.
     container_task_id = generate_task_id_token()
     exception_message = None
-    task_id_token = None
+    sub_task_token = None
 
     try:
       Event.create(
@@ -138,7 +138,7 @@ class ApplicationMixin:
       logger.info(
           f"Deploying application {config.qualified_name} container to worker {
               container.worker.hostname} with task id {container_task_id}...")
-      task_id_token = task_id.set(container_task_id)
+      sub_task_token = sub_task_id.set(container_task_id)
 
       if not self.is_worker_online(container.worker.hostname):
         raise Exception(f"Worker {container.worker.hostname} is offline.")
@@ -278,8 +278,8 @@ class ApplicationMixin:
       deployment_status = "error"
       exception_message = str(e)
     finally:
-      if task_id_token is not None:
-        task_id.reset(task_id_token)
+      if sub_task_token is not None:
+        sub_task_id.reset(sub_task_token)
 
     container.status = deployment_status
     save_container(container)
@@ -411,7 +411,7 @@ class ApplicationMixin:
     container_task_id = generate_task_id_token()
     was_inactive = container.status == "inactive"
     exception_message = None
-    task_id_token = None
+    sub_task_token = None
 
     try:
       Event.create(
@@ -425,7 +425,7 @@ class ApplicationMixin:
       logger.info(
           f"Stopping application {container.application.qualified_name} container on worker {
               container.worker.hostname} with task id {container_task_id}...")
-      task_id_token = task_id.set(container_task_id)
+      sub_task_token = sub_task_id.set(container_task_id)
       container_dir = f"{self.worker_home_dir}/applications/{container.application.qualified_name}"
 
       if was_inactive:
@@ -446,8 +446,8 @@ class ApplicationMixin:
       deployment_status = "error"
       exception_message = str(e)
     finally:
-      if task_id_token is not None:
-        task_id.reset(task_id_token)
+      if sub_task_token is not None:
+        sub_task_id.reset(sub_task_token)
 
     container.status = deployment_status
     save_container(container)

@@ -1,18 +1,32 @@
+import asyncio
 import itertools
 import logging
+import os
+import queue
 import random
+import re
 import sqlite3
 import threading
+import time
 import traceback
-from datetime import timedelta
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
 
 import config
 import services.logs as logs_module
+from services.base import Singleton
 from services.logs import Logs, _CaptureHandler
+from services.settings import Settings
+from services.updates import Updates, UpdateSource
 from utils.common import utcnow
+from utils.executor import run_in_executor_with_context
+from utils.logging import TaskFailed, TaskLines, sub_task_id, task_id, task_lines
+from utils.queue import TaskQueue
+
+log = logging.getLogger("tests.task")
 
 
 def stamp(index):
@@ -26,20 +40,30 @@ def lines(first, count, host="w1", word="line"):
           for index in range(first, first + count)]
 
 
+def task_entries(first, count, task="t1", sub=""):
+  return [{"task_id": task, "sub_task_id": sub, "ts": stamp(index), "level": "INFO", "logger": "tests.task",
+           "message": f"step {index} of the task, pulling and starting the containers"}
+          for index in range(first, first + count)]
+
+
 @pytest.fixture
 def logs(data_dir):
-  """The service without its capture of the manager's own logs, which would write from another thread."""
+  """The service without its capture, which would write from another thread."""
   logs = Logs()
-  for handler in [h for h in logging.getLogger().handlers if isinstance(h, _CaptureHandler)]:
-    logging.getLogger().removeHandler(handler)
   yield logs
   for shard in logs._dbs["logs"].values():
     shard["db"].close()
 
 
-def rows(logs, container):
-  shard = logs.get_logs_db(container)
-  return [row.ts for row in shard["models"]["ContainerLogs"].select().order_by(shard["models"]["ContainerLogs"].ts)]
+def rows(logs, name):
+  shard = logs._store(name)
+  return [row.ts for row in shard["lines"].select().order_by(shard["lines"].ts)]
+
+
+def close_connections(logs):
+  """Close the connections the calling thread opened: one to each file it used."""
+  for shard in list(logs._dbs["logs"].values()):
+    shard["db"].close()
 
 
 def file_bytes(logs, container):
@@ -79,8 +103,8 @@ class TestStoring:
     logs.write_logs("web", lines(0, 20))
     assert [row["ts"] for row in logs.query_logs("web", search="line7")] == [stamp(7)]
 
-  @pytest.mark.parametrize("name", ["", "../etc", "Web", "a b", "a/b"])
-  def test_a_container_name_that_could_leave_the_logs_directory_is_refused(self, logs, name):
+  @pytest.mark.parametrize("name", ["", "../etc", "Web", "a b", "a/b", "tasks"])
+  def test_a_container_name_that_could_leave_the_logs_directory_or_is_the_task_logs_is_refused(self, logs, name):
     with pytest.raises(ValueError):
       logs.get_logs_db(name)
 
@@ -99,6 +123,153 @@ class TestStoring:
     shard = logs.get_logs_db("old")
     indexes = [row[1] for row in shard["db"].execute_sql("PRAGMA index_list('containerlogs')").fetchall()]
     assert "containerlogs_ts" in indexes
+
+
+class Tasks:
+  """A queue whose tasks' lines are captured as the service captures them, and written once the tasks are done."""
+
+  def __init__(self, logs):
+    self.logs = logs
+    self.captured = queue.SimpleQueue()
+    self.handler = _CaptureHandler(self.captured, lambda: False)
+    self.pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="lane")
+    self.queue = TaskQueue(frozenset(["app"]), {"app": self.pool}, record=lambda task, status: None, notify=lambda: None)
+
+  def add(self, task, scope="app:a", **kwargs):
+    return self.queue.add_task(task=task, scopes={scope}, executor="app", **kwargs)
+
+  async def run(self):
+    self.queue.dispatch_tick()
+    while self.queue.snapshot()["running"]:
+      await asyncio.sleep(0)
+      self.queue.dispatch_tick()
+    while not self.captured.empty():
+      _, entry = self.captured.get()
+      self.logs.write_task_line(entry)
+
+  def messages(self, task_id, sub_task_id=""):
+    return [line["message"] for line in self.logs.query_task_logs(task_id, sub_task_id)["lines"]]
+
+
+@pytest.fixture
+def tasks(logs, caplog):
+  caplog.set_level(logging.INFO)
+  tasks = Tasks(logs)
+  logging.getLogger().addHandler(tasks.handler)
+  yield tasks
+  logging.getLogger().removeHandler(tasks.handler)
+  tasks.pool.shutdown(wait=False, cancel_futures=True)
+
+
+class TestTaskLines:
+  async def test_a_task_lines_are_stored_under_its_id_in_order(self, tasks):
+    async def deploy():
+      log.info("pulling the image")
+      log.warning("the image is old")
+
+    tasks.add(deploy, task_id="t1")
+    await tasks.run()
+    assert [(line["level"], line["logger"], line["message"]) for line in tasks.logs.query_task_logs("t1")["lines"]] == [
+        ("INFO", "utils.queue", "deploy: started"),
+        ("INFO", "tests.task", "pulling the image"),
+        ("WARNING", "tests.task", "the image is old"),
+        ("INFO", "utils.queue", "deploy: completed"),
+    ]
+
+  async def test_the_request_lines_before_it_queues_the_task_are_not_the_task_lines(self, tasks):
+    async def deploy():
+      log.info("deploying")
+
+    token = task_id.set("t1")
+    try:
+      log.info("validating the request")
+      tasks.add(deploy, task_id="t1")
+    finally:
+      task_id.reset(token)
+    log.info("outside any request or task")
+    await tasks.run()
+    assert tasks.messages("t1") == ["deploy: started", "deploying", "deploy: completed"]
+    assert tasks.logs._count(tasks.logs.task_logs_db()) == 3
+
+  async def test_a_sync_task_and_what_a_task_runs_in_a_thread_are_its_lines(self, tasks):
+    def build():
+      log.info("built")
+
+    async def deploy():
+      await run_in_executor_with_context(lambda: log.info("offloaded"))
+
+    tasks.add(build, task_id="t1")
+    tasks.add(deploy, scope="app:b", task_id="t2")
+    await tasks.run()
+    assert tasks.messages("t1") == ["build: started", "built", "build: completed"]
+    assert tasks.messages("t2") == ["deploy: started", "offloaded", "deploy: completed"]
+
+  async def test_tasks_running_together_keep_their_lines_apart(self, tasks):
+    async def chatty(word):
+      for index in range(5):
+        log.info(f"{word} {index}")
+        await asyncio.sleep(0)
+
+    tasks.add(chatty, scope="app:a", params={"word": "a"}, task_id="ta")
+    tasks.add(chatty, scope="app:b", params={"word": "b"}, task_id="tb")
+    await tasks.run()
+    for word in ("a", "b"):
+      assert tasks.messages(f"t{word}") == ["chatty: started", *(f"{word} {index}" for index in range(5)), "chatty: completed"]
+
+  async def test_a_container_part_is_read_with_its_task_or_on_its_own(self, tasks):
+    async def deploy():
+      log.info("deploying two containers")
+      for part in ("p1", "p2"):
+        token = sub_task_id.set(part)
+        try:
+          log.info(f"container {part}")
+        finally:
+          sub_task_id.reset(token)
+
+    tasks.add(deploy, task_id="t1")
+    await tasks.run()
+    whole = ["deploy: started", "deploying two containers", "container p1", "container p2", "deploy: completed"]
+    assert tasks.messages("t1") == whole
+    assert tasks.messages("t1", "p2") == ["container p2"]
+    assert tasks.messages("t1", "t1") == whole, "a part recorded under the task's own id is the whole task"
+
+  async def test_a_quiet_task_that_succeeds_leaves_no_lines(self, tasks):
+    async def sync():
+      log.info("nothing changed")
+
+    tasks.add(sync, task_id="q1", quiet=True)
+    await tasks.run()
+    assert tasks.messages("q1") == []
+
+  @pytest.mark.parametrize("quiet", [True, False])
+  async def test_a_task_that_fails_keeps_each_of_its_lines_once(self, tasks, quiet):
+    async def sync():
+      log.info("checking w1")
+      raise TaskFailed()
+
+    tasks.add(sync, task_id="q1", quiet=quiet)
+    await tasks.run()
+    assert tasks.messages("q1") == ["sync: started", "checking w1", "sync: failed"]
+
+  async def test_a_crash_keeps_its_traceback_in_the_message(self, tasks):
+    async def sync():
+      raise RuntimeError("boom")
+
+    tasks.add(sync, task_id="q1", quiet=True)
+    await tasks.run()
+    failed = tasks.messages("q1")[-1]
+    assert failed.startswith("sync: failed\nTraceback") and "RuntimeError: boom" in failed
+
+  def test_a_query_gives_the_newest_lines_and_says_when_there_were_more(self, logs, monkeypatch):
+    monkeypatch.setattr(config, "LOG_QUERY_MAX_ROWS", 5)
+    for entry in task_entries(0, 5):
+      logs.write_task_line(entry)
+    assert logs.query_task_logs("t1")["more"] is False
+    for entry in task_entries(5, 2):
+      logs.write_task_line(entry)
+    result = logs.query_task_logs("t1")
+    assert [line["ts"] for line in result["lines"]] == [stamp(index) for index in range(2, 7)]
+    assert result["more"] is True
 
 
 class TestTrimShard:
@@ -154,7 +325,7 @@ class TestTrimShard:
     logs.write_logs("web", lines(0, 6000))
     big = file_bytes(logs, "web")
     shard = logs.get_logs_db("web")
-    shard["models"]["ContainerLogs"].delete().where(shard["models"]["ContainerLogs"].ts < stamp(5500)).execute()
+    shard["lines"].delete().where(shard["lines"].ts < stamp(5500)).execute()
     shard["db"].execute_sql("INSERT INTO containerlogsindex(containerlogsindex) VALUES('optimize')")
     limit(shard=big // 3)
     assert logs._live_bytes(shard) < config.LOG_SHARD_MAX_BYTES < big / config.LOG_SHARD_VACUUM_RATIO
@@ -165,7 +336,7 @@ class TestTrimShard:
   def test_a_file_only_a_little_over_its_limit_is_not_rewritten(self, logs, small, limit):
     logs.write_logs("web", lines(0, 2000))
     shard = logs.get_logs_db("web")
-    shard["models"]["ContainerLogs"].delete().where(shard["models"]["ContainerLogs"].ts < stamp(1500)).execute()
+    shard["lines"].delete().where(shard["lines"].ts < stamp(1500)).execute()
     before = file_bytes(logs, "web")
     limit(shard=before)
     assert logs.trim_shard("web") == 0
@@ -202,14 +373,14 @@ class TestSizeCheckAfterWrites:
     logs.write_logs("api", lines(0, 3000))
     assert len(rows(logs, "api")) < 3000, "the first write to a shard is checked at once"
 
-  def test_the_manager_own_logs_are_trimmed_too(self, logs, small, limit, clock):
+  def test_the_task_logs_are_trimmed_too(self, logs, small, limit, clock):
     limit(shard=300_000)
-    for entry in lines(0, 3000):
-      logs.append_self_log(entry)
-    assert len(rows(logs, "sage")) == 3000
+    for entry in task_entries(0, 3000):
+      logs.write_task_line(entry)
+    assert len(rows(logs, "tasks")) == 3000
     clock[0] += config.LOG_SIZE_CHECK_SECONDS
-    logs.append_self_log(lines(3000, 1)[0])
-    left = rows(logs, "sage")
+    logs.write_task_line(task_entries(3000, 1)[0])
+    left = rows(logs, "tasks")
     assert len(left) < 3000 and left[-1] == stamp(3000)
 
   def test_an_error_while_trimming_never_fails_the_write(self, logs, small, clock, monkeypatch, caplog):
@@ -281,6 +452,15 @@ class TestTrimTotal:
     monkeypatch.setattr(logs_module.shutil, "disk_usage", lambda path: SimpleNamespace(total=10 * 2**30))
     assert logs.total_limit() == 2**30
 
+  def test_the_task_logs_count_and_lose_their_oldest_lines_like_a_container(self, logs, small, limit):
+    self.fill(logs)
+    for entry in task_entries(0, 1500):
+      logs.write_task_line(entry)
+    limit(total=(self.total(logs) + logs._live_bytes(logs.task_logs_db())) // 2)
+    assert logs.trim_total() > 0
+    assert config.LOG_KEEP_NEWEST_ROWS <= len(rows(logs, "tasks")) < 1500
+    assert len(rows(logs, "new-app")) == 1500
+
   def test_the_total_is_checked_after_a_write(self, logs, small, limit, monkeypatch):
     self.fill(logs)
     limit(total=self.total(logs) // 2)
@@ -297,11 +477,20 @@ class TestCleanup:
     logs.write_logs(kept, [{"hostname": "w1", "ts": old, "stream": "stdout", "message": "stale"},
                            {"hostname": "w1", "ts": fresh, "stream": "stdout", "message": "recent"}])
     logs.write_logs("deleted-app", lines(0, 5))
+    logs.write_logs("sage", lines(0, 5))
     logs.write_logs("traefik", lines(0, 5))
     logs.cleanup()
     assert [row["message"] for row in logs.query_logs(kept)] == ["recent"]
     assert not (logs.db_path / "logs" / "deleted-app.db").exists()
+    assert not (logs.db_path / "logs" / "sage.db").exists()
     assert (logs.db_path / "logs" / "traefik.db").exists()
+
+  def test_the_task_logs_are_kept_and_lose_their_lines_past_the_retention(self, logs, db):
+    old = (utcnow() - timedelta(days=config.RETENTION_DAYS + 1)).isoformat()
+    logs.write_task_line({**task_entries(0, 1)[0], "ts": old, "message": "stale"})
+    logs.write_task_line({**task_entries(1, 1)[0], "ts": utcnow().isoformat(), "message": "recent"})
+    logs.cleanup()
+    assert [line["message"] for line in logs.query_task_logs("t1")["lines"]] == ["recent"]
 
   def test_it_applies_the_size_limits(self, logs, application, small, limit):
     name = application.qualified_name
@@ -339,17 +528,22 @@ class TestUnderLoad:
           logs.write_logs(container, next_lines(rng, container))
       except Exception as error:
         errors.append(traceback.format_exc())
+      finally:
+        close_connections(logs)
 
-    def self_logger():
+    def task_logger():
       rng = random.Random(99)
       try:
         for _ in range(25):
-          for entry in next_lines(rng, "sage"):
-            logs.append_self_log(entry)
+          for entry in next_lines(rng, "tasks"):
+            logs.write_task_line({"task_id": "t1", "sub_task_id": "", "ts": entry["ts"], "level": "INFO",
+                                  "logger": "tests.task", "message": entry["message"]})
       except Exception as error:
         errors.append(traceback.format_exc())
+      finally:
+        close_connections(logs)
 
-    workers = [threading.Thread(target=writer, args=(seed,)) for seed in range(4)] + [threading.Thread(target=self_logger)]
+    workers = [threading.Thread(target=writer, args=(seed,)) for seed in range(4)] + [threading.Thread(target=task_logger)]
     for worker in workers:
       worker.start()
     for worker in workers:
@@ -357,14 +551,15 @@ class TestUnderLoad:
     assert errors == [], errors[0]
 
     logs.trim_total()
-    for container in containers + ["sage"]:
-      shard = logs.get_logs_db(container)
+    for name in containers + ["tasks"]:
+      shard = logs._store(name)
       assert shard["db"].execute_sql("PRAGMA integrity_check").fetchone()[0] == "ok"
-      shard["db"].execute_sql("INSERT INTO containerlogsindex(containerlogsindex, rank) VALUES('integrity-check', 1)")
-      assert logs._live_bytes(shard) <= config.LOG_SHARD_MAX_BYTES, container
-      assert rows(logs, container)[-1] == newest[container], f"the newest line of {container} was trimmed"
-      assert len(rows(logs, container)) >= config.LOG_KEEP_NEWEST_ROWS
-    assert sum(logs._live_bytes(logs.get_logs_db(name)) for name in containers + ["sage"]) <= config.LOG_TOTAL_MAX_BYTES
+      if shard["index"] is not None:
+        shard["db"].execute_sql("INSERT INTO containerlogsindex(containerlogsindex, rank) VALUES('integrity-check', 1)")
+      assert logs._live_bytes(shard) <= config.LOG_SHARD_MAX_BYTES, name
+      assert rows(logs, name)[-1] == newest[name], f"the newest line of {name} was trimmed"
+      assert len(rows(logs, name)) >= config.LOG_KEEP_NEWEST_ROWS
+    assert sum(logs._live_bytes(logs._store(name)) for name in containers + ["tasks"]) <= config.LOG_TOTAL_MAX_BYTES
 
   def test_a_trim_while_another_thread_writes_the_same_shard(self, logs, small, limit, monkeypatch):
     monkeypatch.setattr(config, "LOG_SIZE_CHECK_SECONDS", 10**9)
@@ -378,6 +573,8 @@ class TestUnderLoad:
           logs.write_logs("web", lines(400 + index * 5, 5))
       except Exception:
         errors.append(traceback.format_exc())
+      finally:
+        close_connections(logs)
 
     writer = threading.Thread(target=write)
     writer.start()
@@ -389,3 +586,306 @@ class TestUnderLoad:
       writer.join()
     assert errors == [], errors[0] if errors else ""
     assert logs.get_logs_db("web")["db"].execute_sql("PRAGMA integrity_check").fetchone()[0] == "ok"
+
+
+debug_log = logging.getLogger("tests.debug")
+
+
+def eventually(check, timeout=5.0):
+  """Wait for the drain thread to have done what `check` looks for."""
+  deadline = time.monotonic() + timeout
+  while not check():
+    assert time.monotonic() < deadline, "the drain thread did not get there in time"
+    time.sleep(0.01)
+
+
+def age(path, when: datetime):
+  """Set when a file was last written, a UTC time."""
+  seconds = when.replace(tzinfo=timezone.utc).timestamp()
+  os.utime(path, (seconds, seconds))
+
+
+class Capture:
+  """The service as the manager starts it, once the settings are loaded: its capture on its own thread."""
+
+  def __init__(self):
+    self.started = []
+    self.logs = self._start()
+
+  def _start(self):
+    logs = Logs()
+    logs.start_capture()
+    self.started.append(logs)
+    return logs
+
+  def restart(self):
+    """Sage stops and starts again on the same data."""
+    self.stop()
+    Singleton._instances.pop(Logs)
+    Singleton._instances.pop(Settings)
+    self.logs = self._start()
+    return self.logs
+
+  def stop(self):
+    for handler in [h for h in logging.getLogger().handlers if isinstance(h, _CaptureHandler)]:
+      logging.getLogger().removeHandler(handler)
+    for logs in self.started:
+      logs._queue.put(("close", None))
+
+  def text(self, name=None) -> str:
+    path = self.logs.debug_dir / (name or self.logs.debug_file)
+    return path.read_text() if path.exists() else ""
+
+
+@pytest.fixture
+def capture(db, clock, caplog):
+  caplog.set_level(logging.INFO)
+  capture = Capture()
+  yield capture
+  capture.stop()
+  for logs in capture.started:
+    for shard in logs._dbs["logs"].values():
+      shard["db"].close()
+
+
+@pytest.fixture
+def fired(register):
+  """The sources the service fires."""
+  fired = []
+  register(Updates, SimpleNamespace(changed=fired.append))
+  return fired
+
+
+FIRST_FILE = "sage-debug-2026-01-01T12-00-00Z.log"
+
+
+class TestDebugCapture:
+  def test_every_line_goes_to_its_file_with_its_prefix_until_the_capture_is_stopped(self, capture):
+    logs = capture.logs
+    logs.set_debug_stop("2026-01-01T13:00:00")
+    token = task_id.set("abc12345")
+    try:
+      debug_log.info("inside a task")
+    finally:
+      task_id.reset(token)
+    debug_log.warning("outside of one")
+    logs.set_debug_stop(None)
+    debug_log.info("after the stop")
+
+    assert logs.debug_file is None
+    assert Settings().get("debug", "stop_at") is None
+    eventually(lambda: "Debug capture stopped" in capture.text(FIRST_FILE))
+    text = capture.text(FIRST_FILE)
+    assert re.search(r"^\[.+\] \[INFO +\] \[tests\.debug +\] \[abc12345\] inside a task$", text, re.M)
+    assert re.search(r"^\[.+\] \[WARNING +\] \[tests\.debug +\] \[\] outside of one$", text, re.M)
+    assert "after the stop" not in text
+
+  @pytest.mark.parametrize("quiet", [False, True], ids=["task", "quiet task"])
+  def test_a_task_line_is_in_the_file_when_it_is_logged(self, capture, quiet):
+    logs = capture.logs
+    logs.set_debug_stop("2026-01-01T13:00:00")
+    tokens = task_id.set("t1"), task_lines.set(TaskLines(quiet=quiet))
+    try:
+      debug_log.info("a task line")
+    finally:
+      task_lines.reset(tokens[1])
+      task_id.reset(tokens[0])
+
+    eventually(lambda: "[t1] a task line" in capture.text())
+    if quiet:
+      assert logs.query_task_logs("t1")["lines"] == []
+    else:
+      eventually(lambda: [line["message"] for line in logs.query_task_logs("t1")["lines"]] == ["a task line"])
+
+  @pytest.mark.parametrize("stop_at", ["2026-01-01T12:00:00", "2026-01-01T11:30:00Z", "tomorrow"])
+  def test_a_stop_time_that_is_not_ahead_or_not_a_time_is_refused(self, capture, stop_at):
+    with pytest.raises(ValueError):
+      capture.logs.set_debug_stop(stop_at)
+    assert capture.logs.debug_file is None
+    assert Settings().get("debug", "stop_at") is None
+
+  @pytest.mark.parametrize("stop_at", ["2026-01-01T18:30:00+05:30", "2026-01-01T13:00:00.000Z"])
+  def test_a_stop_time_with_a_zone_is_kept_in_utc(self, capture, stop_at):
+    capture.logs.set_debug_stop(stop_at)
+    assert Settings().get("debug", "stop_at") == "2026-01-01T13:00:00"
+
+  def test_moving_the_stop_time_keeps_the_capture_in_its_file(self, capture, clock):
+    logs = capture.logs
+    logs.set_debug_stop("2026-01-01T13:00:00")
+    clock.advance(timedelta(minutes=5))
+    logs.set_debug_stop("2026-01-01T14:00:00")
+
+    assert logs.debug_file == FIRST_FILE
+    eventually(lambda: "on until 2026-01-01T14:00:00" in capture.text())
+    assert [file["name"] for file in logs.debug_files()] == [FIRST_FILE]
+
+  def test_each_capture_has_its_own_file_and_they_are_listed_newest_first(self, capture, clock):
+    logs = capture.logs
+    logs.set_debug_stop("2026-01-01T13:00:00")
+    logs.set_debug_stop(None)
+    clock.advance(timedelta(minutes=1))
+    logs.set_debug_stop("2026-01-01T13:00:00")
+
+    eventually(lambda: len(logs.debug_files()) == 2)
+    assert [(file["name"], file["active"]) for file in logs.debug_files()] == [
+        ("sage-debug-2026-01-01T12-01-00Z.log", True), (FIRST_FILE, False)]
+
+  def test_the_minutely_check_stops_a_capture_whose_time_has_passed(self, capture, clock):
+    logs = capture.logs
+    logs.set_debug_stop("2026-01-01T12:30:00")
+    clock.advance(timedelta(minutes=29))
+    logs.follow_debug_setting()
+    assert logs.debug_file == FIRST_FILE
+
+    clock.advance(timedelta(minutes=1))
+    logs.follow_debug_setting()
+    debug_log.info("after the stop")
+
+    assert logs.debug_file is None
+    assert Settings().get("debug", "stop_at") is None
+    eventually(lambda: "Debug capture stopped" in capture.text(FIRST_FILE))
+    assert "after the stop" not in capture.text(FIRST_FILE)
+
+  def test_the_check_follows_a_setting_changed_under_it(self, capture):
+    """A restore puts back the backup's setting, which the capture follows from the next check."""
+    logs = capture.logs
+    logs.set_debug_stop("2026-01-01T13:00:00")
+    Settings().set("debug", {"stop_at": None})
+    logs.follow_debug_setting()
+    assert logs.debug_file is None
+
+    Settings().set("debug", {"stop_at": "2026-01-01T11:00:00"})
+    logs.follow_debug_setting()
+    assert logs.debug_file is None
+    assert Settings().get("debug", "stop_at") is None
+
+    Settings().set("debug", {"stop_at": "2026-01-01T13:00:00"})
+    logs.follow_debug_setting()
+    assert logs.debug_file == FIRST_FILE
+
+  def test_a_capture_resumes_in_its_file_after_a_restart(self, capture, clock):
+    capture.logs.set_debug_stop("2026-01-01T13:00:00")
+    debug_log.info("before the restart")
+    eventually(lambda: "before the restart" in capture.text(FIRST_FILE))
+
+    clock.advance(timedelta(minutes=10))
+    logs = capture.restart()
+    debug_log.info("after the restart")
+
+    assert logs.debug_file == FIRST_FILE
+    eventually(lambda: "after the restart" in capture.text(FIRST_FILE))
+    assert capture.text(FIRST_FILE).count("before the restart") == 1
+
+  def test_a_capture_whose_time_passed_while_sage_was_down_is_over(self, capture, clock):
+    capture.logs.set_debug_stop("2026-01-01T13:00:00")
+    clock.advance(timedelta(hours=2))
+    logs = capture.restart()
+
+    assert logs.debug_file is None
+    assert Settings().get("debug", "stop_at") is None
+
+  def test_a_capture_stops_when_its_file_reaches_the_size_limit(self, capture, monkeypatch):
+    monkeypatch.setattr(config, "LOG_SHARD_MAX_BYTES", 4096)
+    logs = capture.logs
+    logs.set_debug_stop("2026-01-01T13:00:00")
+    for index in range(100):
+      debug_log.info(f"line {index} " + "x" * 80)
+
+    eventually(lambda: logs.debug_file is None)
+    assert Settings().get("debug", "stop_at") is None
+    assert 4096 <= (logs.debug_dir / FIRST_FILE).stat().st_size < 4096 + 200
+
+  def test_files_past_the_retention_go_but_not_the_one_being_written(self, capture):
+    logs = capture.logs
+    old = logs.debug_dir / "sage-debug-2025-12-01T00-00-00Z.log"
+    recent = logs.debug_dir / "sage-debug-2025-12-31T00-00-00Z.log"
+    for path in (old, recent):
+      path.write_text("a line\n")
+    logs.set_debug_stop("2026-01-01T13:00:00")
+    eventually(lambda: "Debug capture on" in capture.text())
+    age(old, datetime(2025, 12, 1))
+    age(recent, datetime(2025, 12, 31))
+    age(logs.debug_dir / FIRST_FILE, datetime(2025, 12, 1))
+
+    logs.cleanup()
+
+    assert [file["name"] for file in logs.debug_files()] == [FIRST_FILE, recent.name]
+
+  def test_a_file_can_be_deleted_but_not_the_one_being_written(self, capture):
+    logs = capture.logs
+    done = logs.debug_dir / "sage-debug-2025-12-31T00-00-00Z.log"
+    done.write_text("a line\n")
+    logs.set_debug_stop("2026-01-01T13:00:00")
+
+    with pytest.raises(ValueError, match="stop it first"):
+      logs.delete_debug_file(FIRST_FILE)
+    logs.delete_debug_file(done.name)
+
+    assert not done.exists()
+
+  @pytest.mark.parametrize("name", ["../data.db", "sage-debug-today.log", "tasks.db", ""])
+  def test_a_name_that_is_not_a_capture_file_is_refused(self, logs, name):
+    with pytest.raises(ValueError):
+      logs.debug_file_path(name)
+
+
+class TestDebugCaptureTopic:
+  def test_it_is_told_each_time_a_capture_starts_moves_or_stops(self, capture, fired):
+    fired.clear()
+    for stop_at in ("2026-01-01T13:00:00", "2026-01-01T14:00:00", None):
+      capture.logs.set_debug_stop(stop_at)
+      assert fired == [UpdateSource.DEBUG_CAPTURE]
+      fired.clear()
+
+  def test_the_minutely_check_tells_it_while_the_file_grows_and_not_once_nothing_changes(self, capture, fired):
+    logs = capture.logs
+    logs.follow_debug_setting()
+    logs.set_debug_stop("2026-01-01T13:00:00")
+    debug_log.info("a line")
+    eventually(lambda: "a line" in capture.text())
+    fired.clear()
+
+    logs.follow_debug_setting()
+    logs.follow_debug_setting()
+
+    assert fired == [UpdateSource.DEBUG_CAPTURE]
+
+  def test_it_is_told_when_a_capture_ends_at_its_stop_time(self, capture, clock, fired):
+    logs = capture.logs
+    logs.set_debug_stop("2026-01-01T12:30:00")
+    fired.clear()
+    clock.advance(timedelta(minutes=30))
+
+    logs.follow_debug_setting()
+
+    assert fired == [UpdateSource.DEBUG_CAPTURE]
+    assert logs.debug_capture()["stop_at"] is None
+
+  def test_it_is_told_when_a_capture_ends_at_the_size_limit(self, capture, monkeypatch, fired):
+    monkeypatch.setattr(config, "LOG_SHARD_MAX_BYTES", 4096)
+    logs = capture.logs
+    logs.set_debug_stop("2026-01-01T13:00:00")
+    fired.clear()
+
+    for index in range(100):
+      debug_log.info(f"line {index} " + "x" * 80)
+
+    eventually(lambda: fired)
+    assert fired == [UpdateSource.DEBUG_CAPTURE]
+    assert logs.debug_capture()["stop_at"] is None
+
+  def test_it_is_told_when_a_file_is_deleted_or_goes_with_the_retention(self, capture, fired):
+    logs = capture.logs
+    deleted = logs.debug_dir / "sage-debug-2025-12-30T00-00-00Z.log"
+    old = logs.debug_dir / "sage-debug-2025-12-01T00-00-00Z.log"
+    for path in (deleted, old):
+      path.write_text("a line\n")
+    age(old, datetime(2025, 12, 1))
+    fired.clear()
+
+    logs.delete_debug_file(deleted.name)
+    assert fired == [UpdateSource.DEBUG_CAPTURE]
+    logs.cleanup()
+    assert fired == [UpdateSource.DEBUG_CAPTURE] * 2
+    logs.cleanup()
+    assert fired == [UpdateSource.DEBUG_CAPTURE] * 2

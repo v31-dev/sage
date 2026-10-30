@@ -3,10 +3,12 @@ import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   fetchAppInfo,
+  fetchDebugCapture,
   fetchWorkers,
   type AppInfo,
   type Application,
   type Container,
+  type DebugCapture,
   type SettingSection,
   type SettingsStatus,
   type SettingState,
@@ -20,11 +22,13 @@ vi.mock('@/services/api', async importOriginal => ({
   ...(await importOriginal<typeof import('@/services/api')>()),
   fetchAppInfo: vi.fn(),
   fetchWorkers: vi.fn(),
+  fetchDebugCapture: vi.fn(),
 }))
 vi.mock('@/lib/updates', () => ({ watchState: vi.fn() }))
 
 const fetchInfo = vi.mocked(fetchAppInfo)
 const fetchWorkerList = vi.mocked(fetchWorkers)
+const fetchCapture = vi.mocked(fetchDebugCapture)
 const watch = vi.mocked(watchState)
 
 const last = <T>(items: T[]) => items[items.length - 1]!
@@ -41,6 +45,15 @@ function onWorkers() {
     workers: WorkerListItem[]
   ) => void
 }
+
+// What the store gave to be called with each state of the debug capture.
+function onDebugCapture() {
+  return watch.mock.calls.find(call => call[0] === 'debug')![2] as unknown as (
+    capture: DebugCapture
+  ) => void
+}
+
+const capture = (stopAt: string | null): DebugCapture => ({ stop_at: stopAt, files: [] })
 
 function worker(hostname: string, status: WorkerStatus = 'online'): WorkerListItem {
   return {
@@ -88,6 +101,7 @@ beforeEach(() => {
   setActivePinia(createPinia())
   vi.spyOn(console, 'error').mockImplementation(() => {})
   fetchWorkerList.mockResolvedValue([])
+  fetchCapture.mockResolvedValue(capture(null))
   watch.mockImplementation(((
     _topic: string,
     load: () => Promise<unknown>,
@@ -155,6 +169,72 @@ describe('the workers', () => {
     expect(store.workerStatus('w1')).toBe('rebooting')
     expect(store.workerStatus('w2')).toBe('online')
     expect(store.workerStatus('w9')).toBeUndefined()
+  })
+})
+
+describe('the debug capture', () => {
+  it('is followed from its route, and loading it does not hold the app back', async () => {
+    fetchInfo.mockResolvedValue(appInfo())
+    fetchCapture.mockReturnValue(new Promise(() => {}))
+    const store = useAppStore()
+
+    await store.init()
+
+    expect(watch).toHaveBeenCalledWith('debug', fetchDebugCapture, expect.any(Function))
+    expect(store.debugCapture).toBeNull()
+  })
+
+  it('is the capture the manager sent, and each push replaces it', async () => {
+    fetchInfo.mockResolvedValue(appInfo())
+    const store = useAppStore()
+    await store.init()
+    await flushPromises()
+    expect(store.debugCapture).toEqual(capture(null))
+
+    onDebugCapture()(capture('2026-01-01T13:00:00'))
+
+    expect(store.debugCapture).toEqual(capture('2026-01-01T13:00:00'))
+  })
+
+  it('says why the first load failed, until a state arrives', async () => {
+    fetchInfo.mockResolvedValue(appInfo())
+    fetchCapture.mockRejectedValue(new Error('Failed to fetch the capture'))
+    const store = useAppStore()
+
+    await store.init()
+    await flushPromises()
+    expect(store.debugCaptureError).toBe('Failed to fetch the capture')
+
+    onDebugCapture()(capture(null))
+
+    expect(store.debugCaptureError).toBe('')
+    expect(store.debugCapture).toEqual(capture(null))
+  })
+
+  it('is loaded at once after an action', async () => {
+    fetchInfo.mockResolvedValue(appInfo())
+    const store = useAppStore()
+    await store.init()
+
+    fetchCapture.mockResolvedValue(capture('2026-01-01T13:00:00'))
+    await store.refreshDebugCapture()
+
+    expect(store.debugCapture).toEqual(capture('2026-01-01T13:00:00'))
+  })
+
+  it('shows in the sidebar only while a capture is on', async () => {
+    fetchInfo.mockResolvedValue(appInfo())
+    const store = useAppStore()
+    expect(store.debugIndicator).toBeUndefined()
+    await store.init()
+    await flushPromises()
+    expect(store.debugIndicator).toBeUndefined()
+
+    onDebugCapture()(capture('2026-01-01T13:00:00'))
+    expect(store.debugIndicator).toEqual({ state: 'busy', label: 'Capturing' })
+
+    onDebugCapture()(capture(null))
+    expect(store.debugIndicator).toBeUndefined()
   })
 })
 
@@ -331,7 +411,7 @@ describe('init and the info topic', () => {
     await store.init()
     await store.init()
 
-    expect(watch.mock.calls.map(call => call[0])).toEqual(['workers', 'info'])
+    expect(watch.mock.calls.map(call => call[0])).toEqual(['workers', 'debug', 'info'])
   })
 
   it('takes each state the manager pushes', async () => {

@@ -5,7 +5,7 @@ export interface APIError extends Error {
 
 export type Query = Record<string, string | number | boolean | null | undefined>
 
-const API_ROOT = '/api'
+export const API_ROOT = '/api'
 
 // How long every call waits before it is sent: 300 ms unless VITE_LOAD_DELAY says otherwise (0 in the image and the
 // tests), so that development shows what a slow network does.

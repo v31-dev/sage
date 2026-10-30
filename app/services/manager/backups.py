@@ -9,7 +9,7 @@ import config
 from services.db import APPLICATION_BUSY_STATUSES, Application, Backup, Container, Event, Volume
 from services.updates import Updates, UpdateSource
 from utils.common import get_env, utcnow
-from utils.logging import generate_task_id_token, task_id
+from utils.logging import generate_task_id_token, sub_task_id, task_id
 
 from ._common import BACKUP_TIMESTAMP_FORMAT, app_dir
 from .application import save_application, save_container
@@ -189,7 +189,7 @@ class BackupsMixin:
 
     logger.info(f"Starting backup for {backup_unit_label} with task id {container_task_id}.")
 
-    task_id_token = task_id.set(container_task_id)
+    sub_task_token = sub_task_id.set(container_task_id)
     try:
       await self.tailscale.sync_file(
           container.worker.hostname,
@@ -218,7 +218,7 @@ class BackupsMixin:
       self.notify(f"Failed to create backup for {backup_unit_label}: {exc}", "error")
       raise
     finally:
-      task_id.reset(task_id_token)
+      sub_task_id.reset(sub_task_token)
 
   async def backup_application_s3(self, application_id: int, volume_ids: list[int] | None = None):
     application = Application.get_or_none(Application.id == application_id)

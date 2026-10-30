@@ -4,10 +4,12 @@ import { defineStore } from 'pinia'
 import {
   APPLICATION_BUSY_STATUSES,
   fetchAppInfo,
+  fetchDebugCapture,
   fetchWorkers,
   type AppInfo,
   type Application,
   type Container,
+  type DebugCapture,
   type Indicator,
   type IndicatorState,
   type InfraContainer,
@@ -37,14 +39,18 @@ const WORKER_INDICATORS: Record<WorkerStatus, Indicator> = {
 }
 
 // The manager's status, which the sidebar, the banner, the restore overlay and the
-// settings pages read, and the workers, which the sidebar and the pages of workers and
-// applications read. The store follows the manager's `info` and `workers` topics and owns
-// the map from each status to the indicator that shows it.
+// settings pages read, the workers, which the sidebar and the pages of workers and
+// applications read, and the debug capture, which the sidebar and the Debug page read. The
+// store follows the manager's `info`, `workers` and `debug` topics and owns the map from
+// each status to the indicator that shows it.
 export const useAppStore = defineStore('app', () => {
   const info = ref<AppInfo | null>(null)
   // Null until the first load; the error is the first load failing, until a state arrives.
   const workers = ref<WorkerListItem[] | null>(null)
   const workersError = ref('')
+  // Likewise.
+  const debugCapture = ref<DebugCapture | null>(null)
+  const debugCaptureError = ref('')
 
   // Immediate updates to block UI button till the next push gives the real update
   const applicationDeployStatus = ref('inactive' as Application['status'])
@@ -58,6 +64,11 @@ export const useAppStore = defineStore('app', () => {
     if (total === 0) return { state: 'idle', label: 'No workers' }
     return { state: online === total ? 'ok' : 'error', label: `${online} of ${total} online` }
   })
+
+  // Shown only while a capture is on.
+  const debugIndicator = computed<Indicator | undefined>(() =>
+    debugCapture.value?.stop_at ? { state: 'busy', label: 'Capturing' } : undefined
+  )
 
   // The status of the worker in the list, undefined before the list has loaded or for a name that is not in it.
   function workerStatus(hostname: string): WorkerStatus | undefined {
@@ -131,6 +142,16 @@ export const useAppStore = defineStore('app', () => {
     workersError.value = ''
   }
 
+  function showDebugCapture(next: DebugCapture) {
+    debugCapture.value = next
+    debugCaptureError.value = ''
+  }
+
+  // After an action on the Debug page, without waiting for the push.
+  async function refreshDebugCapture() {
+    showDebugCapture(await fetchDebugCapture())
+  }
+
   async function refresh() {
     try {
       apply(await fetchAppInfo())
@@ -139,11 +160,16 @@ export const useAppStore = defineStore('app', () => {
     }
   }
 
-  // The first info, which the app waits for, and the workers, which it does not; then the manager pushes each change.
+  // The first info, which the app waits for, and the workers and the debug capture, which it does not; then the
+  // manager pushes each change.
   function init() {
     if (!started) {
       watchState('workers', fetchWorkers, showWorkers).first.catch(err => {
         workersError.value = err instanceof Error ? err.message : 'Failed to load workers'
+      })
+      watchState('debug', fetchDebugCapture, showDebugCapture).first.catch(err => {
+        debugCaptureError.value =
+          err instanceof Error ? err.message : 'Failed to load the debug capture'
       })
       started = watchState('info', fetchAppInfo, apply).first
     }
@@ -179,9 +205,12 @@ export const useAppStore = defineStore('app', () => {
     info,
     workers,
     workersError,
+    debugCapture,
+    debugCaptureError,
     applicationDeployStatus,
     // Getters
     workersIndicator,
+    debugIndicator,
     workerStatus,
     sectionIndicator,
     applicationIndicator,
@@ -194,6 +223,7 @@ export const useAppStore = defineStore('app', () => {
     // Actions
     init,
     refresh,
+    refreshDebugCapture,
     setState,
     setSettingApplying,
     updateApplicationDeployStatus,

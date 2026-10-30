@@ -175,6 +175,15 @@ async def discover_backups():
   )
 
 
+async def follow_debug_setting():
+  Manager().add_task(
+      task=Logs().follow_debug_setting,
+      scopes={"common:debug"},
+      executor="common",
+      quiet=True,
+  )
+
+
 async def check_settings():
   for key in SETTING_SECTIONS:
     if Manager().section_configured(key):
@@ -198,6 +207,7 @@ _JOBS = [
     (schedule_application_backups, CronTrigger.from_crontab("* * * * *")),
     (reconcile_traefik_configs, CronTrigger.from_crontab("* * * * *")),
     (collect_metrics, CronTrigger.from_crontab("* * * * *")),
+    (follow_debug_setting, CronTrigger.from_crontab("* * * * *")),
     (refresh_latest_release, CronTrigger.from_crontab("0 */4 * * *")),
     (backup_database, CronTrigger.from_crontab("0 */12 * * *")),
     (send_summary_notification, CronTrigger.from_crontab("0 8 * * *")),

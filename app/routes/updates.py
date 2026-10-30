@@ -5,6 +5,7 @@ from routes.applications import load_application
 from routes.backups import get_platform_backup_status, list_platform_backups
 from routes.info import get as info
 from routes.info import get_release
+from routes.settings import get_debug_capture
 from routes.tasks import list_tasks
 from routes.workers import get as list_workers
 from routes.workers import load_worker
@@ -18,6 +19,7 @@ TOPICS = {
     UpdateTopic.BACKUPS: Topic(list_platform_backups, frozenset({UpdateSource.BACKUPS})),
     UpdateTopic.RELEASE: Topic(get_release, frozenset({UpdateSource.RELEASE})),
     UpdateTopic.WORKERS: Topic(list_workers, frozenset({UpdateSource.WORKER_LIST})),
+    UpdateTopic.DEBUG: Topic(get_debug_capture, frozenset({UpdateSource.DEBUG_CAPTURE})),
     # One worker, followed by hostname, and one application, followed by `<project>/<name>`: the sources are keyed by it.
     UpdateTopic.WORKER: Topic(load_worker, frozenset({UpdateSource.WORKER_ENTRY, UpdateSource.WORKER_CONTAINERS}), parameterised=True),
     UpdateTopic.APPLICATION: Topic(load_application, frozenset({UpdateSource.APPLICATION}), parameterised=True),

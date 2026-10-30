@@ -6,7 +6,7 @@ from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
 from utils.logging import (ContextVarFilter, ExactPathFilter, SuppressTracebackFilter, TaskFailed, fastapi_exclude_log_paths, fastapi_middleware,
-                           generate_task_id_token, get_log_level, task_id)
+                           generate_task_id_token, get_log_level, sub_task_id, task_id)
 
 
 def access_record(path, method="GET"):
@@ -73,6 +73,16 @@ class TestContextVarFilter:
       assert record.task_id == "abc12345"
     finally:
       task_id.reset(token)
+
+  def test_a_container_part_shows_its_task_and_its_own_id(self):
+    tokens = task_id.set("abc12345"), sub_task_id.set("def67890")
+    try:
+      record = logging.makeLogRecord({"msg": "x"})
+      ContextVarFilter().filter(record)
+      assert record.task_id == "abc12345/def67890"
+    finally:
+      sub_task_id.reset(tokens[1])
+      task_id.reset(tokens[0])
 
   def test_is_empty_outside_a_task(self):
     record = logging.makeLogRecord({"msg": "x"})

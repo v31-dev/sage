@@ -8,6 +8,7 @@ import Application from '@/pages/Application'
 import ApplicationLogs from '@/pages/ApplicationLogs.vue'
 import ApplicationMetrics from '@/pages/ApplicationMetrics.vue'
 import CloudflareSettings from '@/pages/Settings/CloudflareSettings.vue'
+import DebugSettings from '@/pages/Settings/DebugSettings.vue'
 import NotificationsSettings from '@/pages/Settings/NotificationsSettings.vue'
 import S3Settings from '@/pages/Settings/S3Settings.vue'
 import TailscaleSettings from '@/pages/Settings/TailscaleSettings.vue'
@@ -47,6 +48,7 @@ const routes = [
     component: NotificationsSettings,
   },
   { path: '/upgrade', name: 'Upgrade', component: Upgrade },
+  { path: '/debug', name: 'DebugSettings', component: DebugSettings },
 ]
 
 const router = createRouter({

@@ -4,12 +4,40 @@ import os
 import re
 import sys
 import uuid
+from collections.abc import Callable
 from contextvars import ContextVar
 
 from starlette.middleware.base import BaseHTTPMiddleware
 
 LOG_FORMAT = "[%(asctime)s] [%(levelname)-8s] [%(name)-19s] [%(task_id)s] %(message)s"
 task_id = ContextVar("task_id", default="")
+# One container's part of a task (its deploy, stop or backup), logged inside the task.
+sub_task_id = ContextVar("sub_task_id", default="")
+
+
+class TaskLines:
+  """Where the lines of the queued task the code runs in are written. A quiet task's are held until it ends:
+  written if it fails, dropped with it if it succeeds."""
+
+  def __init__(self, quiet: bool):
+    self.quiet = quiet
+    self.held: list[Callable[[], None]] = []
+
+  def write(self, write: Callable[[], None]):
+    if self.quiet:
+      self.held.append(write)
+    else:
+      write()
+
+  def release(self):
+    """The task failed: write what was held."""
+    held, self.held = self.held, []
+    for write in held:
+      write()
+
+
+# Set while a queued task runs, and nowhere else: a request's own lines are not a task's.
+task_lines: ContextVar[TaskLines | None] = ContextVar("task_lines", default=None)
 
 fastapi_exclude_log_paths = [
     "/api",  # Healthcheck
@@ -26,7 +54,8 @@ def generate_task_id_token():
 
 class ContextVarFilter(logging.Filter):
   def filter(self, record):
-    record.task_id = task_id.get() or ""
+    sub = sub_task_id.get()
+    record.task_id = f"{task_id.get()}/{sub}" if sub else task_id.get()
     return True
 
 

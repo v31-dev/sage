@@ -6,6 +6,7 @@ import {
   Activity,
   Bell,
   Briefcase,
+  Bug,
   Building,
   CircleArrowUp,
   Cloud,
@@ -126,6 +127,7 @@ const menu = computed<MenuInterface[]>(() => [
         indicator: appStore.sectionIndicator('notifications'),
       },
       { name: 'Upgrade', path: '/upgrade', icon: CircleArrowUp },
+      { name: 'Debug', path: '/debug', icon: Bug, indicator: appStore.debugIndicator },
     ],
   },
 ])

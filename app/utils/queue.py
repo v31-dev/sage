@@ -8,7 +8,7 @@ from threading import Lock
 from typing import Callable
 
 from utils.executor import active_executor, run_in_executor_with_context
-from utils.logging import TaskFailed, generate_task_id_token, task_id
+from utils.logging import TaskFailed, TaskLines, generate_task_id_token, task_id, task_lines
 
 logger = logging.getLogger(__name__)
 
@@ -385,6 +385,8 @@ class TaskQueue:
 
   async def run_task(self, task: QueuedTask):
     token = task_id.set(task.task_id)
+    lines = TaskLines(quiet=task.quiet)
+    lines_token = task_lines.set(lines)
     # Bind the task's pool so blocking offloads inside it (and the sync task
     # itself) flow to that executor without each call site naming it.
     executor_token = active_executor.set(self._executors[task.executor])
@@ -401,17 +403,21 @@ class TaskQueue:
         self._record(task, "completed")
     except TaskFailed:
       logger.error(f"{task.name}: failed")
+      lines.release()
       self._record(task, "failed")
     except asyncio.CancelledError:
       # Loop shutdown mid-task. Records as failed
       logger.warning(f"{task.name}: failed (interrupted by shutdown)")
+      lines.release()
       self._record(task, "failed")
       raise
     except Exception:
       logger.exception(f"{task.name}: failed")
+      lines.release()
       self._record(task, "failed")
     finally:
       active_executor.reset(executor_token)
+      task_lines.reset(lines_token)
       task_id.reset(token)
       with self._lock:
         self._running.remove(task)
