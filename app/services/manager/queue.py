@@ -71,6 +71,8 @@ class QueueMixin:
           params=task.params,
           executor=task.executor,
           status=status,
+          created_at=task.queued_at,
+          started_at=task.started_at,
           finished_at=utcnow(),
       )
     except Exception as e:

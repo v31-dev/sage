@@ -1,12 +1,14 @@
 import asyncio
 import logging
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
+from datetime import datetime
 from enum import Enum
 from inspect import iscoroutinefunction
 from threading import Lock
 from typing import Callable
 
+from utils.common import utcnow
 from utils.executor import active_executor, run_in_executor_with_context
 from utils.logging import TaskFailed, TaskLines, generate_task_id_token, task_id, task_lines
 
@@ -75,6 +77,8 @@ class QueuedTask:
   task_id: str | None = None
   quiet: bool = False           # persist only on failure (high-frequency housekeeping)
   restore: bool = False         # the platform restore: the one task that starts while restoring
+  queued_at: datetime = field(default_factory=utcnow)
+  started_at: datetime | None = None
 
 
 class Admit(Enum):
@@ -341,6 +345,8 @@ class TaskQueue:
         "executor": task.executor,
         "quiet": task.quiet,
         "status": status,
+        "queued_at": task.queued_at,
+        "started_at": task.started_at,
     }
 
   def _validate(self, scopes: frozenset[str], executor: str):
@@ -360,6 +366,7 @@ class TaskQueue:
       starting = next_to_start(self._state, self._queue, self._running)
       for task in starting:
         self._queue.remove(task)
+        task = replace(task, started_at=utcnow())
         self._running.append(task)
         handle = asyncio.create_task(self.run_task(task))
         self._tasks.add(handle)

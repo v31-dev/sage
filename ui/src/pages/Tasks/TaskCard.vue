@@ -3,23 +3,16 @@ import { Card, CardContent } from '@/components/ui/card'
 import StateIndicator from '@/components/StateIndicator.vue'
 import { Label } from '@/components/ui/label'
 import TaskLogsButton from './TaskLogsButton.vue'
-import { type QueueTask, type CompletedTask } from '@/services/api'
+import { taskTimes, type TaskSection } from './times'
+import { type QueueTask, type FinishedTask } from '@/services/api'
 import { useAppStore } from '@/stores/app'
-import { formatDate } from '@/lib/utils'
 
 const appStore = useAppStore()
 
-const props = withDefaults(
-  defineProps<{
-    task: QueueTask | CompletedTask
-    showTimestamps?: boolean
-  }>(),
-  { showTimestamps: false }
-)
-
-function asCompleted(t: QueueTask | CompletedTask) {
-  return t as CompletedTask
-}
+const props = defineProps<{
+  task: QueueTask | FinishedTask
+  section: TaskSection
+}>()
 </script>
 
 <template>
@@ -30,7 +23,7 @@ function asCompleted(t: QueueTask | CompletedTask) {
         <div class="flex items-center justify-between gap-2">
           <TaskLogsButton :taskId="props.task.task_id" />
           <StateIndicator
-            v-if="props.showTimestamps"
+            v-if="props.section === 'finished'"
             v-bind="appStore.taskIndicator(props.task.status)"
             show-label
           />
@@ -47,22 +40,14 @@ function asCompleted(t: QueueTask | CompletedTask) {
           <p class="font-mono text-sm">{{ props.task.executor }}</p>
         </div>
 
-        <template v-if="props.showTimestamps">
-          <div class="space-y-1">
-            <Label class="text-muted-foreground text-xs">Created</Label>
-            <p class="font-mono text-sm">{{ formatDate(asCompleted(props.task).created_at) }}</p>
-          </div>
-          <div class="space-y-1">
-            <Label class="text-muted-foreground text-xs">Finished</Label>
-            <p class="font-mono text-sm">
-              {{
-                asCompleted(props.task).finished_at
-                  ? formatDate(asCompleted(props.task).finished_at as string)
-                  : '—'
-              }}
-            </p>
-          </div>
-        </template>
+        <div
+          v-for="time in taskTimes(props.task, props.section)"
+          :key="time.label"
+          class="space-y-1"
+        >
+          <Label class="text-muted-foreground text-xs">{{ time.label }}</Label>
+          <p class="font-mono text-sm">{{ time.value }}</p>
+        </div>
 
         <div class="col-span-2 space-y-1">
           <Label class="text-muted-foreground text-xs">Scopes</Label>

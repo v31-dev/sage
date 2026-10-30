@@ -494,19 +494,27 @@ export const fetchNotifications = ({
   to_ts?: string | null
 } = {}) => request<Notification[]>('GET', '/notifications/', { query: { limit, from_ts, to_ts } })
 
-export interface QueueTask {
+interface TaskFields {
   task_id: string
   name: string
   scopes: string[]
   params: Record<string, any>
   executor: string
   status: string
+  started_at: string | null
 }
 
-export interface CompletedTask extends QueueTask {
+// A task running or waiting.
+export interface QueueTask extends TaskFields {
+  queued_at: string
+  quiet: boolean
+}
+
+// A task that has finished: `created_at` is when it was queued, and it has no `started_at` if it was cancelled first.
+export interface FinishedTask extends TaskFields {
   created_at: string
   updated_at: string
-  finished_at: string | null
+  finished_at: string
 }
 
 export interface BackupStatus {
@@ -522,8 +530,37 @@ export interface QueueResponse {
 // The tasks that are running or waiting, held in memory by the manager.
 export const fetchTasks = () => request<QueueResponse>('GET', '/tasks/')
 
-// The latest finished tasks, newest first.
-export const fetchTaskHistory = () => request<CompletedTask[]>('GET', '/tasks/history')
+// Which finished tasks: a name, executor and status match exactly; a scope matches itself and its children (`app`
+// matches `app:demo-web`); `from_ts` and `to_ts` match a task active at any point between them.
+export type TaskHistoryQuery = {
+  name?: string
+  scope?: string
+  executor?: string
+  status?: string
+  from_ts?: string
+  to_ts?: string
+  limit?: number
+  offset?: number
+}
+
+export interface TaskHistoryPage {
+  tasks: FinishedTask[]
+  total: number
+}
+
+// A page of the finished tasks, newest finished first, and how many match.
+export const fetchTaskHistory = (query: TaskHistoryQuery = {}) =>
+  request<TaskHistoryPage>('GET', '/tasks/history', { query })
+
+// The choices of the finished tasks' filters.
+export interface TaskHistoryFilters {
+  names: string[]
+  executors: string[]
+  statuses: string[]
+}
+
+export const fetchTaskHistoryFilters = () =>
+  request<TaskHistoryFilters>('GET', '/tasks/history/filters')
 
 // A line a queued task logged; `sub_task_id` is the container's part it belongs to, if any.
 export interface TaskLogLine {

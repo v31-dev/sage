@@ -1,13 +1,32 @@
+from datetime import datetime, timedelta
+
+import pytest
 from fastapi.encoders import jsonable_encoder
 
 from services.db import Task
 from services.logs import Logs
-from utils.common import utcnow
 
 
-def finished(task_id, status="completed", **fields):
-  return Task.create(task_id=task_id, name="deploy", scopes=["platform"], params={}, executor="app", status=status,
-                     finished_at=utcnow(), **fields)
+T0 = datetime(2026, 1, 1, 12, 0)
+
+
+def minutes(count):
+  return T0 + timedelta(minutes=count)
+
+
+def finished(task_id, status="completed", queued=0, ended=1, **fields):
+  """A finished task, queued and finished so many minutes after T0."""
+  values = {"name": "deploy", "scopes": ["platform"], "params": {}, "executor": "app", **fields}
+  return Task.create(task_id=task_id, status=status, created_at=minutes(queued), started_at=minutes(queued),
+                     finished_at=minutes(ended), **values)
+
+
+def history(client, **params):
+  return client.get("/api/tasks/history", params=params).json()
+
+
+def listed(client, **params):
+  return [task["task_id"] for task in history(client, **params)["tasks"]]
 
 
 class TestQueue:
@@ -20,42 +39,112 @@ class TestQueue:
 
 
 class TestHistory:
-  def test_the_finished_tasks_come_newest_first(self, client, db):
-    for index in range(3):
-      finished(f"t-{index}")
+  def test_the_finished_tasks_come_newest_finished_first(self, client, db):
+    finished("t-a", queued=0, ended=10)
+    finished("t-b", queued=5, ended=6)
+    finished("t-c", queued=1, ended=8)
 
-    response = client.get("/api/tasks/history")
-
-    assert [task["task_id"] for task in response.json()] == ["t-2", "t-1", "t-0"]
+    assert listed(client) == ["t-a", "t-c", "t-b"]
 
   def test_a_task_that_is_running_is_not_in_the_history(self, client, db):
     finished("t-0")
     finished("t-1", status="running")
 
-    assert [task["task_id"] for task in client.get("/api/tasks/history").json()] == ["t-0"]
+    assert listed(client) == ["t-0"]
 
-  def test_only_so_many_come_back(self, client, db):
+  def test_a_page_is_so_many_from_an_offset_with_how_many_match(self, client, db):
     for index in range(5):
-      finished(f"t-{index}")
+      finished(f"t-{index}", ended=index)
 
-    response = client.get("/api/tasks/history", params={"limit": 2})
+    page = history(client, limit=2, offset=2)
 
-    assert [task["task_id"] for task in response.json()] == ["t-4", "t-3"]
+    assert [task["task_id"] for task in page["tasks"]] == ["t-2", "t-1"]
+    assert page["total"] == 5
 
-  def test_a_hundred_come_back_unless_asked_for_fewer(self, client, db):
-    for index in range(101):
-      finished(f"t-{index}")
+  def test_fifty_come_back_unless_asked_otherwise(self, client, db):
+    for index in range(51):
+      finished(f"t-{index}", ended=index)
 
-    assert len(client.get("/api/tasks/history").json()) == 100
+    page = history(client)
+
+    assert len(page["tasks"]) == 50 and page["total"] == 51
+
+  @pytest.mark.parametrize("params", [{"limit": 0}, {"limit": 501}, {"offset": -1}])
+  def test_a_page_out_of_bounds_is_refused(self, client, db, params):
+    assert client.get("/api/tasks/history", params=params).status_code == 422
 
   def test_a_row_has_the_fields_of_a_finished_task(self, client, db):
     finished("t-0", status="failed")
 
-    [row] = client.get("/api/tasks/history").json()
+    [row] = history(client)["tasks"]
 
-    assert {"task_id", "name", "scopes", "params", "executor", "status", "created_at", "updated_at",
+    assert {"task_id", "name", "scopes", "params", "executor", "status", "created_at", "started_at", "updated_at",
             "finished_at"} <= set(row)
     assert jsonable_encoder(row) == row
+
+  @pytest.mark.parametrize("params, expected", [
+      ({"name": "deploy"}, ["t-deploy"]),
+      ({"executor": "platform"}, ["t-platform"]),
+      ({"status": "failed"}, ["t-failed"]),
+      ({"name": "deploy", "status": "failed"}, []),
+  ])
+  def test_a_name_an_executor_and_a_status_match_exactly_and_together(self, client, db, params, expected):
+    finished("t-deploy", name="deploy")
+    finished("t-platform", name="sync_workers", executor="platform")
+    finished("t-failed", name="deploy_container", status="failed")
+
+    assert listed(client, **params) == expected
+
+  @pytest.mark.parametrize("scope, expected", [
+      ("app", ["t-app", "t-web", "t-web2", "t-both", "t-under"]),
+      ("app:demo-web", ["t-web"]),
+      ("platform", ["t-both"]),
+      ("app:a_b", []),
+  ])
+  def test_a_scope_matches_itself_and_its_children(self, client, db, scope, expected):
+    for index, (task_id, scopes) in enumerate([("t-app", ["app"]), ("t-web", ["app:demo-web"]),
+                                               ("t-web2", ["app:demo-web2"]), ("t-both", ["app:x", "platform"]),
+                                               ("t-metrics", ["metrics"]), ("t-apps", ["apps"]),
+                                               ("t-under", ["app:aXb:c"])]):
+      finished(task_id, scopes=scopes, ended=-index)
+
+    assert listed(client, scope=scope) == expected
+
+  def test_a_window_matches_a_task_active_at_any_point_in_it(self, client, db):
+    for task_id, queued, ended in [("before", 0, 5), ("ends-as-it-opens", 0, 10), ("over-the-start", 5, 15),
+                                   ("inside", 12, 18), ("over-the-end", 15, 25), ("queued-as-it-closes", 20, 30),
+                                   ("after", 25, 30), ("across", 0, 31)]:
+      finished(task_id, queued=queued, ended=ended)
+
+    matched = listed(client, from_ts=minutes(10).isoformat(), to_ts=minutes(20).isoformat())
+
+    assert sorted(matched) == sorted(["ends-as-it-opens", "over-the-start", "inside", "over-the-end",
+                                      "queued-as-it-closes", "across"])
+
+  def test_a_window_open_at_one_end_is_bounded_at_the_other_only(self, client, db):
+    finished("early", queued=0, ended=5)
+    finished("late", queued=20, ended=30)
+
+    assert listed(client, from_ts=minutes(10).isoformat()) == ["late"]
+    assert listed(client, to_ts=minutes(10).isoformat()) == ["early"]
+
+  def test_a_time_with_a_zone_is_taken_in_utc(self, client, db):
+    finished("early", queued=0, ended=5)
+    finished("late", queued=20, ended=30)
+
+    assert listed(client, from_ts="2026-01-01T17:40:00+05:30") == ["late"]
+    assert listed(client, to_ts="2026-01-01T12:10:00Z") == ["early"]
+
+
+class TestHistoryFilters:
+  def test_the_choices_are_the_names_and_executors_stored_and_the_statuses(self, client, db):
+    finished("t-1", name="sync_workers", executor="platform")
+    finished("t-2", name="deploy", executor="app")
+    finished("t-3", name="deploy", executor="app", status="failed")
+
+    assert client.get("/api/tasks/history/filters").json() == {
+        "names": ["deploy", "sync_workers"], "executors": ["app", "platform"],
+        "statuses": ["completed", "failed", "cancelled"]}
 
 
 def line(task_id, sub_task_id, message):
