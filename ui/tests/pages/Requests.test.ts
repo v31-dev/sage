@@ -114,7 +114,6 @@ describe('the requests', () => {
         '1.25 s',
         '512 B',
         '100.64.0.9',
-        'demo-web@file',
       ],
       [
         formatDate(TS),
@@ -126,7 +125,6 @@ describe('the requests', () => {
         '12 ms',
         '1.5 KiB',
         '100.64.0.9',
-        'demo-web@file',
       ],
     ])
     const statuses = wrapper.findAll('tbody tr').map(row => row.findAll('td')[5]!.classes())

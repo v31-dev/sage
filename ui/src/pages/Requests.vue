@@ -232,11 +232,10 @@ onUnmounted(() => stop?.())
                 <TableHead class="text-xs text-right">Duration</TableHead>
                 <TableHead class="text-xs text-right">Size</TableHead>
                 <TableHead class="text-xs">Client</TableHead>
-                <TableHead class="text-xs">Service</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              <TableEmpty v-if="!requests.length" :colspan="10">No requests found</TableEmpty>
+              <TableEmpty v-if="!requests.length" :colspan="9">No requests found</TableEmpty>
               <TableRow v-for="row in requests" :key="row.id" class="align-top text-xs font-mono">
                 <TableCell class="pl-4 whitespace-nowrap text-muted-foreground">
                   {{ formatDate(row.ts) }}
@@ -253,9 +252,6 @@ onUnmounted(() => stop?.())
                   formatSize(row.size)
                 }}</TableCell>
                 <TableCell class="whitespace-nowrap">{{ row.client }}</TableCell>
-                <TableCell class="break-all whitespace-normal" :title="row.router">
-                  {{ row.service }}
-                </TableCell>
               </TableRow>
             </TableBody>
           </Table>
@@ -278,8 +274,7 @@ onUnmounted(() => stop?.())
                 <span :class="statusClass(row.status)">{{ row.status }}</span>
               </p>
               <p class="text-muted-foreground">
-                {{ formatDuration(row.duration_ms) }} · {{ formatSize(row.size) }} ·
-                {{ row.service }}
+                {{ formatDuration(row.duration_ms) }} · {{ formatSize(row.size) }}
               </p>
             </CardContent>
           </Card>
