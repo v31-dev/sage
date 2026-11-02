@@ -122,7 +122,7 @@ requirements change; the first run takes about a minute, later runs a second or 
 
 Unit tests cover Sage's own code. Cloudflare, S3, Tailscale SSH, Docker, ACME and Discord are replaced
 by mock data that feeds the code a situation (a failure, a slow answer, a documented response shape);
-what the services really do is left to the live integration suite, which runs against the real ones.
+what the services really do is left to live testing against the real ones.
 
 The suite runs in `Asia/Kolkata` (UTC+5:30), set in `tests/conftest.py`, so a time read from the local clock
 fails a test. The `clock` fixture freezes `utcnow()` (`clock.set(...)`, `clock.advance(...)`) and
@@ -153,6 +153,49 @@ and keep the test so the bug can't return unnoticed.
 A known bug is never parked behind `xfail`: `tests/conftest.py` reports an expected failure as a
 failure, so the run stays red until the bug is fixed. pytest lists every failed and skipped test
 with its reason in the summary by default (`-ra`).
+
+### Vector Config
+
+CI has no Vector, so the unit tests only check the structure of
+`app/templates/worker/vector/vector.yml`. A change to its transforms is checked with the image the
+workers run, pinned in `app/templates/worker/docker-compose.yml`. Copy the template into a scratch
+folder and append cases to the copy:
+
+```yaml
+tests:
+  - name: an application's line keeps only the stored fields
+    inputs:
+      - insert_at: shipped
+        type: log
+        log_fields:
+          container_name: web
+          label."sage.deployed_at": "1"
+          stream: stdout
+          message: hello
+          extra: dropped
+    outputs:
+      - extract_from: shipped
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.container_name, "web")
+              assert!(!exists(.extra))
+  - name: a container without the label is dropped
+    inputs:
+      - insert_at: shipped
+        type: log
+        log_fields:
+          container_name: other
+          message: hello
+    no_outputs_from: [shipped]
+```
+
+Run them from that folder, then check the whole config without connecting to Docker or the sink:
+
+```bash
+docker run --rm -e IP=127.0.0.1 -e HOSTNAME=w1 -v "$PWD":/etc/vector:ro timberio/vector:<tag> test /etc/vector/vector.yml
+docker run --rm -e IP=127.0.0.1 -e HOSTNAME=w1 -v "$PWD":/etc/vector:ro timberio/vector:<tag> validate --no-environment /etc/vector/vector.yml
+```
 
 ## UI Tests
 
