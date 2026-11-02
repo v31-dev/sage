@@ -1,5 +1,6 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { nextTick } from 'vue'
 import TaskLogs from '@/components/TaskLogs.vue'
 import { formatDate } from '@/lib/utils'
 import { fetchTaskLogs, type TaskLogLine, type TaskLogPage, type TaskPart } from '@/services/api'
@@ -37,10 +38,11 @@ async function connect(feed: Followed) {
 }
 
 async function open(
-  props: { taskId: string; subTaskId?: string; parts?: TaskPart[] } = { taskId: 't1' }
+  props: { taskId: string; subTaskId?: string; parts?: TaskPart[] } = { taskId: 't1' },
+  errorHandler?: () => void
 ) {
   const topics = followTopics()
-  const wrapper = mount(TaskLogs, { props })
+  const wrapper = mount(TaskLogs, { props, global: { config: { errorHandler } } })
   await flushPromises()
   return { wrapper, topics }
 }
@@ -97,6 +99,21 @@ describe('the lines', () => {
     await flushPromises()
 
     expect(messages(wrapper)).toEqual(['line 1', 'line 2', 'line 3', 'line 4'])
+  })
+
+  it('stop being followed when the view goes away as one arrives, without an error', async () => {
+    const errors = vi.fn()
+    const { wrapper, topics } = await open({ taskId: 't1' }, errors)
+    const feed = topics.topic('task-logs:t1')
+    vi.mocked(fetchTaskLogs).mockResolvedValue(logs([line(1)]))
+    await connect(feed)
+
+    feed.push([line(2)])
+    await nextTick()
+    wrapper.unmount()
+    await flushPromises()
+
+    expect(errors).not.toHaveBeenCalled()
   })
 
   it('are loaded after the last one held when the socket connects again', async () => {

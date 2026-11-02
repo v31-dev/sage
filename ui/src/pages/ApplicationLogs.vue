@@ -107,7 +107,7 @@ watch(
   async () => {
     if (!atBottom() || !viewport.value) return
     await nextTick()
-    viewport.value.scrollTop = viewport.value.scrollHeight
+    if (viewport.value) viewport.value.scrollTop = viewport.value.scrollHeight
   }
 )
 </script>

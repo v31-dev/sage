@@ -51,10 +51,10 @@ async function connect(feed: Followed) {
   await flushPromises()
 }
 
-async function open(first: LogEntry[] = [], more = false) {
+async function open(first: LogEntry[] = [], more = false, errorHandler?: () => void) {
   useAppStore().workers = [{ hostname: 'w1' }, { hostname: 'w2' }] as WorkerListItem[]
   const topics = followTopics()
-  const wrapper = mount(ApplicationLogs, { global: { stubs } })
+  const wrapper = mount(ApplicationLogs, { global: { stubs, config: { errorHandler } } })
   await flushPromises()
   const feed = topics.topic('application-logs:demo-web')
   vi.mocked(fetchApplicationLogs).mockResolvedValueOnce(answer(first, more))
@@ -131,6 +131,16 @@ describe('the application logs page', () => {
     await flushPromises()
 
     expect(messages(wrapper)).toEqual(['line 1', 'line 3'])
+  })
+
+  it('stop following the bottom when a search takes the lines away, without an error', async () => {
+    const errors = vi.fn()
+    const { wrapper } = await open([line(1), line(2)], false, errors)
+
+    await search(wrapper, 'nothing like this')
+
+    expect(wrapper.text()).toContain('No logs found')
+    expect(errors).not.toHaveBeenCalled()
   })
 
   it('offer the workers, and leave out a pushed line from another than the one chosen', async () => {
