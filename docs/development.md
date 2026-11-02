@@ -218,7 +218,8 @@ Current GitHub workflows:
   - bumps the root `VERSION` file by `patch`, `minor`, or `major`
   - creates a `release/v<VERSION>` branch with that change
   - opens a release PR titled `v<VERSION>`
-  - fills the PR body with the generated GitHub release notes
+  - fills the PR body with the generated GitHub release notes and a `## Developer Notes` section holding `None`, which
+    is replaced by hand when a release needs notes
   - adds a changelog compare link as a PR comment for reviewer use
   - applies the combined labels from the merged PRs since the previous release
 - `publish.yml`
