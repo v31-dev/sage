@@ -16,5 +16,9 @@ ui/tests
 ui/coverage
 **/.venv
 
+# Agent instructions
+**/AGENTS.md
+**/CLAUDE.md
+
 # Ignore marked files
 **/*-gitignore

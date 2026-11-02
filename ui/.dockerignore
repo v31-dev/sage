@@ -9,5 +9,9 @@ tests
 # Python
 __pycache__
 
+# Agent instructions
+**/AGENTS.md
+**/CLAUDE.md
+
 # Ignore marked files
 *-gitignore
