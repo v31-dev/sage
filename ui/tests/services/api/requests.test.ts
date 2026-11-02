@@ -28,12 +28,17 @@ describe('a pushed request, kept as the requests route would return it', () => {
     ['text in its host, in any case', { host: 'example.COM' }, true],
     ['text in its path, in any case', { path: 'items/4' }, true],
     ['text in neither', { path: 'admin' }, false],
-    ['as slow as it', { min_duration_ms: 250 }, true],
-    ['slower than it', { min_duration_ms: 251 }, false],
-    ['no duration', { min_duration_ms: null }, true],
     ['a window from its start', { from_ts: '2026-01-01T12:00:00.500Z' }, true],
     ['a window up to its start, which is left out', { to_ts: '2026-01-01T12:00:00.500Z' }, false],
   ])('with %s: %s', (_case, query, kept) => {
     expect(matchesRequestQuery(query, served)).toBe(kept)
+  })
+
+  it('needs a router only when the query asks for the routed ones', () => {
+    const unrouted = { ...served, router: '', service: '' }
+
+    expect(matchesRequestQuery({ routed: true }, served)).toBe(true)
+    expect(matchesRequestQuery({ routed: true }, unrouted)).toBe(false)
+    expect(matchesRequestQuery({ routed: false }, unrouted)).toBe(true)
   })
 })

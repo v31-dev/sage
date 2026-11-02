@@ -41,9 +41,9 @@ const filters = ref({
   worker: '',
   method: '',
   status: '',
+  routed: '',
   host: '',
   path: '',
-  slower: '',
   from: '',
   to: '',
 })
@@ -57,25 +57,25 @@ const dropdowns = computed<FilterDropdown[]>(() => [
   },
   { key: 'method', label: 'Method', any: 'Any method', options: METHODS },
   { key: 'status', label: 'Status', any: 'Any status', options: STATUS_CLASSES },
+  { key: 'routed', label: 'Route', any: 'All requests', options: ['Routed only'] },
 ])
 
 const fields: FilterField[] = [
   { key: 'host', label: 'Host', type: 'text', placeholder: 'e.g. example.com' },
   { key: 'path', label: 'Path', type: 'text', placeholder: 'e.g. /api' },
-  { key: 'slower', label: 'Slower than (ms)', type: 'number', placeholder: 'e.g. 500' },
   { key: 'from', label: 'From', type: 'datetime-local' },
   { key: 'to', label: 'To', type: 'datetime-local' },
 ]
 
 const query = computed<RequestQuery>(() => {
-  const { worker, method, status, host, path, slower, from, to } = filters.value
+  const { worker, method, status, routed, host, path, from, to } = filters.value
   return {
     worker,
     method,
     status: status as StatusClass | '',
     host,
     path,
-    min_duration_ms: slower === '' ? null : Number(slower),
+    routed: routed !== '',
     from_ts: localTimeToUTC(from),
     to_ts: localTimeToUTC(to),
   }

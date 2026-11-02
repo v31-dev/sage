@@ -66,12 +66,13 @@ class RequestsMixin:
     Updates().publish(UpdateFeed.REQUESTS, stored)
 
   def query_requests(self, worker: str = "", host: str = "", method: str = "", status_class: int | None = None,
-                     path: str = "", min_duration_ms: float | None = None, from_ts: datetime | None = None,
-                     to_ts: datetime | None = None, after_id: int = 0, limit: int = config.LIST_MAX_ROWS) -> dict:
+                     path: str = "", min_duration_ms: float | None = None, routed: bool = False,
+                     from_ts: datetime | None = None, to_ts: datetime | None = None, after_id: int = 0,
+                     limit: int = config.LIST_MAX_ROWS) -> dict:
     """The newest `limit` requests (after the request `after_id`, if given), newest first, that match:
     `worker` and `method` exactly, `host` and `path` anywhere in any case, `status_class` the first digit of the status
-    (4 for 4xx), `min_duration_ms` or slower, and a start at or after `from_ts` and before `to_ts`; and whether there
-    were more."""
+    (4 for 4xx), `min_duration_ms` or slower, only those a router matched if `routed`, and a start at or after `from_ts`
+    and before `to_ts`; and whether there were more."""
     requests = self._store(REQUESTS).lines
     query = requests.select()
     if worker:
@@ -86,6 +87,8 @@ class RequestsMixin:
       query = query.where(contains(requests.path, path))
     if min_duration_ms is not None:
       query = query.where(requests.duration_ms >= min_duration_ms)
+    if routed:
+      query = query.where(requests.router != "")
     if from_ts:
       query = query.where(requests.ts >= stored_time(from_ts))
     if to_ts:

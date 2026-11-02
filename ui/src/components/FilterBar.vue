@@ -10,7 +10,7 @@ export interface FilterDropdown {
 export interface FilterField {
   key: string
   label: string
-  type: 'text' | 'number' | 'datetime-local'
+  type: 'text' | 'datetime-local'
   placeholder?: string
 }
 </script>
@@ -66,7 +66,6 @@ function set(key: string, value: string) {
         :id="`${props.id}-${field.key}`"
         :type="field.type"
         :placeholder="field.placeholder"
-        :min="field.type === 'number' ? 0 : undefined"
         :model-value="filters[field.key]"
         @change="set(field.key, ($event.target as HTMLInputElement).value.trim())"
       />

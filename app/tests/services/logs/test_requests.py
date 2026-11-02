@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from .builders import access_line, event, moment, push, request_at, stamp
+from .builders import access_line, event, moment, push, request_at, stamp, unrouted_access_line
 
 
 def requested(logs, **filters):
@@ -40,6 +40,13 @@ class TestRequests:
   ])
   def test_each_filter_narrows_them(self, stored, filters, found):
     assert requested(stored, **filters) == found
+
+  def test_the_routed_ones_are_those_a_router_matched(self, logs):
+    logs.ingest("w1", push(request_at(0, RequestPath="/app", DownstreamStatus=404),
+                           event("traefik", unrouted_access_line(1, RequestPath="/scan", DownstreamStatus=404), 1)))
+
+    assert requested(logs) == ["/scan", "/app"]
+    assert requested(logs, routed=True) == ["/app"]
 
   def test_a_query_gives_the_newest_asked_for_and_says_when_there_were_more(self, logs):
     logs.ingest("w1", push(*(request_at(index) for index in range(4))))

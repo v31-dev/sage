@@ -40,6 +40,13 @@ def access_line(index=0, **fields):
                      "level": "info", "msg": "", **fields})
 
 
+def unrouted_access_line(index=0, **fields):
+  """One of Traefik's access lines for a request no router matched, which names no router or service."""
+  line = json.loads(access_line(index, **fields))
+  del line["RouterName"], line["ServiceName"]
+  return json.dumps(line)
+
+
 def push(*events) -> bytes:
   return "\n".join(each if isinstance(each, str) else json.dumps(each) for each in events).encode()
 

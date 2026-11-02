@@ -2,7 +2,7 @@ import pytest
 
 import config
 from services.logs import Logs
-from tests.services.logs.builders import access_line, event, push
+from tests.services.logs.builders import access_line, event, push, unrouted_access_line
 
 URL = "/api/requests/"
 
@@ -41,6 +41,13 @@ class TestRequests:
   ])
   def test_the_filters_reach_the_query_with_times_in_any_zone(self, client, stored, params, found):
     assert paths(client.get(URL, params=params)) == found
+
+  def test_it_leaves_out_the_requests_no_router_matched_when_asked(self, client, stored):
+    Logs().ingest("w1", push(event("traefik", unrouted_access_line(RequestPath="/scan", DownstreamStatus=404))))
+
+    assert paths(client.get(URL)) == ["/scan", "/broken", "/missing", "/ok"]
+    assert paths(client.get(URL, params={"routed": "true"})) == ["/broken", "/missing", "/ok"]
+    assert paths(client.get(URL, params={"routed": "false"})) == ["/scan", "/broken", "/missing", "/ok"]
 
   def test_a_view_gets_the_requests_after_the_last_one_it_holds(self, client, stored):
     held = client.get(URL).json()["requests"][1]["id"]

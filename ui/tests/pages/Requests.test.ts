@@ -77,7 +77,7 @@ const paths = (wrapper: Page) => rows(wrapper).map(row => row[4])
 
 const lastQuery = () => vi.mocked(fetchRequests).mock.lastCall![0]
 
-// The dropdowns, in the order of the page: worker, method, status.
+// The dropdowns, in the order of the page: worker, method, status, route.
 async function choose(wrapper: Page, index: number, value: string) {
   wrapper.findAllComponents(select)[index]!.vm.$emit('update:modelValue', value)
   await flushPromises()
@@ -177,7 +177,7 @@ describe('the feed', () => {
     ['another status class', { status: 404 }],
     ['a host without the text', { host: 'api.other.org' }],
     ['a path without the text', { path: '/health' }],
-    ['a quicker answer', { duration_ms: 499 }],
+    ['no router', { router: '' }],
     ['a start before the window', { ts: '2026-01-01T11:59:59.999999999Z' }],
     ['a start at the end of the window', { ts: '2026-01-01T13:30:00.000000000Z' }],
   ])('leaves out a pushed request with %s', async (_case, fields) => {
@@ -185,13 +185,13 @@ describe('the feed', () => {
     await choose(wrapper, 0, 'w1')
     await choose(wrapper, 1, 'GET')
     await choose(wrapper, 2, '2xx')
+    await choose(wrapper, 3, 'Routed only')
     await commit(wrapper, 'host', 'EXAMPLE.com')
     await commit(wrapper, 'path', '/ITEMS')
-    await commit(wrapper, 'slower', '500')
     await commit(wrapper, 'from', '2026-01-01T12:00')
     await commit(wrapper, 'to', '2026-01-01T13:30')
 
-    feed.push([served(1, { duration_ms: 500 }), served(2, { duration_ms: 500, ...fields })])
+    feed.push([served(1), served(2, fields)])
     await flushPromises()
 
     expect(paths(wrapper)).toEqual(['/items/1'])
@@ -207,7 +207,7 @@ describe('the feed', () => {
 })
 
 describe('the filters', () => {
-  it('offer the workers and the methods and status classes', async () => {
+  it('offer the workers, the methods, the status classes and the routed requests', async () => {
     const { wrapper } = await mountPage()
 
     const options = wrapper
@@ -217,6 +217,7 @@ describe('the filters', () => {
     expect(options[0]).toEqual(['any', 'w1', 'w2'])
     expect(options[1]).toContain('POST')
     expect(options[2]).toEqual(['any', '2xx', '3xx', '4xx', '5xx'])
+    expect(options[3]).toEqual(['any', 'Routed only'])
   })
 
   it('are sent as each is chosen or committed, the times in UTC, from the start', async () => {
@@ -227,7 +228,7 @@ describe('the filters', () => {
       status: '',
       host: '',
       path: '',
-      min_duration_ms: null,
+      routed: false,
       from_ts: '',
       to_ts: '',
       after_id: 0,
@@ -237,9 +238,9 @@ describe('the filters', () => {
     await choose(wrapper, 0, 'w2')
     await choose(wrapper, 1, 'POST')
     await choose(wrapper, 2, '5xx')
+    await choose(wrapper, 3, 'Routed only')
     await commit(wrapper, 'host', ' example.com ')
     await commit(wrapper, 'path', '/api')
-    await commit(wrapper, 'slower', '500')
     await commit(wrapper, 'from', '2026-01-01T12:00')
     await commit(wrapper, 'to', '2026-01-01T13:30')
 
@@ -249,7 +250,7 @@ describe('the filters', () => {
       status: '5xx',
       host: 'example.com',
       path: '/api',
-      min_duration_ms: 500,
+      routed: true,
       from_ts: '2026-01-01T12:00:00.000Z',
       to_ts: '2026-01-01T13:30:00.000Z',
       after_id: 0,
