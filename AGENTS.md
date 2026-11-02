@@ -32,6 +32,7 @@ These facts hold on every task:
 - Blocking network or remote I/O is offloaded onto the lane pools in `app/utils/executor.py` — `run_in_executor_with_context(...)` (awaited) or `submit_with_context(...)` (fire-and-forget).
 - Local SQLite/Peewee work runs inline and relies on WAL mode.
 - The scheduler is a thin APScheduler layer (`app/scheduler.py`) that only enqueues; cron jobs fire on wall-clock instants, and the `_AT_STARTUP` list also runs once right after startup.
+- State changes (deploys, routing, workers) are infrequent: Sage reacts to them and corrects the config, and up to a minute of lag is fine. Clean design still comes first; the allowance is a reason not to build machinery for per-second precision, not a reason to accept a worse design.
 
 After compaction, reread the relevant `docs/` page before continuing.
 
