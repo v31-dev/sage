@@ -24,5 +24,5 @@ async def vector_logs(request: Request):
   except Exception:
     raise HTTPException(status_code=503, detail="The logs could not be stored.")
   if skipped:
-    logger.warning(f"Skipped {skipped} log lines from {hostname} that were not events of a container.")
+    logger.warning(f"Skipped {skipped} log lines from {hostname}: not events, or of a container with an invalid name.")
   return Response(status_code=204)
