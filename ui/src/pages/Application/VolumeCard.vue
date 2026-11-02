@@ -134,11 +134,7 @@ async function onClickConfirmDelete() {
     </CardContent>
     <CardFooter class="border-t flex gap-2">
       <VolumeBackupButton :application="props.application" :volume="props.volume" />
-      <VolumeRestoreDialog
-        :application="props.application"
-        :volume="props.volume"
-        :loadApplication="props.loadApplication"
-      />
+      <VolumeRestoreDialog :application="props.application" :volume="props.volume" />
     </CardFooter>
   </Card>
 

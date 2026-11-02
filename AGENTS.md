@@ -24,7 +24,7 @@ This is a living project-context file for AI coding agents. Keep it concise, cur
 
 ## Project Summary
 
-Sage is a lightweight manager-and-workers micro-PaaS that uses Tailscale for node connectivity, Cloudflare (required) for the domain, DNS and tunnels, Traefik for ingress, Vector for worker logs (the manager logs itself in-process via a SQLite logging handler), Telegraf for worker metrics and container state (the manager self-collects its own container metrics in-process), SQLite for persistence, APScheduler as a cron/interval trigger feeding an in-memory operation queue, and Vue 3 for the UI.
+Sage is a lightweight manager-and-workers micro-PaaS that uses Tailscale for node connectivity, Cloudflare (required) for the domain, DNS and tunnels, Traefik for ingress, Vector for worker logs (the manager stores its queued tasks' lines in-process; its other lines are in stdout, for `docker logs`), Telegraf for worker metrics and container state (the manager self-collects its own container metrics in-process), SQLite for persistence, APScheduler as a cron/interval trigger feeding an in-memory operation queue, and Vue 3 for the UI.
 
 ## Core Context To Preserve
 
@@ -87,9 +87,9 @@ If this context may have been lost, reread this file plus the relevant `docs/` p
 ### Logging And `task_id`
 
 - `task_id` flows through `ContextVar` in `app/utils/logging.py`.
-- FastAPI middleware creates the request `task_id`; the queue's `run_task` sets it per queued task.
+- The queue's `run_task` sets it for each queued task; a request has none.
 - The offload helpers copy the context, so worker threads keep the originating `task_id`.
-- Do not pass `task_id` through regular function parameters; the one boundary is `add_task(task_id=...)` for route correlation.
+- Do not pass `task_id` through regular function parameters.
 
 ### Async Boundaries
 
@@ -105,7 +105,7 @@ If this context may have been lost, reread this file plus the relevant `docs/` p
 - Main state is stored in SQLite with WAL mode. The database is deferred: `Database` opens it at `config.DB_PATH` at startup, and importing the models touches no disk.
 - Metrics are stored in per-host SQLite files.
 - Times are naive UTC, the way the UI reads a timestamp that has no zone. Read the clock through `utils.common.utcnow()`; ruff (`DTZ003`, `DTZ005`) rejects `datetime.utcnow()` and a `datetime.now()` without a zone. Retry with backoff goes through `utils.retry` (`retry`, `retry_async`, and `is_transient` as the one meaning of "transient").
-- Logs are stored in per-container SQLite files with FTS5 search.
+- Logs are stored in per-application SQLite files with FTS5 search; Traefik's access lines as requests in columns (`logs/requests.db`); a queued task's lines in `logs/tasks.db`, read by task id. The manager's other lines are in stdout only (`docker logs`).
 - Preserve the existing lightweight storage approach unless the task explicitly requires otherwise.
 
 ### Migrations And One-Off Changes
@@ -184,6 +184,7 @@ docker compose up --build --watch
 ## Release Notes
 
 - The release notes are the GitHub release body. Settings → Upgrade renders them as Markdown with raw HTML allowed (sanitized), so the collapsible block works. Put every code identifier, path and `<placeholder>` in backticks: unquoted, `<name>` is read as an HTML tag and disappears.
+- The draft release PR's body is GitHub's generated notes followed by `## Developer Notes` holding `None`, and `publish.yml` puts that body under `## Docker Image` in the release. Not every release needs notes of its own; when one does, replace `None` with them. `## Docker Image`, `## What's Changed` and `## Developer Notes` are the only `##` headings: everything written under Developer Notes starts at `###`.
 - For every release, generate technical release notes against the previous release: list the files changed since its tag (`git diff <previous tag> --stat`), then read the diffs. Cover config and env vars, startup order, endpoints added and removed, data and file formats (backups, S3 keys), the task queue, the Cloudflare and Tailscale resources Sage creates, and the image and CI. Leave test status out of the notes. The Upgrade page also renders GitHub alerts (`> [!IMPORTANT]`, `[!NOTE]`, `[!TIP]`, `[!WARNING]`, `[!CAUTION]`) as highlighted blocks; installs older than the release that added this show the marker as plain text, so write the alert so it still reads well that way. Links into the repo (README sections, docs) point at the release tag, `blob/v<version>/…`, not at `main`, so they keep describing that release. Give names, constants and formats exactly, so a reviewer can check each against the code.
 - Put them at the end of the release notes in a collapsible block (`<details><summary><h3 style="display:inline">Technical notes</h3></summary> … </details>`) with its sections as `####` headings (GitHub inlines a heading in a summary by itself; the style keeps it beside the marker in plain renderers). The user-facing notes above it stay short.
 

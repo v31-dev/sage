@@ -14,6 +14,7 @@ from utils.executor import run_in_executor_with_context
 from utils.logging import TaskFailed
 
 from ._common import WORKER_INFRA_TEMPLATES, app_dir, content_hash, routing_input_hash
+from .application import mark
 from .decisions import (WORKER_TASKS, WorkerInputs, WorkerReboot, WorkerRow, plan_worker_sync, worker_claim_refusal, worker_entry, worker_owner,
                         worker_stack_problem, worker_with_row, worker_without_row)
 
@@ -529,6 +530,8 @@ class WorkersMixin:
     except Exception as e:
       self.notify(f"Failed to reboot worker {worker.hostname}: {e}", "error")
       raise Exception(f"Failed to reboot worker {worker.hostname}: {e}")
+    for container in worker.containers:
+      await mark(container, "Worker rebooted by Sage")
 
     self.update_worker(
         worker.hostname, reboot=WorkerReboot(utcnow(), WorkerReports().started_at(worker.hostname, "telegraf", current=False)))

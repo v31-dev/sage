@@ -2,6 +2,7 @@ import asyncio
 import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta
 
 import pytest
 
@@ -153,10 +154,14 @@ class Lane:
   def __init__(self):
     self.pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="lane")
     self.recorded = []
+    self.recorded_tasks = []
     self.changes = 0
     self.queue = TaskQueue(frozenset(["platform", "app"]), {"platform": self.pool, "app": self.pool},
-                           record=lambda task, status: self.recorded.append((task.name, status)),
-                           notify=self.changed)
+                           record=self.record, notify=self.changed)
+
+  def record(self, task, status):
+    self.recorded.append((task.name, status))
+    self.recorded_tasks.append(task)
 
   def changed(self):
     self.changes += 1
@@ -266,6 +271,30 @@ class TestRunTask:
     await lane.run()
     assert seen["thread"].startswith("lane")
     assert seen["value"] == 7
+
+
+class TestTimes:
+  async def test_a_task_keeps_when_it_was_queued_and_when_it_started(self, lane, clock):
+    lane.add(done, name="deploy")
+    [waiting] = lane.queue.snapshot()["queued"]
+    assert (waiting["queued_at"], waiting["started_at"]) == (datetime(2026, 1, 1, 12, 0), None)
+
+    clock.advance(timedelta(minutes=5))
+    lane.queue.dispatch_tick()
+    [running] = lane.queue.snapshot()["running"]
+    assert (running["queued_at"], running["started_at"]) == (datetime(2026, 1, 1, 12, 0), datetime(2026, 1, 1, 12, 5))
+
+    await lane.run()
+    [task] = lane.recorded_tasks
+    assert (task.queued_at, task.started_at) == (datetime(2026, 1, 1, 12, 0), datetime(2026, 1, 1, 12, 5))
+
+  def test_a_task_cancelled_before_it_started_has_no_start(self, lane, clock):
+    lane.add(done, name="sync", on_conflict=OnConflict.REPLACE)
+    clock.advance(timedelta(minutes=1))
+    lane.add(done, name="sync", on_conflict=OnConflict.REPLACE)
+
+    [task] = lane.recorded_tasks
+    assert (task.queued_at, task.started_at) == (datetime(2026, 1, 1, 12, 0), None)
 
 
 class TestAddTask:

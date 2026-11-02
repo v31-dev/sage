@@ -6,8 +6,10 @@ import {
   formatDate,
   formatDateStringAgo,
   levelClass,
+  localTimeToUTC,
   parseDate,
   startDownload,
+  toLocalTime,
 } from '@/lib/utils'
 
 describe('cn', () => {
@@ -35,6 +37,28 @@ describe('colors', () => {
     expect(colors).toHaveLength(20)
     expect(new Set(colors).size).toBe(20)
     expect(colors.every(color => /^#[0-9a-f]{6}$/.test(color))).toBe(true)
+  })
+})
+
+describe('localTimeToUTC', () => {
+  it('reads a local time as a datetime-local field holds it, and gives it in UTC', () => {
+    expect(localTimeToUTC('2026-01-01T12:00')).toBe('2026-01-01T12:00:00.000Z')
+  })
+
+  it('gives none for none', () => {
+    expect(localTimeToUTC('')).toBe('')
+  })
+})
+
+describe('toLocalTime', () => {
+  it('gives a time as a datetime-local field holds it, to the minute', () => {
+    expect(toLocalTime(new Date('2026-03-04T05:06:59Z'))).toBe('2026-03-04T05:06')
+  })
+
+  it('goes back to the minute it came from', () => {
+    expect(localTimeToUTC(toLocalTime(new Date('2026-12-31T23:59:30Z')))).toBe(
+      '2026-12-31T23:59:00.000Z'
+    )
   })
 })
 

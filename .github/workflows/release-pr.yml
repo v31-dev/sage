@@ -232,7 +232,7 @@ jobs:
 
             const notes = await github.rest.repos.generateReleaseNotes(notesParams);
 
-            const body = notes.data.body;
+            const body = `${notes.data.body}\n\n## Developer Notes\nNone\n`;
 
             const labels = Array.from(labelSet).sort();
 

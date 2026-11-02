@@ -125,7 +125,6 @@ def delete_container(request: Request, force: bool = False):
       params={"container_id": container.id, "force": force},
       executor="app",
       on_conflict=OnConflict.QUEUE,
-      task_id=request.state.task_id,
   )
 
   return {"status": "OK"}

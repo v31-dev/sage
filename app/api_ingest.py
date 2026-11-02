@@ -2,10 +2,8 @@ from fastapi import FastAPI
 
 from routes.telegraf import router as telegraf_router
 from routes.vector import router as vector_router
-from utils.logging import fastapi_middleware
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, redirect_slashes=False)
-app.add_middleware(fastapi_middleware)
 
 
 @app.get("/")

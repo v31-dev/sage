@@ -158,7 +158,7 @@ def state(monkeypatch):
 class TestTopics:
   def test_the_topics_are_the_ones_the_pages_follow(self):
     assert set(TOPICS) == {"info", "tasks", "backup-status", "backups", "release", "workers", "worker", "application",
-                           "notifications", "task-history"}
+                           "notifications", "task-history", "task-logs", "application-logs", "requests"}
 
   def test_the_table_has_each_topic_and_each_feed_once(self):
     assert not set(UpdateTopic) & set(UpdateFeed)
@@ -190,6 +190,10 @@ class TestTopics:
                                             ("workers", list_workers), ("worker", load_worker), ("application", load_application)])
   def test_a_topic_is_loaded_by_the_function_of_its_route(self, topic, route):
     assert TOPICS[topic].load is route
+
+  def test_the_log_feeds_of_a_task_and_of_an_application_take_an_argument_and_the_others_none(self):
+    assert TOPICS["task-logs"].parameterised and TOPICS["application-logs"].parameterised
+    assert not any(TOPICS[name].parameterised for name in ("notifications", "task-history", "requests"))
 
   def test_the_hub_serves_the_table_of_the_socket_server(self):
     build_asgi_app(False)

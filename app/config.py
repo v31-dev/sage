@@ -23,11 +23,11 @@ UPDATES_COALESCE_SECONDS = 3
 UPDATES_PING_INTERVAL_SECONDS = 10
 UPDATES_PING_TIMEOUT_SECONDS = 10
 
-# Log size limits. A container's logs are trimmed, oldest lines first, when their data passes LOG_SHARD_MAX_BYTES, and
-# all containers' logs when together they pass the smaller of LOG_TOTAL_MAX_BYTES and LOG_TOTAL_MAX_DISK_SHARE of the
-# data volume. A trim leaves LOG_TRIM_TO_SHARE of the limit and keeps each container's newest LOG_KEEP_NEWEST_ROWS
-# lines. Sizes are checked after a write at most every LOG_SIZE_CHECK_SECONDS, and lines go LOG_TRIM_BATCH_ROWS at a
-# time. A shard file bigger than LOG_SHARD_VACUUM_RATIO times its limit is rewritten.
+# Log size limits. A container's logs, or the task logs, are trimmed, oldest lines first, when their data passes
+# LOG_SHARD_MAX_BYTES, and all the logs when together they pass the smaller of LOG_TOTAL_MAX_BYTES and
+# LOG_TOTAL_MAX_DISK_SHARE of the data volume. A trim leaves LOG_TRIM_TO_SHARE of the limit and keeps each file's newest
+# LOG_KEEP_NEWEST_ROWS lines. Sizes are checked after a write at most every LOG_SIZE_CHECK_SECONDS, and lines go
+# LOG_TRIM_BATCH_ROWS at a time. A file bigger than LOG_SHARD_VACUUM_RATIO times its limit is rewritten.
 LOG_SHARD_MAX_BYTES = 256 * 1024 * 1024
 LOG_TOTAL_MAX_BYTES = 2 * 1024 * 1024 * 1024
 LOG_TOTAL_MAX_DISK_SHARE = 0.10
@@ -36,6 +36,10 @@ LOG_KEEP_NEWEST_ROWS = 1000
 LOG_SIZE_CHECK_SECONDS = 30
 LOG_TRIM_BATCH_ROWS = 10000
 LOG_SHARD_VACUUM_RATIO = 1.25
+
+# The most rows a list route (an application's logs, the requests, the finished tasks) returns, and what it returns
+# when a view does not ask for fewer.
+LIST_MAX_ROWS = 1000
 
 # Cloudflare network errors, rate limits and server errors are retried after these delays (seconds).
 CLOUDFLARE_RETRY_DELAYS = (1, 2)
@@ -57,6 +61,8 @@ METRICS_SAMPLE_INTERVAL = 5
 REPORT_INTERVAL_SECONDS = 10
 REPORT_KEEP_ALIVE_SECONDS = 30
 REPORT_MAX_BYTES = 8 * 1024 * 1024
+# A push of logs from a worker's Vector is refused above this; Vector's batches are capped at half of it.
+LOG_INTAKE_MAX_BYTES = 8 * 1024 * 1024
 
 # A worker's report is current for this long. A snapshot can stand for how things are now only if
 # it arrived this long after the last change the manager made to the rows it is compared with

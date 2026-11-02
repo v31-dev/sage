@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import {
   Table,
   TableBody,
@@ -10,24 +11,19 @@ import {
 } from '@/components/ui/table'
 import StateIndicator from '@/components/StateIndicator.vue'
 import TaskLogsButton from './TaskLogsButton.vue'
-import { type QueueTask, type CompletedTask } from '@/services/api'
+import { TIME_LABELS, taskTimes, type TaskSection } from './times'
+import { type QueueTask, type FinishedTask } from '@/services/api'
 import { useAppStore } from '@/stores/app'
-import { formatDate } from '@/lib/utils'
 
 const appStore = useAppStore()
 
-const props = withDefaults(
-  defineProps<{
-    rows: (QueueTask | CompletedTask)[]
-    emptyLabel: string
-    showTimestamps?: boolean
-  }>(),
-  { showTimestamps: false }
-)
+const props = defineProps<{
+  rows: (QueueTask | FinishedTask)[]
+  section: TaskSection
+}>()
 
-function asCompleted(t: QueueTask | CompletedTask) {
-  return t as CompletedTask
-}
+const labels = computed(() => TIME_LABELS[props.section])
+const finished = computed(() => props.section === 'finished')
 </script>
 
 <template>
@@ -38,38 +34,31 @@ function asCompleted(t: QueueTask | CompletedTask) {
         <TableHead>Name</TableHead>
         <TableHead>Scopes</TableHead>
         <TableHead>Executor</TableHead>
-        <template v-if="props.showTimestamps">
-          <TableHead>Status</TableHead>
-          <TableHead>Created</TableHead>
-          <TableHead>Finished</TableHead>
-        </template>
+        <TableHead v-if="finished">Status</TableHead>
+        <TableHead v-for="label in labels" :key="label">{{ label }}</TableHead>
         <TableHead>Params</TableHead>
       </TableRow>
     </TableHeader>
     <TableBody>
-      <TableEmpty v-if="!props.rows.length" :colspan="props.showTimestamps ? 8 : 5">
-        No {{ props.emptyLabel }} tasks
+      <TableEmpty v-if="!props.rows.length" :colspan="5 + labels.length + (finished ? 1 : 0)">
+        No {{ props.section }} tasks
       </TableEmpty>
       <TableRow v-for="t in props.rows" :key="t.task_id" class="align-top">
-        <TableCell><TaskLogsButton :taskId="t.task_id" /></TableCell>
+        <TableCell><TaskLogsButton :task="t" /></TableCell>
         <TableCell class="text-xs">{{ t.name }}</TableCell>
         <TableCell class="max-w-[12rem] font-mono text-xs break-all whitespace-pre-wrap">{{
           t.scopes.join(', ')
         }}</TableCell>
         <TableCell class="text-xs">{{ t.executor }}</TableCell>
-        <template v-if="props.showTimestamps">
-          <TableCell>
-            <StateIndicator v-bind="appStore.taskIndicator(t.status)" show-label />
-          </TableCell>
-          <TableCell class="text-xs whitespace-nowrap">{{
-            formatDate(asCompleted(t).created_at)
-          }}</TableCell>
-          <TableCell class="text-xs whitespace-nowrap">
-            {{
-              asCompleted(t).finished_at ? formatDate(asCompleted(t).finished_at as string) : '—'
-            }}
-          </TableCell>
-        </template>
+        <TableCell v-if="finished">
+          <StateIndicator v-bind="appStore.taskIndicator(t.status)" show-label />
+        </TableCell>
+        <TableCell
+          v-for="time in taskTimes(t, props.section)"
+          :key="time.label"
+          class="text-xs whitespace-nowrap"
+          >{{ time.value }}</TableCell
+        >
         <TableCell class="max-w-xs font-mono text-xs break-all whitespace-pre-wrap">{{
           JSON.stringify(t.params)
         }}</TableCell>

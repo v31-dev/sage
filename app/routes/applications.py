@@ -1,17 +1,21 @@
-from typing import Literal
+from datetime import datetime
+from typing import Annotated, Literal
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from playhouse.shortcuts import model_to_dict
 
+import config
 from routes.containers import router as container_router
 from routes.domains import router as domain_router
 from routes.volumes import router as volume_router
 from services.db import APPLICATION_BUSY_STATUSES, APPLICATION_STOP_ELIGIBLE_STATUSES, Application, Container, Project, Worker
+from services.logs import Logs
 from services.manager import Manager
 from services.manager.application import application_changed, hosts_changed
 from services.metrics import Metrics
 from utils.api import generic_create, generic_delete, generic_get, generic_list, generic_update, get_request_models, parse_api_data
 from utils.db import AlphaNumericField
+from utils.logging import NO_ACCESS_LOG
 
 
 def inject_application(request: Request):
@@ -67,6 +71,16 @@ def load_application(name: str) -> dict:
 @router.get("/{application}", dependencies=[Depends(inject_application)])
 def get_application(request: Request):
   return application_payload(request.state.models["application"])
+
+
+@router.get("/{application}/logs", dependencies=[Depends(inject_application)], openapi_extra=NO_ACCESS_LOG)  # what the logs view loads
+def get_application_logs(request: Request, hostname: str = "", search: str = "", from_ts: datetime | None = None,
+                         to_ts: datetime | None = None, after_id: int = 0,
+                         limit: Annotated[int, Query(ge=1, le=config.LIST_MAX_ROWS)] = config.LIST_MAX_ROWS):
+  """The application's lines from its containers: the newest `limit` that match (after the line `after_id`, if
+  given), and whether there were more."""
+  return Logs().query_application_lines(request.state.models["application"].qualified_name, hostname=hostname,
+                                        search=search, from_ts=from_ts, to_ts=to_ts, after_id=after_id, limit=limit)
 
 
 @router.put("/{application}", dependencies=[Depends(inject_application)])
@@ -151,7 +165,6 @@ def deploy_application(request: Request):
       scopes={f"app:{application.qualified_name}"},
       params={"application_id": application.id},
       executor="app",
-      task_id=request.state.task_id,
   ):
     raise HTTPException(status_code=409, detail="Application already has an operation in progress.")
 
@@ -180,7 +193,6 @@ def stop_application(request: Request):
       scopes={f"app:{application.qualified_name}"},
       params={"application_id": application.id},
       executor="app",
-      task_id=request.state.task_id,
   ):
     raise HTTPException(status_code=409, detail="Application already has an operation in progress.")
 

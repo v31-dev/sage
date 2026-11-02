@@ -125,6 +125,7 @@ def world(monkeypatch):
   table = Table()
   topics = {
       "f": Feed(),
+      "k": Feed(parameterised=True),
       "a": Topic(sources["a"].load, frozenset({"x"})),
       "b": Topic(sources["b"].load, frozenset({"x", "y"})),
       "c": Topic(sources["c"].load, frozenset({"y"})),
@@ -529,6 +530,38 @@ class TestAgainstAModel:
           assert len(states) == counts[index][topic_index], f"sid {index} was sent {topic} after it left"
 
 
+class TestParameterisedFeeds:
+  """A parameterised feed is followed by its argument: rows published with a key reach that argument's followers
+  only."""
+
+  async def test_rows_published_for_a_key_reach_only_the_followers_of_that_argument(self, world):
+    one, one_sid = world.connect()
+    two, two_sid = world.connect()
+    world.hub.subscribe(one_sid, "k:t1")
+    world.hub.subscribe(two_sid, "k:t1/c1")
+    world.hub.publish("k", [{"id": 1}], key="t1")
+    world.hub.publish("k", [{"id": 2}], key="t1/c1")
+    world.hub.publish("k", [{"id": 3}], key="t2")
+    await until(lambda: one.states("k:t1") and two.states("k:t1/c1"))
+    await asyncio.sleep(0.05)
+    assert one.states("k:t1") == [[{"id": 1}]]
+    assert two.states("k:t1/c1") == [[{"id": 2}]]
+
+  @pytest.mark.parametrize("name", ["k", "k:", "f:one"])
+  async def test_a_name_without_the_argument_it_takes_or_with_one_it_does_not_is_a_404(self, world, name):
+    socket, sid = world.connect()
+    world.hub.subscribe(sid, name)
+    await until(lambda: socket.frames)
+    assert socket.frames == [("topic_error", {"topic": name, "status": 404})]
+
+  async def test_an_argument_is_forgotten_when_its_last_follower_leaves(self, world):
+    socket, sid = world.connect()
+    world.hub.subscribe(sid, "k:t1")
+    world.hub.unsubscribe(sid, "k:t1")
+    assert "k:t1" not in world.hub._subscribers
+    world.hub.publish("k", [object()], key="t1")
+
+
 class TestFeeds:
   async def test_subscribing_to_a_feed_sends_nothing(self, world):
     world.table.add()
@@ -599,6 +632,12 @@ class TestFeeds:
     world.hub.publish("f", [world.table.add()])
     await until(lambda: stays.states("f"))
     assert gone.frames == []
+
+  async def test_a_feed_nobody_follows_is_not_even_encoded(self, world):
+    socket, sid = world.connect()
+    world.hub.subscribe(sid, "a")
+    world.hub.publish("f", [object()])
+    world.hub.publish("k", [object()], key="one")
 
   async def test_an_unsubscribed_feed_is_sent_nothing_more_not_even_what_was_waiting(self, world):
     socket, sid = world.connect()

@@ -35,7 +35,17 @@ function release(fetchedAt: string | null, overrides: Partial<Release> = {}): Re
 }
 
 function running(id: string, name = 'deploy'): QueueTask {
-  return { task_id: id, name, scopes: [], params: {}, executor: 'app', status: 'running' }
+  return {
+    task_id: id,
+    name,
+    scopes: [],
+    params: {},
+    executor: 'app',
+    status: 'running',
+    queued_at: '2026-01-01T12:00:00',
+    started_at: '2026-01-01T12:00:00',
+    quiet: false,
+  }
 }
 
 async function mountPage(state: AppInfo['state'] = 'running', options: { pending?: boolean } = {}) {

@@ -2,81 +2,118 @@ import logging
 import re
 
 import pytest
-from fastapi import FastAPI, Request
-from fastapi.testclient import TestClient
+from fastapi import APIRouter, FastAPI
 
-from utils.logging import (ContextVarFilter, ExactPathFilter, SuppressTracebackFilter, TaskFailed, fastapi_exclude_log_paths, fastapi_middleware,
-                           generate_task_id_token, get_log_level, task_id)
+from utils.logging import NO_ACCESS_LOG, AccessLogFilter, TaskIdFilter, get_log_level, new_task_id, sub_task_id, task_id, unlogged_paths
 
 
 def access_record(path, method="GET"):
-  return logging.makeLogRecord({"msg": f'127.0.0.1:50000 - "{method} {path} HTTP/1.1" 200'})
+  """A line of uvicorn's access log, as it logs it."""
+  return logging.LogRecord("uvicorn.access", logging.INFO, "", 0, '%s - "%s %s HTTP/%s" %d',
+                           ("127.0.0.1:50000", method, path, "1.1", 200), None)
 
 
-class TestExactPathFilter:
-  filter = ExactPathFilter(fastapi_exclude_log_paths)
+@pytest.fixture(scope="module")
+def apps_filter():
+  """The access log's filter as Sage sets it up: its two apps' marked routes, and the Socket.IO path."""
+  from api import SOCKET_IO_PATH, app
+  from api_ingest import app as ingest
+  return AccessLogFilter(unlogged_paths([app, ingest], [SOCKET_IO_PATH]))
+
+
+class TestTheAppsUnloggedPaths:
 
   @pytest.mark.parametrize("path", [
       "/api",
       "/api?ts=1",
       "/api/vector/logs",
-      "/api/workers/w1/logs/web",
+      "/api/telegraf/report",
+      "/api/projects/demo/applications/web/logs",
+      "/api/projects/demo/applications/web/logs?hostname=w1&search=a%20b",
+      "/api/requests/",
+      "/api/tasks/abc12345/logs?sub_task_id=def67890",
       "/api/workers/w1/metrics",
       "/api/workers/w1/metrics?period=1h",
+      "/api/socket.io/?EIO=4&transport=polling",
   ])
-  def test_drops_the_noisy_requests(self, path):
-    assert self.filter.filter(access_record(path)) is False
+  def test_leave_out_the_requests_asked_every_few_seconds(self, apps_filter, path):
+    assert apps_filter.filter(access_record(path)) is False
 
-  @pytest.mark.parametrize("path", ["/api/", "/api/projects", "/api/workers/w1", "/api/workers/w1/reboot", "/"])
-  def test_keeps_every_other_request(self, path):
-    assert self.filter.filter(access_record(path)) is True
+  @pytest.mark.parametrize("path", [
+      "/",
+      "/api/tasks/",
+      "/api/tasks/abc12345/parts",
+      "/api/workers/w1",
+      "/api/projects/demo/applications/web",
+      "/api/projects/demo/applications/web/logs/extra",
+      "/api/socket.iox",
+  ])
+  def test_keep_every_other_request(self, apps_filter, path):
+    assert apps_filter.filter(access_record(path)) is True
+
+
+class TestAccessLogFilter:
+  def app(self, prefix):
+    """A router with a marked route and one that is not, in another router, as the projects hold the applications."""
+    inner = APIRouter()
+
+    @inner.get("/{name}/logs", openapi_extra=NO_ACCESS_LOG)
+    def logs(name: str):
+      return []
+
+    @inner.get("/{name}")
+    def one(name: str):
+      return {}
+
+    outer = APIRouter()
+    outer.include_router(inner, prefix="/{group}/things")
+    app = FastAPI(openapi_url=None)
+    app.include_router(outer, prefix=prefix)
+    return app
+
+  def test_a_marked_route_is_left_out_wherever_it_is_included(self):
+    for prefix in ("/api", "/api/v2"):
+      filter = AccessLogFilter(unlogged_paths([self.app(prefix)]))
+      assert filter.filter(access_record(f"{prefix}/g/things/a/logs")) is False
+      assert filter.filter(access_record(f"{prefix}/g/things/a")) is True
 
   def test_the_method_does_not_matter(self):
-    assert self.filter.filter(access_record("/api/vector/logs", "POST")) is False
+    filter = AccessLogFilter(unlogged_paths([self.app("/api")]))
+    assert filter.filter(access_record("/api/g/things/a/logs", method="POST")) is False
 
-  def test_a_message_that_is_not_an_access_line_is_kept(self):
-    assert self.filter.filter(logging.makeLogRecord({"msg": "Started server process"})) is True
+  def test_a_record_that_is_not_an_access_line_is_kept(self):
+    filter = AccessLogFilter(unlogged_paths([self.app("/api")]))
+    assert filter.filter(logging.makeLogRecord({"msg": "GET /api/g/things/a/logs"})) is True
 
-  def test_patterns_are_matched_as_given(self):
-    only_status = ExactPathFilter(["/status", "/files/*"])
-    assert only_status.filter(access_record("/status")) is False
-    assert only_status.filter(access_record("/files/a.txt")) is False
-    assert only_status.filter(access_record("/status/extra")) is True
-
-
-class TestSuppressTracebackFilter:
-  def record(self, error):
-    return logging.makeLogRecord({"msg": "x", "exc_info": (type(error), error, None), "exc_text": "Traceback ..."})
-
-  def test_removes_the_traceback_of_a_failed_task(self):
-    record = self.record(TaskFailed())
-    assert SuppressTracebackFilter().filter(record) is True
-    assert record.exc_info is None
-    assert record.exc_text is None
-
-  def test_keeps_the_traceback_of_any_other_error(self):
-    record = self.record(ValueError("boom"))
-    assert SuppressTracebackFilter().filter(record) is True
-    assert record.exc_info[0] is ValueError
-    assert record.exc_text == "Traceback ..."
-
-  def test_a_record_without_an_error_passes(self):
-    assert SuppressTracebackFilter().filter(logging.makeLogRecord({"msg": "x"})) is True
+  def test_a_path_under_a_prefix_is_left_out_and_the_prefix_itself(self):
+    filter = AccessLogFilter(unlogged_paths([], ["/api/socket.io"]))
+    assert [filter.filter(access_record(path)) for path in ("/api/socket.io", "/api/socket.io/", "/api/socket.io/x", "/api/socket")] == [
+        False, False, False, True]
 
 
-class TestContextVarFilter:
+class TestTaskIdFilter:
   def test_puts_the_task_id_on_the_record(self):
     token = task_id.set("abc12345")
     try:
       record = logging.makeLogRecord({"msg": "x"})
-      assert ContextVarFilter().filter(record) is True
+      assert TaskIdFilter().filter(record) is True
       assert record.task_id == "abc12345"
     finally:
       task_id.reset(token)
 
+  def test_a_container_part_shows_its_task_and_its_own_id(self):
+    tokens = task_id.set("abc12345"), sub_task_id.set("def67890")
+    try:
+      record = logging.makeLogRecord({"msg": "x"})
+      TaskIdFilter().filter(record)
+      assert record.task_id == "abc12345/def67890"
+    finally:
+      sub_task_id.reset(tokens[1])
+      task_id.reset(tokens[0])
+
   def test_is_empty_outside_a_task(self):
     record = logging.makeLogRecord({"msg": "x"})
-    ContextVarFilter().filter(record)
+    TaskIdFilter().filter(record)
     assert record.task_id == ""
 
 
@@ -102,44 +139,6 @@ class TestGetLogLevel:
 
 
 def test_task_ids_are_eight_hex_characters_and_differ():
-  tokens = {generate_task_id_token() for _ in range(50)}
+  tokens = {new_task_id() for _ in range(50)}
   assert len(tokens) == 50
   assert all(re.fullmatch(r"[0-9a-f]{8}", token) for token in tokens)
-
-
-class TestRequestMiddleware:
-  @pytest.fixture
-  def client(self):
-    app = FastAPI()
-    app.add_middleware(fastapi_middleware)
-
-    @app.get("/ping")
-    async def ping(request: Request):
-      return {"state": request.state.task_id, "context": task_id.get()}
-
-    @app.get("/sync-ping")
-    def sync_ping():
-      return {"context": task_id.get()}
-
-    return TestClient(app)
-
-  def test_every_response_carries_its_task_id(self, client):
-    response = client.get("/ping")
-    assert re.fullmatch(r"[0-9a-f]{8}", response.headers["X-Task-ID"])
-
-  def test_the_task_id_reaches_the_handler_and_its_context(self, client):
-    response = client.get("/ping")
-    assert response.json() == {"state": response.headers["X-Task-ID"], "context": response.headers["X-Task-ID"]}
-
-  def test_the_task_id_reaches_a_handler_that_runs_in_a_thread(self, client):
-    response = client.get("/sync-ping")
-    assert response.json()["context"] == response.headers["X-Task-ID"]
-
-  def test_each_request_gets_its_own_task_id(self, client):
-    assert client.get("/ping").headers["X-Task-ID"] != client.get("/ping").headers["X-Task-ID"]
-
-  def test_the_request_is_logged_as_an_access_line(self, client, caplog):
-    with caplog.at_level(logging.INFO, logger="uvicorn.access"):
-      client.get("/ping?x=1")
-    messages = [record.getMessage() for record in caplog.records if record.name == "uvicorn.access"]
-    assert messages == ['testclient:50000 - "GET /ping?x=1 HTTP/1.1" 200']

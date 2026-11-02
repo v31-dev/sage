@@ -8,7 +8,7 @@ Sage is a manager-and-workers platform designed for Docker workloads connected t
 - Workers run application containers and edge components.
 - Cloudflare is required (env vars): DNS records, the tunnel for public apps, and the DNS-01 challenge for Sage's certificates.
 - Traefik provides ingress on workers. The manager issues two certificates in-process (ACME DNS-01): its own for `<TS_NAME>.core.<domain>`, whose key never leaves it, and the workers' `*.int.<domain>` wildcard, synced to every worker.
-- Vector runs on workers and forwards their container logs to the manager, a batch at least every 10 s; the manager captures its own logs in-process.
+- Vector runs on workers and forwards Traefik's and the applications' logs to the manager, a batch at least every 10 s; the manager captures its tasks' logs in-process.
 - Telegraf runs on workers and pushes the host's and the containers' metrics and the containers' state to the manager every 10 s; the manager collects its own container metrics in-process.
 
 ## Manager Runtime
@@ -153,13 +153,14 @@ Relationships are centered on:
 Metrics and logs are intentionally sharded:
 
 - Metrics: one SQLite database per hostname under `/app/data/metrics/`
-- Logs: one SQLite database per container under `/app/data/logs/`
+- Logs: one SQLite database per application under `/app/data/logs/`, and beside them the requests (`requests.db`, Traefik's access lines in columns) and the task logs (`tasks.db`)
 
-Container log search uses SQLite FTS5. Worker metric shards are populated from
+Application log search uses SQLite FTS5 with the `trigram` tokenizer, so text is found anywhere in a line. Worker metric shards are populated from
 the workers' Telegraf reports (per-minute peaks of 10 s readings); the manager's own shard is populated in-process from cgroup v2 and the data
-volume (its single sage container, so no host load average). Worker container logs
-arrive via each worker's Vector (the `:9001` ingestion API); the manager's own logs
-are written to the `sage` shard in-process by a logging handler (no Vector sidecar).
+volume (its single sage container, so no host load average). Traefik's and the applications' logs
+arrive via each worker's Vector (the `:9001` ingestion API); the manager keeps the lines of its queued
+tasks, captured in-process by a logging handler (no Vector sidecar), as the task logs. Its other lines are
+in stdout only, read with `docker logs`.
 
 Log storage is bounded at both ends. On a worker, every container (the four of the stack and each
 application) keeps its Docker `json-file` logs in at most five files of 10 MB; the Compose templates set
@@ -168,10 +169,11 @@ limited to 256 MiB of data and all shards together to 2 GiB or 10% of the data v
 (`LOG_SHARD_MAX_BYTES`, `LOG_TOTAL_MAX_BYTES`, `LOG_TOTAL_MAX_DISK_SHARE` in `config.py`), next to the 14-day
 retention. Over a limit, the oldest lines go first (by timestamp), down to 90% of it and never below a
 container's newest 1,000 lines. The check runs after writes (at most every 30 s) and in the daily cleanup.
+The task logs have the same limit as a container's shard and count towards the total.
 
 ## Pushed Updates
 
-The UI keeps one Socket.IO connection to the manager (`/api/socket.io`) and follows topics over it instead of polling: the manager's status (`info`), the workers (`workers`, and one worker as `worker:<hostname>`), an application (`application:<project>/<name>`), the tasks (`tasks`, and the finished ones as `task-history`), the backup and discovery status, the platform backups (`backups`), the release and the notifications. A page loads a topic from its REST route, and the manager pushes the whole state of a state topic each time it changes and each new row of a feed (a notification, a finished task) as it is stored; the page loads again each time the socket connects, so it makes up for what it missed. Socket.IO reconnects and falls back from WebSocket to long-polling by itself, a heartbeat every 10 s shows in an indicator at the top left of the UI, and a connection from another origin is refused. See [backend.md](backend.md) and [frontend.md](frontend.md).
+The UI keeps one Socket.IO connection to the manager (`/api/socket.io`) and follows topics over it instead of polling: the manager's status (`info`), the workers (`workers`, and one worker as `worker:<hostname>`), an application (`application:<project>/<name>`), the tasks (`tasks`, and the finished ones as `task-history`), the backup and discovery status, the platform backups (`backups`), the release, the notifications and the logs (a task's, an application's and the requests). A page loads a topic from its REST route, and the manager pushes the whole state of a state topic each time it changes and each new row of a feed (a notification, a finished task) as it is stored; the page loads again each time the socket connects, so it makes up for what it missed. Socket.IO reconnects and falls back from WebSocket to long-polling by itself, a heartbeat every 10 s shows in an indicator at the top left of the UI, and a connection from another origin is refused. See [backend.md](backend.md) and [frontend.md](frontend.md).
 
 What is pushed, and what the API keeps:
 - **A topic is for changes a page did not make:** a background task, the manager's own checks, or another tab. Examples: an application's status while a deploy runs and when a container goes to error (`application:<project>/<name>`); a worker going offline or coming back (`workers`, `worker:<hostname>`); a settings check ending (`info`); a worker removed by its background task while its page is open (the topic answers 404 and the page shows not found).

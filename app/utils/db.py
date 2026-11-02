@@ -22,6 +22,11 @@ except ValueError:
       "msg": "ENCRYPTION_KEY must be a key made with: openssl rand -base64 32 | tr '+/' '-_'"})))
 
 
+def like_literal(text: str) -> str:
+  """`text` for a `LIKE … ESCAPE '\\'`, with LIKE's wildcards in it escaped."""
+  return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def validate_multiline_kv(config: str, field_name: str = "config"):
   """
   Validate multiline key/value pairs in the format:

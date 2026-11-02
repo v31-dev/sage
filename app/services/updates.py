@@ -53,6 +53,9 @@ class UpdateFeed(StrEnum):
   """The names of the feeds a connection can follow. A feed's owner sends each new row to it."""
   NOTIFICATIONS = "notifications"
   TASK_HISTORY = "task-history"
+  TASK_LOGS = "task-logs"                # a task's lines: `task-logs:<task>`, or a container's part `<task>/<part>`
+  APPLICATION_LOGS = "application-logs"  # an application's lines: `application-logs:<project>-<app>`
+  REQUESTS = "requests"                  # Traefik's requests on every worker
 
 
 @dataclass(frozen=True)
@@ -65,6 +68,7 @@ class Topic:
 @dataclass(frozen=True)
 class Feed:
   """A list of rows that grows, sent as its owner publishes them."""
+  parameterised: bool = False  # followed as `name:argument`, one feed for each argument
 
 
 _UNSET = object()
@@ -211,8 +215,7 @@ class Updates(Base):
     does, stands for nothing."""
     key, separator, argument = name.partition(":")
     definition = self._topics.get(key)
-    if definition is None or (isinstance(definition, Topic) and definition.parameterised) != bool(argument) or (
-            separator and not argument):
+    if definition is None or definition.parameterised != bool(argument) or (separator and not argument):
       return None
     return definition, argument
 
@@ -226,14 +229,16 @@ class Updates(Base):
     except RuntimeError:
       logger.debug("A change was dropped: the event loop is closed.")
 
-  def publish(self, feed: UpdateFeed, rows: list):
-    """Send rows to the subscribers of a feed. Safe to call from any thread."""
+  def publish(self, feed: UpdateFeed, rows: list, key: str | None = None):
+    """Send rows to the subscribers of a feed, a parameterised one's of that key. Safe to call from any thread. A feed
+    nobody follows is not encoded: a connection that follows it from now on loads what was stored before."""
     loop = self._loop
-    if loop is None:
+    name = f"{feed}:{key}" if key else str(feed)
+    if loop is None or name not in self._subscribers:
       return
-    frame = state_frame(feed, jsonable_encoder(rows))
+    frame = state_frame(name, jsonable_encoder(rows))
     try:
-      loop.call_soon_threadsafe(self._send, feed, frame)
+      loop.call_soon_threadsafe(self._send, name, frame)
     except RuntimeError:
       logger.debug("Rows were dropped: the event loop is closed.")
 

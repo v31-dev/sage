@@ -41,6 +41,17 @@ const _tsFormatter = new Intl.DateTimeFormat(undefined, {
 
 // Backend timestamps without a timezone are UTC; ones with `Z` or an offset
 // ('2027-01-13T09:10:59+00:00') are read as given.
+// A time a datetime-local field holds (`2026-01-01T12:00`, local time), as UTC in ISO form; '' for none.
+export function localTimeToUTC(local: string): string {
+  return local ? new Date(local).toISOString() : ''
+}
+
+// A time as a datetime-local field holds it: local time, to the minute.
+export function toLocalTime(date: Date): string {
+  const pad = (value: number) => String(value).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`
+}
+
 export function parseDate(value: string | Date): Date {
   if (typeof value !== 'string') return value
   return new Date(/([zZ]|[+-]\d{2}:?\d{2})$/.test(value) ? value : `${value}Z`)
