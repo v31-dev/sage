@@ -14,5 +14,6 @@ htmlcov
 
 # Ignore marked files
 *-gitignore
-todo*.md
-todo/**
+
+# Claude Code
+.claude/settings.local.json
