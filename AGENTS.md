@@ -178,7 +178,8 @@ docker compose up --build --watch
 Agent memory, the todo tracker and the global working rules for this project live in a separate private memory repo. Its path differs per machine, so find it in this order:
 
 1. The path of `rules.md` in your context, if the global rules loaded.
-2. `autoMemoryDirectory` in `.claude/settings.local.json`: the repo is two levels above that folder.
-3. A folder named `memory` beside this repository, holding a `rules.md`.
+2. The session's working directories, if the user added it to the workspace: a folder holding a `rules.md`.
+3. `autoMemoryDirectory` in `.claude/settings.local.json`: the repo is two levels above that folder.
+4. A folder named `memory` beside this repository, holding a `rules.md`.
 
-This repo is linked, so all work in it is tracked in the memory repo. A session is set up when the global rules are in your context and your memory directory is `<memory repo>/sage/memory`. If you can't find the repo, ask the user for its path and wait before starting the task. If you find it but the session isn't set up, read its `rules.md`, tell the user in one line and carry on, tracking the work there. When the user gives the path or asks to link it, follow Recovery in that repo's `README.md`.
+All work in this repo is tracked in the memory repo. A session is set up when the global rules are in your context and your memory directory is `<memory repo>/sage/memory`. If you can't find the repo, ask the user to add it to the workspace or give its path, and wait before starting the task. If the session isn't set up and the repo is in the workspace or the user gave its path, follow Recovery in its `README.md`. If you found it any other way, read its `rules.md`, tell the user in one line and carry on, tracking the work there.
