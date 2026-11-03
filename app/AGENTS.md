@@ -6,7 +6,7 @@ Non-negotiable patterns for the manager backend. Read the root [../AGENTS.md](..
 
 - Inbound tailnet traffic to the manager is delivered to `127.0.0.1:<port>` inside the container, so anything listening there (on `0.0.0.0` or `127.0.0.1`) is reachable from the tailnet wherever the tailnet policy allows. Never put an internal-only listener on `127.0.0.1`; use `127.0.0.2` or a unix socket.
 - The container has no route into the tailnet: SSH to workers goes through `tailscale nc` (asyncssh `proxy_command`), for HTTP the workers reach the manager (Telegraf's reports and Vector's logs on 9001), not the other way round. Internet calls (Cloudflare, S3, ACME, GitHub) go direct.
-- A file with a secret in it goes to a worker with `sync_file(..., mode=0o600)` (a script `0o700`): created with the mode and renamed into place, because Tailscale SSH keeps the mode of a file it rewrites in place and ignores the mode of a new directory. Other files are written in place.
+- `sync_file` creates every file with its mode under a temporary name and renames it into place, so a reader never finds a partial file. A file with a secret in it goes with `mode=0o600` (a script `0o700`; the default is `0o644`): Tailscale SSH ignores the mode of a new directory, so the file's own mode is what keeps it private.
 - Optional services (S3 `s3_config`, notifications) are checked before use: scheduled triggers skip quietly when unconfigured, user actions get a clear 4xx. Cloudflare is always configured; don't add checks for it.
 
 ## Services
