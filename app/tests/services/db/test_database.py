@@ -4,7 +4,7 @@ import pytest
 from peewee import IntegrityError
 
 import config
-from services.db import Application, BaseModel, Database, Domain, Instance, Project, Worker
+from services.db import Application, BaseModel, Database, Domain, Instance, Project, SchemaRefused, Worker
 from services.db import db as database
 from services.db.database import MODELS
 
@@ -125,11 +125,19 @@ class TestReconcileSchema:
 
     assert "domain_name_namespace" in {index.name for index in db.get_indexes("domain")}
 
-  def test_domains_that_clash_in_a_namespace_stop_the_startup(self, db, application):
+  def test_data_that_refuses_an_index_stops_the_startup_saying_what_failed_and_where_the_fix_is(self, db, application, monkeypatch):
+    monkeypatch.setattr(config, "VERSION", "1.2.3")
     db.execute_sql("DROP INDEX domain_name_namespace")
     other = Application.create(project=application.project, name="api", label="API", image="nginx")
     Domain.insert(application=application, name="shop", type="internal", port=80).execute()
     Domain.insert(application=other, name="shop", type="tcp", port=80).execute()
 
-    with pytest.raises(IntegrityError, match="UNIQUE constraint failed"):
+    with pytest.raises(SchemaRefused) as refused:
       Database().reconcile_schema()
+
+    message = str(refused.value)
+    assert f"Sage 1.2.3 can't update the schema of {config.DB_PATH}" in message
+    assert "UNIQUE constraint failed: index 'domain_name_namespace'" in message
+    assert """The refused index: CREATE UNIQUE INDEX IF NOT EXISTS "domain_name_namespace" ON "domain" ("name", (type = 'public')).""" in message
+    assert message.endswith("How to fix it: https://github.com/v31-dev/sage/releases/tag/v1.2.3")
+    assert isinstance(refused.value.__cause__, IntegrityError)

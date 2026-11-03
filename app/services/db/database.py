@@ -1,5 +1,7 @@
 import logging
+import re
 
+from peewee import IntegrityError
 from playhouse.migrate import SqliteMigrator, migrate
 
 import config
@@ -10,6 +12,10 @@ from .models import Application, Backup, Container, Domain, Event, Instance, Not
 logger = logging.getLogger(__name__)
 
 MODELS = [Setting, Instance, Project, Application, Volume, Domain, Worker, Container, Event, Notification, Backup, Task]
+
+
+class SchemaRefused(Exception):
+  """The data in the database refuses this version's schema."""
 
 
 class Database(Base):
@@ -38,9 +44,23 @@ class Database(Base):
     tables and add missing columns. Idempotent and safe to call any time the
     on-disk schema may lag the models -- at startup, or after a restore swaps in
     an older database snapshot. Also gives the manager its identity if it has none.
+    Data that refuses the schema raises `SchemaRefused`, whose message links the
+    running version's release, where the fix is.
     """
-    db.create_tables(MODELS, safe=True)
-    self._sync_columns()
+    try:
+      db.create_tables(MODELS, safe=True)
+      self._sync_columns()
+    except IntegrityError as e:
+      refused_index = ""
+      if named := re.search(r"index '([^']+)'", str(e)):
+        for model in MODELS:
+          for index in model._meta.fields_to_index():
+            sql = db.get_sql_context().sql(index).query()[0]
+            if f'"{named[1]}"' in sql:
+              refused_index = f" The refused index: {sql}."
+      raise SchemaRefused(
+          f"Sage {config.VERSION} can't update the schema of {config.DB_PATH}: the data in it refuses the change "
+          f"({e}).{refused_index} How to fix it: {config.RELEASE_PAGE_URL.format(version=config.VERSION)}") from e
     if not Instance.select().exists():
       Instance.create()
 

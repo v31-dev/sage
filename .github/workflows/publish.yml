@@ -160,6 +160,7 @@ jobs:
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           RELEASE_PR_BODY: ${{ steps.release_pr.outputs.body }}
+          RELEASE_PR_NUMBER: ${{ steps.release_pr.outputs.number }}
         with:
           script: |
             const version = '${{ steps.version.outputs.version }}';
@@ -173,6 +174,8 @@ jobs:
               '```bash',
               `${image}`,
               '```',
+              `**Release PR**: https://github.com/${owner}/${repo}/pull/${process.env.RELEASE_PR_NUMBER}`,
+              '',
               prBody,
             ].join('\n');
 

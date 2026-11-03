@@ -48,6 +48,7 @@ Non-negotiable patterns for the manager backend. Read the root [../AGENTS.md](..
 - Do not add one-time migration/backfill/convergence code (DB rows, files, or external managed state like Cloudflare DNS records) just to bring existing deployments in line with a change. Prefer documenting the manual step in the summary/PR over shipping code that runs once and is then dead weight.
 - The one sanctioned automatic migration is DB schema evolution — missing columns are added at boot and columns no model has are dropped (`Database` in `app/services/db/database.py`). Anything beyond that (data backfills, external-state rewrites) is a manual step unless the user says otherwise.
 - New writes should carry the new desired state going forward (e.g. a new default on create); reconciling what already exists is a documented manual action, not code.
+- A schema change that existing data can refuse (a new unique index, say) stops the boot: Sage exits with one `[CRITICAL]` line holding what it knows of the failure and a link to the running version's release. The code prints no remediation; the release notes hold it, so it can be corrected without a release.
 
 ## Operation Queue And Scheduler
 

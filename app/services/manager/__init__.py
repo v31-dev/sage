@@ -16,7 +16,6 @@ from services.worker_reports import WorkerReports
 from utils.executor import LANES
 from utils.queue import TaskQueue
 
-from ._common import app_dir
 from .application import ApplicationMixin
 from .backups import BackupsMixin
 from .core import CoreMixin
@@ -50,8 +49,7 @@ class Manager(
     try:
       logger.info("Running Manager setup...")
 
-      with open(app_dir / "VERSION") as f:
-        self.version = f.read().strip()
+      self.version = config.VERSION
       self.latest_version = self.version
       self.latest_release = None
 

@@ -8,9 +8,12 @@ STATIC_DIR = Path("/app/static")
 WORKER_HOME_DIR = "/opt/sage"
 CGROUP_ROOT = Path("/sys/fs/cgroup")
 
+VERSION = (Path(__file__).parent / "VERSION").read_text().strip()
+
 CLOUDFLARE_API_URL = "https://api.cloudflare.com/client/v4"
 ACME_DIRECTORY = "https://acme-v02.api.letsencrypt.org/directory"
 LATEST_RELEASE_URL = "https://api.github.com/repos/v31-dev/sage/releases/latest"
+RELEASE_PAGE_URL = "https://github.com/v31-dev/sage/releases/tag/v{version}"
 
 # How long history is kept: logs, metrics, events, notifications, task history, restore
 # safety copies, and S3 platform and volume backups (the daily cleanup).
