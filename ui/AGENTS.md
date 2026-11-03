@@ -4,6 +4,7 @@ Rules for the Vue frontend. Read the root [../AGENTS.md](../AGENTS.md) first for
 
 - Build from the existing component library (shadcn-vue under `ui/src/components/ui`, add more of its components as needed) rather than hand-rolled HTML and CSS. Don't add a new UI framework or library for one small component.
 - UI text is written for people: a short summary of what will happen or what a state means, not commands, file names or protocol details (those belong in the docs).
+- A refusal says what isn't allowed, plainly: no consequences and no remedies.
 - Forms: a placeholder is only ever an example, written "e.g. …"; a field with a default is prefilled with it; optional fields say "(optional)" in the label.
 - Dates are always shown through `formatDate` / `formatDateStringAgo` (`ui/src/lib/utils.ts`), never raw.
 - The manager's status (queue state, worker summary, settings status) lives in the app store, which follows the `info` topic; pages follow their own topics with `watchState(topic, load, onState)` or `watchFeed(topic, load, onRows)` (`ui/src/lib/updates.ts`, Socket.IO; `load` is the page's REST call), with no polling of their own for them. After an action, update the store at once and let the next push confirm.

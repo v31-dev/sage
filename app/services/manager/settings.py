@@ -65,8 +65,7 @@ class SettingsMixin:
     # The machine name, which Tailscale suffixes when another machine has it.
     machine = (status.get("Self", {}).get("DNSName") or "").split(".")[0]
     if machine.lower() != get_env("TS_NAME").lower():
-      return (f"The node is running as {machine}, not {get_env('TS_NAME')} (TS_NAME): another machine has that name, "
-              f"or it was renamed in the Tailscale admin console. {peers}.")
+      return f"The node is running as {machine}, not {get_env('TS_NAME')} (TS_NAME); {peers}."
     return f"The node is running as {machine}; {peers}."
 
   def _test_cloudflare(self, value: dict, side_effects: bool) -> str:
