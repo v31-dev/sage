@@ -203,6 +203,11 @@ Workers are meant to be dedicated to Sage: a hardened, bare VM with Docker and n
 running on it. The manager has no such requirement; it needs only Docker and runs anywhere, on
 a laptop, a PaaS or a VM.
 
+### Sizing
+
+The smallest recommended machine, for the manager and for each worker, is 1 GB of memory and
+1 core. Give a machine more as its applications and logs grow.
+
 ### First steps
 
 Once Sage is up, the UI is at `https://<TS_NAME>.core.<DOMAIN>`. S3 (backups) and

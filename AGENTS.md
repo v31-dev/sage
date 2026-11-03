@@ -4,9 +4,8 @@ This is a living project-context file for AI coding agents. Keep it concise, cur
 
 ## Start Here
 
-- Read [README.md](README.md) first.
-- Read the relevant files under [docs/](docs/) before making changes.
-- Read the `AGENTS.md` of the module you are touching: [app/AGENTS.md](app/AGENTS.md) or [ui/AGENTS.md](ui/AGENTS.md).
+- Read [README.md](README.md) in full, and [app/AGENTS.md](app/AGENTS.md) and [ui/AGENTS.md](ui/AGENTS.md), at the start of every session.
+- Read the relevant files under [docs/](docs/) before proposing or making changes.
 - Treat `README.md` plus the focused docs as the primary project context.
 
 ## Model
