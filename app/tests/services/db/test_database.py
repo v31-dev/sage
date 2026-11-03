@@ -1,16 +1,42 @@
+import contextlib
 import logging
 
 import pytest
 from peewee import IntegrityError
 
 import config
-from services.db import Application, BaseModel, Database, Domain, Instance, Project, SchemaRefused, Worker
+from services.db import Application, Backup, BaseModel, Container, Database, Domain, Event, Instance, Project, SchemaRefused, Volume, Worker
 from services.db import db as database
 from services.db.database import MODELS
+
+ORPHAN_DOMAIN = [
+    "PRAGMA foreign_keys=OFF",
+    "INSERT INTO domain (application_id, name, type, port, created_at, updated_at) "
+    "VALUES (999, 'ghost', 'public', 80, '2026-01-01 00:00:00', '2026-01-01 00:00:00')",
+    "PRAGMA foreign_keys=ON",
+]
 
 
 def columns(db, table):
   return {column.name for column in db.get_columns(table)}
+
+
+def counts(db):
+  return {table: db.execute_sql(f'SELECT count(*) FROM "{table}"').fetchone()[0] for table in db.get_tables()}
+
+
+def point_a_domain_at_a_missing_application(db):
+  for statement in ORPHAN_DOMAIN:
+    db.execute_sql(statement)
+
+
+@pytest.fixture
+def clash(db, application):
+  """A database from before the namespace index: two applications hold one internal or TCP name."""
+  db.execute_sql("DROP INDEX domain_name_namespace")
+  other = Application.create(project=application.project, name="api", label="API", image="nginx")
+  Domain.insert(application=application, name="shop", type="internal", port=80).execute()
+  Domain.insert(application=other, name="shop", type="tcp", port=80).execute()
 
 
 def test_opens_in_the_data_dir(db, data_dir):
@@ -125,12 +151,8 @@ class TestReconcileSchema:
 
     assert "domain_name_namespace" in {index.name for index in db.get_indexes("domain")}
 
-  def test_data_that_refuses_an_index_stops_the_startup_saying_what_failed_and_where_the_fix_is(self, db, application, monkeypatch):
+  def test_data_that_refuses_an_index_stops_the_startup_saying_what_failed_and_where_the_fix_is(self, db, clash, monkeypatch):
     monkeypatch.setattr(config, "VERSION", "1.2.3")
-    db.execute_sql("DROP INDEX domain_name_namespace")
-    other = Application.create(project=application.project, name="api", label="API", image="nginx")
-    Domain.insert(application=application, name="shop", type="internal", port=80).execute()
-    Domain.insert(application=other, name="shop", type="tcp", port=80).execute()
 
     with pytest.raises(SchemaRefused) as refused:
       Database().reconcile_schema()
@@ -139,5 +161,115 @@ class TestReconcileSchema:
     assert f"Sage 1.2.3 can't update the schema of {config.DB_PATH}" in message
     assert "UNIQUE constraint failed: index 'domain_name_namespace'" in message
     assert """The refused index: CREATE UNIQUE INDEX IF NOT EXISTS "domain_name_namespace" ON "domain" ("name", (type = 'public')).""" in message
+    assert "The database was left as it was." in message
     assert message.endswith("How to fix it: https://github.com/v31-dev/sage/releases/tag/v1.2.3")
     assert isinstance(refused.value.__cause__, IntegrityError)
+
+
+class TestANotNullColumnAddedToATableOtherRowsReference:
+  """Adding a NOT NULL column rebuilds its table; with foreign keys on, dropping the old table deletes the rows that
+  cascade from it or fails on those that restrict it."""
+
+  @pytest.fixture
+  def deployed(self, application, worker):
+    container = Container.create(application=application, worker=worker)
+    Event.create(container=container, type="deploy", application_task_id="t1", container_task_id="t2")
+
+  @pytest.fixture
+  def undeployed(self, project):
+    application = Application.create(project=project, name="api", label="API", image="nginx")
+    Domain.create(application=application, name="shop", type="public", port=80)
+    Volume.create(application=application, name="data", path="/data")
+    Backup.create(type="application", s3_path="backups/api", application=application)
+
+  @pytest.mark.parametrize("table, rows", [
+      ("project", "deployed"),
+      ("application", "undeployed"),
+      ("application", "deployed"),
+      ("worker", "deployed"),
+      ("container", "deployed"),
+  ], ids=[
+      "project, which an application restricts",
+      "application, whose domains, volumes and backups cascade",
+      "application, which a container restricts",
+      "worker, which a container restricts",
+      "container, whose events cascade",
+  ])
+  def test_every_row_stays_and_the_column_is_not_null(self, db, request, table, rows):
+    request.getfixturevalue(rows)
+    before = counts(db)
+    db.execute_sql(f"ALTER TABLE {table} DROP COLUMN updated_at")
+
+    Database().reconcile_schema()
+
+    assert counts(db) == before
+    assert next(column for column in db.get_columns(table) if column.name == "updated_at").null is False
+
+
+class TestARefusedSchemaStep:
+  def test_a_table_it_would_create_is_not_there(self, db, clash):
+    # Created before the domain index fails: Peewee creates the tables in the order of their foreign keys.
+    db.execute_sql("DROP TABLE backup")
+
+    with pytest.raises(SchemaRefused):
+      Database().reconcile_schema()
+
+    assert "backup" not in db.get_tables()
+
+  def test_an_index_it_would_create_is_not_there(self, db, clash):
+    db.execute_sql("DROP INDEX application_project_id_name")
+
+    with pytest.raises(SchemaRefused):
+      Database().reconcile_schema()
+
+    assert "application_project_id_name" not in {index.name for index in db.get_indexes("application")}
+
+  def test_a_column_it_added_before_the_refusal_is_not_there(self, db, application):
+    db.execute_sql("ALTER TABLE project DROP COLUMN description")
+    point_a_domain_at_a_missing_application(db)
+
+    with pytest.raises(SchemaRefused):
+      Database().reconcile_schema()
+
+    assert "description" not in columns(db, "project")
+
+  def test_rows_that_point_at_nothing_are_refused_and_named(self, db, application):
+    point_a_domain_at_a_missing_application(db)
+
+    with pytest.raises(SchemaRefused, match=r"FOREIGN KEY check failed: domain row \d+ points at a missing application"):
+      Database().reconcile_schema()
+
+  def test_after_the_data_is_fixed_the_next_start_goes_through(self, db, clash):
+    with pytest.raises(SchemaRefused):
+      Database().reconcile_schema()
+
+    Domain.delete().where(Domain.type == "tcp").execute()
+    Database().reconcile_schema()
+
+    assert "domain_name_namespace" in {index.name for index in db.get_indexes("domain")}
+
+
+@pytest.mark.parametrize("setup, error", [
+    ([], None),
+    (ORPHAN_DOMAIN, SchemaRefused),
+    (["ALTER TABLE project DROP COLUMN label"], ValueError),
+], ids=["after a success", "after a refusal", "after any other error"])
+def test_foreign_keys_are_on_again(db, application, setup, error):
+  for statement in setup:
+    db.execute_sql(statement)
+
+  with pytest.raises(error) if error else contextlib.nullcontext():
+    Database().reconcile_schema()
+
+  assert db.execute_sql("PRAGMA foreign_keys").fetchone()[0] == 1
+
+
+def test_it_refuses_to_run_inside_a_transaction_where_foreign_keys_cannot_be_turned_off(db):
+  db.execute_sql("ALTER TABLE project DROP COLUMN description")
+
+  with db.atomic():
+    with pytest.raises(RuntimeError, match="must not run inside a transaction"):
+      Database().reconcile_schema()
+
+  assert "description" not in columns(db, "project")
+  assert db.execute_sql("PRAGMA foreign_keys").fetchone()[0] == 1

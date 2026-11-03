@@ -229,6 +229,12 @@ Main database:
 - SQLite
 - WAL mode enabled
 - some fields are encrypted through custom Peewee field types
+- its schema follows the models: at boot and after a platform restore, `Database.reconcile_schema` creates the
+  missing tables and indexes, adds the missing columns and drops those no model has, in one transaction with foreign
+  keys off (SQLite's procedure for changes that rebuild a table, as adding a `NOT NULL` column does). Data that
+  refuses the change (a unique index, the foreign key check) rolls all of it back and raises `SchemaRefused`: the
+  boot stops with one `[CRITICAL]` line naming what failed and linking the running version's release, whose notes
+  give the fix
 
 Additional storage:
 
