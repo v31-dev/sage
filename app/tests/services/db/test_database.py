@@ -1,9 +1,10 @@
 import logging
 
 import pytest
+from peewee import IntegrityError
 
 import config
-from services.db import BaseModel, Database, Instance, Project, Worker
+from services.db import Application, BaseModel, Database, Domain, Instance, Project, Worker
 from services.db import db as database
 from services.db.database import MODELS
 
@@ -115,4 +116,20 @@ class TestReconcileSchema:
   def test_a_not_null_column_without_a_default_stops_the_startup(self, db):
     db.execute_sql("ALTER TABLE project DROP COLUMN label")
     with pytest.raises(ValueError, match="not null but has no default"):
+      Database().reconcile_schema()
+
+  def test_an_existing_domain_table_gets_the_namespace_index(self, db):
+    db.execute_sql("DROP INDEX domain_name_namespace")
+
+    Database().reconcile_schema()
+
+    assert "domain_name_namespace" in {index.name for index in db.get_indexes("domain")}
+
+  def test_domains_that_clash_in_a_namespace_stop_the_startup(self, db, application):
+    db.execute_sql("DROP INDEX domain_name_namespace")
+    other = Application.create(project=application.project, name="api", label="API", image="nginx")
+    Domain.insert(application=application, name="shop", type="internal", port=80).execute()
+    Domain.insert(application=other, name="shop", type="tcp", port=80).execute()
+
+    with pytest.raises(IntegrityError, match="UNIQUE constraint failed"):
       Database().reconcile_schema()

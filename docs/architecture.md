@@ -93,6 +93,11 @@ A `Domain` has a `type` that selects how Traefik routes it:
   public variant) and has no `x-tag` pool variant, but multi-container load balancing
   works the same as other domain types.
 
+A name is unique in its namespace across every application: one public domain per
+`<sub>.<domain>`, and one internal or TCP domain per `<sub>.int.<domain>` (both are served
+under the `*.int` certificate). `app.<domain>` and `app.int.<domain>` can both exist. `core`,
+`int` and `discovery` are reserved.
+
 **`tcp` clients must send SNI.** Routing is purely by SNI, so the client must connect
 with TLS and present SNI = `<sub>.int.<domain>`. Without it Traefik cannot select the
 route and serves its default self-signed cert, so the client fails with a

@@ -4,7 +4,7 @@ import re
 import secrets
 from dataclasses import dataclass
 
-from peewee import BooleanField, CharField, DateTimeField, FixedCharField, ForeignKeyField, IntegerField, SqliteDatabase
+from peewee import SQL, BooleanField, CharField, DateTimeField, FixedCharField, ForeignKeyField, IntegerField, SqliteDatabase
 from playhouse.signals import Model
 
 from utils.common import utcnow
@@ -195,14 +195,36 @@ class Application(BaseModel):
     indexes = ((("project", "name"), True),)
 
 
+RESERVED_DOMAIN_NAMES = {"core", "int", "discovery"}
+
+# A public domain is `<name>.<domain>`; internal and TCP domains share `<name>.int.<domain>`.
+IS_PUBLIC = SQL("(type = 'public')")
+
+
 class Domain(BaseModel):
   application = ForeignKeyField(Application, backref="domains", on_delete="CASCADE")
   name = AlphaNumericField(null=False)
   type = CharField(choices=["internal", "public", "tcp"], default="internal")
   port = IntegerField(null=False)
 
-  class Meta:
-    indexes = ((("application", "name", "type"), True),)
+  def save(self, *args, **kwargs):
+    if self.name in RESERVED_DOMAIN_NAMES:
+      raise ValueError(f"'{self.name}' is reserved for Sage's own addresses.")
+
+    holder = (
+        Domain.select()
+        .where((Domain.name == self.name) & (IS_PUBLIC == (self.type == "public")) & (Domain.id != self.id))
+        .first())
+    if holder:
+      kind = "a public" if self.type == "public" else "an internal or TCP"
+      raise ValueError(
+          f"'{self.name}' is already {kind} domain of the application {holder.application.label} "
+          f"in {holder.application.project.label}.")
+
+    return super().save(*args, **kwargs)
+
+
+Domain.add_index(Domain.index(Domain.name, IS_PUBLIC, unique=True, name="domain_name_namespace"))
 
 
 class Container(BaseModel):

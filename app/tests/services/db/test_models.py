@@ -274,15 +274,70 @@ class TestConfigDirty:
 
 
 class TestDomain:
-  def test_the_same_name_and_type_cannot_be_added_twice(self, application):
-    Domain.create(application=application, name="shop", type="public", port=80)
+  @pytest.fixture
+  def other(self, project):
+    return Application.create(project=project, name="api", label="API", image="nginx")
+
+  @pytest.mark.parametrize("first, second", [
+      ("public", "public"), ("internal", "internal"), ("tcp", "tcp"), ("internal", "tcp"), ("tcp", "internal")])
+  def test_a_name_taken_in_its_namespace_is_refused_naming_the_application_that_has_it(self, application, other, first, second):
+    Domain.create(application=application, name="shop", type=first, port=80)
+
+    with pytest.raises(ValueError, match="'shop' is already .* domain of the application Web in Demo"):
+      Domain.create(application=other, name="shop", type=second, port=81)
+
+  def test_one_application_cannot_take_a_name_twice_in_a_namespace_either(self, application):
+    Domain.create(application=application, name="shop", type="internal", port=80)
+
+    with pytest.raises(ValueError, match="already an internal or TCP domain"):
+      Domain.create(application=application, name="shop", type="tcp", port=5432)
+
+  @pytest.mark.parametrize("first, second", [("public", "internal"), ("public", "tcp"), ("internal", "public")])
+  def test_a_public_name_and_an_internal_or_tcp_name_can_be_the_same(self, application, other, first, second):
+    Domain.create(application=application, name="shop", type=first, port=80)
+    Domain.create(application=other, name="shop", type=second, port=80)
+
+    assert Domain.select().where(Domain.name == "shop").count() == 2
+
+  def test_a_domain_saved_again_is_not_refused_by_itself(self, application):
+    domain = Domain.create(application=application, name="shop", type="tcp", port=80)
+
+    domain.port = 81
+    domain.save()
+
+    assert Domain.get_by_id(domain.id).port == 81
+
+  def test_a_rename_into_a_taken_name_is_refused_and_not_stored(self, application, other):
+    Domain.create(application=application, name="shop", type="internal", port=80)
+    domain = Domain.create(application=other, name="cart", type="tcp", port=80)
+
+    domain.name = "shop"
+    with pytest.raises(ValueError, match="already an internal or TCP domain"):
+      domain.save()
+
+    assert Domain.get_by_id(domain.id).name == "cart"
+
+  def test_a_type_change_into_a_taken_namespace_is_refused_and_not_stored(self, application, other):
+    Domain.create(application=application, name="shop", type="internal", port=80)
+    domain = Domain.create(application=other, name="shop", type="public", port=80)
+
+    domain.type = "tcp"
+    with pytest.raises(ValueError, match="already an internal or TCP domain"):
+      domain.save()
+
+    assert Domain.get_by_id(domain.id).type == "public"
+
+  @pytest.mark.parametrize("type", ["public", "internal", "tcp"])
+  @pytest.mark.parametrize("name", ["core", "int", "discovery"])
+  def test_sages_own_names_are_reserved(self, application, name, type):
+    with pytest.raises(ValueError, match="reserved"):
+      Domain.create(application=application, name=name, type=type, port=80)
+
+  def test_the_database_refuses_a_clash_that_skips_the_check(self, application, other):
+    Domain.create(application=application, name="shop", type="internal", port=80)
 
     with pytest.raises(IntegrityError):
-      Domain.create(application=application, name="shop", type="public", port=81)
-
-  def test_the_same_name_can_exist_with_another_type(self, application):
-    Domain.create(application=application, name="shop", type="public", port=80)
-    Domain.create(application=application, name="shop", type="internal", port=80)
+      Domain.insert(application=other, name="shop", type="tcp", port=80).execute()
 
   def test_domains_go_with_their_application(self, application):
     Domain.create(application=application, name="shop", port=80)
