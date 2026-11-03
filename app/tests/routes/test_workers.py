@@ -120,6 +120,17 @@ class TestAdd:
     assert (response.status_code, response.json()["detail"]) == (409, "Worker w1 is already added.")
     assert manager.tasks == []
 
+  @pytest.mark.parametrize("machine, host", [
+      ("manager", "manager"), ("manager", "MANAGER"), ("manager", "100.64.0.5"), ("Manager", "manager")])
+  def test_a_machine_with_the_managers_name_is_refused(self, client, tailscale, manager, machine, host):
+    tailscale.machines[machine] = "100.64.0.5"
+
+    response = client.post("/api/workers/", json={"host": host})
+
+    assert (response.status_code, response.json()["detail"]) == (
+        409, "A worker with the manager's name (TS_NAME) is not allowed.")
+    assert manager.tasks == []
+
   def test_a_machine_that_is_already_being_added_is_refused(self, client, manager):
     manager.queued = {"add_worker"}
     response = client.post("/api/workers/", json={"host": "w9"})

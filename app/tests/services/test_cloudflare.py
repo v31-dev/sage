@@ -11,7 +11,7 @@ from services.tailscale import Tailscale
 ACCOUNT = "test-account"
 ZONE = "zone1"
 TUNNEL = "tunnel1"
-TUNNEL_NAME = "example.test-sage"
+TUNNEL_NAME = "sage-example.test"
 RECORDS = f"/zones/{ZONE}/dns_records"
 TUNNELS = f"/accounts/{ACCOUNT}/cfd_tunnel"
 
@@ -288,12 +288,18 @@ class TestConnect:
     records = [body(request) for request in healthy.sent("POST", RECORDS)]
     assert {"name": "manager.core.example.test", "content": "100.64.0.1", "type": "A", "ttl": 60, "comment": "sage-manager"} in records
 
+  def test_the_tunnel_is_named_after_sage_and_the_domain_so_sages_sharing_an_account_have_their_own(self, cloudflare, healthy):
+    cloudflare.connect()
+
+    assert healthy.sent("GET", TUNNELS)[0].url.params["name"] == "sage-example.test"
+    assert [body(request)["name"] for request in healthy.sent("POST", TUNNELS)] == ["sage-example.test"]
+
   def test_it_routes_the_wildcard_through_the_tunnel(self, cloudflare, healthy):
     cloudflare.connect()
 
     records = [body(request) for request in healthy.sent("POST", RECORDS)]
     assert {"name": "*.example.test", "content": f"{TUNNEL}.cfargotunnel.com", "type": "CNAME", "proxied": True,
-            "comment": TUNNEL_NAME} in records
+            "comment": "sage-tunnel"} in records
 
   def test_when_already_connected_it_does_nothing(self, connected, api):
     connected.connect()
@@ -548,7 +554,7 @@ class TestCreateTunnel:
     connected.create_tunnel(TUNNEL_NAME)
 
     assert body(healthy.sent("POST", RECORDS)[0]) == {
-        "name": "*.example.test", "content": f"{TUNNEL}.cfargotunnel.com", "type": "CNAME", "proxied": True, "comment": TUNNEL_NAME}
+        "name": "*.example.test", "content": f"{TUNNEL}.cfargotunnel.com", "type": "CNAME", "proxied": True, "comment": "sage-tunnel"}
 
   def test_it_returns_the_tunnel_id(self, connected, healthy):
     assert connected.create_tunnel(TUNNEL_NAME) == TUNNEL

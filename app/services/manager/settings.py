@@ -5,7 +5,7 @@ import httpx
 from services.notification import ChannelCheckFailed, Notifications
 from services.settings import SETTING_DEFINITIONS, Settings
 from services.updates import Fact, Updates, UpdateSource
-from utils.common import utcnow
+from utils.common import get_env, utcnow
 from utils.executor import run_in_executor_with_context
 from utils.retry import is_transient
 
@@ -57,11 +57,17 @@ class SettingsMixin:
     return tests[key](value, side_effects)
 
   def _test_tailscale(self, value: dict, side_effects: bool) -> str:
-    """Env vars, so checked as configured: the node is up and sees the tailnet."""
-    backend_state = self.tailscale.status().get("BackendState")
-    if backend_state != "Running":
-      raise ValueError(f"The manager's tailnet node is not running ({backend_state}).")
-    return f"The node is running; {len(self.tailscale.peers())} other machine(s) on the tailnet."
+    """Env vars, so checked as configured: the node is up and sees the tailnet, and the name it has there."""
+    status = self.tailscale.status()
+    if status.get("BackendState") != "Running":
+      raise ValueError(f"The manager's tailnet node is not running ({status.get('BackendState')}).")
+    peers = f"{len(self.tailscale.peers())} other machine(s) on the tailnet"
+    # The machine name, which Tailscale suffixes when another machine has it.
+    machine = (status.get("Self", {}).get("DNSName") or "").split(".")[0]
+    if machine.lower() != get_env("TS_NAME").lower():
+      return (f"The node is running as {machine}, not {get_env('TS_NAME')} (TS_NAME): another machine has that name, "
+              f"or it was renamed in the Tailscale admin console. {peers}.")
+    return f"The node is running as {machine}; {peers}."
 
   def _test_cloudflare(self, value: dict, side_effects: bool) -> str:
     """Env vars, so checked as configured: token, zone and account, and the tunnel's health."""

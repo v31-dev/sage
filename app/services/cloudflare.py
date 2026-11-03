@@ -102,7 +102,7 @@ class Cloudflare(Base):
       self.zone_id = zone["id"]
       self.account_id = zone["account"]["id"]
       try:
-        self.tunnel_id = self.create_tunnel(f"{self.domain}-sage")
+        self.tunnel_id = self.create_tunnel(f"sage-{self.domain}")
         self.create_dns_record(
             name=self.manager_hostname,
             content=Tailscale().ip(),
@@ -206,7 +206,7 @@ class Cloudflare(Base):
     self.create_dns_record(
         name=f"*.{self.domain}",
         content=f"{tunnel['id']}.cfargotunnel.com",
-        comment=tunnel["name"],
+        comment="sage-tunnel",
         type="CNAME",
         proxied=True,
     )

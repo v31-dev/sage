@@ -49,6 +49,8 @@ def add_worker(worker_data: dict = Body(...)):
   if peer is None:
     raise HTTPException(status_code=404, detail=f"No machine with hostname or IP '{host}' in the tailnet.")
 
+  if peer.hostname.lower() == get_env("TS_NAME").lower():
+    raise HTTPException(status_code=409, detail="A worker with the manager's name (TS_NAME) is not allowed.")
   if Worker.get_or_none(Worker.hostname == peer.hostname):
     raise HTTPException(status_code=409, detail=f"Worker {peer.hostname} is already added.")
   if Manager().has_task(Manager().add_worker, {"worker_hostname": peer.hostname}):

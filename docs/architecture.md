@@ -69,6 +69,24 @@ Current traffic and naming patterns are driven by Cloudflare, Traefik, and Tails
 
 The manager keeps DNS and Traefik state in sync as workers and application domains change.
 
+### Cloudflare Resources
+
+Sage finds what it created in Cloudflare by name (a tunnel) or by comment (a DNS record). Tunnels belong to the
+account, which several Sages may share, so a tunnel's name holds the domain. Records live in the domain's zone, so a
+comment is `sage-<kind>`, with `-<hostname>` where several workers' records share a name. A comment is at most 100
+characters on Cloudflare's Free plan, which has no record tags.
+
+| Resource | Name or comment |
+| --- | --- |
+| The tunnel, run by `cloudflared` on every worker | `sage-<domain>` |
+| `*.<domain>`, a proxied CNAME to the tunnel | `sage-tunnel` |
+| `<TS_NAME>.core.<domain>`, an A record to the manager's tailnet IP | `sage-manager` |
+| `*.int.<domain>`, an A record to each online worker's tailnet IP | `sage-worker-<hostname>` |
+| `_acme-challenge.<name>`, a TXT record while a certificate is issued | `sage-acme-challenge` |
+
+After a change of domain, account or `TS_NAME`, the previous domain's or name's resources stay in Cloudflare until
+they are deleted by hand.
+
 ### Domain Types
 
 A `Domain` has a `type` that selects how Traefik routes it:

@@ -1,4 +1,5 @@
 import inspect
+from types import SimpleNamespace
 
 import botocore.exceptions
 import httpx
@@ -81,3 +82,25 @@ class TestIsApplying:
       (key, name, params) for key, tasks in APPLYING_TASKS.items() for name, params in tasks if name != f"check_{key}"])
   def test_the_other_tasks_are_manager_methods_that_take_those_parameters(self, key, name, params):
     assert set(params) <= set(inspect.signature(getattr(Manager, name)).parameters)
+
+
+class TestTailscaleCheck:
+  def check(self, state="Running", dns_name="manager.tail1234.ts.net."):
+    status = {"BackendState": state, "Self": {"HostName": "manager", "DNSName": dns_name}}
+    tailscale = SimpleNamespace(status=lambda: status, peers=lambda: ["w1", "w2"])
+    return SettingsMixin._test_tailscale(SimpleNamespace(tailscale=tailscale), {}, False)
+
+  def test_a_node_named_ts_name_says_so(self):
+    assert self.check() == "The node is running as manager; 2 other machine(s) on the tailnet."
+
+  @pytest.mark.parametrize("dns_name", ["manager-1.tail1234.ts.net.", "renamed.tail1234.ts.net."])
+  def test_a_node_under_another_name_says_which_and_why_it_can_differ(self, dns_name):
+    machine = dns_name.split(".")[0]
+
+    assert self.check(dns_name=dns_name) == (
+        f"The node is running as {machine}, not manager (TS_NAME): another machine has that name, or it was renamed "
+        "in the Tailscale admin console. 2 other machine(s) on the tailnet.")
+
+  def test_a_node_that_is_not_running_fails_the_check(self):
+    with pytest.raises(ValueError, match=r"not running \(NeedsLogin\)"):
+      self.check(state="NeedsLogin")
