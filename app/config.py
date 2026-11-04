@@ -83,7 +83,7 @@ WORKER_METRICS_STALE_SECONDS = 180
 
 # The services of the worker stack, which `docker compose up -d` starts and which are also the names
 # of their containers.
-WORKER_STACK_SERVICES = ("traefik", "vector", "telegraf", "cloudflared")
+WORKER_STACK_SERVICES = ("traefik", "vector", "telegraf", "cloudflared", "cloudflared-discovery")
 
 # A worker is offline after this many checks in a row went unanswered (about a minute).
 OFFLINE_AFTER_MISSED_CHECKS = 2

@@ -112,6 +112,14 @@ class TestMemoryLimits:
     assert limits["memswap_limit"] == limits["mem_limit"]
 
 
+class TestTunnels:
+  def test_each_cloudflared_runs_its_tunnel_from_its_own_token_in_the_env(self):
+    assert service("cloudflared")["environment"] == ["TUNNEL_TOKEN=${TUNNEL_TOKEN}"]
+    assert service("cloudflared-discovery")["environment"] == ["TUNNEL_TOKEN=${DISCOVERY_TUNNEL_TOKEN}"]
+    env = (TEMPLATES / "worker.env").read_text().splitlines()
+    assert {"TUNNEL_TOKEN=${TUNNEL_TOKEN}", "DISCOVERY_TUNNEL_TOKEN=${DISCOVERY_TUNNEL_TOKEN}"} <= set(env)
+
+
 COMPOSE_TEMPLATES = ["docker-compose.yml", "application/dockerhub-compose.yml", "application/gitrepo-compose.yml"]
 
 
@@ -136,5 +144,5 @@ class TestContainerLogs:
     labelled = {"sage.deployed_at" in definition.get("labels", {}) for definition in compose_services(name).values()}
     assert labelled == {name.startswith("application/")}
 
-  def test_the_stack_has_the_four_services_that_are_capped(self):
-    assert set(compose_services("docker-compose.yml")) == {"traefik", "cloudflared", "vector", "telegraf"}
+  def test_the_stack_has_the_services_that_are_capped(self):
+    assert set(compose_services("docker-compose.yml")) == set(config.WORKER_STACK_SERVICES)

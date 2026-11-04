@@ -53,7 +53,8 @@ The worker stack currently includes:
 - `traefik`
 - `vector`
 - `telegraf`
-- `cloudflared`, connecting the worker to the manager's tunnel
+- `cloudflared`, running the worker's own tunnel
+- `cloudflared-discovery`, a replica of the platform's tunnel, which every worker runs
 
 `vector` and `telegraf` run with a 128 MiB memory limit, swap included: their executables are large, and the kernel keeps the pages it has read in the container's memory, which on a small worker the applications could use.
 
@@ -78,8 +79,9 @@ characters on Cloudflare's Free plan, which has no record tags.
 
 | Resource | Name or comment |
 | --- | --- |
-| The tunnel, run by `cloudflared` on every worker | `sage-<domain>` |
-| `*.<domain>`, a proxied CNAME to the tunnel | `sage-tunnel` |
+| The platform's tunnel, run by `cloudflared-discovery` on every worker: created at start, and never deleted with a worker | `sage-<domain>` |
+| Each worker's own tunnel, run by its `cloudflared`: created when the worker is set up, deleted when it is removed | `sage-<domain>-<hostname>` |
+| `*.<domain>`, a proxied CNAME to the platform's tunnel | `sage-tunnel` |
 | `<TS_NAME>.core.<domain>`, an A record to the manager's tailnet IP | `sage-manager` |
 | `*.int.<domain>`, an A record to each online worker's tailnet IP | `sage-worker-<hostname>` |
 | `_acme-challenge.<name>`, a TXT record while a certificate is issued | `sage-acme-challenge` |

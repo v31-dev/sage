@@ -248,15 +248,16 @@ class WorkersMixin:
         stale.append(application.qualified_name)
     return stale
 
-  def infra_hash(self) -> str:
-    """Hash of every input `setup_worker` renders into worker infra files.
-    Computed from current truth on demand — the only stored copy is the
-    worker-side `revisions/infra` stamp."""
+  def infra_hash(self, tunnel_id: str) -> str:
+    """Hash of every input `setup_worker` renders into a worker's infra files,
+    `tunnel_id` being the worker's own tunnel. Computed from current truth on
+    demand — the only stored copy is the worker-side `revisions/infra` stamp."""
     return content_hash({
         "templates": WORKER_INFRA_TEMPLATES,
         "version": self.version,
         "domain": self.cloudflare.domain,
         "tunnel": self.cloudflare.tunnel_id,
+        "worker_tunnel": tunnel_id,
         "manager_ip": self.tailscale.ip(),
         "report_interval": config.REPORT_INTERVAL_SECONDS,
     })
@@ -386,9 +387,11 @@ class WorkersMixin:
       # Claim it before changing anything, so a failed setup leaves it claimed.
       if revisions.get("owner") != f"{instance_id} {domain}":
         await self.write_worker_revision(worker.hostname, "owner", f"{instance_id} {domain}")
+      tunnel_id = await run_in_executor_with_context(
+          self.cloudflare.create_tunnel, self.cloudflare.worker_tunnel_name(worker.hostname))
       # The IP is rendered into infra files, so a changed IP is infra drift
       # even under a matching stamp.
-      infra_stale = (revisions.get("infra") != self.infra_hash()
+      infra_stale = (revisions.get("infra") != self.infra_hash(tunnel_id)
                      or is_new or existing.ip != worker.ip)
 
       self._save_worker(worker.hostname, worker.ip, tag, pool)
@@ -402,7 +405,8 @@ class WorkersMixin:
       )
 
       if infra_stale:
-        tunnel_token = (await run_in_executor_with_context(self.cloudflare.get_tunnel_token)).token
+        tunnel_token = (await run_in_executor_with_context(self.cloudflare.get_tunnel_token, tunnel_id)).token
+        discovery_tunnel_token = (await run_in_executor_with_context(self.cloudflare.get_tunnel_token)).token
         # Telegraf runs as a user in the Docker socket's group, which differs between hosts.
         _, socket_group = await self.tailscale.exec_command(
             worker.hostname, "stat -c %g /var/run/docker.sock", timeout=30)
@@ -423,6 +427,7 @@ class WorkersMixin:
                 "TS_IP": worker.ip,
                 "TS_HOSTNAME": worker.hostname,
                 "TUNNEL_TOKEN": tunnel_token,
+                "DISCOVERY_TUNNEL_TOKEN": discovery_tunnel_token,
                 "DOCKER_GID": docker_gid,
             },
             mode=0o600,
@@ -510,7 +515,7 @@ class WorkersMixin:
 
       if infra_stale:
         # Success commit marker
-        await self.write_worker_revision(worker.hostname, "infra", self.infra_hash())
+        await self.write_worker_revision(worker.hostname, "infra", self.infra_hash(tunnel_id))
         self.notify(f"Worker {worker.hostname} {'added' if is_new else 'synced'}.")
       elif repaired:
         self.notify(
@@ -560,7 +565,7 @@ class WorkersMixin:
     that is online and has containers is refused: they have to be deleted first -
     - Remove from Manager database
     - Delete Cloudflare DNS entry (*.int) for Tailscale routing
-    - Cloudflare automatically cleans up dead tunnels
+    - Delete its own tunnel; one Cloudflare won't delete is left, with a warning
     """
     worker = Worker.get_or_none(Worker.hostname == worker_hostname)
     if not worker:
@@ -603,6 +608,13 @@ class WorkersMixin:
     await self.tailscale.forget(worker.hostname)
     await run_in_executor_with_context(
         self.cloudflare.delete_dns_record, name=f"*.int.{self.cloudflare.domain}", content=worker.ip)
+    tunnel = self.cloudflare.worker_tunnel_name(worker.hostname)
+    try:
+      await run_in_executor_with_context(self.cloudflare.delete_tunnel, tunnel)
+    except Exception as e:
+      self.notify(
+          f"Worker {worker.hostname} is removed from Sage, but its Cloudflare tunnel {tunnel} could not be deleted: "
+          f"{e}. Delete it by hand.", "warning")
     logger.info(f"Worker {worker.hostname} removed from manager.")
 
   def set_worker_offline(self, worker):

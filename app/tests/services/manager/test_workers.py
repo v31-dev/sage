@@ -17,7 +17,7 @@ from services.worker_reports import ContainerReading, HostReading, Snapshot, Wor
 from utils.executor import active_executor
 from utils.logging import TaskFailed
 
-STACK = ("traefik", "vector", "telegraf", "cloudflared")
+STACK = config.WORKER_STACK_SERVICES
 
 
 class FakeTailscale:
@@ -91,7 +91,16 @@ class Harness(WorkersMixin):
     self.worker_list = []
     self._worker_list_lock = threading.Lock()
     self.dns_deleted = []
-    self.cloudflare = SimpleNamespace(domain="example.test", delete_dns_record=lambda **kw: self.dns_deleted.append(kw))
+    self.tunnels_deleted = []
+    self.tunnel_delete_error = None
+    self.cloudflare = SimpleNamespace(domain="example.test", delete_dns_record=lambda **kw: self.dns_deleted.append(kw),
+                                      worker_tunnel_name=lambda hostname: f"sage-example.test-{hostname}",
+                                      delete_tunnel=self.delete_tunnel)
+
+  def delete_tunnel(self, name):
+    if self.tunnel_delete_error:
+      raise self.tunnel_delete_error
+    self.tunnels_deleted.append(name)
 
   def notify(self, message, level="info"):
     self.notices.append((level, message))
@@ -235,7 +244,7 @@ class TestRepairWorkerStacks:
 
   def test_a_stack_the_report_shows_down_is_started_and_said_so(self, harness):
     add(harness, "w1", True)
-    WorkerReports().accept("w1", snapshot(running=("vector", "telegraf", "cloudflared")))
+    WorkerReports().accept("w1", snapshot(running=("vector", "telegraf", "cloudflared", "cloudflared-discovery")))
     harness.tailscale.up_output = ["Container traefik  Starting", "Container traefik  Started"]
     self.repair(harness)
     host, command = harness.tailscale.commands[0]
@@ -461,7 +470,8 @@ class SetupHarness(Harness):
     self.cloudflare.tunnel_id = "tunnel"
     self.cloudflare.connect = lambda: None
     self.cloudflare.create_dns_record = lambda **kwargs: None
-    self.cloudflare.get_tunnel_token = lambda: SimpleNamespace(token="token")
+    self.cloudflare.create_tunnel = lambda name: f"id-of-{name}"
+    self.cloudflare.get_tunnel_token = lambda tunnel_id=None: SimpleNamespace(token=f"token-of-{tunnel_id or 'shared'}")
     self.tailscale.sync_error = Exception("stop here")
 
 
@@ -561,6 +571,16 @@ class TestSetupWorkerToTheEnd:
     assert setup.tailscale.synced[-1][0] == "/opt/sage/revisions/infra"
     assert setup.dns_created == [{"name": "*.int.example.test", "content": "100.64.0.3", "comment": "sage-worker-w3", "type": "A"}]
 
+  def test_it_runs_its_own_tunnel_beside_the_shared_one(self, setup):
+    self.run(setup)
+    env = dict(setup.tailscale.synced)["/opt/sage/.env"]
+    assert (env["TUNNEL_TOKEN"], env["DISCOVERY_TUNNEL_TOKEN"]) == ("token-of-id-of-sage-example.test-w3", "token-of-shared")
+
+  def test_its_infra_stamp_is_that_of_its_own_tunnel_so_another_tunnel_sets_it_up_again(self, setup):
+    self.run(setup)
+    stamp = setup.tailscale.synced[-1][1]["CONTENT"]
+    assert stamp == setup.infra_hash("id-of-sage-example.test-w3") != setup.infra_hash("id-of-sage-example.test-w4")
+
   def test_a_worker_that_was_offline_is_online_again_with_its_new_ip(self, setup):
     add(setup, "w3", False, "100.64.0.9")
     self.run(setup)
@@ -614,6 +634,15 @@ class TestRemoveWorker:
     assert Worker.get_or_none(Worker.hostname == "w1") is None
     assert harness.notices == []
     assert harness.dns_deleted == [{"name": "*.int.example.test", "content": "100.64.0.2"}]
+    assert harness.tunnels_deleted == ["sage-example.test-w1"]
+
+  def test_a_tunnel_cloudflare_will_not_delete_still_lets_the_worker_go_and_says_so(self, harness):
+    add(harness, "w1", False)
+    harness.tunnel_delete_error = Exception("tunnel has active connections")
+    self.remove(harness)
+    assert Worker.get_or_none(Worker.hostname == "w1") is None
+    assert ("warning", "Worker w1 is removed from Sage, but its Cloudflare tunnel sage-example.test-w1 could not be "
+            "deleted: tunnel has active connections. Delete it by hand.") in harness.notices
 
   @pytest.mark.parametrize("online", [True, False])
   def test_the_pooled_ssh_connection_of_a_removed_worker_is_closed(self, harness, online):

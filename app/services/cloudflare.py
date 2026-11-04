@@ -102,7 +102,15 @@ class Cloudflare(Base):
       self.zone_id = zone["id"]
       self.account_id = zone["account"]["id"]
       try:
+        # The platform's tunnel, which no worker's removal deletes.
         self.tunnel_id = self.create_tunnel(f"sage-{self.domain}")
+        self.create_dns_record(
+            name=f"*.{self.domain}",
+            content=f"{self.tunnel_id}.cfargotunnel.com",
+            comment="sage-tunnel",
+            type="CNAME",
+            proxied=True,
+        )
         self.create_dns_record(
             name=self.manager_hostname,
             content=Tailscale().ip(),
@@ -182,9 +190,16 @@ class Cloudflare(Base):
       self.request("POST", f"/zones/{self.zone_id}/dns_records", json=record)
       logger.info(f"DNS record for {name} created with content {content}.")
 
-  def create_tunnel(self, name):
+  def worker_tunnel_name(self, hostname: str) -> str:
+    return f"sage-{self.domain}-{hostname}"
+
+  def find_tunnel(self, name) -> dict | None:
     tunnels = self.list_all(f"/accounts/{self.account_id}/cfd_tunnel", name=name, is_deleted="false")
-    tunnel = next((t for t in tunnels if t["name"] == name), None)
+    return next((t for t in tunnels if t["name"] == name), None)
+
+  def create_tunnel(self, name):
+    """The id of the tunnel of that name, created when missing, with the static ingress every tunnel carries."""
+    tunnel = self.find_tunnel(name)
 
     if tunnel:
       logger.info(f"Tunnel {name} already exists with id: {tunnel['id']}.")
@@ -201,16 +216,18 @@ class Cloudflare(Base):
             {"hostname": f"*.{self.domain}", "service": "http://traefik:80"},
             {"service": "http_status:404"},
         ]}})
-
-    # Create DNS record for the tunnel
-    self.create_dns_record(
-        name=f"*.{self.domain}",
-        content=f"{tunnel['id']}.cfargotunnel.com",
-        comment="sage-tunnel",
-        type="CNAME",
-        proxied=True,
-    )
     return tunnel["id"]
+
+  def delete_tunnel(self, name):
+    """Delete the tunnel of that name, if there is one: its connections first, as a tunnel with any can't be."""
+    self.connect()
+    tunnel = self.find_tunnel(name)
+    if tunnel is None:
+      logger.info(f"No tunnel {name} to delete.")
+      return
+    self.request("DELETE", f"/accounts/{self.account_id}/cfd_tunnel/{tunnel['id']}/connections")
+    self.request("DELETE", f"/accounts/{self.account_id}/cfd_tunnel/{tunnel['id']}")
+    logger.info(f"Tunnel {name} deleted.")
 
   def get_tunnel_token(self, tunnel_id=None):
     self.connect()

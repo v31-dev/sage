@@ -550,12 +550,6 @@ class TestCreateTunnel:
         {"service": "http_status:404"},
     ]}}
 
-  def test_the_wildcard_record_points_at_the_tunnel(self, connected, healthy):
-    connected.create_tunnel(TUNNEL_NAME)
-
-    assert body(healthy.sent("POST", RECORDS)[0]) == {
-        "name": "*.example.test", "content": f"{TUNNEL}.cfargotunnel.com", "type": "CNAME", "proxied": True, "comment": "sage-tunnel"}
-
   def test_it_returns_the_tunnel_id(self, connected, healthy):
     assert connected.create_tunnel(TUNNEL_NAME) == TUNNEL
 

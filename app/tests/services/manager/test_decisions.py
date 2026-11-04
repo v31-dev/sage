@@ -142,7 +142,7 @@ class TestPlanWorkerSync:
     assert plan([row("w1", None)], []) == [("offline", "w1", "not found in the tailnet", False)]
 
 
-def snapshot(running=("traefik", "vector", "telegraf", "cloudflared"), traefik_reachable=True):
+def snapshot(running=config.WORKER_STACK_SERVICES, traefik_reachable=True):
   def reading(name, status):
     return ContainerReading(name=name, status=status, image="", deployed_at=None, exit_code=0, oom_killed=False,
                             started_at=1, finished_at=None, health=None, cpu_percent=None, mem_bytes=None,
@@ -187,8 +187,10 @@ class TestWorkerStackProblem:
     assert worker_stack_problem(snapshot(), 5) is None
 
   def test_a_missing_or_stopped_container_of_the_stack_is_named(self):
-    assert worker_stack_problem(snapshot(running=("vector", "telegraf", "cloudflared")), 5) == "traefik not running"
-    assert worker_stack_problem(snapshot(running=("vector",)), 5) == "traefik, telegraf, cloudflared not running"
+    assert worker_stack_problem(snapshot(running=("vector", "telegraf", "cloudflared", "cloudflared-discovery")), 5) == (
+        "traefik not running")
+    assert worker_stack_problem(snapshot(running=("vector",)), 5) == (
+        "traefik, telegraf, cloudflared, cloudflared-discovery not running")
 
   def test_a_stopped_state_counts_as_not_running(self):
     from dataclasses import replace
@@ -341,7 +343,8 @@ class TestWorkerEntry:
         "hostname": "w1", "ip": "100.64.0.2", "tag": None, "pool": None, "online": True, "status": "online", "path": "direct",
         "container_count": 3,
         "infra": [{"name": "traefik", "status": "running"}, {"name": "vector", "status": "missing"},
-                  {"name": "telegraf", "status": "running"}, {"name": "cloudflared", "status": "missing"}],
+                  {"name": "telegraf", "status": "running"}, {"name": "cloudflared", "status": "missing"},
+                  {"name": "cloudflared-discovery", "status": "missing"}],
         "metrics": None}
 
   def test_the_container_count_and_the_stack_are_those_of_the_current_report_only(self):
