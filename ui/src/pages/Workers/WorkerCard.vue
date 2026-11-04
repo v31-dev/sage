@@ -71,13 +71,8 @@ function goToMetrics(hostname: string) {
         </p>
       </div>
 
-      <div v-if="props.worker.tag || props.worker.pool" class="flex flex-wrap gap-2">
-        <Badge v-if="props.worker.tag" variant="secondary" class="font-mono">
-          Tag {{ props.worker.tag }}
-        </Badge>
-        <Badge v-if="props.worker.pool" variant="outline" class="font-mono">
-          Pool {{ props.worker.pool }}
-        </Badge>
+      <div v-if="props.worker.subdomain" class="flex flex-wrap gap-2">
+        <Badge variant="secondary" class="font-mono">Subdomain {{ props.worker.subdomain }}</Badge>
       </div>
 
       <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">

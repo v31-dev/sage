@@ -11,6 +11,7 @@ from starlette.staticfiles import StaticFiles
 
 import config
 from routes.backups import router as backup_router
+from routes.domains import router as domains_router
 from routes.info import router as info_router
 from routes.notifications import router as notifications_router
 from routes.projects import router as projects_router
@@ -69,6 +70,7 @@ app.include_router(info_router, prefix="/api")
 app.include_router(backup_router, prefix="/api/backups")
 app.include_router(settings_router, prefix="/api/settings")
 app.include_router(workers_router, prefix="/api/workers")
+app.include_router(domains_router, prefix="/api/domains")
 app.include_router(projects_router, prefix="/api/projects")
 app.include_router(notifications_router, prefix="/api/notifications")
 app.include_router(tasks_router, prefix="/api/tasks")

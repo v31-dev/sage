@@ -12,7 +12,6 @@ import { useAppStore } from '@/stores/app'
 import ApplicationHeader from './ApplicationHeader.vue'
 import AddContainerButton from './AddContainerButton.vue'
 import ContainerCard from './ContainerCard.vue'
-import AddDomainButton from './AddDomainButton.vue'
 import DomainCard from './DomainCard.vue'
 import AddVolumeButton from './AddVolumeButton.vue'
 import VolumeCard from './VolumeCard.vue'
@@ -160,10 +159,8 @@ function goBack() {
             <SectionTitle
               title="Domains"
               :size="4"
-              tooltip="Domain configurations are automatically synced."
+              tooltip="The names linked to this application's containers, each routed to its own container."
             />
-            <!-- Add Domain Button -->
-            <AddDomainButton :application="application" :loadApplication="loadApplication" />
           </div>
 
           <!-- Empty Domains State -->
@@ -182,10 +179,9 @@ function goBack() {
           <div v-else class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             <DomainCard
               v-for="domain in application.domains"
-              :key="domain.name"
+              :key="domain.id"
               :application="application"
               :domain="domain"
-              :loadApplication="loadApplication"
             />
           </div>
         </div>

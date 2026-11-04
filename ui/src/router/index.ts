@@ -2,6 +2,7 @@ import { createRouter, createWebHistory } from 'vue-router'
 import Home from '@/pages/Home.vue'
 import Projects from '@/pages/Projects.vue'
 import Project from '@/pages/Project'
+import Domains from '@/pages/Domains'
 import System from '@/pages/System.vue'
 import Application from '@/pages/Application'
 import ApplicationLogs from '@/pages/ApplicationLogs.vue'
@@ -29,6 +30,7 @@ const routes = [
     name: 'ApplicationMetrics',
     component: ApplicationMetrics,
   },
+  { path: '/domains', name: 'Domains', component: Domains },
   { path: '/requests', name: 'Requests', component: Requests },
   { path: '/system', name: 'System', component: System },
   { path: '/tasks', name: 'Tasks', component: Tasks },

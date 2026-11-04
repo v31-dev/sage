@@ -3,7 +3,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from services.db import APPLICATION_BUSY_STATUSES, Container, Worker
 from services.manager import Manager
 from services.manager.application import container_changed
-from utils.api import generic_create, generic_get, generic_list, generic_update, get_request_models
+from utils.api import generic_create, generic_get, generic_list, get_request_models
 from utils.queue import OnConflict
 
 
@@ -73,29 +73,10 @@ def create_container(request: Request, container_data: dict = Body(...)):
     raise HTTPException(
         status_code=409, detail=f"Container already exists on worker '{worker.hostname}'.")
 
-  result = generic_create(Container, {
-      "application": application,
-      "worker": worker,
-      "domain_tag": container_data.get("domain_tag"),
-  })
+  result = generic_create(Container, {"application": application, "worker": worker})
   container_changed(Container.get_by_id(result["id"]))
-  return result
-
-
-@router.put("/{container}", dependencies=[Depends(inject_container)])
-def update_container(request: Request, container_data: dict = Body(...)):
-  if 'worker' in request.state.models:
-    raise HTTPException(status_code=405, detail="Method not allowed.")
-
-  application = request.state.models["application"]
-  container = request.state.models["container"]
-
-  result = generic_update(Container, container, {"domain_tag": container_data.get("domain_tag")})
-  container_changed(container)
-  # An active container's tag is part of the live routing view.
-  if container.status == "active":
-    Manager().request_application_traefik_sync(application)
-
+  # The application's public names on the worker get their records before it is deployed there.
+  Manager().request_application_traefik_sync(application)
   return result
 
 

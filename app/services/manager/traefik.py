@@ -1,5 +1,4 @@
 import asyncio
-import json
 import logging
 import re
 
@@ -9,7 +8,7 @@ from utils.executor import run_in_executor_with_context
 from utils.queue import OnConflict
 from utils.retry import is_transient, retry
 
-from ._common import app_dir, routing_input_hash
+from ._common import DISCOVERY_TEMPLATES, app_dir, content_hash, routing_input_hash
 from .application import application_changed, save_application
 
 logger = logging.getLogger(__name__)
@@ -25,6 +24,32 @@ class TraefikMixin:
         scopes={f"app:{application.qualified_name}"},
         params={"application_id": application.id},
         executor="app",
+        on_conflict=OnConflict.REPLACE,
+        quiet=True,
+    )
+
+  def request_certificate_renewal(self):
+    self.add_task(
+        task=self.renew_certificates,
+        scopes={"platform", "app"},
+        executor="platform",
+        on_conflict=OnConflict.REPLACE,
+    )
+
+  def request_discovery_sync(self):
+    self.add_task(
+        task=self.sync_discovery,
+        scopes={"platform"},
+        executor="platform",
+        on_conflict=OnConflict.REPLACE,
+        quiet=True,
+    )
+
+  def request_domain_records_sync(self):
+    self.add_task(
+        task=self.sync_domain_records,
+        scopes={"platform"},
+        executor="platform",
         on_conflict=OnConflict.REPLACE,
         quiet=True,
     )
@@ -57,17 +82,19 @@ class TraefikMixin:
       self.certs.reload_local_tls()
       self.notify(f"Renewed the manager's certificate; expires {self.certs.manager.expiry()}.", "success")
     if await run_in_executor_with_context(self.certs.ensure, self.certs.workers):
+      self.update_workers({})
       self.notify(f"Renewed the workers' certificate; expires {self.certs.workers.expiry()}.", "success")
     await self.sync_certificates_to_workers()
 
   async def refresh_traefik(self):
     """Ensure both certificates are valid and resync everything that depends on them —
-    the manager's :443 server, each worker's PEM + Traefik config, the `*.int` DNS
-    records, and app routing. Triggered by Resync Traefik."""
+    the manager's :443 server, each worker's PEM, Traefik config and `*.<subdomain>.int` DNS
+    record, and app routing. Triggered by Resync Traefik."""
     try:
       if await run_in_executor_with_context(self.certs.ensure, self.certs.manager):
         self.certs.reload_local_tls()
-      await run_in_executor_with_context(self.certs.ensure, self.certs.workers)
+      if await run_in_executor_with_context(self.certs.ensure, self.certs.workers):
+        self.update_workers({})
 
       domain = self.cloudflare.domain
       await self.sync_certificates_to_workers(force=True)
@@ -81,13 +108,7 @@ class TraefikMixin:
             f"{self.worker_home_dir}/traefik/dynamic/config.yml",
             {"DOMAIN": domain, "HOSTNAME": worker.hostname},
         )
-        await run_in_executor_with_context(
-            self.cloudflare.create_dns_record,
-            f"*.int.{domain}",
-            worker.ip,
-            comment=f"sage-worker-{worker.hostname}",
-            type="A",
-        )
+        await run_in_executor_with_context(self.cloudflare.sync_worker_records, worker.hostname, worker.subdomain, worker.ip)
 
       # Resync every application so the new domain lands in the routing rules.
       for application in Application.select():
@@ -143,12 +164,14 @@ class TraefikMixin:
         f"{traefik_dir}/dynamic/certs.yml")
     await self.write_worker_revision(
         worker.hostname, "certs", self.certs.workers.hash() or "")
+    self.update_worker(worker.hostname, certs=self.certs.workers.hash())
     logger.info(f"Synced certificate to worker {worker.hostname}.")
 
   async def sync_application_traefik_domains_config(self, application_id: int):
     """
-    Sync Traefik domains config for an application. Applications with no active containers
-    have config written for X-Tag discovery.
+    Write, to each online worker that runs an active container of the application, a file per domain linked to that
+    container, routing the domain's name to it, and remove the application's other files on every online worker,
+    last, so every state in between routes. Then ask for the public names' records.
     """
     application = Application.get_or_none(Application.id == application_id)
     if application is None:
@@ -157,174 +180,136 @@ class TraefikMixin:
       return
     domain_name = self.cloudflare.domain
     containers = list(application.containers)
-    application_domains = list(application.domains)
-    workers = list(Worker.select())
-    online_workers = [worker for worker in workers if self.is_worker_online(worker.hostname)]
-    active_containers = [
-        container
-        for container in containers
-        if self.is_worker_online(container.worker.hostname) and container.status == "active"
-    ]
-    logger.info(
-        f"Syncing Traefik config for application {
-            application.qualified_name} for these workers {
-            [
-                container.worker.hostname for container in active_containers]}."
-    )
+    online_workers = self.online_workers()
+    hosting = {container.worker.hostname: container for container in containers
+               if self.is_worker_online(container.worker.hostname) and container.status == "active"}
+    logger.info(f"Syncing Traefik config for application {application.qualified_name} for these workers {sorted(hosting)}.")
 
-    # Preserve the full declared tag list for discovery, even when a tag has no
-    # currently active backing container.
-    domain_tags = sorted({container.domain_tag for container in containers if container.domain_tag})
-    domain_tag_pools = {
-        tag: [container for container in active_containers if container.domain_tag == tag]
-        for tag in domain_tags
-    }
-
-    # Reset any config on online workers before either clearing stale configs or
-    # writing the new routing view for this application.
-    for worker in workers:
+    for worker in Worker.select():
       if not self.is_worker_online(worker.hostname):
         logger.error(
-            f"Worker {
-                worker.hostname} is offline, skipping Traefik config sync for application {
-                application.qualified_name} on this worker.")
-        continue
+            f"Worker {worker.hostname} is offline, skipping Traefik config sync for application "
+            f"{application.qualified_name} on this worker.")
 
+    templates = {"public": "service_public.yml", "internal": "service_internal.yml", "tcp": "service_internal_tcp.yml"}
+    dynamic = f"{self.worker_home_dir}/traefik/dynamic"
+    for worker in online_workers:
+      written = []
+      if worker.hostname in hosting:
+        for domain in hosting[worker.hostname].domains:
+          file = f"{application.qualified_name}-{domain.type}-{domain.name}.yml"
+          await self.tailscale.sync_file(
+              worker.hostname, app_dir / f"templates/worker/traefik/{templates[domain.type]}", f"{dynamic}/{file}", {
+                  "SERVICE": application.qualified_name,
+                  "NAME": domain.name,
+                  "HOST": domain.host(domain_name),
+                  "PORT": domain.port,
+              })
+          written.append(file)
       await self.tailscale.exec_command(
           worker.hostname,
-          f"rm -f {self.worker_home_dir}/traefik/dynamic/{application.qualified_name}-*.yml",
+          f"find {dynamic} -maxdepth 1 -name '{application.qualified_name}-*.yml' "
+          + "".join(f"! -name '{file}' " for file in written) + "-delete",
       )
 
-    template_names = {
-        "internal": ("service_internal.yml", "service_internal_pool.yml"),
-        "public": ("service_public.yml", "service_public_pool.yml"),
-    }
-    # Mesh communication between Traefik uses port 9002 (HTTP). For the same
-    # worker, use traefik instead of the Tailscale IP to avoid hairpinning and
-    # let Docker DNS resolve locally.
-    load_balanced_servers = {
-        worker.hostname: ", ".join(
-            (
-                '{ url: "http://traefik:9002" }'
-                if worker.hostname == container.worker.hostname
-                else f'{{ url: "http://{container.worker.ip}:9002" }}'
-            )
-            for container in active_containers
-        )
-        for worker in online_workers
-    }
-    domain_tag_load_balanced_servers = {
-        worker.hostname: {
-            domain_tag: ", ".join(
-                (
-                    '{ url: "http://traefik:9002" }'
-                    if worker.hostname == container.worker.hostname
-                    else f'{{ url: "http://{container.worker.ip}:9002" }}'
-                )
-                for container in domain_tag_pool
-            )
-            for domain_tag, domain_tag_pool in domain_tag_pools.items()
-        }
-        for worker in online_workers
-    }
-    # TCP backing services mesh over port 9003 (address form, not URL). The edge
-    # passthrough router load-balances across every active backing worker, just like
-    # the HTTP mesh; same-worker uses traefik to avoid hairpinning.
-    tcp_load_balanced_servers = {
-        worker.hostname: ", ".join(
-            (
-                '{ address: "traefik:9003" }'
-                if worker.hostname == container.worker.hostname
-                else f'{{ address: "{container.worker.ip}:9003" }}'
-            )
-            for container in active_containers
-        )
-        for worker in online_workers
-    }
-
-    # Application is active -> sync Traefik config based on active containers
-    # to all online workers (mesh network).
-    for worker in online_workers:
-      for domain in application_domains:
-        # TCP services route by SNI and have no x-tag pool variant (TCP carries no
-        # query string), so they use a dedicated single-template path.
-        if domain.type == "tcp":
-          await self.tailscale.sync_file(
-              worker.hostname,
-              app_dir / "templates/worker/traefik/service_internal_tcp.yml",
-              f"{self.worker_home_dir}/traefik/dynamic/{application.qualified_name}-{domain.type}-{domain.name}.yml",
-              {
-                  "SERVICE": application.qualified_name,
-                  "SUBDOMAIN": domain.name,
-                  "DOMAIN": domain_name,
-                  "PORT": domain.port,
-                  "LOAD_BALANCED_SERVERS": tcp_load_balanced_servers[worker.hostname],
-              },
-          )
-
-        # HTTP services can route by path and support x-tag based pool splitting,
-        # so they use the standard template pair.
-        else:
-          traefik_config_template, traefik_config_template_domain_pool = template_names[
-              domain.type
-          ]
-          await self.tailscale.sync_file(
-              worker.hostname,
-              app_dir / f"templates/worker/traefik/{traefik_config_template}",
-              f"{self.worker_home_dir}/traefik/dynamic/{application.qualified_name}-{domain.type}-{domain.name}.yml",
-              {
-                  "SERVICE": application.qualified_name,
-                  "SUBDOMAIN": domain.name,
-                  "DOMAIN": domain_name,
-                  "DOMAIN_TAGS_HEADER": json.dumps(domain_tags),
-                  "PORT": domain.port,
-                  "LOAD_BALANCED_SERVERS": load_balanced_servers[worker.hostname],
-              },
-          )
-
-          # Create Domain Tag pool config.
-          for domain_tag in domain_tags:
-            await self.tailscale.sync_file(
-                worker.hostname,
-                app_dir / f"templates/worker/traefik/{traefik_config_template_domain_pool}",
-                f"{self.worker_home_dir}/traefik/dynamic/{application.qualified_name}-{domain.type}-{domain.name}-{domain_tag}.yml",
-                {
-                    "SERVICE": application.qualified_name,
-                    "SUBDOMAIN": domain.name,
-                    "DOMAIN": domain_name,
-                    "POOL_TAG": domain_tag,
-                    "LOAD_BALANCED_SERVERS": domain_tag_load_balanced_servers[worker.hostname][domain_tag],
-                },
-            )
-
-    input_hash = routing_input_hash(domain_name, application_domains, containers, self.is_worker_online)
+    domains = list(application.domains)
+    input_hash = routing_input_hash(domain_name, domains, containers, self.is_worker_online)
     for worker in online_workers:
       await self.write_worker_revision(worker.hostname, application.qualified_name, input_hash)
 
-    for domain in application_domains:
-      if domain.type == "tcp":
-        domain_url = f"{domain.name}.int.{domain_name}:8443"
-      elif domain.type == "internal":
-        domain_url = f"https://{domain.name}.int.{domain_name}"
-      else:
-        domain_url = f"https://{domain.name}.{domain_name}"
+    for domain in domains:
       self.notify(
           f"Traefik config synced for application {application.qualified_name} with domain {domain.type}:{domain.name}.",
-          link=domain_url,
+          link=domain.address(domain_name),
       )
 
+    self.request_domain_records_sync()
     application.domains_synced = True
     save_application(application)
     logger.info(f"Traefik config synced for application {application.qualified_name}.")
+
+  def discovery_services(self) -> list:
+    """Each service, as `[namespace, service, [[host, pool], ...]]`, sorted, with the names linked to a container in
+    it: a public service holds public names, an internal one internal and TCP names."""
+    services = {}
+    for domain in Domain.select().where(Domain.service.is_null(False) & Domain.container.is_null(False)):
+      namespace = "public" if domain.type == "public" else "internal"
+      services.setdefault((namespace, domain.service), []).append([domain.host(self.cloudflare.domain), domain.pool])
+    return [[namespace, service, sorted(names, key=lambda name: name[0])]
+            for (namespace, service), names in sorted(services.items())]
+
+  def discovery_hash(self, services: list) -> str:
+    """Hash of everything the discovery files of `services` are rendered from: the `discovery` stamp."""
+    return content_hash({"templates": DISCOVERY_TEMPLATES, "domain": self.cloudflare.domain, "services": services})
+
+  async def sync_discovery(self):
+    """Write, to every online worker, a discovery router per service, so any worker answers from its files alone:
+    `discovery.<domain>?service=<service>` for a public one (through the platform's tunnel) and
+    `discovery.int.<domain>?service=<service>` for an internal one (tailnet only). HEAD, GET and OPTIONS get the
+    service's names and pools in `Sage-Endpoints`; another method gets a 404. Each worker's stale files go last, and its
+    `discovery` stamp says what it has."""
+    services = self.discovery_services()
+    stamp = self.discovery_hash(services)
+    hosts = {"public": f"discovery.{self.cloudflare.domain}", "internal": f"discovery.int.{self.cloudflare.domain}"}
+    dynamic = f"{self.worker_home_dir}/traefik/dynamic"
+    for worker in self.online_workers():
+      written = []
+      for namespace, service, names in services:
+        file = f"_discovery-{namespace}-{service}.yml"
+        await self.tailscale.sync_file(
+            worker.hostname, app_dir / f"templates/worker/traefik/discovery_{namespace}.yml", f"{dynamic}/{file}", {
+                "SERVICE": service,
+                "HOST": hosts[namespace],
+                # An RFC 9651 list: each name a string, its pool a parameter.
+                "ENDPOINTS": ", ".join(f'"{host}";pool="{pool}"' if pool else f'"{host}"' for host, pool in names),
+            })
+        written.append(file)
+      await self.tailscale.exec_command(
+          worker.hostname,
+          f"find {dynamic} -maxdepth 1 -name '_discovery-*.yml' " + "".join(f"! -name '{file}' " for file in written)
+          + "-delete",
+      )
+      await self.write_worker_revision(worker.hostname, "discovery", stamp)
+    logger.info(f"Discovery synced: {len(services)} service(s).")
+
+  async def sync_domain_records(self):
+    """Make the zone's records for what Sage serves: `discovery.<domain>` a CNAME to the platform's tunnel
+    (`sage-tunnel`), each public name linked to a container a CNAME to the tunnel of that container's worker
+    (`sage-domain`), whatever the container's state, so a name doesn't come and go with deploys, and
+    `discovery.int.<domain>` an A record to each online worker (`sage-discovery-<hostname>`), so internal discovery
+    goes round the workers that answer. The one writer of these records, from one list of the account's tunnels and
+    one of the zone's records."""
+    tunnels = await run_in_executor_with_context(self.cloudflare.tunnels)
+    zone = await run_in_executor_with_context(self.cloudflare.get_dns_records)
+    domain_name = self.cloudflare.domain
+    names = {}
+    for domain in Domain.select().where((Domain.type == "public") & Domain.container.is_null(False)):
+      tunnel = tunnels.get(self.cloudflare.worker_tunnel_name(domain.container.worker_id))
+      if tunnel is None:
+        logger.warning(f"Worker {domain.container.worker_id} has no tunnel yet; {domain.host(domain_name)} waits for "
+                       "its setup.")
+        continue
+      names[domain.host(domain_name)] = f"{tunnel['id']}.cfargotunnel.com"
+    await run_in_executor_with_context(self.cloudflare.sync_dns_records, {
+        "sage-tunnel": {f"discovery.{domain_name}": f"{self.cloudflare.tunnel_id}.cfargotunnel.com"},
+        "sage-domain": names,
+    }, zone=zone, type="CNAME", proxied=True)
+    # A worker no longer in Sage has its record deleted too.
+    discovery = {record["comment"]: {} for record in zone if (record.get("comment") or "").startswith("sage-discovery-")}
+    for worker in Worker.select():
+      discovery[f"sage-discovery-{worker.hostname}"] = (
+          {f"discovery.int.{domain_name}": worker.ip} if self.is_worker_online(worker.hostname) else {})
+    await run_in_executor_with_context(self.cloudflare.sync_dns_records, discovery, zone=zone, type="A")
 
   async def reconcile_traefik_configs(self):
     """
     Existence-level reconciliation between worker Traefik dynamic configs and
     applications: a file with no owning application is removed, and an
-    application with domains must have config on every online worker. Content
-    correctness is owned by sync_application_traefik_domains_config;
-    applications left domains_synced=False (e.g. a restart dropped their queued
-    sync) are re-enqueued here.
+    application with domains must have config on every online worker that runs
+    an active container of it. Content correctness is owned by
+    sync_application_traefik_domains_config; applications left
+    domains_synced=False (e.g. a restart dropped their queued sync) are
+    re-enqueued here.
     """
     online_workers = self.online_workers()
     worker_files = {}
@@ -356,14 +341,10 @@ class TraefikMixin:
             ";".join(f"rm -f {self.worker_home_dir}/traefik/dynamic/{name}" for name in orphans),
         )
 
-    applications_ids_with_domains = {
-        domain.application_id for domain in Domain.select(Domain.application).distinct()
-    }
-
     # Revision stamps: existence checks above catch missing files; the hash
     # layer catches files rendered from stale inputs (a worker that missed a
     # sync). Stamps for deleted applications are removed here, like their
-    # routing files; the worker's own stamps (infra, certs, owner) stay.
+    # routing files; the worker's own stamps (infra, certs, owner, discovery) stay.
     revisions_by_worker = {}
     for worker in online_workers:
       revisions_by_worker[worker.hostname] = await self.read_worker_revisions(worker.hostname)
@@ -371,7 +352,7 @@ class TraefikMixin:
     for worker in online_workers:
       stale_keys = sorted(
           key for key in revisions_by_worker[worker.hostname]
-          if key not in live_names and key not in ("infra", "certs", "owner")
+          if key not in live_names and key not in ("infra", "certs", "owner", "discovery")
           and re.fullmatch(r"[a-z0-9-]+", key)
       )
       if stale_keys:
@@ -392,15 +373,14 @@ class TraefikMixin:
         )
         continue
 
-      # An app with domains must have config on every online worker; a missing
-      # file means the worker joined after the app's last sync.
-      needs_sync = False
-      if application.id in applications_ids_with_domains:
-        prefix = f"{application.qualified_name}-"
-        needs_sync = any(
-            not any(name.startswith(prefix) for name in worker_files[worker.hostname])
-            for worker in online_workers
-        )
+      # An online worker whose active container of the app has domains must have its files; a missing one means the
+      # worker missed the app's last sync.
+      prefix = f"{application.qualified_name}-"
+      needs_sync = any(
+          not any(name.startswith(prefix) for name in worker_files[container.worker_id])
+          for container in application.containers
+          if container.status == "active" and container.worker_id in worker_files and container.domains.exists()
+      )
 
       if not needs_sync and online_workers:
         app_hash = routing_input_hash(
@@ -412,3 +392,8 @@ class TraefikMixin:
 
       if needs_sync:
         self.request_application_traefik_sync(application)
+
+    if online_workers:
+      discovery = self.discovery_hash(self.discovery_services())
+      if any(revisions_by_worker[worker.hostname].get("discovery") != discovery for worker in online_workers):
+        self.request_discovery_sync()

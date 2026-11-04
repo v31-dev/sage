@@ -1,0 +1,25 @@
+http:
+  routers:
+    discovery_public_${SERVICE}:
+      rule: Host(`${HOST}`) && Query(`service`, `${SERVICE}`) && (Method(`GET`) || Method(`HEAD`) || Method(`OPTIONS`))
+      entrypoints:
+        - web
+      middlewares:
+        - discovery_public_${SERVICE}
+      service: ping@internal
+
+  middlewares:
+    discovery_public_${SERVICE}:
+      headers:
+        customResponseHeaders:
+          Sage-Endpoints: '${ENDPOINTS}'
+          Cache-Control: "private, max-age=300"
+        accessControlAllowOriginList:
+          - "*"
+        accessControlAllowMethods:
+          - GET
+          - HEAD
+          - OPTIONS
+        accessControlExposeHeaders:
+          - Sage-Endpoints
+        accessControlMaxAge: 300

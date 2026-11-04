@@ -37,17 +37,25 @@ class Certificate:
     self.names = names
     self.fullchain_path = directory / "fullchain.pem"
     self.key_path = directory / "key.pem"
+    # Why the last issuance failed, until one succeeds.
+    self.error = None
     self._cert = None
+    self._hash = None
+    self.covered = frozenset()
     self.load()
 
   def load(self):
     """Read the certificate into memory, so checks and the status never touch the disk.
     At start, and after every write of the PEM file."""
-    self._cert = None
+    self._cert, self._hash, self.covered = None, None, frozenset()
     if not self.fullchain_path.exists():
       return
+    pem = self.fullchain_path.read_bytes()
+    self._hash = hashlib.sha256(pem).hexdigest()[:16]
     try:
-      self._cert = x509.load_pem_x509_certificate(self.fullchain_path.read_bytes())
+      self._cert = x509.load_pem_x509_certificate(pem)
+      self.covered = frozenset(self._cert.extensions.get_extension_for_class(
+          x509.SubjectAlternativeName).value.get_values_for_type(x509.DNSName))
     except Exception:
       pass
 
@@ -59,12 +67,7 @@ class Certificate:
     cert = self._cert
     if cert is None or cert.not_valid_after_utc <= _aware_now():
       return False
-    try:
-      sans = cert.extensions.get_extension_for_class(
-          x509.SubjectAlternativeName).value.get_values_for_type(x509.DNSName)
-    except x509.ExtensionNotFound:
-      return False
-    return all(name in sans for name in self.names)
+    return all(name in self.covered for name in self.names)
 
   def needs_renewal(self, days: int = config.RENEWAL_THRESHOLD_DAYS):
     if self._cert is None:
@@ -74,16 +77,15 @@ class Certificate:
   def hash(self):
     """Content hash of the chain (None when absent); compared against a worker's
     `revisions/certs` stamp to detect missed rotations."""
-    if not self.fullchain_path.exists():
-      return None
-    return hashlib.sha256(self.fullchain_path.read_bytes()).hexdigest()[:16]
+    return self._hash
 
 
 class Certs(Base):
   """Owns Sage's two TLS certificates — in-process ACME issuance (Let's Encrypt
   DNS-01 via the Cloudflare client), PEM storage, renewal, and the :443 in-place
   reload. The manager's certificate covers only its own address and never leaves the
-  manager; the workers' covers `*.int.<domain>` and is synced to every worker."""
+  manager; the workers' covers `*.int.<domain>` and each worker's `*.<subdomain>.int.<domain>`,
+  and is synced to every worker."""
 
   def __init__(self):
     super().__init__()
@@ -93,12 +95,21 @@ class Certs(Base):
     self.account_key_path = cert_dir / "account.key"
     self.domain = get_env("DOMAIN")
     self.manager = Certificate(cert_dir / "manager", [Cloudflare().manager_hostname])
-    self.workers = Certificate(cert_dir / "workers", [f"*.int.{self.domain}"])
+    self.workers = Certificate(cert_dir / "workers", [])
+    self.set_worker_subdomains([])
 
     # The uvicorn :443 SSLContext, set by main once the server is built. Holding
     # the reference lets renewal swap the cert in place (new handshakes get the
     # new cert, live connections keep theirs) without restarting the server.
     self.tls_context = None
+
+  def set_worker_subdomains(self, subdomains):
+    """The workers' certificate is to cover the names under these workers' subdomains."""
+    self.workers.names = [f"*.int.{self.domain}", *sorted(f"*.{subdomain}.int.{self.domain}" for subdomain in subdomains)]
+
+  def covers_subdomain(self, subdomain: str | None) -> bool:
+    """Whether the workers' certificate as issued covers the names under this subdomain."""
+    return f"*.{subdomain}.int.{self.domain}" in self.workers.covered
 
   def _account_key(self):
     if self.account_key_path.exists():
@@ -231,7 +242,12 @@ class Certs(Base):
     if certificate.is_valid() and not certificate.needs_renewal():
       return False
     logger.info(f"Requesting a certificate for {', '.join(certificate.names)} from Let's Encrypt.")
-    self.issue(certificate)
+    try:
+      self.issue(certificate)
+    except Exception as e:
+      certificate.error = str(e)
+      raise
+    certificate.error = None
     return True
 
   def ensure_manager_at_startup(self):

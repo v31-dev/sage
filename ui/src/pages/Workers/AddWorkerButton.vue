@@ -26,15 +26,13 @@ import { addWorker } from '@/services/api'
 
 const isOpen = ref(false)
 const host = ref('')
-const tag = ref('')
-const pool = ref('')
+const subdomain = ref('')
 const errorMessage = ref('')
 const isSubmitting = ref(false)
 
 function openDialog() {
   host.value = ''
-  tag.value = ''
-  pool.value = ''
+  subdomain.value = ''
   errorMessage.value = ''
   isOpen.value = true
 }
@@ -51,8 +49,7 @@ async function onConfirm() {
     isSubmitting.value = true
     const { hostname } = await addWorker({
       host: host.value.trim(),
-      tag: tag.value.trim(),
-      pool: pool.value.trim(),
+      subdomain: subdomain.value.trim(),
     })
     isOpen.value = false
     toast.success(`Adding worker ${hostname}`)
@@ -87,16 +84,16 @@ async function onConfirm() {
             <Input id="worker-host" v-model="host" placeholder="e.g. worker-1 or 100.64.0.2" />
           </Field>
           <Field>
-            <FieldLabel for="worker-tag"> Tag (optional) </FieldLabel>
-            <Input id="worker-tag" v-model="tag" placeholder="e.g. eu1" />
+            <FieldLabel for="worker-subdomain"> Subdomain (optional) </FieldLabel>
+            <Input id="worker-subdomain" v-model="subdomain" placeholder="e.g. eu1" />
             <FieldDescription>
-              Up to 10 letters and digits, unique to this worker. Left empty, Sage picks one.
+              The worker's internal names are under it, as in shop.eu1.int. Lowercase letters,
+              digits and dashes, unique to this worker. Left empty, Sage picks one.
             </FieldDescription>
-          </Field>
-          <Field>
-            <FieldLabel for="worker-pool"> Pool (optional) </FieldLabel>
-            <Input id="worker-pool" v-model="pool" placeholder="e.g. eu" />
-            <FieldDescription>A group this worker belongs to, shared with others.</FieldDescription>
+            <FieldDescription>
+              ⚠ A new worker reissues the workers' certificate for its names. Let's Encrypt issues
+              at most 5 for the same names and 50 for the domain every 7 days.
+            </FieldDescription>
           </Field>
           <Field>
             <FieldError v-if="errorMessage">{{ errorMessage }}</FieldError>

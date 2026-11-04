@@ -13,6 +13,8 @@ import {
   type InfraContainer,
   type SettingSection,
   type SettingState,
+  type TunnelStatus,
+  type WorkerCertificate,
   type WorkerListItem,
   type WorkerStatus,
 } from '@/services/api'
@@ -62,6 +64,30 @@ export const useAppStore = defineStore('app', () => {
   // The status of the worker in the list, undefined before the list has loaded or for a name that is not in it.
   function workerStatus(hostname: string): WorkerStatus | undefined {
     return workers.value?.find(worker => worker.hostname === hostname)?.status
+  }
+
+  // The workers' certificate on the worker in the list, as `workerStatus`.
+  function workerCertificate(hostname: string): WorkerCertificate | undefined {
+    return workers.value?.find(worker => worker.hostname === hostname)?.certificate
+  }
+
+  // Whether the worker's internal names have their certificate: issued for them, then synced to the worker.
+  function certificateIndicator(certificate: WorkerCertificate): Indicator {
+    if (!certificate.covered) return { state: 'busy', label: 'waiting for the certificate' }
+    if (!certificate.synced) return { state: 'busy', label: 'syncing the certificate' }
+    return { state: 'ok', label: 'certificate ready' }
+  }
+
+  function tunnelIndicator(status: TunnelStatus): Indicator {
+    const state: IndicatorState =
+      status === 'healthy'
+        ? 'ok'
+        : status === 'degraded'
+          ? 'warning'
+          : status === 'down'
+            ? 'error'
+            : 'idle'
+    return { state, label: `tunnel ${status}` }
   }
 
   function sectionIndicator(section: SettingSection): Indicator | undefined {
@@ -183,6 +209,9 @@ export const useAppStore = defineStore('app', () => {
     // Getters
     workersIndicator,
     workerStatus,
+    workerCertificate,
+    certificateIndicator,
+    tunnelIndicator,
     sectionIndicator,
     applicationIndicator,
     workerIndicator,

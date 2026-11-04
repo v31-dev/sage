@@ -1,7 +1,7 @@
 import pytest
 
 import config
-from services.db import Application, Container, Project, Volume, Worker
+from services.db import Application, Container, Domain, Project, Volume, Worker
 
 URL = "/api/projects/demo/applications"
 
@@ -68,6 +68,20 @@ class TestGet:
     assert body["project"]["name"] == "demo"
     assert [row["name"] for row in body["volumes"]] == ["data"]
     assert body["containers"] == []
+
+  def test_it_lists_the_domains_linked_to_its_containers_with_their_names_workers_and_states(
+          self, client, application, worker, project):
+    Worker.update(subdomain="red").where(Worker.hostname == "w1").execute()
+    container = Container.create(application=application, worker=worker, status="active")
+    Domain.create(name="shop", type="public", port=80, container=container)
+    Domain.create(name="db", type="tcp", port=5432, container=container)
+    other = Application.create(project=project, name="api", label="API", image="nginx")
+    Domain.create(name="api", type="public", port=80, container=Container.create(application=other, worker=worker))
+
+    domains = client.get(f"{URL}/web").json()["domains"]
+
+    assert [(domain["address"], domain["worker"], domain["container"]["status"]) for domain in domains] == [
+        ("https://shop.example.test", "w1", "active"), ("db.red.int.example.test:8443", "w1", "active")]
 
   def test_a_new_application_is_not_dirty(self, client, application):
     assert client.get(f"{URL}/web").json()["config_dirty"] is False

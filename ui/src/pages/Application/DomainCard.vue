@@ -1,241 +1,82 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
-import { toast } from 'vue-sonner'
-import { Edit, ExternalLink, Trash } from 'lucide-vue-next'
-import { Card, CardHeader, CardTitle, CardAction, CardFooter } from '@/components/ui/card'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog'
+import { computed } from 'vue'
+import { ExternalLink } from 'lucide-vue-next'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import {
-  InputGroup,
-  InputGroupAddon,
-  InputGroupInput,
-  InputGroupText,
-} from '@/components/ui/input-group'
-import {
-  Field,
-  FieldGroup,
-  FieldLabel,
-  FieldSet,
-  FieldError,
-  FieldDescription,
-} from '@/components/ui/field'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
-import { Spinner } from '@/components/ui/spinner'
-import { ButtonGroup } from '@/components/ui/button-group'
 import { useAppStore } from '@/stores/app'
 
-import { type Domain, type Application, deleteDomain, updateDomain } from '@/services/api'
-import SectionTitle from '@/components/SectionTitle.vue'
+import type { Domain, Application } from '@/services/api'
+import CopyButton from '@/components/CopyButton.vue'
 import StateIndicator from '@/components/StateIndicator.vue'
-import ConfirmationButton from '@/components/ConfirmationButton.vue'
 
 interface Props {
   application: Application
   domain: Domain
-  loadApplication: () => Promise<void>
 }
 
 const props = withDefaults(defineProps<Props>(), {})
 const appStore = useAppStore()
 
-const isEditDomainDialogOpen = ref(false)
-const domain = ref({
-  name: '',
-  type: 'internal' as 'internal' | 'public' | 'tcp',
-  port: 80,
-})
-const editDomainErrorMessage = ref('')
-const isClickedEditDomainConfirm = ref(false)
-const isTcp = computed(() => props.domain.type === 'tcp')
-const link = computed(() => {
-  if (props.domain.type === 'public') {
-    return `https://${props.domain.name}.${appStore.info!.domain}`
-  } else if (props.domain.type === 'tcp') {
-    // Raw-TCP backing service reached over the mesh's shared SNI port; not an https URL.
-    return `${props.domain.name}.int.${appStore.info!.domain}:8443`
-  } else {
-    return `https://${props.domain.name}.int.${appStore.info!.domain}`
-  }
-})
+const TYPES: Record<Domain['type'], string> = { public: 'Public', internal: 'Internal', tcp: 'TCP' }
 
-function openEditDomainDialog() {
-  editDomainErrorMessage.value = ''
-  domain.value.name = props.domain.name
-  domain.value.type = props.domain.type
-  domain.value.port = props.domain.port
-  isEditDomainDialogOpen.value = true
-}
-
-async function onClickEditDomainConfirm() {
-  editDomainErrorMessage.value = ''
-
-  if (!domain.value.name.trim()) {
-    editDomainErrorMessage.value = 'Please enter a domain name'
-    return
-  }
-
-  try {
-    isClickedEditDomainConfirm.value = true
-    await updateDomain(
-      props.application.project.name,
-      props.application.name,
-      `${props.domain.type}:${props.domain.name}`,
-      domain.value
-    )
-    isEditDomainDialogOpen.value = false
-    await props.loadApplication()
-    toast.success('Domain updated successfully')
-  } catch (err) {
-    editDomainErrorMessage.value = err instanceof Error ? err.message : 'Failed to update domain'
-  } finally {
-    isClickedEditDomainConfirm.value = false
-  }
-}
-
-async function onClickConfirmDelete() {
-  await deleteDomain(
-    props.application.project.name,
-    props.application.name,
-    `${props.domain.type}:${props.domain.name}`
+const container = computed(() =>
+  props.application.containers.find(
+    container => container.worker.hostname === props.domain.container?.worker
   )
-  await props.loadApplication()
-  toast.success('Domain deleted successfully')
-}
+)
+
+// The workers' certificate on the worker of an internal or TCP name, shown until it is ready there.
+const pendingCertificate = computed(() => {
+  if (props.domain.type === 'public' || !props.domain.worker) return undefined
+  const certificate = appStore.workerCertificate(props.domain.worker)
+  return certificate && !(certificate.covered && certificate.synced)
+    ? appStore.certificateIndicator(certificate)
+    : undefined
+})
 </script>
 
 <template>
-  <Card>
-    <CardHeader class="flex items-center justify-between">
-      <CardTitle>
-        <SectionTitle :title="props.domain.name">
-          <StateIndicator v-bind="appStore.domainIndicator(props.application.domains_synced)" />
-        </SectionTitle>
-      </CardTitle>
-      <CardAction>
-        <ButtonGroup class="space-x-1">
-          <Button size="sm" variant="outline" @click="openEditDomainDialog" class="gap-2">
-            <Edit />
-            Edit
-          </Button>
-          <ConfirmationButton
-            triggerText="Delete"
-            title="Delete Domain"
-            body="Are you sure you want to delete this domain? This action cannot be undone."
-            :description="props.domain.name"
-            :icon="Trash"
-            destructive
-            :onConfirm="onClickConfirmDelete"
-          />
-        </ButtonGroup>
-      </CardAction>
-    </CardHeader>
-    <CardFooter class="border-t">
-      <Button v-if="isTcp" size="sm" variant="outline" class="w-full" disabled>
-        {{ link }}
-      </Button>
-      <Button v-else size="sm" variant="outline" class="w-full" as-child>
-        <a :href="link" target="_blank">
-          <ExternalLink />
-          {{ link }}
-        </a>
-      </Button>
-    </CardFooter>
-  </Card>
-
-  <!-- Edit Domain Dialog -->
-  <Dialog v-model:open="isEditDomainDialogOpen">
-    <DialogContent class="sm:max-w-[400px]">
-      <DialogHeader>
-        <DialogTitle>Edit Domain</DialogTitle>
-        <DialogDescription>
-          {{ props.domain.name }}
-        </DialogDescription>
-      </DialogHeader>
-      <FieldSet>
-        <FieldGroup>
-          <Field>
-            <FieldLabel for="edit-domain-name"> Subdomain </FieldLabel>
-            <InputGroup>
-              <InputGroupAddon>
-                <InputGroupText>{{ domain.type == 'tcp' ? '' : 'https://' }}</InputGroupText>
-              </InputGroupAddon>
-              <InputGroupInput
-                id="edit-domain-name"
-                v-model="domain.name"
-                placeholder="e.g. app"
-                class="!pl-0.5"
-              />
-              <InputGroupAddon align="inline-end">
-                <InputGroupText
-                  >.{{ domain.type == 'public' ? '' : 'int.' }}{{ appStore.info!.domain
-                  }}{{ domain.type == 'tcp' ? ':8443' : '' }}</InputGroupText
-                >
-              </InputGroupAddon>
-            </InputGroup>
-          </Field>
-          <Field>
-            <FieldLabel for="edit-domain-type"> Type </FieldLabel>
-            <Select v-model="domain.type">
-              <SelectTrigger id="edit-domain-type">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="internal"> Internal </SelectItem>
-                <SelectItem value="public"> Public </SelectItem>
-                <SelectItem value="tcp"> TCP </SelectItem>
-              </SelectContent>
-            </Select>
-            <FieldDescription v-if="domain.type === 'tcp'">
-              TCP routes by SNI only — x-tag domain tags are not supported.
-            </FieldDescription>
-          </Field>
-          <Field>
-            <FieldLabel for="edit-domain-port"> Port </FieldLabel>
-            <Input
-              id="edit-domain-port"
-              v-model="domain.port"
-              type="number"
-              placeholder="e.g. 80"
-            />
-          </Field>
-          <Field>
-            <FieldError v-if="editDomainErrorMessage">{{ editDomainErrorMessage }}</FieldError>
-          </Field>
-        </FieldGroup>
-      </FieldSet>
-      <DialogFooter>
+  <Card data-domain>
+    <CardHeader class="flex items-center gap-2">
+      <CardTitle class="min-w-0 flex-1">
         <Button
+          v-if="props.domain.type === 'tcp'"
           size="sm"
-          type="button"
           variant="outline"
-          @click="isEditDomainDialogOpen = false"
-          :disabled="isClickedEditDomainConfirm"
+          class="w-full min-w-0"
+          disabled
         >
-          Cancel
+          <span class="truncate">{{ props.domain.address }}</span>
         </Button>
-        <Button
-          size="sm"
-          @click="onClickEditDomainConfirm"
-          :disabled="isClickedEditDomainConfirm || !domain.name.trim()"
-        >
-          <Spinner class="animate-spin" v-if="isClickedEditDomainConfirm" />
-          Save
+        <Button v-else size="sm" variant="outline" class="w-full min-w-0" as-child>
+          <a :href="props.domain.address ?? undefined" target="_blank">
+            <ExternalLink />
+            <span class="truncate">{{ props.domain.address }}</span>
+          </a>
         </Button>
-      </DialogFooter>
-    </DialogContent>
-  </Dialog>
+      </CardTitle>
+      <CopyButton v-if="props.domain.address" :text="props.domain.address" />
+    </CardHeader>
+    <CardContent class="flex flex-wrap items-center gap-2">
+      <Badge variant="secondary" class="font-mono">{{ props.domain.worker }}</Badge>
+      <StateIndicator
+        v-if="container"
+        v-bind="appStore.applicationIndicator(appStore.containerStatus(container))"
+        show-label
+      />
+      <StateIndicator v-if="pendingCertificate" v-bind="pendingCertificate" show-label />
+      <StateIndicator
+        v-bind="appStore.domainIndicator(props.application.domains_synced)"
+        show-label
+      />
+      <Badge variant="outline">{{ TYPES[props.domain.type] }}</Badge>
+      <Badge v-if="props.domain.service" variant="outline" class="font-mono">
+        Service {{ props.domain.service }}
+      </Badge>
+      <Badge v-if="props.domain.pool" variant="outline" class="font-mono">
+        Pool {{ props.domain.pool }}
+      </Badge>
+    </CardContent>
+  </Card>
 </template>

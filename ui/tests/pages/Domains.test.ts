@@ -1,0 +1,259 @@
+import { flushPromises, mount } from '@vue/test-utils'
+import { createPinia, setActivePinia } from 'pinia'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import Domains from '@/pages/Domains'
+import DomainDialog from '@/pages/Domains/DomainDialog.vue'
+import {
+  createDomain,
+  updateDomain,
+  type AppInfo,
+  type Domain,
+  type DomainsResponse,
+  type LinkableContainer,
+} from '@/services/api'
+import { useAppStore } from '@/stores/app'
+import { followTopics } from '../helpers/topics'
+
+vi.mock('@/lib/updates', () => ({ watchState: vi.fn(), watchFeed: vi.fn() }))
+vi.mock('vue-sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
+vi.mock('@/services/api', async importOriginal => ({
+  ...(await importOriginal<typeof import('@/services/api')>()),
+  fetchDomains: vi.fn(),
+  createDomain: vi.fn(async () => ({})),
+  updateDomain: vi.fn(async () => ({})),
+}))
+
+const application = { name: 'web', label: 'Web', project: { name: 'demo', label: 'Demo' } }
+
+const linkable = (id: number, hostname: string, subdomain: string): LinkableContainer => ({
+  id,
+  status: 'active',
+  worker: { hostname, subdomain },
+  application,
+})
+
+const domain = (id: number, overrides: Partial<Domain>): Domain => ({
+  id,
+  name: 'shop',
+  type: 'public',
+  port: 80,
+  service: null,
+  pool: null,
+  host: 'shop.example.test',
+  address: 'https://shop.example.test',
+  worker: 'w1',
+  container: { id: 1, status: 'active', worker: 'w1', application },
+  ...overrides,
+})
+
+beforeEach(() => {
+  setActivePinia(createPinia())
+  useAppStore().info = { domain: 'example.test' } as AppInfo
+  vi.mocked(createDomain).mockClear()
+  vi.mocked(updateDomain).mockClear()
+})
+
+describe('the Domains page', () => {
+  function shown(state: DomainsResponse) {
+    const topics = followTopics()
+    const wrapper = mount(Domains, {
+      global: { stubs: { DomainDialog: true, ConfirmationButton: true, CopyButton: true } },
+    })
+    topics.topic('domains').push(state)
+    return wrapper
+  }
+
+  it('follows the domains topic and groups the domains by namespace, then service, then pool', async () => {
+    const wrapper = shown({
+      domains: [
+        domain(1, {
+          name: 'b',
+          host: 'b.example.test',
+          address: 'https://b.example.test',
+          service: 'shop',
+          pool: 'eu',
+        }),
+        domain(2, {
+          name: 'a',
+          host: 'a.example.test',
+          address: 'https://a.example.test',
+          service: 'shop',
+        }),
+        domain(3, { name: 'c', host: 'c.example.test', address: 'https://c.example.test' }),
+        domain(4, {
+          name: 'd',
+          type: 'tcp',
+          host: 'd.red.int.example.test',
+          address: 'd.red.int.example.test:8443',
+          service: 'shop',
+        }),
+      ],
+      containers: [],
+    })
+    await flushPromises()
+
+    const layout = wrapper
+      .findAll('[data-namespace]')
+      .map(namespace => [
+        namespace.get('[data-slot=card-title]').text(),
+        namespace
+          .findAll('[data-service]')
+          .map(service => [
+            service.get('h3').text(),
+            service
+              .findAll('[data-pool]')
+              .map(pool => [
+                pool.get('p').text(),
+                pool
+                  .findAll('[data-domain]')
+                  .map(row => row.element.children[0]!.textContent!.trim()),
+              ]),
+          ]),
+      ])
+    expect(layout).toEqual([
+      [
+        'Public',
+        [
+          [
+            'Service shop',
+            [
+              ['Pool eu', ['https://b.example.test']],
+              ['No pool', ['https://a.example.test']],
+            ],
+          ],
+          ['No service', [['No pool', ['https://c.example.test']]]],
+        ],
+      ],
+      ['Internal', [['Service shop', [['No pool', ['d.red.int.example.test:8443']]]]]],
+    ])
+  })
+
+  it('says a domain whose container is gone is not linked', async () => {
+    const wrapper = shown({ domains: [domain(1, { container: null })], containers: [] })
+    await flushPromises()
+
+    expect(wrapper.get('[data-domain]').text()).toContain('not linked')
+  })
+})
+
+describe('the domain dialog', () => {
+  const containers = [linkable(1, 'w1', 'red'), linkable(2, 'w2', 'blue')]
+
+  async function open(props: { domain?: Domain; domains?: Domain[] } = {}) {
+    const inline = { template: '<div><slot /></div>' }
+    const wrapper = mount(DomainDialog, {
+      props: {
+        containers,
+        domains: props.domains ?? [],
+        domain: props.domain,
+        reload: async () => {},
+      },
+      global: {
+        stubs: {
+          Dialog: inline,
+          DialogTrigger: inline,
+          DialogContent: inline,
+          DialogHeader: inline,
+          DialogTitle: inline,
+          DialogDescription: inline,
+          DialogFooter: inline,
+        },
+      },
+    })
+    await wrapper
+      .findAll('button')
+      .find(button => /Add Domain|Edit/.test(button.text()))!
+      .trigger('click')
+    return wrapper
+  }
+
+  const vm = (wrapper: Awaited<ReturnType<typeof open>>) =>
+    wrapper.vm as unknown as {
+      chooseContainer: (value: string) => void
+      type: string
+      suffix: string
+    }
+
+  it("shows the name's shape for its type under the chosen container's worker", async () => {
+    const wrapper = await open()
+    const dialog = vm(wrapper)
+
+    dialog.chooseContainer('1')
+    dialog.type = 'internal'
+    await flushPromises()
+    expect(dialog.suffix).toBe('.red.int.example.test')
+    dialog.type = 'tcp'
+    expect(dialog.suffix).toBe('.red.int.example.test:8443')
+    dialog.type = 'public'
+    expect(dialog.suffix).toBe('.example.test')
+  })
+
+  it('clears the type when another container is chosen', async () => {
+    const dialog = vm(await open())
+
+    dialog.chooseContainer('1')
+    dialog.type = 'internal'
+    dialog.chooseContainer('2')
+
+    expect(dialog.type).toBe('')
+    dialog.type = 'internal'
+    expect(dialog.suffix).toBe('.blue.int.example.test')
+  })
+
+  it('creates the domain on the chosen container', async () => {
+    const wrapper = await open()
+    vm(wrapper).chooseContainer('2')
+    vm(wrapper).type = 'public'
+    await flushPromises()
+    await wrapper.get('#domain-name').setValue(' shop ')
+    await wrapper.get('#domain-service').setValue('shop')
+    await wrapper
+      .findAll('button')
+      .find(button => button.text() === 'Add')!
+      .trigger('click')
+    await flushPromises()
+
+    expect(createDomain).toHaveBeenCalledWith({
+      name: 'shop',
+      type: 'public',
+      port: 80,
+      service: 'shop',
+      pool: '',
+      container: 2,
+    })
+  })
+
+  it('opens with the domain it edits, and an unlinked one keeps its container empty', async () => {
+    const wrapper = await open({ domain: domain(7, { container: null, port: 8080, pool: 'eu' }) })
+    await wrapper.get('#domain-port').setValue('9090')
+    await wrapper
+      .findAll('button')
+      .find(button => button.text() === 'Save')!
+      .trigger('click')
+    await flushPromises()
+
+    expect(updateDomain).toHaveBeenCalledWith(7, {
+      name: 'shop',
+      type: 'public',
+      port: 9090,
+      service: '',
+      pool: 'eu',
+    })
+  })
+
+  it("offers the services of the chosen type's namespace", async () => {
+    const domains = [
+      domain(1, { service: 'shop' }),
+      domain(2, { type: 'internal', service: 'api' }),
+      domain(3, { type: 'tcp', service: 'db' }),
+    ]
+    const wrapper = await open({ domains })
+    vm(wrapper).chooseContainer('1')
+    vm(wrapper).type = 'internal'
+    await flushPromises()
+
+    expect(
+      wrapper.findAll('#domain-services option').map(option => option.attributes('value'))
+    ).toEqual(['api', 'db'])
+  })
+})

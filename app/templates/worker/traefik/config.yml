@@ -1,9 +1,5 @@
 http:
   middlewares:
-    mark-as-hopped:
-      headers:
-        customRequestHeaders:
-          X-Mesh-Hops: "1"
     tailscale-only:
       ipAllowList:
         sourceRange:
@@ -13,6 +9,11 @@ http:
       headers:
         customResponseHeaders:
           X-Server: "${HOSTNAME}"
+    # Lets a page on another origin time the probe of a name.
+    probe:
+      headers:
+        customResponseHeaders:
+          Timing-Allow-Origin: "*"
     security-headers:
       headers:
         frameDeny: true
@@ -42,7 +43,7 @@ tcp:
           - "100.64.0.0/10"
           - "172.16.0.0/12"
 
-# Shared TLS options for the TCP mesh hop (meshtcp), which terminates TLS
+# TLS options for the TCP routers, which terminate TLS
 tls:
   options:
     backend-tcp:

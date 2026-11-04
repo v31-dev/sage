@@ -60,10 +60,15 @@ WORKER_INFRA_TEMPLATES = templates_digest(
 # behind each application's own stamp.
 APPLICATION_ROUTING_TEMPLATES = templates_digest(
     "worker/traefik/service_public.yml",
-    "worker/traefik/service_public_pool.yml",
     "worker/traefik/service_internal.yml",
-    "worker/traefik/service_internal_pool.yml",
     "worker/traefik/service_internal_tcp.yml",
+)
+
+
+# The discovery files, pushed by `sync_discovery` behind each worker's `discovery` stamp.
+DISCOVERY_TEMPLATES = templates_digest(
+    "worker/traefik/discovery_public.yml",
+    "worker/traefik/discovery_internal.yml",
 )
 
 
@@ -76,10 +81,9 @@ def routing_input_hash(domain_name: str, domains, containers, is_online) -> str:
   return content_hash({
       "templates": APPLICATION_ROUTING_TEMPLATES,
       "domain": domain_name,
-      "domains": sorted((d.name, d.type, d.port) for d in domains),
-      "tags": sorted({c.domain_tag for c in containers if c.domain_tag}),
+      "domains": sorted((d.name, d.type, d.port, d.container.worker_id) for d in domains),
       "active": sorted(
-          (c.worker.hostname, c.worker.ip, c.domain_tag or "")
+          (c.worker.hostname, c.worker.subdomain or "")
           for c in containers
           if is_online(c.worker.hostname) and c.status == "active"
       ),

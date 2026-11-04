@@ -9,14 +9,15 @@ function listed(hostname: string, status: WorkerStatus): WorkerListItem {
   return {
     hostname,
     ip: '100.64.0.2',
-    tag: null,
-    pool: null,
+    subdomain: null,
     online: status !== 'offline',
     status,
     path: null,
     container_count: null,
     infra: null,
     metrics: null,
+    certificate: { covered: true, synced: true, expiry: null },
+    tunnel: 'healthy',
   }
 }
 
@@ -24,13 +25,11 @@ function mountCard(hostname = 'w1') {
   const container = {
     worker: { hostname },
     status: 'active',
-    domain_tag: null,
   } as unknown as Container
   return mount(ContainerCard, {
     props: { application: {} as never, container, loadApplication: async () => {} },
     global: {
       stubs: {
-        EditContainerButton: true,
         DeleteContainerButton: true,
         EventLogsButton: true,
         RouterLink: { template: '<a><slot /></a>' },

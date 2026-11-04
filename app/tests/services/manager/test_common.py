@@ -7,12 +7,12 @@ import pytest
 from services.manager import _common
 
 
-def domain(name="web", type="public", port=80):
-  return SimpleNamespace(name=name, type=type, port=port)
+def domain(name="web", type="public", port=80, worker="w1"):
+  return SimpleNamespace(name=name, type=type, port=port, container=SimpleNamespace(worker_id=worker))
 
 
-def container(hostname="w1", ip="100.64.0.1", status="active", tag=None):
-  return SimpleNamespace(domain_tag=tag, status=status, worker=SimpleNamespace(hostname=hostname, ip=ip))
+def container(hostname="w1", ip="100.64.0.1", status="active", subdomain="eu1"):
+  return SimpleNamespace(status=status, worker=SimpleNamespace(hostname=hostname, ip=ip, subdomain=subdomain))
 
 
 class TestContentHash:
@@ -117,13 +117,14 @@ class TestRoutingInputHash:
 
   def test_does_not_depend_on_the_order_of_domains_or_containers(self):
     domains = [domain("a"), domain("b", "internal", 8080)]
-    containers = [container("w1", "100.64.0.1", tag="blue"), container("w2", "100.64.0.2", tag="green")]
+    containers = [container("w1", "100.64.0.1", subdomain="eu1"), container("w2", "100.64.0.2", subdomain="us1")]
     assert self.hash(domains, containers) == self.hash(domains[::-1], containers[::-1])
 
   @pytest.mark.parametrize("changed", [
       [domain(name="other")],
       [domain(type="internal")],
       [domain(port=8080)],
+      [domain(worker="w2")],
       [domain(), domain("second")],
       [],
   ])
@@ -133,8 +134,8 @@ class TestRoutingInputHash:
   def test_changes_with_the_cloudflare_domain(self):
     assert self.hash(domain_name="other.test") != self.hash()
 
-  def test_changes_with_the_address_of_an_active_container(self):
-    assert self.hash(containers=[container(ip="100.64.0.9")]) != self.hash()
+  def test_the_address_of_a_worker_is_in_no_file_so_not_in_the_hash(self):
+    assert self.hash(containers=[container(ip="100.64.0.9")]) == self.hash()
 
   def test_changes_with_the_worker_an_active_container_runs_on(self):
     assert self.hash(containers=[container(hostname="w2")]) != self.hash()
@@ -149,11 +150,12 @@ class TestRoutingInputHash:
   def test_a_container_on_an_offline_worker_is_left_out(self):
     assert self.hash(containers=[container()], offline=("w1",)) == self.hash(containers=[container(status="inactive")])
 
-  def test_a_domain_tag_counts_even_when_its_container_is_not_active(self):
-    assert self.hash(containers=[container(status="inactive", tag="blue")]) != self.hash(containers=[container(status="inactive")])
+  def test_a_new_subdomain_of_a_worker_that_runs_it_actively_changes_the_hash(self):
+    assert self.hash(containers=[container(subdomain="eu2")]) != self.hash()
 
-  def test_a_new_tag_changes_the_hash(self):
-    assert self.hash(containers=[container(tag="blue")]) != self.hash()
+  def test_the_subdomain_of_a_worker_that_does_not_run_it_actively_is_left_out(self):
+    assert (self.hash(containers=[container(status="inactive", subdomain="eu2")])
+            == self.hash(containers=[container(status="inactive")]))
 
   def test_editing_a_routing_template_changes_the_hash(self, monkeypatch):
     before = self.hash()

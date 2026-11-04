@@ -20,8 +20,7 @@ const stubs = {
   DialogFooter: inline,
 }
 
-const worker = (tag: string | null, pool: string | null) =>
-  ({ hostname: 'w1', tag, pool }) as unknown as Worker
+const worker = (subdomain: string | null) => ({ hostname: 'w1', subdomain }) as unknown as Worker
 
 const loadWorkerStatus = vi.fn(async () => {})
 
@@ -51,33 +50,33 @@ beforeEach(() => {
 })
 
 describe('editing a worker', () => {
-  it("opens with the worker's tag and pool", async () => {
-    const wrapper = await open(worker('eu1', 'eu'))
+  it("opens with the worker's subdomain", async () => {
+    const wrapper = await open(worker('eu1'))
 
-    expect((wrapper.get('#worker-edit-tag').element as HTMLInputElement).value).toBe('eu1')
-    expect((wrapper.get('#worker-edit-pool').element as HTMLInputElement).value).toBe('eu')
+    expect((wrapper.get('#worker-edit-subdomain').element as HTMLInputElement).value).toBe('eu1')
   })
 
-  it('sends the tag and pool, trimmed, and then has the page load the worker again', async () => {
-    vi.mocked(updateWorker).mockResolvedValue(worker('eu2', 'west'))
-    const wrapper = await open(worker('eu1', null))
+  it('sends the subdomain, trimmed, and then has the page load the worker again', async () => {
+    vi.mocked(updateWorker).mockResolvedValue(worker('eu2'))
+    const wrapper = await open(worker('eu1'))
 
-    await wrapper.get('#worker-edit-tag').setValue(' eu2 ')
-    await wrapper.get('#worker-edit-pool').setValue('west')
+    await wrapper.get('#worker-edit-subdomain').setValue(' eu2 ')
     await save(wrapper)
 
-    expect(updateWorker).toHaveBeenCalledWith('w1', { tag: 'eu2', pool: 'west' })
+    expect(updateWorker).toHaveBeenCalledWith('w1', { subdomain: 'eu2' })
     expect(loadWorkerStatus).toHaveBeenCalledOnce()
   })
 
   it("shows the manager's refusal and leaves the page as it is", async () => {
-    vi.mocked(updateWorker).mockRejectedValue(new Error('A worker with tag eu2 already exists.'))
-    const wrapper = await open(worker('eu1', null))
+    vi.mocked(updateWorker).mockRejectedValue(
+      new Error('A worker with subdomain eu2 already exists.')
+    )
+    const wrapper = await open(worker('eu1'))
 
-    await wrapper.get('#worker-edit-tag').setValue('eu2')
+    await wrapper.get('#worker-edit-subdomain').setValue('eu2')
     await save(wrapper)
 
-    expect(wrapper.text()).toContain('A worker with tag eu2 already exists.')
+    expect(wrapper.text()).toContain('A worker with subdomain eu2 already exists.')
     expect(loadWorkerStatus).not.toHaveBeenCalled()
   })
 })

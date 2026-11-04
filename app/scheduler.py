@@ -83,6 +83,16 @@ async def reconcile_traefik_configs():
   )
 
 
+async def sync_domain_records():
+  Manager().add_task(
+      task=Manager().sync_domain_records,
+      scopes={"platform"},
+      executor="platform",
+      on_conflict=OnConflict.REPLACE,
+      quiet=True,
+  )
+
+
 async def collect_metrics():
   # The manager collects its own container metrics in-process (cgroup/statvfs);
   Manager().add_task(
@@ -204,11 +214,13 @@ _JOBS = [
     (cleanup, CronTrigger.from_crontab("0 4 * * *")),
     (renew_certificates, CronTrigger.from_crontab("0 3 * * *")),
     (check_settings, CronTrigger.from_crontab("*/5 * * * *")),
+    (sync_domain_records, CronTrigger.from_crontab("*/5 * * * *")),
 ]
 
 # Run once right after startup (as queued tasks, so the servers are already up), then on
 # their cron schedule where they have one.
-_AT_STARTUP = [refresh_latest_release, renew_certificates, discover_backups, check_settings, check_worker_stamps, refresh_worker_paths]
+_AT_STARTUP = [refresh_latest_release, renew_certificates, discover_backups, check_settings, check_worker_stamps, refresh_worker_paths,
+               sync_domain_records]
 
 
 def start():

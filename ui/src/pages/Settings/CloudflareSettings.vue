@@ -2,6 +2,16 @@
 import { computed } from 'vue'
 import { ExternalLink } from 'lucide-vue-next'
 import { Button } from '@/components/ui/button'
+import { Card, CardContent } from '@/components/ui/card'
+import {
+  Field,
+  FieldDescription,
+  FieldError,
+  FieldGroup,
+  FieldLabel,
+  FieldSet,
+} from '@/components/ui/field'
+import StateIndicator from '@/components/StateIndicator.vue'
 import { formatDate } from '@/lib/utils'
 import { useAppStore } from '@/stores/app'
 import SettingsSection from './SettingsSection.vue'
@@ -14,7 +24,7 @@ const domain = computed(() => appStore.info?.domain)
 const managerAddress = computed(() => `https://${appStore.info?.name}.core.${domain.value}`)
 const tunnel = computed(() => {
   const status = details.value?.tunnel_status
-  return `${domain.value}-sage` + (status ? ` (${status})` : '')
+  return (details.value?.tunnel_name ?? '') + (status ? ` (${status})` : '')
 })
 
 function expiry(value: string | null | undefined) {
@@ -43,8 +53,8 @@ const fields = computed(() => [
   },
   {
     key: 'tunnel',
-    label: 'Tunnel',
-    description: 'Carries public app traffic',
+    label: 'Platform Tunnel',
+    description: "Run on every worker; each worker's own tunnel carries its public names",
     readonly: true,
     value: tunnel.value,
   },
@@ -58,7 +68,7 @@ const fields = computed(() => [
   {
     key: 'workers_certificate',
     label: "Workers' Certificate",
-    description: 'For internal app domains (*.int), copied to every worker',
+    description: 'For the internal and TCP names, copied to every worker',
     readonly: true,
     value: expiry(details.value?.workers_certificate_expiry),
   },
@@ -98,6 +108,32 @@ const fields = computed(() => [
     </template>
 
     <template #after>
+      <Card v-if="details">
+        <CardContent>
+          <FieldSet>
+            <FieldGroup>
+              <Field>
+                <FieldLabel>Names of the Workers' Certificate</FieldLabel>
+                <FieldDescription>
+                  Each worker's internal names, and *.int. A new worker or subdomain reissues it.
+                </FieldDescription>
+                <div data-certificate-names class="flex flex-wrap gap-2">
+                  <StateIndicator
+                    v-for="name in details.workers_certificate_names"
+                    :key="name.name"
+                    :state="name.covered ? 'ok' : 'warning'"
+                    :label="name.covered ? name.name : `${name.name}: not issued yet`"
+                    show-label
+                  />
+                </div>
+                <FieldError v-if="details.workers_certificate_error">
+                  The last issuance failed: {{ details.workers_certificate_error }}
+                </FieldError>
+              </Field>
+            </FieldGroup>
+          </FieldSet>
+        </CardContent>
+      </Card>
       <TraefikResyncSubCard />
     </template>
   </SettingsSection>

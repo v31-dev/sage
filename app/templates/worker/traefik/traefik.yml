@@ -24,12 +24,6 @@ entryPoints:
   # Internal HTTPS client entry via Tailscale (the *.int domains); TLS terminated here.
   websecure:
     address: :443
-  # Internal HTTP mesh final hop — the internal/public load-balancing target between Traefik nodes.
-  mesh:
-    address: :9002
-  # tcp backing services (redis/postgres/...). tcps is the shared client entry
-  # (SNI-routed); meshtcp is the internal final hop (the TCP analog of mesh:9002).
+  # TCP backing services (redis/postgres/...), routed by SNI on one shared port.
   tcps:
     address: :8443
-  meshtcp:
-    address: :9003

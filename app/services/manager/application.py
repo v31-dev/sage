@@ -34,17 +34,27 @@ def application_changed(application: Application):
 
 
 def container_changed(container: Container):
-  """A container was written: its application's page and its worker's page show it."""
+  """A container was written: its application's page, its worker's page and the Domains page show it."""
   application_changed(container.application)
   Updates().changed(UpdateSource.WORKER_CONTAINERS, container.worker_id)
+  domains_changed()
+
+
+def domains_changed():
+  """A domain was written, or what the Domains page shows of one: its container, its application, its worker's
+  subdomain."""
+  Updates().changed(UpdateSource.DOMAINS)
 
 
 def hosts_changed(application: Application):
   """What the pages of the workers show of an application (its label, its project's) was written, besides the
   application itself."""
   application_changed(application)
-  for hostname in {container.worker_id for container in application.containers}:
+  hostnames = {container.worker_id for container in application.containers}
+  for hostname in hostnames:
     Updates().changed(UpdateSource.WORKER_CONTAINERS, hostname)
+  if hostnames:
+    domains_changed()
 
 
 def save_application(application: Application):
@@ -326,7 +336,6 @@ class ApplicationMixin:
     if container is None:
       logger.info(f"Container {container_id} already deleted; nothing to do.")
       return
-    was_active = container.status == "active"
     with container_part(container, "delete"):
       container.status = "stopping"
       save_container(container)
@@ -363,20 +372,13 @@ class ApplicationMixin:
               container.worker.hostname, f"rm -rf {container_dir}", timeout=30
           )
 
-          # Remove traefik config
-          await self.tailscale.exec_command(
-              container.worker.hostname,
-              f"rm -rf {self.worker_home_dir}/traefik/dynamic/{container.application.qualified_name}-*.yml",
-              timeout=30,
-          )
-
         # Delete database record
         application = container.application
         container.delete_instance()
         container_changed(container)
-        # Only a container that was in the routing pool needs a resync to drop it.
-        if was_active:
-          self.request_application_traefik_sync(application)
+        # Its domains are unlinked: their routing and their places at discovery go.
+        self.request_application_traefik_sync(application)
+        self.request_discovery_sync()
 
         await mark(container, "Removed from Sage; the offline worker was not cleaned up" if skip_remote_cleanup
                    else "Removed from this worker")

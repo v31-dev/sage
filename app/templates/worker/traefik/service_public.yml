@@ -1,49 +1,27 @@
 http:
   routers:
-    # Discovery endpoint exposing all configured domain tags for this service.
-    ${SERVICE}_${SUBDOMAIN}_public_x_tag:
-      rule: Host(`${SUBDOMAIN}.${DOMAIN}`) && Path(`/x-tag`) && Method(`GET`)
+    ${SERVICE}_${NAME}_public:
+      rule: Host(`${HOST}`)
       entrypoints:
         - web
       middlewares:
         - security-headers
-        - ${SERVICE}_${SUBDOMAIN}_public_x_tag_header
-      priority: 400
+        - server-header
+      service: ${SERVICE}_${NAME}_public
+    # The probe a client times to choose a name, answered by Traefik; HEAD only, so the application's own GET /ping
+    # still reaches it.
+    ${SERVICE}_${NAME}_public_ping:
+      rule: Host(`${HOST}`) && Method(`HEAD`) && Path(`/ping`)
+      priority: 1000
+      entrypoints:
+        - web
+      middlewares:
+        - probe
+        - server-header
       service: ping@internal
 
-    # Entrypoint via Cloudflare Tunnel
-    ${SERVICE}_${SUBDOMAIN}_public:
-      rule: Host(`${SUBDOMAIN}.${DOMAIN}`) && PathPrefix(`/`)
-      entrypoints:
-        - web
-      middlewares:
-        - security-headers
-        - mark-as-hopped
-      service: ${SERVICE}_${SUBDOMAIN}_public
-
-    # Final Mesh Entrypoint (for load balancing)
-    ${SERVICE}_${SUBDOMAIN}_mesh_public:
-      rule: "Host(`${SUBDOMAIN}.${DOMAIN}`) && PathPrefix(`/`) && Header(`X-Mesh-Hops`, `1`)"
-      entrypoints:
-        - mesh
-      middlewares:
-        - server-header
-      priority: 200
-      service: ${SERVICE}_${SUBDOMAIN}_local_public
-
-  middlewares:
-    ${SERVICE}_${SUBDOMAIN}_public_x_tag_header:
-      headers:
-        customResponseHeaders:
-          X-Tag: '${DOMAIN_TAGS_HEADER}'
-
   services:
-    # Final Mesh service
-    ${SERVICE}_${SUBDOMAIN}_local_public:
+    ${SERVICE}_${NAME}_public:
       loadBalancer:
         servers:
           - url: http://${SERVICE}:${PORT}
-    # Loadbalanced services
-    ${SERVICE}_${SUBDOMAIN}_public:
-      loadBalancer:
-        servers: [ ${LOAD_BALANCED_SERVERS} ]

@@ -31,7 +31,7 @@ import { Spinner } from '@/components/ui/spinner'
 import CopyButton from '@/components/CopyButton.vue'
 import CustomInput from '@/components/CustomInput.vue'
 import StateIndicator from '@/components/StateIndicator.vue'
-import SettingField from './SettingField.vue'
+import SettingField from '@/components/SettingField.vue'
 import {
   fetchSetting,
   testSetting,

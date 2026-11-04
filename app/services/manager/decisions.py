@@ -2,7 +2,7 @@
 given. The async tasks gather that state, call these, and apply the answer."""
 from dataclasses import dataclass, replace
 from datetime import datetime
-from typing import Iterable
+from typing import Callable, Iterable
 
 import config
 from services.worker_reports import Received, Snapshot, container_started_at, infra_of, is_current
@@ -183,14 +183,15 @@ class WorkerInputs:
   """What the worker marker knows of one worker, each field written by the one owner of that fact. A record
   without an `ip` is not a worker, as the table has no row for it: a push can arrive before the row does."""
   ip: str | None = None                 # the row in the Worker table
-  tag: str | None = None                # the row's tag
-  pool: str | None = None               # the row's pool
+  subdomain: str | None = None          # the row's subdomain
   online: bool | None = None            # at the last sync its SSH server answered and it was set up; None until a sync has looked
   tasks: frozenset[str] = frozenset()   # the `WORKER_TASKS` queued or running for it
   reboot: WorkerReboot | None = None    # the last reboot asked of it
   report: Received | None = None        # the newest report of its Telegraf
   path: str | None = None               # how the manager reaches it
   metrics: dict | None = None           # its newest minute of metrics written, with the machine's size
+  certs: str | None = None              # the hash of the workers' certificate on it, as its stamp was last read or written
+  tunnel: str | None = None             # the health of its own tunnel at the last Cloudflare check
 
 
 def _current_report(worker: WorkerInputs, now: datetime) -> Received | None:
@@ -225,34 +226,40 @@ def worker_status(worker: WorkerInputs, now: datetime, started: datetime) -> str
   return "online" if worker_ready(worker, now, started) else "not ready"
 
 
-def worker_entry(hostname: str, worker: WorkerInputs, now: datetime, started: datetime) -> dict:
+def worker_entry(hostname: str, worker: WorkerInputs, now: datetime, started: datetime, certificate_hash: str | None,
+                 certificate_expiry: datetime | None, covers: Callable[[str | None], bool]) -> dict:
   """The worker as the worker list shows it. `container_count` and `infra` (the state of the containers of its stack)
   are those of its current report, and `metrics` its newest minute while that began less than
-  WORKER_METRICS_STALE_SECONDS ago."""
+  WORKER_METRICS_STALE_SECONDS ago. `certificate` says whether the workers' certificate, whose hash is
+  `certificate_hash`, covers the worker's names (`covers` its subdomain) and is the one on it, and then until when it is
+  valid."""
   current = _current_report(worker, now)
   metrics = worker.metrics
   if metrics is not None and (now - metrics["ts"]).total_seconds() >= config.WORKER_METRICS_STALE_SECONDS:
     metrics = None
+  synced = certificate_hash is not None and worker.certs == certificate_hash
   return {
       "hostname": hostname,
       "ip": worker.ip,
-      "tag": worker.tag,
-      "pool": worker.pool,
+      "subdomain": worker.subdomain,
       "online": worker.online,
       "status": worker_status(worker, now, started),
       "path": worker.path,
       "container_count": len(current.snapshot.containers) if current else None,
       "infra": infra_of(current) if current else None,
       "metrics": metrics,
+      "certificate": {"covered": covers(worker.subdomain), "synced": synced,
+                      "expiry": certificate_expiry.isoformat() if synced and certificate_expiry else None},
+      "tunnel": worker.tunnel,
   }
 
 
-def worker_with_row(worker: WorkerInputs, ip: str, tag: str | None, pool: str | None, path: str | None) -> WorkerInputs:
-  """The record of a worker whose row has this `ip`, `tag` and `pool`. One that had no row yet starts not known to be
+def worker_with_row(worker: WorkerInputs, ip: str, subdomain: str | None, path: str | None) -> WorkerInputs:
+  """The record of a worker whose row has this `ip` and `subdomain`. One that had no row yet starts not known to be
   online or offline and not rebooting, whatever an earlier worker of the same name left."""
   if worker.ip is None:
     worker = replace(worker, online=None, reboot=None)
-  return replace(worker, ip=ip, tag=tag, pool=pool, path=path)
+  return replace(worker, ip=ip, subdomain=subdomain, path=path)
 
 
 def worker_without_row(worker: WorkerInputs) -> WorkerInputs:

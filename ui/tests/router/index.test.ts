@@ -3,6 +3,7 @@ import Application from '@/pages/Application'
 import ApplicationLogs from '@/pages/ApplicationLogs.vue'
 import ApplicationMetrics from '@/pages/ApplicationMetrics.vue'
 import Backup from '@/pages/Backup'
+import Domains from '@/pages/Domains'
 import CloudflareSettings from '@/pages/Settings/CloudflareSettings.vue'
 import Home from '@/pages/Home.vue'
 import NotificationsSettings from '@/pages/Settings/NotificationsSettings.vue'
@@ -56,6 +57,7 @@ describe('resolving an address', () => {
     ['/backups', 'Backups', {}],
     ['/tasks', 'Tasks', {}],
     ['/system', 'System', {}],
+    ['/domains', 'Domains', {}],
     ['/requests', 'Requests', {}],
     ['/tailscale', 'TailscaleSettings', {}],
     ['/cloudflare', 'CloudflareSettings', {}],
@@ -76,6 +78,7 @@ describe('resolving an address', () => {
     ['Application', Application],
     ['ApplicationLogs', ApplicationLogs],
     ['ApplicationMetrics', ApplicationMetrics],
+    ['Domains', Domains],
     ['Requests', Requests],
     ['System', System],
     ['Tasks', Tasks],
@@ -93,7 +96,7 @@ describe('resolving an address', () => {
   })
 
   it('has a route for each of those pages and no other', () => {
-    expect(router.getRoutes()).toHaveLength(18)
+    expect(router.getRoutes()).toHaveLength(19)
   })
 
   it('does not mistake a longer address for a shorter page', () => {

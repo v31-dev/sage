@@ -26,13 +26,15 @@ class UpdateSource(StrEnum):
   SETTINGS_APPLYING = "settings_applying"  # the task that makes each settings section apply
   BACKUP_STATUS = "backup_status"    # whether a platform backup runs or backups are being discovered
   BACKUPS = "backups"                # a backup row was written
-  WORKER_LIST = "worker_list"        # each worker's status, path, container count, tag and pool
+  WORKER_LIST = "worker_list"        # each worker's status, path, container count and subdomain
   CHECKS = "checks"                  # the result of checking a settings section
   LATEST_VERSION = "latest_version"  # the newest version released
   RELEASE = "release"                # a release was fetched
   APPLICATION = "application"        # keyed by `<project>/<name>`: the application, or a container, domain or volume of it, was written
   WORKER_ENTRY = "worker_entry"      # keyed by hostname: the worker's entry in the worker list differs
   WORKER_CONTAINERS = "worker_containers"  # keyed by hostname: a container of the worker, or what its page shows of its application, was written
+  # a domain, or what the Domains page shows of one (its container, its application, its worker's subdomain), was written
+  DOMAINS = "domains"
 
 
 @unique
@@ -45,6 +47,7 @@ class UpdateTopic(StrEnum):
   RELEASE = "release"
   WORKERS = "workers"
   WORKER = "worker"            # one worker: `worker:<hostname>`
+  DOMAINS = "domains"
   APPLICATION = "application"  # one application: `application:<project>/<name>`
 
 

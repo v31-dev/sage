@@ -41,19 +41,18 @@ def get():
   return Manager().worker_list
 
 
-def tags_of(worker_data: dict, hostname: str) -> tuple[str | None, str | None]:
-  """The tag and pool asked for, checked; a tag another worker has is refused."""
-  tag = Worker.tag.validate(str(worker_data.get("tag") or "").strip() or None)
-  pool = Worker.pool.validate(str(worker_data.get("pool") or "").strip() or None)
-  if tag and Worker.select().where((Worker.tag == tag) & (Worker.hostname != hostname)).exists():
-    raise HTTPException(status_code=409, detail=f"A worker with tag {tag} already exists.")
-  return tag, pool
+def subdomain_of(worker_data: dict, hostname: str) -> str | None:
+  """The subdomain asked for, checked; one another worker has is refused."""
+  subdomain = Worker.subdomain.validate(str(worker_data.get("subdomain") or "").strip() or None)
+  if subdomain and Worker.select().where((Worker.subdomain == subdomain) & (Worker.hostname != hostname)).exists():
+    raise HTTPException(status_code=409, detail=f"A worker with subdomain {subdomain} already exists.")
+  return subdomain
 
 
 @router.post("/")
 def add_worker(worker_data: dict = Body(...)):
-  """Add a machine of the tailnet, given by hostname or Tailscale IP, as a worker, with its tag (random when none
-  is given) and pool."""
+  """Add a machine of the tailnet, given by hostname or Tailscale IP, as a worker, with its subdomain (random when
+  none is given)."""
   host = str(worker_data.get("host") or "").strip()
   peer = Tailscale().find_peer(host) if host else None
   if peer is None:
@@ -65,12 +64,12 @@ def add_worker(worker_data: dict = Body(...)):
     raise HTTPException(status_code=409, detail=f"Worker {peer.hostname} is already added.")
   if Manager().has_task(Manager().add_worker, {"worker_hostname": peer.hostname}):
     raise HTTPException(status_code=409, detail=f"Worker {peer.hostname} is already being added.")
-  tag, pool = tags_of(worker_data, peer.hostname)
+  subdomain = subdomain_of(worker_data, peer.hostname)
 
   Manager().add_task(
       task=Manager().add_worker,
       scopes={"platform"},
-      params={"worker_hostname": peer.hostname, "tag": tag, "pool": pool},
+      params={"worker_hostname": peer.hostname, "subdomain": subdomain},
       executor="platform",
       on_conflict=OnConflict.QUEUE,
   )
@@ -80,21 +79,22 @@ def add_worker(worker_data: dict = Body(...)):
 
 @router.put("/{hostname}", dependencies=[Depends(inject_worker)])
 def update_worker(request: Request, hostname: str, worker_data: dict = Body(...)):
-  """Change a worker's tag or pool; what is not sent stays."""
+  """Change a worker's subdomain; what is not sent stays."""
   worker = request.state.models["worker"]
   if not worker:
     raise HTTPException(status_code=404, detail="Worker not found")
-  tag, pool = tags_of({"tag": worker.tag, "pool": worker.pool, **parse_api_data(worker_data, ["tag", "pool"])}, hostname)
-  if not tag:
-    raise HTTPException(status_code=400, detail="A worker without a tag is not allowed.")
+  subdomain = subdomain_of({"subdomain": worker.subdomain, **parse_api_data(worker_data, ["subdomain"])}, hostname)
+  if not subdomain:
+    raise HTTPException(status_code=400, detail="A worker without a subdomain is not allowed.")
 
-  Manager().save_worker_tags(hostname, tag, pool)
+  Manager().save_worker_subdomain(hostname, subdomain)
   return worker_payload(Worker.get_by_id(hostname))
 
 
 def worker_payload(worker: Worker) -> dict:
   """The worker with its containers and their applications, and what the worker list holds of it: `infra` (the state
-  of the containers of its stack), `online`, `status`, `path` and `metrics` (its newest minute)."""
+  of the containers of its stack), `online`, `status`, `path`, `metrics` (its newest minute), `certificate` and
+  `tunnel` (its own tunnel's health), with that tunnel's name."""
   data = model_to_dict(
       worker,
       backrefs=True,
@@ -117,6 +117,9 @@ def worker_payload(worker: Worker) -> dict:
   data["status"] = entry.get("status", "offline")
   data["path"] = entry.get("path")
   data["metrics"] = entry.get("metrics")
+  data["certificate"] = entry.get("certificate")
+  data["tunnel"] = entry.get("tunnel")
+  data["tunnel_name"] = Manager().cloudflare.worker_tunnel_name(worker.hostname)
   return data
 
 
@@ -176,6 +179,8 @@ def delete_worker(request: Request, hostname: str):
   # force-deleted with them.
   if Manager().worker_online(hostname) is not False and worker.containers.count() > 0:
     raise HTTPException(status_code=400, detail="Worker is online and has containers; delete them first.")
+  if worker.domains.count() > 0:
+    raise HTTPException(status_code=409, detail="Removing a worker with internal domains is not allowed.")
   if Manager().worker_status(hostname) == "removing":
     raise HTTPException(status_code=409, detail="Worker is already being removed.")
 

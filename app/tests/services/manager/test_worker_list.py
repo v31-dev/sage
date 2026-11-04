@@ -8,13 +8,15 @@ from types import SimpleNamespace
 import pytest
 
 import config
-from services.db import Worker
+from services.certs import Certs
+from services.db import Application, Container, Domain, Worker
 from services.manager.decisions import WorkerInputs, WorkerReboot, worker_entry, worker_with_row, worker_without_row
 from services.manager.workers import WorkersMixin
 from services.metrics import Metrics
 from services.updates import Updates, UpdateSource
 from services.worker_reports import WorkerReports
 from tests.services.manager.test_decisions import report
+from tests.services.test_certs import write_certificate
 from utils.common import utcnow
 
 
@@ -37,6 +39,23 @@ class Workers(WorkersMixin):
     self.paths = {}
     self.hold = hold
     self.tailscale = SimpleNamespace(path=lambda ip: self.paths.get(ip))
+    self.certs = Certs()
+    self.synced_applications = []
+    self.renewals = 0
+    self.discovery_syncs = 0
+    self.tasks = []
+
+  def request_application_traefik_sync(self, application):
+    self.synced_applications.append(application.name)
+
+  def request_certificate_renewal(self):
+    self.renewals += 1
+
+  def request_discovery_sync(self):
+    self.discovery_syncs += 1
+
+  def add_task(self, task, **kwargs):
+    self.tasks.append((task.__name__, kwargs["params"]))
 
   def _edit_workers(self, edit):
     def slow(records):
@@ -45,9 +64,9 @@ class Workers(WorkersMixin):
       edit(records)
     super()._edit_workers(slow)
 
-  def add(self, hostname, online=None, ip="100.64.0.2", tag=None, pool=None):
-    """A worker with a row (its tag its hostname unless given), whose online is what the sync observed."""
-    self._save_worker(hostname, ip, tag or hostname, pool)
+  def add(self, hostname, online=None, ip="100.64.0.2", subdomain=None):
+    """A worker with a row (its subdomain its hostname unless given), whose online is what the sync observed."""
+    self._save_worker(hostname, ip, subdomain or hostname)
     if online is not None:
       self.update_worker(hostname, online=online)
 
@@ -71,19 +90,19 @@ class TestEntries:
   def test_each_worker_is_what_its_owners_pushed(self, workers):
     workers.paths["100.64.0.2"] = "direct"
     workers.add("w2", False, "100.64.0.3")
-    workers.add("w1", True, "100.64.0.2", tag="eu1", pool="eu")
+    workers.add("w1", True, "100.64.0.2", subdomain="eu1")
     workers.update_worker("w1", report=report(running=("traefik", "web", "telegraf")))
 
     assert workers.worker_list == [
-        {"hostname": "w1", "ip": "100.64.0.2", "tag": "eu1", "pool": "eu", "online": True, "status": "online", "path": "direct",
+        {"hostname": "w1", "ip": "100.64.0.2", "subdomain": "eu1", "online": True, "status": "online", "path": "direct",
          "container_count": 3,
          "infra": [{"name": "traefik", "status": "running"}, {"name": "vector", "status": "missing"},
                    {"name": "telegraf", "status": "running"}, {"name": "cloudflared", "status": "missing"},
                    {"name": "cloudflared-discovery", "status": "missing"}],
-         "metrics": None},
-        {"hostname": "w2", "ip": "100.64.0.3", "tag": "w2", "pool": None, "online": False, "status": "offline", "path": None,
+         "metrics": None, "certificate": {"covered": False, "synced": False, "expiry": None}, "tunnel": None},
+        {"hostname": "w2", "ip": "100.64.0.3", "subdomain": "w2", "online": False, "status": "offline", "path": None,
          "container_count": None,
-         "infra": None, "metrics": None},
+         "infra": None, "metrics": None, "certificate": {"covered": False, "synced": False, "expiry": None}, "tunnel": None},
     ]
 
   def test_the_order_is_by_name(self, workers):
@@ -154,42 +173,79 @@ class TestMetrics:
     assert entries(workers)["w1"]["metrics"] is None
 
 
-class TestTags:
-  def tags(self, workers, hostname):
+class TestSubdomain:
+  def subdomain(self, workers, hostname):
     row = Worker.get_by_id(hostname)
-    entry = entries(workers)[hostname]
-    assert (entry["tag"], entry["pool"]) == (row.tag, row.pool)
-    return row.tag, row.pool
+    assert entries(workers)[hostname]["subdomain"] == row.subdomain
+    return row.subdomain
 
-  def test_a_new_worker_keeps_the_tag_and_pool_it_was_given(self, workers):
-    workers._save_worker("w1", "100.64.0.2", "eu1", "eu")
-    assert self.tags(workers, "w1") == ("eu1", "eu")
+  def test_a_new_worker_keeps_the_subdomain_it_was_given(self, workers):
+    workers._save_worker("w1", "100.64.0.2", "eu1")
+    assert self.subdomain(workers, "w1") == "eu1"
 
-  def test_a_new_worker_given_no_tag_gets_a_random_one(self, workers):
+  def test_a_new_worker_given_no_subdomain_gets_a_random_one(self, workers):
     workers._save_worker("w1", "100.64.0.2")
-    tag, pool = self.tags(workers, "w1")
-    assert re.fullmatch(r"[a-z][a-z0-9]{5}", tag) and pool is None
+    assert re.fullmatch(r"[a-z][a-z0-9]{5}", self.subdomain(workers, "w1"))
 
-  def test_writing_the_row_again_keeps_its_tag_and_pool(self, workers):
-    workers._save_worker("w1", "100.64.0.2", "eu1", "eu")
+  def test_writing_the_row_again_keeps_its_subdomain(self, workers):
+    workers._save_worker("w1", "100.64.0.2", "eu1")
     workers._save_worker("w1", "100.64.0.9")
-    assert self.tags(workers, "w1") == ("eu1", "eu")
+    assert self.subdomain(workers, "w1") == "eu1"
     assert Worker.get_by_id("w1").ip == "100.64.0.9"
 
-  def test_a_change_of_tag_and_pool_reaches_the_row_and_the_list_and_both_topics_hear_of_it(self, workers, changes):
+  def test_a_new_subdomain_reaches_the_row_and_the_list_and_the_topics_hear_of_it(self, workers, changes):
     workers.add("w1", True)
     workers.add("w2", True, "100.64.0.3")
     changes.sources.clear()
     changes.keyed.clear()
-    workers.save_worker_tags("w1", "eu2", "west")
-    assert self.tags(workers, "w1") == ("eu2", "west")
-    assert changes.sources == [UpdateSource.WORKER_LIST]
+    workers.save_worker_subdomain("w1", "eu2")
+    assert self.subdomain(workers, "w1") == "eu2"
+    assert changes.sources == [UpdateSource.WORKER_LIST, UpdateSource.DOMAINS]
     assert changes.keyed == [(UpdateSource.WORKER_ENTRY, "w1")]
 
-  def test_loading_the_table_brings_each_worker_its_tag_and_pool(self, workers):
-    Worker.create(hostname="w1", ip="100.64.0.2", tag="eu1", pool="eu")
+  def test_a_new_subdomain_resyncs_the_applications_its_internal_names_route_to_and_asks_for_the_certificate_and_the_setup(
+          self, workers, application, project):
+    workers.add("w1", True)
+    workers.add("w2", True, "100.64.0.3")
+    other = Application.create(project=project, name="api", label="API", image="nginx")
+    Domain.create(name="shop", type="internal", port=80, container=Container.create(application=application, worker="w1"))
+    Domain.create(name="api", type="public", port=80, container=Container.create(application=other, worker="w1"))
+    workers.save_worker_subdomain("w2", "eu2")
+    assert workers.synced_applications == []
+    workers.save_worker_subdomain("w1", "eu1")
+    assert workers.synced_applications == ["web"]
+    assert (workers.renewals, workers.discovery_syncs) == (2, 2)
+    assert workers.tasks == [("sync_workers", {"check_stamps": True})] * 2
+
+  def test_the_same_subdomain_again_changes_nothing(self, workers, changes):
+    workers.add("w1", True, subdomain="eu1")
+    changes.sources.clear()
+    workers.save_worker_subdomain("w1", "eu1")
+    assert (changes.sources, workers.renewals, workers.tasks) == ([], 0, [])
+
+  def test_a_worker_shows_the_certificate_as_issued_and_as_last_synced_to_it(self, workers, data_dir):
+    workers.add("w1", True, subdomain="eu1")
+    workers.add("w2", True, "100.64.0.3", subdomain="us1")
+    write_certificate(data_dir / "certs/workers", ["*.int.example.test", "*.eu1.int.example.test"])
+    workers.certs.workers.load()
+    workers.update_worker("w1", certs=workers.certs.workers.hash())
+    workers.update_worker("w2", certs="old")
+    assert {hostname: entry["certificate"] for hostname, entry in entries(workers).items()} == {
+        "w1": {"covered": True, "synced": True, "expiry": workers.certs.workers.expiry().isoformat()},
+        "w2": {"covered": False, "synced": False, "expiry": None}}
+
+  def test_the_workers_certificate_is_to_cover_the_names_of_the_workers_listed(self, workers):
+    workers.add("w2", True, "100.64.0.3", subdomain="us1")
+    workers.add("w1", True, subdomain="eu1")
+    assert workers.certs.workers.names == ["*.int.example.test", "*.eu1.int.example.test", "*.us1.int.example.test"]
+    workers.save_worker_subdomain("w1", "eu2")
+    workers._forget_worker("w2")
+    assert workers.certs.workers.names == ["*.int.example.test", "*.eu2.int.example.test"]
+
+  def test_loading_the_table_brings_each_worker_its_subdomain(self, workers):
+    Worker.create(hostname="w1", ip="100.64.0.2", subdomain="eu1")
     workers.load_workers()
-    assert self.tags(workers, "w1") == ("eu1", "eu")
+    assert self.subdomain(workers, "w1") == "eu1"
 
 
 class TestPresence:
@@ -218,9 +274,9 @@ class TestPresence:
     workers.add("w1", True)
     workers.paths["100.64.0.9"] = "direct"
     workers._save_worker("w1", "100.64.0.9")
-    assert entries(workers)["w1"] == {"hostname": "w1", "ip": "100.64.0.9", "tag": "w1", "pool": None, "online": True,
+    assert entries(workers)["w1"] == {"hostname": "w1", "ip": "100.64.0.9", "subdomain": "w1", "online": True,
                                       "status": "online", "path": "direct", "container_count": None, "infra": None,
-                                      "metrics": None}
+                                      "metrics": None, "certificate": {"covered": False, "synced": False, "expiry": None}, "tunnel": None}
     assert Worker.get(Worker.hostname == "w1").ip == "100.64.0.9"
 
   def test_forgetting_a_worker_deletes_its_row_and_its_entry(self, workers):
@@ -476,7 +532,7 @@ class TestFromManyThreads:
     def flap():
       # the writes of a row without the table, which these threads would each need a connection for
       def give(records):
-        records["wx"] = worker_with_row(records.get("wx", WorkerInputs()), "100.64.0.99", "wx", None, None)
+        records["wx"] = worker_with_row(records.get("wx", WorkerInputs()), "100.64.0.99", "wx", None)
 
       def take(records):
         records["wx"] = worker_without_row(records.get("wx", WorkerInputs()))
@@ -492,12 +548,28 @@ class TestFromManyThreads:
     for thread in threads:
       thread.join()
 
-    expected = {name: {"hostname": name, "ip": f"100.64.0.{index + 2}", "tag": name, "pool": None, "online": finals[name][0],
-                       "status": self.expected_status(finals[name][0], finals[name][1]), "path": finals[name][2],
-                       "container_count": None, "infra": None, "metrics": None}
-                for index, name in enumerate(names)}
+    expected = {
+        name: {
+            "hostname": name,
+            "ip": f"100.64.0.{
+                index + 2}",
+            "subdomain": name,
+            "online": finals[name][0],
+            "status": self.expected_status(
+                finals[name][0],
+                finals[name][1]),
+            "path": finals[name][2],
+            "container_count": None,
+            "infra": None,
+            "metrics": None,
+            "certificate": {
+                "covered": False,
+                "synced": False,
+                "expiry": None},
+            "tunnel": None} for index,
+        name in enumerate(names)}
     if flapper_present:
-      expected["wx"] = {"hostname": "wx", "ip": "100.64.0.99", "tag": "wx", "pool": None, "online": True, "status": "online",
+      expected["wx"] = {"hostname": "wx", "ip": "100.64.0.99", "subdomain": "wx", "online": True, "status": "online",
                         "path": None, "container_count": None,
-                        "infra": None, "metrics": None}
+                        "infra": None, "metrics": None, "certificate": {"covered": False, "synced": False, "expiry": None}, "tunnel": None}
     assert workers.worker_list == [expected[name] for name in sorted(expected)]

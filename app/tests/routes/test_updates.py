@@ -157,7 +157,7 @@ def state(monkeypatch):
 
 class TestTopics:
   def test_the_topics_are_the_ones_the_pages_follow(self):
-    assert set(TOPICS) == {"info", "tasks", "backup-status", "backups", "release", "workers", "worker", "application",
+    assert set(TOPICS) == {"info", "tasks", "backup-status", "backups", "release", "workers", "worker", "application", "domains",
                            "notifications", "task-history", "task-logs", "application-logs", "requests"}
 
   def test_the_table_has_each_topic_and_each_feed_once(self):

@@ -87,7 +87,10 @@ async function onConfirmResync() {
             <p>The following will happen:</p>
             <ul class="ml-4 list-disc space-y-1 text-xs">
               <li>Certificates that are missing or about to expire are renewed.</li>
-              <li>Every online worker gets the current certificate and routing configuration.</li>
+              <li>
+                Every online worker gets the current certificate, routing configuration and DNS
+                record.
+              </li>
               <li>Every application's routing is resynced.</li>
             </ul>
           </div>

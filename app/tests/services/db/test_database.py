@@ -11,7 +11,7 @@ from services.db.database import MODELS
 
 ORPHAN_DOMAIN = [
     "PRAGMA foreign_keys=OFF",
-    "INSERT INTO domain (application_id, name, type, port, created_at, updated_at) "
+    "INSERT INTO domain (container_id, name, type, port, created_at, updated_at) "
     "VALUES (999, 'ghost', 'public', 80, '2026-01-01 00:00:00', '2026-01-01 00:00:00')",
     "PRAGMA foreign_keys=ON",
 ]
@@ -25,18 +25,17 @@ def counts(db):
   return {table: db.execute_sql(f'SELECT count(*) FROM "{table}"').fetchone()[0] for table in db.get_tables()}
 
 
-def point_a_domain_at_a_missing_application(db):
+def point_a_domain_at_a_missing_container(db):
   for statement in ORPHAN_DOMAIN:
     db.execute_sql(statement)
 
 
 @pytest.fixture
-def clash(db, application):
-  """A database from before the namespace index: two applications hold one internal or TCP name."""
-  db.execute_sql("DROP INDEX domain_name_namespace")
-  other = Application.create(project=application.project, name="api", label="API", image="nginx")
-  Domain.insert(application=application, name="shop", type="internal", port=80).execute()
-  Domain.insert(application=other, name="shop", type="tcp", port=80).execute()
+def clash(db, worker):
+  """A database from before the name index: one worker holds an internal and a TCP name that are the same."""
+  db.execute_sql("DROP INDEX domain_name_worker")
+  Domain.insert(name="shop", type="internal", port=80, worker=worker).execute()
+  Domain.insert(name="shop", type="tcp", port=80, worker=worker).execute()
 
 
 def test_opens_in_the_data_dir(db, data_dir):
@@ -145,24 +144,44 @@ class TestReconcileSchema:
       Database().reconcile_schema()
 
   def test_a_new_column_with_an_index_gets_both_on_a_table_with_rows(self, db):
-    Worker.create(hostname="w1", ip="100.64.0.2", tag="aaa111")
-    Worker.create(hostname="w2", ip="100.64.0.3", tag="bbb222")
-    db.execute_sql("DROP INDEX worker_tag")
-    db.execute_sql("ALTER TABLE worker DROP COLUMN tag")
+    Worker.create(hostname="w1", ip="100.64.0.2", subdomain="aaa111")
+    Worker.create(hostname="w2", ip="100.64.0.3", subdomain="bbb222")
+    db.execute_sql("DROP INDEX worker_subdomain")
+    db.execute_sql("ALTER TABLE worker DROP COLUMN subdomain")
 
     Database().reconcile_schema()
 
-    assert "tag" in columns(db, "worker")
-    assert [row[0] for row in db.execute_sql("SELECT sql FROM sqlite_master WHERE name = 'worker_tag'")] == [
-        'CREATE UNIQUE INDEX "worker_tag" ON "worker" ("tag")']
+    assert "subdomain" in columns(db, "worker")
+    assert [row[0] for row in db.execute_sql("SELECT sql FROM sqlite_master WHERE name = 'worker_subdomain'")] == [
+        'CREATE UNIQUE INDEX "worker_subdomain" ON "worker" ("subdomain")']
     assert Worker.select().count() == 2
 
-  def test_an_existing_domain_table_gets_the_namespace_index(self, db):
-    db.execute_sql("DROP INDEX domain_name_namespace")
+  def test_an_existing_domain_table_gets_the_name_index(self, db):
+    db.execute_sql("DROP INDEX domain_name_worker")
 
     Database().reconcile_schema()
 
-    assert "domain_name_namespace" in {index.name for index in db.get_indexes("domain")}
+    assert "domain_name_worker" in {index.name for index in db.get_indexes("domain")}
+
+  def test_an_index_no_model_declares_is_dropped_and_the_declared_ones_and_sqlites_own_stay(self, db):
+    db.execute_sql("CREATE UNIQUE INDEX domain_name_namespace ON domain (name, (type = 'public'))")
+    before = {index.name for index in db.get_indexes("worker")}
+
+    Database().reconcile_schema()
+
+    assert "domain_name_namespace" not in {index.name for index in db.get_indexes("domain")}
+    assert {index.name for index in db.get_indexes("worker")} == before
+    assert "sqlite_autoindex_worker_1" in before
+
+  def test_a_column_in_a_foreign_key_that_no_model_has_is_dropped_and_the_rows_stay(self, db, application, worker):
+    container = Container.create(application=application, worker=worker)
+    Domain.create(name="shop", type="internal", port=80, container=container)
+    db.execute_sql("ALTER TABLE domain ADD COLUMN application_id INTEGER REFERENCES application (id) ON DELETE CASCADE")
+
+    Database().reconcile_schema()
+
+    assert "application_id" not in columns(db, "domain")
+    assert Domain.get(Domain.name == "shop").container_id == container.id
 
   def test_data_that_refuses_an_index_stops_the_startup_saying_what_failed_and_where_the_fix_is(self, db, clash, monkeypatch):
     monkeypatch.setattr(config, "VERSION", "1.2.3")
@@ -172,8 +191,8 @@ class TestReconcileSchema:
 
     message = str(refused.value)
     assert f"Sage 1.2.3 can't update the schema of {config.DB_PATH}" in message
-    assert "UNIQUE constraint failed: index 'domain_name_namespace'" in message
-    assert """The refused index: CREATE UNIQUE INDEX IF NOT EXISTS "domain_name_namespace" ON "domain" ("name", (type = 'public')).""" in message
+    assert "UNIQUE constraint failed: index 'domain_name_worker'" in message
+    assert """The refused index: CREATE UNIQUE INDEX IF NOT EXISTS "domain_name_worker" ON "domain" ("name", coalesce(worker_id, '')).""" in message
     assert "The database was left as it was." in message
     assert message.endswith("How to fix it: https://github.com/v31-dev/sage/releases/tag/v1.2.3")
     assert isinstance(refused.value.__cause__, IntegrityError)
@@ -187,11 +206,11 @@ class TestANotNullColumnAddedToATableOtherRowsReference:
   def deployed(self, application, worker):
     container = Container.create(application=application, worker=worker)
     Event.create(container=container, type="deploy", application_task_id="t1", container_task_id="t2")
+    Domain.create(name="shop", type="internal", port=80, container=container)
 
   @pytest.fixture
   def undeployed(self, project):
     application = Application.create(project=project, name="api", label="API", image="nginx")
-    Domain.create(application=application, name="shop", type="public", port=80)
     Volume.create(application=application, name="data", path="/data")
     Backup.create(type="application", s3_path="backups/api", application=application)
 
@@ -203,10 +222,10 @@ class TestANotNullColumnAddedToATableOtherRowsReference:
       ("container", "deployed"),
   ], ids=[
       "project, which an application restricts",
-      "application, whose domains, volumes and backups cascade",
+      "application, whose volumes and backups cascade",
       "application, which a container restricts",
-      "worker, which a container restricts",
-      "container, whose events cascade",
+      "worker, which a container and a domain restrict",
+      "container, whose events cascade and whose domains are unlinked",
   ])
   def test_every_row_stays_and_the_column_is_not_null(self, db, request, table, rows):
     request.getfixturevalue(rows)
@@ -239,7 +258,7 @@ class TestARefusedSchemaStep:
 
   def test_a_column_it_added_before_the_refusal_is_not_there(self, db, application):
     db.execute_sql("ALTER TABLE project DROP COLUMN description")
-    point_a_domain_at_a_missing_application(db)
+    point_a_domain_at_a_missing_container(db)
 
     with pytest.raises(SchemaRefused):
       Database().reconcile_schema()
@@ -247,9 +266,9 @@ class TestARefusedSchemaStep:
     assert "description" not in columns(db, "project")
 
   def test_rows_that_point_at_nothing_are_refused_and_named(self, db, application):
-    point_a_domain_at_a_missing_application(db)
+    point_a_domain_at_a_missing_container(db)
 
-    with pytest.raises(SchemaRefused, match=r"FOREIGN KEY check failed: domain row \d+ points at a missing application"):
+    with pytest.raises(SchemaRefused, match=r"FOREIGN KEY check failed: domain row \d+ points at a missing container"):
       Database().reconcile_schema()
 
   def test_after_the_data_is_fixed_the_next_start_goes_through(self, db, clash):
@@ -259,7 +278,7 @@ class TestARefusedSchemaStep:
     Domain.delete().where(Domain.type == "tcp").execute()
     Database().reconcile_schema()
 
-    assert "domain_name_namespace" in {index.name for index in db.get_indexes("domain")}
+    assert "domain_name_worker" in {index.name for index in db.get_indexes("domain")}
 
 
 @pytest.mark.parametrize("setup, error", [

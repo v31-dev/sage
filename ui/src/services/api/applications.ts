@@ -1,5 +1,6 @@
 import { request } from '@/lib/api'
 import { applicationPath, type Fields } from './_common'
+import type { Domain } from './domains'
 import type { Project } from './projects'
 import type { Worker } from './workers'
 
@@ -16,6 +17,7 @@ export interface Application {
   args: string | null
   build_secrets: string | null
   command: string | null
+  // The domains linked to its containers.
   domains: Domain[]
   containers: Container[]
   volumes: Volume[]
@@ -38,15 +40,6 @@ export const APPLICATION_BUSY_STATUSES: Application['status'][] = [
 
 export const APPLICATION_STOP_ELIGIBLE_STATUSES: Application['status'][] = ['active', 'error']
 
-export interface Domain {
-  name: string
-  type: 'internal' | 'public' | 'tcp'
-  port: number
-  application: Application
-  created_at: Date
-  updated_at: Date
-}
-
 // A container's part of a task: its lines are the task's `application_task_id` and part `container_task_id`.
 export interface Event {
   application_task_id: string
@@ -58,7 +51,6 @@ export interface Event {
 export interface Container {
   worker: Worker
   status: 'active' | 'inactive' | 'deploying' | 'stopping' | 'backup' | 'restoring' | 'error'
-  domain_tag: string | null
   events: Event[]
   created_at: Date
   updated_at: Date
@@ -97,16 +89,6 @@ export const createContainer = (project: string, application: string, data: Fiel
     body: data,
   })
 
-export const updateContainer = (
-  project: string,
-  application: string,
-  hostname: string,
-  data: Fields
-) =>
-  request<Container>('PUT', `${applicationPath(project, application)}/containers/${hostname}`, {
-    body: data,
-  })
-
 // `force` removes the container from Sage without cleaning up after it on an offline worker.
 export const deleteContainer = (
   project: string,
@@ -128,15 +110,3 @@ export const updateVolume = (project: string, application: string, name: string,
 
 export const deleteVolume = (project: string, application: string, name: string) =>
   request<unknown>('DELETE', `${applicationPath(project, application)}/volumes/${name}`)
-
-// A domain is named by its type and name, `<type>:<name>`.
-export const createDomain = (project: string, application: string, data: Fields) =>
-  request<Domain>('POST', `${applicationPath(project, application)}/domains/`, { body: data })
-
-export const updateDomain = (project: string, application: string, key: string, data: Fields) =>
-  request<Domain>('PUT', `${applicationPath(project, application)}/domains/${key}`, {
-    body: data,
-  })
-
-export const deleteDomain = (project: string, application: string, key: string) =>
-  request<unknown>('DELETE', `${applicationPath(project, application)}/domains/${key}`)

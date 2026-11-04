@@ -54,11 +54,13 @@ class FakeManager:
     self.running = set()
     self.queued = set()
     self.s3 = FakeS3()
+    self.cloudflare = SimpleNamespace(worker_tunnel_name=lambda hostname: f"sage-example.test-{hostname}")
     self.worker_statuses = {}
     self.worker_list = []
     self.online = set()
     self.checking = set()   # workers no sync has looked at yet
     self.traefik_syncs = []
+    self.discovery_syncs = 0
 
   def __getattr__(self, name):
     if not callable(getattr(Manager, name, None)):
@@ -84,8 +86,8 @@ class FakeManager:
   def has_task(self, task, params=None):
     return task.__name__ in self.queued
 
-  def save_worker_tags(self, hostname, tag, pool):
-    Worker.update(tag=tag, pool=pool).where(Worker.hostname == hostname).execute()
+  def save_worker_subdomain(self, hostname, subdomain):
+    Worker.update(subdomain=subdomain).where(Worker.hostname == hostname).execute()
 
   def backup_status(self):
     return Manager.backup_status(self)
@@ -101,6 +103,9 @@ class FakeManager:
 
   def request_application_traefik_sync(self, application):
     self.traefik_syncs.append(application.id)
+
+  def request_discovery_sync(self):
+    self.discovery_syncs += 1
 
   def worker_entry(self, hostname):
     return Manager.worker_entry(self, hostname)

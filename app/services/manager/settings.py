@@ -69,13 +69,17 @@ class SettingsMixin:
     return f"The node is running as {machine}; {peers}."
 
   def _test_cloudflare(self, value: dict, side_effects: bool) -> str:
-    """Env vars, so checked as configured: token, zone and account, and the tunnel's health."""
+    """Env vars, so checked as configured: token, zone and account, and the platform tunnel's health. Each listed
+    worker is given its own tunnel's health, read in the same call."""
     self.cloudflare.check_config(self.cloudflare.config)
-    self.cloudflare.connect()
-    tunnel = self.cloudflare.request(
-        "GET", f"/accounts/{self.cloudflare.account_id}/cfd_tunnel/{self.cloudflare.tunnel_id}")["result"]
-    self.cloudflare.tunnel_status = tunnel["status"]
-    return f"API token, zone {self.cloudflare.domain} and account verified; tunnel {tunnel['status']}."
+    tunnels = self.cloudflare.tunnels()
+    if self.cloudflare.tunnel_name not in tunnels:
+      raise ValueError(f"The tunnel {self.cloudflare.tunnel_name} is not in the account.")
+    self.cloudflare.tunnel_status = tunnels[self.cloudflare.tunnel_name]["status"]
+    self.update_workers({
+        entry["hostname"]: {"tunnel": (tunnels.get(self.cloudflare.worker_tunnel_name(entry["hostname"])) or {}).get("status")}
+        for entry in self.worker_list})
+    return f"API token, zone {self.cloudflare.domain} and account verified; tunnel {self.cloudflare.tunnel_status}."
 
   def _test_s3(self, value: dict, side_effects: bool) -> str:
     if not Settings().is_valid("s3", value):
@@ -152,10 +156,14 @@ class SettingsMixin:
         entry.update(state="applying", message="Checking…")
       elif key == "cloudflare" and check["state"] == "ok":
         certificates = (self.certs.manager, self.certs.workers)
-        invalid = [name for certificate in certificates if not certificate.is_valid() for name in certificate.names]
+        invalid = [certificate for certificate in certificates if not certificate.is_valid()]
         if invalid:
-          entry.update(state="error",
-                       message=f"No valid certificate for {', '.join(invalid)}. Resync Traefik to issue it.")
+          # The names it lacks, or all of them when it has expired.
+          names = [name for certificate in invalid
+                   for name in [name for name in certificate.names if name not in certificate.covered] or certificate.names]
+          errors = [certificate.error for certificate in invalid if certificate.error]
+          entry.update(state="error", message=f"No valid certificate for {', '.join(names)}"
+                       + (f": {' '.join(errors)}" if errors else ". Resync Traefik to issue it."))
         else:
           expiry = min(certificate.expiry() for certificate in certificates)
           entry["message"] += f" Certificates valid until {expiry:%Y-%m-%d}."
@@ -164,9 +172,13 @@ class SettingsMixin:
         entry["details"] = {
             "account_id": self.cloudflare.account_id,
             "tunnel_id": self.cloudflare.tunnel_id,
+            "tunnel_name": self.cloudflare.tunnel_name,
             "tunnel_status": self.cloudflare.tunnel_status,
             "manager_certificate_expiry": manager_expiry.isoformat() if manager_expiry else None,
             "workers_certificate_expiry": workers_expiry.isoformat() if workers_expiry else None,
+            "workers_certificate_names": [{"name": name, "covered": name in self.certs.workers.covered}
+                                          for name in self.certs.workers.names],
+            "workers_certificate_error": self.certs.workers.error,
         }
       status[key] = entry
     return status

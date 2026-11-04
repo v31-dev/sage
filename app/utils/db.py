@@ -143,3 +143,20 @@ class AlphaNumericField(CharField):
 
   def db_value(self, value):
     return self.validate(value)
+
+
+class LabelField(CharField):
+  """One label of a domain name: lowercase letters, digits and dashes, at most 63, not starting or ending with a dash."""
+
+  def __init__(self, *args, **kwargs):
+    super().__init__(*args, max_length=63, **kwargs)
+
+  def validate(self, value):
+    if value is not None and not re.fullmatch(r"[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?", value):
+      raise ValueError(
+          f"Invalid name {value!r}: must be lowercase letters, digits and dashes, at most 63, "
+          "not starting or ending with a dash.")
+    return value
+
+  def db_value(self, value):
+    return self.validate(value)

@@ -1,6 +1,6 @@
 import random
 from dataclasses import replace
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -336,16 +336,30 @@ class TestWorkerReady:
 
 class TestWorkerEntry:
   def entry(self, now=NOW, **inputs):
-    return worker_entry("w1", WorkerInputs(ip="100.64.0.2", **inputs), now, NOW)
+    return worker_entry("w1", WorkerInputs(ip="100.64.0.2", **inputs), now, NOW, None, None, lambda subdomain: False)
+
+  @pytest.mark.parametrize("subdomain, certs, issued, expected", [
+      ("eu1", "abc", "abc", {"covered": True, "synced": True, "expiry": "2027-02-02T00:00:00+00:00"}),
+      ("us1", "abc", "abc", {"covered": False, "synced": True, "expiry": "2027-02-02T00:00:00+00:00"}),
+      ("eu1", "old", "abc", {"covered": True, "synced": False, "expiry": None}),
+      ("eu1", None, "abc", {"covered": True, "synced": False, "expiry": None}),
+      ("eu1", None, None, {"covered": True, "synced": False, "expiry": None}),
+  ])
+  def test_its_certificate_is_covered_when_the_issued_one_names_its_subdomain_and_synced_with_its_expiry_when_on_it(
+          self, subdomain, certs, issued, expected):
+    expiry = datetime(2027, 2, 2, tzinfo=timezone.utc) if issued else None
+    entry = worker_entry("w1", WorkerInputs(ip="100.64.0.2", subdomain=subdomain, certs=certs), NOW, NOW, issued, expiry,
+                         lambda subdomain: subdomain == "eu1")
+    assert entry["certificate"] == expected
 
   def test_it_holds_what_the_list_shows_of_the_worker(self):
     assert self.entry(online=True, path="direct", report=report(running=("traefik", "web", "telegraf"))) == {
-        "hostname": "w1", "ip": "100.64.0.2", "tag": None, "pool": None, "online": True, "status": "online", "path": "direct",
+        "hostname": "w1", "ip": "100.64.0.2", "subdomain": None, "online": True, "status": "online", "path": "direct",
         "container_count": 3,
         "infra": [{"name": "traefik", "status": "running"}, {"name": "vector", "status": "missing"},
                   {"name": "telegraf", "status": "running"}, {"name": "cloudflared", "status": "missing"},
                   {"name": "cloudflared-discovery", "status": "missing"}],
-        "metrics": None}
+        "metrics": None, "certificate": {"covered": False, "synced": False, "expiry": None}, "tunnel": None}
 
   def test_the_container_count_and_the_stack_are_those_of_the_current_report_only(self):
     assert self.entry(report=report())["container_count"] == 2
@@ -365,14 +379,14 @@ class TestWorkerEntry:
 class TestWorkerRows:
   def test_a_worker_that_gets_a_row_starts_not_known_to_be_online_and_not_rebooting(self):
     kept = WorkerInputs(online=True, reboot=WorkerReboot(NOW, 1), tasks=frozenset({"add_worker"}), report=report())
-    row = worker_with_row(kept, "100.64.0.2", "eu1", "eu", "direct")
-    assert (row.ip, row.tag, row.pool, row.online, row.reboot, row.path) == ("100.64.0.2", "eu1", "eu", None, None, "direct")
+    row = worker_with_row(kept, "100.64.0.2", "eu1", "direct")
+    assert (row.ip, row.subdomain, row.online, row.reboot, row.path) == ("100.64.0.2", "eu1", None, None, "direct")
     assert row.tasks == kept.tasks and row.report == kept.report
 
   def test_a_worker_that_had_a_row_keeps_what_it_has_when_the_row_is_written_again(self):
     held = WorkerInputs(ip="100.64.0.2", online=True, reboot=WorkerReboot(NOW, 1))
-    row = worker_with_row(held, "100.64.0.9", "eu2", None, None)
-    assert (row.ip, row.tag, row.pool, row.online, row.reboot) == ("100.64.0.9", "eu2", None, True, held.reboot)
+    row = worker_with_row(held, "100.64.0.9", "eu2", None)
+    assert (row.ip, row.subdomain, row.online, row.reboot) == ("100.64.0.9", "eu2", True, held.reboot)
 
   def test_a_worker_whose_row_is_gone_keeps_only_its_tasks(self):
     held = WorkerInputs(ip="100.64.0.2", online=True, tasks=frozenset({"remove_worker"}), report=report(), path="direct",

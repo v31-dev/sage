@@ -294,12 +294,10 @@ class TestConnect:
     assert healthy.sent("GET", TUNNELS)[0].url.params["name"] == "sage-example.test"
     assert [body(request)["name"] for request in healthy.sent("POST", TUNNELS)] == ["sage-example.test"]
 
-  def test_it_routes_the_wildcard_through_the_tunnel(self, cloudflare, healthy):
+  def test_the_managers_record_is_the_only_one_it_writes(self, cloudflare, healthy):
     cloudflare.connect()
 
-    records = [body(request) for request in healthy.sent("POST", RECORDS)]
-    assert {"name": "*.example.test", "content": f"{TUNNEL}.cfargotunnel.com", "type": "CNAME", "proxied": True,
-            "comment": "sage-tunnel"} in records
+    assert [body(request)["name"] for request in healthy.sent("POST", RECORDS)] == ["manager.core.example.test"]
 
   def test_when_already_connected_it_does_nothing(self, connected, api):
     connected.connect()
@@ -396,6 +394,15 @@ class TestCheckConfig:
       cloudflare.check_config(self.VALUES)
 
 
+class TestTunnels:
+  def test_each_tunnel_of_the_account_by_name(self, connected, api):
+    tunnels = [{"id": "1", "name": "sage-example.test", "status": "healthy"},
+               {"id": "2", "name": "sage-example.test-w1", "status": "down"}]
+    api.on("GET", TUNNELS, ok(tunnels))
+
+    assert connected.tunnels() == {"sage-example.test": tunnels[0], "sage-example.test-w1": tunnels[1]}
+
+
 class TestDnsRecords:
   def test_only_records_with_exactly_that_name_are_returned(self, connected, api):
     wanted = {"id": "1", "name": "a.example.test", "content": "1.1.1.1"}
@@ -408,21 +415,42 @@ class TestDnsRecords:
     cloudflare.get_dns_records("a.example.test")
     assert cloudflare.zone_id == ZONE
 
-  def test_delete_one_removes_the_record_with_that_content(self, connected, api):
-    api.on("GET", RECORDS, ok([{"id": "1", "name": "a.example.test", "content": "1.1.1.1"},
-                               {"id": "2", "name": "a.example.test", "content": "2.2.2.2"}]))
-    api.on("DELETE", f"{RECORDS}/2", ok({"id": "2"}))
+  def test_a_sync_keeps_the_right_records_corrects_and_adds_the_rest_and_deletes_the_others_from_one_list(
+          self, connected, api):
+    api.on("GET", RECORDS, ok([
+        {"id": "1", "name": "a.example.test", "content": "t1", "comment": "sage-domain"},
+        {"id": "2", "name": "b.example.test", "content": "old", "comment": "sage-domain"},
+        {"id": "3", "name": "gone.example.test", "content": "t1", "comment": "sage-domain"},
+        {"id": "4", "name": "theirs.example.test", "content": "t1", "comment": "SAGE-DOMAIN"},
+        {"id": "5", "name": "*.example.test", "content": "t0", "comment": "sage-tunnel"},
+    ]))
+    for record in ("2", "3", "5"):
+      api.on("PUT" if record == "2" else "DELETE", f"{RECORDS}/{record}", ok({}))
+    api.on("POST", RECORDS, ok({}))
 
-    connected.delete_dns_record("a.example.test", "2.2.2.2")
+    connected.sync_dns_records({
+        "sage-domain": {"a.example.test": "t1", "b.example.test": "t2", "c.example.test": "t1"},
+        "sage-tunnel": {"discovery.example.test": "t0"},
+    }, type="CNAME", proxied=True)
 
-    assert [request.url.path for request in api.sent("DELETE")] == [f"{RECORDS}/2"]
+    assert [request.url.path for request in api.sent("DELETE")] == [f"{RECORDS}/3", f"{RECORDS}/5"]
+    assert [(body(request)["name"], body(request)["content"]) for request in api.sent("PUT")] == [("b.example.test", "t2")]
+    assert [(body(request)["name"], body(request)["comment"], body(request)["proxied"])
+            for request in api.sent("POST")] == [
+        ("c.example.test", "sage-domain", True), ("discovery.example.test", "sage-tunnel", True)]
+    assert len(api.sent("GET", RECORDS)) == 1
 
-  def test_delete_one_with_no_such_content_deletes_nothing(self, connected, api):
-    api.on("GET", RECORDS, ok([{"id": "1", "name": "a.example.test", "content": "1.1.1.1"}]))
+  def test_a_workers_record_follows_its_tag_and_without_one_all_of_its_records_go(self, connected, api):
+    api.on("GET", RECORDS, ok([
+        {"id": "1", "name": "*.int.example.test", "content": "100.64.0.2", "comment": "sage-worker-w1"}]))
+    api.on("DELETE", f"{RECORDS}/1", ok({}))
+    api.on("POST", RECORDS, ok({}))
 
-    connected.delete_dns_record("a.example.test", "9.9.9.9")
+    connected.sync_worker_records("w1", "eu1", "100.64.0.2")
+    connected.sync_worker_records("w1")
 
-    assert api.sent("DELETE") == []
+    assert [body(request)["name"] for request in api.sent("POST")] == ["*.eu1.int.example.test"]
+    assert [request.url.path for request in api.sent("DELETE")] == [f"{RECORDS}/1"] * 2
 
   def test_delete_all_removes_every_record_at_the_name(self, connected, api):
     api.on("GET", RECORDS, ok([{"id": "1", "name": "a.example.test", "type": "A"},

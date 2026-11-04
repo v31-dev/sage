@@ -46,14 +46,15 @@ function worker(hostname: string, status: WorkerStatus = 'online'): WorkerListIt
   return {
     hostname,
     ip: '100.64.0.2',
-    tag: null,
-    pool: null,
+    subdomain: null,
     online: status !== 'offline',
     status,
     path: null,
     container_count: null,
     infra: null,
     metrics: null,
+    certificate: { covered: true, synced: true, expiry: null },
+    tunnel: 'healthy',
   }
 }
 

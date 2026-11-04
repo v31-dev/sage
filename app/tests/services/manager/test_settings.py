@@ -103,3 +103,28 @@ class TestTailscaleCheck:
   def test_a_node_that_is_not_running_fails_the_check(self):
     with pytest.raises(ValueError, match=r"not running \(NeedsLogin\)"):
       self.check(state="NeedsLogin")
+
+
+class TestCloudflareCheck:
+  def check(self, statuses, listed=("w1", "w2")):
+    cloudflare = SimpleNamespace(
+        config={}, check_config=lambda config: None, tunnel_name="sage-example.test",
+        tunnels=lambda: {name: {"id": name, "status": status} for name, status in statuses.items()},
+        tunnel_status=None, domain="example.test", worker_tunnel_name=lambda hostname: f"sage-example.test-{hostname}")
+    pushed = {}
+    manager = SimpleNamespace(cloudflare=cloudflare, worker_list=[{"hostname": hostname} for hostname in listed],
+                              update_workers=pushed.update)
+    message = SettingsMixin._test_cloudflare(manager, {}, False)
+    return message, cloudflare.tunnel_status, pushed
+
+  def test_the_platform_tunnels_health_is_kept_and_each_listed_worker_gets_its_own_tunnels(self):
+    message, status, pushed = self.check({
+        "sage-example.test": "degraded", "sage-example.test-w1": "healthy", "sage-other.test-w2": "down"})
+
+    assert message == "API token, zone example.test and account verified; tunnel degraded."
+    assert status == "degraded"
+    assert pushed == {"w1": {"tunnel": "healthy"}, "w2": {"tunnel": None}}
+
+  def test_without_the_platform_tunnel_the_check_fails(self):
+    with pytest.raises(ValueError, match="The tunnel sage-example.test is not in the account."):
+      self.check({"sage-example.test-w1": "healthy"})

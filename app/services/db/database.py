@@ -41,7 +41,9 @@ class Database(Base):
   def reconcile_schema(self):
     """
     Bring the live database schema up to the current models: create missing
-    tables and add missing columns. Idempotent and safe to call any time the
+    tables, add missing columns and drop those no model has, and drop the indexes
+    no model declares before creating the missing ones (a create skips a name that
+    exists, so a changed index comes under a new name). Idempotent and safe to call any time the
     on-disk schema may lag the models -- at startup, or after a restore swaps in
     an older database snapshot. Also gives the manager its identity if it has none.
 
@@ -64,6 +66,12 @@ class Database(Base):
         for model in sort_models(MODELS):
           model._schema.create_table(safe=True)
         self._sync_columns()
+        declared = {index._name for model in MODELS for index in model._meta.fields_to_index()}
+        for model in MODELS:
+          for index in db.get_indexes(model._meta.table_name):
+            if index.name not in declared and not index.name.startswith("sqlite_autoindex_"):
+              logger.info(f"Dropping index {index.name}, which no model declares.")
+              db.execute_sql(f'DROP INDEX "{index.name}"')
         for model in MODELS:
           model._schema.create_indexes(safe=True)
         if broken := db.execute_sql("PRAGMA foreign_key_check").fetchall():
@@ -108,4 +116,5 @@ class Database(Base):
         migrate(migrator.add_column(table, field.column_name, field))
       for column in sorted(existing - wanted):
         logger.info(f"Dropping column {table}.{column}, which no model has.")
-        migrate(migrator.drop_column(table, column))
+        # A rebuild of the table: SQLite's own DROP COLUMN refuses a column in a foreign key or an index.
+        migrate(migrator.drop_column(table, column, legacy=True))

@@ -42,23 +42,25 @@ beforeEach(() => {
 })
 
 describe('adding a worker', () => {
-  it('sends the machine with the tag and the pool given, trimmed', async () => {
-    await add({ 'worker-host': ' w9 ', 'worker-tag': ' eu1 ', 'worker-pool': 'eu' })
+  it('sends the machine with the subdomain given, trimmed', async () => {
+    await add({ 'worker-host': ' w9 ', 'worker-subdomain': ' eu-1 ' })
 
-    expect(addWorker).toHaveBeenCalledWith({ host: 'w9', tag: 'eu1', pool: 'eu' })
+    expect(addWorker).toHaveBeenCalledWith({ host: 'w9', subdomain: 'eu-1' })
   })
 
-  it('sends no tag when none is given, for the manager to pick one', async () => {
+  it('sends no subdomain when none is given, for the manager to pick one', async () => {
     await add({ 'worker-host': 'w9' })
 
-    expect(addWorker).toHaveBeenCalledWith({ host: 'w9', tag: '', pool: '' })
+    expect(addWorker).toHaveBeenCalledWith({ host: 'w9', subdomain: '' })
   })
 
   it("shows the manager's refusal", async () => {
-    vi.mocked(addWorker).mockRejectedValueOnce(new Error('A worker with tag eu1 already exists.'))
+    vi.mocked(addWorker).mockRejectedValueOnce(
+      new Error('A worker with subdomain eu1 already exists.')
+    )
 
-    const wrapper = await add({ 'worker-host': 'w9', 'worker-tag': 'eu1' })
+    const wrapper = await add({ 'worker-host': 'w9', 'worker-subdomain': 'eu1' })
 
-    expect(wrapper.text()).toContain('A worker with tag eu1 already exists.')
+    expect(wrapper.text()).toContain('A worker with subdomain eu1 already exists.')
   })
 })

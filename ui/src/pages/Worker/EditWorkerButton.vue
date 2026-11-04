@@ -32,14 +32,12 @@ interface Props {
 const props = defineProps<Props>()
 
 const isOpen = ref(false)
-const tag = ref('')
-const pool = ref('')
+const subdomain = ref('')
 const errorMessage = ref('')
 const isSubmitting = ref(false)
 
 function openDialog() {
-  tag.value = props.worker.tag ?? ''
-  pool.value = props.worker.pool ?? ''
+  subdomain.value = props.worker.subdomain ?? ''
   errorMessage.value = ''
   isOpen.value = true
 }
@@ -48,7 +46,7 @@ async function onConfirm() {
   errorMessage.value = ''
   try {
     isSubmitting.value = true
-    await updateWorker(props.worker.hostname, { tag: tag.value.trim(), pool: pool.value.trim() })
+    await updateWorker(props.worker.hostname, { subdomain: subdomain.value.trim() })
     isOpen.value = false
     await props.loadWorkerStatus()
     toast.success(`Worker ${props.worker.hostname} updated`)
@@ -76,14 +74,17 @@ async function onConfirm() {
       <FieldSet>
         <FieldGroup>
           <Field>
-            <FieldLabel for="worker-edit-tag"> Tag </FieldLabel>
-            <Input id="worker-edit-tag" v-model="tag" placeholder="e.g. eu1" />
-            <FieldDescription>Up to 10 letters and digits, unique to this worker.</FieldDescription>
-          </Field>
-          <Field>
-            <FieldLabel for="worker-edit-pool"> Pool (optional) </FieldLabel>
-            <Input id="worker-edit-pool" v-model="pool" placeholder="e.g. eu" />
-            <FieldDescription>A group this worker belongs to, shared with others.</FieldDescription>
+            <FieldLabel for="worker-edit-subdomain"> Subdomain </FieldLabel>
+            <Input id="worker-edit-subdomain" v-model="subdomain" placeholder="e.g. eu1" />
+            <FieldDescription>
+              The worker's internal names are under it. Lowercase letters, digits and dashes, unique
+              to this worker.
+            </FieldDescription>
+            <FieldDescription>
+              ⚠ A new subdomain changes the worker's internal names and reissues the workers'
+              certificate. Let's Encrypt issues at most 5 for the same names and 50 for the domain
+              every 7 days.
+            </FieldDescription>
           </Field>
           <Field>
             <FieldError v-if="errorMessage">{{ errorMessage }}</FieldError>

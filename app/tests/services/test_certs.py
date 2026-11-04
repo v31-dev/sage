@@ -143,11 +143,12 @@ class TestHash:
     (tmp_path / "fullchain.pem").write_bytes(b"abc")
     assert Certificate(tmp_path, NAMES).hash() == "ba7816bf8f01cfea"
 
-  def test_it_follows_the_file_without_a_reload(self, tmp_path):
-    certificate = Certificate(tmp_path, NAMES)
+  def test_it_is_that_of_the_file_last_loaded(self, tmp_path):
     (tmp_path / "fullchain.pem").write_bytes(b"one")
+    certificate = Certificate(tmp_path, NAMES)
     first = certificate.hash()
     (tmp_path / "fullchain.pem").write_bytes(b"two")
+    certificate.load()
     assert certificate.hash() != first
 
 

@@ -21,14 +21,15 @@ function worker(hostname: string, overrides: Partial<WorkerListItem> = {}): Work
   return {
     hostname,
     ip: '100.64.0.2',
-    tag: null,
-    pool: null,
+    subdomain: null,
     online: true,
     status: 'online',
     path: 'direct',
     container_count: 3,
     infra: null,
     metrics: null,
+    certificate: { covered: true, synced: true, expiry: null },
+    tunnel: 'healthy',
     ...overrides,
   }
 }
@@ -137,16 +138,14 @@ describe('a worker card', () => {
     return mount(WorkerCard, { props: { worker: listed } })
   }
 
-  it('shows the tag and the pool of the worker', () => {
-    const text = mountCard(worker('w1', { tag: 'eu1', pool: 'eu' })).text()
-    expect(text).toContain('Tag eu1')
-    expect(text).toContain('Pool eu')
+  it('shows the subdomain of the worker', () => {
+    const text = mountCard(worker('w1', { subdomain: 'eu1' })).text()
+    expect(text).toContain('Subdomain eu1')
   })
 
   it('shows neither for a worker that has none yet', () => {
     const text = mountCard(worker('w1')).text()
-    expect(text).not.toContain('Tag ')
-    expect(text).not.toContain('Pool ')
+    expect(text).not.toContain('Subdomain')
   })
 
   it('shows the container count of the worker', () => {
