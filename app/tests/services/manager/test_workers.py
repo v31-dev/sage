@@ -1,4 +1,5 @@
 import asyncio
+import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
@@ -82,6 +83,7 @@ class Harness(WorkersMixin):
     self.worker_stack_repairs = {}
     self.notices = []
     self.setups = []
+    self.setup_tags = {}
     self.deleted_containers = []
     self.offlined = []
     self.failing = set()
@@ -94,10 +96,11 @@ class Harness(WorkersMixin):
   def notify(self, message, level="info"):
     self.notices.append((level, message))
 
-  async def setup_worker(self, worker, force=False):
+  async def setup_worker(self, worker, force=False, tag=None, pool=None):
     if worker.hostname in self.failing:
       raise Exception("boom")
     self.setups.append((worker.hostname, force))
+    self.setup_tags[worker.hostname] = (tag, pool)
 
   async def delete_container(self, container_id, force=False):
     self.deleted_containers.append((container_id, force))
@@ -147,6 +150,22 @@ class TestSyncWorkers:
     clock.advance(timedelta(seconds=config.REPORT_STALE_SECONDS + 1))
     self.sync(harness)
     assert (harness.worker_list[0]["status"], harness.worker_list[0]["container_count"]) == ("not ready", None)
+
+  def test_every_worker_without_a_tag_gets_one_online_or_not_and_a_tag_stays(self, harness):
+    add(harness, "w1", True)
+    add(harness, "w2", False)
+    add(harness, "w3", True)
+    Worker.update(tag=None).where(Worker.hostname.in_(["w1", "w2"])).execute()
+    Worker.update(tag="eu3").where(Worker.hostname == "w3").execute()
+    harness.tailscale.listed = [("w1", "100.64.0.2"), ("w3", "100.64.0.2")]
+    harness.tailscale.answering = {"w1", "w3"}
+
+    self.sync(harness)
+
+    tags = {worker.hostname: worker.tag for worker in Worker.select()}
+    assert all(re.fullmatch(r"[a-z][a-z0-9]{5}", tags[name]) for name in ("w1", "w2"))
+    assert tags["w3"] == "eu3" and len(set(tags.values())) == 3
+    assert {entry["hostname"]: entry["tag"] for entry in harness.worker_list}["w2"] == tags["w2"]
 
   def test_a_machine_that_is_not_a_known_worker_is_not_checked_or_set_up(self, harness):
     add(harness, "w1", True)
@@ -334,6 +353,12 @@ class TestAddWorker:
     harness.tailscale.answering = {"w3"}
     self.add(harness)
     assert harness.setups == [("w3", False)]
+
+  def test_the_tag_and_pool_asked_for_reach_its_setup(self, harness):
+    harness.tailscale.listed = [("w3", "100.64.0.3")]
+    harness.tailscale.answering = {"w3"}
+    asyncio.run(harness.add_worker("w3", tag="eu1", pool="eu"))
+    assert harness.setup_tags == {"w3": ("eu1", "eu")}
 
   def test_a_machine_that_is_not_in_the_tailnet_is_refused_and_said_so(self, harness):
     with pytest.raises(TaskFailed):

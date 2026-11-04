@@ -26,7 +26,7 @@ class UpdateSource(StrEnum):
   SETTINGS_APPLYING = "settings_applying"  # the task that makes each settings section apply
   BACKUP_STATUS = "backup_status"    # whether a platform backup runs or backups are being discovered
   BACKUPS = "backups"                # a backup row was written
-  WORKER_LIST = "worker_list"        # each worker's status, path and container count
+  WORKER_LIST = "worker_list"        # each worker's status, path, container count, tag and pool
   CHECKS = "checks"                  # the result of checking a settings section
   LATEST_VERSION = "latest_version"  # the newest version released
   RELEASE = "release"                # a release was fetched

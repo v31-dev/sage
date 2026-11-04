@@ -183,6 +183,8 @@ class WorkerInputs:
   """What the worker marker knows of one worker, each field written by the one owner of that fact. A record
   without an `ip` is not a worker, as the table has no row for it: a push can arrive before the row does."""
   ip: str | None = None                 # the row in the Worker table
+  tag: str | None = None                # the row's tag
+  pool: str | None = None               # the row's pool
   online: bool | None = None            # at the last sync its SSH server answered and it was set up; None until a sync has looked
   tasks: frozenset[str] = frozenset()   # the `WORKER_TASKS` queued or running for it
   reboot: WorkerReboot | None = None    # the last reboot asked of it
@@ -234,6 +236,8 @@ def worker_entry(hostname: str, worker: WorkerInputs, now: datetime, started: da
   return {
       "hostname": hostname,
       "ip": worker.ip,
+      "tag": worker.tag,
+      "pool": worker.pool,
       "online": worker.online,
       "status": worker_status(worker, now, started),
       "path": worker.path,
@@ -243,12 +247,12 @@ def worker_entry(hostname: str, worker: WorkerInputs, now: datetime, started: da
   }
 
 
-def worker_with_row(worker: WorkerInputs, ip: str, path: str | None) -> WorkerInputs:
-  """The record of a worker whose row has this `ip`. One that had no row yet starts not known to be online or
-  offline and not rebooting, whatever an earlier worker of the same name left."""
+def worker_with_row(worker: WorkerInputs, ip: str, tag: str | None, pool: str | None, path: str | None) -> WorkerInputs:
+  """The record of a worker whose row has this `ip`, `tag` and `pool`. One that had no row yet starts not known to be
+  online or offline and not rebooting, whatever an earlier worker of the same name left."""
   if worker.ip is None:
     worker = replace(worker, online=None, reboot=None)
-  return replace(worker, ip=ip, path=path)
+  return replace(worker, ip=ip, tag=tag, pool=pool, path=path)
 
 
 def worker_without_row(worker: WorkerInputs) -> WorkerInputs:

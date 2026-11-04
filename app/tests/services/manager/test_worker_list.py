@@ -1,4 +1,5 @@
 import random
+import re
 import threading
 import time
 from datetime import timedelta
@@ -44,9 +45,9 @@ class Workers(WorkersMixin):
       edit(records)
     super()._edit_workers(slow)
 
-  def add(self, hostname, online=None, ip="100.64.0.2"):
-    """A worker with a row, whose online is what the sync observed."""
-    self._save_worker(hostname, ip)
+  def add(self, hostname, online=None, ip="100.64.0.2", tag=None, pool=None):
+    """A worker with a row (its tag its hostname unless given), whose online is what the sync observed."""
+    self._save_worker(hostname, ip, tag or hostname, pool)
     if online is not None:
       self.update_worker(hostname, online=online)
 
@@ -70,15 +71,17 @@ class TestEntries:
   def test_each_worker_is_what_its_owners_pushed(self, workers):
     workers.paths["100.64.0.2"] = "direct"
     workers.add("w2", False, "100.64.0.3")
-    workers.add("w1", True, "100.64.0.2")
+    workers.add("w1", True, "100.64.0.2", tag="eu1", pool="eu")
     workers.update_worker("w1", report=report(running=("traefik", "web", "telegraf")))
 
     assert workers.worker_list == [
-        {"hostname": "w1", "ip": "100.64.0.2", "online": True, "status": "online", "path": "direct", "container_count": 3,
+        {"hostname": "w1", "ip": "100.64.0.2", "tag": "eu1", "pool": "eu", "online": True, "status": "online", "path": "direct",
+         "container_count": 3,
          "infra": [{"name": "traefik", "status": "running"}, {"name": "vector", "status": "missing"},
                    {"name": "telegraf", "status": "running"}, {"name": "cloudflared", "status": "missing"}],
          "metrics": None},
-        {"hostname": "w2", "ip": "100.64.0.3", "online": False, "status": "offline", "path": None, "container_count": None,
+        {"hostname": "w2", "ip": "100.64.0.3", "tag": "w2", "pool": None, "online": False, "status": "offline", "path": None,
+         "container_count": None,
          "infra": None, "metrics": None},
     ]
 
@@ -150,6 +153,44 @@ class TestMetrics:
     assert entries(workers)["w1"]["metrics"] is None
 
 
+class TestTags:
+  def tags(self, workers, hostname):
+    row = Worker.get_by_id(hostname)
+    entry = entries(workers)[hostname]
+    assert (entry["tag"], entry["pool"]) == (row.tag, row.pool)
+    return row.tag, row.pool
+
+  def test_a_new_worker_keeps_the_tag_and_pool_it_was_given(self, workers):
+    workers._save_worker("w1", "100.64.0.2", "eu1", "eu")
+    assert self.tags(workers, "w1") == ("eu1", "eu")
+
+  def test_a_new_worker_given_no_tag_gets_a_random_one(self, workers):
+    workers._save_worker("w1", "100.64.0.2")
+    tag, pool = self.tags(workers, "w1")
+    assert re.fullmatch(r"[a-z][a-z0-9]{5}", tag) and pool is None
+
+  def test_writing_the_row_again_keeps_its_tag_and_pool(self, workers):
+    workers._save_worker("w1", "100.64.0.2", "eu1", "eu")
+    workers._save_worker("w1", "100.64.0.9")
+    assert self.tags(workers, "w1") == ("eu1", "eu")
+    assert Worker.get_by_id("w1").ip == "100.64.0.9"
+
+  def test_a_change_of_tag_and_pool_reaches_the_row_and_the_list_and_both_topics_hear_of_it(self, workers, changes):
+    workers.add("w1", True)
+    workers.add("w2", True, "100.64.0.3")
+    changes.sources.clear()
+    changes.keyed.clear()
+    workers.save_worker_tags("w1", "eu2", "west")
+    assert self.tags(workers, "w1") == ("eu2", "west")
+    assert changes.sources == [UpdateSource.WORKER_LIST]
+    assert changes.keyed == [(UpdateSource.WORKER_ENTRY, "w1")]
+
+  def test_loading_the_table_brings_each_worker_its_tag_and_pool(self, workers):
+    Worker.create(hostname="w1", ip="100.64.0.2", tag="eu1", pool="eu")
+    workers.load_workers()
+    assert self.tags(workers, "w1") == ("eu1", "eu")
+
+
 class TestPresence:
   def test_pushes_for_a_name_without_a_row_make_no_worker(self, workers):
     workers.update_worker("w9", online=True, path="direct", report=report())
@@ -176,8 +217,9 @@ class TestPresence:
     workers.add("w1", True)
     workers.paths["100.64.0.9"] = "direct"
     workers._save_worker("w1", "100.64.0.9")
-    assert entries(workers)["w1"] == {"hostname": "w1", "ip": "100.64.0.9", "online": True, "status": "online", "path": "direct",
-                                      "container_count": None, "infra": None, "metrics": None}
+    assert entries(workers)["w1"] == {"hostname": "w1", "ip": "100.64.0.9", "tag": "w1", "pool": None, "online": True,
+                                      "status": "online", "path": "direct", "container_count": None, "infra": None,
+                                      "metrics": None}
     assert Worker.get(Worker.hostname == "w1").ip == "100.64.0.9"
 
   def test_forgetting_a_worker_deletes_its_row_and_its_entry(self, workers):
@@ -433,7 +475,7 @@ class TestFromManyThreads:
     def flap():
       # the writes of a row without the table, which these threads would each need a connection for
       def give(records):
-        records["wx"] = worker_with_row(records.get("wx", WorkerInputs()), "100.64.0.99", None)
+        records["wx"] = worker_with_row(records.get("wx", WorkerInputs()), "100.64.0.99", "wx", None, None)
 
       def take(records):
         records["wx"] = worker_without_row(records.get("wx", WorkerInputs()))
@@ -449,11 +491,12 @@ class TestFromManyThreads:
     for thread in threads:
       thread.join()
 
-    expected = {name: {"hostname": name, "ip": f"100.64.0.{index + 2}", "online": finals[name][0],
+    expected = {name: {"hostname": name, "ip": f"100.64.0.{index + 2}", "tag": name, "pool": None, "online": finals[name][0],
                        "status": self.expected_status(finals[name][0], finals[name][1]), "path": finals[name][2],
                        "container_count": None, "infra": None, "metrics": None}
                 for index, name in enumerate(names)}
     if flapper_present:
-      expected["wx"] = {"hostname": "wx", "ip": "100.64.0.99", "online": True, "status": "online", "path": None, "container_count": None,
+      expected["wx"] = {"hostname": "wx", "ip": "100.64.0.99", "tag": "wx", "pool": None, "online": True, "status": "online",
+                        "path": None, "container_count": None,
                         "infra": None, "metrics": None}
     assert workers.worker_list == [expected[name] for name in sorted(expected)]

@@ -1,7 +1,7 @@
 import logging
 import re
 
-from peewee import IntegrityError
+from peewee import IntegrityError, sort_models
 from playhouse.migrate import SqliteMigrator, migrate
 
 import config
@@ -59,8 +59,13 @@ class Database(Base):
       if db.execute_sql("PRAGMA foreign_keys").fetchone()[0]:
         raise RuntimeError("The schema step must not run inside a transaction: foreign keys can't be turned off.")
       with db.atomic():
-        db.create_tables(MODELS, safe=True)
+        # Indexes last: an index on a column not added yet would be built on the string of its name (SQLite reads a
+        # double-quoted name it doesn't know as a literal).
+        for model in sort_models(MODELS):
+          model._schema.create_table(safe=True)
         self._sync_columns()
+        for model in MODELS:
+          model._schema.create_indexes(safe=True)
         if broken := db.execute_sql("PRAGMA foreign_key_check").fetchall():
           raise IntegrityError("FOREIGN KEY check failed: " + ", ".join(
               f"{table} row {row} points at a missing {parent}" for table, row, parent, _ in broken))

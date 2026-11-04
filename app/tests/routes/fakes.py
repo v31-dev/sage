@@ -1,6 +1,7 @@
 import inspect
 from types import SimpleNamespace
 
+from services.db import Worker
 from services.manager import Manager
 from utils.queue import TaskQueue
 
@@ -82,6 +83,9 @@ class FakeManager:
 
   def has_task(self, task, params=None):
     return task.__name__ in self.queued
+
+  def save_worker_tags(self, hostname, tag, pool):
+    Worker.update(tag=tag, pool=pool).where(Worker.hostname == hostname).execute()
 
   def backup_status(self):
     return Manager.backup_status(self)

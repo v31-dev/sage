@@ -1,4 +1,5 @@
 import { request } from '@/lib/api'
+import type { Fields } from './_common'
 import type { Container } from './applications'
 import type { MetricsPoint } from './metrics'
 
@@ -19,6 +20,8 @@ export type WorkerStatus =
 export interface Worker {
   hostname: string
   ip: string
+  tag: string | null
+  pool: string | null
   online: boolean | null
   status: WorkerStatus
   // How the manager's last ping reached the worker: "direct", or "relay" with its region.
@@ -34,6 +37,8 @@ export interface Worker {
 export interface WorkerListItem {
   hostname: string
   ip: string
+  tag: string | null
+  pool: string | null
   online: boolean | null
   status: WorkerStatus
   path: string | null
@@ -55,10 +60,13 @@ export const fetchWorkers = () => request<WorkerListItem[]>('GET', '/workers/')
 
 export const fetchWorker = (hostname: string) => request<Worker>('GET', `/workers/${hostname}`)
 
-// Adds a machine of the tailnet, by hostname or Tailscale IP, as a worker. It is set up in the
-// background and shows in the list once the manager has reached it.
-export const addWorker = (host: string) =>
-  request<{ hostname: string }>('POST', '/workers/', { body: { host } })
+// Adds a machine of the tailnet, by `host` (its hostname or Tailscale IP), as a worker, with its `tag` (random when
+// none is given) and `pool`. It is set up in the background and shows in the list once the manager has reached it.
+export const addWorker = (data: Fields) =>
+  request<{ hostname: string }>('POST', '/workers/', { body: data })
+
+export const updateWorker = (hostname: string, data: Fields) =>
+  request<Worker>('PUT', `/workers/${hostname}`, { body: data })
 
 export const rebootWorker = (hostname: string) =>
   request<unknown>('POST', `/workers/${hostname}/reboot`)

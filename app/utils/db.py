@@ -132,12 +132,13 @@ class AlphaNumericField(CharField):
       )
     return cleaned
 
-  @staticmethod
-  def validate(value):
+  def validate(self, value):
     if value is not None and not re.fullmatch(r"[a-z][a-z0-9]*", value):
       raise ValueError(
           f"Invalid name {value!r}: must be lowercase letters and digits only, starting with a letter."
       )
+    if value is not None and len(value) > self.max_length:
+      raise ValueError(f"Invalid name {value!r}: at most {self.max_length} characters.")
     return value
 
   def db_value(self, value):

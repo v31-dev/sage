@@ -26,10 +26,12 @@ import {
 import SectionTitle from '@/components/SectionTitle.vue'
 import StateIndicator from '@/components/StateIndicator.vue'
 import { useAppStore } from '@/stores/app'
+import EditWorkerButton from './EditWorkerButton.vue'
 
 interface Props {
   worker: Worker
   workerMetrics: WorkerMetricsResponse
+  loadWorkerStatus: () => Promise<void>
 }
 
 const router = useRouter()
@@ -90,6 +92,7 @@ async function onConfirmRestart() {
       </CardTitle>
       <CardAction>
         <ButtonGroup class="space-x-1">
+          <EditWorkerButton :worker="props.worker" :loadWorkerStatus="props.loadWorkerStatus" />
           <ConfirmationButton
             triggerText="Restart"
             title="Restart Worker"
@@ -113,12 +116,22 @@ async function onConfirmRestart() {
       </CardAction>
     </CardHeader>
 
-    <CardContent class="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-5">
+    <CardContent class="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-7">
       <div>
         <Label>IP</Label>
         <p class="text-sm text-muted-foreground font-mono break-all">
           {{ props.workerMetrics.meta.ip || props.worker.ip }}
         </p>
+      </div>
+
+      <div>
+        <Label>Tag</Label>
+        <p class="text-sm text-muted-foreground font-mono">{{ props.worker.tag ?? '-' }}</p>
+      </div>
+
+      <div>
+        <Label>Pool</Label>
+        <p class="text-sm text-muted-foreground font-mono">{{ props.worker.pool ?? '-' }}</p>
       </div>
 
       <div>
@@ -145,7 +158,7 @@ async function onConfirmRestart() {
         </p>
       </div>
 
-      <div class="md:col-span-2 lg:col-span-5">
+      <div class="md:col-span-2 lg:col-span-7">
         <Label>Stack</Label>
         <div v-if="props.worker.infra" class="mt-1 flex flex-wrap gap-2">
           <StateIndicator

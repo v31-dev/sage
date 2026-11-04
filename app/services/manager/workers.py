@@ -35,6 +35,8 @@ class WorkersMixin:
     - Recently online workers (previously offline but now answering)
     After that, a worker whose reports say its stack is down gets it started.
     """
+    for worker in Worker.select().where(Worker.tag.is_null()):
+      self.save_worker_tags(worker.hostname, Worker.random_tag(), worker.pool)
     known = [WorkerRow(w.hostname, w.ip, self.worker_online(w.hostname)) for w in Worker.select()]
     names = {row.hostname for row in known}
     listed = [peer for peer in await run_in_executor_with_context(self.tailscale.peers) if peer.hostname in names]
@@ -135,16 +137,22 @@ class WorkersMixin:
         records[hostname] = replace(records.get(hostname, WorkerInputs()), tasks=frozenset(tasks.get(hostname, ())))
     self._edit_workers(edit)
 
-  def _save_worker(self, hostname: str, ip: str):
-    """Write the worker's row and its record together."""
-    Worker.insert(hostname=hostname, ip=ip).on_conflict(
+  def _save_worker(self, hostname: str, ip: str, tag: str | None = None, pool: str | None = None):
+    """Write the worker's row and its record together. A new worker gets `tag`, or a random one, and `pool`."""
+    Worker.insert(hostname=hostname, ip=ip, tag=tag or Worker.random_tag(), pool=pool).on_conflict(
         conflict_target=[Worker.hostname], preserve=[Worker.ip]
     ).execute()
+    row = Worker.get_by_id(hostname)
     path = self.tailscale.path(ip)
 
     def edit(records: dict):
-      records[hostname] = worker_with_row(records.get(hostname, WorkerInputs()), ip, path)
+      records[hostname] = worker_with_row(records.get(hostname, WorkerInputs()), ip, row.tag, row.pool, path)
     self._edit_workers(edit)
+
+  def save_worker_tags(self, hostname: str, tag: str, pool: str | None):
+    """Write the worker's tag and pool to its row and its record together."""
+    Worker.update(tag=tag, pool=pool).where(Worker.hostname == hostname).execute()
+    self.update_worker(hostname, tag=tag, pool=pool)
 
   def _forget_worker(self, hostname: str):
     """Delete the worker's row and its record together."""
@@ -157,14 +165,15 @@ class WorkersMixin:
 
   def load_workers(self):
     """Read the Worker table into the worker list, at start and after a restore replaced the table: the only
-    reads of it, as `_save_worker` and `_forget_worker` are the only writes."""
-    rows = {worker.hostname: worker.ip for worker in Worker.select()}
-    paths = {hostname: self.tailscale.path(ip) for hostname, ip in rows.items()}
+    reads of it, as `_save_worker`, `save_worker_tags` and `_forget_worker` are the only writes."""
+    rows = {worker.hostname: worker for worker in Worker.select()}
+    paths = {hostname: self.tailscale.path(row.ip) for hostname, row in rows.items()}
 
     def edit(records: dict):
       for hostname in records.keys() | rows.keys():
         record = records.get(hostname, WorkerInputs())
-        records[hostname] = (worker_with_row(record, rows[hostname], paths[hostname]) if hostname in rows
+        row = rows.get(hostname)
+        records[hostname] = (worker_with_row(record, row.ip, row.tag, row.pool, paths[hostname]) if row
                              else worker_without_row(record))
     self._edit_workers(edit)
 
@@ -329,21 +338,21 @@ class WorkersMixin:
           f"{', '.join(sorted(orphan_containers | orphan_dirs))}.",
           "warning")
 
-  async def add_worker(self, worker_hostname: str):
+  async def add_worker(self, worker_hostname: str, tag: str | None = None, pool: str | None = None):
     """
-    Add a machine of the tailnet as a worker: its SSH server must answer and it must not be managed
-    by another Sage (`setup_worker` checks). `setup_worker` does the rest.
+    Add a machine of the tailnet as a worker, with its tag (random when none is given) and pool: its SSH server
+    must answer and it must not be managed by another Sage (`setup_worker` checks). `setup_worker` does the rest.
     """
     peer = await run_in_executor_with_context(self.tailscale.find_peer, worker_hostname)
     if peer is None or not await self.tailscale.reachable(peer.hostname):
       self.notify(f"Failed to add worker {worker_hostname}: it is not in the tailnet or its SSH server does not answer.", "error")
       raise TaskFailed()
-    await self.setup_worker(peer)
+    await self.setup_worker(peer, tag=tag, pool=pool)
 
   def instance_id(self) -> str:
     return Instance.get().id
 
-  async def setup_worker(self, worker, force: bool = False):
+  async def setup_worker(self, worker, force: bool = False, tag: str | None = None, pool: str | None = None):
     """
     Converge a worker to current manager state — the single idempotent heal
     for new, rejoining, IP-changed, and force-resynced workers. The worker's
@@ -353,7 +362,8 @@ class WorkersMixin:
     read. `force` deletes the stamps first — distrust everything, converge
     from scratch. A worker that another Sage manages (its owner stamp names
     another instance) is refused. On failure, the worker row + DNS are only
-    cleaned up if this call was adding a brand-new worker.
+    cleaned up if this call was adding a brand-new worker. `tag` and `pool` are a
+    new worker's.
     """
     existing = Worker.get_or_none(Worker.hostname == worker.hostname)
     is_new = existing is None
@@ -381,7 +391,7 @@ class WorkersMixin:
       infra_stale = (revisions.get("infra") != self.infra_hash()
                      or is_new or existing.ip != worker.ip)
 
-      self._save_worker(worker.hostname, worker.ip)
+      self._save_worker(worker.hostname, worker.ip, tag, pool)
       # Always: the offline transition deleted the DNS record.
       await run_in_executor_with_context(
           self.cloudflare.create_dns_record,

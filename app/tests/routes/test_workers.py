@@ -2,7 +2,7 @@ from datetime import datetime
 
 import pytest
 
-from services.db import Container
+from services.db import Container, Worker
 from services.worker_reports import HostReading, Snapshot, WorkerReports
 
 
@@ -103,7 +103,7 @@ class TestAdd:
     response = client.post("/api/workers/", json={"host": "w9"})
     assert (response.status_code, response.json()["hostname"]) == (200, "w9")
     (task,) = manager.tasks
-    assert (task["task"].__name__, task["params"]) == ("add_worker", {"worker_hostname": "w9"})
+    assert (task["task"].__name__, task["params"]) == ("add_worker", {"worker_hostname": "w9", "tag": None, "pool": None})
 
   def test_it_can_be_given_by_its_address_in_any_case_and_the_hostname_is_what_is_added(self, client, manager):
     assert client.post("/api/workers/", json={"host": " 100.64.0.9 "}).status_code == 200
@@ -131,11 +131,62 @@ class TestAdd:
         409, "A worker with the manager's name (TS_NAME) is not allowed.")
     assert manager.tasks == []
 
+  def test_the_tag_and_pool_asked_for_are_queued_with_it(self, client, manager):
+    assert client.post("/api/workers/", json={"host": "w9", "tag": " eu9 ", "pool": "eu"}).status_code == 200
+    (task,) = manager.tasks
+    assert task["params"] == {"worker_hostname": "w9", "tag": "eu9", "pool": "eu"}
+
+  @pytest.mark.parametrize("asked", [{"tag": "EU9"}, {"tag": "eu-9"}, {"tag": "abcdefghijk"}, {"pool": "e-u"}])
+  def test_a_tag_or_pool_that_is_not_a_short_name_is_refused(self, client, manager, asked):
+    assert client.post("/api/workers/", json={"host": "w9", **asked}).status_code == 400
+    assert manager.tasks == []
+
+  def test_a_tag_another_worker_has_is_refused(self, client, worker, manager):
+    Worker.update(tag="eu1").where(Worker.hostname == "w1").execute()
+    response = client.post("/api/workers/", json={"host": "w9", "tag": "eu1"})
+    assert (response.status_code, response.json()["detail"]) == (409, "A worker with tag eu1 already exists.")
+    assert manager.tasks == []
+
   def test_a_machine_that_is_already_being_added_is_refused(self, client, manager):
     manager.queued = {"add_worker"}
     response = client.post("/api/workers/", json={"host": "w9"})
     assert (response.status_code, response.json()["detail"]) == (409, "Worker w9 is already being added.")
     assert manager.tasks == []
+
+
+class TestEdit:
+  def test_the_tag_and_pool_are_changed(self, client, worker, manager):
+    response = client.put("/api/workers/w1", json={"tag": "eu1", "pool": "eu"})
+    assert (response.status_code, response.json()["tag"], response.json()["pool"]) == (200, "eu1", "eu")
+    assert (Worker.get_by_id("w1").tag, Worker.get_by_id("w1").pool) == ("eu1", "eu")
+
+  def test_what_is_not_sent_stays(self, client, worker, manager):
+    Worker.update(tag="eu1", pool="eu").where(Worker.hostname == "w1").execute()
+    assert client.put("/api/workers/w1", json={"pool": "west"}).json()["tag"] == "eu1"
+    assert client.put("/api/workers/w1", json={"tag": "eu2"}).json()["pool"] == "west"
+    assert client.put("/api/workers/w1", json={"pool": ""}).json()["pool"] is None
+
+  def test_keeping_its_own_tag_is_no_clash(self, client, worker, manager):
+    Worker.update(tag="eu1").where(Worker.hostname == "w1").execute()
+    assert client.put("/api/workers/w1", json={"tag": "eu1", "pool": "west"}).status_code == 200
+
+  def test_a_tag_another_worker_has_is_refused(self, client, worker, manager):
+    Worker.create(hostname="w2", ip="100.64.0.3", tag="eu2")
+    response = client.put("/api/workers/w1", json={"tag": "eu2"})
+    assert (response.status_code, response.json()["detail"]) == (409, "A worker with tag eu2 already exists.")
+    assert Worker.get_by_id("w1").tag is None
+
+  def test_a_worker_without_a_tag_is_refused(self, client, worker, manager):
+    response = client.put("/api/workers/w1", json={"tag": " ", "pool": "eu"})
+    assert (response.status_code, response.json()["detail"]) == (400, "A worker without a tag is not allowed.")
+
+  @pytest.mark.parametrize("asked", [{"tag": "EU1"}, {"tag": "abcdefghijk"}, {"tag": "eu1", "pool": "eu-west"}])
+  def test_a_tag_or_pool_that_is_not_a_short_name_is_refused(self, client, worker, manager, asked):
+    assert client.put("/api/workers/w1", json=asked).status_code == 400
+
+  @pytest.mark.parametrize("hostname", ["nobody", "manager"])
+  def test_an_unknown_worker_or_the_manager_is_not_found(self, client, manager, hostname):
+    assert client.put(f"/api/workers/{hostname}", json={"tag": "eu1"}).status_code == 404
 
 
 class TestDelete:

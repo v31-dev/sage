@@ -1,4 +1,4 @@
-"""Locations, endpoints and timings shared by the backend. Modules read a value as `config.NAME`
+"""Locations, endpoints, timings and the running version, shared by the backend. Modules read a value as `config.NAME`
 where it is used, never `from config import NAME`, so a test can override one attribute."""
 from pathlib import Path
 

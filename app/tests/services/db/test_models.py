@@ -1,4 +1,6 @@
 import dataclasses
+import re
+import secrets
 from datetime import datetime
 
 import pytest
@@ -339,12 +341,45 @@ class TestDomain:
     with pytest.raises(IntegrityError):
       Domain.insert(application=other, name="shop", type="tcp", port=80).execute()
 
+  def test_a_name_is_at_most_forty_characters(self, application):
+    Domain.create(application=application, name="a" * 40, type="public", port=80)
+
+    with pytest.raises(ValueError, match="at most 40 characters"):
+      Domain.create(application=application, name="b" * 41, type="public", port=80)
+
   def test_domains_go_with_their_application(self, application):
     Domain.create(application=application, name="shop", port=80)
 
     application.delete_instance()
 
     assert Domain.select().count() == 0
+
+
+class TestWorker:
+  @pytest.mark.parametrize("field, value", [
+      ("tag", "eu1abcdefgh"), ("tag", "EU1"), ("tag", "1eu"), ("tag", "eu-1"), ("pool", "eu-west"), ("pool", "abcdefghijk")])
+  def test_a_tag_and_a_pool_are_names_of_at_most_ten_letters_and_digits(self, db, field, value):
+    Worker.create(hostname="w1", ip="100.64.0.2", tag="eu1abcdefg", pool="eu")
+
+    with pytest.raises(ValueError):
+      Worker.create(hostname="w2", ip="100.64.0.3", **{field: value})
+
+  def test_two_workers_cannot_share_a_tag_but_can_share_a_pool(self, db):
+    Worker.create(hostname="w1", ip="100.64.0.2", tag="eu1", pool="eu")
+    Worker.create(hostname="w2", ip="100.64.0.3", tag="eu2", pool="eu")
+
+    with pytest.raises(IntegrityError):
+      Worker.create(hostname="w3", ip="100.64.0.4", tag="eu1")
+
+  def test_a_random_tag_is_a_letter_and_five_letters_or_digits(self, db):
+    assert re.fullmatch(r"[a-z][a-z0-9]{5}", Worker.random_tag())
+
+  def test_a_random_tag_is_never_one_a_worker_has(self, db, monkeypatch):
+    Worker.create(hostname="w1", ip="100.64.0.2", tag="aaaaaa")
+    draws = iter("aaaaaabbbbbb")
+    monkeypatch.setattr(secrets, "choice", lambda letters: next(draws))
+
+    assert Worker.random_tag() == "bbbbbb"
 
 
 class TestContainer:

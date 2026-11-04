@@ -61,19 +61,30 @@ class TestCleanCharField:
 class TestAlphaNumericField:
   @pytest.mark.parametrize("value", ["a", "abc", "a1", "web2"])
   def test_validate_accepts_lowercase_letters_and_digits_starting_with_a_letter(self, value):
-    assert AlphaNumericField.validate(value) == value
+    assert AlphaNumericField().validate(value) == value
 
   def test_validate_lets_none_through(self):
-    assert AlphaNumericField.validate(None) is None
+    assert AlphaNumericField().validate(None) is None
 
   @pytest.mark.parametrize("value", ["1abc", "Abc", "a-b", "a_b", "a b", ""])
   def test_validate_rejects_anything_else(self, value):
     with pytest.raises(ValueError, match="Invalid name"):
-      AlphaNumericField.validate(value)
+      AlphaNumericField().validate(value)
 
   def test_db_value_validates(self):
     with pytest.raises(ValueError):
       AlphaNumericField().db_value("not valid")
+
+  def test_a_value_longer_than_the_field_allows_is_refused_naming_the_limit(self):
+    field = AlphaNumericField(max_length=10)
+    assert field.validate("a" * 10) == "a" * 10
+    with pytest.raises(ValueError, match="at most 10 characters"):
+      field.validate("a" * 11)
+
+  def test_a_field_without_a_limit_of_its_own_allows_255(self):
+    assert AlphaNumericField().validate("a" * 255) == "a" * 255
+    with pytest.raises(ValueError, match="at most 255 characters"):
+      AlphaNumericField().validate("a" * 256)
 
   @pytest.mark.parametrize("label, name", [
       ("My App", "myapp"),

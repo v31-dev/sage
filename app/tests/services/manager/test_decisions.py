@@ -338,7 +338,8 @@ class TestWorkerEntry:
 
   def test_it_holds_what_the_list_shows_of_the_worker(self):
     assert self.entry(online=True, path="direct", report=report(running=("traefik", "web", "telegraf"))) == {
-        "hostname": "w1", "ip": "100.64.0.2", "online": True, "status": "online", "path": "direct", "container_count": 3,
+        "hostname": "w1", "ip": "100.64.0.2", "tag": None, "pool": None, "online": True, "status": "online", "path": "direct",
+        "container_count": 3,
         "infra": [{"name": "traefik", "status": "running"}, {"name": "vector", "status": "missing"},
                   {"name": "telegraf", "status": "running"}, {"name": "cloudflared", "status": "missing"}],
         "metrics": None}
@@ -361,14 +362,14 @@ class TestWorkerEntry:
 class TestWorkerRows:
   def test_a_worker_that_gets_a_row_starts_not_known_to_be_online_and_not_rebooting(self):
     kept = WorkerInputs(online=True, reboot=WorkerReboot(NOW, 1), tasks=frozenset({"add_worker"}), report=report())
-    row = worker_with_row(kept, "100.64.0.2", "direct")
-    assert (row.ip, row.online, row.reboot, row.path) == ("100.64.0.2", None, None, "direct")
+    row = worker_with_row(kept, "100.64.0.2", "eu1", "eu", "direct")
+    assert (row.ip, row.tag, row.pool, row.online, row.reboot, row.path) == ("100.64.0.2", "eu1", "eu", None, None, "direct")
     assert row.tasks == kept.tasks and row.report == kept.report
 
   def test_a_worker_that_had_a_row_keeps_what_it_has_when_the_row_is_written_again(self):
     held = WorkerInputs(ip="100.64.0.2", online=True, reboot=WorkerReboot(NOW, 1))
-    row = worker_with_row(held, "100.64.0.9", None)
-    assert (row.ip, row.online, row.reboot) == ("100.64.0.9", True, held.reboot)
+    row = worker_with_row(held, "100.64.0.9", "eu2", None, None)
+    assert (row.ip, row.tag, row.pool, row.online, row.reboot) == ("100.64.0.9", "eu2", None, True, held.reboot)
 
   def test_a_worker_whose_row_is_gone_keeps_only_its_tasks(self):
     held = WorkerInputs(ip="100.64.0.2", online=True, tasks=frozenset({"remove_worker"}), report=report(), path="direct",

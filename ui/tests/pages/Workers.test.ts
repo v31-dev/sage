@@ -21,6 +21,8 @@ function worker(hostname: string, overrides: Partial<WorkerListItem> = {}): Work
   return {
     hostname,
     ip: '100.64.0.2',
+    tag: null,
+    pool: null,
     online: true,
     status: 'online',
     path: 'direct',
@@ -134,6 +136,18 @@ describe('a worker card', () => {
   function mountCard(listed: WorkerListItem) {
     return mount(WorkerCard, { props: { worker: listed } })
   }
+
+  it('shows the tag and the pool of the worker', () => {
+    const text = mountCard(worker('w1', { tag: 'eu1', pool: 'eu' })).text()
+    expect(text).toContain('Tag eu1')
+    expect(text).toContain('Pool eu')
+  })
+
+  it('shows neither for a worker that has none yet', () => {
+    const text = mountCard(worker('w1')).text()
+    expect(text).not.toContain('Tag ')
+    expect(text).not.toContain('Pool ')
+  })
 
   it('shows the container count of the worker', () => {
     expect(mountCard(worker('w1', { container_count: 4 })).text()).toContain('4')

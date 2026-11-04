@@ -17,8 +17,9 @@ vi.mock('@/services/api', async importOriginal => ({
 }))
 
 const header = {
-  props: ['worker', 'workerMetrics'],
-  template: '<div data-header>{{ worker.hostname }}:{{ worker.status }}</div>',
+  props: ['worker', 'workerMetrics', 'loadWorkerStatus'],
+  template:
+    '<button data-header @click="loadWorkerStatus()">{{ worker.hostname }}:{{ worker.status }}</button>',
 }
 const containerCard = {
   props: ['container', 'worker', 'loadWorkerStatus'],
@@ -163,6 +164,17 @@ describe('what the manager pushes', () => {
 
     expect(wrapper.find('[data-header]').text()).toBe('w1:rebooting')
     expect(wrapper.findAll('[data-container]').map(found => found.text())).toEqual(['web', 'api'])
+  })
+
+  it('shows what an action on the worker changed at once, without waiting for the push', async () => {
+    const { wrapper, topics } = await mountPage()
+    await loaded(topics)
+    vi.mocked(fetchWorker).mockResolvedValue(worker({ status: 'rebooting' }) as never)
+
+    await wrapper.get('[data-header]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('[data-header]').text()).toBe('w1:rebooting')
   })
 
   it('shows what an action on a container changed at once, without waiting for the push', async () => {

@@ -144,6 +144,19 @@ class TestReconcileSchema:
     with pytest.raises(ValueError, match="not null but has no default"):
       Database().reconcile_schema()
 
+  def test_a_new_column_with_an_index_gets_both_on_a_table_with_rows(self, db):
+    Worker.create(hostname="w1", ip="100.64.0.2", tag="aaa111")
+    Worker.create(hostname="w2", ip="100.64.0.3", tag="bbb222")
+    db.execute_sql("DROP INDEX worker_tag")
+    db.execute_sql("ALTER TABLE worker DROP COLUMN tag")
+
+    Database().reconcile_schema()
+
+    assert "tag" in columns(db, "worker")
+    assert [row[0] for row in db.execute_sql("SELECT sql FROM sqlite_master WHERE name = 'worker_tag'")] == [
+        'CREATE UNIQUE INDEX "worker_tag" ON "worker" ("tag")']
+    assert Worker.select().count() == 2
+
   def test_an_existing_domain_table_gets_the_namespace_index(self, db):
     db.execute_sql("DROP INDEX domain_name_namespace")
 

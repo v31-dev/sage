@@ -9,7 +9,7 @@ from services.manager import Manager
 from services.metrics import Metrics
 from services.tailscale import Tailscale
 from services.worker_reports import WorkerReports
-from utils.api import generic_get, get_request_models
+from utils.api import generic_get, get_request_models, parse_api_data
 from utils.common import get_env
 from utils.logging import NO_ACCESS_LOG
 from utils.queue import OnConflict
@@ -41,9 +41,19 @@ def get():
   return Manager().worker_list
 
 
+def tags_of(worker_data: dict, hostname: str) -> tuple[str | None, str | None]:
+  """The tag and pool asked for, checked; a tag another worker has is refused."""
+  tag = Worker.tag.validate(str(worker_data.get("tag") or "").strip() or None)
+  pool = Worker.pool.validate(str(worker_data.get("pool") or "").strip() or None)
+  if tag and Worker.select().where((Worker.tag == tag) & (Worker.hostname != hostname)).exists():
+    raise HTTPException(status_code=409, detail=f"A worker with tag {tag} already exists.")
+  return tag, pool
+
+
 @router.post("/")
 def add_worker(worker_data: dict = Body(...)):
-  """Add a machine of the tailnet, given by hostname or Tailscale IP, as a worker."""
+  """Add a machine of the tailnet, given by hostname or Tailscale IP, as a worker, with its tag (random when none
+  is given) and pool."""
   host = str(worker_data.get("host") or "").strip()
   peer = Tailscale().find_peer(host) if host else None
   if peer is None:
@@ -55,16 +65,31 @@ def add_worker(worker_data: dict = Body(...)):
     raise HTTPException(status_code=409, detail=f"Worker {peer.hostname} is already added.")
   if Manager().has_task(Manager().add_worker, {"worker_hostname": peer.hostname}):
     raise HTTPException(status_code=409, detail=f"Worker {peer.hostname} is already being added.")
+  tag, pool = tags_of(worker_data, peer.hostname)
 
   Manager().add_task(
       task=Manager().add_worker,
       scopes={"platform"},
-      params={"worker_hostname": peer.hostname},
+      params={"worker_hostname": peer.hostname, "tag": tag, "pool": pool},
       executor="platform",
       on_conflict=OnConflict.QUEUE,
   )
 
   return {"status": "OK", "hostname": peer.hostname}
+
+
+@router.put("/{hostname}", dependencies=[Depends(inject_worker)])
+def update_worker(request: Request, hostname: str, worker_data: dict = Body(...)):
+  """Change a worker's tag or pool; what is not sent stays."""
+  worker = request.state.models["worker"]
+  if not worker:
+    raise HTTPException(status_code=404, detail="Worker not found")
+  tag, pool = tags_of({"tag": worker.tag, "pool": worker.pool, **parse_api_data(worker_data, ["tag", "pool"])}, hostname)
+  if not tag:
+    raise HTTPException(status_code=400, detail="A worker without a tag is not allowed.")
+
+  Manager().save_worker_tags(hostname, tag, pool)
+  return worker_payload(Worker.get_by_id(hostname))
 
 
 def worker_payload(worker: Worker) -> dict:

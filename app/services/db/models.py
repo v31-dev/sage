@@ -2,6 +2,7 @@ import hashlib
 import json
 import re
 import secrets
+import string
 from dataclasses import dataclass
 
 from peewee import SQL, BooleanField, CharField, DateTimeField, FixedCharField, ForeignKeyField, IntegerField, SqliteDatabase
@@ -45,6 +46,20 @@ class Instance(BaseModel):
 class Worker(BaseModel):
   hostname = CleanCharField(primary_key=True)
   ip = FixedCharField(15)
+  tag = AlphaNumericField(max_length=10, null=True)
+  pool = AlphaNumericField(max_length=10, null=True)
+
+  @staticmethod
+  def random_tag() -> str:
+    """A tag no worker has: a letter and five letters or digits."""
+    while True:
+      tag = secrets.choice(string.ascii_lowercase) + "".join(
+          secrets.choice(string.ascii_lowercase + string.digits) for _ in range(5))
+      if not Worker.select().where(Worker.tag == tag).exists():
+        return tag
+
+  class Meta:
+    indexes = ((("tag",), True),)
 
 
 class Project(BaseModel):
@@ -203,7 +218,7 @@ IS_PUBLIC = SQL("(type = 'public')")
 
 class Domain(BaseModel):
   application = ForeignKeyField(Application, backref="domains", on_delete="CASCADE")
-  name = AlphaNumericField(null=False)
+  name = AlphaNumericField(null=False, max_length=40)
   type = CharField(choices=["internal", "public", "tcp"], default="internal")
   port = IntegerField(null=False)
 

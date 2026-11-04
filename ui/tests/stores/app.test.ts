@@ -46,6 +46,8 @@ function worker(hostname: string, status: WorkerStatus = 'online'): WorkerListIt
   return {
     hostname,
     ip: '100.64.0.2',
+    tag: null,
+    pool: null,
     online: status !== 'offline',
     status,
     path: null,
