@@ -1,6 +1,8 @@
+import ast
 import asyncio
 import logging
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import pytest
 
@@ -54,7 +56,49 @@ async def hold(domain_id=None):
   await asyncio.Event().wait()
 
 
+def broad_declarations():
+  root = Path(__file__).parents[3]
+  declarations = []
+  for path in [root / "scheduler.py", *(root / "routes").glob("*.py"), *(root / "services/manager").glob("*.py")]:
+    for node in ast.walk(ast.parse(path.read_text())):
+      if not isinstance(node, ast.Call):
+        continue
+      scopes = next((keyword.value for keyword in node.keywords if keyword.arg == "scopes"), None)
+      if isinstance(scopes, ast.Set) and all(isinstance(value, ast.Constant) for value in scopes.elts):
+        values = {value.value for value in scopes.elts}
+        if {"platform", "app"} <= values:
+          declarations.append(pytest.param(values, id=f"{path.relative_to(root)}:{node.lineno}"))
+  assert len(declarations) >= 12
+  return declarations
+
+
+@pytest.mark.parametrize("scopes", broad_declarations())
+@pytest.mark.parametrize("domain_scope", ["domain", "domain:42"])
+@pytest.mark.parametrize("broad_first", [True, False])
+async def test_every_broad_operation_excludes_parent_and_unlinked_domain_work(queue, scopes, domain_scope, broad_first):
+  assert "domain" in scopes
+  first, second = (scopes, {domain_scope}) if broad_first else ({domain_scope}, scopes)
+  queue.add_task(hold, scopes=first, executor="app", task_id="first")
+  queue.dispatch_tick()
+  queue.add_task(hold, scopes=second, executor="app", task_id="second")
+  queue.dispatch_tick()
+
+  assert [task["task_id"] for task in queue.snapshot()["running"]] == ["first"]
+  assert [task["task_id"] for task in queue.snapshot()["queued"]] == ["second"]
+
+
 class TestDomainScopes:
+  @pytest.mark.parametrize("domain_scope", ["domain", "domain:42"])
+  async def test_platform_restore_waits_for_running_domain_work(self, queue, domain_scope):
+    queue.add_task(hold, scopes={domain_scope}, executor="app", task_id="domain")
+    queue.dispatch_tick()
+    queue.add_task(hold, scopes={"platform", "app", "domain"}, executor="app", task_id="restore", restore=True)
+    queue.dispatch_tick()
+
+    assert queue.state.value == "restoring"
+    assert [task["task_id"] for task in queue.snapshot()["running"]] == ["domain"]
+    assert [task["task_id"] for task in queue.snapshot()["queued"]] == ["restore"]
+
   async def test_replacing_one_domains_request_keeps_another_domains_request(self, queue):
     for domain_id, task_id in [(1, "first"), (2, "second"), (1, "latest")]:
       queue.add_task(hold, scopes={f"domain:{domain_id}", "app:demo-web"}, executor="app", task_id=task_id,

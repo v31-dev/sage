@@ -373,8 +373,10 @@ class PlatformMixin:
     finally:
       # The restore rewrote worker state in the DB; force-resync the workers.
       follow_ups = [dict(task=self.sync_workers, scopes={"platform"}, params={"force": True},
-                         executor="platform", on_conflict=OnConflict.REPLACE)]
+                         executor="platform", on_conflict=OnConflict.REPLACE),
+                    dict(task=self.sync_discovery, scopes={"domain"}, params={"repair": True},
+                         executor="app", on_conflict=OnConflict.REPLACE, quiet=True)]
       if self.s3.s3_config:
         # The backup records are the snapshot's too; match them to the bucket again.
-        follow_ups.append(dict(task=self.discover_s3_backups, scopes={"platform", "app"}, executor="platform"))
+        follow_ups.append(dict(task=self.discover_s3_backups, scopes={"platform", "app", "domain"}, executor="platform"))
       self.end_restore(restored, follow_ups=follow_ups)

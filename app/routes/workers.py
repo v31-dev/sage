@@ -159,7 +159,7 @@ def reboot_worker(request: Request, hostname: str):
 
   Manager().add_task(
       task=Manager().reboot_worker,
-      scopes={"platform", "app"},
+      scopes={"platform", "app", "domain"},
       params={"worker_hostname": worker.hostname},
       executor="platform",
       on_conflict=OnConflict.QUEUE,
@@ -184,11 +184,11 @@ def delete_worker(request: Request, hostname: str):
   if Manager().worker_status(hostname) == "removing":
     raise HTTPException(status_code=409, detail="Worker is already being removed.")
 
-  # platform+app scoped so it serializes with worker sync and deploys; QUEUE so a
+  # The broad scopes serialize worker, app and domain work; QUEUE so a
   # deliberate removal waits behind an in-flight op instead of being dropped.
   Manager().add_task(
       task=Manager().remove_worker,
-      scopes={"platform", "app"},
+      scopes={"platform", "app", "domain"},
       params={"worker_hostname": worker.hostname},
       executor="platform",
       on_conflict=OnConflict.QUEUE,

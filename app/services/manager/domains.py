@@ -1,13 +1,16 @@
+import asyncio
 import logging
+import shlex
 
+from services.cloudflare import dns_record_matches
 from services.db import APPLICATION_BUSY_STATUSES, Application, Domain, db
-from services.domains import ROUTING_TEMPLATES, DomainConfig, domains_changed
+from services.domains import ROUTING_TEMPLATES, DomainConfig, domain_artifact_owner, domains_changed
 from services.updates import Fact, UpdateSource
 from utils.common import get_env, utcnow
 from utils.executor import run_in_executor_with_context
 from utils.queue import OnConflict
 
-from ._common import DOMAIN_ROUTING_TEMPLATES, app_dir
+from ._common import DISCOVERY_TEMPLATES, DOMAIN_ROUTING_TEMPLATES, app_dir, content_hash
 from .application import application_changed
 
 logger = logging.getLogger(__name__)
@@ -104,15 +107,12 @@ class DomainsMixin:
 
         phase = "DNS"
         await run_in_executor_with_context(self.cloudflare.connect)
-        records = {}
+        tunnel = None
         if snapshot.type == "public" and snapshot.container_id is not None:
           tunnel = await run_in_executor_with_context(
               self.cloudflare.find_tunnel, self.cloudflare.worker_tunnel_name(snapshot.worker))
-          if tunnel is None:
-            raise ValueError(f"Worker {snapshot.worker} has no tunnel.")
-          records[snapshot.host] = f"{tunnel['id']}.cfargotunnel.com"
         await run_in_executor_with_context(
-            self.cloudflare.sync_dns_records, {snapshot.dns_comment: records}, type="CNAME", proxied=True)
+            self.cloudflare.sync_dns_records, {snapshot.dns_comment: snapshot.dns_records(tunnel)}, type="CNAME", proxied=True)
     except Exception as failure:
       error = failure
       logger.error(f"Domain {domain_id} sync failed at {phase}: {failure}")
@@ -133,6 +133,148 @@ class DomainsMixin:
           save_domain(domain)
     if repeat:
       self.request_domain_sync(domain)
-    self.request_discovery_sync()
+    self.request_discovery_sync(repair=False)
     if error:
       raise error
+
+  def request_discovery_sync(self, repair: bool = True):
+    # A child holds its domain scope: its DEDUP follow-up cannot meet a running parent or replace a queued full scan.
+    self.add_task(
+        task=self.sync_discovery, scopes={"domain"}, executor="app", params={"repair": repair},
+        on_conflict=OnConflict.REPLACE if repair else OnConflict.DEDUP, quiet=True,
+    )
+
+  def discovery_services(self, domains=None) -> list:
+    """Services as `[namespace, service, [[host, pool], ...]]`, sorted, from synced linked records."""
+    services = {}
+    for domain in Domain.select() if domains is None else domains:
+      if domain.status != "synced" or domain.container_id is None or domain.service is None:
+        continue
+      namespace = "public" if domain.type == "public" else "internal"
+      services.setdefault((namespace, domain.service), []).append([domain.host(self.cloudflare.domain), domain.pool])
+    return [[namespace, service, sorted(names, key=lambda name: name[0])]
+            for (namespace, service), names in sorted(services.items())]
+
+  def discovery_hash(self, services: list) -> str:
+    return content_hash({"templates": DISCOVERY_TEMPLATES, "domain": self.cloudflare.domain, "services": services})
+
+  async def sync_discovery(self, repair: bool = True):
+    workers = self.online_workers()
+    dynamic = f"{self.worker_home_dir}/traefik/dynamic"
+    failures = []
+    zone, tunnels = None, None
+    try:
+      await run_in_executor_with_context(self.cloudflare.connect)
+      zone, tunnels = await asyncio.gather(
+          run_in_executor_with_context(self.cloudflare.get_dns_records),
+          run_in_executor_with_context(self.cloudflare.tunnels), return_exceptions=True)
+      if isinstance(zone, Exception):
+        failures.append(f"DNS inventory: {zone}")
+        zone = None
+      if isinstance(tunnels, Exception):
+        failures.append(f"Tunnel inventory: {tunnels}")
+        tunnels = None
+    except Exception as error:
+      failures.append(f"Cloudflare: {error}")
+
+    listings = await asyncio.gather(*[
+        self.tailscale.exec_command(
+            worker.hostname, f"if [ -d {dynamic} ]; then find {dynamic} -maxdepth 1 -type f -printf '%f\\n'; fi", timeout=30)
+        for worker in workers], return_exceptions=True)
+    revisions = await asyncio.gather(*[self.read_worker_revisions(worker.hostname, timeout=30) for worker in workers], return_exceptions=True)
+    files, stamps = {}, {}
+    for worker, listing, revision in zip(workers, listings, revisions):
+      if isinstance(listing, Exception):
+        failures.append(f"{worker.hostname} files: {listing}")
+      else:
+        files[worker.hostname] = set(listing[1])
+      if isinstance(revision, Exception):
+        failures.append(f"{worker.hostname} revisions: {revision}")
+      else:
+        stamps[worker.hostname] = revision
+
+    # Inventory precedes owners: instant creates must be visible before an artifact is classified as orphaned.
+    with db.atomic():
+      domains = {domain.id: domain for domain in Domain.select()}
+      configs = {domain.id: self.domain_config(domain) for domain in domains.values()}
+      busy = {domain.id for domain in domains.values() if domain.container and (
+          domain.container.status in APPLICATION_BUSY_STATUSES or domain.container.application.status in APPLICATION_BUSY_STATUSES)}
+
+    if repair:
+      for domain in domains.values():
+        if domain.id in busy:
+          continue
+        snapshot = configs[domain.id]
+        drift = domain.status != "synced" or domain.synced_hash != snapshot.content_hash
+        if snapshot.container_id is not None and snapshot.worker in files:
+          drift |= (snapshot.filename in files[snapshot.worker]) != snapshot.active
+        if zone is not None and (tunnels is not None or snapshot.type != "public" or snapshot.container_id is None):
+          records = [record for record in zone if record.get("comment") == snapshot.dns_comment]
+          try:
+            wanted = snapshot.dns_records((tunnels or {}).get(self.cloudflare.worker_tunnel_name(snapshot.worker)))
+            drift |= len(records) != len(wanted) or any(
+                record["name"] not in wanted or not dns_record_matches(record, {
+                    "content": wanted[record["name"]], "type": "CNAME", "proxied": True}) for record in records)
+          except ValueError:
+            drift = True
+        if drift:
+          self.request_domain_sync(domain)
+          domain.status = "pending"
+
+    confirmed = {domain.id for domain in domains.values() if domain.id not in busy and domain.status == "synced"
+                 and domain.synced_hash == configs[domain.id].content_hash and (not configs[domain.id].active or
+                 configs[domain.id].filename in files.get(configs[domain.id].worker, set()))}
+    services = self.discovery_services(domains.values())
+    stamp = self.discovery_hash(services)
+    expected = {f"_discovery-{namespace}-{service}.yml" for namespace, service, _ in services}
+    hosts = {"public": f"discovery.{self.cloudflare.domain}", "internal": f"discovery.int.{self.cloudflare.domain}"}
+    for worker in workers:
+      if worker.hostname not in files:
+        continue
+      obsolete = []
+      for name in files[worker.hostname]:
+        domain_id = domain_artifact_owner("file", name)
+        if domain_id is None:
+          continue
+        if domain_id not in domains or (domain_id in confirmed and (
+                configs[domain_id].container_id is None or not configs[domain_id].active or configs[domain_id].worker != worker.hostname)):
+          obsolete.append(name)
+      try:
+        if obsolete:
+          await self.tailscale.exec_command(
+              worker.hostname, "rm -f " + " ".join(shlex.quote(f"{dynamic}/{name}") for name in sorted(obsolete)))
+        actual = {name for name in files[worker.hostname] if name.startswith("_discovery-") and name.endswith(".yml")}
+        if actual == expected and stamps.get(worker.hostname, {}).get("discovery") == stamp:
+          continue
+        for namespace, service, names in services:
+          await self.tailscale.sync_file(
+              worker.hostname, app_dir / f"templates/worker/traefik/discovery_{namespace}.yml",
+              f"{dynamic}/_discovery-{namespace}-{service}.yml", {
+                  "SERVICE": service, "HOST": hosts[namespace],
+                  "ENDPOINTS": ", ".join(f'"{host}";pool="{pool}"' if pool else f'"{host}"' for host, pool in names),
+              })
+        stale = actual - expected
+        if stale:
+          await self.tailscale.exec_command(
+              worker.hostname, "rm -f " + " ".join(shlex.quote(f"{dynamic}/{name}") for name in sorted(stale)))
+        await self.write_worker_revision(worker.hostname, "discovery", stamp)
+      except Exception as error:
+        failures.append(f"{worker.hostname} cleanup/discovery: {error}")
+
+    if zone is not None:
+      orphaned = {record["comment"]: {} for record in zone
+                  if (domain_id := domain_artifact_owner("dns", record.get("comment") or "")) is not None
+                  and domain_id not in domains}
+      discovery = {record["comment"]: {} for record in zone if (record.get("comment") or "").startswith("sage-discovery-")}
+      for worker in workers:
+        discovery[f"sage-discovery-{worker.hostname}"] = {f"discovery.int.{self.cloudflare.domain}": worker.ip}
+      try:
+        await run_in_executor_with_context(self.cloudflare.sync_dns_records, {
+            **orphaned, "sage-tunnel": {f"discovery.{self.cloudflare.domain}": f"{self.cloudflare.tunnel_id}.cfargotunnel.com"},
+        }, zone=zone, type="CNAME", proxied=True)
+        await run_in_executor_with_context(self.cloudflare.sync_dns_records, discovery, zone=zone, type="A", proxied=False)
+      except Exception as error:
+        failures.append(f"Discovery DNS/cleanup: {error}")
+    if failures:
+      raise RuntimeError("Domain reconciliation failed: " + "; ".join(failures))
+    logger.info(f"Domains reconciled; discovery synced: {len(services)} service(s).")

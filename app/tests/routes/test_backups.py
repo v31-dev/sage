@@ -180,7 +180,7 @@ class TestDiscover:
     assert response.json() == {"status": "OK"}
     [queued] = manager.tasks
     assert queued["task"].__name__ == "discover_s3_backups"
-    assert queued["scopes"] == {"platform", "app"}
+    assert queued["scopes"] == {"platform", "app", "domain"}
     assert queued["executor"] == "platform"
 
 

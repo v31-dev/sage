@@ -1,5 +1,6 @@
 import hashlib
 import json
+import re
 from dataclasses import asdict, dataclass
 
 from services.db import Domain
@@ -10,6 +11,18 @@ ROUTING_TEMPLATES = {
     "internal": "service_internal.yml",
     "tcp": "service_internal_tcp.yml",
 }
+ARTIFACTS = {"file": ("domain-", ".yml"), "dns": ("sage-domain-", "")}
+
+
+def domain_artifact_name(kind: str, domain_id: int) -> str:
+  prefix, suffix = ARTIFACTS[kind]
+  return f"{prefix}{domain_id}{suffix}"
+
+
+def domain_artifact_owner(kind: str, value: str) -> int | None:
+  prefix, suffix = ARTIFACTS[kind]
+  match = re.fullmatch(rf"{re.escape(prefix)}([1-9][0-9]*){re.escape(suffix)}", value)
+  return int(match[1]) if match else None
 
 
 def domains_changed():
@@ -46,8 +59,15 @@ class DomainConfig:
 
   @property
   def filename(self) -> str:
-    return f"domain-{self.domain_id}.yml"
+    return domain_artifact_name("file", self.domain_id)
 
   @property
   def dns_comment(self) -> str:
-    return f"sage-domain-{self.domain_id}"
+    return domain_artifact_name("dns", self.domain_id)
+
+  def dns_records(self, tunnel: dict | None) -> dict[str, str]:
+    if self.type != "public" or self.container_id is None:
+      return {}
+    if tunnel is None:
+      raise ValueError(f"Worker {self.worker} has no tunnel.")
+    return {self.host: f"{tunnel['id']}.cfargotunnel.com"}

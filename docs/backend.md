@@ -136,8 +136,8 @@ This is a project-wide pattern, not a local implementation detail.
 The Manager owns a single in-memory `TaskQueue` (`app/utils/queue.py`). It is the one place concurrency is controlled; the scheduler only enqueues.
 
 - **Enqueue.** Every operation runs via `Manager().add_task(task=..., scopes=..., executor=..., params=..., ...)`. Handlers receive ids (not ORM objects) and re-fetch, so nothing carries a stale snapshot across the queue boundary.
-- **Scopes** are `:`-delimited and hierarchical. The Manager's roots are declared in `services/manager/queue.py`: `platform`, `app` (with `app:<qualified_name>` children), `domain` (with `domain:<id>` children), `common`, `metrics`. A parent scope conflicts with all of its children; siblings never conflict. Conflicting tasks are mutually excluded. Scope roots and executor lanes are registered independently; a task can require several scopes and use one existing lane.
-- **Dispatch.** A one-second APScheduler interval tick calls `dispatch_tick`, which starts every pending task whose scope is free. One dispatcher makes the scan race-free; a `threading.Lock` guards the queue because producers run on FastAPI/loop threads. Dispatch is **deliberately opportunistic**: conflicts are checked against *running* work only, so a blocked pending task reserves nothing and later-queued non-conflicting tasks start past it (FIFO holds within a scope, not across conflicting scopes — a queued broad `{platform,app}` task waits for a tick with no app task running, and its start can be pushed out by later app work). This is the accepted trade: a pending-scope reservation rule would let any queued broad task freeze every `app:<qn>` task behind long-running work, converting rare bounded delays on platform ops into fleet-wide stalls. `priority` is queue-position only; nothing ever preempts running work. The scan (`next_to_start`) and admission (`admit`) are pure functions of plain data in `utils/queue.py`, which the queue applies under its lock.
+- **Scopes** are `:`-delimited and hierarchical. The Manager's roots are declared in `services/manager/queue.py`: `platform`, `app` (with `app:<qualified_name>` children), `domain` (with `domain:<id>` children), `common`, `metrics`. A parent scope conflicts with all of its children; siblings never conflict. Conflicting tasks are mutually excluded. Scope roots and executor lanes are registered independently; a task can require several scopes and use one existing lane. Every operation holding both `platform` and `app` also holds `domain`, including every route, scheduled trigger and restore follow-up for it.
+- **Dispatch.** A one-second APScheduler interval tick calls `dispatch_tick`, which starts every pending task whose scope is free. One dispatcher makes the scan race-free; a `threading.Lock` guards the queue because producers run on FastAPI/loop threads. Dispatch is **deliberately opportunistic**: conflicts are checked against *running* work only, so a blocked pending task reserves nothing and later-queued non-conflicting tasks start past it (FIFO holds within a scope, not across conflicting scopes — a queued broad `{platform,app,domain}` task waits for a tick with no app task running, and its start can be pushed out by later app work). This is the accepted trade: a pending-scope reservation rule would let any queued broad task freeze every `app:<qn>` task behind long-running work, converting rare bounded delays on platform ops into fleet-wide stalls. `priority` is queue-position only; nothing ever preempts running work. The scan (`next_to_start`) and admission (`admit`) are pure functions of plain data in `utils/queue.py`, which the queue applies under its lock.
 - **Admission policy — `on_conflict` on `add_task`** (enum `OnConflict`; decided atomically under the queue lock). Admission decides *drop vs. enqueue*; mutual exclusion is **separate and always scope-based** — the dispatcher serializes conflicting scopes regardless of mode, so an enqueued task simply waits for its scope to free.
   - `DEDUP` (default) — drop and return `False` if an identical op (**same name + exact scope**) is already running or queued; otherwise enqueue and wait. Prevents reconciler pile-ups and double-triggers (e.g. a second deploy of the same app). A *different* op holding a conflicting scope does **not** cause a drop — it enqueues and waits behind that op. (So a background sync never rejects a user action; the action just defers behind it.)
   - `QUEUE` — always enqueue and wait, even for an identical op. For work where every call must run, including params-identified work that shares a name + scope (S3 delete by path, worker removal by host, the settings Traefik refresh by change-flags).
@@ -168,7 +168,7 @@ the `TaskQueue` (`QueueState`: `running`, `paused`, `restoring`, `stopping`), ex
   and `restoring_from`, the backup's timestamp — so a refreshed page shows the same. The
   restore task ends the state with `Manager().end_restore(restored, follow_ups)` in a
   `finally`: when the restore took effect, the tasks still waiting (queued against the old
-  data) are recorded as `cancelled`, the follow-ups (worker force-resync, backup discovery)
+  data) are recorded as `cancelled`, the follow-ups (worker force-resync, domain reconciliation, backup discovery)
   are queued ahead of anything added since, and the UI reloads; after a failure or a
   rollback the waiting tasks simply run. A stop signal cancels a restore that hasn't
   started; one that is running finishes first.
@@ -257,7 +257,7 @@ Additional storage:
 
 ## Scheduler Notes
 
-`app/scheduler.py` holds async APScheduler triggers that act only as cron/interval triggers — each one calls `Manager().add_task(...)` and contains no execution logic. Sub-minute pumps (`dispatch_tick`, `sync_workers`) use `IntervalTrigger`; everything else uses `CronTrigger.from_crontab` and fires on exact wall-clock instants. The triggers in `_AT_STARTUP` (`refresh_latest_release`, `renew_certificates`, `discover_backups`, `check_settings`, `check_worker_stamps`) also run once right after startup, so startup network work happens in queued tasks while the servers are already serving. Triggers for optional services skip quietly when the service isn't configured: `backup_database` and `discover_backups` need S3, `renew_certificates` needs Cloudflare. Note: APScheduler's `from_crontab` treats numeric day-of-week `0` as Monday (whereas the `croniter`-matched volume-backup crons use `0` = Sunday) — be explicit about the intended weekday. `dispatch_tick` must stay an `async def` (APScheduler runs coroutine jobs on the loop; a sync job would run in a worker thread where its `asyncio.create_task` has no running loop). Route handlers enqueue through the same `add_task` path, and a few tasks are enqueued internally from within another task.
+`app/scheduler.py` holds async APScheduler triggers that act only as cron/interval triggers — each one calls `Manager().add_task(...)` and contains no execution logic. Sub-minute pumps (`dispatch_tick`, `sync_workers`) use `IntervalTrigger`; everything else uses `CronTrigger.from_crontab` and fires on exact wall-clock instants. The triggers in `_AT_STARTUP` (`refresh_latest_release`, `renew_certificates`, `discover_backups`, `check_settings`, `check_worker_stamps`, `refresh_worker_paths`, `sync_discovery`) also run once right after startup, so startup network work happens in queued tasks while the servers are already serving. Triggers for optional services skip quietly when the service isn't configured: `backup_database` and `discover_backups` need S3. Cloudflare is required, so certificate and domain work has no optional-service gate. Note: APScheduler's `from_crontab` treats numeric day-of-week `0` as Monday (whereas the `croniter`-matched volume-backup crons use `0` = Sunday) — be explicit about the intended weekday. `dispatch_tick` must stay an `async def` (APScheduler runs coroutine jobs on the loop; a sync job would run in a worker thread where its `asyncio.create_task` has no running loop). Route handlers enqueue through the same `add_task` path, and a few tasks are enqueued internally from within another task.
 
 ## Task Catalog
 
@@ -274,16 +274,16 @@ Every queued operation, its scope, where it is enqueued from, its lane pool, and
 | `Manager.flush_worker_metrics` | metrics:`workers` | cron 1m | metrics | DEDUP — writes the minutes of the workers' reports that have completed (`Metrics.flush_workers`) and gives the worker list each worker's newest |
 | `Metrics.collect_self` | metrics:`<manager>` | cron 1m | metrics | DEDUP |
 | `send_summary_notification` | common | cron daily 08:00 | common | REPLACE |
-| `sync_discovery` | domain | cron 5m + once at startup | app | REPLACE, quiet — service discovery files and discovery DNS |
+| `sync_discovery` | domain | cron 5m + once at startup | app | REPLACE, quiet, `repair=True` — cleanup, record repair scan, service discovery files and DNS |
 | `refresh_latest_release` | common | cron 4h + once at startup | common | REPLACE — caches latest-release detail (version + notes + `fetched_at`) served by `GET /info/release` |
 | `check_<section>` (`check_setting`) | common:`<section>` | cron 5m + once at startup, per configured section (quiet) | common | REPLACE — checks the saved settings against the provider without side effects and records the result for the `settings` status in `GET /api` (`services/manager/settings.py`) |
 | `backup_database_s3` | platform, app, domain | cron 12h (skipped when S3 isn't configured) | platform | REPLACE — SQLite snapshot, encrypted as a whole in the volume-archive format (`<ts>.db.enc`; `utils/archive.py`: `openssl enc`, then an HMAC-SHA256 trailer; streamed, so memory stays flat) |
 | `Metrics.cleanup` | metrics | cron daily 04:00 | metrics | REPLACE — everything past `RETENTION_DAYS` (14, `utils/common.py`), like the two below |
 | `Logs.cleanup` | common | cron daily 04:00 | common | REPLACE |
 | `cleanup` | platform | cron daily 04:00 | platform | REPLACE |
-| `renew_certificates` | platform, app | cron daily 03:00 + once at startup | platform | REPLACE — both certificates; reloads the manager's `:443` in place and syncs the workers' to stale workers |
-| `sync_workers` (`check_stamps`) | platform | once at startup | platform | REPLACE — also sets up workers that stayed online, checking infrastructure stamps and requesting linked Domain syncs, since the env may have changed while Sage was stopped |
-| `discover_s3_backups` | platform, app | once at startup (skipped when S3 isn't configured) | platform | DEDUP — makes the Backup table match the bucket under the configured path: records the platform backups and the volume archives whose application exists here (by the project and application names in the key), and drops records whose object is gone |
+| `renew_certificates` | platform, app, domain | cron daily 03:00 + once at startup | platform | REPLACE — both certificates; reloads the manager's `:443` in place and syncs the workers' to stale workers |
+| `sync_workers` (`check_stamps`) | platform | once at startup | platform | REPLACE — also sets up workers that stayed online, checking infrastructure stamps and requesting the Domain parent scan, since the env may have changed while Sage was stopped |
+| `discover_s3_backups` | platform, app, domain | once at startup (skipped when S3 isn't configured) | platform | DEDUP — makes the Backup table match the bucket under the configured path: records the platform backups and the volume archives whose application exists here (by the project and application names in the key), and drops records whose object is gone |
 
 **Route-driven (HTTP → `add_task`)**
 
@@ -297,17 +297,17 @@ Every queued operation, its scope, where it is enqueued from, its lane pool, and
 | `backup_database_s3` | platform, app, domain | POST /backups | platform | REPLACE |
 | `restore_database_from_s3` | platform, app, domain | POST /backups/{b}/restore | platform | DEDUP, `restore=True` (see Pause And Stop: the queue is `restoring` from the request until the task ends) — decrypts first (another key or an unencrypted backup is refused before the live DB is touched); safety copy and restore through SQLite's backup API; then reloads the settings and the services built from them (S3, notifications, Cloudflare, certs). The S3 settings are written back to their values from before the restore: they are how this manager reaches its backups, so a backup never changes them. A settings reload failure still rolls back to the safety copy |
 | `delete_backup_s3` | common | DELETE /backups/{b} | common | QUEUE |
-| `discover_s3_backups` | platform, app | POST /backups/discover; PUT /settings/s3 | platform | DEDUP |
+| `discover_s3_backups` | platform, app, domain | POST /backups/discover; PUT /settings/s3 | platform | DEDUP |
 | `add_worker` | platform | POST /workers/ | platform | QUEUE — admission ignores params, so QUEUE keeps one worker's addition from dropping another's; pings the machine, then `setup_worker` |
-| `remove_worker` | platform, app | DELETE /workers/{h} | platform | QUEUE — cleans up a worker that answers and is this Sage's, force-deletes the containers of one that is offline |
-| `reboot_worker` | platform, app | POST /workers/{h}/reboot | platform | QUEUE — backgrounds a `reboot` over Tailscale SSH so the command returns before the host drops; won't run mid-deploy; status reconciler tracks the worker going offline/back |
-| `refresh_traefik` | platform, app | POST /settings/resync_traefik | platform | DEDUP |
+| `remove_worker` | platform, app, domain | DELETE /workers/{h} | platform | QUEUE — cleans up a worker that answers and is this Sage's, force-deletes the containers of one that is offline |
+| `reboot_worker` | platform, app, domain | POST /workers/{h}/reboot | platform | QUEUE — backgrounds a `reboot` over Tailscale SSH so the command returns before the host drops; won't run mid-deploy; status reconciler tracks the worker going offline/back |
+| `refresh_traefik` | platform, app, domain | POST /settings/resync_traefik | platform | DEDUP |
 | `refresh_latest_release` | common | POST /info/release/refresh | common | REPLACE — on-demand version of the 4h refresh; the release topic pushes the result (a new `fetched_at`) |
 | `check_<section>` (`check_setting`) | common:`<section>` | PUT /settings/{section} (after a save, when complete) | common | REPLACE |
 | `sync_workers` | platform | POST /settings/resync_workers | platform | REPLACE |
 | `sync_domain` | domain:`<id>`, app:`<qn>` when linked | POST/PUT /domains/ (via `request_domain_sync`) | app | REPLACE, quiet — one record’s routing file and DNS |
 | `sync_workers` (`check_stamps`) | platform | PUT /workers/{h} with a new subdomain (via `save_worker_subdomain`) | platform | REPLACE — its `setup_worker` moves the worker's `*.<subdomain>.int` record |
-| `renew_certificates` | platform, app | PUT /workers/{h} with a new subdomain (via `request_certificate_renewal`) | platform | REPLACE — the workers' certificate is to cover the new subdomain's names |
+| `renew_certificates` | platform, app, domain | PUT /workers/{h} with a new subdomain (via `request_certificate_renewal`) | platform | REPLACE — the workers' certificate is to cover the new subdomain's names |
 | `sync_discovery` | domain | DELETE /domains/ (via `request_discovery_sync`) | app | REPLACE, quiet |
 
 **Settings status.** The `settings` part of `GET /api` gives each section (tailscale, cloudflare, s3, notifications) a state: `not_configured`, `applying` (a check or apply task is queued or running, except a quiet one such as the scheduled 5-minute check; its `task_id` is included; which tasks count, and with which params, is `APPLYING_TASKS` in `services/manager/settings.py`, written with `task(name, **params)`, e.g. `task("sync_workers", force=True)`), `ok`, `retrying` (the last check failed in a way that clears on its own — network, timeout, 5xx/429; the 5-minute check retries) or `error` (needs the user — bad credentials, missing bucket or zone). Cloudflare is also `error` without a valid certificate (the message names the names it lacks and the last issuance's error, whose text from Let's Encrypt says until when a rate limit holds), and its entry carries `details` for the read-only page: account and tunnel ids (dashboard links), the platform tunnel's health from the 5-minute check (`healthy`, `degraded`, `down`, `inactive`; the check reads every tunnel of the account in one list call and gives each listed worker its own tunnel's, `tunnel` in its worker entry), both certificates' expiry, the names the workers' certificate is to cover, each with whether the issued one does, and its last issuance error. Tailscale and Cloudflare are env vars, so they're always configured and checked as set. Notifications are independent channels (`CHANNELS` in `services/notification.py`, one settings field each): the section is configured once any channel is set, and its check covers every configured channel, reading each webhook without posting. One failing channel fails the section as `error` (`retrying` only when every channel failed in a way that clears by itself), the message names the failing channels, and the status entry's `channels` maps each failing field to its reason so the page can show it beside the field. `POST /settings/{s3|notifications}/test` checks the values in the request (saved or not) with side effects: the S3 test writes and deletes a marker object, the notifications test sends a message. Check failures never include a webhook URL (it holds the token).
@@ -329,11 +329,12 @@ Container create is an **instant route-side model write**, like most entities' C
 | Task | Scope | Source | Lane | on_conflict |
 | --- | --- | --- | --- | --- |
 | `sync_workers` | platform | `restore_database_from_s3` (via `end_restore`, priority) | platform | REPLACE |
-| `discover_s3_backups` | platform, app | `restore_database_from_s3` (via `end_restore`, priority; the restored Backup table is the snapshot's) | platform | DEDUP |
+| `discover_s3_backups` | platform, app, domain | `restore_database_from_s3` (via `end_restore`, priority; the restored Backup table is the snapshot's) | platform | DEDUP |
 | `sync_application_status` | app:`<qn>` | the cron (every application, every minute), and a report that changes a container of the application (`request_status_sync_for_containers`, from the report route) | app | REPLACE — a request that arrives while one runs is kept, since the running one may have read its input before the change |
-| `sync_domain` | domain:`<id>`, app:`<qn>` when linked | deploy/stop, container deletion, status changes, worker setup/rejoin/subdomain, `refresh_traefik` (via `request_domain_syncs` or `request_domain_sync`) | app | REPLACE, quiet |
-| `renew_certificates` | platform, app | `setup_worker` of a new worker, `sync_workers`' subdomain for a worker without one (via `request_certificate_renewal`) | platform | REPLACE |
-| `sync_discovery` | domain | domain attempt completion, container deletion, worker subdomain/setup/offline/removal (via `request_discovery_sync`) | app | REPLACE, quiet |
+| `sync_domain` | domain:`<id>`, app:`<qn>` when linked | deploy/stop, container deletion, status changes, worker subdomain, manual refresh, parent repair scan (via `request_domain_syncs` or `request_domain_sync`) | app | REPLACE, quiet |
+| `renew_certificates` | platform, app, domain | `setup_worker` of a new worker, `sync_workers`' subdomain for a worker without one (via `request_certificate_renewal`) | platform | REPLACE |
+| `sync_discovery` | domain | worker subdomain/setup/offline/removal, manual refresh, platform restore (via `request_discovery_sync` or `end_restore`) | app | REPLACE, quiet, `repair=True` |
+| `sync_discovery` | domain | Domain attempt completion | app | DEDUP, quiet, `repair=False` — cleanup and discovery without retrying record work |
 
 Quiet tasks (recorded only on failure): `sync_workers` (cron), `sync_application_status`, `sync_domain`, `sync_discovery`, `flush_worker_metrics`, `Metrics.collect_self`, `Metrics.cleanup`, `Logs.cleanup`.
 
@@ -351,7 +352,7 @@ Cron cadence convention: **≤ 1m → `DEDUP`** (a high-frequency reconciler ski
 
 **Worker status.** The worker JSON carries `status` (`Manager.worker_status`, the entry's in `worker_list`) and `online`. In this order: `removing` while `remove_worker` is queued or running for it; `adding` while `add_worker` is; `rebooting` while `reboot_worker` is queued or running and then, through the mark the task leaves in the worker's record, until the worker reports again with a Telegraf container that has started since the request (`is_worker_rebooting`; comparing the worker's own `started_at` before and after needs no clock agreement), or 5 minutes (`WORKER_REBOOT_LIMIT_SECONDS`); `checking` while `online` is not known; `offline` when `online` is false; `not ready` when the worker answers but is not ready (the rest of the stack may still be coming up after a reboot, which is not part of the reboot); otherwise `online`. The UI shows the status as the worker's indicator and enables Restart only for `online` and `not ready`; the routes refuse a reboot in any other status and a second removal while it is removing. The worker JSON also carries `path`, how the last `tailscale ping` reached the worker (`direct`, or `relay <region>` for a DERP relay; null when it did not answer or the output did not say), which `Tailscale` keeps in memory per peer; `refresh_worker_paths` pings the online workers every 60 s for it, apart from the online decision; the UI shows it next to the status.
 
-Worker convergence (`setup_worker`, reached through `sync_workers` and `add_worker`) runs on the **`platform` scope only** — it does not barrier app work, so the 30-second worker poll is never starved by long builds and worker drift is detected (and converged) within ~30s regardless of app activity. This is safe because app tasks already treat workers as unreliable — a worker can vanish mid-exec regardless of scheduling: deploy/stop/delete/backup **fast-fail on an offline-flagged worker**, any per-exec failure lands the container in `error`, and the status syncs converge from there. The residual race — a deploy targeting a worker whose setup is still mid-flight — fails loudly and converges identically, which is the same outcome as deploying to an offline worker (already possible at any time; placement doesn't require `online`). Tasks that mutate fleet-wide state keep the broad `{platform, app}` barrier: `remove_worker` (deletes the row), `refresh_traefik` (re-issues the cert and rewrites worker traefik config on a domain change), and the daily `renew_certificates` — the latter holds `{platform, app}` so it also serializes with `setup_worker`'s per-worker cert sync. The manager now issues the wildcard cert in-process (`Certs`, via ACME DNS-01) before the sync runs, so there is no wait-for-provisioning spin; the cert reaches a worker as PEM plus a re-written `traefik/dynamic/certs.yml`, whose file-provider `watch` reloads it with no traefik restart. Platform database backup/restore additionally holds `domain`, covering discovery and unlinked record tasks. There is deliberately no per-worker scope dimension; at ≤10 workers it isn't worth the fragility.
+Worker convergence (`setup_worker`, reached through `sync_workers` and `add_worker`) runs on the **`platform` scope only** — it does not barrier app work, so the 30-second worker poll is never starved by long builds and worker drift is detected (and converged) within ~30s regardless of app activity. This is safe because app tasks already treat workers as unreliable — a worker can vanish mid-exec regardless of scheduling: deploy/stop/delete/backup **fast-fail on an offline-flagged worker**, any per-exec failure lands the container in `error`, and the status syncs converge from there. The residual race — a deploy targeting a worker whose setup is still mid-flight — fails loudly and converges identically, which is the same outcome as deploying to an offline worker (already possible at any time; placement doesn't require `online`). Tasks that mutate fleet-wide state keep the broad `{platform, app, domain}` barrier: `remove_worker` (deletes the row), `reboot_worker` (restarts the machine), `refresh_traefik` (re-issues the cert and rewrites worker traefik config on a domain change), and the daily `renew_certificates` — the latter holds `{platform, app, domain}` so it also serializes with `setup_worker`'s per-worker cert sync. The manager now issues the wildcard cert in-process (`Certs`, via ACME DNS-01) before the sync runs, so there is no wait-for-provisioning spin; the cert reaches a worker as PEM plus a re-written `traefik/dynamic/certs.yml`, whose file-provider `watch` reloads it with no traefik restart. Platform database backup/restore and backup discovery hold the same three roots, covering discovery and unlinked record tasks. There is deliberately no per-worker scope dimension; at ≤10 workers it isn't worth the fragility.
 
 ## Traefik Domain Sync
 
@@ -381,19 +382,48 @@ the row stays pending and a new request is queued. Running or queued work projec
 without persisting it. Domain writes and queue transitions publish `domains` and the affected application topics.
 Application rows hold no domain progress state; summary counts use Domain status independently of health.
 
-Domain edits, deployment/stop outcomes, container-state changes, container deletion, worker setup/rejoin/subdomain
-changes and manual Traefik refresh request the affected records. Container creation has no domains to sync.
+Domain edits, deployment/stop outcomes, container-state changes, container deletion, worker subdomain changes and
+manual Traefik refresh request the affected records. Worker setup/rejoin requests the parent scan, which selects
+record work from the artifacts and current proof. Container creation has no domains to sync.
 Each attempt requests `sync_discovery` without awaiting the parent while holding the child's scope.
 
-`sync_discovery` holds the parent `domain` scope, uses the app lane and coalesces requests with `REPLACE`. It runs
-on demand, every five minutes and at startup. Only synced records linked to a container and carrying a service
-join discovery; health is a separate fact. Every online worker receives `_discovery-<namespace>-<service>.yml`, a
-router on `discovery.<domain>` (public, `web`) or `discovery.int.<domain>` (internal/TCP, `websecure`, tailnet only),
-matching `?service=<service>` and HEAD, GET or OPTIONS. Its headers middleware supplies `Sage-Endpoints` (names and
-pools as an RFC 9651 list), `Cache-Control: private, max-age=300` and CORS. Stale discovery files are removed after
-the new files are written and the `discovery` stamp records the generated service set. The same task maintains
-public discovery DNS (comment `sage-tunnel`) and internal addresses of online workers
-(`sage-discovery-<hostname>`); it does not write individual domains' public DNS.
+`sync_discovery` is the parent cleanup, repair and discovery operation. It holds `domain` and uses the app lane,
+so record operations cannot overlap it while application work can. Full scans (`repair=True`) run every five
+minutes, at startup, after worker setup/rejoin or removal, on Domain deletion and manual refresh, and after a
+platform restore. Requests coalesce with `REPLACE`. A child's completion requests `repair=False` with `DEDUP`:
+cleanup/discovery can observe its result without immediately retrying failed or offline records. A child's
+follow-up cannot run with the child or displace a queued full scan. This keeps retry with the scheduled/external
+full scan instead of creating a child/parent retry loop.
+
+The parent inventories each online worker's files and revision stamps, plus one list of zone DNS and one list of
+account tunnels, before reading Domain rows in a local transaction. Inventory precedes owners so an artifact
+materialized during an instant create cannot be misclassified as orphaned. Each worker inventory command has a
+30-second timeout. Failed inventories remain unknown;
+they cannot establish a missing file or DNS record. Other workers still progress and a failed parent records its
+own error without changing a successful Domain proof.
+
+A full scan requests record work for pending/error results, stale configuration fingerprints, an exact required
+file missing (or a stopped linked target still carrying its route), or public DNS drift in name, type, target or
+proxy mode. The parent queues children without awaiting them or applying their DNS itself. Busy application or
+container states are left to the app-scoped operation and status recovery; they are not evidence for invalidating
+proof or reaping a possible working copy. A record invalidated by this scan is excluded from discovery.
+
+Only exact `domain-<id>.yml` files and `sage-domain-<id>` DNS comments carry Domain ownership. Absent IDs are
+orphans and are removed. Existing records' old placement files are removed only when the current configuration is
+synced and its active target's required file is visible; pending/error replacements retain possible working
+copies. A synced unlinked record needs no route, so its copies on returning workers are removed. No old-worker
+list, tombstone or cleanup column is stored. Files outside the managed identities, including infrastructure and
+certificate files, are preserved. The parent maintains discovery DNS alongside orphan comment cleanup, using the
+same zone inventory; worker wildcard DNS remains worker-owned.
+
+Discovery lists only synced records linked to a container and carrying a service; health is a separate fact.
+Every online worker receives `_discovery-<namespace>-<service>.yml`, a router on `discovery.<domain>` (public, `web`)
+or `discovery.int.<domain>` (internal/TCP, `websecure`, tailnet only), matching `?service=<service>` and HEAD, GET or
+OPTIONS. Its headers middleware supplies `Sage-Endpoints` (names and pools as an RFC 9651 list),
+`Cache-Control: private, max-age=300` and CORS. A matching exact file set plus the template/service `discovery` stamp
+avoids rewriting files; a missing file is repaired even with a matching stamp. New files are written before stale
+discovery files are removed, and the stamp is committed last. Public discovery DNS uses comment `sage-tunnel` and
+internal online-worker addresses use `sage-discovery-<hostname>` with DNS-only A records.
 
 **Revision stamps make stale worker state detectable.** Every worker carries
 `{worker_home}/revisions/` — one hash stamp per artifact class, written by
@@ -428,7 +458,7 @@ worker, offline→online rejoin, IP change, force resync — calls the same
 idempotent `setup_worker`, and the worker's stamps decide how much work that
 is: infra stamp mismatch (or a changed IP, which is rendered into infra
 files) → the full file-sync/compose/restart pass; certs mismatch → per-worker
-cert sync only. It requests the worker’s linked Domain records once the worker is online, and
+cert sync only. It requests the Domain parent scan once the worker is online, and
 always makes the worker's DNS record `*.<subdomain>.int.<domain>` (deleting its records at any other name), asks
 for discovery, marks the worker online, and runs existence-level
 orphan cleanup: containers/app dirs with no owning Container row (e.g.
@@ -437,7 +467,7 @@ otherwise a zombie runs forever and squats on a future app's container name.
 `force=True` means *distrust every stamp*: the `revisions/` dir is deleted
 first, so everything mismatches and the worker converges from scratch — a
 brand-new worker (no stamps) takes the same path. Matching stamps avoid infrastructure and certificate writes;
-linked Domain syncs are requested after setup. Settings → Resync Traefik remains the manual global
+the Domain parent scan is requested after setup. Settings → Resync Traefik remains the manual global
 routing heal. Orphan cleanup reads the worker's containers/dirs **before** the
 owning Container rows: a row is created (instant route write) before any
 deploy materializes its app dir, so a dir captured on the worker whose row is
@@ -472,8 +502,6 @@ hostnames are Tailscale's identity, not ours: the one remaining
 exception handler in `api.py` (plus the generic route handlers, whose broad
 `except` would otherwise swallow it) maps it to a 400 carrying the message, so
 routes call `clean`/`validate` bare.
-
-<!-- TODO(19 step 1): Document parent artifact cleanup and repair when implemented. -->
 
 ## Settings And Traefik Refresh
 

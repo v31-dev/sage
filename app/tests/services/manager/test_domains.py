@@ -11,7 +11,6 @@ from services.domains import DomainConfig
 from services.manager.core import CoreMixin
 from services.manager.domains import DomainsMixin, domain_changed
 from services.manager.queue import SCOPES, QueueMixin
-from services.manager.traefik import TraefikMixin
 from services.updates import Updates, UpdateSource
 from tests.services.manager.test_traefik import LocalWorkers
 from utils.executor import active_executor
@@ -59,9 +58,7 @@ class Syncing(DomainsMixin, QueueMixin):
   def online_workers(self):
     return [worker for worker in Worker.select() if worker.hostname in self.online]
 
-  request_discovery_sync = TraefikMixin.request_discovery_sync
-
-  async def sync_discovery(self):
+  async def sync_discovery(self, repair=True):
     pass
 
   def request_application_status_sync(self, application):

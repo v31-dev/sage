@@ -593,12 +593,13 @@ class TestSetupWorkerToTheEnd:
     assert [(worker["ip"], worker["online"]) for worker in setup.worker_list] == [("100.64.0.3", True)]
     assert setup.notices == [("info", "Worker w3 synced.")]
 
-  def test_linked_domains_are_asked_to_sync_once_the_worker_is_online(self, setup, application, worker):
+  def test_worker_rejoin_requests_parent_artifact_checks(self, setup, application, worker):
     container = Container.create(application=application, worker=worker, status="active")
-    domain = Domain.create(name="shop", type="public", port=80, container=container)
+    Domain.create(name="shop", type="public", port=80, container=container)
     setup.load_workers()
     self.run(setup, hostname="w1", ip="100.64.0.2")
-    assert setup.traffic_syncs == [domain.id]
+    assert setup.traffic_syncs == []
+    assert setup.discovery_requests == 2
 
   def test_a_new_worker_whose_setup_fails_is_forgotten_again_and_never_online(self, setup):
     setup.tailscale.fail_when = "up -d"

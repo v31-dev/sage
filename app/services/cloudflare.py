@@ -11,6 +11,10 @@ from utils.retry import retry
 logger = logging.getLogger(__name__)
 
 
+def dns_record_matches(record: dict, desired: dict) -> bool:
+  return all(record.get(key) == value for key, value in desired.items())
+
+
 class CloudflareError(Exception):
   """The Cloudflare API refused a request; carries the API's own error messages."""
 
@@ -189,7 +193,7 @@ class Cloudflare(Base):
          if r["name"] == name and (comment is None or r.get("comment") == comment)), None)
 
     if existing_record:
-      if any(existing_record.get(key) != value for key, value in record.items()):
+      if not dns_record_matches(existing_record, record):
         self.request("PUT", f"/zones/{self.zone_id}/dns_records/{existing_record['id']}", json=record)
         logger.info(f"DNS record for {name} updated.")
       else:

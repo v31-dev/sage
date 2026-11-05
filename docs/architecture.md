@@ -82,7 +82,8 @@ Current traffic and naming patterns are driven by Cloudflare, Traefik, and Tails
   reaches the application).
 
 Each Domain record owns its DNS and Traefik synchronization result. A record is synced once both effects have
-completed for its desired configuration. Discovery includes synced names linked to a container; container health
+completed for its desired configuration. A parent pass on demand and every five minutes cleans orphan/old-placement
+artifacts, queues record repairs and generates discovery. Discovery includes synced names linked to a container; container health
 is a separate state.
 
 ### Cloudflare Resources
@@ -229,7 +230,7 @@ APScheduler is a pure cron/interval trigger: each scheduled coroutine only calls
 - worker sync
 - application status sync
 - scheduled volume backup dispatch
-- Traefik domain config sync
+- Domain artifact cleanup, repair scanning and discovery synchronization
 - metrics collection
 - platform backup scheduling
 - cleanup

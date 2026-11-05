@@ -115,7 +115,7 @@ def discover_backups():
   require_s3()
   Manager().add_task(
       task=Manager().discover_s3_backups,
-      scopes={"platform", "app"},
+      scopes={"platform", "app", "domain"},
       executor="platform",
   )
   return {"status": "OK"}

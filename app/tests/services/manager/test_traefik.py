@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import re
 import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -12,7 +11,8 @@ import yaml
 
 import config
 from services.cloudflare import CloudflareError
-from services.db import Application, Container, Domain, Worker
+from services.db import Container, Domain, Worker
+from services.manager.domains import DomainsMixin
 from services.manager.traefik import TraefikMixin
 from services.manager.workers import WorkersMixin
 from services.updates import Updates
@@ -168,14 +168,16 @@ class LocalWorkers:
     return result.returncode, result.stdout.splitlines()
 
 
-class Syncing(TraefikMixin):
+class Syncing(DomainsMixin):
   """The routing sync of a manager whose workers are `LocalWorkers`, those in `online` online."""
   worker_home_dir = "/opt/sage"
   write_worker_revision = WorkersMixin.write_worker_revision
+  read_worker_revisions = WorkersMixin.read_worker_revisions
 
   def __init__(self, root, online):
     self.tailscale = LocalWorkers(root)
-    self.cloudflare = SimpleNamespace(domain="example.test")
+    self.cloudflare = SimpleNamespace(domain="example.test", connect=lambda: None, get_dns_records=lambda: [],
+                                      tunnels=lambda: {}, tunnel_id="t0", sync_dns_records=lambda *args, **kwargs: None)
     self.online = set(online)
     self.records_requests = 0
     self.discovery_requests = 0
@@ -190,20 +192,8 @@ class Syncing(TraefikMixin):
   def notify(self, message, type="info", link=None):
     self.links.append(link)
 
-  async def sync_discovery_records(self):
-    pass
-
   def request_discovery_sync(self):
     self.discovery_requests += 1
-
-
-def rules(files):
-  """Each file's routers' rules."""
-  return {name: re.findall(r"rule: (.+)", content) for name, content in files.items()}
-
-
-def ping(host):
-  return f"Host(`{host}`) && Method(`HEAD`) && Path(`/ping`)"
 
 
 @pytest.fixture
@@ -219,6 +209,13 @@ def workers(db):
 
 @pytest.mark.usefixtures("quiet")
 class TestDiscovery:
+  @pytest.fixture(autouse=True)
+  def lane(self):
+    with ThreadPoolExecutor(max_workers=1) as pool:
+      token = active_executor.set(pool)
+      yield
+      active_executor.reset(token)
+
   def test_each_service_lists_the_names_linked_to_a_container_in_it_apart_for_each_namespace(
           self, tmp_path, application, workers):
     red = Container.create(application=application, worker=workers[0])
@@ -245,7 +242,7 @@ class TestDiscovery:
       manager.tailscale.place(hostname, "_discovery-public-old.yml")
       manager.tailscale.place(hostname, "demo-web-public-shop-red.yml")
 
-    asyncio.run(manager.sync_discovery())
+    asyncio.run(manager.sync_discovery(repair=False))
 
     for hostname in ("w1", "w2"):
       files = manager.tailscale.files(hostname)
@@ -272,47 +269,3 @@ class TestDiscovery:
     domain.pool = "eu"
     domain.save()
     assert manager.discovery_hash(manager.discovery_services()) != before
-
-
-class DomainRecords(TraefikMixin):
-  """The records task of a manager whose Cloudflare has a tunnel for each worker in `tunnels` and a zone of `zone`, and
-  whose workers in `online` are online."""
-
-  def __init__(self, tunnels, zone, online):
-    self.cloudflare = SimpleNamespace(
-        domain="example.test", tunnel_id="t0", worker_tunnel_name=lambda hostname: f"sage-example.test-{hostname}",
-        tunnels=lambda: {name: {"id": tunnel_id} for name, tunnel_id in tunnels.items()},
-        get_dns_records=lambda: zone, sync_dns_records=self.write)
-    self.online = set(online)
-    self.written = []
-
-  def is_worker_online(self, hostname):
-    return hostname in self.online
-
-  def write(self, records, zone=None, **fields):
-    self.written.append((records, fields))
-
-
-class TestDomainRecords:
-  @pytest.fixture(autouse=True)
-  def lane(self):
-    executor = ThreadPoolExecutor(max_workers=1)
-    token = active_executor.set(executor)
-    yield
-    active_executor.reset(token)
-    executor.shutdown()
-
-  def records(self, tunnels=None, zone=(), online=("w1", "w2", "w3")):
-    manager = DomainRecords({"sage-example.test-w1": "t1", "sage-example.test-w2": "t2"} if tunnels is None else tunnels,
-                            list(zone), online)
-    asyncio.run(manager.sync_discovery_records())
-    return manager.written
-
-  def test_internal_discovery_goes_round_the_online_workers_and_a_removed_workers_record_goes(self, workers):
-    zone = [{"name": "discovery.int.example.test", "content": "100.64.0.9", "comment": "sage-discovery-gone"}]
-    assert self.records(zone=zone, online=("w1", "w3"))[1] == ({
-        "sage-discovery-gone": {},
-        "sage-discovery-w1": {"discovery.int.example.test": "100.64.0.2"},
-        "sage-discovery-w2": {},
-        "sage-discovery-w3": {"discovery.int.example.test": "100.64.0.4"},
-    }, {"type": "A"})

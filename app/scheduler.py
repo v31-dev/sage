@@ -154,7 +154,7 @@ async def cleanup():
 async def renew_certificates():
   Manager().add_task(
       task=Manager().renew_certificates,
-      scopes={"platform", "app"},
+      scopes={"platform", "app", "domain"},
       executor="platform",
       on_conflict=OnConflict.REPLACE,
   )
@@ -165,7 +165,7 @@ async def discover_backups():
     return
   Manager().add_task(
       task=Manager().discover_s3_backups,
-      scopes={"platform", "app"},
+      scopes={"platform", "app", "domain"},
       executor="platform",
   )
 
@@ -191,7 +191,6 @@ _JOBS = [
     (refresh_worker_paths, IntervalTrigger(seconds=60)),
     (sync_application_status, CronTrigger.from_crontab("* * * * *")),
     (schedule_application_backups, CronTrigger.from_crontab("* * * * *")),
-    # TODO(19 step 1): Include domain artifact repair in the parent discovery pass.
     (collect_metrics, CronTrigger.from_crontab("* * * * *")),
     (refresh_latest_release, CronTrigger.from_crontab("0 */4 * * *")),
     (backup_database, CronTrigger.from_crontab("0 */12 * * *")),

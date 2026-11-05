@@ -64,7 +64,7 @@ def update_setting(request: Request, setting_data: dict = Body(...)):
     # The bucket or path may hold backups this manager hasn't listed yet.
     Manager().add_task(
         task=Manager().discover_s3_backups,
-        scopes={"platform", "app"},
+        scopes={"platform", "app", "domain"},
         executor="platform",
     )
 
@@ -126,7 +126,7 @@ async def resync_traefik():
   """
   if not Manager().add_task(
       task=Manager().refresh_traefik,
-      scopes={"platform", "app"},
+      scopes={"platform", "app", "domain"},
       executor="platform",
   ):
     raise HTTPException(

@@ -7,7 +7,7 @@ from utils.executor import run_in_executor_with_context
 from utils.queue import OnConflict
 from utils.retry import is_transient, retry
 
-from ._common import DISCOVERY_TEMPLATES, app_dir, content_hash
+from ._common import app_dir
 
 logger = logging.getLogger(__name__)
 
@@ -16,18 +16,9 @@ class TraefikMixin:
   def request_certificate_renewal(self):
     self.add_task(
         task=self.renew_certificates,
-        scopes={"platform", "app"},
+        scopes={"platform", "app", "domain"},
         executor="platform",
         on_conflict=OnConflict.REPLACE,
-    )
-
-  def request_discovery_sync(self):
-    self.add_task(
-        task=self.sync_discovery,
-        scopes={"domain"},
-        executor="app",
-        on_conflict=OnConflict.REPLACE,
-        quiet=True,
     )
 
   def setup_domain(self):
@@ -87,6 +78,7 @@ class TraefikMixin:
         await run_in_executor_with_context(self.cloudflare.sync_worker_records, worker.hostname, worker.subdomain, worker.ip)
 
       self.request_domain_syncs(Domain.select())
+      self.request_discovery_sync()
     except Exception as e:
       self.notify(
           f"Traefik refresh failed part-way: {e}. Run Resync Traefik on the Cloudflare settings page "
@@ -140,62 +132,3 @@ class TraefikMixin:
         worker.hostname, "certs", self.certs.workers.hash() or "")
     self.update_worker(worker.hostname, certs=self.certs.workers.hash())
     logger.info(f"Synced certificate to worker {worker.hostname}.")
-
-  def discovery_services(self) -> list:
-    """Each service, as `[namespace, service, [[host, pool], ...]]`, sorted, with the names linked to a container in
-    it: a public service holds public names, an internal one internal and TCP names."""
-    services = {}
-    for domain in Domain.select().where(Domain.service.is_null(False) & Domain.container.is_null(False) & (Domain.status == "synced")):
-      namespace = "public" if domain.type == "public" else "internal"
-      services.setdefault((namespace, domain.service), []).append([domain.host(self.cloudflare.domain), domain.pool])
-    return [[namespace, service, sorted(names, key=lambda name: name[0])]
-            for (namespace, service), names in sorted(services.items())]
-
-  def discovery_hash(self, services: list) -> str:
-    """Hash of everything the discovery files of `services` are rendered from: the `discovery` stamp."""
-    return content_hash({"templates": DISCOVERY_TEMPLATES, "domain": self.cloudflare.domain, "services": services})
-
-  async def sync_discovery(self):
-    """Write, to every online worker, a discovery router per service, so any worker answers from its files alone:
-    `discovery.<domain>?service=<service>` for a public one (through the platform's tunnel) and
-    `discovery.int.<domain>?service=<service>` for an internal one (tailnet only). HEAD, GET and OPTIONS get the
-    service's names and pools in `Sage-Endpoints`; another method gets a 404. Each worker's stale files go last, and its
-    `discovery` stamp says what it has."""
-    services = self.discovery_services()
-    stamp = self.discovery_hash(services)
-    hosts = {"public": f"discovery.{self.cloudflare.domain}", "internal": f"discovery.int.{self.cloudflare.domain}"}
-    dynamic = f"{self.worker_home_dir}/traefik/dynamic"
-    for worker in self.online_workers():
-      written = []
-      for namespace, service, names in services:
-        file = f"_discovery-{namespace}-{service}.yml"
-        await self.tailscale.sync_file(
-            worker.hostname, app_dir / f"templates/worker/traefik/discovery_{namespace}.yml", f"{dynamic}/{file}", {
-                "SERVICE": service,
-                "HOST": hosts[namespace],
-                # An RFC 9651 list: each name a string, its pool a parameter.
-                "ENDPOINTS": ", ".join(f'"{host}";pool="{pool}"' if pool else f'"{host}"' for host, pool in names),
-            })
-        written.append(file)
-      await self.tailscale.exec_command(
-          worker.hostname,
-          f"find {dynamic} -maxdepth 1 -name '_discovery-*.yml' " + "".join(f"! -name '{file}' " for file in written)
-          + "-delete",
-      )
-      await self.write_worker_revision(worker.hostname, "discovery", stamp)
-    await self.sync_discovery_records()
-    logger.info(f"Discovery synced: {len(services)} service(s).")
-
-  async def sync_discovery_records(self):
-    """The public discovery name and its internal addresses on online workers."""
-    zone = await run_in_executor_with_context(self.cloudflare.get_dns_records)
-    domain_name = self.cloudflare.domain
-    await run_in_executor_with_context(self.cloudflare.sync_dns_records, {
-        "sage-tunnel": {f"discovery.{domain_name}": f"{self.cloudflare.tunnel_id}.cfargotunnel.com"},
-    }, zone=zone, type="CNAME", proxied=True)
-    # A worker no longer in Sage has its record deleted too.
-    discovery = {record["comment"]: {} for record in zone if (record.get("comment") or "").startswith("sage-discovery-")}
-    for worker in Worker.select():
-      discovery[f"sage-discovery-{worker.hostname}"] = (
-          {f"discovery.int.{domain_name}": worker.ip} if self.is_worker_online(worker.hostname) else {})
-    await run_in_executor_with_context(self.cloudflare.sync_dns_records, discovery, zone=zone, type="A")

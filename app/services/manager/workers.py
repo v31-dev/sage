@@ -275,11 +275,12 @@ class WorkersMixin:
         "report_interval": config.REPORT_INTERVAL_SECONDS,
     })
 
-  async def read_worker_revisions(self, hostname: str) -> dict:
+  async def read_worker_revisions(self, hostname: str, timeout: int = 300) -> dict:
     """All revision stamps stored on a worker ({} when none exist yet)."""
     _, lines = await self.tailscale.exec_command(
         hostname,
         f"grep -H . {self.worker_home_dir}/revisions/* 2>/dev/null || true",
+        timeout=timeout,
     )
     revisions = {}
     for line in lines:
@@ -371,9 +372,8 @@ class WorkersMixin:
     Converge a worker to current manager state — the single idempotent heal
     for new, rejoining, IP-changed, and force-resynced workers. The worker's
     revision stamps decide how much work that is: a matching infra stamp
-    skips the file syncs / compose up / restarts, matching cert and per-app
-    stamps skip those repairs, and a worker that missed nothing costs one
-    read. `force` deletes the stamps first — distrust everything, converge
+    skips the file syncs / compose up / restarts, and a matching cert stamp
+    skips its repair. Domain artifacts are reconciled by the parent pass. `force` deletes the stamps first — distrust everything, converge
     from scratch. A worker that another Sage manages (its owner stamp names
     another instance) is refused. On failure, the worker row + DNS are only
     cleaned up if this call was adding a brand-new worker. `subdomain` is a new
@@ -520,7 +520,6 @@ class WorkersMixin:
 
       self.update_worker(worker.hostname, online=True)
 
-      self.request_domain_syncs(Domain.select().join(Container).where(Container.worker == worker.hostname))
       self.request_discovery_sync()
 
       await self.cleanup_orphan_containers(worker)
