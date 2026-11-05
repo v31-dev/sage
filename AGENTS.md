@@ -10,7 +10,9 @@ This is a living project-context file for AI coding agents. Keep it concise, cur
 
 ## Model
 
-- Sessions here run on Claude Opus at `xhigh` effort or above, set with `/model` and `/effort`, because evaluation and design decisions are subtle. Spawn subagents at the same level, never a lighter model or lower effort.
+- Claude Code: use Opus 5.5 at `xhigh` effort or above.
+- Codex: use GPT-6.1 Sol at `xhigh` effort or above.
+- Select the model and effort in the client settings. Evaluation and design decisions are subtle; when the user requests subagents, use the parent's model and effort.
 
 ## Project Summary
 
@@ -99,7 +101,9 @@ docker compose up --build --watch
 
 ## Release Notes
 
-How to write release notes is in [.claude/skills/release-notes/SKILL.md](.claude/skills/release-notes/SKILL.md).
+Skills live in `.agents/skills/`, each with an identical copy in `.claude/skills/`, where Claude Code finds them; edit both together.
+
+How to write release notes is in [.agents/skills/release-notes/SKILL.md](.agents/skills/release-notes/SKILL.md).
 
 ## Documentation Rules
 
@@ -118,4 +122,8 @@ Agent memory, the todo tracker and the global working rules for this project liv
 3. `autoMemoryDirectory` in `.claude/settings.local.json`: the repo is two levels above that folder.
 4. A folder named `memory` beside this repository, holding a `rules.md`.
 
-All work in this repo is tracked in the memory repo. A session is set up when the global rules are in your context and your memory directory is `<memory repo>/sage/memory`. If you can't find the repo, ask the user to add it to the workspace or give its path, and wait before starting the task. If the session isn't set up and the repo is in the workspace or the user gave its path, follow Recovery in its `README.md`. If you found it any other way, read its `rules.md`, tell the user in one line and carry on, tracking the work there.
+All work in this repo is tracked in the memory repo. If you can't find it, ask the user to add it to the workspace or give its path, and wait before starting the task.
+
+At the start of every session, read its `rules.md` and `<memory repo>/sage/memory/MEMORY.md`, then the relevant indexed notes. Reading the rules and index initializes the session for any agent; keep notes and todos in the memory repo using file operations. This repo is the only store for persistent agent memory and todos; do not use a separate client memory store.
+
+If this machine's link is missing or stale and the memory repo is in the workspace or the user gave its path, follow Recovery in its `README.md`. If you found it any other way, tell the user in one line and carry on, tracking the work there.
