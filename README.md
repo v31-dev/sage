@@ -234,6 +234,7 @@ Sage brings the workers in line on start. A new `TS_NAME` renames the manager's 
 machine, and the manager's metrics history starts over. Records and tunnels of a previous
 domain, account or name stay in Cloudflare until you delete them; they are listed in
 [Cloudflare Resources](docs/architecture.md#cloudflare-resources).
+See [DNS and API limits](docs/architecture.md#dns-and-api-limits) for Cloudflare's quotas and how Sage reports failures.
 
 Sage doesn't upgrade itself. The version in the footer opens Settings → Upgrade, with the
 release notes and the steps: take a backup, pause Sage and wait until it is safe to stop,

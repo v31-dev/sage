@@ -1,11 +1,13 @@
 import logging
+from datetime import timezone
+from email.utils import parsedate_to_datetime
 
 import httpx
 
 import config
 from services.base import Base
 from services.tailscale import Tailscale
-from utils.common import dict_to_obj, get_env
+from utils.common import dict_to_obj, get_env, utcnow
 from utils.retry import retry
 
 logger = logging.getLogger(__name__)
@@ -18,10 +20,24 @@ def dns_record_matches(record: dict, desired: dict) -> bool:
 class CloudflareError(Exception):
   """The Cloudflare API refused a request; carries the API's own error messages."""
 
-  def __init__(self, status_code: int, reasons: str):
-    super().__init__(f"Cloudflare answered HTTP {status_code}" + (f": {reasons}" if reasons else ""))
+  def __init__(self, status_code: int, reasons: str, retry_after: str | None = None):
     self.status_code = status_code
     self.transient = status_code >= 500 or status_code == 429
+    self.retry_after_seconds = None
+    if retry_after:
+      retry_after = retry_after.strip()
+      try:
+        if retry_after.isascii() and retry_after.isdecimal():
+          self.retry_after_seconds = int(retry_after)
+        else:
+          retry_at = parsedate_to_datetime(retry_after)
+          if retry_at.tzinfo is None:
+            retry_at = retry_at.replace(tzinfo=timezone.utc)
+          self.retry_after_seconds = max(0, (retry_at.astimezone(timezone.utc).replace(tzinfo=None) - utcnow()).total_seconds())
+      except (ValueError, TypeError, OverflowError):
+        pass
+    super().__init__(f"Cloudflare answered HTTP {status_code}" + (f": {reasons}" if reasons else "")
+                     + (f" (retry after {self.retry_after_seconds}s)" if self.retry_after_seconds is not None else ""))
 
 
 class Cloudflare(Base):
@@ -62,7 +78,7 @@ class Cloudflare(Base):
         errors = response.json().get("errors") or []
       except ValueError:
         errors = []
-      raise CloudflareError(response.status_code, "; ".join(e.get("message", "") for e in errors))
+      raise CloudflareError(response.status_code, "; ".join(e.get("message", "") for e in errors), response.headers.get("Retry-After"))
 
     return retry(attempt, delays=config.CLOUDFLARE_RETRY_DELAYS)
 

@@ -119,6 +119,20 @@ class TestCloudflareError:
   def test_without_reasons_the_message_has_only_the_status(self):
     assert str(CloudflareError(502, "")) == "Cloudflare answered HTTP 502"
 
+  @pytest.mark.parametrize("header, seconds", [
+      (None, None), ("", None), ("300", 300), ("0", 0), (" 120 ", 120),
+      ("Thu, 01 Jan 2026 12:02:00 GMT", 120), ("Thursday, 01-Jan-26 12:02:00 GMT", 120),
+      ("Thu Jan  1 12:02:00 2026", 120), ("Thu, 01 Jan 2026 17:32:00 +0530", 120),
+      ("Thu, 01 Jan 2026 11:59:00 GMT", 0),
+      ("-1", None), ("+10", None), ("1.5", None), ("soon", None), ("NaN", None), ("Infinity", None),
+      ("Thu, 32 Jan 2026 12:02:00 GMT", None), ("Thu, 01 Jan 999999 12:02:00 GMT", None),
+  ])
+  def test_retry_after_is_a_nonnegative_delay_from_the_utc_clock(self, clock, header, seconds):
+    assert CloudflareError(429, "rate limited", header).retry_after_seconds == seconds
+
+  def test_the_terminal_error_includes_the_provider_wait(self):
+    assert str(CloudflareError(429, "rate limited", "300")) == "Cloudflare answered HTTP 429: rate limited (retry after 300s)"
+
 
 class TestConstruction:
   def test_the_names_come_from_the_environment(self):
@@ -230,6 +244,56 @@ class TestRequest:
 
     assert sleeps == [1, 2]
     assert len(api.requests) == 3
+
+  def test_each_response_can_change_the_minimum_retry_wait(self, cloudflare, api, sleeps):
+    first = fail(429, "slow down")
+    first.headers["Retry-After"] = "300"
+    second = fail(503, "still busy")
+    second.headers["Retry-After"] = "60"
+    api.on("GET", "/zones", first, second, ok([]))
+
+    cloudflare.request("GET", "/zones")
+
+    assert sleeps == [300, 60]
+
+  def test_a_date_header_waits_until_the_provider_time(self, cloudflare, api, sleeps, clock):
+    response = fail(429, "slow down")
+    response.headers["Retry-After"] = "Thu, 01 Jan 2026 12:02:00 GMT"
+    api.on("GET", "/zones", response, ok([]))
+
+    cloudflare.request("GET", "/zones")
+
+    assert sleeps == [120]
+
+  def test_a_transport_error_does_not_reuse_an_earlier_provider_delay(self, cloudflare, api, sleeps):
+    response = fail(429, "slow down")
+    response.headers["Retry-After"] = "300"
+    api.on("GET", "/zones", response, httpx.ConnectError("down"), ok([]))
+
+    cloudflare.request("GET", "/zones")
+
+    assert sleeps == [300, 2]
+
+  def test_retry_after_does_not_add_attempts_or_hide_the_terminal_error(self, cloudflare, api, sleeps):
+    response = fail(429, "rate limited")
+    response.headers["Retry-After"] = "300"
+    api.on("GET", "/zones", response)
+
+    with pytest.raises(CloudflareError, match="rate limited.*retry after 300s") as raised:
+      cloudflare.request("GET", "/zones")
+
+    assert raised.value.status_code == 429
+    assert sleeps == [300, 300]
+
+  def test_a_provider_wait_does_not_make_a_permanent_error_retryable(self, cloudflare, api, sleeps):
+    response = fail(400, "DNS quota exceeded")
+    response.headers["Retry-After"] = "300"
+    api.on("POST", "/zones", response)
+
+    with pytest.raises(CloudflareError, match="DNS quota exceeded"):
+      cloudflare.request("POST", "/zones")
+
+    assert sleeps == []
 
 
 class TestListAll:

@@ -111,6 +111,29 @@ characters on Cloudflare's Free plan, which has no record tags.
 After a change of domain, account or `TS_NAME`, the previous domain's or name's resources stay in Cloudflare until
 they are deleted by hand.
 
+### DNS And API Limits
+
+Each linked public Domain uses one CNAME, including a stopped container's name. Internal and TCP names share one
+wildcard record per worker. Steady Sage records total **P + W + O + 2**: P linked public Domains, W workers,
+O online workers' internal discovery records, plus the manager and public discovery records. For example, 40 public
+Domains and four online workers use 50 records. Allow space for unrelated zone records and temporary ACME TXT records.
+
+Cloudflare's Free quota is 200 records per zone; some Free zones have a 1,000-record quota. Pro and Business allow
+3,500; Enterprise uses an account quota. Check the zone's actual allowance in Cloudflare. A larger DNS quota does
+not by itself increase the API allowance. See [Cloudflare's DNS quotas](https://developers.cloudflare.com/dns/manage-dns-records/#dns-records-quota).
+
+The API allows 1,200 requests per five minutes per user, shared across tokens and dashboard activity. Exceeding it
+can block calls for five minutes with HTTP 429. Sage inventories DNS and tunnels once per discovery pass, reuses
+those lists for cleanup and writes only drift. A clean pass with one page per inventory needs two API calls;
+record repairs, worker setup, certificates and other operations add calls. Sage applies no proactive rate limiter.
+See [Cloudflare's API limits](https://developers.cloudflare.com/fundamentals/api/reference/limits/).
+
+Retryable requests use bounded retries and honor a valid `Retry-After` minimum wait when supplied. Long provider
+delays extend the operation. A final Domain apply failure appears in its sync error, task history and an error
+notification; a failed discovery pass reports its error in task history and a notification without overwriting
+successful Domain proofs. Record quota failures also surface as errors. Scheduled or manual synchronization can
+retry once capacity is available; Sage does not increase the provider's quotas.
+
 ### Domain Types
 
 A `Domain` is a name (one DNS label: lowercase letters, digits and dashes), a `type`, a port, the container it is

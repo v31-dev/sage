@@ -354,6 +354,26 @@ Cron cadence convention: **≤ 1m → `DEDUP`** (a high-frequency reconciler ski
 
 Worker convergence (`setup_worker`, reached through `sync_workers` and `add_worker`) runs on the **`platform` scope only** — it does not barrier app work, so the 30-second worker poll is never starved by long builds and worker drift is detected (and converged) within ~30s regardless of app activity. This is safe because app tasks already treat workers as unreliable — a worker can vanish mid-exec regardless of scheduling: deploy/stop/delete/backup **fast-fail on an offline-flagged worker**, any per-exec failure lands the container in `error`, and the status syncs converge from there. The residual race — a deploy targeting a worker whose setup is still mid-flight — fails loudly and converges identically, which is the same outcome as deploying to an offline worker (already possible at any time; placement doesn't require `online`). Tasks that mutate fleet-wide state keep the broad `{platform, app, domain}` barrier: `remove_worker` (deletes the row), `reboot_worker` (restarts the machine), `refresh_traefik` (re-issues the cert and rewrites worker traefik config on a domain change), and the daily `renew_certificates` — the latter holds `{platform, app, domain}` so it also serializes with `setup_worker`'s per-worker cert sync. The manager now issues the wildcard cert in-process (`Certs`, via ACME DNS-01) before the sync runs, so there is no wait-for-provisioning spin; the cert reaches a worker as PEM plus a re-written `traefik/dynamic/certs.yml`, whose file-provider `watch` reloads it with no traefik restart. Platform database backup/restore and backup discovery hold the same three roots, covering discovery and unlinked record tasks. There is deliberately no per-worker scope dimension; at ≤10 workers it isn't worth the fragility.
 
+## Cloudflare Request Failures
+
+`Cloudflare.request` classifies HTTP 429, HTTP 5xx and transport failures as retryable. It uses
+`config.CLOUDFLARE_RETRY_DELAYS` (1 and 2 seconds: at most three attempts). A valid `Retry-After` on an error is parsed
+as nonnegative delay seconds or an HTTP date in UTC. The resulting `CloudflareError.retry_after_seconds` is a
+minimum wait in the shared `retry`/`retry_async` helpers: each wait is the greater of that minimum and its configured
+backoff. Missing or malformed values use the configured delay; a past date contributes zero. The header does not
+add attempts or make a permanent failure retryable. The final error retains Cloudflare's reason and its wait hint.
+See [Retry-After](https://www.rfc-editor.org/rfc/rfc9110.html#section-10.2.3).
+
+Waiting occupies the operation's existing executor thread and keeps its task scopes held. There is no shared
+cooldown, proactive pacing or separate retry scheduler. DNS/API budgets are described in
+[architecture.md](architecture.md#dns-and-api-limits).
+
+Domain apply and discovery reconciliation own their failure notifications. A record failure retains its last
+successful proof/time, stores the phase and error, requests cleanup/discovery and sends an error notification linked
+to Domains before failing the task. Parent failures aggregate inventory, cleanup and publication errors into one
+notification per failed pass; other workers still progress and successful Domain proofs remain intact. The queue
+records failed tasks, including quiet tasks, in task history. UI notifications use the existing notification feed.
+
 ## Traefik Domain Sync
 
 `sync_domain` owns one Domain record's Traefik file and DNS. `request_domain_sync` marks that record pending and

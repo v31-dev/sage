@@ -101,6 +101,16 @@ class TestRetry:
     assert call.calls == 3
     assert sleeps == [1, 2]
 
+  @pytest.mark.parametrize("minimum, expected", [(None, [1, 2]), (0, [1, 2]), (0.5, [1, 2]), (1.5, [1.5, 2]), (300, [300, 300])])
+  def test_a_provider_minimum_extends_the_wait_and_the_notice(self, minimum, expected):
+    error = Transient()
+    error.retry_after_seconds = minimum
+    notices, sleeps = [], []
+
+    retry(Flaky(error, error), delays=(1, 2), on_retry=lambda error, delay: notices.append(delay), sleep=sleeps.append)
+
+    assert sleeps == notices == expected
+
   def test_an_error_that_is_not_retried_is_raised_at_once(self):
     sleeps = []
     call = Flaky(ValueError("bad"))
@@ -155,6 +165,19 @@ class TestRetry:
 
 
 class TestRetryAsync:
+  @pytest.mark.parametrize("minimum, expected", [(None, [1, 2]), (0, [1, 2]), (0.5, [1, 2]), (1.5, [1.5, 2]), (300, [300, 300])])
+  async def test_a_provider_minimum_extends_the_wait_and_the_notice(self, minimum, expected):
+    error = Transient()
+    error.retry_after_seconds = minimum
+    notices, sleeps = [], []
+
+    async def sleep(delay):
+      sleeps.append(delay)
+
+    await retry_async(Flaky(error, error).acall, delays=(1, 2), on_retry=lambda error, delay: notices.append(delay), sleep=sleep)
+
+    assert sleeps == notices == expected
+
   async def test_each_failure_waits_the_next_delay_and_tries_again(self):
     sleeps = []
 

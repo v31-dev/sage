@@ -50,6 +50,7 @@ class Syncing(DomainsMixin, QueueMixin):
     self.online = {"w1", "w2"}
     self.not_ready = set()
     self.status_requests = []
+    self.notices = []
     self.queue_facts = self.domains_queue_facts()
     self.task_queue = TaskQueue(SCOPES, {"app": pool}, notify=self._queue_changed)
 
@@ -67,6 +68,9 @@ class Syncing(DomainsMixin, QueueMixin):
 
   def request_application_status_sync(self, application):
     self.status_requests.append(application.id)
+
+  def notify(self, message, type="info", link=None):
+    self.notices.append((message, type, link))
 
   def run(self, domain_id, application_id):
     asyncio.run(self.sync_domain(domain_id, application_id))

@@ -136,6 +136,7 @@ class DomainsMixin:
       self.request_domain_sync(domain)
     self.request_discovery_sync(repair=False)
     if error:
+      self.notify(f"Domain {snapshot.host or domain_id} sync failed at {phase}: {error}", "error", "/domains")
       raise error
 
   def request_discovery_sync(self, repair: bool = True):
@@ -287,5 +288,7 @@ class DomainsMixin:
       except Exception as error:
         failures.append(f"Discovery DNS/cleanup: {error}")
     if failures:
-      raise RuntimeError("Domain reconciliation failed: " + "; ".join(failures))
+      message = "Domain reconciliation failed: " + "; ".join(failures)
+      self.notify(message, "error", "/domains")
+      raise RuntimeError(message)
     logger.info(f"Domains reconciled; discovery synced: {len(services)} service(s).")
