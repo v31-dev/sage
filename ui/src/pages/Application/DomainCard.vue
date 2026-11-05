@@ -67,7 +67,8 @@ const pendingCertificate = computed(() => {
       />
       <StateIndicator v-if="pendingCertificate" v-bind="pendingCertificate" show-label />
       <StateIndicator
-        v-bind="appStore.domainIndicator(props.application.domains_synced)"
+        v-bind="appStore.domainIndicator(props.domain.status)"
+        :title="props.domain.sync_error ?? undefined"
         show-label
       />
       <Badge variant="outline">{{ TYPES[props.domain.type] }}</Badge>

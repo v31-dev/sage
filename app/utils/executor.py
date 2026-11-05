@@ -4,7 +4,7 @@ from contextvars import ContextVar, copy_context
 from functools import partial
 
 # Every thread pool in the process is defined here. LANES holds the operation-queue
-# lanes (the Manager builds its TaskQueue from it); each scope root gets its own pool. Worker counts are fixed I/O-concurrency limits, not derived
+# lanes (the Manager builds its TaskQueue from it). Worker counts are fixed I/O-concurrency limits, not derived
 # from os.cpu_count(): these lanes run blocking network I/O (Cloudflare API, S3,
 # tailscale status, httpx), so the manager's core count doesn't gate them -- and in a CPU-limited
 # container os.cpu_count() reports host cores, not the container's allowance.

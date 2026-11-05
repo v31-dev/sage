@@ -152,10 +152,8 @@ class Cloudflare(Base):
         if record["name"] not in wanted:
           self.request("DELETE", f"/zones/{self.zone_id}/dns_records/{record['id']}")
           logger.info(f"DNS record for {record['name']} ({comment}) deleted.")
-      contents = {record["name"]: record["content"] for record in existing}
       for name, content in wanted.items():
-        if contents.get(name) != content:
-          self.create_dns_record(name, content, comment=comment, existing=existing, **fields)
+        self.create_dns_record(name, content, comment=comment, existing=existing, **fields)
 
   def sync_worker_records(self, hostname: str, subdomain: str | None = None, ip: str | None = None):
     """Point the worker's `*.<subdomain>.int.<domain>` at its IP and delete its records at any other name; without a
@@ -175,7 +173,7 @@ class Cloudflare(Base):
 
   def create_dns_record(self, name, content, comment=None, existing=None, **fields):
     """
-    Create a DNS record if it doesn't already exist, or correct its content. Existence is
+    Create a DNS record if it doesn't already exist, or correct its requested fields. Existence is
     by name and, when given, comment, among `existing` when given, else the records at `name`.
     `fields` are other record fields (type, proxied, ttl).
     """
@@ -191,12 +189,9 @@ class Cloudflare(Base):
          if r["name"] == name and (comment is None or r.get("comment") == comment)), None)
 
     if existing_record:
-      if existing_record["content"] != content:
-        logger.info(
-            f"DNS record for {name} exists but content is {existing_record['content']}. "
-            f"Updating content to {content}.")
+      if any(existing_record.get(key) != value for key, value in record.items()):
         self.request("PUT", f"/zones/{self.zone_id}/dns_records/{existing_record['id']}", json=record)
-        logger.info(f"DNS record for {name} updated with new content {content}.")
+        logger.info(f"DNS record for {name} updated.")
       else:
         logger.info(f"DNS record for {name} already exists.")
     else:

@@ -101,7 +101,7 @@ def create_backup(request: Request):
     # in-flight backup, with at most one backup queued behind it.
     Manager().add_task(
         task=Manager().backup_database_s3,
-        scopes={"platform", "app"},
+        scopes={"platform", "app", "domain"},
         executor="platform",
         on_conflict=OnConflict.REPLACE,
     )
@@ -208,7 +208,7 @@ async def restore_backup(request: Request, restore_data: dict = Body(default={})
   # Blocks Sage (restoring state) until the restore has finished.
   if not Manager().add_task(
       task=Manager().restore_database_from_s3,
-      scopes={"platform", "app"},
+      scopes={"platform", "app", "domain"},
       params={"s3_path": backup.s3_path},
       executor="platform",
       restore=True,

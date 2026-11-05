@@ -2,7 +2,7 @@ from fastapi import APIRouter, Body, HTTPException
 
 from services.db import Container, Domain
 from services.manager import Manager
-from services.manager.application import application_changed, domains_changed
+from services.manager.domains import domain_changed
 from utils.api import generic_create, generic_delete, generic_get, generic_update, parse_api_data
 from utils.common import get_env
 
@@ -21,6 +21,10 @@ def domain_payload(domain: Domain) -> dict:
       "port": domain.port,
       "service": domain.service,
       "pool": domain.pool,
+      "status": Manager().domain_status(domain),
+      "sync_error": domain.sync_error,
+      "synced_hash": domain.synced_hash,
+      "synced_at": domain.synced_at,
       "host": domain.host(get_env("DOMAIN")),
       "address": domain.address(get_env("DOMAIN")),
       "worker": container.worker_id if container else domain.worker_id,
@@ -59,16 +63,6 @@ def list_domains() -> dict:
   }
 
 
-def routing_changed(*containers):
-  """What routes the domains of these containers (the old and the new of one domain, when it moved) is resynced, and
-  the pages that show them are told."""
-  for application in {container.application for container in containers if container}:
-    Manager().request_application_traefik_sync(application)
-    application_changed(application)
-  Manager().request_discovery_sync()
-  domains_changed()
-
-
 def fields_of(domain_data: dict) -> dict:
   """The domain's own fields that were sent; an empty service or pool is none."""
   data = parse_api_data(domain_data, ["name", "type", "port", "service", "pool"])
@@ -96,8 +90,10 @@ def create_domain(domain_data: dict = Body(...)):
     raise HTTPException(status_code=400, detail="A domain without a container is not allowed.")
   container = container_of(domain_data)
   result = generic_create(Domain, {**fields_of(domain_data), "container": container})
-  routing_changed(container)
-  return domain_payload(Domain.get_by_id(result["id"]))
+  domain = Domain.get_by_id(result["id"])
+  Manager().request_domain_sync(domain)
+  domain_changed(domain)
+  return domain_payload(Domain.get_by_id(domain.id))
 
 
 @router.put("/{domain_id}")
@@ -108,15 +104,16 @@ def update_domain(domain_id: int, domain_data: dict = Body(...)):
   data = fields_of(domain_data)
   if "container" in domain_data:
     data["container"] = container_of(domain_data)
-  generic_update(Domain, domain, data)
-  routing_changed(before, domain.container)
+  generic_update(Domain, domain, {**data, "status": "pending", "sync_error": None})
+  Manager().request_domain_sync(domain)
+  domain_changed(domain, before)
   return domain_payload(Domain.get_by_id(domain_id))
 
 
 @router.delete("/{domain_id}")
 def delete_domain(domain_id: int):
   domain = generic_get(Domain, Domain.id == domain_id, return_model=True)
-  container = domain.container
   result = generic_delete(Domain, domain)
-  routing_changed(container)
+  domain_changed(domain)
+  Manager().request_discovery_sync()
   return result

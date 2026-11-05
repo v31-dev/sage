@@ -108,8 +108,9 @@ class CoreMixin:
     container_stopping = container_counts.get("stopping", 0)
     container_backup = container_counts.get("backup", 0)
     container_restoring = container_counts.get("restoring", 0)
-    domain_active = Domain.select().join(Application).where(Application.domains_synced).count()
-    domain_inactive = Domain.select().join(Application).where(Application.domains_synced == False).count()
+    domain_counts = self._status_counts(Domain)
+    domain_active = domain_counts.get("synced", 0)
+    domain_inactive = sum(domain_counts.values()) - domain_active
     backup_system = Backup.select().where(Backup.type == "platform").count()
     backup_application = Backup.select().where(Backup.type == "application").count()
     deployments_last_24h = Event.select().where(

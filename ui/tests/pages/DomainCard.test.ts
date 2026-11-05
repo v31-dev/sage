@@ -13,6 +13,10 @@ const domain = (overrides: Partial<Domain> = {}) =>
     port: 80,
     service: null,
     pool: null,
+    status: 'synced',
+    sync_error: null,
+    synced_hash: null,
+    synced_at: null,
     host: 'shop.example.test',
     address: 'https://shop.example.test',
     worker: 'w1',
@@ -28,7 +32,6 @@ function mountCard(current: Domain, workers: Partial<WorkerListItem>[] = []) {
   return mount(DomainCard, {
     props: {
       application: {
-        domains_synced: true,
         containers: [container('w1', 'active'), container('w2', 'inactive')],
       } as unknown as Application,
       domain: current,
@@ -69,6 +72,25 @@ describe('a domain on its application page', () => {
     expect(wrapper.find('a').exists()).toBe(false)
     expect(wrapper.get('[data-slot=card-title]').text()).toBe('db.red.int.example.test:8443')
   })
+
+  it.each([
+    ['pending', 'pending'],
+    ['syncing', 'syncing'],
+    ['synced', 'synced'],
+    ['error', 'sync failed'],
+  ] as const)(
+    'shows the record sync state %s separately from container health',
+    (status, label) => {
+      const wrapper = mountCard(
+        domain({ status, sync_error: status === 'error' ? 'DNS: unavailable' : null })
+      )
+
+      expect(wrapper.text()).toContain('active')
+      expect(wrapper.text()).toContain(label)
+      if (status === 'error')
+        expect(wrapper.get('[title]').attributes('title')).toBe('DNS: unavailable')
+    }
+  )
 
   it.each([
     [{ covered: false, synced: false, expiry: null }, 'waiting for the certificate'],

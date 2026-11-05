@@ -74,23 +74,8 @@ async def schedule_application_backups():
     )
 
 
-async def reconcile_traefik_configs():
-  Manager().add_task(
-      task=Manager().reconcile_traefik_configs,
-      scopes={"platform"},
-      executor="platform",
-      quiet=True,
-  )
-
-
-async def sync_domain_records():
-  Manager().add_task(
-      task=Manager().sync_domain_records,
-      scopes={"platform"},
-      executor="platform",
-      on_conflict=OnConflict.REPLACE,
-      quiet=True,
-  )
+async def sync_discovery():
+  Manager().request_discovery_sync()
 
 
 async def collect_metrics():
@@ -135,7 +120,7 @@ async def backup_database():
     return
   Manager().add_task(
       task=Manager().backup_database_s3,
-      scopes={"platform", "app"},
+      scopes={"platform", "app", "domain"},
       executor="platform",
       on_conflict=OnConflict.REPLACE,
   )
@@ -206,7 +191,7 @@ _JOBS = [
     (refresh_worker_paths, IntervalTrigger(seconds=60)),
     (sync_application_status, CronTrigger.from_crontab("* * * * *")),
     (schedule_application_backups, CronTrigger.from_crontab("* * * * *")),
-    (reconcile_traefik_configs, CronTrigger.from_crontab("* * * * *")),
+    # TODO(19 step 1): Include domain artifact repair in the parent discovery pass.
     (collect_metrics, CronTrigger.from_crontab("* * * * *")),
     (refresh_latest_release, CronTrigger.from_crontab("0 */4 * * *")),
     (backup_database, CronTrigger.from_crontab("0 */12 * * *")),
@@ -214,13 +199,13 @@ _JOBS = [
     (cleanup, CronTrigger.from_crontab("0 4 * * *")),
     (renew_certificates, CronTrigger.from_crontab("0 3 * * *")),
     (check_settings, CronTrigger.from_crontab("*/5 * * * *")),
-    (sync_domain_records, CronTrigger.from_crontab("*/5 * * * *")),
+    (sync_discovery, CronTrigger.from_crontab("*/5 * * * *")),
 ]
 
 # Run once right after startup (as queued tasks, so the servers are already up), then on
 # their cron schedule where they have one.
 _AT_STARTUP = [refresh_latest_release, renew_certificates, discover_backups, check_settings, check_worker_stamps, refresh_worker_paths,
-               sync_domain_records]
+               sync_discovery]
 
 
 def start():

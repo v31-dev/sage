@@ -149,6 +149,11 @@ onUnmounted(() => stop?.())
                     />
                   </template>
                   <StateIndicator v-else state="warning" label="not linked" show-label />
+                  <StateIndicator
+                    v-bind="appStore.domainIndicator(domain.status)"
+                    :title="domain.sync_error ?? undefined"
+                    show-label
+                  />
                   <DomainDialog
                     :containers="state.containers"
                     :domains="state.domains"

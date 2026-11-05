@@ -6,6 +6,7 @@ from typing import Callable
 
 import config
 from services.db import Application, Container, Domain, Instance, Worker
+from services.domains import domains_changed
 from services.metrics import Metrics
 from services.updates import Fact, Updates, UpdateSource
 from services.worker_reports import WorkerReports
@@ -14,10 +15,11 @@ from utils.executor import run_in_executor_with_context
 from utils.logging import TaskFailed
 from utils.queue import OnConflict
 
-from ._common import WORKER_INFRA_TEMPLATES, app_dir, content_hash, routing_input_hash
-from .application import domains_changed, mark
+from ._common import WORKER_INFRA_TEMPLATES, app_dir, content_hash
+from .application import mark
 from .decisions import (WORKER_TASKS, WorkerInputs, WorkerReboot, WorkerRow, plan_worker_sync, worker_claim_refusal, worker_entry, worker_owner,
                         worker_stack_problem, worker_with_row, worker_without_row)
+from .domains import domain_changed
 
 logger = logging.getLogger(__name__)
 
@@ -160,8 +162,9 @@ class WorkersMixin:
       return
     Worker.update(subdomain=subdomain).where(Worker.hostname == hostname).execute()
     self.update_worker(hostname, subdomain=subdomain)
-    for domain in Domain.select().where((Domain.worker == hostname) & Domain.container.is_null(False)):
-      self.request_application_traefik_sync(domain.container.application)
+    for domain in Domain.select().where(Domain.worker == hostname):
+      self.request_domain_sync(domain)
+      domain_changed(domain)
     domains_changed()
     self.request_discovery_sync()
     self.request_certificate_renewal()
@@ -257,18 +260,6 @@ class WorkersMixin:
         self.notify(f"Worker {worker.hostname}: {problem}; started its stack.", "warning")
       else:
         logger.warning(f"Worker {worker.hostname}: {problem}, but starting its stack changed nothing.")
-
-  def request_stale_application_syncs(self, domain: str, revisions: dict) -> list[str]:
-    """Request a Traefik sync of each application whose routing stamp in `revisions` (a worker's) is not what its files
-    would be now. Returns the names of those."""
-    stale = []
-    for application in Application.select():
-      app_hash = routing_input_hash(
-          domain, list(application.domains), list(application.containers), self.is_worker_online)
-      if revisions.get(application.qualified_name) != app_hash:
-        self.request_application_traefik_sync(application)
-        stale.append(application.qualified_name)
-    return stale
 
   def infra_hash(self, tunnel_id: str) -> str:
     """Hash of every input `setup_worker` renders into a worker's infra files,
@@ -422,7 +413,7 @@ class WorkersMixin:
         self.request_certificate_renewal()
       await run_in_executor_with_context(self.cloudflare.sync_worker_records, worker.hostname, row.subdomain, worker.ip)
       # It answers internal discovery once online, and its tunnel, which its public names point at, may be new.
-      self.request_domain_records_sync()
+      self.request_discovery_sync()
 
       if infra_stale:
         tunnel_token = (await run_in_executor_with_context(self.cloudflare.get_tunnel_token, tunnel_id)).token
@@ -529,10 +520,8 @@ class WorkersMixin:
 
       self.update_worker(worker.hostname, online=True)
 
-      repaired.extend(self.request_stale_application_syncs(domain, revisions))
-      if revisions.get("discovery") != self.discovery_hash(self.discovery_services()):
-        self.request_discovery_sync()
-        repaired.append("discovery")
+      self.request_domain_syncs(Domain.select().join(Container).where(Container.worker == worker.hostname))
+      self.request_discovery_sync()
 
       await self.cleanup_orphan_containers(worker)
 
@@ -634,7 +623,7 @@ class WorkersMixin:
     Metrics().forget(worker.hostname)
     await self.tailscale.forget(worker.hostname)
     await run_in_executor_with_context(self.cloudflare.sync_worker_records, worker.hostname)
-    self.request_domain_records_sync()
+    self.request_discovery_sync()
     tunnel = self.cloudflare.worker_tunnel_name(worker.hostname)
     try:
       await run_in_executor_with_context(self.cloudflare.delete_tunnel, tunnel)
@@ -652,5 +641,5 @@ class WorkersMixin:
     """
     logger.info(f"Setting worker {worker.hostname} offline.")
     self.update_worker(worker.hostname, online=False)
-    self.request_domain_records_sync()
+    self.request_discovery_sync()
     self.notify(f"Worker {worker.hostname} is offline.", "error")

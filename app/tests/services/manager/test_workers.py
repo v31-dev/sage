@@ -11,7 +11,6 @@ import config
 from services.certs import Certs
 from services.db import Container, Domain, Worker
 from services.logs import Logs
-from services.manager._common import routing_input_hash
 from services.manager.decisions import WorkerReboot
 from services.manager.workers import WorkersMixin
 from services.worker_reports import ContainerReading, HostReading, Snapshot, WorkerReports
@@ -124,8 +123,12 @@ class Harness(WorkersMixin):
   def discovery_hash(self, services):
     return self.discovery_stamp
 
-  def request_application_traefik_sync(self, application):
-    self.synced_applications.append(application.name)
+  def request_domain_sync(self, domain):
+    self.synced_applications.append(domain.id)
+
+  def request_domain_syncs(self, domains):
+    for domain in domains:
+      self.request_domain_sync(domain)
 
   def delete_tunnel(self, name):
     if self.tunnel_delete_error:
@@ -427,53 +430,8 @@ class TestSetWorkerOffline:
     assert harness.is_worker_online("w1") is False
     assert harness.worker_list[0]["status"] == "offline"
     assert harness.worker_records == []
-    assert harness.records_requests == 1
+    assert harness.discovery_requests == 1
     assert harness.notices == [("error", "Worker w1 is offline.")]
-
-
-class TestRequestStaleApplicationSyncs:
-  class Requesting(Harness):
-    request_stale_application_syncs = WorkersMixin.request_stale_application_syncs
-
-    def __init__(self):
-      super().__init__()
-      self.requested = []
-
-    def request_application_traefik_sync(self, application):
-      self.requested.append(application.qualified_name)
-
-  @pytest.fixture
-  def harness(self, db, clock):
-    WorkerReports()
-    return self.Requesting()
-
-  def stamp(self, harness, application):
-    return routing_input_hash("example.test", list(application.domains), list(application.containers), harness.is_worker_online)
-
-  def test_an_application_whose_stamp_is_what_its_files_would_be_is_left_alone(self, harness, application, worker):
-    Container.create(application=application, worker=worker, status="active")
-    harness.load_workers()
-    harness.update_worker("w1", online=True)
-    stamps = {application.qualified_name: self.stamp(harness, application)}
-
-    assert harness.request_stale_application_syncs("example.test", stamps) == []
-    assert harness.requested == []
-
-  def test_an_application_with_another_stamp_or_none_is_requested_and_named(self, harness, application, worker):
-    assert harness.request_stale_application_syncs("example.test", {application.qualified_name: "old"}) == [
-        application.qualified_name]
-    assert harness.request_stale_application_syncs("example.test", {}) == [application.qualified_name]
-    assert harness.requested == [application.qualified_name] * 2
-
-  def test_the_stamp_follows_whether_the_worker_the_container_is_on_is_online(self, harness, application, worker):
-    Container.create(application=application, worker=worker, status="active")
-    harness.load_workers()
-    harness.update_worker("w1", online=True)
-    stamps = {application.qualified_name: self.stamp(harness, application)}
-
-    harness.update_worker("w1", online=False)
-
-    assert harness.request_stale_application_syncs("example.test", stamps) == [application.qualified_name]
 
 
 class TestRefreshWorkerPaths:
@@ -569,8 +527,8 @@ class CompleteSetupHarness(SetupHarness):
     self.tailscale.sync_error = None
     self.traffic_syncs = []
 
-  def request_application_traefik_sync(self, application):
-    self.traffic_syncs.append(application.qualified_name)
+  def request_domain_sync(self, domain):
+    self.traffic_syncs.append(domain.id)
 
 
 class TestSetupWorkerToTheEnd:
@@ -599,19 +557,19 @@ class TestSetupWorkerToTheEnd:
 
   def test_a_new_worker_asks_for_a_certificate_with_its_names_and_for_the_records_of_its_tunnel(self, setup):
     self.run(setup)
-    assert (setup.renewals, setup.records_requests) == (1, 1)
+    assert (setup.renewals, setup.discovery_requests) == (1, 2)
 
   def test_a_worker_that_comes_back_asks_for_no_certificate(self, setup):
     add(setup, "w3", False, "100.64.0.9")
     self.run(setup)
     assert setup.renewals == 0
 
-  @pytest.mark.parametrize("stamp, requests", [("d1", 0), ("d0", 1), (None, 1)])
-  def test_discovery_is_asked_for_when_the_workers_stamp_is_not_what_the_files_would_be(self, setup, stamp, requests):
+  @pytest.mark.parametrize("stamp", ["d1", "d0", None])
+  def test_setup_requests_discovery_even_when_its_files_are_current(self, setup, stamp):
     if stamp:
       setup.tailscale.up_output = [f"/opt/sage/revisions/discovery:{stamp}"]
     self.run(setup)
-    assert setup.discovery_requests == requests
+    assert setup.discovery_requests == 2
 
   def test_the_certificate_stamp_it_read_reaches_the_list(self, setup):
     setup.tailscale.up_output = ["/opt/sage/revisions/certs:abc"]
@@ -635,10 +593,12 @@ class TestSetupWorkerToTheEnd:
     assert [(worker["ip"], worker["online"]) for worker in setup.worker_list] == [("100.64.0.3", True)]
     assert setup.notices == [("info", "Worker w3 synced.")]
 
-  def test_the_applications_whose_stamp_is_stale_are_asked_to_sync_once_the_worker_is_online(self, setup, application, worker):
+  def test_linked_domains_are_asked_to_sync_once_the_worker_is_online(self, setup, application, worker):
+    container = Container.create(application=application, worker=worker, status="active")
+    domain = Domain.create(name="shop", type="public", port=80, container=container)
     setup.load_workers()
     self.run(setup, hostname="w1", ip="100.64.0.2")
-    assert setup.traffic_syncs == [application.qualified_name]
+    assert setup.traffic_syncs == [domain.id]
 
   def test_a_new_worker_whose_setup_fails_is_forgotten_again_and_never_online(self, setup):
     setup.tailscale.fail_when = "up -d"
@@ -744,7 +704,7 @@ class TestRemoveWorker:
   def test_a_removal_asks_for_the_records_so_the_workers_discovery_record_goes(self, harness):
     add(harness, "w1", False)
     self.remove(harness)
-    assert harness.records_requests == 1
+    assert harness.discovery_requests == 1
 
   def test_an_online_worker_with_containers_is_refused_and_nothing_changes(self, harness, application):
     add(harness, "w1", True)

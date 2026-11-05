@@ -32,7 +32,7 @@ Initial app boot fetches `GET /api` through the Pinia store in `ui/src/stores/ap
 - `info`: the app store (loading `GET /api`).
 - `workers`: the app store (loading `GET /workers`): for each worker its status, ip, path, container count and newest minute of metrics. The Workers page, the sidebar, the container cards and the Add Container dialog read the store; each card on the Workers page shows the worker's minute from it, so the page asks for no metrics of its own. The graph pages (a worker's and an application's metrics, the Home page) still poll every 60 s.
 - `worker:<hostname>`: the Worker page (loading `GET /workers/{hostname}`): the worker with its containers, its stack and its status. The page has no timer; an action on a container reloads it at once through `loadWorkerStatus`. A worker removed while the page is open shows as not found.
-- `domains`: the Domains page (loading `GET /domains/`): every domain with its container, and every container a domain can be linked to. The manager pushes it when a domain, a container (its state too) or a worker's subdomain is written, so a name's state follows its container.
+- `domains`: the Domains page (loading `GET /domains/`): every domain with its container, and every container a domain can be linked to. The manager pushes it when a domain, a container (its state too) or a worker's subdomain is written, and when per-record sync results or their queued/running tasks change. Each name shows sync state separately from its container's health.
 - `application:<project>/<name>`: the Application page (loading the application route). Each push replaces the whole application (volumes, domains and variables changed elsewhere too) and puts its status over the one an action set; an edit dialog keeps the values it copied when it opened. An action on the page reloads it at once through `loadApplication`. An application deleted while the page is open shows as not found.
 - `tasks`: the Tasks page, the Upgrade page (which tasks it waits for before a stop) and the restore overlay, which follows it only while restoring (loading `GET /tasks`).
 - `task-history`, a feed: the Tasks page's finished tasks (`GET /tasks/history`), a list (below).
@@ -128,7 +128,9 @@ section, `workersIndicator` for the Workers menu item, `applicationIndicator` fo
 application or container, `workerIndicator`, `domainIndicator`, `taskIndicator`). Used by the
 settings badge and sidebar, the Workers menu item, the application, container, worker and
 task statuses, a domain's sync state and the worker dot in a container card. A title with a
-state beside it is a `SectionTitle` with the indicator in its slot.
+state beside it is a `SectionTitle` with the indicator in its slot. Both Domain views read the same record status:
+`pending` (idle), queue-derived `syncing` (busy), `synced` (ok) or `error` (error, labelled “sync failed”).
+Failure detail is available on the indicator; container health remains separate.
 
 ## Dates
 

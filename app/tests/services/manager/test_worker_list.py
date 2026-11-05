@@ -45,8 +45,8 @@ class Workers(WorkersMixin):
     self.discovery_syncs = 0
     self.tasks = []
 
-  def request_application_traefik_sync(self, application):
-    self.synced_applications.append(application.name)
+  def request_domain_sync(self, domain):
+    self.synced_applications.append(domain.name)
 
   def request_certificate_renewal(self):
     self.renewals += 1
@@ -213,7 +213,7 @@ class TestSubdomain:
     workers.save_worker_subdomain("w2", "eu2")
     assert workers.synced_applications == []
     workers.save_worker_subdomain("w1", "eu1")
-    assert workers.synced_applications == ["web"]
+    assert workers.synced_applications == ["shop"]
     assert (workers.renewals, workers.discovery_syncs) == (2, 2)
     assert workers.tasks == [("sync_workers", {"check_stamps": True})] * 2
 

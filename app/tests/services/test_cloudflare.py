@@ -418,7 +418,7 @@ class TestDnsRecords:
   def test_a_sync_keeps_the_right_records_corrects_and_adds_the_rest_and_deletes_the_others_from_one_list(
           self, connected, api):
     api.on("GET", RECORDS, ok([
-        {"id": "1", "name": "a.example.test", "content": "t1", "comment": "sage-domain"},
+        {"id": "1", "name": "a.example.test", "content": "t1", "comment": "sage-domain", "type": "CNAME", "proxied": True},
         {"id": "2", "name": "b.example.test", "content": "old", "comment": "sage-domain"},
         {"id": "3", "name": "gone.example.test", "content": "t1", "comment": "sage-domain"},
         {"id": "4", "name": "theirs.example.test", "content": "t1", "comment": "SAGE-DOMAIN"},
@@ -516,7 +516,7 @@ class TestCreateDnsRecord:
     assert body(update) == {"name": "a.example.test", "content": "2.2.2.2", "type": "A", "ttl": 60, "comment": "mine"}
 
   def test_a_record_that_is_already_right_is_left_alone(self, connected, api):
-    api.on("GET", RECORDS, ok([{"id": "7", "name": "a.example.test", "content": "1.1.1.1", "comment": "mine"}]))
+    api.on("GET", RECORDS, ok([{"id": "7", "name": "a.example.test", "content": "1.1.1.1", "comment": "mine", "type": "A", "ttl": 60}]))
 
     connected.create_dns_record("a.example.test", "1.1.1.1", comment="mine", type="A")
 

@@ -19,6 +19,10 @@ export interface Domain {
   port: number
   service: string | null
   pool: string | null
+  status: 'pending' | 'syncing' | 'synced' | 'error'
+  sync_error: string | null
+  synced_hash: string | null
+  synced_at: Date | null
   // None for an internal or TCP one without a worker.
   host: string | null
   address: string | null

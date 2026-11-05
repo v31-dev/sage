@@ -42,7 +42,6 @@ const application = (overrides: Record<string, unknown> = {}) =>
     status: 'inactive',
     container_count: 0,
     updated_at: '2026-10-29T10:00:00',
-    domains_synced: true,
     deployed_at: null,
     config_dirty: false,
     containers: [],

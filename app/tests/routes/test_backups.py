@@ -130,7 +130,7 @@ class TestCreatePlatformBackup:
     assert response.json() == {"status": "OK"}
     [queued] = manager.tasks
     assert queued["task"].__name__ == "backup_database_s3"
-    assert queued["scopes"] == {"platform", "app"}
+    assert queued["scopes"] == {"platform", "app", "domain"}
     assert queued["executor"] == "platform"
     assert queued["on_conflict"] is OnConflict.REPLACE
 
@@ -250,7 +250,7 @@ class TestRestorePlatform:
     [queued] = manager.tasks
     assert queued["task"].__name__ == "restore_database_from_s3"
     assert queued["params"] == {"s3_path": PLATFORM_PATH}
-    assert queued["scopes"] == {"platform", "app"}
+    assert queued["scopes"] == {"platform", "app", "domain"}
     assert queued["executor"] == "platform"
     assert queued["restore"] is True
 

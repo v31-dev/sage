@@ -292,10 +292,13 @@ describe('the indicators by status', () => {
     })
   })
 
-  it('domainIndicator: synced and syncing', () => {
-    const store = useAppStore()
-    expect(store.domainIndicator(true)).toEqual({ state: 'ok', label: 'synced' })
-    expect(store.domainIndicator(false)).toEqual({ state: 'busy', label: 'syncing' })
+  it.each([
+    ['pending', 'idle', 'pending'],
+    ['syncing', 'busy', 'syncing'],
+    ['synced', 'ok', 'synced'],
+    ['error', 'error', 'sync failed'],
+  ] as const)('domainIndicator: %s is %s', (status, state, label) => {
+    expect(useAppStore().domainIndicator(status)).toEqual({ state, label })
   })
 
   it.each([

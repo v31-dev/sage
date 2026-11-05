@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from services.db import Container, Event
+from services.db import Container, Domain, Event
 from services.logs import Logs
 from services.manager.application import ApplicationMixin, container_part, mark
 from services.updates import Updates
@@ -95,8 +95,8 @@ class Deleting(ApplicationMixin):
   def notify(self, message, type="info", link=None):
     pass
 
-  def request_application_traefik_sync(self, application):
-    self.synced.append(application.name)
+  def request_domain_syncs(self, domains):
+    self.synced.extend(domain.id for domain in domains)
 
   def request_discovery_sync(self):
     self.synced.append("discovery")
@@ -108,14 +108,17 @@ class TestDeleteContainer:
     register(Updates, SimpleNamespace(changed=lambda source, key=None: None))
 
   @pytest.mark.parametrize("status", ["active", "inactive"])
-  def test_its_routing_goes_with_the_resync_it_asks_for_and_no_routing_file_is_removed_here(
+  def test_its_domains_are_unlinked_and_selected_for_record_sync_without_removing_routes_here(
           self, container, in_task, thread_connections, status):
     container.status = status
     container.save()
+    public = Domain.create(name="shop", type="public", port=80, container=container)
+    internal = Domain.create(name="shop", type="internal", port=80, container=container)
     manager = Deleting()
 
     asyncio.run(manager.delete_container(container.id))
 
     assert Container.get_or_none(Container.id == container.id) is None
-    assert manager.synced == ["web", "discovery"]
+    assert sorted(manager.synced) == [public.id, internal.id]
+    assert [domain.container_id for domain in Domain.select().order_by(Domain.id)] == [None, None]
     assert not any("traefik" in command for command in manager.commands)

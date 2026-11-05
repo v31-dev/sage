@@ -59,7 +59,7 @@ class FakeManager:
     self.worker_list = []
     self.online = set()
     self.checking = set()   # workers no sync has looked at yet
-    self.traefik_syncs = []
+    self.domain_syncs = []
     self.discovery_syncs = 0
 
   def __getattr__(self, name):
@@ -101,8 +101,11 @@ class FakeManager:
   def is_worker_online(self, hostname):
     return self.worker_online(hostname) is True
 
-  def request_application_traefik_sync(self, application):
-    self.traefik_syncs.append(application.id)
+  def request_domain_sync(self, domain):
+    self.domain_syncs.append(domain.id)
+
+  def domain_status(self, domain):
+    return Manager.domain_status(self, domain)
 
   def request_discovery_sync(self):
     self.discovery_syncs += 1

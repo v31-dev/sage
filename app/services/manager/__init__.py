@@ -19,8 +19,9 @@ from utils.queue import TaskQueue
 from .application import ApplicationMixin
 from .backups import BackupsMixin
 from .core import CoreMixin
+from .domains import DomainsMixin
 from .platform import PlatformMixin
-from .queue import QueueMixin
+from .queue import SCOPES, QueueMixin
 from .settings import SettingsMixin
 from .traefik import TraefikMixin
 from .workers import WorkersMixin
@@ -32,6 +33,7 @@ class Manager(
     CoreMixin,
     WorkersMixin,
     TraefikMixin,
+    DomainsMixin,
     ApplicationMixin,
     BackupsMixin,
     PlatformMixin,
@@ -62,16 +64,14 @@ class Manager(
       self.worker_list = []
       self._worker_list_lock = threading.Lock()
       # What each owner works out from the queue at every change of it: the tasks and the state, the settings sections
-      # applying, the restore and the backups, the worker tasks.
+      # applying, the restore and the backups, the worker and domain tasks.
       self.queue_facts = [*self.tasks_queue_facts(), *self.settings_queue_facts(), *self.platform_queue_facts(),
-                          *self.workers_queue_facts()]
+                          *self.workers_queue_facts(), *self.domains_queue_facts()]
       # When the stack of each worker was last started for being down, until its cooldown is over
       # (services/manager/workers.py).
       self.worker_stack_repairs = {}
 
-      # Single-dispatcher operation queue. Each scope root maps to an independent
-      # lane pool (all defined in utils.executor).
-      self.task_queue = TaskQueue(scopes=frozenset(LANES), executors=LANES, record=self._persist_task,
+      self.task_queue = TaskQueue(scopes=SCOPES, executors=LANES, record=self._persist_task,
                                   notify=self._queue_changed)
 
       # Initialize all services

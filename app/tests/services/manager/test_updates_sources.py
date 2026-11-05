@@ -390,7 +390,7 @@ class TestWorkersQueueFacts:
 class TestTheManagerChecksEveryOwner:
   def test_each_owners_queue_facts_are_checked_by_the_manager(self):
     owners = [name for name in dir(Manager) if name.endswith("_queue_facts")]
-    assert sorted(owners) == ["platform_queue_facts", "settings_queue_facts", "tasks_queue_facts", "workers_queue_facts"]
+    assert sorted(owners) == ["domains_queue_facts", "platform_queue_facts", "settings_queue_facts", "tasks_queue_facts", "workers_queue_facts"]
     source = inspect.getsource(sys.modules[Manager.__module__])
     assert [name for name in owners if f"self.{name}()" not in source] == []
 
@@ -453,15 +453,8 @@ class TestApplicationAndContainerChanges:
       save_container(Container(application=application, worker="nobody"))
     assert keyed.signals == []
 
-  def test_a_bulk_update_of_the_domain_sync_says_so(self, keyed, application):
-    class Traefik(TraefikMixin):
-      def add_task(self, **kwargs):
-        pass
-    Traefik().request_application_traefik_sync(application)
-    assert keyed.signals == [(UpdateSource.APPLICATION, "demo/web")]
-
-  def test_every_write_of_an_application_or_a_container_in_the_manager_goes_through_a_function_that_says_so(self):
-    """The only `save()` of an application or container is in `save_application` and `save_container`, and the only
+  def test_every_row_save_in_the_manager_goes_through_its_notifying_owner(self):
+    """Row saves belong to `save_application`, `save_container` and `save_domain`, and the only
     `delete_instance()` is followed by `container_changed`."""
     saves, deletes = {}, {}
     for path in Path(inspect.getsourcefile(Manager)).parent.glob("*.py"):
@@ -472,7 +465,7 @@ class TestApplicationAndContainerChanges:
         if re.search(r"\.delete_instance\(\)", line):
           deletes[path.name] = deletes.get(path.name, 0) + 1
           assert "container_changed(container)" in lines[number + 1]
-    assert saves == {"application.py": 2} and deletes == {"application.py": 1}
+    assert saves == {"application.py": 2, "domains.py": 1} and deletes == {"application.py": 1}
 
 
 class TestBackupRows:

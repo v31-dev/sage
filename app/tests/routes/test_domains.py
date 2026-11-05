@@ -26,6 +26,7 @@ class TestList:
     assert body["domains"] == [{
         "id": 1, "name": "shop", "type": "internal", "port": 80, "service": "shop", "pool": "eu",
         "host": "shop.red.int.example.test", "address": "https://shop.red.int.example.test", "worker": "w1",
+        "status": "pending", "sync_error": None, "synced_hash": None, "synced_at": None,
         "container": {"id": red.id, "status": "inactive", "worker": "w1",
                       "application": {"name": "web", "label": "Web", "project": {"name": "demo", "label": "Demo"}}},
     }]
@@ -42,7 +43,7 @@ class TestList:
 
 
 class TestCreate:
-  def test_a_domain_is_linked_to_its_container_and_its_applications_routing_and_discovery_are_resynced(
+  def test_a_domain_is_linked_to_its_container_and_requests_its_own_sync(
           self, client, red, manager):
     response = client.post(f"{URL}/", json={"name": "shop", "type": "public", "port": 80, "container": red.id,
                                             "service": "", "pool": " eu "})
@@ -50,7 +51,7 @@ class TestCreate:
     assert response.status_code == 200, response.json()
     assert (response.json()["host"], response.json()["service"], response.json()["pool"]) == (
         "shop.example.test", None, "eu")
-    assert (manager.traefik_syncs, manager.discovery_syncs) == ([red.application_id], 1)
+    assert (manager.domain_syncs, manager.discovery_syncs) == ([response.json()["id"]], 0)
 
   def test_one_without_a_container_is_refused(self, client, red, manager):
     response = client.post(f"{URL}/", json={"name": "shop", "type": "public", "port": 80})
@@ -63,7 +64,7 @@ class TestCreate:
   def test_a_name_service_or_pool_the_model_refuses_is_refused_and_nothing_is_resynced(self, client, red, manager, data):
     response = client.post(f"{URL}/", json={"name": "shop", "type": "public", "port": 80, "container": red.id, **data})
     assert response.status_code == 400
-    assert (Domain.select().count(), manager.traefik_syncs) == (0, [])
+    assert (Domain.select().count(), manager.domain_syncs) == (0, [])
 
   def test_a_name_taken_in_its_namespace_is_refused(self, client, red, manager):
     Domain.create(name="shop", type="internal", port=80, container=red)
@@ -73,14 +74,14 @@ class TestCreate:
 
 
 class TestUpdate:
-  def test_another_container_on_another_worker_moves_an_internal_name_there_and_both_applications_resync(
+  def test_another_container_on_another_worker_moves_the_internal_name_and_requests_its_sync(
           self, client, red, blue, manager):
     domain = Domain.create(name="shop", type="internal", port=80, container=red)
 
     response = client.put(f"{URL}/{domain.id}", json={"container": blue.id})
 
     assert (response.json()["host"], response.json()["worker"]) == ("shop.blue.int.example.test", "w2")
-    assert sorted(manager.traefik_syncs) == sorted([red.application_id, blue.application_id])
+    assert manager.domain_syncs == [domain.id]
 
   def test_what_is_not_sent_stays_and_an_unlinked_domain_stays_unlinked(self, client, red, manager):
     domain = Domain.create(name="shop", type="internal", port=80, container=red, service="shop")
@@ -95,10 +96,10 @@ class TestUpdate:
 
 
 class TestDelete:
-  def test_a_domain_goes_and_its_applications_routing_and_discovery_are_resynced(self, client, red, manager):
+  def test_a_domain_goes_and_requests_parent_cleanup_and_discovery(self, client, red, manager):
     domain = Domain.create(name="shop", type="public", port=80, container=red)
 
     assert client.delete(f"{URL}/{domain.id}").status_code == 200
 
     assert Domain.select().count() == 0
-    assert (manager.traefik_syncs, manager.discovery_syncs) == ([red.application_id], 1)
+    assert (manager.domain_syncs, manager.discovery_syncs) == ([], 1)

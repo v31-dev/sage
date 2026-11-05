@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 import pytest
 
 import config
-from services.db import Application, Container, Worker
+from services.db import Application, Container, Domain, Worker
 from services.logs import Logs
 from services.manager.application import ApplicationMixin
 from services.manager.decisions import ABSENT, OFFLINE, SEEN, UNKNOWN, Observation
@@ -46,8 +46,8 @@ class Harness(ApplicationMixin):
   def notify(self, message, level="info"):
     self.notices.append((level, message))
 
-  def request_application_traefik_sync(self, application):
-    self.traefik_syncs.append(application.id)
+  def request_domain_syncs(self, domains):
+    self.traefik_syncs.extend(domain.id for domain in domains)
 
   def add_task(self, **kwargs):
     self.tasks.append(kwargs)
@@ -120,9 +120,10 @@ class TestAReportThatCanBeTrusted:
     assert statuses(deployed) == ("active", ["active"])
 
   def test_a_change_of_container_status_asks_for_the_traefik_config_to_be_synced(self, harness, deployed):
+    domain = Domain.create(name="shop", type="public", port=80, container=deployed.containers.get())
     WorkerReports().accept("w1", report(reading("exited")))
     harness.sync(deployed)
-    assert harness.traefik_syncs == [deployed.id]
+    assert harness.traefik_syncs == [domain.id]
 
   def test_nothing_changing_asks_for_nothing(self, harness, deployed):
     WorkerReports().accept("w1", report(reading()))

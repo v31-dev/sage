@@ -5,7 +5,8 @@ import re
 import shlex
 from contextlib import contextmanager
 
-from services.db import APPLICATION_BUSY_STATUSES, Application, Container, DeployConfig, Event, Project, Worker, db
+from services.db import APPLICATION_BUSY_STATUSES, Application, Container, DeployConfig, Domain, Event, Project, Worker, db
+from services.domains import domains_changed
 from services.logs import Logs
 from services.updates import Updates, UpdateSource
 from services.worker_reports import WorkerReports
@@ -38,12 +39,6 @@ def container_changed(container: Container):
   application_changed(container.application)
   Updates().changed(UpdateSource.WORKER_CONTAINERS, container.worker_id)
   domains_changed()
-
-
-def domains_changed():
-  """A domain was written, or what the Domains page shows of one: its container, its application, its worker's
-  subdomain."""
-  Updates().changed(UpdateSource.DOMAINS)
 
 
 def hosts_changed(application: Application):
@@ -149,8 +144,7 @@ class ApplicationMixin:
         return_exceptions=False,
     )
 
-    # Trigger traefik sync
-    self.request_application_traefik_sync(application)
+    self.request_domain_syncs(Domain.select().where(Domain.container.in_([container.id for container in containers])))
 
     # Check only the snapshot's container set: an instant create mid-deploy adds
     # an inactive row the minutely status sync owns, not this deploy's outcome.
@@ -373,12 +367,10 @@ class ApplicationMixin:
           )
 
         # Delete database record
-        application = container.application
+        domains = [domain.id for domain in container.domains]
         container.delete_instance()
         container_changed(container)
-        # Its domains are unlinked: their routing and their places at discovery go.
-        self.request_application_traefik_sync(application)
-        self.request_discovery_sync()
+        self.request_domain_syncs(Domain.select().where(Domain.id.in_(domains)))
 
         await mark(container, "Removed from Sage; the offline worker was not cleaned up" if skip_remote_cleanup
                    else "Removed from this worker")
@@ -418,8 +410,7 @@ class ApplicationMixin:
         return_exceptions=False,
     )
 
-    # Containers no longer active -> refresh Traefik routing.
-    self.request_application_traefik_sync(application)
+    self.request_domain_syncs(Domain.select().join(Container).where(Container.application == application))
 
     if any(container.status == "error" for container in application.containers):
       application.status = "error"
@@ -509,7 +500,6 @@ class ApplicationMixin:
       if application.status != "inactive":
         application.status = "inactive"
         save_application(application)
-        self.request_application_traefik_sync(application)
         self.notify(f"Application {application.qualified_name} is inactive as it has no containers.", "warning")
       return
 
@@ -568,7 +558,7 @@ class ApplicationMixin:
         self.notify(message, level)
 
     if routing_changed:
-      self.request_application_traefik_sync(application)
+      self.request_domain_syncs(Domain.select().where(Domain.container.in_([container.id for container in containers])))
 
     # Sync the overall application status from the (possibly updated) containers.
     status = rollup_status(container.status for container in application.containers)

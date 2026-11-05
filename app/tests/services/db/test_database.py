@@ -11,8 +11,8 @@ from services.db.database import MODELS
 
 ORPHAN_DOMAIN = [
     "PRAGMA foreign_keys=OFF",
-    "INSERT INTO domain (container_id, name, type, port, created_at, updated_at) "
-    "VALUES (999, 'ghost', 'public', 80, '2026-01-01 00:00:00', '2026-01-01 00:00:00')",
+    "INSERT INTO domain (container_id, name, type, port, status, created_at, updated_at) "
+    "VALUES (999, 'ghost', 'public', 80, 'pending', '2026-01-01 00:00:00', '2026-01-01 00:00:00')",
     "PRAGMA foreign_keys=ON",
 ]
 
@@ -162,6 +162,35 @@ class TestReconcileSchema:
     Database().reconcile_schema()
 
     assert "domain_name_worker" in {index.name for index in db.get_indexes("domain")}
+
+  @pytest.mark.parametrize("type", ["public", "internal", "tcp"])
+  def test_domain_sync_columns_are_added_pending_and_keep_the_binding(self, db, application, worker, type):
+    container = Container.create(application=application, worker=worker, status="active")
+    domain = Domain.create(name="shop", type=type, port=80, container=container, service="shop", pool="eu")
+    before = counts(db)
+    for column in ("status", "sync_error", "synced_hash", "synced_at"):
+      db.execute_sql(f"ALTER TABLE domain DROP COLUMN {column}")
+
+    Database().reconcile_schema()
+
+    stored = Domain.get_by_id(domain.id)
+    assert (stored.status, stored.sync_error, stored.synced_hash, stored.synced_at) == ("pending", None, None, None)
+    assert (stored.name, stored.type, stored.port, stored.container_id, stored.worker_id, stored.service, stored.pool) == (
+        "shop", type, 80, container.id, None if type == "public" else worker.hostname, "shop", "eu")
+    assert counts(db) == before
+
+  def test_a_domain_keeps_its_error_and_previous_success_when_its_table_is_rebuilt(self, db, application, worker, clock):
+    container = Container.create(application=application, worker=worker)
+    domain = Domain.create(name="shop", type="public", port=80, container=container,
+                           status="error", sync_error="DNS: unavailable", synced_hash="applied", synced_at=clock.current)
+    db.execute_sql("ALTER TABLE domain DROP COLUMN updated_at")
+
+    Database().reconcile_schema()
+
+    stored = Domain.get_by_id(domain.id)
+    assert (stored.status, stored.sync_error, stored.synced_hash, stored.synced_at) == (
+        "error", "DNS: unavailable", "applied", clock.current)
+    assert stored.container_id == container.id
 
   def test_an_index_no_model_declares_is_dropped_and_the_declared_ones_and_sqlites_own_stay(self, db):
     db.execute_sql("CREATE UNIQUE INDEX domain_name_namespace ON domain (name, (type = 'public'))")

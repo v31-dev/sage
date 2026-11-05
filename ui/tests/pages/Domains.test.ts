@@ -39,6 +39,10 @@ const domain = (id: number, overrides: Partial<Domain>): Domain => ({
   port: 80,
   service: null,
   pool: null,
+  status: 'synced',
+  sync_error: null,
+  synced_hash: null,
+  synced_at: null,
   host: 'shop.example.test',
   address: 'https://shop.example.test',
   worker: 'w1',
@@ -62,6 +66,25 @@ describe('the Domains page', () => {
     topics.topic('domains').push(state)
     return wrapper
   }
+
+  it('updates the record sync state from the domains topic and retains the container state', async () => {
+    const topics = followTopics()
+    const wrapper = mount(Domains, {
+      global: { stubs: { DomainDialog: true, ConfirmationButton: true, CopyButton: true } },
+    })
+    topics.topic('domains').push({ domains: [domain(1, { status: 'syncing' })], containers: [] })
+    await flushPromises()
+    expect(wrapper.get('[data-domain]').text()).toContain('syncing')
+
+    topics.topic('domains').push({
+      domains: [domain(1, { status: 'error', sync_error: 'Traefik: unavailable' })],
+      containers: [],
+    })
+    await flushPromises()
+    expect(wrapper.get('[data-domain]').text()).toContain('sync failed')
+    expect(wrapper.get('[data-domain]').text()).toContain('active')
+    expect(wrapper.get('[title]').attributes('title')).toBe('Traefik: unavailable')
+  })
 
   it('follows the domains topic and groups the domains by namespace, then service, then pool', async () => {
     const wrapper = shown({

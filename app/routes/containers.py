@@ -75,8 +75,6 @@ def create_container(request: Request, container_data: dict = Body(...)):
 
   result = generic_create(Container, {"application": application, "worker": worker})
   container_changed(Container.get_by_id(result["id"]))
-  # The application's public names on the worker get their records before it is deployed there.
-  Manager().request_application_traefik_sync(application)
   return result
 
 

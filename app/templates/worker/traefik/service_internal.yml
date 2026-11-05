@@ -1,17 +1,17 @@
 http:
   routers:
-    ${SERVICE}_${NAME}_internal:
+    domain_${ID}:
       rule: Host(`${HOST}`)
       entrypoints:
         - websecure
       middlewares:
         - security-headers
         - tailscale-only
-      service: ${SERVICE}_${NAME}_internal
+      service: domain_${ID}
       tls: {}
     # The probe a client times to choose a name, answered by Traefik; HEAD only, so the application's own GET /ping
     # still reaches it.
-    ${SERVICE}_${NAME}_internal_ping:
+    domain_${ID}_ping:
       rule: Host(`${HOST}`) && Method(`HEAD`) && Path(`/ping`)
       priority: 1000
       entrypoints:
@@ -23,7 +23,7 @@ http:
       tls: {}
 
   services:
-    ${SERVICE}_${NAME}_internal:
+    domain_${ID}:
       loadBalancer:
         servers:
           - url: http://${SERVICE}:${PORT}

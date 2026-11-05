@@ -1,15 +1,15 @@
 http:
   routers:
-    ${SERVICE}_${NAME}_public:
+    domain_${ID}:
       rule: Host(`${HOST}`)
       entrypoints:
         - web
       middlewares:
         - security-headers
-      service: ${SERVICE}_${NAME}_public
+      service: domain_${ID}
     # The probe a client times to choose a name, answered by Traefik; HEAD only, so the application's own GET /ping
     # still reaches it.
-    ${SERVICE}_${NAME}_public_ping:
+    domain_${ID}_ping:
       rule: Host(`${HOST}`) && Method(`HEAD`) && Path(`/ping`)
       priority: 1000
       entrypoints:
@@ -19,7 +19,7 @@ http:
       service: ping@internal
 
   services:
-    ${SERVICE}_${NAME}_public:
+    domain_${ID}:
       loadBalancer:
         servers:
           - url: http://${SERVICE}:${PORT}

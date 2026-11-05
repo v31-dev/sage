@@ -78,10 +78,13 @@ class TestGet:
     other = Application.create(project=project, name="api", label="API", image="nginx")
     Domain.create(name="api", type="public", port=80, container=Container.create(application=other, worker=worker))
 
-    domains = client.get(f"{URL}/web").json()["domains"]
+    body = client.get(f"{URL}/web").json()
+    domains = body["domains"]
 
     assert [(domain["address"], domain["worker"], domain["container"]["status"]) for domain in domains] == [
         ("https://shop.example.test", "w1", "active"), ("db.red.int.example.test:8443", "w1", "active")]
+    assert domains == client.get("/api/domains/").json()["domains"][1:]
+    assert all("domains" not in container for container in body["containers"])
 
   def test_a_new_application_is_not_dirty(self, client, application):
     assert client.get(f"{URL}/web").json()["config_dirty"] is False
@@ -110,7 +113,6 @@ class TestUpdate:
       ("project", "other"),
       ("container_count", 7),
       ("deployed_hash", "abc"),
-      ("domains_synced", True),
       ("id", 99),
   ])
   def test_fields_the_user_does_not_own_are_ignored(self, client, application, field, value):

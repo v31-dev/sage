@@ -131,7 +131,6 @@ class Application(BaseModel):
   build_secrets = EncryptedTextField(null=True)
   command = CharField(null=True)
   status = CharField(choices=STATUS_CHOICES, default="inactive")
-  domains_synced = BooleanField(default=False)
   container_count = IntegerField(default=0)
   deployed_at = DateTimeField(null=True)
   deployed_hash = CharField(null=True)
@@ -239,6 +238,10 @@ class Domain(BaseModel):
   worker = ForeignKeyField(Worker, backref="domains", null=True, on_delete="RESTRICT")
   service = LabelField(null=True)
   pool = LabelField(null=True)
+  status = CharField(choices=["pending", "synced", "error"], default="pending")
+  sync_error = CharField(null=True)
+  synced_hash = CharField(null=True)
+  synced_at = DateTimeField(null=True)
 
   def save(self, *args, **kwargs):
     if self.type == "public":

@@ -81,7 +81,9 @@ Current traffic and naming patterns are driven by Cloudflare, Traefik, and Tails
   A client times `HEAD /ping` on each name to choose, which Traefik answers while the container is active (GET still
   reaches the application).
 
-The manager keeps DNS and Traefik state in sync as workers and application domains change.
+Each Domain record owns its DNS and Traefik synchronization result. A record is synced once both effects have
+completed for its desired configuration. Discovery includes synced names linked to a container; container health
+is a separate state.
 
 ### Cloudflare Resources
 
@@ -94,11 +96,11 @@ characters on Cloudflare's Free plan, which has no record tags.
 | --- | --- |
 | The platform's tunnel, run by `cloudflared-discovery` on every worker: created at start, and never deleted with a worker | `sage-<domain>` |
 | Each worker's own tunnel, run by its `cloudflared`: created when the worker is set up, deleted when it is removed | `sage-<domain>-<hostname>` |
-| `discovery.<domain>`, a proxied CNAME to the platform's tunnel, its one record (any other with its comment is deleted), written by `sync_domain_records` | `sage-tunnel` |
+| `discovery.<domain>`, a proxied CNAME to the platform's tunnel, its one record (any other with its comment is deleted), written by `sync_discovery` | `sage-tunnel` |
 | `<TS_NAME>.core.<domain>`, an A record to the manager's tailnet IP | `sage-manager` |
 | `*.<subdomain>.int.<domain>`, an A record to the worker's tailnet IP: kept while the worker is offline, so its names work again as soon as it is back, and deleted when it is removed | `sage-worker-<hostname>` |
-| `discovery.int.<domain>`, an A record to each online worker's tailnet IP, written by `sync_domain_records` | `sage-discovery-<hostname>` |
-| Each public name linked to a container, a proxied CNAME to its worker's tunnel, written by `sync_domain_records` every 5 minutes and when routing or a worker's tunnel changes | `sage-domain` |
+| `discovery.int.<domain>`, an A record to each online worker's tailnet IP, written by `sync_discovery` | `sage-discovery-<hostname>` |
+| Each public name linked to a container, a proxied CNAME to its worker's tunnel, written by its record's `sync_domain` | `sage-domain-<id>` |
 | `_acme-challenge.<name>`, a TXT record while a certificate is issued | `sage-acme-challenge` |
 
 After a change of domain, account or `TS_NAME`, the previous domain's or name's resources stay in Cloudflare until

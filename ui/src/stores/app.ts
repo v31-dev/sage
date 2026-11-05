@@ -8,6 +8,7 @@ import {
   type AppInfo,
   type Application,
   type Container,
+  type Domain,
   type Indicator,
   type IndicatorState,
   type InfraContainer,
@@ -36,6 +37,13 @@ const WORKER_INDICATORS: Record<WorkerStatus, Indicator> = {
   adding: { state: 'busy', label: 'adding' },
   rebooting: { state: 'busy', label: 'rebooting' },
   removing: { state: 'busy', label: 'removing' },
+}
+
+const DOMAIN_INDICATORS: Record<Domain['status'], Indicator> = {
+  pending: { state: 'idle', label: 'pending' },
+  syncing: { state: 'busy', label: 'syncing' },
+  synced: { state: 'ok', label: 'synced' },
+  error: { state: 'error', label: 'sync failed' },
 }
 
 // The manager's status, which the sidebar, the banner, the restore overlay and the
@@ -127,8 +135,8 @@ export const useAppStore = defineStore('app', () => {
     return { state, label: `${name}: ${status}` }
   }
 
-  function domainIndicator(synced: boolean): Indicator {
-    return synced ? { state: 'ok', label: 'synced' } : { state: 'busy', label: 'syncing' }
+  function domainIndicator(status: Domain['status']): Indicator {
+    return DOMAIN_INDICATORS[status]
   }
 
   function taskIndicator(status: string): Indicator {
