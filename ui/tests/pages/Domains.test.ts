@@ -39,6 +39,7 @@ const domain = (id: number, overrides: Partial<Domain>): Domain => ({
   port: 80,
   service: null,
   pool: null,
+  cors_origins: null,
   status: 'synced',
   sync_error: null,
   synced_hash: null,
@@ -242,6 +243,7 @@ describe('the domain dialog', () => {
       port: 80,
       service: 'shop',
       pool: '',
+      cors_origins: null,
       container: 2,
     })
   })
@@ -261,6 +263,7 @@ describe('the domain dialog', () => {
       port: 9090,
       service: '',
       pool: 'eu',
+      cors_origins: null,
     })
   })
 
@@ -278,5 +281,90 @@ describe('the domain dialog', () => {
     expect(
       wrapper.findAll('#domain-services option').map(option => option.attributes('value'))
     ).toEqual(['api', 'db'])
+  })
+
+  it('keeps a blank origins field and describes the current origin after a rename', async () => {
+    const wrapper = await open({ domain: domain(7, {}) })
+    expect(wrapper.get('#domain-cors').element).toHaveProperty('value', '')
+    expect(wrapper.text()).toContain('https://shop.example.test')
+
+    await wrapper.get('#domain-name').setValue('frontend')
+
+    expect(wrapper.get('#domain-cors').element).toHaveProperty('value', '')
+    expect(wrapper.text()).toContain('https://frontend.example.test')
+  })
+
+  it('opens with explicit origins and submits one origin per nonempty line', async () => {
+    const wrapper = await open({
+      domain: domain(7, { cors_origins: ['https://app.example.test'] }),
+    })
+    expect(wrapper.get('#domain-cors').element).toHaveProperty('value', 'https://app.example.test')
+    await wrapper
+      .get('#domain-cors')
+      .setValue('https://app.example.test\n\n http://localhost:5173 ')
+    await wrapper
+      .findAll('button')
+      .find(button => button.text() === 'Save')!
+      .trigger('click')
+    await flushPromises()
+
+    expect(updateDomain).toHaveBeenCalledWith(
+      7,
+      expect.objectContaining({
+        cors_origins: ['https://app.example.test', 'http://localhost:5173'],
+      })
+    )
+  })
+
+  it('clears an override to null without substituting the shown default', async () => {
+    const wrapper = await open({
+      domain: domain(7, { cors_origins: ['https://app.example.test'] }),
+    })
+    await wrapper.get('#domain-cors').setValue('  ')
+    await wrapper
+      .findAll('button')
+      .find(button => button.text() === 'Save')!
+      .trigger('click')
+    await flushPromises()
+
+    expect(updateDomain).toHaveBeenCalledWith(7, expect.objectContaining({ cors_origins: null }))
+  })
+
+  it('hides the HTTP policy for TCP and clears it on a protocol change', async () => {
+    const wrapper = await open({
+      domain: domain(7, { cors_origins: ['https://app.example.test'] }),
+    })
+    vm(wrapper).type = 'tcp'
+    await flushPromises()
+    expect(wrapper.find('#domain-cors').exists()).toBe(false)
+    await wrapper
+      .findAll('button')
+      .find(button => button.text() === 'Save')!
+      .trigger('click')
+    await flushPromises()
+
+    expect(updateDomain).toHaveBeenCalledWith(
+      7,
+      expect.objectContaining({ type: 'tcp', cors_origins: null })
+    )
+  })
+
+  it('retains the entered origins when the backend rejects them', async () => {
+    vi.mocked(updateDomain).mockRejectedValueOnce(
+      new Error('Invalid origin: use an HTTP(S) origin.')
+    )
+    const wrapper = await open({ domain: domain(7, {}) })
+    await wrapper.get('#domain-cors').setValue('https://app.example.test/path')
+    await wrapper
+      .findAll('button')
+      .find(button => button.text() === 'Save')!
+      .trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Invalid origin: use an HTTP(S) origin.')
+    expect(wrapper.get('#domain-cors').element).toHaveProperty(
+      'value',
+      'https://app.example.test/path'
+    )
   })
 })

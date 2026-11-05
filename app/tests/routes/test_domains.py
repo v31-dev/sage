@@ -25,6 +25,7 @@ class TestList:
 
     assert body["domains"] == [{
         "id": 1, "name": "shop", "type": "internal", "port": 80, "service": "shop", "pool": "eu",
+        "cors_origins": None,
         "host": "shop.red.int.example.test", "address": "https://shop.red.int.example.test", "worker": "w1",
         "status": "pending", "sync_error": None, "synced_hash": None, "synced_at": None,
         "container": {"id": red.id, "status": "inactive", "worker": "w1",
@@ -104,3 +105,44 @@ class TestDelete:
 
     assert Domain.select().count() == 0
     assert (manager.domain_syncs, manager.discovery_syncs) == ([], 1)
+
+
+class TestCors:
+  def test_an_explicit_list_is_normalized_and_returned(self, client, red, manager):
+    response = client.post(f"{URL}/", json={"name": "app-api", "type": "public", "port": 80, "container": red.id,
+                                            "cors_origins": [" HTTPS://APP.example.test:443/ ", "http://localhost:5173"]})
+
+    assert response.status_code == 200
+    assert response.json()["cors_origins"] == ["https://app.example.test", "http://localhost:5173"]
+    assert Domain.get_by_id(response.json()["id"]).cors_origins == response.json()["cors_origins"]
+
+  @pytest.mark.parametrize("origins", [None, [], ""])
+  def test_clearing_the_list_keeps_a_blank_default_and_requests_its_apply(self, client, red, manager, origins):
+    domain = Domain.create(name="app-api", type="public", port=80, container=red, status="synced",
+                           cors_origins=["https://app.example.test"])
+
+    response = client.put(f"{URL}/{domain.id}", json={"cors_origins": origins})
+
+    assert response.status_code == 200
+    assert response.json()["cors_origins"] is None
+    assert Domain.get_by_id(domain.id).status == "pending"
+    assert (manager.domain_syncs, manager.discovery_syncs) == ([domain.id], 1)
+
+  @pytest.mark.parametrize("origins", [["https://app.example.test/path"], ["https://*.example.test"], ["https://u:p@app.example.test"],
+                                       ["https://app.example.test\r\nX-Test: bad"], "https://app.example.test", [5]])
+  def test_an_invalid_edit_returns_400_without_changing_or_syncing_the_record(self, client, red, manager, origins):
+    domain = Domain.create(name="app-api", type="public", port=80, container=red, status="synced")
+
+    response = client.put(f"{URL}/{domain.id}", json={"cors_origins": origins})
+
+    assert response.status_code == 400
+    stored = Domain.get_by_id(domain.id)
+    assert stored.cors_origins is None and stored.status == "synced"
+    assert (manager.domain_syncs, manager.discovery_syncs) == ([], 0)
+
+  def test_omitting_cors_preserves_the_explicit_value(self, client, red, manager):
+    domain = Domain.create(name="app-api", type="public", port=80, container=red, cors_origins=["https://app.example.test"])
+
+    response = client.put(f"{URL}/{domain.id}", json={"port": 8080})
+
+    assert response.json()["cors_origins"] == ["https://app.example.test"]

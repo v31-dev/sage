@@ -6,6 +6,7 @@ import sys
 
 from cryptography.fernet import Fernet
 from peewee import CharField, TextField
+from pydantic import AnyHttpUrl
 
 from utils.common import strip_env_comment
 from utils.logging import LOG_FORMAT
@@ -100,6 +101,37 @@ class JSONField(TextField):
     if isinstance(value, (dict, list)):
       value = json.dumps(value)
     return value
+
+
+class OriginListField(JSONField):
+  @staticmethod
+  def validate(value):
+    if value is None or value == "":
+      return None
+    if not isinstance(value, list):
+      raise ValueError("Allowed origins must be a list.")
+    origins = []
+    for origin in value:
+      if not isinstance(origin, str):
+        raise ValueError("Allowed origins must contain strings.")
+      origin = origin.strip()
+      if not origin:
+        continue
+      if origin not in ("*", "null"):
+        try:
+          if any(char.isspace() or ord(char) < 32 or ord(char) == 127 for char in origin) or "@" in origin or "\\" in origin:
+            raise ValueError()
+          url = AnyHttpUrl(origin)
+          if url.path not in (None, "/") or url.query is not None or url.fragment is not None or "*" in url.host:
+            raise ValueError()
+          origin = str(url).rstrip("/")
+        except ValueError as error:
+          raise ValueError(f"Invalid origin {origin!r}: use an HTTP(S) origin without a path, credentials, query or fragment, or '*'.") from error
+      origins.append(origin)
+    return list(dict.fromkeys(origins)) or None
+
+  def db_value(self, value):
+    return super().db_value(self.validate(value))
 
 
 class CleanCharField(CharField):

@@ -40,6 +40,7 @@ class DomainConfig:
   application_id: int | None
   application: str | None
   active: bool
+  cors_origins: tuple[str, ...]
   templates: str
 
   @classmethod
@@ -50,7 +51,7 @@ class DomainConfig:
         worker=container.worker_id if container else domain.worker_id,
         container_id=domain.container_id, application_id=container.application_id if container else None,
         application=container.application.qualified_name if container else None,
-        active=container is not None and container.status == "active", templates=templates,
+        active=container is not None and container.status == "active", cors_origins=domain.allowed_origins(base_domain), templates=templates,
     )
 
   @property

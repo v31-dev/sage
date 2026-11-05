@@ -19,6 +19,7 @@ export interface Domain {
   port: number
   service: string | null
   pool: string | null
+  cors_origins: string[] | null
   status: 'pending' | 'syncing' | 'synced' | 'error'
   sync_error: string | null
   synced_hash: string | null

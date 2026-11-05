@@ -9,7 +9,8 @@ from peewee import SQL, BooleanField, CharField, DateTimeField, FixedCharField, 
 from playhouse.signals import Model
 
 from utils.common import utcnow
-from utils.db import AlphaNumericField, CleanCharField, EncryptedJSONField, EncryptedTextField, JSONField, LabelField, validate_multiline_kv
+from utils.db import (AlphaNumericField, CleanCharField, EncryptedJSONField, EncryptedTextField, JSONField, LabelField, OriginListField,
+                      validate_multiline_kv)
 
 # Deferred: opened by Database at startup.
 db = SqliteDatabase(None)
@@ -238,12 +239,17 @@ class Domain(BaseModel):
   worker = ForeignKeyField(Worker, backref="domains", null=True, on_delete="RESTRICT")
   service = LabelField(null=True)
   pool = LabelField(null=True)
+  cors_origins = OriginListField(null=True)
   status = CharField(choices=["pending", "synced", "error"], default="pending")
   sync_error = CharField(null=True)
   synced_hash = CharField(null=True)
   synced_at = DateTimeField(null=True)
 
   def save(self, *args, **kwargs):
+    if self.type == "tcp" and self.cors_origins is not None:
+      self.cors_origins = None
+    elif any(field is Domain.cors_origins for field in self.dirty_fields):
+      self.cors_origins = Domain.cors_origins.validate(self.cors_origins)
     if self.type == "public":
       if self.name in RESERVED_DOMAIN_NAMES:
         raise ValueError(f"'{self.name}' is reserved for Sage's own addresses.")
@@ -272,6 +278,11 @@ class Domain(BaseModel):
     if host is None:
       return None
     return f"{host}:8443" if self.type == "tcp" else f"https://{host}"
+
+  def allowed_origins(self, base_domain: str) -> tuple[str, ...]:
+    if self.type == "tcp" or self.host(base_domain) is None:
+      return ()
+    return tuple(sorted(self.cors_origins or [self.address(base_domain)]))
 
 
 # A name once among the public domains, and once per worker among the internal and TCP ones.

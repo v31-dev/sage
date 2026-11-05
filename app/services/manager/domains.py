@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import shlex
 
@@ -100,6 +101,7 @@ class DomainsMixin:
               snapshot.worker, app_dir / f"templates/worker/traefik/{ROUTING_TEMPLATES[snapshot.type]}",
               f"{dynamic}/{snapshot.filename}", {
                   "ID": snapshot.domain_id, "HOST": snapshot.host, "SERVICE": snapshot.application, "PORT": snapshot.port,
+                  "CORS_ORIGINS": json.dumps(snapshot.cors_origins),
               })
         else:
           workers = [snapshot.worker] if snapshot.container_id is not None else [w.hostname for w in self.online_workers()]

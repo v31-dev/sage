@@ -21,6 +21,7 @@ def domain_payload(domain: Domain) -> dict:
       "port": domain.port,
       "service": domain.service,
       "pool": domain.pool,
+      "cors_origins": domain.cors_origins,
       "status": Manager().domain_status(domain),
       "sync_error": domain.sync_error,
       "synced_hash": domain.synced_hash,
@@ -65,7 +66,7 @@ def list_domains() -> dict:
 
 def fields_of(domain_data: dict) -> dict:
   """The domain's own fields that were sent; an empty service or pool is none."""
-  data = parse_api_data(domain_data, ["name", "type", "port", "service", "pool"])
+  data = parse_api_data(domain_data, ["name", "type", "port", "service", "pool", "cors_origins"])
   for key in ("service", "pool"):
     if key in data:
       data[key] = data[key] or None

@@ -185,6 +185,29 @@ openssl s_client -connect <name>.<subdomain>.int.<domain>:8443 -servername <name
 For access between containers on one worker, use the Docker DNS name (the container's `qualified_name`) on
 `sage_default`.
 
+### Allowed Origins
+
+Each HTTP Domain has an optional **Allowed origins** field, one origin per line. Blank allows its own current
+HTTPS origin. Use full origins such as `https://app.example.com` or `http://localhost:5173`, without a path; `*`
+allows any origin. The standard `null` origin token is also accepted. Names, default ports and root URLs are
+normalized when saved. Clearing an override restores the implicit own origin.
+
+For a frontend at `https://app.example.com` calling service `app-api`, assign that service to backend Domains
+`app-api-1.example.com` and `app-api-2.example.com` and put `https://app.example.com` in each backend's allowed
+origins. The frontend can leave its own field blank. Explicit origins are plain values: renaming the frontend
+requires updating each backend's list manually. A blank field follows its own Domain's name and worker placement.
+
+Traefik applies this list to the application's HTTP responses and handles credentialless preflight requests.
+Requests may use methods and headers including Authorization; the browser can read the response only when its
+Origin matches. The form configures origins only; application response headers and cookies have no Sage editor.
+TCP has no HTTP CORS policy. CORS changes apply through the Domain's sync, without a container deployment.
+
+Discovery remains readable from any origin. A Domain's `HEAD /ping` latency probe also allows any origin, exposes
+timing and is not cached; GET `/ping` reaches the application under its configured origins. The probe measures the
+network and Traefik path, not application health. Browsers calling an application still need compatible application
+state: cookies are scoped by their cookie attributes, and OAuth callback URLs must name the registered frontend.
+Webhook senders use a concrete backend hostname rather than the discovery response.
+
 ## Main Data Model
 
 The main manager database is SQLite with WAL mode and lives at `/app/data/data.db`.

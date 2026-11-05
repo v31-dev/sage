@@ -10,6 +10,8 @@ http:
       headers:
         customResponseHeaders:
           Timing-Allow-Origin: "*"
+          Access-Control-Allow-Origin: "*"
+          Cache-Control: "no-store"
     security-headers:
       headers:
         frameDeny: true

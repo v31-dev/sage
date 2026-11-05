@@ -385,7 +385,8 @@ application status recovery. An offline target stays pending and retains the las
 The task captures an immutable `DomainConfig` inside a local transaction. It renders `domain-<id>.yml` on the
 active container's worker, with router/service identity `domain_<id>`, the current host and port, and the
 application's Docker name as backend. HTTP names also get a `HEAD /ping` probe answered by Traefik's `ping@internal`
-with `Timing-Allow-Origin`; GET reaches the application. Stopped containers have their record's file removed.
+with `Timing-Allow-Origin: *`, `Access-Control-Allow-Origin: *` and `Cache-Control: no-store`; GET reaches the application.
+Stopped containers have their record's file removed.
 An unlinked record removes its own file from reachable workers. `sync_file` writes through a temporary name and
 renames it, and Traefik's file provider reloads the directory.
 
@@ -401,6 +402,19 @@ and fails the queued task. A result for a configuration edited during I/O cannot
 the row stays pending and a new request is queued. Running or queued work projects `syncing` through the queue,
 without persisting it. Domain writes and queue transitions publish `domains` and the affected application topics.
 Application rows hold no domain progress state; summary counts use Domain status independently of health.
+
+Domain also owns nullable `cors_origins`, a JSON list validated by `OriginListField` on every database write.
+Blank derives the record's own current HTTPS origin. Explicit origins are normalized HTTP(S) origins, `*` or `null`;
+paths, queries, fragments, userinfo, control characters and subdomain wildcard patterns are refused. The effective
+list enters `DomainConfig` and its fingerprint. Editing it invalidates routing proof without changing deployment
+inputs. Unrelated saves preserve concurrent edits to the field. A rename never updates other records' explicit lists.
+
+Each HTTP record file contains `domain_<id>_cors`, attached to the application router after the internal allow-list.
+Its stock headers middleware clears a backend Allow-Origin value, then supplies the matching configured origin;
+an unmatched request cannot inherit a backend's allow-all value. Other application headers are preserved.
+Fixed credentialless preflight defaults allow methods `*`, headers `*` plus explicit `Authorization`, with a
+300-second preflight cache and `Vary: Origin`. Methods, headers and cookies have no editor. The higher-priority
+HEAD probe uses the separate shared probe middleware. TCP clears its inapplicable override and has no CORS middleware.
 
 Domain edits, deployment/stop outcomes, container-state changes, container deletion, worker subdomain changes and
 manual Traefik refresh request the affected records. Worker setup/rejoin requests the parent scan, which selects

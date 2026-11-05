@@ -13,6 +13,7 @@ import {
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Textarea } from '@/components/ui/textarea'
 import {
   InputGroup,
   InputGroupAddon,
@@ -63,6 +64,7 @@ const name = ref('')
 const port = ref(80)
 const service = ref('')
 const pool = ref('')
+const corsOrigins = ref('')
 const errorMessage = ref('')
 const submitting = ref(false)
 
@@ -106,6 +108,7 @@ function openDialog() {
   port.value = props.domain?.port ?? 80
   service.value = props.domain?.service ?? ''
   pool.value = props.domain?.pool ?? ''
+  corsOrigins.value = props.domain?.cors_origins?.join('\n') ?? ''
   open.value = true
 }
 
@@ -128,6 +131,13 @@ async function onConfirm() {
       port: Number(port.value),
       service: service.value.trim(),
       pool: pool.value.trim(),
+      cors_origins:
+        type.value === 'tcp' || !corsOrigins.value.trim()
+          ? null
+          : corsOrigins.value
+              .split('\n')
+              .map(origin => origin.trim())
+              .filter(Boolean),
       ...(container.value ? { container: container.value.id } : {}),
     }
     if (props.domain) await updateDomain(props.domain.id, data)
@@ -222,6 +232,20 @@ async function onConfirm() {
             <FieldLabel for="domain-port"> Port </FieldLabel>
             <Input id="domain-port" v-model="port" type="number" />
             <FieldDescription>The container's port the name routes to.</FieldDescription>
+          </Field>
+          <Field v-if="type && type !== 'tcp'">
+            <FieldLabel for="domain-cors"> Allowed origins (optional) </FieldLabel>
+            <Textarea
+              id="domain-cors"
+              v-model="corsOrigins"
+              placeholder="e.g. https://app.example.com"
+              :rows="2"
+            />
+            <FieldDescription>
+              One origin per line, or * for any origin. Leave blank to allow only
+              {{ name.trim() ? `${prefix}${name.trim()}${suffix}` : "this domain's own origin" }}.
+              References to other domains must be updated manually when their names change.
+            </FieldDescription>
           </Field>
           <Field>
             <FieldLabel for="domain-service"> Service (optional) </FieldLabel>

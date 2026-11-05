@@ -6,6 +6,7 @@ http:
         - web
       middlewares:
         - security-headers
+        - domain_${ID}_cors
       service: domain_${ID}
     # The probe a client times to choose a name, answered by Traefik; HEAD only, so the application's own GET /ping
     # still reaches it.
@@ -17,6 +18,20 @@ http:
       middlewares:
         - probe
       service: ping@internal
+
+  middlewares:
+    domain_${ID}_cors:
+      headers:
+        customResponseHeaders:
+          Access-Control-Allow-Origin: ""
+        accessControlAllowOriginList: ${CORS_ORIGINS}
+        accessControlAllowMethods:
+          - "*"
+        accessControlAllowHeaders:
+          - "*"
+          - Authorization
+        accessControlMaxAge: 300
+        addVaryHeader: true
 
   services:
     domain_${ID}:
