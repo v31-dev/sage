@@ -7,7 +7,6 @@ http:
       middlewares:
         - security-headers
         - tailscale-only
-        - server-header
       service: ${SERVICE}_${NAME}_internal
       tls: {}
     # The probe a client times to choose a name, answered by Traefik; HEAD only, so the application's own GET /ping
@@ -20,7 +19,6 @@ http:
       middlewares:
         - tailscale-only
         - probe
-        - server-header
       service: ping@internal
       tls: {}
 

@@ -6,7 +6,6 @@ http:
         - web
       middlewares:
         - security-headers
-        - server-header
       service: ${SERVICE}_${NAME}_public
     # The probe a client times to choose a name, answered by Traefik; HEAD only, so the application's own GET /ping
     # still reaches it.
@@ -17,7 +16,6 @@ http:
         - web
       middlewares:
         - probe
-        - server-header
       service: ping@internal
 
   services:
