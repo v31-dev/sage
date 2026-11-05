@@ -42,9 +42,13 @@ class Harness(ApplicationMixin):
     self.traefik_syncs = []
     self.tasks = []
     self.worker_list = []
+    self.discovery_syncs = 0
 
   def notify(self, message, level="info"):
     self.notices.append((level, message))
+
+  def request_discovery_sync(self):
+    self.discovery_syncs += 1
 
   def request_domain_syncs(self, domains):
     self.traefik_syncs.extend(domain.id for domain in domains)

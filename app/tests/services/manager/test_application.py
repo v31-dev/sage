@@ -83,6 +83,7 @@ class Deleting(ApplicationMixin):
   def __init__(self):
     self.commands = []
     self.synced = []
+    self.discovery_syncs = 0
     self.tailscale = SimpleNamespace(exec_command=self.exec_command)
 
   async def exec_command(self, hostname, command, timeout=300):
@@ -99,7 +100,7 @@ class Deleting(ApplicationMixin):
     self.synced.extend(domain.id for domain in domains)
 
   def request_discovery_sync(self):
-    self.synced.append("discovery")
+    self.discovery_syncs += 1
 
 
 class TestDeleteContainer:

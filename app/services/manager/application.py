@@ -57,11 +57,6 @@ def save_application(application: Application):
   application_changed(application)
 
 
-def save_container(container: Container):
-  container.save()
-  container_changed(container)
-
-
 @contextmanager
 def container_part(container: Container, kind: str):
   """One container's part of the running task (its deploy, stop, delete, backup or restore): records its `Event`, and
@@ -97,6 +92,13 @@ def task_parts(task_id: str) -> list[dict]:
 
 
 class ApplicationMixin:
+  def save_container(self, container: Container):
+    was_active = Container.select(Container.status).where(Container.id == container.id).scalar() == "active"
+    container.save()
+    container_changed(container)
+    if was_active != (container.status == "active"):
+      self.request_discovery_sync()
+
   async def deploy_application(self, application_id: int):
     """
     Deploy an application.
@@ -165,7 +167,7 @@ class ApplicationMixin:
       exception_message = None
       try:
         container.status = "deploying"
-        save_container(container)
+        self.save_container(container)
         container_dir = f"{self.worker_home_dir}/applications/{config.qualified_name}"
         logger.info(
             f"Deploying application {config.qualified_name} container to worker {
@@ -310,7 +312,7 @@ class ApplicationMixin:
         exception_message = str(e)
 
       container.status = deployment_status
-      save_container(container)
+      self.save_container(container)
 
       if deployment_status == "active":
         await mark(container, "Deployed")
@@ -332,7 +334,7 @@ class ApplicationMixin:
       return
     with container_part(container, "delete"):
       container.status = "stopping"
-      save_container(container)
+      self.save_container(container)
 
       container_dir = f"{self.worker_home_dir}/applications/{container.application.qualified_name}"
 
@@ -386,7 +388,7 @@ class ApplicationMixin:
                   container.worker.hostname}.", "success")
       except Exception as e:
         container.status = "error"
-        save_container(container)
+        self.save_container(container)
         await mark(container, f"Delete failed: {e}")
         self.notify(
             f"Failed to delete container of application {container.application.qualified_name} from worker {
@@ -428,7 +430,7 @@ class ApplicationMixin:
       exception_message = None
       try:
         container.status = "stopping"
-        save_container(container)
+        self.save_container(container)
         logger.info(
             f"Stopping application {container.application.qualified_name} container on worker {
                 container.worker.hostname} with task id {part}...")
@@ -453,7 +455,7 @@ class ApplicationMixin:
         exception_message = str(e)
 
       container.status = deployment_status
-      save_container(container)
+      self.save_container(container)
 
       if deployment_status == "inactive":
         if not was_inactive:
@@ -531,7 +533,7 @@ class ApplicationMixin:
               f"running operation; status reset to error.",
               "error")
         container.status = "error"
-        save_container(container)
+        self.save_container(container)
         routing_changed = True
 
       decision = reconcile_container(
@@ -552,7 +554,7 @@ class ApplicationMixin:
           await mark(container, f"Could not stop the stale version: {e}")
       if status is not None and status != container.status:
         container.status = status
-        save_container(container)
+        self.save_container(container)
         routing_changed = True
       if message:
         self.notify(message, level)

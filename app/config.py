@@ -55,6 +55,8 @@ DNS_PROPAGATION_TIMEOUT = 180
 DNS_POLL_INTERVAL = 5
 FINALIZE_TIMEOUT_SECONDS = 180
 
+DISCOVERY_CACHE_SECONDS = 30
+
 # The manager samples its own usage every few seconds and reports the per-minute peak
 METRICS_SAMPLE_INTERVAL = 5
 

@@ -15,7 +15,7 @@ http:
       headers:
         customResponseHeaders:
           Sage-Endpoints: '${ENDPOINTS}'
-          Cache-Control: "private, max-age=300"
+          Cache-Control: "private, max-age=${CACHE_SECONDS}"
         accessControlAllowOriginList:
           - "*"
         accessControlAllowMethods:

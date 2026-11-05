@@ -82,6 +82,12 @@ class WorkersMixin:
     """The worker tasks are given to the worker list when the set of them differs; they fire no source of their own."""
     return [Fact(self.worker_tasks_busy, on_change=self._set_worker_tasks)]
 
+  def ready_workers(self) -> frozenset[str]:
+    return frozenset(worker["hostname"] for worker in self.worker_list if worker["status"] == "online")
+
+  def workers_discovery_fact(self) -> Fact:
+    return Fact(self.ready_workers, on_change=lambda _: self.request_discovery_sync())
+
   def worker_online(self, hostname: str) -> bool | None:
     """Whether the worker answered the last sync and was set up (`online` in `worker_list`): None until a sync has
     looked at it, False for a name that is not in the list."""
@@ -118,6 +124,7 @@ class WorkersMixin:
       for hostname, inputs in changes.items():
         records[hostname] = replace(records.get(hostname, WorkerInputs()), **inputs)
     self._edit_workers(edit)
+    self.worker_discovery.check()
 
   def update_worker(self, hostname: str, **inputs):
     self.update_workers({hostname: inputs})
@@ -152,6 +159,7 @@ class WorkersMixin:
     def edit(records: dict):
       records[hostname] = worker_with_row(records.get(hostname, WorkerInputs()), ip, row.subdomain, path)
     self._edit_workers(edit)
+    self.worker_discovery.check()
     return row
 
   def save_worker_subdomain(self, hostname: str, subdomain: str):
@@ -184,6 +192,7 @@ class WorkersMixin:
       if hostname in records:
         records[hostname] = worker_without_row(records[hostname])
     self._edit_workers(edit)
+    self.worker_discovery.check()
 
   def load_workers(self):
     """Read the Worker table into the worker list, at start and after a restore replaced the table: the only
@@ -198,6 +207,7 @@ class WorkersMixin:
         records[hostname] = (worker_with_row(record, row.ip, row.subdomain, paths[hostname]) if row
                              else worker_without_row(record))
     self._edit_workers(edit)
+    self.worker_discovery.check()
 
   def _edit_workers(self, edit: Callable[[dict], None]):
     """The one place the worker list is worked out. `edit` changes the records (hostname to `WorkerInputs`) under

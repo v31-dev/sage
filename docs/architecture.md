@@ -76,15 +76,19 @@ Current traffic and naming patterns are driven by Cloudflare, Traefik, and Tails
 - **Discovery** lists a service's names for clients that choose one: `discovery.<domain>?service=<service>` for public
   names (through the platform's tunnel, so any worker answers while the manager is down) and
   `discovery.int.<domain>?service=<service>` for internal and TCP ones (tailnet only, an A record per online worker).
-  The answer is a header, `Sage-Endpoints: "<host>";pool="<pool>", …` (an RFC 9651 list), to HEAD, GET or OPTIONS,
-  with `Cache-Control: private, max-age=300` and CORS for any origin; another method or an unknown service gets a 404.
-  A client times `HEAD /ping` on each name to choose, which Traefik answers while the container is active (GET still
-  reaches the application).
+  The answer is an RFC 9651 list in `Sage-Endpoints`, for example
+  `"a.example.test";pool="eu";online, "b.example.test";pool="eu";online=?0`, to HEAD, GET or OPTIONS.
+  `;online` means available; `;online=?0` means offline. Every service-assigned name stays listed, including unlinked
+  names and pending or failed syncs. An available name needs an active container, its worker's cached ready status,
+  and a successful Domain sync for its current configuration. This is last-known state, derived when discovery
+  config is generated; discovery performs no live health checks. Responses have `Cache-Control: private, max-age=30`
+  and CORS for any origin; another method or an unknown service gets a 404. A client can time `HEAD /ping` on the
+  available names to choose, which Traefik answers while the container is active (GET still reaches the application).
 
 Each Domain record owns its DNS and Traefik synchronization result. A record is synced once both effects have
 completed for its desired configuration. A parent pass on demand and every five minutes cleans orphan/old-placement
-artifacts, queues record repairs and generates discovery. Discovery includes synced names linked to a container; container health
-is a separate state.
+artifacts, queues record repairs and generates discovery. Container availability and worker readiness changes also
+request this pass. Domain sync status remains separate from the derived discovery availability flag.
 
 ### Cloudflare Resources
 

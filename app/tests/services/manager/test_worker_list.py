@@ -36,6 +36,7 @@ class Workers(WorkersMixin):
     self._worker_inputs = {}
     self.worker_list = []
     self._worker_list_lock = threading.Lock()
+    self.worker_discovery = self.workers_discovery_fact()
     self.paths = {}
     self.hold = hold
     self.tailscale = SimpleNamespace(path=lambda ip: self.paths.get(ip))
@@ -210,11 +211,13 @@ class TestSubdomain:
     other = Application.create(project=project, name="api", label="API", image="nginx")
     Domain.create(name="shop", type="internal", port=80, container=Container.create(application=application, worker="w1"))
     Domain.create(name="api", type="public", port=80, container=Container.create(application=other, worker="w1"))
+    before = workers.discovery_syncs
     workers.save_worker_subdomain("w2", "eu2")
     assert workers.synced_applications == []
     workers.save_worker_subdomain("w1", "eu1")
     assert workers.synced_applications == ["shop"]
-    assert (workers.renewals, workers.discovery_syncs) == (2, 2)
+    assert workers.renewals == 2
+    assert workers.discovery_syncs == before + 2
     assert workers.tasks == [("sync_workers", {"check_stamps": True})] * 2
 
   def test_the_same_subdomain_again_changes_nothing(self, workers, changes):

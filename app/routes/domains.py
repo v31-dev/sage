@@ -91,6 +91,7 @@ def create_domain(domain_data: dict = Body(...)):
   container = container_of(domain_data)
   result = generic_create(Domain, {**fields_of(domain_data), "container": container})
   domain = Domain.get_by_id(result["id"])
+  Manager().request_discovery_sync()
   Manager().request_domain_sync(domain)
   domain_changed(domain)
   return domain_payload(Domain.get_by_id(domain.id))
@@ -105,6 +106,7 @@ def update_domain(domain_id: int, domain_data: dict = Body(...)):
   if "container" in domain_data:
     data["container"] = container_of(domain_data)
   generic_update(Domain, domain, {**data, "status": "pending", "sync_error": None})
+  Manager().request_discovery_sync()
   Manager().request_domain_sync(domain)
   domain_changed(domain, before)
   return domain_payload(Domain.get_by_id(domain_id))

@@ -183,6 +183,9 @@ class Syncing(DomainsMixin):
     self.discovery_requests = 0
     self.links = []
 
+  def ready_workers(self):
+    return frozenset(self.online)
+
   def is_worker_online(self, hostname):
     return hostname in self.online
 
@@ -229,8 +232,8 @@ class TestDiscovery:
     Domain.update(container=None).where(Domain.id == unlinked.id).execute()
 
     assert Syncing(tmp_path, ()).discovery_services() == [
-        ["internal", "shop", [["db.blue.int.example.test", None], ["shop.red.int.example.test", "eu"]]],
-        ["public", "shop", [["shop-blue.example.test", None], ["shop-red.example.test", "eu"]]],
+        ["internal", "shop", [["db.blue.int.example.test", None, False], ["shop.red.int.example.test", "eu", False]]],
+        ["public", "shop", [["gone.example.test", None, False], ["shop-blue.example.test", None, False], ["shop-red.example.test", "eu", False]]],
     ]
 
   def test_every_online_worker_answers_each_service_from_its_own_files_and_is_stamped(self, tmp_path, application, workers):
@@ -252,11 +255,11 @@ class TestDiscovery:
           "Host(`discovery.example.test`) && Query(`service`, `shop`) && "
           "(Method(`GET`) || Method(`HEAD`) || Method(`OPTIONS`))")
       headers = public["middlewares"]["discovery_public_shop"]["headers"]
-      assert headers["customResponseHeaders"]["Sage-Endpoints"] == '"shop-red.example.test";pool="eu"'
+      assert headers["customResponseHeaders"]["Sage-Endpoints"] == '"shop-red.example.test";pool="eu";online=?0'
       internal = yaml.safe_load(files["_discovery-internal-api.yml"])["http"]
       assert internal["routers"]["discovery_internal_api"]["rule"].startswith("Host(`discovery.int.example.test`)")
       assert internal["middlewares"]["discovery_internal_api"]["headers"]["customResponseHeaders"]["Sage-Endpoints"] == (
-          '"shop.red.int.example.test"')
+          '"shop.red.int.example.test";online=?0')
       assert (manager.tailscale.home(hostname) / "revisions/discovery").read_text() == manager.discovery_hash(
           manager.discovery_services())
     assert manager.tailscale.files("w3") == {}

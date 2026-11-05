@@ -63,6 +63,7 @@ class Manager(
       self._worker_inputs = {}
       self.worker_list = []
       self._worker_list_lock = threading.Lock()
+      self.worker_discovery = self.workers_discovery_fact()
       # What each owner works out from the queue at every change of it: the tasks and the state, the settings sections
       # applying, the restore and the backups, the worker and domain tasks.
       self.queue_facts = [*self.tasks_queue_facts(), *self.settings_queue_facts(), *self.platform_queue_facts(),

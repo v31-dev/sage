@@ -48,9 +48,13 @@ class Syncing(DomainsMixin, QueueMixin):
     self.tailscale = LocalWorkers(root)
     self.cloudflare = Cloudflare()
     self.online = {"w1", "w2"}
+    self.not_ready = set()
     self.status_requests = []
     self.queue_facts = self.domains_queue_facts()
     self.task_queue = TaskQueue(SCOPES, {"app": pool}, notify=self._queue_changed)
+
+  def ready_workers(self):
+    return frozenset(self.online - self.not_ready)
 
   def is_worker_online(self, hostname):
     return hostname in self.online

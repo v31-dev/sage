@@ -94,7 +94,8 @@ class TestRecordRepair:
     assert (UpdateSource.DOMAINS, None) in manager.signals
     assert (UpdateSource.APPLICATION, "demo/web") in manager.signals
     discovery = manager.tailscale.files("w1")["_discovery-internal-shop.yml"]
-    assert "other.red.int.example.test" in discovery and "shop.red.int.example.test" not in discovery
+    assert '"other.red.int.example.test";online' in discovery
+    assert '"shop.red.int.example.test";online=?0' in discovery
 
   @pytest.mark.parametrize("status", ["pending", "error"])
   def test_unfinished_work_is_retried_without_losing_its_last_success(self, manager, application, status):
@@ -131,7 +132,7 @@ class TestRecordRepair:
 
     assert repairs(manager) == [domain.id]
     assert Domain.get_by_id(domain.id).status == "pending"
-    assert "_discovery-public-shop.yml" not in manager.tailscale.files("w1")
+    assert '"shop.example.test";online=?0' in manager.tailscale.files("w1")["_discovery-public-shop.yml"]
 
   def test_the_matching_dns_configuration_needs_no_record_repair(self, manager, application):
     domain = applied(manager, application, type="public")

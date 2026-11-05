@@ -220,7 +220,7 @@ name `<name>.<DOMAIN>`, or an internal one `<name>.<subdomain>.int.<DOMAIN>` (ta
 its worker). Names that share a service are listed together for clients that choose one, at
 `https://discovery.<DOMAIN>/?service=<service>` (public) or
 `https://discovery.int.<DOMAIN>/?service=<service>` (internal), in the `Sage-Endpoints`
-header; [Domain Types](docs/architecture.md#domain-types) has the details.
+header, with an online flag for each name; [Domain Types](docs/architecture.md#domain-types) has the details.
 
 Sage lists the backups already in the S3 bucket and path when you save the S3 settings,
 at startup and from Discover backups on the Backups page. To recover onto a new volume,

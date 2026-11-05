@@ -2,6 +2,7 @@ import asyncio
 import logging
 import shlex
 
+import config
 from services.cloudflare import dns_record_matches
 from services.db import APPLICATION_BUSY_STATUSES, Application, Domain, db
 from services.domains import ROUTING_TEMPLATES, DomainConfig, domain_artifact_owner, domains_changed
@@ -144,19 +145,27 @@ class DomainsMixin:
         on_conflict=OnConflict.REPLACE if repair else OnConflict.DEDUP, quiet=True,
     )
 
-  def discovery_services(self, domains=None) -> list:
-    """Services as `[namespace, service, [[host, pool], ...]]`, sorted, from synced linked records."""
+  def discovery_services(self, domains=None, ready=None) -> list:
+    """Services as `[namespace, service, [[host, pool, online], ...]]` from configured records."""
+    if ready is None:
+      ready = self.ready_workers()
     services = {}
     for domain in Domain.select() if domains is None else domains:
-      if domain.status != "synced" or domain.container_id is None or domain.service is None:
+      if domain.service is None:
         continue
+      snapshot = self.domain_config(domain)
+      if snapshot.host is None:
+        continue
+      online = (snapshot.active and snapshot.worker in ready and domain.status == "synced"
+                and domain.synced_hash == snapshot.content_hash)
       namespace = "public" if domain.type == "public" else "internal"
-      services.setdefault((namespace, domain.service), []).append([domain.host(self.cloudflare.domain), domain.pool])
+      services.setdefault((namespace, domain.service), []).append([snapshot.host, domain.pool, online])
     return [[namespace, service, sorted(names, key=lambda name: name[0])]
             for (namespace, service), names in sorted(services.items())]
 
   def discovery_hash(self, services: list) -> str:
-    return content_hash({"templates": DISCOVERY_TEMPLATES, "domain": self.cloudflare.domain, "services": services})
+    return content_hash({"templates": DISCOVERY_TEMPLATES, "domain": self.cloudflare.domain, "services": services,
+                         "cache_seconds": config.DISCOVERY_CACHE_SECONDS})
 
   async def sync_discovery(self, repair: bool = True):
     workers = self.online_workers()
@@ -195,6 +204,7 @@ class DomainsMixin:
 
     # Inventory precedes owners: instant creates must be visible before an artifact is classified as orphaned.
     with db.atomic():
+      ready = self.ready_workers()
       domains = {domain.id: domain for domain in Domain.select()}
       configs = {domain.id: self.domain_config(domain) for domain in domains.values()}
       busy = {domain.id for domain in domains.values() if domain.container and (
@@ -224,7 +234,7 @@ class DomainsMixin:
     confirmed = {domain.id for domain in domains.values() if domain.id not in busy and domain.status == "synced"
                  and domain.synced_hash == configs[domain.id].content_hash and (not configs[domain.id].active or
                  configs[domain.id].filename in files.get(configs[domain.id].worker, set()))}
-    services = self.discovery_services(domains.values())
+    services = self.discovery_services(domains.values(), ready=ready)
     stamp = self.discovery_hash(services)
     expected = {f"_discovery-{namespace}-{service}.yml" for namespace, service, _ in services}
     hosts = {"public": f"discovery.{self.cloudflare.domain}", "internal": f"discovery.int.{self.cloudflare.domain}"}
@@ -250,8 +260,9 @@ class DomainsMixin:
           await self.tailscale.sync_file(
               worker.hostname, app_dir / f"templates/worker/traefik/discovery_{namespace}.yml",
               f"{dynamic}/_discovery-{namespace}-{service}.yml", {
-                  "SERVICE": service, "HOST": hosts[namespace],
-                  "ENDPOINTS": ", ".join(f'"{host}";pool="{pool}"' if pool else f'"{host}"' for host, pool in names),
+                  "SERVICE": service, "HOST": hosts[namespace], "CACHE_SECONDS": config.DISCOVERY_CACHE_SECONDS,
+                  "ENDPOINTS": ", ".join(f'"{host}"' + (f';pool="{pool}"' if pool else "")
+                                         + (";online" if online else ";online=?0") for host, pool, online in names),
               })
         stale = actual - expected
         if stale:

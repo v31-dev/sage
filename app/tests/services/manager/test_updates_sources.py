@@ -19,7 +19,7 @@ import config
 from routes.notifications import list_notifications
 from services.db import Application, Backup, Container, Domain, Notification, Task, Worker
 from services.manager import Manager
-from services.manager.application import application_changed, container_changed, hosts_changed, save_application, save_container
+from services.manager.application import ApplicationMixin, application_changed, container_changed, hosts_changed, save_application
 from services.manager.core import CoreMixin
 from services.manager.decisions import WORKER_TASKS
 from services.manager.platform import PlatformMixin
@@ -443,14 +443,14 @@ class TestApplicationAndContainerChanges:
   def test_saving_a_container_writes_it_and_says_so(self, keyed, hosted):
     container = hosted[0]
     container.status = "active"
-    save_container(container)
+    ApplicationMixin.save_container(SimpleNamespace(request_discovery_sync=lambda: None), container)
     assert Container.get_by_id(container.id).status == "active"
     assert keyed.signals == [(UpdateSource.APPLICATION, "demo/web"), (UpdateSource.WORKER_CONTAINERS, "w1"),
                              (UpdateSource.DOMAINS, None)]
 
   def test_a_container_that_cannot_be_saved_says_nothing(self, keyed, hosted, application):
     with pytest.raises(IntegrityError):
-      save_container(Container(application=application, worker="nobody"))
+      ApplicationMixin.save_container(SimpleNamespace(request_discovery_sync=lambda: None), Container(application=application, worker="nobody"))
     assert keyed.signals == []
 
   def test_every_row_save_in_the_manager_goes_through_its_notifying_owner(self):

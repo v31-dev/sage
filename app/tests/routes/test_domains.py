@@ -51,7 +51,7 @@ class TestCreate:
     assert response.status_code == 200, response.json()
     assert (response.json()["host"], response.json()["service"], response.json()["pool"]) == (
         "shop.example.test", None, "eu")
-    assert (manager.domain_syncs, manager.discovery_syncs) == ([response.json()["id"]], 0)
+    assert (manager.domain_syncs, manager.discovery_syncs) == ([response.json()["id"]], 1)
 
   def test_one_without_a_container_is_refused(self, client, red, manager):
     response = client.post(f"{URL}/", json={"name": "shop", "type": "public", "port": 80})
@@ -81,7 +81,7 @@ class TestUpdate:
     response = client.put(f"{URL}/{domain.id}", json={"container": blue.id})
 
     assert (response.json()["host"], response.json()["worker"]) == ("shop.blue.int.example.test", "w2")
-    assert manager.domain_syncs == [domain.id]
+    assert (manager.domain_syncs, manager.discovery_syncs) == ([domain.id], 1)
 
   def test_what_is_not_sent_stays_and_an_unlinked_domain_stays_unlinked(self, client, red, manager):
     domain = Domain.create(name="shop", type="internal", port=80, container=red, service="shop")
@@ -90,6 +90,7 @@ class TestUpdate:
     response = client.put(f"{URL}/{domain.id}", json={"port": 8080})
 
     assert (response.json()["port"], response.json()["service"], response.json()["container"]) == (8080, "shop", None)
+    assert (manager.domain_syncs, manager.discovery_syncs) == ([domain.id], 1)
 
   def test_an_unknown_domain_is_not_found(self, client, manager):
     assert client.put(f"{URL}/9", json={"port": 80}).status_code == 404
