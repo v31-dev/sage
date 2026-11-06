@@ -159,8 +159,9 @@ A public name is unique among the public domains, and an internal or TCP name on
 `<subdomain>.int.<domain>`). `core`, `int` and `discovery` are reserved public names.
 
 Names that share a **service** are listed together at discovery, apart for each namespace (public, or internal and
-TCP), and a **pool** is a group within a service. Clients that can't choose a name, such as browsers and webhook
-senders, are given one name. An OAuth provider needs each name it redirects to registered.
+TCP), and a **pool** is a group within a service. Clients without discovery support, such as webhook senders,
+use one concrete name. An OAuth provider needs each name it redirects to registered.
+The [client guide](discovery.md) covers browser discovery, latency-based selection, caching and failover.
 
 **`tcp` clients must send SNI.** Routing is purely by SNI, so the client must connect
 with TLS and present SNI = `<name>.<subdomain>.int.<domain>`. Without it Traefik cannot select the

@@ -222,6 +222,7 @@ its worker). Names that share a service are listed together for clients that cho
 `https://discovery.int.<DOMAIN>/?service=<service>` (internal), in the `Sage-Endpoints`
 header, with an online flag for each name; [Domain Types](docs/architecture.md#domain-types) has the details.
 Each HTTP Domain can [allow frontend origins](docs/architecture.md#allowed-origins) for browser API requests.
+The [client guide](docs/discovery.md) shows how to discover a backend service, probe its replicas and choose one.
 
 Sage lists the backups already in the S3 bucket and path when you save the S3 settings,
 at startup and from Discover backups on the Backups page. To recover onto a new volume,
