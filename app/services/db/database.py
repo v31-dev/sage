@@ -1,5 +1,7 @@
 import logging
+import re
 
+from peewee import IntegrityError, sort_models
 from playhouse.migrate import SqliteMigrator, migrate
 
 import config
@@ -10,6 +12,10 @@ from .models import Application, Backup, Container, Domain, Event, Instance, Not
 logger = logging.getLogger(__name__)
 
 MODELS = [Setting, Instance, Project, Application, Volume, Domain, Worker, Container, Event, Notification, Backup, Task]
+
+
+class SchemaRefused(Exception):
+  """The data in the database refuses this version's schema."""
 
 
 class Database(Base):
@@ -35,12 +41,56 @@ class Database(Base):
   def reconcile_schema(self):
     """
     Bring the live database schema up to the current models: create missing
-    tables and add missing columns. Idempotent and safe to call any time the
+    tables, add missing columns and drop those no model has, and drop the indexes
+    no model declares before creating the missing ones (a create skips a name that
+    exists, so a changed index comes under a new name). Idempotent and safe to call any time the
     on-disk schema may lag the models -- at startup, or after a restore swaps in
     an older database snapshot. Also gives the manager its identity if it has none.
+
+    The step is SQLite's procedure for schema changes: foreign keys off, every
+    change in one transaction, a foreign key check, commit. Adding a NOT NULL
+    column rebuilds its table, and with foreign keys on, dropping the old table
+    would delete or block the rows that reference it. Data that refuses the
+    schema (an index, or the foreign key check) rolls the whole step back and
+    raises `SchemaRefused`, whose message links the running version's release,
+    where the fix is.
     """
-    db.create_tables(MODELS, safe=True)
-    self._sync_columns()
+    db.execute_sql("PRAGMA foreign_keys=OFF")
+    try:
+      # The pragma is ignored inside a transaction.
+      if db.execute_sql("PRAGMA foreign_keys").fetchone()[0]:
+        raise RuntimeError("The schema step must not run inside a transaction: foreign keys can't be turned off.")
+      with db.atomic():
+        # Indexes last: an index on a column not added yet would be built on the string of its name (SQLite reads a
+        # double-quoted name it doesn't know as a literal).
+        for model in sort_models(MODELS):
+          model._schema.create_table(safe=True)
+        self._sync_columns()
+        declared = {index._name for model in MODELS for index in model._meta.fields_to_index()}
+        for model in MODELS:
+          for index in db.get_indexes(model._meta.table_name):
+            if index.name not in declared and not index.name.startswith("sqlite_autoindex_"):
+              logger.info(f"Dropping index {index.name}, which no model declares.")
+              db.execute_sql(f'DROP INDEX "{index.name}"')
+        for model in MODELS:
+          model._schema.create_indexes(safe=True)
+        if broken := db.execute_sql("PRAGMA foreign_key_check").fetchall():
+          raise IntegrityError("FOREIGN KEY check failed: " + ", ".join(
+              f"{table} row {row} points at a missing {parent}" for table, row, parent, _ in broken))
+    except IntegrityError as e:
+      refused_index = ""
+      if named := re.search(r"index '([^']+)'", str(e)):
+        for model in MODELS:
+          for index in model._meta.fields_to_index():
+            sql = db.get_sql_context().sql(index).query()[0]
+            if f'"{named[1]}"' in sql:
+              refused_index = f" The refused index: {sql}."
+      raise SchemaRefused(
+          f"Sage {config.VERSION} can't update the schema of {config.DB_PATH}: the data in it refuses the change "
+          f"({e}).{refused_index} The database was left as it was. "
+          f"How to fix it: {config.RELEASE_PAGE_URL.format(version=config.VERSION)}") from e
+    finally:
+      db.execute_sql("PRAGMA foreign_keys=ON")
     if not Instance.select().exists():
       Instance.create()
 
@@ -66,4 +116,5 @@ class Database(Base):
         migrate(migrator.add_column(table, field.column_name, field))
       for column in sorted(existing - wanted):
         logger.info(f"Dropping column {table}.{column}, which no model has.")
-        migrate(migrator.drop_column(table, column))
+        # A rebuild of the table: SQLite's own DROP COLUMN refuses a column in a foreign key or an index.
+        migrate(migrator.drop_column(table, column, legacy=True))

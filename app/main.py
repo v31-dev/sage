@@ -14,6 +14,7 @@ from api import app_asgi, app_redirect
 from api_ingest import app as app_fastapi_ingest
 from scheduler import shutdown as shutdown_scheduler
 from scheduler import start as start_scheduler
+from services.db import SchemaRefused
 from services.manager import Manager
 from utils.logging import setup_logger, unlogged_paths
 
@@ -23,13 +24,13 @@ setup_logger(unlogged_paths([app_fastapi, app_fastapi_ingest], [SOCKET_IO_PATH])
 logger = logging.getLogger(__name__)
 
 
-def caused_by(error: BaseException | None, kind: type) -> bool:
+def caused_by(error: BaseException | None, kind: type) -> BaseException | None:
   # Services re-raise setup errors as generic exceptions; the original is in the chain.
   while error is not None:
     if isinstance(error, kind):
-      return True
+      return error
     error = error.__cause__ or error.__context__
-  return False
+  return None
 
 
 try:
@@ -40,6 +41,8 @@ except Exception as e:
     logger.critical(
         "ENCRYPTION_KEY is not the key this data was written with. Set the original key, or "
         "wipe the volume to start over with this one.")
+  elif refused := caused_by(e, SchemaRefused):
+    logger.critical(str(refused))
   else:
     logger.critical(f"Error during startup: {e}", exc_info=True)
   sys.exit(1)

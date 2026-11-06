@@ -21,7 +21,6 @@ vi.mock('@/services/api', async importOriginal => ({
   ...(await importOriginal<typeof import('@/services/api')>()),
   fetchApplication: vi.fn(),
   getContainerAPI: vi.fn(() => ({})),
-  getDomainAPI: vi.fn(() => ({})),
   getVolumeAPI: vi.fn(() => ({})),
 }))
 
@@ -31,8 +30,8 @@ const header = {
     '<button data-header @click="loadApplication()">{{ application.name }}:{{ application.status }}:{{ application.config_dirty }}</button>',
 }
 const list = (attribute: string, key: string) => ({
-  props: ['container', 'volume', 'domain'],
-  template: `<div ${attribute}>{{ ($props.container ?? $props.volume ?? $props.domain).${key} }}</div>`,
+  props: ['container', 'volume'],
+  template: `<div ${attribute}>{{ ($props.container ?? $props.volume).${key} }}</div>`,
 })
 
 // The fields the page shows; the rest of an application is left out.
@@ -42,24 +41,20 @@ const application = (overrides: Record<string, unknown> = {}) =>
     status: 'inactive',
     container_count: 0,
     updated_at: '2026-10-29T10:00:00',
-    domains_synced: true,
     deployed_at: null,
     config_dirty: false,
     containers: [],
     volumes: [{ name: 'data' }],
-    domains: [{ name: 'web.example.test' }],
     ...overrides,
   }) as unknown as ApplicationState
 
 const stubs = {
   ApplicationHeader: header,
   AddContainerButton: true,
-  AddDomainButton: true,
   AddVolumeButton: true,
   SectionTitle: true,
   ContainerCard: list('data-container', 'status'),
   VolumeCard: list('data-volume', 'name'),
-  DomainCard: list('data-domain', 'name'),
 }
 
 async function mountPage() {
@@ -118,7 +113,7 @@ describe('what the page follows', () => {
 })
 
 describe('loading', () => {
-  it('shows a spinner until the application has loaded, then it with its volumes and domains', async () => {
+  it('shows a spinner until the application has loaded, then it with its volumes', async () => {
     const { wrapper, topics } = await mountPage()
     expect(wrapper.text()).toContain('Loading application...')
 
@@ -127,7 +122,6 @@ describe('loading', () => {
     expect(wrapper.text()).not.toContain('Loading application...')
     expect(wrapper.find('[data-header]').text()).toBe('web:inactive:false')
     expect(texts(wrapper, 'data-volume')).toEqual(['data'])
-    expect(texts(wrapper, 'data-domain')).toEqual(['web.example.test'])
   })
 
   it('gives the deploy status to the app store', async () => {
@@ -181,17 +175,14 @@ describe('what the manager pushes', () => {
     expect(useAppStore().applicationDeployStatus).toBe('active')
   })
 
-  it('shows the volumes and the domains it pushes, changed elsewhere', async () => {
+  it('shows the volumes it pushes, changed elsewhere', async () => {
     const { wrapper, topics } = await mountPage()
     await loaded(topics)
 
-    topics
-      .topic('application:demo/web')
-      .push(application({ volumes: [], domains: [{ name: 'other.example.test' }] }))
+    topics.topic('application:demo/web').push(application({ volumes: [] }))
     await flushPromises()
 
     expect(texts(wrapper, 'data-volume')).toEqual([])
-    expect(texts(wrapper, 'data-domain')).toEqual(['other.example.test'])
   })
 
   it('puts the status the manager sends over the one an action set', async () => {

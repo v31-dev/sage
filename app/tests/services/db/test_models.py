@@ -1,4 +1,6 @@
 import dataclasses
+import re
+import secrets
 from datetime import datetime
 
 import pytest
@@ -274,22 +276,133 @@ class TestConfigDirty:
 
 
 class TestDomain:
-  def test_the_same_name_and_type_cannot_be_added_twice(self, application):
-    Domain.create(application=application, name="shop", type="public", port=80)
+  @pytest.fixture
+  def red(self, application):
+    return Container.create(application=application, worker=Worker.create(hostname="w1", ip="100.64.0.2", subdomain="red"))
+
+  @pytest.fixture
+  def blue(self, project):
+    other = Application.create(project=project, name="api", label="API", image="nginx")
+    return Container.create(application=other, worker=Worker.create(hostname="w2", ip="100.64.0.3", subdomain="blue"))
+
+  @pytest.mark.parametrize("type, host, address", [
+      ("public", "shop.example.test", "https://shop.example.test"),
+      ("internal", "shop.red.int.example.test", "https://shop.red.int.example.test"),
+      ("tcp", "shop.red.int.example.test", "shop.red.int.example.test:8443"),
+  ])
+  def test_its_name_is_public_or_under_its_workers_subdomain(self, red, type, host, address):
+    domain = Domain.create(name="shop", type=type, port=80, container=red)
+
+    assert (domain.host("example.test"), domain.address("example.test")) == (host, address)
+
+  def test_an_internal_name_is_on_its_containers_worker_and_moves_with_another_container(self, red, blue):
+    domain = Domain.create(name="shop", type="internal", port=80, container=red)
+    assert domain.worker_id == "w1"
+
+    domain.container = blue
+    domain.save()
+
+    assert Domain.get_by_id(domain.id).host("example.test") == "shop.blue.int.example.test"
+
+  def test_a_public_name_has_no_worker_of_its_own(self, red):
+    assert Domain.create(name="shop", type="public", port=80, container=red).worker_id is None
+
+  def test_deleting_its_container_unlinks_it_and_an_internal_one_keeps_its_name(self, red):
+    public = Domain.create(name="shop", type="public", port=80, container=red)
+    internal = Domain.create(name="shop", type="internal", port=80, container=red)
+
+    red.delete_instance()
+
+    public, internal = Domain.get_by_id(public.id), Domain.get_by_id(internal.id)
+    assert (public.container_id, internal.container_id) == (None, None)
+    assert internal.host("example.test") == "shop.red.int.example.test"
+
+  def test_a_worker_with_internal_domains_cannot_be_deleted(self, red):
+    Domain.create(name="shop", type="internal", port=80, container=red)
+    red.delete_instance()
 
     with pytest.raises(IntegrityError):
-      Domain.create(application=application, name="shop", type="public", port=81)
+      Worker.get_by_id("w1").delete_instance()
 
-  def test_the_same_name_can_exist_with_another_type(self, application):
-    Domain.create(application=application, name="shop", type="public", port=80)
-    Domain.create(application=application, name="shop", type="internal", port=80)
+  @pytest.mark.parametrize("first, second", [("internal", "internal"), ("internal", "tcp"), ("tcp", "internal")])
+  def test_an_internal_or_tcp_name_is_taken_once_on_a_worker(self, red, first, second):
+    Domain.create(name="shop", type=first, port=80, container=red)
 
-  def test_domains_go_with_their_application(self, application):
-    Domain.create(application=application, name="shop", port=80)
+    with pytest.raises(ValueError, match="'shop' is already an internal or TCP domain on worker w1."):
+      Domain.create(name="shop", type=second, port=81, container=red)
 
-    application.delete_instance()
+  def test_a_public_name_is_taken_once_whatever_its_container(self, red, blue):
+    Domain.create(name="shop", type="public", port=80, container=red)
+    red.delete_instance()
 
-    assert Domain.select().count() == 0
+    with pytest.raises(ValueError, match="'shop' is already a public domain."):
+      Domain.create(name="shop", type="public", port=80, container=blue)
+
+  def test_the_same_name_can_be_internal_on_two_workers_and_public(self, red, blue):
+    Domain.create(name="shop", type="internal", port=80, container=red)
+    Domain.create(name="shop", type="tcp", port=80, container=blue)
+    Domain.create(name="shop", type="public", port=80, container=red)
+
+    assert Domain.select().where(Domain.name == "shop").count() == 3
+
+  def test_a_domain_saved_again_is_not_refused_by_itself(self, red):
+    domain = Domain.create(name="shop", type="tcp", port=80, container=red)
+
+    domain.port = 81
+    domain.save()
+
+    assert Domain.get_by_id(domain.id).port == 81
+
+  @pytest.mark.parametrize("name", ["core", "int", "discovery"])
+  def test_sages_own_public_names_are_reserved_and_free_inside(self, red, name):
+    with pytest.raises(ValueError, match="reserved for Sage's own addresses"):
+      Domain.create(name=name, type="public", port=80, container=red)
+    Domain.create(name=name, type="internal", port=80, container=red)
+
+  def test_an_internal_or_tcp_domain_needs_a_container_or_a_worker(self, db):
+    with pytest.raises(ValueError, match="without a container is not allowed"):
+      Domain.create(name="shop", type="internal", port=80)
+
+  def test_the_database_refuses_a_clash_that_skips_the_check(self, red):
+    Domain.create(name="shop", type="internal", port=80, container=red)
+
+    with pytest.raises(IntegrityError):
+      Domain.insert(name="shop", type="tcp", port=80, container=red, worker="w1").execute()
+
+  @pytest.mark.parametrize("name", ["shop", "shop-eu", "1shop", "a" * 63, "a-b-c"])
+  def test_a_name_service_and_pool_are_any_valid_domain_label(self, red, name):
+    Domain.create(name=name, type="public", port=80, container=red, service=name, pool=name)
+
+  @pytest.mark.parametrize("name", ["Shop", "-shop", "shop-", "a" * 64, "shop_eu", "shop.eu", ""])
+  @pytest.mark.parametrize("field", ["name", "service", "pool"])
+  def test_anything_else_is_refused(self, red, field, name):
+    with pytest.raises(ValueError, match="lowercase letters, digits and dashes, at most 63"):
+      Domain.create(**{"name": "shop", "type": "public", "port": 80, "container": red, field: name})
+
+
+class TestWorker:
+  @pytest.mark.parametrize("value", ["EU1", "-eu1", "eu1-", "a" * 64, "eu_1"])
+  def test_a_subdomain_is_a_valid_domain_label(self, db, value):
+    Worker.create(hostname="w1", ip="100.64.0.2", subdomain="eu-1")
+
+    with pytest.raises(ValueError):
+      Worker.create(hostname="w2", ip="100.64.0.3", subdomain=value)
+
+  def test_two_workers_cannot_share_a_subdomain(self, db):
+    Worker.create(hostname="w1", ip="100.64.0.2", subdomain="eu1")
+
+    with pytest.raises(IntegrityError):
+      Worker.create(hostname="w3", ip="100.64.0.4", subdomain="eu1")
+
+  def test_a_random_subdomain_is_a_letter_and_five_letters_or_digits(self, db):
+    assert re.fullmatch(r"[a-z][a-z0-9]{5}", Worker.random_subdomain())
+
+  def test_a_random_subdomain_is_never_one_a_worker_has(self, db, monkeypatch):
+    Worker.create(hostname="w1", ip="100.64.0.2", subdomain="aaaaaa")
+    draws = iter("aaaaaabbbbbb")
+    monkeypatch.setattr(secrets, "choice", lambda letters: next(draws))
+
+    assert Worker.random_subdomain() == "bbbbbb"
 
 
 class TestContainer:
@@ -302,13 +415,6 @@ class TestContainer:
   def test_an_application_can_run_on_two_workers(self, application, worker):
     Container.create(application=application, worker=worker)
     Container.create(application=application, worker=Worker.create(hostname="w2", ip="100.64.0.3"))
-
-  def test_the_tag_x_tag_is_reserved(self, application, worker):
-    with pytest.raises(ValueError, match="reserved for internal use"):
-      Container.create(application=application, worker=worker, domain_tag="x_tag")
-
-  def test_other_tags_are_fine(self, application, worker):
-    assert Container.create(application=application, worker=worker, domain_tag="blue").domain_tag == "blue"
 
   def test_an_application_with_a_container_cannot_be_deleted(self, application, worker):
     Container.create(application=application, worker=worker)

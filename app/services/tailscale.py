@@ -269,7 +269,7 @@ class Tailscale(Base):
     logger.info(f"Successfully executed command on {hostname}.")
     return (status, output_lines)
 
-  async def sync_file(self, hostname, src, dst, keys=None, formatter=None, timeout=120, mode=None):
+  async def sync_file(self, hostname, src, dst, keys=None, formatter=None, timeout=120, mode=0o644):
     """
     Copy a single file to a worker via SFTP over the Tailscale SSH server.
     If keys (dict) is given, src is treated as a template and ${VAR} placeholders
@@ -278,11 +278,9 @@ class Tailscale(Base):
     reads src as text; with neither, src is copied verbatim. Missing parent
     directories are created.
 
-    Without `mode` the file is written in place with the server's default mode. With
-    `mode` (secrets, scripts) the file is created with that mode, uploaded to a temporary
-    name beside `dst` and renamed over it: nobody reads a partial file, and a `dst` that
-    was written earlier with a looser mode is replaced rather than rewritten, because a
-    rewrite keeps the old mode.
+    The file is created with `mode` (secrets 0o600, scripts 0o700) under a temporary
+    name beside `dst` and renamed over it: a reader finds the whole old file or the
+    whole new one, and `dst` takes `mode` even when an earlier copy had another one.
 
     `timeout` caps the whole connect+transfer so a wedged sync can't hold a
     task's scope forever.
@@ -290,7 +288,6 @@ class Tailscale(Base):
     if os.path.isdir(src):
       raise Exception(f"src must be a file, not a directory: {src}")
 
-    content = None
     if keys or formatter:
       with open(src, "r") as f:
         content = f.read()
@@ -299,6 +296,9 @@ class Tailscale(Base):
           content = content.replace("${" + key + "}", str(value))
       if formatter:
         content = formatter(content)
+      data = content.encode()
+    else:
+      data = Path(src).read_bytes()
 
     remote_dir = posixpath.dirname(dst)
 
@@ -306,25 +306,15 @@ class Tailscale(Base):
       async with conn.start_sftp_client() as sftp:
         if remote_dir:
           await sftp.makedirs(remote_dir, exist_ok=True)
-        if mode is not None:
-          await _upload_with_mode(sftp)
-        elif content is not None:
-          async with sftp.open(dst, "w") as remote_file:
-            await remote_file.write(content)
-        else:
-          await sftp.put(str(src), dst)
-
-    async def _upload_with_mode(sftp):
-      data = content.encode() if content is not None else Path(src).read_bytes()
-      temporary = posixpath.join(remote_dir, f".{posixpath.basename(dst)}.{secrets.token_hex(4)}.tmp")
-      try:
-        async with sftp.open(temporary, "wb", asyncssh.SFTPAttrs(permissions=mode)) as remote_file:
-          await remote_file.write(data)
-        await sftp.posix_rename(temporary, dst)
-      except BaseException:
-        with contextlib.suppress(Exception):
-          await sftp.remove(temporary)
-        raise
+        temporary = posixpath.join(remote_dir, f".{posixpath.basename(dst)}.{secrets.token_hex(4)}.tmp")
+        try:
+          async with sftp.open(temporary, "wb", asyncssh.SFTPAttrs(permissions=mode)) as remote_file:
+            await remote_file.write(data)
+          await sftp.posix_rename(temporary, dst)
+        except BaseException:
+          with contextlib.suppress(Exception):
+            await sftp.remove(temporary)
+          raise
 
     logger.info(f"Syncing file to {hostname} from {src} to {dst}.")
     for attempt in range(2):

@@ -6,10 +6,14 @@ Sage is a manager-and-workers platform designed for Docker workloads connected t
 
 - The manager is the control plane.
 - Workers run application containers and edge components.
-- Cloudflare is required (env vars): DNS records, the tunnel for public apps, and the DNS-01 challenge for Sage's certificates.
-- Traefik provides ingress on workers. The manager issues two certificates in-process (ACME DNS-01): its own for `<TS_NAME>.core.<domain>`, whose key never leaves it, and the workers' `*.int.<domain>` wildcard, synced to every worker.
+- Cloudflare is required (env vars): DNS records, a tunnel per worker for public apps, and the DNS-01 challenge for Sage's certificates.
+- Traefik provides ingress on workers, each routing only to its own containers. The manager issues certificates in-process (ACME DNS-01): its own for `<TS_NAME>.core.<domain>`, whose key never leaves it; one shared exact `discovery.int.<domain>` certificate; and a distinct-key `*.<subdomain>.int.<domain>` certificate for each worker. Each worker receives discovery plus its own wildcard only.
 - Vector runs on workers and forwards Traefik's and the applications' logs to the manager, a batch at least every 10 s; the manager captures its tasks' logs in-process.
 - Telegraf runs on workers and pushes the host's and the containers' metrics and the containers' state to the manager every 10 s; the manager collects its own container metrics in-process.
+
+Sage requests Let's Encrypt's [`tlsserver` profile](https://letsencrypt.org/docs/profiles/#tlsserver) for 45-day
+certificates. Renewal becomes due when seven days remain before the certificate's signed expiry. Certificates
+are checked at startup and daily; valid certificates outside that window stay in use.
 
 ## Manager Runtime
 
@@ -35,7 +39,7 @@ The manager process starts these concurrent services from `app/main.py`:
 Startup is service-driven:
 
 - `Manager()` initializes the platform services.
-- Before serving, startup sets up the domain (`Manager.setup_domain`): connect to Cloudflare (zone, tunnel, the manager's record) and get the manager's certificate, retrying a failure that clears by itself (a network error, HTTP 5xx or 429) after 1, 4 and 16 minutes and then exiting; any other failure, such as a rejected token, and a rate limit exit at once, and a still-valid certificate lets startup continue. Other startup work that touches the network (release check, the workers' certificate, S3 backup discovery, settings checks, re-checking online workers against their stamps) runs as queued tasks once the servers are up. S3 and notifications are optional.
+- Before serving, startup sets up the domain (`Manager.setup_domain`): connect to Cloudflare (zone, tunnel, the manager's record) and get the manager's certificate, retrying a failure that clears by itself (a network error, HTTP 5xx or 429) after 1, 4 and 16 minutes and then exiting; any other failure, such as a rejected token, and a rate limit exit at once, and a still-valid certificate lets startup continue. Other startup work that touches the network (release check, worker and discovery certificates, S3 backup discovery, settings checks, re-checking online workers against their stamps) runs as queued tasks once the servers are up. S3 and notifications are optional.
 - If service initialization fails, the process exits.
 
 ## Worker Runtime
@@ -53,68 +57,180 @@ The worker stack currently includes:
 - `traefik`
 - `vector`
 - `telegraf`
-- `cloudflared`, connecting the worker to the manager's tunnel
+- `cloudflared`, running the worker's own tunnel
+- `cloudflared-discovery`, a replica of the platform's tunnel, which every worker runs
 
 `vector` and `telegraf` run with a 128 MiB memory limit, swap included: their executables are large, and the kernel keeps the pages it has read in the container's memory, which on a small worker the applications could use.
 
 Applications themselves are also deployed onto workers as Docker workloads.
+
+## Certificate Lifecycle
+
+Adding a worker requests its own wildcard leaf. Changing its subdomain removes and revokes its obsolete leaf
+before issuance of the replacement; other workers' leaves and the shared discovery certificate remain independent.
+Deleting a worker also retires its leaf. Revocation can run while a worker is offline; its next setup repairs the
+remote certificate inventory. An offline removed VM still needs manual decommissioning.
+
+Maintenance runs sequentially under the platform/app/domain scopes, leaving common and metrics independent.
+An individual failure is reported while other certificate owners continue. A valid leaf stays in use if ordinary
+renewal fails. Retired public leaves survive restart until revocation succeeds or they expire; their private keys
+are removed. [Certificate state and worker application](backend.md)
+are described in the backend guide.
+
+Let's Encrypt's [rate limits](https://letsencrypt.org/docs/rate-limits/) apply across worker certificates:
+new names share the registered-domain allowance, and repeated issuance for one exact name set has its own limit.
+These limits refill gradually; revocation does not refund issuance capacity. Sage uses one ACME account and
+serializes its orders. Provider failures surface in certificate status, tasks and notifications.
 
 ## Traffic Model
 
 Current traffic and naming patterns are driven by Cloudflare, Traefik, and Tailscale:
 
 - The manager UI and API are only at `https://<TS_NAME>.core.<domain>`: a DNS-only record pointing at its tailnet IP, served with the manager's own certificate on `:443`. Plain HTTP (`:80`) only redirects there, and so does `:443` for any other hostname (the tailnet name or IP); in dev the dev Traefik enforces the same by matching the hostname. `.core` is a namespace apps never use, and workers hold no certificate for it.
-- Public traffic uses Cloudflare-managed domains and tunnels.
-- Internal routing uses Tailscale IPs and `*.int.<domain>` style records.
+- A domain is a name linked to one container, and the worker that runs it routes it to that container with its own
+  Traefik: there is no hop between workers. Domains are managed on the Domains page; an application's page lists the
+  linked names on each container's card.
+- A worker has a **subdomain** (one DNS label, unique; random when none is given) that its internal names are under.
+- Public names are proxied CNAMEs to the tunnel of the worker their container is on. Every worker's tunnel carries the
+  same ingress (`*.<domain>` to Traefik, then 404), so the record alone decides the worker.
+- Internal and TCP names are `<name>.<subdomain>.int.<domain>`, through one DNS-only `*.<subdomain>.int.<domain>` record
+  per worker pointing at its tailnet IP. No record names an application, so application names stay out of public DNS.
+- **Discovery** lists a service's names for clients that choose one: `discovery.<domain>?service=<service>` for public
+  names (through the platform's tunnel, so any worker answers while the manager is down) and
+  `discovery.int.<domain>?service=<service>` for internal and TCP ones (tailnet only, an A record per online worker).
+  The answer is an RFC 9651 list in `Sage-Endpoints`, for example
+  `"a.example.test";pool="eu";online, "b.example.test";pool="eu";online=?0`, to HEAD, GET or OPTIONS.
+  `;online` means available; `;online=?0` means offline. Every service-assigned name stays listed, including unlinked
+  names and pending or failed syncs. An available name needs an active container, its worker's cached ready status,
+  and a successful Domain sync for its current configuration. This is last-known state, derived when discovery
+  config is generated; discovery performs no live health checks. Responses have `Cache-Control: private, max-age=30`
+  and CORS for any origin; another method or an unknown service gets a 404. A client can time `HEAD /ping` on the
+  available names to choose, which Traefik answers while the container is active (GET still reaches the application).
 
-The manager keeps DNS and Traefik state in sync as workers and application domains change.
+Each Domain record owns its DNS and Traefik synchronization result. A record is synced once both effects have
+completed for its desired configuration. A parent pass on demand and every five minutes cleans orphan/old-placement
+artifacts, queues record repairs and generates discovery. Container availability and worker readiness changes also
+request this pass. Domain sync status remains separate from the derived discovery availability flag.
+
+### Cloudflare Resources
+
+Sage finds what it created in Cloudflare by name (a tunnel) or by comment (a DNS record). Tunnels belong to the
+account, which several Sages may share, so a tunnel's name holds the domain. Records live in the domain's zone, so a
+comment is `sage-<kind>`, with `-<hostname>` where several workers' records share a name. A comment is at most 100
+characters on Cloudflare's Free plan, which has no record tags.
+
+| Resource | Name or comment |
+| --- | --- |
+| The platform's tunnel, run by `cloudflared-discovery` on every worker: created at start, and never deleted with a worker | `sage-<domain>` |
+| Each worker's own tunnel, run by its `cloudflared`: created when the worker is set up, deleted when it is removed | `sage-<domain>-<hostname>` |
+| `discovery.<domain>`, a proxied CNAME to the platform's tunnel, its one record (any other with its comment is deleted), written by `sync_discovery` | `sage-tunnel` |
+| `<TS_NAME>.core.<domain>`, an A record to the manager's tailnet IP | `sage-manager` |
+| `*.<subdomain>.int.<domain>`, an A record to the worker's tailnet IP: kept while the worker is offline, so its names work again as soon as it is back, and deleted when it is removed | `sage-worker-<hostname>` |
+| `discovery.int.<domain>`, an A record to each online worker's tailnet IP, written by `sync_discovery` | `sage-discovery-<hostname>` |
+| Each public name linked to a container, a proxied CNAME to its worker's tunnel, written by its record's `sync_domain` | `sage-domain-<id>` |
+| `_acme-challenge.<name>`, a TXT record while a certificate is issued | `sage-acme-challenge` |
+
+After a change of domain, account or `TS_NAME`, the previous domain's or name's resources stay in Cloudflare until
+they are deleted by hand.
+
+### DNS And API Limits
+
+Each linked public Domain uses one CNAME, including a stopped container's name. Internal and TCP names share one
+wildcard record per worker. Steady Sage records total **P + W + O + 2**: P linked public Domains, W workers,
+O online workers' internal discovery records, plus the manager and public discovery records. For example, 40 public
+Domains and four online workers use 50 records. Allow space for unrelated zone records and temporary ACME TXT records.
+
+Cloudflare's Free quota is 200 records per zone; some Free zones have a 1,000-record quota. Pro and Business allow
+3,500; Enterprise uses an account quota. Check the zone's actual allowance in Cloudflare. A larger DNS quota does
+not by itself increase the API allowance. See [Cloudflare's DNS quotas](https://developers.cloudflare.com/dns/manage-dns-records/#dns-records-quota).
+
+The API allows 1,200 requests per five minutes per user, shared across tokens and dashboard activity. Exceeding it
+can block calls for five minutes with HTTP 429. Sage inventories DNS once per discovery pass and account tunnels
+only for full repair scans, reuses those lists for cleanup and writes only drift. With one page per inventory,
+a clean full scan needs two API calls and a clean cleanup-only pass needs one; record repairs, worker setup,
+certificates and other operations add calls. Sage applies no proactive rate limiter.
+See [Cloudflare's API limits](https://developers.cloudflare.com/fundamentals/api/reference/limits/).
+
+Retryable requests use bounded retries and honor a valid `Retry-After` minimum wait when supplied. Long provider
+delays extend the operation. A final Domain apply failure appears in its sync error, task history and an error
+notification; a failed discovery pass reports its error in task history and a notification without overwriting
+successful Domain proofs. Record quota failures also surface as errors. Scheduled or manual synchronization can
+retry once capacity is available; Sage does not increase the provider's quotas.
 
 ### Domain Types
 
-A `Domain` has a `type` that selects how Traefik routes it:
+A `Domain` is a name (one DNS label: lowercase letters, digits and dashes), a `type`, a port, the container it is
+linked to, and optionally a service and a pool:
 
-- `public` — HTTP(S) via the Cloudflare tunnel on `<sub>.<domain>`.
-- `internal` — HTTP(S) over the Tailscale mesh on `<sub>.int.<domain>`. The edge
-  Traefik marks the request with `X-Mesh-Hops` and load-balances to the `mesh`
-  entrypoint (`:9002`) of each backing worker, which forwards to the local
-  container. WebSockets ride this path unchanged (HTTP Upgrade).
-- `tcp` — raw TCP backing service (redis/postgres/...) over the mesh on
-  `<sub>.int.<domain>:8443`. TCP has no Host header, so routing is by **TLS SNI** on
-  a single shared client port (`tcps` = `:8443`). Clients connect with TLS (e.g.
-  `rediss://`, libpq `sslmode=require`); Traefik handles Postgres STARTTLS
-  automatically (Traefik 3.x), so no `sslnegotiation=direct` or sidecar is needed.
-  The edge router is **passthrough** (so the SNI survives to the mesh hop) and
-  load-balances across every active backing worker, exactly like the internal/public
-  routers. The final hop on `meshtcp` (`:9003`, the TCP analog of `mesh:9002`)
-  **terminates** TLS with the `*.int` wildcard from the worker's synced PEM (loaded
-  via the Traefik file provider) and forwards plaintext to the local stock container — so the cert never leaves
-  Traefik and backends need no TLS config. The separate `meshtcp` entrypoint stands
-  in for the `X-Mesh-Hops` header that TCP cannot carry. `tcp` is Tailscale-only (no
-  public variant) and has no `x-tag` pool variant, but multi-container load balancing
-  works the same as other domain types.
+- `public` — `https://<name>.<domain>`, through the tunnel of its container's worker.
+- `internal` — `https://<name>.<subdomain>.int.<domain>`, under its worker's subdomain, on the tailnet only (the
+  `tailscale-only` allow list). WebSockets work unchanged (HTTP Upgrade).
+- `tcp` — a raw TCP service (redis, postgres, ...) at `<name>.<subdomain>.int.<domain>:8443`, on the tailnet only. TCP
+  has no Host header, so Traefik routes by **TLS SNI** on one shared port (`tcps`, `:8443`), ends TLS with that worker's
+  wildcard certificate and forwards plain TCP to the container, so the container needs no TLS of its own. Clients connect with
+  TLS (e.g. `rediss://`, libpq `sslmode=require`); Traefik handles Postgres STARTTLS (Traefik 3.x), so no
+  `sslnegotiation=direct` or sidecar is needed.
+
+Deleting a container unlinks its domains: they stay, listed on the Domains page, with no routing, and an internal one
+keeps its worker, so it keeps its name. Linking it to a container on another worker moves an internal name there (its
+subdomain in the name follows), so moving an application to another worker keeps its public names. A worker that has
+internal domains, linked or not, can't be removed. A public name is one level under `<domain>`, because Cloudflare's
+free edge certificate covers only first-level names, and it keeps its record while its container is stopped, so it
+doesn't come and go with deploys; Traefik answers it while the container is active.
+
+A public name is unique among the public domains, and an internal or TCP name once on each worker (they share
+`<subdomain>.int.<domain>`). `core`, `int` and `discovery` are reserved public names.
+
+Names that share a **service** are listed together at discovery, apart for each namespace (public, or internal and
+TCP), and a **pool** is a group within a service. Clients without discovery support, such as webhook senders,
+use one concrete name. An OAuth provider needs each name it redirects to registered.
+The [client guide](discovery.md) covers browser discovery, latency-based selection, caching and failover.
 
 **`tcp` clients must send SNI.** Routing is purely by SNI, so the client must connect
-with TLS and present SNI = `<sub>.int.<domain>`. Without it Traefik cannot select the
+with TLS and present SNI = `<name>.<subdomain>.int.<domain>`. Without it Traefik cannot select the
 route and serves its default self-signed cert, so the client fails with a
 "self-signed certificate" error. Most clients derive the SNI from the connection host
 automatically (`rediss://`, libpq `sslmode=require`, `openssl s_client`), but some do
 not — **node-redis** is one: pass the host explicitly as the TLS `servername`:
 
 ```js
-const url = process.env.REDIS_URL // rediss://<sub>.int.<domain>:8443
+const url = process.env.REDIS_URL // rediss://<name>.<subdomain>.int.<domain>:8443
 createClient({ url, socket: { servername: new URL(url).hostname } })
 ```
 
-To see what a worker presents for a given SNI (real wildcard vs. the default cert):
+To see what a worker presents for a given SNI (its wildcard certificate or the default one):
 
 ```bash
-# with -servername -> CN=<domain> (Let's Encrypt); with -noservername -> TRAEFIK DEFAULT CERT
-openssl s_client -connect <sub>.int.<domain>:8443 -servername <sub>.int.<domain> \
+# with -servername -> issued by Let's Encrypt; with -noservername -> TRAEFIK DEFAULT CERT
+openssl s_client -connect <name>.<subdomain>.int.<domain>:8443 -servername <name>.<subdomain>.int.<domain> \
   </dev/null 2>/dev/null | openssl x509 -noout -subject -issuer
 ```
 
-For same-node, same-protocol access between containers, skip the mesh entirely and
-use the Docker DNS name (the container's `qualified_name`) on `sage_default`.
+For access between containers on one worker, use the Docker DNS name (the container's `qualified_name`) on
+`sage_default`.
+
+### Allowed Origins
+
+Each HTTP Domain has an optional **Allowed origins** field, one origin per line. Blank allows its own current
+HTTPS origin. Use full origins such as `https://app.example.com` or `http://localhost:5173`, without a path; `*`
+allows any origin. The standard `null` origin token is also accepted. Names, default ports and root URLs are
+normalized when saved. Clearing an override restores the implicit own origin.
+
+For a frontend at `https://app.example.com` calling service `app-api`, assign that service to backend Domains
+`app-api-1.example.com` and `app-api-2.example.com` and put `https://app.example.com` in each backend's allowed
+origins. The frontend can leave its own field blank. Explicit origins are plain values: renaming the frontend
+requires updating each backend's list manually. A blank field follows its own Domain's name and worker placement.
+
+Traefik applies this list to the application's HTTP responses and handles credentialless preflight requests.
+Requests may use methods and headers including Authorization; the browser can read the response only when its
+Origin matches. The form configures origins only; application response headers and cookies have no Sage editor.
+TCP has no HTTP CORS policy. CORS changes apply through the Domain's sync, without a container deployment.
+
+Discovery remains readable from any origin. A Domain's `HEAD /ping` latency probe also allows any origin, exposes
+timing and is not cached; GET `/ping` reaches the application under its configured origins. The probe measures the
+network and Traefik path, not application health. Browsers calling an application still need compatible application
+state: cookies are scoped by their cookie attributes, and OAuth callback URLs must name the registered frontend.
+Webhook senders use a concrete backend hostname rather than the discovery response.
 
 ## Main Data Model
 
@@ -123,6 +239,7 @@ The main manager database is SQLite with WAL mode and lives at `/app/data/data.d
 Core entities:
 
 - `Setting`
+- `Instance`
 - `Worker`
 - `Project`
 - `Application`
@@ -145,8 +262,12 @@ later one, so a different key stops startup (`main.py`).
 Relationships are centered on:
 
 - project -> applications
-- application -> containers, domains, volumes, backups
-- worker -> containers
+- application -> containers, volumes, backups
+- container -> domains, events
+- worker -> containers and internal/TCP domains
+
+The [model writer index](operations.md#model-writer-index) lists every model's direct, queued and implicit
+writers. The [flow diagrams](operations.md) show how scheduler, route and startup work reach them.
 
 ## Metrics And Logs Storage
 
@@ -173,7 +294,7 @@ The task logs have the same limit as a container's shard and count towards the t
 
 ## Pushed Updates
 
-The UI keeps one Socket.IO connection to the manager (`/api/socket.io`) and follows topics over it instead of polling: the manager's status (`info`), the workers (`workers`, and one worker as `worker:<hostname>`), an application (`application:<project>/<name>`), the tasks (`tasks`, and the finished ones as `task-history`), the backup and discovery status, the platform backups (`backups`), the release, the notifications and the logs (a task's, an application's and the requests). A page loads a topic from its REST route, and the manager pushes the whole state of a state topic each time it changes and each new row of a feed (a notification, a finished task) as it is stored; the page loads again each time the socket connects, so it makes up for what it missed. Socket.IO reconnects and falls back from WebSocket to long-polling by itself, a heartbeat every 10 s shows in an indicator at the top left of the UI, and a connection from another origin is refused. See [backend.md](backend.md) and [frontend.md](frontend.md).
+The UI keeps one Socket.IO connection to the manager (`/api/socket.io`) and follows topics over it instead of polling: the manager's status (`info`), the workers (`workers`, and one worker as `worker:<hostname>`), an application (`application:<project>/<name>`), the domains (`domains`), the tasks (`tasks`, and the finished ones as `task-history`), the backup and discovery status, the platform backups (`backups`), the release, the notifications and the logs (a task's, an application's and the requests). A page loads a topic from its REST route, and the manager pushes the whole state of a state topic each time it changes and each new row of a feed (a notification, a finished task) as it is stored; the page loads again each time the socket connects, so it makes up for what it missed. Socket.IO reconnects and falls back from WebSocket to long-polling by itself, a heartbeat every 10 s shows in an indicator at the top left of the UI, and a connection from another origin is refused. See [backend.md](backend.md) and [frontend.md](frontend.md).
 
 What is pushed, and what the API keeps:
 - **A topic is for changes a page did not make:** a background task, the manager's own checks, or another tab. Examples: an application's status while a deploy runs and when a container goes to error (`application:<project>/<name>`); a worker going offline or coming back (`workers`, `worker:<hostname>`); a settings check ending (`info`); a worker removed by its background task while its page is open (the topic answers 404 and the page shows not found).
@@ -188,13 +309,16 @@ APScheduler is a pure cron/interval trigger: each scheduled coroutine only calls
 - worker sync
 - application status sync
 - scheduled volume backup dispatch
-- Traefik domain config sync
+- Domain artifact cleanup, repair scanning and discovery synchronization
 - metrics collection
 - platform backup scheduling
 - cleanup
 - certificate renewal
 
 All execution and mutual exclusion live in an in-memory operation queue on the `Manager` singleton (`app/utils/queue.py`). Routes (deploy, stop, delete, backup, restore, worker removal and reboot) and the cron triggers above enqueue through the same `add_task` path; a single one-second dispatcher starts each pending task whose scope is free. See [backend.md](backend.md) for the queue model and execution semantics.
+
+For the visual execution flows, exact schedules, complete task catalog and synchronous model writers, see
+[Scheduler and data writes](operations.md).
 
 ## Service Pattern
 

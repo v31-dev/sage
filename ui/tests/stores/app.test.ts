@@ -46,12 +46,16 @@ function worker(hostname: string, status: WorkerStatus = 'online'): WorkerListIt
   return {
     hostname,
     ip: '100.64.0.2',
+    subdomain: null,
     online: status !== 'offline',
     status,
     path: null,
     container_count: null,
     infra: null,
     metrics: null,
+    certificate: { covered: true, synced: true, expiry: null, error: null },
+    discovery_certificate: { covered: true, synced: true, expiry: null, error: null },
+    tunnel: 'healthy',
   }
 }
 
@@ -245,6 +249,24 @@ describe('sectionIndicator', () => {
 
 describe('the indicators by status', () => {
   it.each([
+    [false, false, null, 'busy', 'waiting for the certificate'],
+    [false, true, null, 'busy', 'waiting for the certificate'],
+    [true, false, null, 'busy', 'syncing the certificate'],
+    [true, true, null, 'ok', 'certificate ready'],
+    [false, false, 'CA unavailable', 'error', 'certificate update failed'],
+    [true, false, 'copy failed', 'error', 'certificate update failed'],
+    [true, true, 'renewal rejected', 'warning', 'certificate ready'],
+  ] as const)(
+    'certificateIndicator: coverage %s, applied %s, error %s',
+    (covered, synced, error, state, label) => {
+      expect(useAppStore().certificateIndicator({ covered, synced, error, expiry: null })).toEqual({
+        state,
+        label,
+      })
+    }
+  )
+
+  it.each([
     ['active', 'ok'],
     ['error', 'error'],
     ['deploying', 'busy'],
@@ -289,10 +311,13 @@ describe('the indicators by status', () => {
     })
   })
 
-  it('domainIndicator: synced and syncing', () => {
-    const store = useAppStore()
-    expect(store.domainIndicator(true)).toEqual({ state: 'ok', label: 'synced' })
-    expect(store.domainIndicator(false)).toEqual({ state: 'busy', label: 'syncing' })
+  it.each([
+    ['pending', 'idle', 'pending'],
+    ['syncing', 'busy', 'syncing'],
+    ['synced', 'ok', 'synced'],
+    ['error', 'error', 'sync failed'],
+  ] as const)('domainIndicator: %s is %s', (status, state, label) => {
+    expect(useAppStore().domainIndicator(status)).toEqual({ state, label })
   })
 
   it.each([

@@ -5,7 +5,7 @@ import httpx
 from services.notification import ChannelCheckFailed, Notifications
 from services.settings import SETTING_DEFINITIONS, Settings
 from services.updates import Fact, Updates, UpdateSource
-from utils.common import utcnow
+from utils.common import get_env, utcnow
 from utils.executor import run_in_executor_with_context
 from utils.retry import is_transient
 
@@ -57,20 +57,29 @@ class SettingsMixin:
     return tests[key](value, side_effects)
 
   def _test_tailscale(self, value: dict, side_effects: bool) -> str:
-    """Env vars, so checked as configured: the node is up and sees the tailnet."""
-    backend_state = self.tailscale.status().get("BackendState")
-    if backend_state != "Running":
-      raise ValueError(f"The manager's tailnet node is not running ({backend_state}).")
-    return f"The node is running; {len(self.tailscale.peers())} other machine(s) on the tailnet."
+    """Env vars, so checked as configured: the node is up and sees the tailnet, and the name it has there."""
+    status = self.tailscale.status()
+    if status.get("BackendState") != "Running":
+      raise ValueError(f"The manager's tailnet node is not running ({status.get('BackendState')}).")
+    peers = f"{len(self.tailscale.peers())} other machine(s) on the tailnet"
+    # The machine name, which Tailscale suffixes when another machine has it.
+    machine = (status.get("Self", {}).get("DNSName") or "").split(".")[0]
+    if machine.lower() != get_env("TS_NAME").lower():
+      return f"The node is running as {machine}, not {get_env('TS_NAME')} (TS_NAME); {peers}."
+    return f"The node is running as {machine}; {peers}."
 
   def _test_cloudflare(self, value: dict, side_effects: bool) -> str:
-    """Env vars, so checked as configured: token, zone and account, and the tunnel's health."""
+    """Env vars, so checked as configured: token, zone and account, and the platform tunnel's health. Each listed
+    worker is given its own tunnel's health, read in the same call."""
     self.cloudflare.check_config(self.cloudflare.config)
-    self.cloudflare.connect()
-    tunnel = self.cloudflare.request(
-        "GET", f"/accounts/{self.cloudflare.account_id}/cfd_tunnel/{self.cloudflare.tunnel_id}")["result"]
-    self.cloudflare.tunnel_status = tunnel["status"]
-    return f"API token, zone {self.cloudflare.domain} and account verified; tunnel {tunnel['status']}."
+    tunnels = self.cloudflare.tunnels()
+    if self.cloudflare.tunnel_name not in tunnels:
+      raise ValueError(f"The tunnel {self.cloudflare.tunnel_name} is not in the account.")
+    self.cloudflare.tunnel_status = tunnels[self.cloudflare.tunnel_name]["status"]
+    self.update_workers({
+        entry["hostname"]: {"tunnel": (tunnels.get(self.cloudflare.worker_tunnel_name(entry["hostname"])) or {}).get("status")}
+        for entry in self.worker_list})
+    return f"API token, zone {self.cloudflare.domain} and account verified; tunnel {self.cloudflare.tunnel_status}."
 
   def _test_s3(self, value: dict, side_effects: bool) -> str:
     if not Settings().is_valid("s3", value):
@@ -146,22 +155,22 @@ class SettingsMixin:
         # Checked at startup, every 5 minutes and after a save; this is before the first.
         entry.update(state="applying", message="Checking…")
       elif key == "cloudflare" and check["state"] == "ok":
-        certificates = (self.certs.manager, self.certs.workers)
-        invalid = [name for certificate in certificates if not certificate.is_valid() for name in certificate.names]
-        if invalid:
-          entry.update(state="error",
-                       message=f"No valid certificate for {', '.join(invalid)}. Resync Traefik to issue it.")
+        certificates = self.certs.status()
+        failed = [certificate for certificate in certificates if not certificate["valid"] or certificate["error"]]
+        if failed:
+          entry.update(state="error", message="Certificates need attention: " + "; ".join(
+              f"{', '.join(certificate['names']) or certificate['id']}: {certificate['error'] or 'not valid'}"
+              for certificate in failed))
         else:
-          expiry = min(certificate.expiry() for certificate in certificates)
-          entry["message"] += f" Certificates valid until {expiry:%Y-%m-%d}."
+          expiry = min(certificate["expiry"] for certificate in certificates)
+          entry["message"] += f" Certificates valid until {expiry[:10]}."
       if key == "cloudflare":
-        manager_expiry, workers_expiry = self.certs.manager.expiry(), self.certs.workers.expiry()
         entry["details"] = {
             "account_id": self.cloudflare.account_id,
             "tunnel_id": self.cloudflare.tunnel_id,
+            "tunnel_name": self.cloudflare.tunnel_name,
             "tunnel_status": self.cloudflare.tunnel_status,
-            "manager_certificate_expiry": manager_expiry.isoformat() if manager_expiry else None,
-            "workers_certificate_expiry": workers_expiry.isoformat() if workers_expiry else None,
+            "certificates": self.certs.status(),
         }
       status[key] = entry
     return status

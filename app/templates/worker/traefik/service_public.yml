@@ -1,49 +1,40 @@
 http:
   routers:
-    # Discovery endpoint exposing all configured domain tags for this service.
-    ${SERVICE}_${SUBDOMAIN}_public_x_tag:
-      rule: Host(`${SUBDOMAIN}.${DOMAIN}`) && Path(`/x-tag`) && Method(`GET`)
+    domain_${ID}:
+      rule: Host(`${HOST}`)
       entrypoints:
         - web
       middlewares:
         - security-headers
-        - ${SERVICE}_${SUBDOMAIN}_public_x_tag_header
-      priority: 400
+        - domain_${ID}_cors
+      service: domain_${ID}
+    # The probe a client times to choose a name, answered by Traefik; HEAD only, so the application's own GET /ping
+    # still reaches it.
+    domain_${ID}_ping:
+      rule: Host(`${HOST}`) && Method(`HEAD`) && Path(`/ping`)
+      priority: 1000
+      entrypoints:
+        - web
+      middlewares:
+        - probe
       service: ping@internal
 
-    # Entrypoint via Cloudflare Tunnel
-    ${SERVICE}_${SUBDOMAIN}_public:
-      rule: Host(`${SUBDOMAIN}.${DOMAIN}`) && PathPrefix(`/`)
-      entrypoints:
-        - web
-      middlewares:
-        - security-headers
-        - mark-as-hopped
-      service: ${SERVICE}_${SUBDOMAIN}_public
-
-    # Final Mesh Entrypoint (for load balancing)
-    ${SERVICE}_${SUBDOMAIN}_mesh_public:
-      rule: "Host(`${SUBDOMAIN}.${DOMAIN}`) && PathPrefix(`/`) && Header(`X-Mesh-Hops`, `1`)"
-      entrypoints:
-        - mesh
-      middlewares:
-        - server-header
-      priority: 200
-      service: ${SERVICE}_${SUBDOMAIN}_local_public
-
   middlewares:
-    ${SERVICE}_${SUBDOMAIN}_public_x_tag_header:
+    domain_${ID}_cors:
       headers:
         customResponseHeaders:
-          X-Tag: '${DOMAIN_TAGS_HEADER}'
+          Access-Control-Allow-Origin: ""
+        accessControlAllowOriginList: ${CORS_ORIGINS}
+        accessControlAllowMethods:
+          - "*"
+        accessControlAllowHeaders:
+          - "*"
+          - Authorization
+        accessControlMaxAge: 300
+        addVaryHeader: true
 
   services:
-    # Final Mesh service
-    ${SERVICE}_${SUBDOMAIN}_local_public:
+    domain_${ID}:
       loadBalancer:
         servers:
           - url: http://${SERVICE}:${PORT}
-    # Loadbalanced services
-    ${SERVICE}_${SUBDOMAIN}_public:
-      loadBalancer:
-        servers: [ ${LOAD_BALANCED_SERVERS} ]

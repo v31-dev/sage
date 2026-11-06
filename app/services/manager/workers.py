@@ -5,18 +5,22 @@ from dataclasses import replace
 from typing import Callable
 
 import config
-from services.db import Application, Container, Instance, Worker
+from services.certs import Certs
+from services.db import Application, Container, Domain, Instance, Worker
+from services.domains import domains_changed
 from services.metrics import Metrics
 from services.updates import Fact, Updates, UpdateSource
 from services.worker_reports import WorkerReports
 from utils.common import utcnow
 from utils.executor import run_in_executor_with_context
 from utils.logging import TaskFailed
+from utils.queue import OnConflict
 
-from ._common import WORKER_INFRA_TEMPLATES, app_dir, content_hash, routing_input_hash
+from ._common import CERTIFICATE_TEMPLATES, WORKER_INFRA_TEMPLATES, app_dir, content_hash
 from .application import mark
 from .decisions import (WORKER_TASKS, WorkerInputs, WorkerReboot, WorkerRow, plan_worker_sync, worker_claim_refusal, worker_entry, worker_owner,
                         worker_stack_problem, worker_with_row, worker_without_row)
+from .domains import domain_changed
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +39,8 @@ class WorkersMixin:
     - Recently online workers (previously offline but now answering)
     After that, a worker whose reports say its stack is down gets it started.
     """
+    for worker in Worker.select().where(Worker.subdomain.is_null()):
+      self.save_worker_subdomain(worker.hostname, Worker.random_subdomain())
     known = [WorkerRow(w.hostname, w.ip, self.worker_online(w.hostname)) for w in Worker.select()]
     names = {row.hostname for row in known}
     listed = [peer for peer in await run_in_executor_with_context(self.tailscale.peers) if peer.hostname in names]
@@ -51,7 +57,7 @@ class WorkersMixin:
       try:
         if action.kind == "offline":
           logger.info(f"Worker {hostname}: {action.reason}.")
-          await run_in_executor_with_context(self.set_worker_offline, action.worker)
+          self.set_worker_offline(action.worker)
         else:
           logger.info(f"{'Force syncing' if action.force else 'Syncing'} worker {hostname}: {action.reason}.")
           await self.setup_worker(action.worker, force=action.force)
@@ -76,6 +82,12 @@ class WorkersMixin:
   def workers_queue_facts(self) -> list[Fact]:
     """The worker tasks are given to the worker list when the set of them differs; they fire no source of their own."""
     return [Fact(self.worker_tasks_busy, on_change=self._set_worker_tasks)]
+
+  def ready_workers(self) -> frozenset[str]:
+    return frozenset(worker["hostname"] for worker in self.worker_list if worker["status"] == "online")
+
+  def workers_discovery_fact(self) -> Fact:
+    return Fact(self.ready_workers, on_change=lambda _: self.request_discovery_sync())
 
   def worker_online(self, hostname: str) -> bool | None:
     """Whether the worker answered the last sync and was set up (`online` in `worker_list`): None until a sync has
@@ -113,6 +125,7 @@ class WorkersMixin:
       for hostname, inputs in changes.items():
         records[hostname] = replace(records.get(hostname, WorkerInputs()), **inputs)
     self._edit_workers(edit)
+    self.worker_discovery.check()
 
   def update_worker(self, hostname: str, **inputs):
     self.update_workers({hostname: inputs})
@@ -135,16 +148,42 @@ class WorkersMixin:
         records[hostname] = replace(records.get(hostname, WorkerInputs()), tasks=frozenset(tasks.get(hostname, ())))
     self._edit_workers(edit)
 
-  def _save_worker(self, hostname: str, ip: str):
-    """Write the worker's row and its record together."""
-    Worker.insert(hostname=hostname, ip=ip).on_conflict(
+  def _save_worker(self, hostname: str, ip: str, subdomain: str | None = None) -> Worker:
+    """Write the worker's row and its record together, and return the row. A new worker gets `subdomain`, or a random
+    one."""
+    Worker.insert(hostname=hostname, ip=ip, subdomain=subdomain or Worker.random_subdomain()).on_conflict(
         conflict_target=[Worker.hostname], preserve=[Worker.ip]
     ).execute()
+    row = Worker.get_by_id(hostname)
     path = self.tailscale.path(ip)
 
     def edit(records: dict):
-      records[hostname] = worker_with_row(records.get(hostname, WorkerInputs()), ip, path)
+      records[hostname] = worker_with_row(records.get(hostname, WorkerInputs()), ip, row.subdomain, path)
     self._edit_workers(edit)
+    self.worker_discovery.check()
+    return row
+
+  def save_worker_subdomain(self, hostname: str, subdomain: str):
+    """Write the worker's subdomain to its row and its record together. Its internal names are under it, so their
+    routing (the applications they are linked to, resynced), its record (the workers are set up again) and the workers'
+    certificate (renewed) follow, and the Domains page is told."""
+    if Worker.get_by_id(hostname).subdomain == subdomain:
+      return
+    Worker.update(subdomain=subdomain).where(Worker.hostname == hostname).execute()
+    self.update_worker(hostname, subdomain=subdomain)
+    for domain in Domain.select().where(Domain.worker == hostname):
+      self.request_domain_sync(domain)
+      domain_changed(domain)
+    domains_changed()
+    self.request_discovery_sync()
+    self.request_certificate_renewal()
+    self.add_task(
+        task=self.sync_workers,
+        scopes={"platform"},
+        params={"check_stamps": True},
+        executor="platform",
+        on_conflict=OnConflict.REPLACE,
+    )
 
   def _forget_worker(self, hostname: str):
     """Delete the worker's row and its record together."""
@@ -154,19 +193,22 @@ class WorkersMixin:
       if hostname in records:
         records[hostname] = worker_without_row(records[hostname])
     self._edit_workers(edit)
+    self.worker_discovery.check()
 
   def load_workers(self):
     """Read the Worker table into the worker list, at start and after a restore replaced the table: the only
-    reads of it, as `_save_worker` and `_forget_worker` are the only writes."""
-    rows = {worker.hostname: worker.ip for worker in Worker.select()}
-    paths = {hostname: self.tailscale.path(ip) for hostname, ip in rows.items()}
+    reads of it, as `_save_worker`, `save_worker_subdomain` and `_forget_worker` are the only writes."""
+    rows = {worker.hostname: worker for worker in Worker.select()}
+    paths = {hostname: self.tailscale.path(row.ip) for hostname, row in rows.items()}
 
     def edit(records: dict):
       for hostname in records.keys() | rows.keys():
         record = records.get(hostname, WorkerInputs())
-        records[hostname] = (worker_with_row(record, rows[hostname], paths[hostname]) if hostname in rows
+        row = rows.get(hostname)
+        records[hostname] = (worker_with_row(record, row.ip, row.subdomain, paths[hostname]) if row
                              else worker_without_row(record))
     self._edit_workers(edit)
+    self.worker_discovery.check()
 
   def _edit_workers(self, edit: Callable[[dict], None]):
     """The one place the worker list is worked out. `edit` changes the records (hostname to `WorkerInputs`) under
@@ -180,8 +222,11 @@ class WorkersMixin:
         del self._worker_inputs[hostname]
       now, started = utcnow(), WorkerReports().started
       workers = [(hostname, record) for hostname, record in sorted(self._worker_inputs.items()) if record.ip is not None]
+      self.certs.set_workers({hostname: record.subdomain for hostname, record in workers})
       listed = {entry["hostname"]: entry for entry in self.worker_list}
-      self.worker_list = [worker_entry(hostname, record, now, started) for hostname, record in workers]
+      self.worker_list = [worker_entry(hostname, record, now, started,
+                                       self.certs.worker_state(hostname, record.certs, CERTIFICATE_TEMPLATES))
+                          for hostname, record in workers]
       now_listed = {entry["hostname"]: entry for entry in self.worker_list}
     differing = [hostname for hostname in listed.keys() | now_listed.keys() if listed.get(hostname) != now_listed.get(hostname)]
     if differing:
@@ -227,36 +272,26 @@ class WorkersMixin:
       else:
         logger.warning(f"Worker {worker.hostname}: {problem}, but starting its stack changed nothing.")
 
-  def request_stale_application_syncs(self, domain: str, revisions: dict) -> list[str]:
-    """Request a Traefik sync of each application whose routing stamp in `revisions` (a worker's) is not what its files
-    would be now, which covers hosted and mesh files alike. Returns the names of those."""
-    stale = []
-    for application in Application.select():
-      app_hash = routing_input_hash(
-          domain, list(application.domains), list(application.containers), self.is_worker_online)
-      if revisions.get(application.qualified_name) != app_hash:
-        self.request_application_traefik_sync(application)
-        stale.append(application.qualified_name)
-    return stale
-
-  def infra_hash(self) -> str:
-    """Hash of every input `setup_worker` renders into worker infra files.
-    Computed from current truth on demand — the only stored copy is the
-    worker-side `revisions/infra` stamp."""
+  def infra_hash(self, tunnel_id: str) -> str:
+    """Hash of every input `setup_worker` renders into a worker's infra files,
+    `tunnel_id` being the worker's own tunnel. Computed from current truth on
+    demand — the only stored copy is the worker-side `revisions/infra` stamp."""
     return content_hash({
         "templates": WORKER_INFRA_TEMPLATES,
         "version": self.version,
         "domain": self.cloudflare.domain,
         "tunnel": self.cloudflare.tunnel_id,
+        "worker_tunnel": tunnel_id,
         "manager_ip": self.tailscale.ip(),
         "report_interval": config.REPORT_INTERVAL_SECONDS,
     })
 
-  async def read_worker_revisions(self, hostname: str) -> dict:
+  async def read_worker_revisions(self, hostname: str, timeout: int = 300) -> dict:
     """All revision stamps stored on a worker ({} when none exist yet)."""
     _, lines = await self.tailscale.exec_command(
         hostname,
         f"grep -H . {self.worker_home_dir}/revisions/* 2>/dev/null || true",
+        timeout=timeout,
     )
     revisions = {}
     for line in lines:
@@ -329,31 +364,31 @@ class WorkersMixin:
           f"{', '.join(sorted(orphan_containers | orphan_dirs))}.",
           "warning")
 
-  async def add_worker(self, worker_hostname: str):
+  async def add_worker(self, worker_hostname: str, subdomain: str | None = None):
     """
-    Add a machine of the tailnet as a worker: its SSH server must answer and it must not be managed
-    by another Sage (`setup_worker` checks). `setup_worker` does the rest.
+    Add a machine of the tailnet as a worker, with its subdomain (random when none is given): its SSH server
+    must answer and it must not be managed by another Sage (`setup_worker` checks). `setup_worker` does the rest.
     """
     peer = await run_in_executor_with_context(self.tailscale.find_peer, worker_hostname)
     if peer is None or not await self.tailscale.reachable(peer.hostname):
       self.notify(f"Failed to add worker {worker_hostname}: it is not in the tailnet or its SSH server does not answer.", "error")
       raise TaskFailed()
-    await self.setup_worker(peer)
+    await self.setup_worker(peer, subdomain=subdomain)
 
   def instance_id(self) -> str:
     return Instance.get().id
 
-  async def setup_worker(self, worker, force: bool = False):
+  async def setup_worker(self, worker, force: bool = False, subdomain: str | None = None):
     """
     Converge a worker to current manager state — the single idempotent heal
     for new, rejoining, IP-changed, and force-resynced workers. The worker's
     revision stamps decide how much work that is: a matching infra stamp
-    skips the file syncs / compose up / restarts, matching cert and per-app
-    stamps skip those repairs, and a worker that missed nothing costs one
-    read. `force` deletes the stamps first — distrust everything, converge
+    skips the file syncs / compose up / restarts, and a matching cert stamp
+    skips its repair. Domain artifacts are reconciled by the parent pass. `force` deletes the stamps first — distrust everything, converge
     from scratch. A worker that another Sage manages (its owner stamp names
     another instance) is refused. On failure, the worker row + DNS are only
-    cleaned up if this call was adding a brand-new worker.
+    cleaned up if this call was adding a brand-new worker. `subdomain` is a new
+    worker's.
     """
     existing = Worker.get_or_none(Worker.hostname == worker.hostname)
     is_new = existing is None
@@ -376,23 +411,24 @@ class WorkersMixin:
       # Claim it before changing anything, so a failed setup leaves it claimed.
       if revisions.get("owner") != f"{instance_id} {domain}":
         await self.write_worker_revision(worker.hostname, "owner", f"{instance_id} {domain}")
+      tunnel_id = await run_in_executor_with_context(
+          self.cloudflare.create_tunnel, self.cloudflare.worker_tunnel_name(worker.hostname))
       # The IP is rendered into infra files, so a changed IP is infra drift
       # even under a matching stamp.
-      infra_stale = (revisions.get("infra") != self.infra_hash()
+      infra_stale = (revisions.get("infra") != self.infra_hash(tunnel_id)
                      or is_new or existing.ip != worker.ip)
 
-      self._save_worker(worker.hostname, worker.ip)
-      # Always: the offline transition deleted the DNS record.
-      await run_in_executor_with_context(
-          self.cloudflare.create_dns_record,
-          name=f"*.int.{domain}",
-          content=worker.ip,
-          comment=f"sage-worker-{worker.hostname}",
-          type="A",
-      )
+      row = self._save_worker(worker.hostname, worker.ip, subdomain)
+      self.update_worker(worker.hostname, certs=Certs.read_proofs(revisions.get("certs")))
+      if is_new:
+        self.request_certificate_renewal()
+      await run_in_executor_with_context(self.cloudflare.sync_worker_records, worker.hostname, row.subdomain, worker.ip)
+      # It answers internal discovery once online, and its tunnel, which its public names point at, may be new.
+      self.request_discovery_sync()
 
       if infra_stale:
-        tunnel_token = (await run_in_executor_with_context(self.cloudflare.get_tunnel_token)).token
+        tunnel_token = (await run_in_executor_with_context(self.cloudflare.get_tunnel_token, tunnel_id)).token
+        discovery_tunnel_token = (await run_in_executor_with_context(self.cloudflare.get_tunnel_token)).token
         # Telegraf runs as a user in the Docker socket's group, which differs between hosts.
         _, socket_group = await self.tailscale.exec_command(
             worker.hostname, "stat -c %g /var/run/docker.sock", timeout=30)
@@ -413,6 +449,7 @@ class WorkersMixin:
                 "TS_IP": worker.ip,
                 "TS_HOSTNAME": worker.hostname,
                 "TUNNEL_TOKEN": tunnel_token,
+                "DISCOVERY_TUNNEL_TOKEN": discovery_tunnel_token,
                 "DOCKER_GID": docker_gid,
             },
             mode=0o600,
@@ -427,12 +464,6 @@ class WorkersMixin:
             app_dir / "templates/worker/traefik/config.yml",
             f"{self.worker_home_dir}/traefik/dynamic/config.yml",
             {"DOMAIN": domain or "", "HOSTNAME": worker.hostname},
-        )
-        # File-provider TLS config pointing at the PEM the manager syncs below.
-        await self.tailscale.sync_file(
-            worker.hostname,
-            app_dir / "templates/worker/traefik/certs.yml",
-            f"{self.worker_home_dir}/traefik/dynamic/certs.yml",
         )
         await self.tailscale.sync_file(
             worker.hostname,
@@ -452,12 +483,11 @@ class WorkersMixin:
             },
         )
 
-      # Land the cert before any container start/restart below
       repaired = []
-      if (self.certs.workers.is_valid()
-              and revisions.get("certs") != self.certs.workers.hash()):
-        await self.sync_certificates_to_worker(worker)
+      if await self.sync_certificates_to_worker(worker):
         repaired.append("certificates")
+      if not is_new and any(not certificate.is_valid() for certificate in self.certs.for_worker(worker.hostname).values()):
+        self.request_certificate_renewal()
 
       if infra_stale:
         # Start containers
@@ -494,13 +524,13 @@ class WorkersMixin:
 
       self.update_worker(worker.hostname, online=True)
 
-      repaired.extend(self.request_stale_application_syncs(domain, revisions))
+      self.request_discovery_sync()
 
       await self.cleanup_orphan_containers(worker)
 
       if infra_stale:
         # Success commit marker
-        await self.write_worker_revision(worker.hostname, "infra", self.infra_hash())
+        await self.write_worker_revision(worker.hostname, "infra", self.infra_hash(tunnel_id))
         self.notify(f"Worker {worker.hostname} {'added' if is_new else 'synced'}.")
       elif repaired:
         self.notify(
@@ -547,10 +577,11 @@ class WorkersMixin:
     Forget a worker. One that answers a ping and is this Sage's is cleaned up first: its stack is
     stopped and Sage's files on it removed, so that another Sage can take it. One that is offline
     (the VM may be gone) is forgotten as it is, and its containers are removed from Sage only. A worker
-    that is online and has containers is refused: they have to be deleted first -
+    that is online and has containers is refused: they have to be deleted first; one with internal domains, linked
+    or not, is refused whatever its state -
     - Remove from Manager database
-    - Delete Cloudflare DNS entry (*.int) for Tailscale routing
-    - Cloudflare automatically cleans up dead tunnels
+    - Delete its DNS records (`*.<subdomain>.int`; its `discovery.int` record goes with the records sync)
+    - Delete its own tunnel; one Cloudflare won't delete is left, with a warning
     """
     worker = Worker.get_or_none(Worker.hostname == worker_hostname)
     if not worker:
@@ -561,6 +592,9 @@ class WorkersMixin:
     # in the task table rather than vanishing.
     if self.worker_online(worker_hostname) is not False and worker.containers.count() > 0:
       logger.error(f"Worker {worker_hostname} gained containers before removal; aborting.")
+      raise TaskFailed()
+    if worker.domains.count() > 0:
+      logger.error(f"Worker {worker_hostname} has internal domains; aborting its removal.")
       raise TaskFailed()
 
     logger.info(f"Removing worker {worker.hostname} from manager.")
@@ -588,21 +622,28 @@ class WorkersMixin:
           f"Worker {worker.hostname} was offline, so Sage could not clean it up. It is removed from Sage "
           "only; anything on the VM, including the VM itself, has to be removed by hand.", "warning")
     self._forget_worker(worker.hostname)
+    self.request_certificate_renewal()
     WorkerReports().forget(worker.hostname)
     Metrics().forget(worker.hostname)
     await self.tailscale.forget(worker.hostname)
-    await run_in_executor_with_context(
-        self.cloudflare.delete_dns_record, name=f"*.int.{self.cloudflare.domain}", content=worker.ip)
+    await run_in_executor_with_context(self.cloudflare.sync_worker_records, worker.hostname)
+    self.request_discovery_sync()
+    tunnel = self.cloudflare.worker_tunnel_name(worker.hostname)
+    try:
+      await run_in_executor_with_context(self.cloudflare.delete_tunnel, tunnel)
+    except Exception as e:
+      self.notify(
+          f"Worker {worker.hostname} is removed from Sage, but its Cloudflare tunnel {tunnel} could not be deleted: "
+          f"{e}. Delete it by hand.", "warning")
     logger.info(f"Worker {worker.hostname} removed from manager.")
 
   def set_worker_offline(self, worker):
     """
-    A worker can be set to offline if it is expected to come back soon, e.g. after a reboot -
-    - Mark as offline in Manager database
-    - Delete Cloudflare DNS entry (*.int) for Tailscale routing
-    - Cloudflare will automatically handle an offline tunnel
+    A worker can be set to offline if it is expected to come back soon, e.g. after a reboot. Its `*.<subdomain>.int`
+    record stays, so its names work again as soon as it is back, and its `discovery.int` record goes (the records
+    sync); Cloudflare handles its offline tunnel.
     """
     logger.info(f"Setting worker {worker.hostname} offline.")
     self.update_worker(worker.hostname, online=False)
-    self.cloudflare.delete_dns_record(name=f"*.int.{self.cloudflare.domain}", content=worker.ip)
+    self.request_discovery_sync()
     self.notify(f"Worker {worker.hostname} is offline.", "error")

@@ -62,7 +62,7 @@ function showNotFound() {
   isNotFound.value = true
 }
 
-// After an action on one of its containers, without waiting for the manager's push.
+// After an action on the worker or one of its containers, without waiting for the manager's push.
 async function loadWorkerStatus() {
   try {
     showWorker(await fetchWorker())
@@ -94,7 +94,11 @@ function goBack() {
       </Card>
 
       <div v-else-if="worker && workerMetrics" class="space-y-6">
-        <WorkerHeader :worker="worker" :workerMetrics="workerMetrics" />
+        <WorkerHeader
+          :worker="worker"
+          :workerMetrics="workerMetrics"
+          :loadWorkerStatus="loadWorkerStatus"
+        />
 
         <div class="space-y-4">
           <div class="flex items-center justify-between">

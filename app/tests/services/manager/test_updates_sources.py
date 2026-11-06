@@ -13,12 +13,13 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi.encoders import jsonable_encoder
+from peewee import IntegrityError
 
 import config
 from routes.notifications import list_notifications
-from services.db import Application, Backup, Container, Notification, Task, Worker
+from services.db import Application, Backup, Container, Domain, Notification, Task, Worker
 from services.manager import Manager
-from services.manager.application import application_changed, container_changed, hosts_changed, save_application, save_container
+from services.manager.application import ApplicationMixin, application_changed, container_changed, hosts_changed, save_application
 from services.manager.core import CoreMixin
 from services.manager.decisions import WORKER_TASKS
 from services.manager.platform import PlatformMixin
@@ -389,7 +390,7 @@ class TestWorkersQueueFacts:
 class TestTheManagerChecksEveryOwner:
   def test_each_owners_queue_facts_are_checked_by_the_manager(self):
     owners = [name for name in dir(Manager) if name.endswith("_queue_facts")]
-    assert sorted(owners) == ["platform_queue_facts", "settings_queue_facts", "tasks_queue_facts", "workers_queue_facts"]
+    assert sorted(owners) == ["domains_queue_facts", "platform_queue_facts", "settings_queue_facts", "tasks_queue_facts", "workers_queue_facts"]
     source = inspect.getsource(sys.modules[Manager.__module__])
     assert [name for name in owners if f"self.{name}()" not in source] == []
 
@@ -419,13 +420,15 @@ class TestApplicationAndContainerChanges:
 
   def test_a_change_of_a_container_tells_its_applications_page_and_its_workers(self, keyed, hosted):
     container_changed(hosted[1])
-    assert keyed.signals == [(UpdateSource.APPLICATION, "demo/api"), (UpdateSource.WORKER_CONTAINERS, "w2")]
+    assert keyed.signals == [(UpdateSource.APPLICATION, "demo/api"), (UpdateSource.WORKER_CONTAINERS, "w2"),
+                             (UpdateSource.DOMAINS, None)]
 
   def test_a_change_of_what_the_workers_show_of_an_application_tells_each_worker_it_is_on_once(self, keyed, hosted, application):
     Container.create(application=application, worker=Worker.create(hostname="w3", ip="100.64.0.4"))
     hosts_changed(application)
     assert sorted(keyed.signals, key=str) == sorted([
-        (UpdateSource.APPLICATION, "demo/web"), (UpdateSource.WORKER_CONTAINERS, "w1"), (UpdateSource.WORKER_CONTAINERS, "w3")], key=str)
+        (UpdateSource.APPLICATION, "demo/web"), (UpdateSource.WORKER_CONTAINERS, "w1"), (UpdateSource.WORKER_CONTAINERS, "w3"),
+        (UpdateSource.DOMAINS, None)], key=str)
 
   def test_an_application_with_no_containers_tells_only_itself(self, keyed, application):
     hosts_changed(application)
@@ -440,26 +443,18 @@ class TestApplicationAndContainerChanges:
   def test_saving_a_container_writes_it_and_says_so(self, keyed, hosted):
     container = hosted[0]
     container.status = "active"
-    save_container(container)
+    ApplicationMixin.save_container(SimpleNamespace(request_discovery_sync=lambda: None), container)
     assert Container.get_by_id(container.id).status == "active"
-    assert keyed.signals == [(UpdateSource.APPLICATION, "demo/web"), (UpdateSource.WORKER_CONTAINERS, "w1")]
+    assert keyed.signals == [(UpdateSource.APPLICATION, "demo/web"), (UpdateSource.WORKER_CONTAINERS, "w1"),
+                             (UpdateSource.DOMAINS, None)]
 
-  def test_a_container_that_cannot_be_saved_says_nothing(self, keyed, hosted):
-    container = hosted[0]
-    container.domain_tag = "x_tag"
-    with pytest.raises(ValueError):
-      save_container(container)
+  def test_a_container_that_cannot_be_saved_says_nothing(self, keyed, hosted, application):
+    with pytest.raises(IntegrityError):
+      ApplicationMixin.save_container(SimpleNamespace(request_discovery_sync=lambda: None), Container(application=application, worker="nobody"))
     assert keyed.signals == []
 
-  def test_a_bulk_update_of_the_domain_sync_says_so(self, keyed, application):
-    class Traefik(TraefikMixin):
-      def add_task(self, **kwargs):
-        pass
-    Traefik().request_application_traefik_sync(application)
-    assert keyed.signals == [(UpdateSource.APPLICATION, "demo/web")]
-
-  def test_every_write_of_an_application_or_a_container_in_the_manager_goes_through_a_function_that_says_so(self):
-    """The only `save()` of an application or container is in `save_application` and `save_container`, and the only
+  def test_every_row_save_in_the_manager_goes_through_its_notifying_owner(self):
+    """Row saves belong to `save_application`, `save_container` and `save_domain`, and the only
     `delete_instance()` is followed by `container_changed`."""
     saves, deletes = {}, {}
     for path in Path(inspect.getsourcefile(Manager)).parent.glob("*.py"):
@@ -470,7 +465,7 @@ class TestApplicationAndContainerChanges:
         if re.search(r"\.delete_instance\(\)", line):
           deletes[path.name] = deletes.get(path.name, 0) + 1
           assert "container_changed(container)" in lines[number + 1]
-    assert saves == {"application.py": 2} and deletes == {"application.py": 1}
+    assert saves == {"application.py": 2, "domains.py": 1} and deletes == {"application.py": 1}
 
 
 class TestBackupRows:

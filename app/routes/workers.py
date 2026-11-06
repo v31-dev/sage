@@ -3,13 +3,14 @@ from typing import Literal
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from playhouse.shortcuts import model_to_dict
 
+from routes.containers import container_payload
 from routes.containers import router as container_router
-from services.db import Application, Container, Project, Worker
+from services.db import Worker
 from services.manager import Manager
 from services.metrics import Metrics
 from services.tailscale import Tailscale
 from services.worker_reports import WorkerReports
-from utils.api import generic_get, get_request_models
+from utils.api import generic_get, get_request_models, parse_api_data
 from utils.common import get_env
 from utils.logging import NO_ACCESS_LOG
 from utils.queue import OnConflict
@@ -41,23 +42,35 @@ def get():
   return Manager().worker_list
 
 
+def subdomain_of(worker_data: dict, hostname: str) -> str | None:
+  """The subdomain asked for, checked; one another worker has is refused."""
+  subdomain = Worker.subdomain.validate(str(worker_data.get("subdomain") or "").strip() or None)
+  if subdomain and Worker.select().where((Worker.subdomain == subdomain) & (Worker.hostname != hostname)).exists():
+    raise HTTPException(status_code=409, detail=f"A worker with subdomain {subdomain} already exists.")
+  return subdomain
+
+
 @router.post("/")
 def add_worker(worker_data: dict = Body(...)):
-  """Add a machine of the tailnet, given by hostname or Tailscale IP, as a worker."""
+  """Add a machine of the tailnet, given by hostname or Tailscale IP, as a worker, with its subdomain (random when
+  none is given)."""
   host = str(worker_data.get("host") or "").strip()
   peer = Tailscale().find_peer(host) if host else None
   if peer is None:
     raise HTTPException(status_code=404, detail=f"No machine with hostname or IP '{host}' in the tailnet.")
 
+  if peer.hostname.lower() == get_env("TS_NAME").lower():
+    raise HTTPException(status_code=409, detail="A worker with the manager's name (TS_NAME) is not allowed.")
   if Worker.get_or_none(Worker.hostname == peer.hostname):
     raise HTTPException(status_code=409, detail=f"Worker {peer.hostname} is already added.")
   if Manager().has_task(Manager().add_worker, {"worker_hostname": peer.hostname}):
     raise HTTPException(status_code=409, detail=f"Worker {peer.hostname} is already being added.")
+  subdomain = subdomain_of(worker_data, peer.hostname)
 
   Manager().add_task(
       task=Manager().add_worker,
       scopes={"platform"},
-      params={"worker_hostname": peer.hostname},
+      params={"worker_hostname": peer.hostname, "subdomain": subdomain},
       executor="platform",
       on_conflict=OnConflict.QUEUE,
   )
@@ -65,31 +78,36 @@ def add_worker(worker_data: dict = Body(...)):
   return {"status": "OK", "hostname": peer.hostname}
 
 
+@router.put("/{hostname}", dependencies=[Depends(inject_worker)])
+def update_worker(request: Request, hostname: str, worker_data: dict = Body(...)):
+  """Change a worker's subdomain; what is not sent stays."""
+  worker = request.state.models["worker"]
+  if not worker:
+    raise HTTPException(status_code=404, detail="Worker not found")
+  subdomain = subdomain_of({"subdomain": worker.subdomain, **parse_api_data(worker_data, ["subdomain"])}, hostname)
+  if not subdomain:
+    raise HTTPException(status_code=400, detail="A worker without a subdomain is not allowed.")
+
+  Manager().save_worker_subdomain(hostname, subdomain)
+  return worker_payload(Worker.get_by_id(hostname))
+
+
 def worker_payload(worker: Worker) -> dict:
   """The worker with its containers and their applications, and what the worker list holds of it: `infra` (the state
-  of the containers of its stack), `online`, `status`, `path` and `metrics` (its newest minute)."""
-  data = model_to_dict(
-      worker,
-      backrefs=True,
-      only=(
-          set(Worker._meta.sorted_fields)
-          | {Worker.containers}
-          | set(Container._meta.sorted_fields)
-          | {
-              Application.name,
-              Application.label,
-              Application.project,
-              Project.name,
-              Project.label,
-          }
-      ),
-  )
+  of the containers of its stack), `online`, `status`, `path`, `metrics` (its newest minute), both certificate states and
+  `tunnel` (its own tunnel's health), with that tunnel's name."""
+  data = model_to_dict(worker)
+  data["containers"] = [container_payload(container) for container in worker.containers]
   entry = Manager().worker_entry(worker.hostname) or {}
   data["infra"] = entry.get("infra")
   data["online"] = entry.get("online", False)
   data["status"] = entry.get("status", "offline")
   data["path"] = entry.get("path")
   data["metrics"] = entry.get("metrics")
+  data["certificate"] = entry.get("certificate")
+  data["discovery_certificate"] = entry.get("discovery_certificate")
+  data["tunnel"] = entry.get("tunnel")
+  data["tunnel_name"] = Manager().cloudflare.worker_tunnel_name(worker.hostname)
   return data
 
 
@@ -129,7 +147,7 @@ def reboot_worker(request: Request, hostname: str):
 
   Manager().add_task(
       task=Manager().reboot_worker,
-      scopes={"platform", "app"},
+      scopes={"platform", "app", "domain"},
       params={"worker_hostname": worker.hostname},
       executor="platform",
       on_conflict=OnConflict.QUEUE,
@@ -149,14 +167,16 @@ def delete_worker(request: Request, hostname: str):
   # force-deleted with them.
   if Manager().worker_online(hostname) is not False and worker.containers.count() > 0:
     raise HTTPException(status_code=400, detail="Worker is online and has containers; delete them first.")
+  if worker.domains.count() > 0:
+    raise HTTPException(status_code=409, detail="Removing a worker with internal domains is not allowed.")
   if Manager().worker_status(hostname) == "removing":
     raise HTTPException(status_code=409, detail="Worker is already being removed.")
 
-  # platform+app scoped so it serializes with worker sync and deploys; QUEUE so a
+  # The broad scopes serialize worker, app and domain work; QUEUE so a
   # deliberate removal waits behind an in-flight op instead of being dropped.
   Manager().add_task(
       task=Manager().remove_worker,
-      scopes={"platform", "app"},
+      scopes={"platform", "app", "domain"},
       params={"worker_hostname": worker.hostname},
       executor="platform",
       on_conflict=OnConflict.QUEUE,

@@ -1,18 +1,9 @@
 import re
 from datetime import datetime
-from types import SimpleNamespace
 
 import pytest
 
 from services.manager import _common
-
-
-def domain(name="web", type="public", port=80):
-  return SimpleNamespace(name=name, type=type, port=port)
-
-
-def container(hostname="w1", ip="100.64.0.1", status="active", tag=None):
-  return SimpleNamespace(domain_tag=tag, status=status, worker=SimpleNamespace(hostname=hostname, ip=ip))
 
 
 class TestContentHash:
@@ -107,55 +98,3 @@ class TestTemplatesDigest:
   def test_a_missing_file_raises(self, templates):
     with pytest.raises(FileNotFoundError):
       _common.templates_digest("worker/missing.yml")
-
-
-class TestRoutingInputHash:
-  def hash(self, domains=None, containers=None, domain_name="example.test", offline=()):
-    return _common.routing_input_hash(domain_name, [domain()] if domains is None else domains,
-                                      [container()] if containers is None else containers,
-                                      lambda hostname: hostname not in offline)
-
-  def test_does_not_depend_on_the_order_of_domains_or_containers(self):
-    domains = [domain("a"), domain("b", "internal", 8080)]
-    containers = [container("w1", "100.64.0.1", tag="blue"), container("w2", "100.64.0.2", tag="green")]
-    assert self.hash(domains, containers) == self.hash(domains[::-1], containers[::-1])
-
-  @pytest.mark.parametrize("changed", [
-      [domain(name="other")],
-      [domain(type="internal")],
-      [domain(port=8080)],
-      [domain(), domain("second")],
-      [],
-  ])
-  def test_changes_with_the_domains(self, changed):
-    assert self.hash(changed) != self.hash()
-
-  def test_changes_with_the_cloudflare_domain(self):
-    assert self.hash(domain_name="other.test") != self.hash()
-
-  def test_changes_with_the_address_of_an_active_container(self):
-    assert self.hash(containers=[container(ip="100.64.0.9")]) != self.hash()
-
-  def test_changes_with_the_worker_an_active_container_runs_on(self):
-    assert self.hash(containers=[container(hostname="w2")]) != self.hash()
-
-  def test_changes_with_another_active_container(self):
-    assert self.hash(containers=[container(), container("w2", "100.64.0.2")]) != self.hash()
-
-  def test_a_container_that_is_not_active_is_left_out(self):
-    assert self.hash(containers=[container(), container("w2", status="error")]) == self.hash()
-    assert self.hash(containers=[container(status="error")]) == self.hash(containers=[container(status="inactive")])
-
-  def test_a_container_on_an_offline_worker_is_left_out(self):
-    assert self.hash(containers=[container()], offline=("w1",)) == self.hash(containers=[container(status="inactive")])
-
-  def test_a_domain_tag_counts_even_when_its_container_is_not_active(self):
-    assert self.hash(containers=[container(status="inactive", tag="blue")]) != self.hash(containers=[container(status="inactive")])
-
-  def test_a_new_tag_changes_the_hash(self):
-    assert self.hash(containers=[container(tag="blue")]) != self.hash()
-
-  def test_editing_a_routing_template_changes_the_hash(self, monkeypatch):
-    before = self.hash()
-    monkeypatch.setattr(_common, "APPLICATION_ROUTING_TEMPLATES", "edited")
-    assert self.hash() != before

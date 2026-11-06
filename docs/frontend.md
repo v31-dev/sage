@@ -32,6 +32,7 @@ Initial app boot fetches `GET /api` through the Pinia store in `ui/src/stores/ap
 - `info`: the app store (loading `GET /api`).
 - `workers`: the app store (loading `GET /workers`): for each worker its status, ip, path, container count and newest minute of metrics. The Workers page, the sidebar, the container cards and the Add Container dialog read the store; each card on the Workers page shows the worker's minute from it, so the page asks for no metrics of its own. The graph pages (a worker's and an application's metrics, the Home page) still poll every 60 s.
 - `worker:<hostname>`: the Worker page (loading `GET /workers/{hostname}`): the worker with its containers, its stack and its status. The page has no timer; an action on a container reloads it at once through `loadWorkerStatus`. A worker removed while the page is open shows as not found.
+- `domains`: the Domains page (loading `GET /domains/`): every domain with its container, and every container a domain can be linked to. The manager pushes it when a domain, a container (its state too) or a worker's subdomain is written, and when per-record sync results or their queued/running tasks change. Each name shows sync state separately from its container's health. Each service heading links to that service's public or internal discovery URL in a new tab.
 - `application:<project>/<name>`: the Application page (loading the application route). Each push replaces the whole application (volumes, domains and variables changed elsewhere too) and puts its status over the one an action set; an edit dialog keeps the values it copied when it opened. An action on the page reloads it at once through `loadApplication`. An application deleted while the page is open shows as not found.
 - `tasks`: the Tasks page, the Upgrade page (which tasks it waits for before a stop) and the restore overlay, which follows it only while restoring (loading `GET /tasks`).
 - `task-history`, a feed: the Tasks page's finished tasks (`GET /tasks/history`), a list (below).
@@ -89,6 +90,10 @@ Routes in `ui/src/router/index.ts` currently cover:
 - Backups and restore flows
 - Settings: one page per section, listed under a "Settings" group in the sidebar
 
+The Application page shows linked domains on their container cards. Each domain keeps its address/copy controls,
+sync state, type, service and pool; internal/TCP names also show the worker's pending certificate state. The
+card reads `container.domains` from the application's pushed data. Domain editing stays on the Domains page.
+
 ## Forms
 
 - Placeholders are only examples, written "e.g. …". They never stand in for a label, a
@@ -127,7 +132,9 @@ section, `workersIndicator` for the Workers menu item, `applicationIndicator` fo
 application or container, `workerIndicator`, `domainIndicator`, `taskIndicator`). Used by the
 settings badge and sidebar, the Workers menu item, the application, container, worker and
 task statuses, a domain's sync state and the worker dot in a container card. A title with a
-state beside it is a `SectionTitle` with the indicator in its slot.
+state beside it is a `SectionTitle` with the indicator in its slot. Both Domain views read the same record status:
+`pending` (idle), queue-derived `syncing` (busy), `synced` (ok) or `error` (error, labelled “sync failed”).
+Failure detail is available on the indicator; container health remains separate.
 
 ## Dates
 
@@ -135,11 +142,30 @@ Every date shown goes through `formatDate` or `formatDateStringAgo` (`lib/utils.
 raw. Both parse with `parseDate`: backend timestamps without a timezone are UTC; ones with
 `Z` or an offset are read as given.
 
+## Certificate Status
+
+The Worker page shows its wildcard and the shared internal discovery certificate separately, even without a
+current worker report. Both come from the worker topic's `certificate` and `discovery_certificate` fields. A
+certificate is ready only when valid and applied; its expiry is shown only with that matching applied proof.
+Missing status stays unknown, and pending or stale material has no displayed expiry. Settings inventory expiry
+is not used for a worker's applied certificate.
+
+The app store's `certificateIndicator` maps both roles to waiting, syncing or ready. An unusable certificate
+with an update error is failed. A ready certificate whose update failed keeps its applied expiry, with a warning
+and the error shown alongside it. Connectivity and stack health keep their own states. Ordinary worker pushes
+update the fields without page polling.
+
 ## Settings Pages
 
 Every settings page is a `SettingsSection.vue` given a `fields` list (`key`, `label`, and optionally `description`, `placeholder`, `type`, `secret`, `readonly`, `value`). A `readonly` field shows its `value` and is never loaded or saved. Tailscale and Cloudflare are env vars, so all their fields are read-only: the section then shows no Save / Test / Reset, and the page adds its dashboard links (`links` slot: the manager's machine in the Tailscale console; the tunnel and DNS records in Cloudflare) and its resync actions (`after` slot). S3 and notifications have editable fields: for those the section draws the inputs, loads, saves, tests and resets the values, shows a failing field's reason from the status under it, and handles the unsaved-changes dialog and the route-leave guard. Errors show inline; successes as toasts. The sidebar
 and the pages read each section's status from the app store (`info.settings`). States are
 drawn by `components/StateIndicator.vue` (see State Indicators).
+
+Cloudflare's certificate inventory comes from `info.settings.cloudflare.details.certificates`: manager,
+shared discovery, and hostname-owned worker entries. Each shows its desired names, local validity, expiry and
+maintenance error; removed owners with retained public leaves show pending retirement. This inventory describes
+the manager's material; worker pages independently show what is applied. Resync Traefik runs the global
+maintenance/application operation and exposes its queued/running state through the existing settings indicator.
 
 ## API Layer
 

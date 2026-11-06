@@ -4,14 +4,15 @@ This is a living project-context file for AI coding agents. Keep it concise, cur
 
 ## Start Here
 
-- Read [README.md](README.md) first.
-- Read the relevant files under [docs/](docs/) before making changes.
-- Read the `AGENTS.md` of the module you are touching: [app/AGENTS.md](app/AGENTS.md) or [ui/AGENTS.md](ui/AGENTS.md).
+- Read [README.md](README.md) in full, and [app/AGENTS.md](app/AGENTS.md) and [ui/AGENTS.md](ui/AGENTS.md), at the start of every session.
+- Read the relevant files under [docs/](docs/) before proposing or making changes.
 - Treat `README.md` plus the focused docs as the primary project context.
 
 ## Model
 
-- Sessions here run on Claude Opus at `xhigh` effort or above, set with `/model` and `/effort`, because evaluation and design decisions are subtle. Spawn subagents at the same level, never a lighter model or lower effort.
+- Claude Code: use Opus 5.5 at `xhigh` effort or above.
+- Codex: use GPT-6.1 Sol at `xhigh` effort or above.
+- Select the model and effort in the client settings. Evaluation and design decisions are subtle; when the user requests subagents, use the parent's model and effort.
 
 ## Project Summary
 
@@ -32,6 +33,7 @@ These facts hold on every task:
 - Blocking network or remote I/O is offloaded onto the lane pools in `app/utils/executor.py` — `run_in_executor_with_context(...)` (awaited) or `submit_with_context(...)` (fire-and-forget).
 - Local SQLite/Peewee work runs inline and relies on WAL mode.
 - The scheduler is a thin APScheduler layer (`app/scheduler.py`) that only enqueues; cron jobs fire on wall-clock instants, and the `_AT_STARTUP` list also runs once right after startup.
+- State changes (deploys, routing, workers) are infrequent: Sage reacts to them and corrects the config, and up to a minute of lag is fine. Clean design still comes first; the allowance is a reason not to build machinery for per-second precision, not a reason to accept a worse design.
 
 After compaction, reread the relevant `docs/` page before continuing.
 
@@ -64,7 +66,7 @@ After compaction, reread the relevant `docs/` page before continuing.
 2. Sage is in development, so every change is the final state of the code, and the no-history rule for comments holds for docs, this file, release notes and UI text too: no dates, sprint or milestone names, "was X before" or migration steps.
 3. One owner per fact and per piece of logic. A service class owns its facts and the Manager mixin derives from it; the Manager itself holds only its own bookkeeping (what it decided or asked for: check results, the worker list with the reboots it asked, the stack repairs it started), and a per-worker entry goes when the worker is removed or its time is up; variants are data (a table or config tuple such as `CHANNELS`, `APPLYING_TASKS`, a menu item's `indicator`), not special cases in code; a UI component owns its logic end to end (props, not slot plumbing or a separate composable). Before adding a file, store, composable, flag or special case, check whether an existing owner can hold it, and when something general appears, scan for its other users. A new setting, field, status or channel should touch one place. A file that mixes concepts is split by concept, not by layer, even when that adds files; where ownership and fewer files pull apart, ownership wins.
 4. Verification matches the change. Backend: run the code path against a stub or in the dev image and report what was run. UI: when alignment or colour is the point, render it (headless Chrome against the built CSS) instead of reasoning from classes. The user live-tests S3, backup, Cloudflare and Railway flows, so don't build mock S3 servers; say what is left for live testing.
-5. Unit tests cover Sage's own code. Every external service (Cloudflare, S3, Tailscale SSH, Docker, ACME, Discord) is replaced by mock data that feeds the code a situation: a failure, a slow answer, a response shape the service documents, or a scenario that does not depend on the service's behaviour. A test asserts a decision our code makes, not what the mock was told to say; if the mock already holds the expected value, the test is not written. The good targets are pure logic (retry policy, classification, decision tables, parsers) and real local state (SQLite, files). What a service really does is left to live testing against the real services. Don't add unit tests for an area the backlog says will be reworked; its tests come with the rework, and ask when unsure.
+5. Unit tests cover Sage's own code. Every external service (Cloudflare, S3, Tailscale SSH, Docker, ACME, Discord) is replaced by mock data that feeds the code a situation: a failure, a slow answer, a response shape the service documents, or a scenario that does not depend on the service's behaviour. A test asserts a decision our code makes, not what the mock was told to say; if the mock already holds the expected value, the test is not written. The good targets are pure logic (retry policy, classification, decision tables, parsers) and real local state (SQLite, files). What a service really does is left to live testing against the real services: which calls Sage makes to it, in what order and with what parameters, is not unit-tested against a mock but covered by the live integration suite (Sprint 9). Don't add unit tests for an area the backlog says will be reworked; its tests come with the rework, and ask when unsure.
 6. Clean code beats a small gain. A minor cosmetic fix or a jagged optimization that needs machinery (widths computed from character counts, offsets kept in step with a measured height) is left alone, in the UI and the backend alike: say it isn't clean, name the clean partial option if there is one, and don't build it.
 7. A stock tool comes before custom code. If an existing tool or a library's built-in behaviour does the job, use it and render its config; a custom agent is the last resort, above all for secondary concerns like logs and metrics. Keep what runs on a worker minimal, treat the manager's cost (CPU, memory, requests per worker) as the budget, and prefer simple code that is easy to maintain over squeezing out memory.
 8. A bug a test finds is never parked: no `xfail`, `skip` or any other marker that keeps the suite green. Record it in the todo item, then fix it in the same change, naming the production change to the user, or leave the test failing so nothing merges over it. `skip` is only for a test that cannot run on the machine, such as a missing tool.
@@ -99,7 +101,9 @@ docker compose up --build --watch
 
 ## Release Notes
 
-How to write release notes is in [.claude/skills/release-notes/SKILL.md](.claude/skills/release-notes/SKILL.md).
+Skills live in `.agents/skills/`, each with an identical copy in `.claude/skills/`, where Claude Code finds them; edit both together.
+
+How to write release notes is in [.agents/skills/release-notes/SKILL.md](.agents/skills/release-notes/SKILL.md).
 
 ## Documentation Rules
 
@@ -118,4 +122,8 @@ Agent memory, the todo tracker and the global working rules for this project liv
 3. `autoMemoryDirectory` in `.claude/settings.local.json`: the repo is two levels above that folder.
 4. A folder named `memory` beside this repository, holding a `rules.md`.
 
-All work in this repo is tracked in the memory repo. A session is set up when the global rules are in your context and your memory directory is `<memory repo>/sage/memory`. If you can't find the repo, ask the user to add it to the workspace or give its path, and wait before starting the task. If the session isn't set up and the repo is in the workspace or the user gave its path, follow Recovery in its `README.md`. If you found it any other way, read its `rules.md`, tell the user in one line and carry on, tracking the work there.
+All work in this repo is tracked in the memory repo. If you can't find it, ask the user to add it to the workspace or give its path, and wait before starting the task.
+
+At the start of every session, read its `rules.md` and `<memory repo>/sage/memory/MEMORY.md`, then the relevant indexed notes. Reading the rules and index initializes the session for any agent; keep notes and todos in the memory repo using file operations. This repo is the only store for persistent agent memory and todos; do not use a separate client memory store.
+
+If this machine's link is missing or stale and the memory repo is in the workspace or the user gave its path, follow Recovery in its `README.md`. If you found it any other way, tell the user in one line and carry on, tracking the work there.

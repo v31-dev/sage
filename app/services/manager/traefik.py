@@ -1,32 +1,27 @@
 import asyncio
+import hashlib
 import json
 import logging
-import re
+import shlex
 
 import config
-from services.db import Application, Domain, Project, Worker
+from services.db import Domain, Worker
 from utils.executor import run_in_executor_with_context
 from utils.queue import OnConflict
 from utils.retry import is_transient, retry
 
-from ._common import app_dir, routing_input_hash
-from .application import application_changed, save_application
+from ._common import CERTIFICATE_TEMPLATES, app_dir
 
 logger = logging.getLogger(__name__)
 
 
 class TraefikMixin:
-  def request_application_traefik_sync(self, application):
-    """Mark the app's Traefik config stale and enqueue an app-scoped resync."""
-    Application.update(domains_synced=False).where(Application.id == application.id).execute()
-    application_changed(application)
+  def request_certificate_renewal(self):
     self.add_task(
-        task=self.sync_application_traefik_domains_config,
-        scopes={f"app:{application.qualified_name}"},
-        params={"application_id": application.id},
-        executor="app",
+        task=self.renew_certificates,
+        scopes={"platform", "app", "domain"},
+        executor="platform",
         on_conflict=OnConflict.REPLACE,
-        quiet=True,
     )
 
   def setup_domain(self):
@@ -49,28 +44,48 @@ class TraefikMixin:
       return
     self.certs.ensure_manager_at_startup()
 
-  async def renew_certificates(self):
-    """Issue each certificate that is missing or within its renewal window, hot-reload
-    the manager's :443 server in place, then push the workers' certificate to any worker
-    whose stamp is stale."""
-    if await run_in_executor_with_context(self.certs.ensure, self.certs.manager):
-      self.certs.reload_local_tls()
-      self.notify(f"Renewed the manager's certificate; expires {self.certs.manager.expiry()}.", "success")
-    if await run_in_executor_with_context(self.certs.ensure, self.certs.workers):
-      self.notify(f"Renewed the workers' certificate; expires {self.certs.workers.expiry()}.", "success")
-    await self.sync_certificates_to_workers()
+  async def renew_certificates(self, force_sync: bool = False):
+    failures = []
+    self.certs.set_workers({worker.hostname: worker.subdomain for worker in Worker.select()})
+    stored = await run_in_executor_with_context(self.certs.stored)
+    try:
+      await self.sync_certificates_to_workers()
+    except Exception as error:
+      failures.append(str(error))
+    blocked = set()
+    for identity, certificate in stored.items():
+      if not self.certs.is_current(identity, certificate):
+        continue
+      try:
+        await run_in_executor_with_context(self.certs.retire, certificate)
+      except Exception as error:
+        blocked.add(identity)
+        failures.append(f"{identity} retirement: {error}")
+      self.update_workers({})
+    for identity, certificate in self.certs.inventory().items():
+      if not certificate.names or identity in blocked or not self.certs.is_current(identity, certificate):
+        continue
+      try:
+        if await run_in_executor_with_context(self.certs.ensure, certificate):
+          if identity == "manager":
+            self.certs.reload_local_tls()
+          self.notify(f"Issued certificate for {', '.join(certificate.names)}; expires {certificate.expiry()}.", "success")
+      except Exception as error:
+        failures.append(f"{identity} issuance: {error}")
+      self.update_workers({})
+    try:
+      await self.sync_certificates_to_workers(force=force_sync)
+    except Exception as error:
+      failures.append(str(error))
+    if failures:
+      self.notify("Certificate maintenance failed: " + "; ".join(failures), "error")
+      raise RuntimeError("; ".join(failures))
 
   async def refresh_traefik(self):
-    """Ensure both certificates are valid and resync everything that depends on them —
-    the manager's :443 server, each worker's PEM + Traefik config, the `*.int` DNS
-    records, and app routing. Triggered by Resync Traefik."""
+    """Maintain certificate inventory and resync worker TLS, Traefik, DNS and routing."""
     try:
-      if await run_in_executor_with_context(self.certs.ensure, self.certs.manager):
-        self.certs.reload_local_tls()
-      await run_in_executor_with_context(self.certs.ensure, self.certs.workers)
-
+      await self.renew_certificates(force_sync=True)
       domain = self.cloudflare.domain
-      await self.sync_certificates_to_workers(force=True)
 
       # Worker Traefik picks up config.yml from its watched dynamic dir (file
       # provider), so no restart is needed.
@@ -81,17 +96,10 @@ class TraefikMixin:
             f"{self.worker_home_dir}/traefik/dynamic/config.yml",
             {"DOMAIN": domain, "HOSTNAME": worker.hostname},
         )
-        await run_in_executor_with_context(
-            self.cloudflare.create_dns_record,
-            f"*.int.{domain}",
-            worker.ip,
-            comment=f"sage-worker-{worker.hostname}",
-            type="A",
-        )
+        await run_in_executor_with_context(self.cloudflare.sync_worker_records, worker.hostname, worker.subdomain, worker.ip)
 
-      # Resync every application so the new domain lands in the routing rules.
-      for application in Application.select():
-        self.request_application_traefik_sync(application)
+      self.request_domain_syncs(Domain.select())
+      self.request_discovery_sync()
     except Exception as e:
       self.notify(
           f"Traefik refresh failed part-way: {e}. Run Resync Traefik on the Cloudflare settings page "
@@ -100,315 +108,50 @@ class TraefikMixin:
       raise
 
   async def sync_certificates_to_workers(self, force: bool = False):
-    """Push the workers' certificate to every online worker whose stamp is stale, or
-    to all of them when forced."""
-    if not self.certs.workers.is_valid():
-      self.notify(
-          "No valid certificate available; skipping certificate sync to workers.",
-          type="error",
-      )
-      return
+    results = await asyncio.gather(*[self.sync_certificates_to_worker(worker, force=force)
+                                     for worker in self.online_workers()], return_exceptions=True)
+    failures = [str(result) for result in results if isinstance(result, Exception)]
+    if failures:
+      raise RuntimeError("Worker certificate sync failed: " + "; ".join(failures))
 
-    cert_hash = self.certs.workers.hash()
-    workers = self.online_workers()
-    if force:
-      targets = workers
-    else:
-      revisions = await asyncio.gather(
-          *[self.read_worker_revisions(worker.hostname) for worker in workers])
-      targets = [
-          worker for worker, revision in zip(workers, revisions)
-          if revision.get("certs") != cert_hash
-      ]
-
-    # Workers are independent, so sync them concurrently: the asyncssh SFTP
-    # leaves fan out and drain on the event loop.
-    await asyncio.gather(
-        *[self.sync_certificates_to_worker(worker) for worker in targets],
-        return_exceptions=False,
-    )
-
-  async def sync_certificates_to_worker(self, worker: Worker):
-    traefik_dir = f"{self.worker_home_dir}/traefik"
-    await self.tailscale.sync_file(
-        worker.hostname, self.certs.workers.fullchain_path, f"{traefik_dir}/certs/fullchain.pem")
-    await self.tailscale.sync_file(
-        worker.hostname, self.certs.workers.key_path, f"{traefik_dir}/certs/key.pem", mode=0o600)
-    # Re-write the watched dynamic cert config so Traefik's file-provider watch
-    # fires and reloads the new PEM; overwriting only the cert files is not a
-    # reliable reload trigger.
-    await self.tailscale.sync_file(
-        worker.hostname,
-        app_dir / "templates/worker/traefik/certs.yml",
-        f"{traefik_dir}/dynamic/certs.yml")
-    await self.write_worker_revision(
-        worker.hostname, "certs", self.certs.workers.hash() or "")
-    logger.info(f"Synced certificate to worker {worker.hostname}.")
-
-  async def sync_application_traefik_domains_config(self, application_id: int):
-    """
-    Sync Traefik domains config for an application. Applications with no active containers
-    have config written for X-Tag discovery.
-    """
-    application = Application.get_or_none(Application.id == application_id)
-    if application is None:
-      # The reconcile scan owns file cleanup for deleted applications.
-      logger.info(f"Application {application_id} deleted before Traefik sync; nothing to do.")
-      return
-    domain_name = self.cloudflare.domain
-    containers = list(application.containers)
-    application_domains = list(application.domains)
-    workers = list(Worker.select())
-    online_workers = [worker for worker in workers if self.is_worker_online(worker.hostname)]
-    active_containers = [
-        container
-        for container in containers
-        if self.is_worker_online(container.worker.hostname) and container.status == "active"
-    ]
-    logger.info(
-        f"Syncing Traefik config for application {
-            application.qualified_name} for these workers {
-            [
-                container.worker.hostname for container in active_containers]}."
-    )
-
-    # Preserve the full declared tag list for discovery, even when a tag has no
-    # currently active backing container.
-    domain_tags = sorted({container.domain_tag for container in containers if container.domain_tag})
-    domain_tag_pools = {
-        tag: [container for container in active_containers if container.domain_tag == tag]
-        for tag in domain_tags
-    }
-
-    # Reset any config on online workers before either clearing stale configs or
-    # writing the new routing view for this application.
-    for worker in workers:
-      if not self.is_worker_online(worker.hostname):
-        logger.error(
-            f"Worker {
-                worker.hostname} is offline, skipping Traefik config sync for application {
-                application.qualified_name} on this worker.")
-        continue
-
-      await self.tailscale.exec_command(
-          worker.hostname,
-          f"rm -f {self.worker_home_dir}/traefik/dynamic/{application.qualified_name}-*.yml",
-      )
-
-    template_names = {
-        "internal": ("service_internal.yml", "service_internal_pool.yml"),
-        "public": ("service_public.yml", "service_public_pool.yml"),
-    }
-    # Mesh communication between Traefik uses port 9002 (HTTP). For the same
-    # worker, use traefik instead of the Tailscale IP to avoid hairpinning and
-    # let Docker DNS resolve locally.
-    load_balanced_servers = {
-        worker.hostname: ", ".join(
-            (
-                '{ url: "http://traefik:9002" }'
-                if worker.hostname == container.worker.hostname
-                else f'{{ url: "http://{container.worker.ip}:9002" }}'
-            )
-            for container in active_containers
-        )
-        for worker in online_workers
-    }
-    domain_tag_load_balanced_servers = {
-        worker.hostname: {
-            domain_tag: ", ".join(
-                (
-                    '{ url: "http://traefik:9002" }'
-                    if worker.hostname == container.worker.hostname
-                    else f'{{ url: "http://{container.worker.ip}:9002" }}'
-                )
-                for container in domain_tag_pool
-            )
-            for domain_tag, domain_tag_pool in domain_tag_pools.items()
-        }
-        for worker in online_workers
-    }
-    # TCP backing services mesh over port 9003 (address form, not URL). The edge
-    # passthrough router load-balances across every active backing worker, just like
-    # the HTTP mesh; same-worker uses traefik to avoid hairpinning.
-    tcp_load_balanced_servers = {
-        worker.hostname: ", ".join(
-            (
-                '{ address: "traefik:9003" }'
-                if worker.hostname == container.worker.hostname
-                else f'{{ address: "{container.worker.ip}:9003" }}'
-            )
-            for container in active_containers
-        )
-        for worker in online_workers
-    }
-
-    # Application is active -> sync Traefik config based on active containers
-    # to all online workers (mesh network).
-    for worker in online_workers:
-      for domain in application_domains:
-        # TCP services route by SNI and have no x-tag pool variant (TCP carries no
-        # query string), so they use a dedicated single-template path.
-        if domain.type == "tcp":
-          await self.tailscale.sync_file(
-              worker.hostname,
-              app_dir / "templates/worker/traefik/service_internal_tcp.yml",
-              f"{self.worker_home_dir}/traefik/dynamic/{application.qualified_name}-{domain.type}-{domain.name}.yml",
-              {
-                  "SERVICE": application.qualified_name,
-                  "SUBDOMAIN": domain.name,
-                  "DOMAIN": domain_name,
-                  "PORT": domain.port,
-                  "LOAD_BALANCED_SERVERS": tcp_load_balanced_servers[worker.hostname],
-              },
-          )
-
-        # HTTP services can route by path and support x-tag based pool splitting,
-        # so they use the standard template pair.
-        else:
-          traefik_config_template, traefik_config_template_domain_pool = template_names[
-              domain.type
-          ]
-          await self.tailscale.sync_file(
-              worker.hostname,
-              app_dir / f"templates/worker/traefik/{traefik_config_template}",
-              f"{self.worker_home_dir}/traefik/dynamic/{application.qualified_name}-{domain.type}-{domain.name}.yml",
-              {
-                  "SERVICE": application.qualified_name,
-                  "SUBDOMAIN": domain.name,
-                  "DOMAIN": domain_name,
-                  "DOMAIN_TAGS_HEADER": json.dumps(domain_tags),
-                  "PORT": domain.port,
-                  "LOAD_BALANCED_SERVERS": load_balanced_servers[worker.hostname],
-              },
-          )
-
-          # Create Domain Tag pool config.
-          for domain_tag in domain_tags:
-            await self.tailscale.sync_file(
-                worker.hostname,
-                app_dir / f"templates/worker/traefik/{traefik_config_template_domain_pool}",
-                f"{self.worker_home_dir}/traefik/dynamic/{application.qualified_name}-{domain.type}-{domain.name}-{domain_tag}.yml",
-                {
-                    "SERVICE": application.qualified_name,
-                    "SUBDOMAIN": domain.name,
-                    "DOMAIN": domain_name,
-                    "POOL_TAG": domain_tag,
-                    "LOAD_BALANCED_SERVERS": domain_tag_load_balanced_servers[worker.hostname][domain_tag],
-                },
-            )
-
-    input_hash = routing_input_hash(domain_name, application_domains, containers, self.is_worker_online)
-    for worker in online_workers:
-      await self.write_worker_revision(worker.hostname, application.qualified_name, input_hash)
-
-    for domain in application_domains:
-      if domain.type == "tcp":
-        domain_url = f"{domain.name}.int.{domain_name}:8443"
-      elif domain.type == "internal":
-        domain_url = f"https://{domain.name}.int.{domain_name}"
-      else:
-        domain_url = f"https://{domain.name}.{domain_name}"
-      self.notify(
-          f"Traefik config synced for application {application.qualified_name} with domain {domain.type}:{domain.name}.",
-          link=domain_url,
-      )
-
-    application.domains_synced = True
-    save_application(application)
-    logger.info(f"Traefik config synced for application {application.qualified_name}.")
-
-  async def reconcile_traefik_configs(self):
-    """
-    Existence-level reconciliation between worker Traefik dynamic configs and
-    applications: a file with no owning application is removed, and an
-    application with domains must have config on every online worker. Content
-    correctness is owned by sync_application_traefik_domains_config;
-    applications left domains_synced=False (e.g. a restart dropped their queued
-    sync) are re-enqueued here.
-    """
-    online_workers = self.online_workers()
-    worker_files = {}
-    for worker in online_workers:
-      _, files = await self.tailscale.exec_command(
-          worker.hostname,
-          f"ls -1 {self.worker_home_dir}/traefik/dynamic 2>/dev/null || true",
-      )
-      worker_files[worker.hostname] = set(files)
-
-    # Applications are created by route writes that can interleave with this
-    # task; listing files first means any file listed above has its owner
-    # present in this read, so a fresh app is never misclassified as an orphan.
-    applications = list(Application.select(Application, Project).join(Project))
-    live_prefixes = {f"{application.qualified_name}-" for application in applications}
-
-    for worker in online_workers:
-      orphans = sorted(
-          name for name in worker_files[worker.hostname]
-          if name.endswith(".yml")
-          and name not in ("config.yml", "certs.yml")        # worker's own infra configs
-          and re.fullmatch(r"[a-z0-9.-]+", name)             # rm-safe names only
-          and not any(name.startswith(prefix) for prefix in live_prefixes)
-      )
-      if orphans:
-        logger.info(f"Removing orphaned Traefik configs on {worker.hostname}: {orphans}")
-        await self.tailscale.exec_command(
-            worker.hostname,
-            ";".join(f"rm -f {self.worker_home_dir}/traefik/dynamic/{name}" for name in orphans),
-        )
-
-    applications_ids_with_domains = {
-        domain.application_id for domain in Domain.select(Domain.application).distinct()
-    }
-
-    # Revision stamps: existence checks above catch missing files; the hash
-    # layer catches files rendered from stale inputs (a worker that missed a
-    # sync). Stamps for deleted applications are removed here, like their
-    # routing files; the worker's own stamps (infra, certs, owner) stay.
-    revisions_by_worker = {}
-    for worker in online_workers:
-      revisions_by_worker[worker.hostname] = await self.read_worker_revisions(worker.hostname)
-    live_names = {application.qualified_name for application in applications}
-    for worker in online_workers:
-      stale_keys = sorted(
-          key for key in revisions_by_worker[worker.hostname]
-          if key not in live_names and key not in ("infra", "certs", "owner")
-          and re.fullmatch(r"[a-z0-9-]+", key)
-      )
-      if stale_keys:
-        await self.tailscale.exec_command(
-            worker.hostname,
-            ";".join(f"rm -f {self.worker_home_dir}/revisions/{key}" for key in stale_keys),
-        )
-
-    domain_name = self.cloudflare.domain
-    for application in applications:
-      if not application.domains_synced:
-        self.add_task(
-            task=self.sync_application_traefik_domains_config,
-            scopes={f"app:{application.qualified_name}"},
-            params={"application_id": application.id},
-            executor="app",
-            quiet=True,
-        )
-        continue
-
-      # An app with domains must have config on every online worker; a missing
-      # file means the worker joined after the app's last sync.
-      needs_sync = False
-      if application.id in applications_ids_with_domains:
-        prefix = f"{application.qualified_name}-"
-        needs_sync = any(
-            not any(name.startswith(prefix) for name in worker_files[worker.hostname])
-            for worker in online_workers
-        )
-
-      if not needs_sync and online_workers:
-        app_hash = routing_input_hash(
-            domain_name, list(application.domains), list(application.containers), self.is_worker_online)
-        needs_sync = any(
-            revisions_by_worker[worker.hostname].get(application.qualified_name) != app_hash
-            for worker in online_workers
-        )
-
-      if needs_sync:
-        self.request_application_traefik_sync(application)
+  async def sync_certificates_to_worker(self, worker: Worker, force: bool = False):
+    hostname = worker.hostname
+    dynamic = f"{self.worker_home_dir}/traefik/dynamic/certs.yml"
+    managed = f"{self.worker_home_dir}/traefik/certs/managed"
+    revisions, listing = await asyncio.gather(
+        self.read_worker_revisions(hostname),
+        self.tailscale.exec_command(hostname, f"if [ -f {shlex.quote(dynamic)} ]; then printf '@config '; "
+                                    f"sha256sum {shlex.quote(dynamic)} | cut -d ' ' -f 1; fi; "
+                                    f"if [ -d {shlex.quote(managed)} ]; then find {shlex.quote(managed)} -mindepth 1 -maxdepth 1 -printf '%f\\n'; fi",
+                                    timeout=30))
+    actual = set(listing[1])
+    configured = next((line.removeprefix("@config ") for line in actual if line.startswith("@config ")), None)
+    actual = {line for line in actual if not line.startswith("@config ")}
+    material = {role: (certificate, certificate.info(CERTIFICATE_TEMPLATES))
+                for role, certificate in self.certs.for_worker(hostname).items() if certificate.is_valid()}
+    proofs = {role: info["proof"] for role, (_, info) in material.items()}
+    expected = {f"{role}-{info['hash']}.{suffix}" for role, (_, info) in material.items() for suffix in ("pem", "key")}
+    certificates = [{"certFile": f"/etc/traefik/certs/managed/{role}-{info['hash']}.pem",
+                     "keyFile": f"/etc/traefik/certs/managed/{role}-{info['hash']}.key"} for role, (_, info) in material.items()]
+    rendered = (app_dir / "templates/worker/traefik/certs.yml").read_text().replace("${CERTIFICATES}", json.dumps(certificates))
+    if (not force and configured == hashlib.sha256(rendered.encode()).hexdigest() and actual == expected
+            and self.certs.read_proofs(revisions.get("certs")) == proofs):
+      self.update_worker(hostname, certs=proofs)
+      return False
+    for role, (certificate, info) in material.items():
+      for source, suffix, mode in ((certificate.fullchain_path, "pem", 0o644), (certificate.key_path, "key", 0o600)):
+        name = f"{role}-{info['hash']}.{suffix}"
+        if force or name not in actual:
+          await self.tailscale.sync_file(hostname, source, f"{managed}/{name}", mode=mode)
+    current = {role: certificate.info(CERTIFICATE_TEMPLATES)["proof"] for role, certificate in self.certs.for_worker(hostname).items()
+               if certificate.is_valid()}
+    if current != proofs:
+      raise RuntimeError(f"{hostname}: certificate configuration changed during sync")
+    await self.tailscale.sync_file(hostname, app_dir / "templates/worker/traefik/certs.yml", dynamic,
+                                   {"CERTIFICATES": json.dumps(certificates)})
+    if actual - expected:
+      await self.tailscale.exec_command(hostname, "rm -rf -- " + " ".join(
+          shlex.quote(f"{managed}/{name}") for name in sorted(actual - expected)))
+    await self.write_worker_revision(hostname, "certs", json.dumps(proofs, sort_keys=True))
+    self.update_worker(hostname, certs=proofs)
+    return True

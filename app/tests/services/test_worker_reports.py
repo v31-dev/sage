@@ -307,6 +307,7 @@ class TestInfra:
         {"name": "vector", "status": "restarting"},
         {"name": "telegraf", "status": "running"},
         {"name": "cloudflared", "status": "missing"},
+        {"name": "cloudflared-discovery", "status": "missing"},
     ]
 
 

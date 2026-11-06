@@ -34,6 +34,7 @@ def said(changes):
 
 
 WEB = (UpdateSource.APPLICATION, "demo/web")
+DOMAINS = (UpdateSource.DOMAINS, None)
 
 
 class TestApplications:
@@ -43,7 +44,8 @@ class TestApplications:
 
   def test_changing_one_tells_its_page_and_the_pages_of_the_workers_it_is_on(self, client, hosted, changes):
     assert client.put(f"{APP}/web", json={"label": "Renamed"}).status_code == 200
-    assert said(changes) == sorted([WEB, (UpdateSource.WORKER_CONTAINERS, "w1"), (UpdateSource.WORKER_CONTAINERS, "w2")], key=str)
+    assert said(changes) == sorted([WEB, (UpdateSource.WORKER_CONTAINERS, "w1"), (UpdateSource.WORKER_CONTAINERS, "w2"),
+                                    DOMAINS], key=str)
 
   def test_deleting_one_tells_its_page(self, client, application, changes):
     assert client.delete(f"{APP}/web").status_code == 200
@@ -58,12 +60,7 @@ class TestApplications:
 class TestContainers:
   def test_a_new_container_tells_its_applications_page_and_its_workers(self, client, application, worker, manager, changes):
     assert client.post(f"{APP}/web/containers/", json={"worker": "w1"}).status_code == 200
-    assert said(changes) == sorted([WEB, (UpdateSource.WORKER_CONTAINERS, "w1")], key=str)
-
-  def test_changing_one_tells_the_same_pages(self, client, application, worker, manager, changes):
-    container = Container.create(application=application, worker=worker)
-    assert client.put(f"{APP}/web/containers/w1", json={"domain_tag": "blue"}).status_code == 200
-    assert container.id and said(changes) == sorted([WEB, (UpdateSource.WORKER_CONTAINERS, "w1")], key=str)
+    assert said(changes) == sorted([WEB, (UpdateSource.WORKER_CONTAINERS, "w1"), DOMAINS], key=str)
 
   def test_a_container_that_is_refused_tells_nothing(self, client, application, worker, manager, changes):
     Container.create(application=application, worker=worker)
@@ -73,19 +70,25 @@ class TestContainers:
 
 
 class TestDomains:
-  def test_each_write_tells_the_applications_page_only(self, client, application, manager, changes):
-    assert client.post(f"{APP}/web/domains/", json={"name": "web", "type": "hosted", "port": 80}).status_code == 200
-    assert said(changes) == [WEB]
+  def test_each_write_tells_the_application_worker_and_domains_pages(self, client, application, worker, manager,
+                                                                     changes):
+    container = Container.create(application=application, worker=worker)
     changes.signals.clear()
-    response = client.put(f"{APP}/web/domains/hosted:web", json={"port": 8080})
+    response = client.post("/api/domains/", json={"name": "web", "type": "public", "port": 80, "container": container.id})
     assert response.status_code == 200, response.json()
-    assert said(changes) == [WEB]
+    assert said(changes) == sorted([WEB, DOMAINS, (UpdateSource.WORKER_CONTAINERS, "w1")], key=str)
     changes.signals.clear()
-    assert client.delete(f"{APP}/web/domains/hosted:web").status_code == 200
-    assert said(changes) == [WEB]
+    assert client.put(f"/api/domains/{response.json()['id']}", json={"port": 8080}).status_code == 200
+    assert said(changes) == sorted([WEB, DOMAINS, (UpdateSource.WORKER_CONTAINERS, "w1")], key=str)
+    changes.signals.clear()
+    assert client.delete(f"/api/domains/{response.json()['id']}").status_code == 200
+    assert said(changes) == sorted([WEB, DOMAINS, (UpdateSource.WORKER_CONTAINERS, "w1")], key=str)
 
-  def test_a_domain_that_is_refused_tells_nothing(self, client, application, manager, changes):
-    assert client.post(f"{APP}/web/domains/", json={"name": "Not Valid", "type": "hosted", "port": 80}).status_code == 400
+  def test_a_domain_that_is_refused_tells_nothing(self, client, application, worker, manager, changes):
+    container = Container.create(application=application, worker=worker)
+    changes.signals.clear()
+    response = client.post("/api/domains/", json={"name": "Not Valid", "type": "public", "port": 80, "container": container.id})
+    assert response.status_code == 400
     assert changes.signals == []
 
 
@@ -110,7 +113,8 @@ class TestProjects:
     Application.create(project=Project.get_by_id("demo"), name="api", label="Api", image="nginx")
     assert client.put("/api/projects/demo", json={"label": "Renamed"}).status_code == 200
     assert said(changes) == sorted([WEB, (UpdateSource.APPLICATION, "demo/api"),
-                                    (UpdateSource.WORKER_CONTAINERS, "w1"), (UpdateSource.WORKER_CONTAINERS, "w2")], key=str)
+                                    (UpdateSource.WORKER_CONTAINERS, "w1"), (UpdateSource.WORKER_CONTAINERS, "w2"),
+                                    DOMAINS], key=str)
 
   def test_a_project_without_applications_tells_nothing(self, client, project, changes):
     assert client.put("/api/projects/demo", json={"label": "Renamed"}).status_code == 200

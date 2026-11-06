@@ -5,8 +5,8 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from playhouse.shortcuts import model_to_dict
 
 import config
+from routes.containers import container_payload
 from routes.containers import router as container_router
-from routes.domains import router as domain_router
 from routes.volumes import router as volume_router
 from services.db import APPLICATION_BUSY_STATUSES, APPLICATION_STOP_ELIGIBLE_STATUSES, Application, Container, Project, Worker
 from services.logs import Logs
@@ -55,8 +55,9 @@ def create_application(
 
 
 def application_payload(application: Application) -> dict:
-  data = model_to_dict(application, backrefs=True, max_depth=2)
+  data = model_to_dict(application, backrefs=True, max_depth=2, exclude=[Container.application])
   data["config_dirty"] = application.config_dirty
+  data["containers"] = [container_payload(container) for container in application.containers]
   return data
 
 
@@ -224,12 +225,5 @@ router.include_router(
 router.include_router(
     container_router,
     prefix="/{application}/containers",
-    dependencies=[Depends(inject_application)],
-)
-
-# Domain routes
-router.include_router(
-    domain_router,
-    prefix="/{application}/domains",
     dependencies=[Depends(inject_application)],
 )

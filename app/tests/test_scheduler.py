@@ -9,6 +9,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import scheduler
 from services.logs import Logs
 from services.manager import Manager
+from services.manager.queue import SCOPES
 from services.metrics import Metrics
 from utils.executor import LANES
 from utils.queue import TaskQueue
@@ -49,7 +50,7 @@ class FakeManager(Service):
 
   def __init__(self, s3_configured=True):
     super().__init__(Manager)
-    self.queue = TaskQueue(frozenset(LANES), LANES)
+    self.queue = TaskQueue(SCOPES, LANES)
     self.s3 = SimpleNamespace(s3_config={"bucket": "b"} if s3_configured else None)
     self.configured = True
     self.application = SimpleNamespace(id=1, qualified_name="p-a")
@@ -65,6 +66,8 @@ class FakeManager(Service):
 
   def get_due_volume_backups(self, now):
     return [(self.application, [SimpleNamespace(id=2)])]
+
+  request_discovery_sync = Manager.request_discovery_sync
 
   def request_application_status_sync(self, application):
     self.status_syncs.append(application)
@@ -137,9 +140,9 @@ async def test_the_minutely_metrics_job_hands_the_workers_newest_minutes_to_the_
 async def test_a_task_is_named_after_the_method_it_runs(manager):
   await scheduler.send_summary_notification()
   await scheduler.refresh_latest_release()
-  await scheduler.reconcile_traefik_configs()
+  await scheduler.sync_discovery()
   assert [task["name"] for task in manager.tasks()] == ["send_summary_notification", "refresh_latest_release",
-                                                        "reconcile_traefik_configs"]
+                                                        "sync_discovery"]
 
 
 class TestRegistration:

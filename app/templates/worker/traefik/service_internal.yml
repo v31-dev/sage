@@ -1,53 +1,44 @@
 http:
   routers:
-    # Discovery endpoint exposing all configured domain tags for this service.
-    ${SERVICE}_${SUBDOMAIN}_internal_x_tag:
-      rule: Host(`${SUBDOMAIN}.int.${DOMAIN}`) && Path(`/x-tag`) && Method(`GET`)
+    domain_${ID}:
+      rule: Host(`${HOST}`)
       entrypoints:
         - websecure
       middlewares:
         - security-headers
         - tailscale-only
-        - ${SERVICE}_${SUBDOMAIN}_internal_x_tag_header
-      priority: 400
+        - domain_${ID}_cors
+      service: domain_${ID}
+      tls: {}
+    # The probe a client times to choose a name, answered by Traefik; HEAD only, so the application's own GET /ping
+    # still reaches it.
+    domain_${ID}_ping:
+      rule: Host(`${HOST}`) && Method(`HEAD`) && Path(`/ping`)
+      priority: 1000
+      entrypoints:
+        - websecure
+      middlewares:
+        - tailscale-only
+        - probe
       service: ping@internal
       tls: {}
 
-    # Entrypoint via Tailscale
-    ${SERVICE}_${SUBDOMAIN}_internal:
-      rule: Host(`${SUBDOMAIN}.int.${DOMAIN}`) && PathPrefix(`/`)
-      entrypoints:
-        - websecure
-      middlewares:
-        - security-headers
-        - tailscale-only
-        - mark-as-hopped
-      service: ${SERVICE}_${SUBDOMAIN}_internal
-      tls: {}
-
-    # Final Mesh Entrypoint (for load balancing)
-    ${SERVICE}_${SUBDOMAIN}_mesh_internal:
-      rule: "Host(`${SUBDOMAIN}.int.${DOMAIN}`) && PathPrefix(`/`) && Header(`X-Mesh-Hops`, `1`)"
-      entrypoints:
-        - mesh
-      middlewares:
-        - server-header
-      priority: 200
-      service: ${SERVICE}_${SUBDOMAIN}_local_internal
-
   middlewares:
-    ${SERVICE}_${SUBDOMAIN}_internal_x_tag_header:
+    domain_${ID}_cors:
       headers:
         customResponseHeaders:
-          X-Tag: '${DOMAIN_TAGS_HEADER}'
+          Access-Control-Allow-Origin: ""
+        accessControlAllowOriginList: ${CORS_ORIGINS}
+        accessControlAllowMethods:
+          - "*"
+        accessControlAllowHeaders:
+          - "*"
+          - Authorization
+        accessControlMaxAge: 300
+        addVaryHeader: true
 
   services:
-    # Final Mesh service
-    ${SERVICE}_${SUBDOMAIN}_local_internal:
+    domain_${ID}:
       loadBalancer:
         servers:
           - url: http://${SERVICE}:${PORT}
-    # Loadbalanced services
-    ${SERVICE}_${SUBDOMAIN}_internal:
-      loadBalancer:
-        servers: [ ${LOAD_BALANCED_SERVERS} ]

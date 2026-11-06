@@ -1,4 +1,4 @@
-"""Locations, endpoints and timings shared by the backend. Modules read a value as `config.NAME`
+"""Locations, endpoints, timings and the running version, shared by the backend. Modules read a value as `config.NAME`
 where it is used, never `from config import NAME`, so a test can override one attribute."""
 from pathlib import Path
 
@@ -8,9 +8,13 @@ STATIC_DIR = Path("/app/static")
 WORKER_HOME_DIR = "/opt/sage"
 CGROUP_ROOT = Path("/sys/fs/cgroup")
 
+VERSION = (Path(__file__).parent / "VERSION").read_text().strip()
+
 CLOUDFLARE_API_URL = "https://api.cloudflare.com/client/v4"
 ACME_DIRECTORY = "https://acme-v02.api.letsencrypt.org/directory"
+ACME_PROFILE = "tlsserver"
 LATEST_RELEASE_URL = "https://api.github.com/repos/v31-dev/sage/releases/latest"
+RELEASE_PAGE_URL = "https://github.com/v31-dev/sage/releases/tag/v{version}"
 
 # How long history is kept: logs, metrics, events, notifications, task history, restore
 # safety copies, and S3 platform and volume backups (the daily cleanup).
@@ -47,10 +51,12 @@ CLOUDFLARE_RETRY_DELAYS = (1, 2)
 S3_RETRY_DELAYS = (1, 2)
 # A cold start without a certificate retries before giving up (seconds).
 STARTUP_RETRY_DELAYS = (60, 240, 960)
-RENEWAL_THRESHOLD_DAYS = 30
+RENEWAL_THRESHOLD_DAYS = 7
 DNS_PROPAGATION_TIMEOUT = 180
 DNS_POLL_INTERVAL = 5
 FINALIZE_TIMEOUT_SECONDS = 180
+
+DISCOVERY_CACHE_SECONDS = 30
 
 # The manager samples its own usage every few seconds and reports the per-minute peak
 METRICS_SAMPLE_INTERVAL = 5
@@ -80,7 +86,7 @@ WORKER_METRICS_STALE_SECONDS = 180
 
 # The services of the worker stack, which `docker compose up -d` starts and which are also the names
 # of their containers.
-WORKER_STACK_SERVICES = ("traefik", "vector", "telegraf", "cloudflared")
+WORKER_STACK_SERVICES = ("traefik", "vector", "telegraf", "cloudflared", "cloudflared-discovery")
 
 # A worker is offline after this many checks in a row went unanswered (about a minute).
 OFFLINE_AFTER_MISSED_CHECKS = 2

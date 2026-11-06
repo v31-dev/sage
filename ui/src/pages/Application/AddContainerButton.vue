@@ -20,7 +20,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { Input } from '@/components/ui/input'
 import { Spinner } from '@/components/ui/spinner'
 
 import { type Application, createContainer } from '@/services/api'
@@ -43,14 +42,12 @@ const availableWorkers = computed(() =>
   )
 )
 const selectedWorker = ref('')
-const domainTag = ref('')
 const addContainerErrorMessage = ref('')
 const isClickedAddContainerConfirm = ref(false)
 
 function openAddContainerDialog() {
   addContainerErrorMessage.value = appStore.workersError ? 'Failed to load available workers' : ''
   selectedWorker.value = availableWorkers.value[0]?.hostname ?? ''
-  domainTag.value = ''
   isAddContainerDialogOpen.value = true
 }
 
@@ -64,11 +61,9 @@ async function onClickAddContainerConfirm() {
 
   try {
     isClickedAddContainerConfirm.value = true
-    const containerData: Record<string, string> = { worker: selectedWorker.value }
-    if (domainTag.value) {
-      containerData.domain_tag = domainTag.value
-    }
-    await createContainer(props.application.project.name, props.application.name, containerData)
+    await createContainer(props.application.project.name, props.application.name, {
+      worker: selectedWorker.value,
+    })
     isAddContainerDialogOpen.value = false
     await props.loadApplication()
     toast.success('Container added')
@@ -118,15 +113,6 @@ async function onClickAddContainerConfirm() {
                 </SelectItem>
               </SelectContent>
             </Select>
-          </Field>
-          <Field>
-            <FieldLabel for="domain-tag"> Domain Tag (Optional) </FieldLabel>
-            <Input
-              id="domain-tag"
-              v-model="domainTag"
-              type="text"
-              placeholder="e.g. api, web, worker"
-            />
           </Field>
           <Field>
             <FieldError v-if="addContainerErrorMessage">{{ addContainerErrorMessage }}</FieldError>

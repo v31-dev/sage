@@ -36,13 +36,15 @@ def retry(call: Callable, *, delays, should_retry: Callable[[Exception], bool] =
           on_retry: Callable[[Exception, float], None] | None = None, sleep: Callable[[float], None] | None = None):
   """Return `call()`. When it raises an error that `should_retry` accepts, wait the next of
   `delays` (seconds) and call it again. The error of the last attempt, or one that should not
-  be retried, is raised. `on_retry(error, delay)` is called before each wait."""
+  be retried, is raised. An error's numeric `retry_after_seconds` is a minimum wait.
+  `on_retry(error, delay)` is called before each wait."""
   for delay in (*delays, None):
     try:
       return call()
     except Exception as error:
       if delay is None or not should_retry(error):
         raise
+      delay = max(delay, getattr(error, "retry_after_seconds", None) or 0)
       if on_retry:
         on_retry(error, delay)
       (sleep or time.sleep)(delay)
@@ -57,6 +59,7 @@ async def retry_async(call: Callable[[], Awaitable], *, delays, should_retry: Ca
     except Exception as error:
       if delay is None or not should_retry(error):
         raise
+      delay = max(delay, getattr(error, "retry_after_seconds", None) or 0)
       if on_retry:
         on_retry(error, delay)
       await (sleep or asyncio.sleep)(delay)

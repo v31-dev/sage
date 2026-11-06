@@ -2,7 +2,7 @@ from datetime import datetime
 
 import pytest
 
-from services.db import Container
+from services.db import Container, Domain, Worker
 from services.worker_reports import HostReading, Snapshot, WorkerReports
 
 
@@ -11,8 +11,27 @@ def report():
 
 
 def listed(hostname="w1", **overrides):
-  return {"hostname": hostname, "ip": "100.64.0.2", "online": True, "status": "online", "path": None, "container_count": None,
-          "infra": None, "metrics": None, **overrides}
+  return {
+      "hostname": hostname,
+      "ip": "100.64.0.2",
+      "online": True,
+      "status": "online",
+      "path": None,
+      "container_count": None,
+      "infra": None,
+      "metrics": None,
+      "certificate": {
+          "covered": False,
+          "synced": False,
+          "expiry": None,
+          "error": None},
+      "discovery_certificate": {
+          "covered": False,
+          "synced": False,
+          "expiry": None,
+          "error": None},
+      "tunnel": None,
+      **overrides}
 
 
 class TestInfra:
@@ -54,6 +73,9 @@ class TestEntry:
     manager.worker_list = [listed(metrics=minute)]
     assert client.get("/api/workers/w1").json()["metrics"] == minute
     assert client.get("/api/workers/").json()[0]["metrics"] == minute
+
+  def test_a_workers_payload_names_its_own_tunnel(self, client, worker, manager):
+    assert client.get("/api/workers/w1").json()["tunnel_name"] == "sage-example.test-w1"
 
   def test_it_is_the_workers_row_and_its_containers_besides(self, client, worker, manager, application):
     Container.create(application=application, worker=worker)
@@ -103,7 +125,7 @@ class TestAdd:
     response = client.post("/api/workers/", json={"host": "w9"})
     assert (response.status_code, response.json()["hostname"]) == (200, "w9")
     (task,) = manager.tasks
-    assert (task["task"].__name__, task["params"]) == ("add_worker", {"worker_hostname": "w9"})
+    assert (task["task"].__name__, task["params"]) == ("add_worker", {"worker_hostname": "w9", "subdomain": None})
 
   def test_it_can_be_given_by_its_address_in_any_case_and_the_hostname_is_what_is_added(self, client, manager):
     assert client.post("/api/workers/", json={"host": " 100.64.0.9 "}).status_code == 200
@@ -120,11 +142,67 @@ class TestAdd:
     assert (response.status_code, response.json()["detail"]) == (409, "Worker w1 is already added.")
     assert manager.tasks == []
 
+  @pytest.mark.parametrize("machine, host", [
+      ("manager", "manager"), ("manager", "MANAGER"), ("manager", "100.64.0.5"), ("Manager", "manager")])
+  def test_a_machine_with_the_managers_name_is_refused(self, client, tailscale, manager, machine, host):
+    tailscale.machines[machine] = "100.64.0.5"
+
+    response = client.post("/api/workers/", json={"host": host})
+
+    assert (response.status_code, response.json()["detail"]) == (
+        409, "A worker with the manager's name (TS_NAME) is not allowed.")
+    assert manager.tasks == []
+
+  def test_the_subdomain_asked_for_is_queued_with_it(self, client, manager):
+    assert client.post("/api/workers/", json={"host": "w9", "subdomain": " eu-9 "}).status_code == 200
+    (task,) = manager.tasks
+    assert task["params"] == {"worker_hostname": "w9", "subdomain": "eu-9"}
+
+  @pytest.mark.parametrize("subdomain", ["EU9", "-eu9", "eu9-", "a" * 64, "eu_9"])
+  def test_a_subdomain_that_is_not_a_domain_label_is_refused(self, client, manager, subdomain):
+    assert client.post("/api/workers/", json={"host": "w9", "subdomain": subdomain}).status_code == 400
+    assert manager.tasks == []
+
+  def test_a_subdomain_another_worker_has_is_refused(self, client, worker, manager):
+    Worker.update(subdomain="eu1").where(Worker.hostname == "w1").execute()
+    response = client.post("/api/workers/", json={"host": "w9", "subdomain": "eu1"})
+    assert (response.status_code, response.json()["detail"]) == (409, "A worker with subdomain eu1 already exists.")
+    assert manager.tasks == []
+
   def test_a_machine_that_is_already_being_added_is_refused(self, client, manager):
     manager.queued = {"add_worker"}
     response = client.post("/api/workers/", json={"host": "w9"})
     assert (response.status_code, response.json()["detail"]) == (409, "Worker w9 is already being added.")
     assert manager.tasks == []
+
+
+class TestEdit:
+  def test_the_subdomain_is_changed(self, client, worker, manager):
+    response = client.put("/api/workers/w1", json={"subdomain": "eu1"})
+    assert (response.status_code, response.json()["subdomain"]) == (200, "eu1")
+    assert Worker.get_by_id("w1").subdomain == "eu1"
+
+  def test_keeping_its_own_subdomain_is_no_clash(self, client, worker, manager):
+    Worker.update(subdomain="eu1").where(Worker.hostname == "w1").execute()
+    assert client.put("/api/workers/w1", json={"subdomain": "eu1"}).status_code == 200
+
+  def test_a_subdomain_another_worker_has_is_refused(self, client, worker, manager):
+    Worker.create(hostname="w2", ip="100.64.0.3", subdomain="eu2")
+    response = client.put("/api/workers/w1", json={"subdomain": "eu2"})
+    assert (response.status_code, response.json()["detail"]) == (409, "A worker with subdomain eu2 already exists.")
+    assert Worker.get_by_id("w1").subdomain is None
+
+  def test_a_worker_without_a_subdomain_is_refused(self, client, worker, manager):
+    response = client.put("/api/workers/w1", json={"subdomain": " "})
+    assert (response.status_code, response.json()["detail"]) == (400, "A worker without a subdomain is not allowed.")
+
+  @pytest.mark.parametrize("subdomain", ["EU1", "a" * 64, "eu1-"])
+  def test_a_subdomain_that_is_not_a_domain_label_is_refused(self, client, worker, manager, subdomain):
+    assert client.put("/api/workers/w1", json={"subdomain": subdomain}).status_code == 400
+
+  @pytest.mark.parametrize("hostname", ["nobody", "manager"])
+  def test_an_unknown_worker_or_the_manager_is_not_found(self, client, manager, hostname):
+    assert client.put(f"/api/workers/{hostname}", json={"subdomain": "eu1"}).status_code == 404
 
 
 class TestDelete:
@@ -137,6 +215,14 @@ class TestDelete:
     Container.create(application=application, worker=worker)
     response = client.delete("/api/workers/w1")
     assert (response.status_code, response.json()["detail"]) == (400, "Worker is online and has containers; delete them first.")
+    assert manager.tasks == []
+
+  def test_a_worker_with_internal_domains_is_refused_even_offline(self, client, worker, application, manager):
+    container = Container.create(application=application, worker=worker)
+    Domain.create(name="shop", type="internal", port=80, container=container)
+    container.delete_instance()
+    response = client.delete("/api/workers/w1")
+    assert (response.status_code, response.json()["detail"]) == (409, "Removing a worker with internal domains is not allowed.")
     assert manager.tasks == []
 
   def test_a_worker_no_sync_has_looked_at_with_containers_is_refused_too(self, client, worker, application, manager):

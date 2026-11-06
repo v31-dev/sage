@@ -30,6 +30,8 @@ def write_certificate(directory, names, expires_in=timedelta(days=90), with_san=
     builder = builder.add_extension(x509.SubjectAlternativeName([x509.DNSName(name) for name in names]), critical=False)
   certificate = builder.sign(key, hashes.SHA256())
   (directory / "fullchain.pem").write_bytes(certificate.public_bytes(serialization.Encoding.PEM))
+  (directory / "key.pem").write_bytes(key.private_bytes(
+      serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
   return certificate
 
 
@@ -88,9 +90,9 @@ class TestIsValid:
     write_certificate(tmp_path, ["a.example.test", "b.example.test"])
     assert Certificate(tmp_path, ["a.example.test", "b.example.test"]).is_valid() is True
 
-  def test_a_certificate_with_more_names_than_asked_for_is_valid(self, tmp_path):
+  def test_a_certificate_with_more_names_than_asked_for_is_not_valid(self, tmp_path):
     write_certificate(tmp_path, ["a.example.test", "b.example.test"])
-    assert Certificate(tmp_path, ["a.example.test"]).is_valid() is True
+    assert Certificate(tmp_path, ["a.example.test"]).is_valid() is False
 
   def test_an_expired_certificate_is_not_valid(self, tmp_path):
     write_certificate(tmp_path, NAMES, timedelta(hours=-1))
@@ -115,6 +117,21 @@ class TestIsValid:
 
 
 class TestNeedsRenewal:
+  @pytest.mark.parametrize("seconds, renew", [(-1, True), (0, True), (1, False)])
+  def test_seven_days_before_the_signed_expiry(self, tmp_path, clock, seconds, renew):
+    issued = write_certificate(tmp_path, NAMES, timedelta(days=45))
+    clock.set((issued.not_valid_after_utc - timedelta(days=7, seconds=seconds)).replace(tzinfo=None))
+    assert Certificate(tmp_path, NAMES).needs_renewal() is renew
+
+  def test_the_default_window_reads_current_config(self, tmp_path, monkeypatch):
+    write_certificate(tmp_path, NAMES, timedelta(days=10))
+    certificate = Certificate(tmp_path, NAMES)
+    assert certificate.needs_renewal() is False
+
+    monkeypatch.setattr(config, "RENEWAL_THRESHOLD_DAYS", 14)
+
+    assert certificate.needs_renewal() is True
+
   def test_outside_the_renewal_window_it_does_not(self, tmp_path):
     write_certificate(tmp_path, NAMES, timedelta(days=config.RENEWAL_THRESHOLD_DAYS + 1))
     assert Certificate(tmp_path, NAMES).needs_renewal() is False
@@ -143,12 +160,33 @@ class TestHash:
     (tmp_path / "fullchain.pem").write_bytes(b"abc")
     assert Certificate(tmp_path, NAMES).hash() == "ba7816bf8f01cfea"
 
-  def test_it_follows_the_file_without_a_reload(self, tmp_path):
-    certificate = Certificate(tmp_path, NAMES)
+  def test_it_is_that_of_the_file_last_loaded(self, tmp_path):
     (tmp_path / "fullchain.pem").write_bytes(b"one")
+    certificate = Certificate(tmp_path, NAMES)
     first = certificate.hash()
     (tmp_path / "fullchain.pem").write_bytes(b"two")
+    certificate.load()
     assert certificate.hash() != first
+
+
+class TestACMEProfile:
+  @pytest.mark.parametrize("meta", [{}, {"profiles": {}}, {"profiles": {"classic": "https://example.test/classic"}}])
+  def test_an_unadvertised_profile_records_failure_without_replacing_material(self, tmp_path, data_dir, monkeypatch, meta):
+    write_certificate(tmp_path, NAMES, timedelta(days=3))
+    certificate = Certificate(tmp_path, NAMES)
+    key = certificate.key_path.read_bytes()
+    fullchain = certificate.fullchain_path.read_bytes()
+    certs = Certs()
+    directory = messages.Directory.from_json({"meta": meta})
+    monkeypatch.setattr("services.certs.client.ClientV2.get_directory", lambda *_: directory)
+
+    with pytest.raises(ValueError, match="tlsserver"):
+      certs.ensure(certificate)
+
+    assert "tlsserver" in certificate.error
+    assert certificate.fullchain_path.read_bytes() == fullchain
+    assert certificate.key_path.read_bytes() == key
+    assert certificate.is_valid() is True
 
 
 class TestEnsureManagerAtStartup:

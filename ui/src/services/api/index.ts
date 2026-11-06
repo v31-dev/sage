@@ -3,6 +3,7 @@
 // every caller.
 export * from './applications'
 export * from './backups'
+export * from './domains'
 export * from './info'
 export * from './logs'
 export * from './metrics'

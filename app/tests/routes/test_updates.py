@@ -157,7 +157,7 @@ def state(monkeypatch):
 
 class TestTopics:
   def test_the_topics_are_the_ones_the_pages_follow(self):
-    assert set(TOPICS) == {"info", "tasks", "backup-status", "backups", "release", "workers", "worker", "application",
+    assert set(TOPICS) == {"info", "tasks", "backup-status", "backups", "release", "workers", "worker", "application", "domains",
                            "notifications", "task-history", "task-logs", "application-logs", "requests"}
 
   def test_the_table_has_each_topic_and_each_feed_once(self):
@@ -171,7 +171,7 @@ class TestTopics:
 
   def test_the_info_follows_what_the_manager_status_is_made_of(self):
     assert TOPICS["info"].sources == {UpdateSource.QUEUE_STATE, UpdateSource.RESTORING, UpdateSource.SETTINGS_APPLYING,
-                                      UpdateSource.CHECKS, UpdateSource.LATEST_VERSION}
+                                      UpdateSource.CHECKS, UpdateSource.CERTIFICATES, UpdateSource.LATEST_VERSION}
 
   @pytest.mark.parametrize("topic, source", [("tasks", UpdateSource.TASKS), ("backup-status", UpdateSource.BACKUP_STATUS),
                                              ("backups", UpdateSource.BACKUPS), ("release", UpdateSource.RELEASE),

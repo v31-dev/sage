@@ -5,7 +5,8 @@ import re
 import shlex
 from contextlib import contextmanager
 
-from services.db import APPLICATION_BUSY_STATUSES, Application, Container, DeployConfig, Event, Project, Worker, db
+from services.db import APPLICATION_BUSY_STATUSES, Application, Container, DeployConfig, Domain, Event, Project, Worker, db
+from services.domains import domains_changed
 from services.logs import Logs
 from services.updates import Updates, UpdateSource
 from services.worker_reports import WorkerReports
@@ -34,27 +35,26 @@ def application_changed(application: Application):
 
 
 def container_changed(container: Container):
-  """A container was written: its application's page and its worker's page show it."""
+  """A container was written: its application's page, its worker's page and the Domains page show it."""
   application_changed(container.application)
   Updates().changed(UpdateSource.WORKER_CONTAINERS, container.worker_id)
+  domains_changed()
 
 
 def hosts_changed(application: Application):
   """What the pages of the workers show of an application (its label, its project's) was written, besides the
   application itself."""
   application_changed(application)
-  for hostname in {container.worker_id for container in application.containers}:
+  hostnames = {container.worker_id for container in application.containers}
+  for hostname in hostnames:
     Updates().changed(UpdateSource.WORKER_CONTAINERS, hostname)
+  if hostnames:
+    domains_changed()
 
 
 def save_application(application: Application):
   application.save()
   application_changed(application)
-
-
-def save_container(container: Container):
-  container.save()
-  container_changed(container)
 
 
 @contextmanager
@@ -92,6 +92,13 @@ def task_parts(task_id: str) -> list[dict]:
 
 
 class ApplicationMixin:
+  def save_container(self, container: Container):
+    was_active = Container.select(Container.status).where(Container.id == container.id).scalar() == "active"
+    container.save()
+    container_changed(container)
+    if was_active != (container.status == "active"):
+      self.request_discovery_sync()
+
   async def deploy_application(self, application_id: int):
     """
     Deploy an application.
@@ -139,8 +146,7 @@ class ApplicationMixin:
         return_exceptions=False,
     )
 
-    # Trigger traefik sync
-    self.request_application_traefik_sync(application)
+    self.request_domain_syncs(Domain.select().where(Domain.container.in_([container.id for container in containers])))
 
     # Check only the snapshot's container set: an instant create mid-deploy adds
     # an inactive row the minutely status sync owns, not this deploy's outcome.
@@ -161,7 +167,7 @@ class ApplicationMixin:
       exception_message = None
       try:
         container.status = "deploying"
-        save_container(container)
+        self.save_container(container)
         container_dir = f"{self.worker_home_dir}/applications/{config.qualified_name}"
         logger.info(
             f"Deploying application {config.qualified_name} container to worker {
@@ -306,7 +312,7 @@ class ApplicationMixin:
         exception_message = str(e)
 
       container.status = deployment_status
-      save_container(container)
+      self.save_container(container)
 
       if deployment_status == "active":
         await mark(container, "Deployed")
@@ -326,10 +332,9 @@ class ApplicationMixin:
     if container is None:
       logger.info(f"Container {container_id} already deleted; nothing to do.")
       return
-    was_active = container.status == "active"
     with container_part(container, "delete"):
       container.status = "stopping"
-      save_container(container)
+      self.save_container(container)
 
       container_dir = f"{self.worker_home_dir}/applications/{container.application.qualified_name}"
 
@@ -363,20 +368,11 @@ class ApplicationMixin:
               container.worker.hostname, f"rm -rf {container_dir}", timeout=30
           )
 
-          # Remove traefik config
-          await self.tailscale.exec_command(
-              container.worker.hostname,
-              f"rm -rf {self.worker_home_dir}/traefik/dynamic/{container.application.qualified_name}-*.yml",
-              timeout=30,
-          )
-
         # Delete database record
-        application = container.application
+        domains = [domain.id for domain in container.domains]
         container.delete_instance()
         container_changed(container)
-        # Only a container that was in the routing pool needs a resync to drop it.
-        if was_active:
-          self.request_application_traefik_sync(application)
+        self.request_domain_syncs(Domain.select().where(Domain.id.in_(domains)))
 
         await mark(container, "Removed from Sage; the offline worker was not cleaned up" if skip_remote_cleanup
                    else "Removed from this worker")
@@ -392,7 +388,7 @@ class ApplicationMixin:
                   container.worker.hostname}.", "success")
       except Exception as e:
         container.status = "error"
-        save_container(container)
+        self.save_container(container)
         await mark(container, f"Delete failed: {e}")
         self.notify(
             f"Failed to delete container of application {container.application.qualified_name} from worker {
@@ -416,8 +412,7 @@ class ApplicationMixin:
         return_exceptions=False,
     )
 
-    # Containers no longer active -> refresh Traefik routing.
-    self.request_application_traefik_sync(application)
+    self.request_domain_syncs(Domain.select().join(Container).where(Container.application == application))
 
     if any(container.status == "error" for container in application.containers):
       application.status = "error"
@@ -435,7 +430,7 @@ class ApplicationMixin:
       exception_message = None
       try:
         container.status = "stopping"
-        save_container(container)
+        self.save_container(container)
         logger.info(
             f"Stopping application {container.application.qualified_name} container on worker {
                 container.worker.hostname} with task id {part}...")
@@ -460,7 +455,7 @@ class ApplicationMixin:
         exception_message = str(e)
 
       container.status = deployment_status
-      save_container(container)
+      self.save_container(container)
 
       if deployment_status == "inactive":
         if not was_inactive:
@@ -507,7 +502,6 @@ class ApplicationMixin:
       if application.status != "inactive":
         application.status = "inactive"
         save_application(application)
-        self.request_application_traefik_sync(application)
         self.notify(f"Application {application.qualified_name} is inactive as it has no containers.", "warning")
       return
 
@@ -539,7 +533,7 @@ class ApplicationMixin:
               f"running operation; status reset to error.",
               "error")
         container.status = "error"
-        save_container(container)
+        self.save_container(container)
         routing_changed = True
 
       decision = reconcile_container(
@@ -560,13 +554,13 @@ class ApplicationMixin:
           await mark(container, f"Could not stop the stale version: {e}")
       if status is not None and status != container.status:
         container.status = status
-        save_container(container)
+        self.save_container(container)
         routing_changed = True
       if message:
         self.notify(message, level)
 
     if routing_changed:
-      self.request_application_traefik_sync(application)
+      self.request_domain_syncs(Domain.select().where(Domain.container.in_([container.id for container in containers])))
 
     # Sync the overall application status from the (possibly updated) containers.
     status = rollup_status(container.status for container in application.containers)

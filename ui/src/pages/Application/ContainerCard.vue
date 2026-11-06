@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { ArrowRight } from 'lucide-vue-next'
+import { ArrowRight, ExternalLink } from 'lucide-vue-next'
 import {
   Card,
   CardHeader,
@@ -11,14 +11,13 @@ import {
 } from '@/components/ui/card'
 import { RouterLink } from 'vue-router'
 import { Button } from '@/components/ui/button'
-import { ButtonGroup } from '@/components/ui/button-group'
-import { Label } from '@/components/ui/label'
+import { Badge } from '@/components/ui/badge'
 
 import { useAppStore } from '@/stores/app'
 import EventLogsButton from './EventLogsButton.vue'
-import EditContainerButton from './EditContainerButton.vue'
 import DeleteContainerButton from './DeleteContainerButton.vue'
-import { type Application, type Container } from '@/services/api'
+import { type Application, type Container, type Domain } from '@/services/api'
+import CopyButton from '@/components/CopyButton.vue'
 import StateIndicator from '@/components/StateIndicator.vue'
 
 interface Props {
@@ -31,6 +30,15 @@ const appStore = useAppStore()
 
 const props = withDefaults(defineProps<Props>(), {})
 
+const TYPES: Record<Domain['type'], string> = { public: 'Public', internal: 'Internal', tcp: 'TCP' }
+
+const pendingCertificate = computed(() => {
+  const certificate = appStore.workerCertificate(props.container.worker.hostname)
+  return certificate && !(certificate.covered && certificate.synced)
+    ? appStore.certificateIndicator(certificate)
+    : undefined
+})
+
 // The status of the container's worker in the list of workers; none before the list has loaded.
 const workerIndicator = computed(() => {
   const status = appStore.workerStatus(props.container.worker.hostname)
@@ -39,7 +47,7 @@ const workerIndicator = computed(() => {
 </script>
 
 <template>
-  <Card>
+  <Card data-container>
     <CardHeader class="flex items-center justify-between border-b">
       <CardTitle>
         <div class="flex w-full flex-wrap gap-2">
@@ -50,29 +58,14 @@ const workerIndicator = computed(() => {
         </div>
       </CardTitle>
       <CardAction>
-        <ButtonGroup class="space-x-1">
-          <EditContainerButton
-            :application="props.application"
-            :container="props.container"
-            :loadApplication="props.loadApplication"
-          />
-          <DeleteContainerButton
-            :application="props.application"
-            :container="props.container"
-            :loadApplication="props.loadApplication"
-          />
-        </ButtonGroup>
+        <DeleteContainerButton
+          :application="props.application"
+          :container="props.container"
+          :loadApplication="props.loadApplication"
+        />
       </CardAction>
     </CardHeader>
-    <CardContent class="space-y-4">
-      <div>
-        <Label>Domain Tag</Label>
-        <p class="text-sm text-muted-foreground break-all">
-          {{ props.container.domain_tag ? props.container.domain_tag : 'N/A' }}
-        </p>
-      </div>
-    </CardContent>
-    <CardFooter class="border-t flex-col space-y-4">
+    <CardFooter class="flex-col space-y-4">
       <EventLogsButton :container="props.container" class="w-full min-w-0" />
       <Button as-child variant="outline" size="sm" class="w-full min-w-0">
         <RouterLink
@@ -91,5 +84,46 @@ const workerIndicator = computed(() => {
         </RouterLink>
       </Button>
     </CardFooter>
+    <CardContent v-if="props.container.domains.length" class="border-t pt-6 space-y-4">
+      <div v-for="domain in props.container.domains" :key="domain.id" class="space-y-2" data-domain>
+        <div class="flex items-center gap-2">
+          <Button
+            v-if="domain.type === 'tcp' || !domain.address"
+            size="sm"
+            variant="outline"
+            class="min-w-0 flex-1"
+            disabled
+          >
+            <span class="truncate">{{ domain.address ?? domain.name }}</span>
+          </Button>
+          <Button v-else size="sm" variant="outline" class="min-w-0 flex-1" as-child>
+            <a :href="domain.address" target="_blank">
+              <ExternalLink />
+              <span class="truncate">{{ domain.address }}</span>
+            </a>
+          </Button>
+          <CopyButton v-if="domain.address" :text="domain.address" />
+        </div>
+        <div class="flex flex-wrap items-center gap-2">
+          <StateIndicator
+            v-if="domain.type !== 'public' && pendingCertificate"
+            v-bind="pendingCertificate"
+            show-label
+          />
+          <StateIndicator
+            v-bind="appStore.domainIndicator(domain.status)"
+            :title="domain.sync_error ?? undefined"
+            show-label
+          />
+          <Badge variant="outline">{{ TYPES[domain.type] }}</Badge>
+          <Badge v-if="domain.service" variant="outline" class="font-mono">
+            Service {{ domain.service }}
+          </Badge>
+          <Badge v-if="domain.pool" variant="outline" class="font-mono">
+            Pool {{ domain.pool }}
+          </Badge>
+        </div>
+      </div>
+    </CardContent>
   </Card>
 </template>

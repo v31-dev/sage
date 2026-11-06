@@ -8,11 +8,14 @@ import {
   type AppInfo,
   type Application,
   type Container,
+  type Domain,
   type Indicator,
   type IndicatorState,
   type InfraContainer,
   type SettingSection,
   type SettingState,
+  type TunnelStatus,
+  type WorkerCertificate,
   type WorkerListItem,
   type WorkerStatus,
 } from '@/services/api'
@@ -34,6 +37,13 @@ const WORKER_INDICATORS: Record<WorkerStatus, Indicator> = {
   adding: { state: 'busy', label: 'adding' },
   rebooting: { state: 'busy', label: 'rebooting' },
   removing: { state: 'busy', label: 'removing' },
+}
+
+const DOMAIN_INDICATORS: Record<Domain['status'], Indicator> = {
+  pending: { state: 'idle', label: 'pending' },
+  syncing: { state: 'busy', label: 'syncing' },
+  synced: { state: 'ok', label: 'synced' },
+  error: { state: 'error', label: 'sync failed' },
 }
 
 // The manager's status, which the sidebar, the banner, the restore overlay and the
@@ -62,6 +72,33 @@ export const useAppStore = defineStore('app', () => {
   // The status of the worker in the list, undefined before the list has loaded or for a name that is not in it.
   function workerStatus(hostname: string): WorkerStatus | undefined {
     return workers.value?.find(worker => worker.hostname === hostname)?.status
+  }
+
+  // The worker's own certificate in the list, as `workerStatus`.
+  function workerCertificate(hostname: string): WorkerCertificate | undefined {
+    return workers.value?.find(worker => worker.hostname === hostname)?.certificate
+  }
+
+  // Whether the worker's internal names have their certificate: issued for them, then synced to the worker.
+  function certificateIndicator(certificate: WorkerCertificate): Indicator {
+    if (certificate.error && (!certificate.covered || !certificate.synced)) {
+      return { state: 'error', label: 'certificate update failed' }
+    }
+    if (!certificate.covered) return { state: 'busy', label: 'waiting for the certificate' }
+    if (!certificate.synced) return { state: 'busy', label: 'syncing the certificate' }
+    return { state: certificate.error ? 'warning' : 'ok', label: 'certificate ready' }
+  }
+
+  function tunnelIndicator(status: TunnelStatus): Indicator {
+    const state: IndicatorState =
+      status === 'healthy'
+        ? 'ok'
+        : status === 'degraded'
+          ? 'warning'
+          : status === 'down'
+            ? 'error'
+            : 'idle'
+    return { state, label: `tunnel ${status}` }
   }
 
   function sectionIndicator(section: SettingSection): Indicator | undefined {
@@ -101,8 +138,8 @@ export const useAppStore = defineStore('app', () => {
     return { state, label: `${name}: ${status}` }
   }
 
-  function domainIndicator(synced: boolean): Indicator {
-    return synced ? { state: 'ok', label: 'synced' } : { state: 'busy', label: 'syncing' }
+  function domainIndicator(status: Domain['status']): Indicator {
+    return DOMAIN_INDICATORS[status]
   }
 
   function taskIndicator(status: string): Indicator {
@@ -183,6 +220,9 @@ export const useAppStore = defineStore('app', () => {
     // Getters
     workersIndicator,
     workerStatus,
+    workerCertificate,
+    certificateIndicator,
+    tunnelIndicator,
     sectionIndicator,
     applicationIndicator,
     workerIndicator,

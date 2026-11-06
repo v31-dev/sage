@@ -2,6 +2,16 @@
 import { computed } from 'vue'
 import { ExternalLink } from 'lucide-vue-next'
 import { Button } from '@/components/ui/button'
+import { Card, CardContent } from '@/components/ui/card'
+import {
+  Field,
+  FieldDescription,
+  FieldError,
+  FieldGroup,
+  FieldLabel,
+  FieldSet,
+} from '@/components/ui/field'
+import StateIndicator from '@/components/StateIndicator.vue'
 import { formatDate } from '@/lib/utils'
 import { useAppStore } from '@/stores/app'
 import SettingsSection from './SettingsSection.vue'
@@ -14,11 +24,16 @@ const domain = computed(() => appStore.info?.domain)
 const managerAddress = computed(() => `https://${appStore.info?.name}.core.${domain.value}`)
 const tunnel = computed(() => {
   const status = details.value?.tunnel_status
-  return `${domain.value}-sage` + (status ? ` (${status})` : '')
+  return (details.value?.tunnel_name ?? '') + (status ? ` (${status})` : '')
 })
 
 function expiry(value: string | null | undefined) {
-  return value ? `Valid until ${formatDate(value)}` : 'Not issued yet'
+  return value ? `Expires ${formatDate(value)}` : 'Not issued yet'
+}
+
+const certificateLabels: Record<string, string> = {
+  manager: 'Manager certificate',
+  discovery: 'Discovery certificate',
 }
 
 const tunnelUrl = computed(() =>
@@ -43,24 +58,10 @@ const fields = computed(() => [
   },
   {
     key: 'tunnel',
-    label: 'Tunnel',
-    description: 'Carries public app traffic',
+    label: 'Platform Tunnel',
+    description: "Run on every worker; each worker's own tunnel carries its public names",
     readonly: true,
     value: tunnel.value,
-  },
-  {
-    key: 'manager_certificate',
-    label: 'Manager Certificate',
-    description: 'For the manager address; never leaves the manager',
-    readonly: true,
-    value: expiry(details.value?.manager_certificate_expiry),
-  },
-  {
-    key: 'workers_certificate',
-    label: "Workers' Certificate",
-    description: 'For internal app domains (*.int), copied to every worker',
-    readonly: true,
-    value: expiry(details.value?.workers_certificate_expiry),
   },
 ])
 </script>
@@ -98,6 +99,34 @@ const fields = computed(() => [
     </template>
 
     <template #after>
+      <Card v-if="details">
+        <CardContent>
+          <FieldSet>
+            <FieldGroup>
+              <Field v-for="certificate in details.certificates" :key="certificate.id">
+                <FieldLabel>{{
+                  certificateLabels[certificate.id] ?? `Worker ${certificate.id.slice(7)}`
+                }}</FieldLabel>
+                <FieldDescription>{{
+                  certificate.names.length ? expiry(certificate.expiry) : 'Pending retirement'
+                }}</FieldDescription>
+                <div data-certificate-names class="flex flex-wrap gap-2">
+                  <StateIndicator
+                    v-for="name in certificate.names"
+                    :key="name"
+                    :state="certificate.valid ? 'ok' : 'warning'"
+                    :label="certificate.valid ? name : `${name}: not ready`"
+                    show-label
+                  />
+                </div>
+                <FieldError v-if="certificate.error">
+                  {{ certificate.error }}
+                </FieldError>
+              </Field>
+            </FieldGroup>
+          </FieldSet>
+        </CardContent>
+      </Card>
       <TraefikResyncSubCard />
     </template>
   </SettingsSection>

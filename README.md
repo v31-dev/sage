@@ -18,9 +18,9 @@ Sage is built around a manager node that coordinates one or more worker nodes ov
 
 - The manager provides the API and web UI.
 - Workers run application containers and supporting edge services.
-- Cloudflare provides the domain: DNS, the tunnel for public apps, and the DNS-01
-  validation for Let's Encrypt certificates.
-- Traefik handles ingress and routing.
+- Cloudflare provides the domain: DNS, a tunnel on each worker for public apps, and the
+  DNS-01 validation for Let's Encrypt certificates.
+- Traefik on each worker routes its names to its own containers.
 - Metrics and logs are collected centrally for visibility and troubleshooting.
 - Backups can be stored with S3-compatible object storage.
 
@@ -125,8 +125,8 @@ volumes:
 `latest` follows the newest release. Pin a release tag (`ghcr.io/v31-dev/sage:<version>`,
 see the [GitHub releases](https://github.com/v31-dev/sage/releases)) to control when you upgrade.
 
-On start, before serving anything, Sage sets up Cloudflare (the tunnel and the manager's
-DNS record) and gets the manager's certificate from Let's Encrypt. A first start can take
+On start, before serving anything, Sage sets up Cloudflare (the platform's tunnel and the
+manager's DNS record) and gets the manager's certificate from Let's Encrypt. A first start can take
 a few minutes. If Cloudflare is unreachable or answers with a server error, Sage retries
 for about 20 minutes and then exits, and its log says why. A token Cloudflare rejects, or a
 domain the token can't use, exits at once with the reason. With a certificate from an
@@ -167,9 +167,7 @@ unreachable; tailnet traffic reaches every port the manager container listens on
     {"action": "accept", "src": ["tag:sage-worker"], "dst": ["tag:sage:9001"]},
     // Manager → workers: SSH (Tailscale SSH)
     {"action": "accept", "src": ["tag:sage"], "dst": ["tag:sage-worker:22"]},
-    // Workers ↔ workers: the Traefik mesh
-    {"action": "accept", "src": ["tag:sage-worker"], "dst": ["tag:sage-worker:9002,9003"]},
-    // Internal app domains (*.int) served by workers
+    // Internal and TCP app domains (*.<subdomain>.int) and internal discovery, served by workers
     {"action": "accept", "src": ["autogroup:member", "tag:sage-worker"], "dst": ["tag:sage-worker:443,8443"]}
   ],
   "ssh": [
@@ -190,8 +188,16 @@ tailscale up --ssh --auth-key=tskey-auth-...   # a key tagged tag:sage-worker
 
 The tag is for the tailnet policy above, which lets the manager reach the machine; Sage does
 not read it. Add the machine on the Workers page by its hostname or Tailscale IP: Sage checks
-that it answers, then sets it up over SSH. Deleting a worker stops Sage's services on it and
-removes Sage's files from it, so delete its containers first. A worker that is offline is
+that it answers, then sets it up over SSH. In Sage a worker has a subdomain, given or
+random, which its internal names are under (`<name>.<subdomain>.int.<DOMAIN>`). A new
+worker gets its own certificate and private key; changing its subdomain replaces only that
+certificate. Workers share a separate certificate for internal discovery. Certificates use
+45-day validity and renew with seven days remaining. The worker's page shows each certificate's
+status and applied expiry separately; Settings → Cloudflare shows the full inventory and any issuance or
+retirement errors. See [Certificate Lifecycle](docs/architecture.md#certificate-lifecycle) for cleanup and rate limits.
+Deleting a worker stops
+Sage's services on it and removes Sage's files from it, so delete its containers first; a
+worker with internal domains can't be deleted until they are moved or deleted. A worker that is offline is
 removed from Sage as it is, with its containers; its VM has to be deleted by hand.
 
 A worker records which Sage manages it. Several Sages can share a tailnet when each has its own
@@ -203,10 +209,24 @@ Workers are meant to be dedicated to Sage: a hardened, bare VM with Docker and n
 running on it. The manager has no such requirement; it needs only Docker and runs anywhere, on
 a laptop, a PaaS or a VM.
 
+### Sizing
+
+The smallest recommended machine, for the manager and for each worker, is 1 GB of memory and
+1 core. Give a machine more as its applications and logs grow.
+
 ### First steps
 
 Once Sage is up, the UI is at `https://<TS_NAME>.core.<DOMAIN>`. S3 (backups) and
 notifications are optional and set in the UI.
+
+An application is reached at the names you give its containers on the Domains page: a public
+name `<name>.<DOMAIN>`, or an internal one `<name>.<subdomain>.int.<DOMAIN>` (tailnet only, on
+its worker). Names that share a service are listed together for clients that choose one, at
+`https://discovery.<DOMAIN>/?service=<service>` (public) or
+`https://discovery.int.<DOMAIN>/?service=<service>` (internal), in the `Sage-Endpoints`
+header, with an online flag for each name; [Domain Types](docs/architecture.md#domain-types) has the details.
+Each HTTP Domain can [allow frontend origins](docs/architecture.md#allowed-origins) for browser API requests.
+The [client guide](docs/discovery.md) shows how to discover a backend service, probe its replicas and choose one.
 
 Sage lists the backups already in the S3 bucket and path when you save the S3 settings,
 at startup and from Discover backups on the Backups page. To recover onto a new volume,
@@ -217,8 +237,10 @@ for a minute, straight from S3. The files are encrypted; Settings → S3 shows h
 
 To change `TS_NAME` or the Cloudflare details, edit the env and restart:
 Sage brings the workers in line on start. A new `TS_NAME` renames the manager's tailnet
-machine. Records and tunnels of a previous domain, account or name stay in Cloudflare
-until you delete them.
+machine, and the manager's metrics history starts over. Records and tunnels of a previous
+domain, account or name stay in Cloudflare until you delete them; they are listed in
+[Cloudflare Resources](docs/architecture.md#cloudflare-resources).
+See [DNS and API limits](docs/architecture.md#dns-and-api-limits) for Cloudflare's quotas and how Sage reports failures.
 
 Sage doesn't upgrade itself. The version in the footer opens Settings → Upgrade, with the
 release notes and the steps: take a backup, pause Sage and wait until it is safe to stop,
@@ -231,6 +253,7 @@ for local development; see [docs/development.md](docs/development.md).
 ## More Docs
 
 - [docs/architecture.md](docs/architecture.md)
+- [Scheduler and data-write diagrams](docs/operations.md)
 - [docs/backend.md](docs/backend.md)
 - [docs/frontend.md](docs/frontend.md)
 - [docs/development.md](docs/development.md)

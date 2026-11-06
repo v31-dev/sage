@@ -3,7 +3,6 @@ import logging
 import posixpath
 import shlex
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 from types import SimpleNamespace
 
 import asyncssh
@@ -325,9 +324,6 @@ class FakeSftp:
   def open(self, path, flags="r", attrs=None):
     return FakeSftpFile(self, path, attrs or asyncssh.SFTPAttrs())
 
-  async def put(self, source, destination):
-    self.files[destination] = {"data": Path(source).read_bytes(), "mode": self.files.get(destination, {}).get("mode", 0o644)}
-
   async def posix_rename(self, old, new):
     if self.rename_error is not None:
       raise self.rename_error
@@ -398,39 +394,50 @@ class TestSyncFileWithAMode:
 
     assert sftp.directories == ["/opt/sage/applications/demo-web"]
 
-  async def test_a_failed_upload_leaves_no_temporary_file_and_the_old_one_alone(self, tailscale, sftp, template):
+
+class TestSyncFileWithoutAMode:
+  async def test_the_file_is_created_with_0o644_and_renamed_into_place(self, tailscale, sftp, template):
+    await tailscale.sync_file(HOST, template, DESTINATION, {"CONTENT": "new"})
+
+    assert sftp.files == {DESTINATION: {"data": b"TOKEN=new", "mode": 0o644}}
+    [(temporary, target)] = sftp.renames
+    assert target == DESTINATION
+    assert posixpath.dirname(temporary) == posixpath.dirname(DESTINATION)
+    assert temporary != DESTINATION
+
+  async def test_a_file_written_earlier_with_another_mode_is_replaced_with_0o644(self, tailscale, sftp, template):
+    sftp.files[DESTINATION] = {"data": b"old", "mode": 0o600}
+
+    await tailscale.sync_file(HOST, template, DESTINATION, {"CONTENT": "new"})
+
+    assert sftp.files[DESTINATION] == {"data": b"TOKEN=new", "mode": 0o644}
+
+  async def test_a_file_without_substitutions_is_copied_whole_and_renamed_into_place(self, tailscale, sftp, template):
+    await tailscale.sync_file(HOST, template, DESTINATION)
+
+    assert sftp.files == {DESTINATION: {"data": b"TOKEN=${CONTENT}", "mode": 0o644}}
+    assert len(sftp.renames) == 1
+
+
+@pytest.mark.parametrize("arguments", [{"mode": 0o600}, {}], ids=["with a mode", "without a mode"])
+class TestAFailedSync:
+  async def test_a_failed_upload_leaves_no_temporary_file_and_the_old_one_alone(self, tailscale, sftp, template, arguments):
     sftp.files[DESTINATION] = {"data": b"old", "mode": 0o600}
     sftp.write_error = asyncssh.SFTPFailure("disk full")
 
     with pytest.raises(Exception, match="disk full"):
-      await tailscale.sync_file(HOST, template, DESTINATION, {"CONTENT": "new"}, mode=0o600)
+      await tailscale.sync_file(HOST, template, DESTINATION, {"CONTENT": "new"}, **arguments)
 
     assert sftp.files == {DESTINATION: {"data": b"old", "mode": 0o600}}
 
-  async def test_a_failed_rename_leaves_no_temporary_file_either(self, tailscale, sftp, template):
+  async def test_a_failed_rename_leaves_no_temporary_file_either(self, tailscale, sftp, template, arguments):
     sftp.files[DESTINATION] = {"data": b"old", "mode": 0o600}
     sftp.rename_error = asyncssh.SFTPFailure("permission denied")
 
     with pytest.raises(Exception, match="permission denied"):
-      await tailscale.sync_file(HOST, template, DESTINATION, {"CONTENT": "new"}, mode=0o600)
+      await tailscale.sync_file(HOST, template, DESTINATION, {"CONTENT": "new"}, **arguments)
 
     assert sftp.files == {DESTINATION: {"data": b"old", "mode": 0o600}}
-
-
-class TestSyncFileWithoutAMode:
-  async def test_the_file_is_written_in_place_as_before(self, tailscale, sftp, template):
-    sftp.files[DESTINATION] = {"data": b"old", "mode": 0o644}
-
-    await tailscale.sync_file(HOST, template, DESTINATION, {"CONTENT": "new"})
-
-    assert sftp.files == {DESTINATION: {"data": b"TOKEN=new", "mode": 0o644}}
-    assert sftp.renames == []
-
-  async def test_a_file_without_substitutions_is_copied_whole(self, tailscale, sftp, template):
-    await tailscale.sync_file(HOST, template, DESTINATION)
-
-    assert sftp.files == {DESTINATION: {"data": b"TOKEN=${CONTENT}", "mode": 0o644}}
-    assert sftp.renames == []
 
 
 class ClosableConnection:

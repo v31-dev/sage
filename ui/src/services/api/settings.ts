@@ -23,10 +23,27 @@ export interface SettingSectionStatus {
   message: string | null
   task_id: string | null
   checked_at: string | null
-  // Cloudflare: account_id, tunnel_id, tunnel_status, *_certificate_expiry.
-  details: Record<string, string | null> | null
+  details: CloudflareDetails | null
   // Notifications: why each failing channel failed, by settings field.
   channels: Record<string, string> | null
+}
+
+export type TunnelStatus = 'healthy' | 'degraded' | 'down' | 'inactive'
+
+export interface CertificateInfo {
+  id: string
+  names: string[]
+  valid: boolean
+  expiry: string | null
+  error: string | null
+}
+
+export interface CloudflareDetails {
+  account_id: string | null
+  tunnel_id: string | null
+  tunnel_name: string
+  tunnel_status: TunnelStatus | null
+  certificates: CertificateInfo[]
 }
 
 export type SettingsStatus = Record<SettingSection, SettingSectionStatus>

@@ -11,7 +11,7 @@ from services.updates import Updates, UpdateSource
 from utils.common import get_env, utcnow
 
 from ._common import BACKUP_TIMESTAMP_FORMAT, app_dir
-from .application import container_part, mark, save_application, save_container
+from .application import container_part, mark, save_application
 
 logger = logging.getLogger(__name__)
 
@@ -104,7 +104,7 @@ class BackupsMixin:
     for container_state in snapshot["containers"]:
       container = Container.get_by_id(container_state["id"])
       container.status = container_state["status"]
-      save_container(container)
+      self.save_container(container)
 
   def _get_application_backup_unit_label(
       self,
@@ -147,10 +147,10 @@ class BackupsMixin:
           f"docker compose -f {container_dir}/docker-compose.yml up -d --wait",
       )
       container.status = "active"
-      save_container(container)
+      self.save_container(container)
     except Exception as e:
       container.status = "error"
-      save_container(container)
+      self.save_container(container)
       await mark(container, f"Failed to start again after the backup: {e}")
       raise
     await mark(container, "Started again after the backup")
@@ -262,7 +262,7 @@ class BackupsMixin:
       for container in application.containers:
         if container.status != "backup":
           container.status = "backup"
-          save_container(container)
+          self.save_container(container)
 
       if snapshot["application_status"] == "active":
         await asyncio.gather(
@@ -306,7 +306,7 @@ class BackupsMixin:
           container = Container.get_by_id(entry["id"])
           if container.status in ["backup", "restoring"]:
             container.status = "error"
-            save_container(container)
+            self.save_container(container)
       raise
 
   async def delete_backup_s3(self, s3_path: str):
@@ -370,7 +370,7 @@ class BackupsMixin:
         save_application(application)
         if target_container.status != "restoring":
           target_container.status = "restoring"
-          save_container(target_container)
+          self.save_container(target_container)
 
         await self.tailscale.sync_file(
             target_container.worker.hostname,

@@ -11,7 +11,7 @@ from services.tailscale import Tailscale
 ACCOUNT = "test-account"
 ZONE = "zone1"
 TUNNEL = "tunnel1"
-TUNNEL_NAME = "example.test-sage"
+TUNNEL_NAME = "sage-example.test"
 RECORDS = f"/zones/{ZONE}/dns_records"
 TUNNELS = f"/accounts/{ACCOUNT}/cfd_tunnel"
 
@@ -118,6 +118,20 @@ class TestCloudflareError:
 
   def test_without_reasons_the_message_has_only_the_status(self):
     assert str(CloudflareError(502, "")) == "Cloudflare answered HTTP 502"
+
+  @pytest.mark.parametrize("header, seconds", [
+      (None, None), ("", None), ("300", 300), ("0", 0), (" 120 ", 120),
+      ("Thu, 01 Jan 2026 12:02:00 GMT", 120), ("Thursday, 01-Jan-26 12:02:00 GMT", 120),
+      ("Thu Jan  1 12:02:00 2026", 120), ("Thu, 01 Jan 2026 17:32:00 +0530", 120),
+      ("Thu, 01 Jan 2026 11:59:00 GMT", 0),
+      ("-1", None), ("+10", None), ("1.5", None), ("soon", None), ("NaN", None), ("Infinity", None),
+      ("Thu, 32 Jan 2026 12:02:00 GMT", None), ("Thu, 01 Jan 999999 12:02:00 GMT", None),
+  ])
+  def test_retry_after_is_a_nonnegative_delay_from_the_utc_clock(self, clock, header, seconds):
+    assert CloudflareError(429, "rate limited", header).retry_after_seconds == seconds
+
+  def test_the_terminal_error_includes_the_provider_wait(self):
+    assert str(CloudflareError(429, "rate limited", "300")) == "Cloudflare answered HTTP 429: rate limited (retry after 300s)"
 
 
 class TestConstruction:
@@ -231,6 +245,56 @@ class TestRequest:
     assert sleeps == [1, 2]
     assert len(api.requests) == 3
 
+  def test_each_response_can_change_the_minimum_retry_wait(self, cloudflare, api, sleeps):
+    first = fail(429, "slow down")
+    first.headers["Retry-After"] = "300"
+    second = fail(503, "still busy")
+    second.headers["Retry-After"] = "60"
+    api.on("GET", "/zones", first, second, ok([]))
+
+    cloudflare.request("GET", "/zones")
+
+    assert sleeps == [300, 60]
+
+  def test_a_date_header_waits_until_the_provider_time(self, cloudflare, api, sleeps, clock):
+    response = fail(429, "slow down")
+    response.headers["Retry-After"] = "Thu, 01 Jan 2026 12:02:00 GMT"
+    api.on("GET", "/zones", response, ok([]))
+
+    cloudflare.request("GET", "/zones")
+
+    assert sleeps == [120]
+
+  def test_a_transport_error_does_not_reuse_an_earlier_provider_delay(self, cloudflare, api, sleeps):
+    response = fail(429, "slow down")
+    response.headers["Retry-After"] = "300"
+    api.on("GET", "/zones", response, httpx.ConnectError("down"), ok([]))
+
+    cloudflare.request("GET", "/zones")
+
+    assert sleeps == [300, 2]
+
+  def test_retry_after_does_not_add_attempts_or_hide_the_terminal_error(self, cloudflare, api, sleeps):
+    response = fail(429, "rate limited")
+    response.headers["Retry-After"] = "300"
+    api.on("GET", "/zones", response)
+
+    with pytest.raises(CloudflareError, match="rate limited.*retry after 300s") as raised:
+      cloudflare.request("GET", "/zones")
+
+    assert raised.value.status_code == 429
+    assert sleeps == [300, 300]
+
+  def test_a_provider_wait_does_not_make_a_permanent_error_retryable(self, cloudflare, api, sleeps):
+    response = fail(400, "DNS quota exceeded")
+    response.headers["Retry-After"] = "300"
+    api.on("POST", "/zones", response)
+
+    with pytest.raises(CloudflareError, match="DNS quota exceeded"):
+      cloudflare.request("POST", "/zones")
+
+    assert sleeps == []
+
 
 class TestListAll:
   def test_a_single_page_is_returned_whole(self, cloudflare, api):
@@ -288,12 +352,16 @@ class TestConnect:
     records = [body(request) for request in healthy.sent("POST", RECORDS)]
     assert {"name": "manager.core.example.test", "content": "100.64.0.1", "type": "A", "ttl": 60, "comment": "sage-manager"} in records
 
-  def test_it_routes_the_wildcard_through_the_tunnel(self, cloudflare, healthy):
+  def test_the_tunnel_is_named_after_sage_and_the_domain_so_sages_sharing_an_account_have_their_own(self, cloudflare, healthy):
     cloudflare.connect()
 
-    records = [body(request) for request in healthy.sent("POST", RECORDS)]
-    assert {"name": "*.example.test", "content": f"{TUNNEL}.cfargotunnel.com", "type": "CNAME", "proxied": True,
-            "comment": TUNNEL_NAME} in records
+    assert healthy.sent("GET", TUNNELS)[0].url.params["name"] == "sage-example.test"
+    assert [body(request)["name"] for request in healthy.sent("POST", TUNNELS)] == ["sage-example.test"]
+
+  def test_the_managers_record_is_the_only_one_it_writes(self, cloudflare, healthy):
+    cloudflare.connect()
+
+    assert [body(request)["name"] for request in healthy.sent("POST", RECORDS)] == ["manager.core.example.test"]
 
   def test_when_already_connected_it_does_nothing(self, connected, api):
     connected.connect()
@@ -390,6 +458,15 @@ class TestCheckConfig:
       cloudflare.check_config(self.VALUES)
 
 
+class TestTunnels:
+  def test_each_tunnel_of_the_account_by_name(self, connected, api):
+    tunnels = [{"id": "1", "name": "sage-example.test", "status": "healthy"},
+               {"id": "2", "name": "sage-example.test-w1", "status": "down"}]
+    api.on("GET", TUNNELS, ok(tunnels))
+
+    assert connected.tunnels() == {"sage-example.test": tunnels[0], "sage-example.test-w1": tunnels[1]}
+
+
 class TestDnsRecords:
   def test_only_records_with_exactly_that_name_are_returned(self, connected, api):
     wanted = {"id": "1", "name": "a.example.test", "content": "1.1.1.1"}
@@ -402,21 +479,42 @@ class TestDnsRecords:
     cloudflare.get_dns_records("a.example.test")
     assert cloudflare.zone_id == ZONE
 
-  def test_delete_one_removes_the_record_with_that_content(self, connected, api):
-    api.on("GET", RECORDS, ok([{"id": "1", "name": "a.example.test", "content": "1.1.1.1"},
-                               {"id": "2", "name": "a.example.test", "content": "2.2.2.2"}]))
-    api.on("DELETE", f"{RECORDS}/2", ok({"id": "2"}))
+  def test_a_sync_keeps_the_right_records_corrects_and_adds_the_rest_and_deletes_the_others_from_one_list(
+          self, connected, api):
+    api.on("GET", RECORDS, ok([
+        {"id": "1", "name": "a.example.test", "content": "t1", "comment": "sage-domain", "type": "CNAME", "proxied": True},
+        {"id": "2", "name": "b.example.test", "content": "old", "comment": "sage-domain"},
+        {"id": "3", "name": "gone.example.test", "content": "t1", "comment": "sage-domain"},
+        {"id": "4", "name": "theirs.example.test", "content": "t1", "comment": "SAGE-DOMAIN"},
+        {"id": "5", "name": "*.example.test", "content": "t0", "comment": "sage-tunnel"},
+    ]))
+    for record in ("2", "3", "5"):
+      api.on("PUT" if record == "2" else "DELETE", f"{RECORDS}/{record}", ok({}))
+    api.on("POST", RECORDS, ok({}))
 
-    connected.delete_dns_record("a.example.test", "2.2.2.2")
+    connected.sync_dns_records({
+        "sage-domain": {"a.example.test": "t1", "b.example.test": "t2", "c.example.test": "t1"},
+        "sage-tunnel": {"discovery.example.test": "t0"},
+    }, type="CNAME", proxied=True)
 
-    assert [request.url.path for request in api.sent("DELETE")] == [f"{RECORDS}/2"]
+    assert [request.url.path for request in api.sent("DELETE")] == [f"{RECORDS}/3", f"{RECORDS}/5"]
+    assert [(body(request)["name"], body(request)["content"]) for request in api.sent("PUT")] == [("b.example.test", "t2")]
+    assert [(body(request)["name"], body(request)["comment"], body(request)["proxied"])
+            for request in api.sent("POST")] == [
+        ("c.example.test", "sage-domain", True), ("discovery.example.test", "sage-tunnel", True)]
+    assert len(api.sent("GET", RECORDS)) == 1
 
-  def test_delete_one_with_no_such_content_deletes_nothing(self, connected, api):
-    api.on("GET", RECORDS, ok([{"id": "1", "name": "a.example.test", "content": "1.1.1.1"}]))
+  def test_a_workers_record_follows_its_tag_and_without_one_all_of_its_records_go(self, connected, api):
+    api.on("GET", RECORDS, ok([
+        {"id": "1", "name": "*.int.example.test", "content": "100.64.0.2", "comment": "sage-worker-w1"}]))
+    api.on("DELETE", f"{RECORDS}/1", ok({}))
+    api.on("POST", RECORDS, ok({}))
 
-    connected.delete_dns_record("a.example.test", "9.9.9.9")
+    connected.sync_worker_records("w1", "eu1", "100.64.0.2")
+    connected.sync_worker_records("w1")
 
-    assert api.sent("DELETE") == []
+    assert [body(request)["name"] for request in api.sent("POST")] == ["*.eu1.int.example.test"]
+    assert [request.url.path for request in api.sent("DELETE")] == [f"{RECORDS}/1"] * 2
 
   def test_delete_all_removes_every_record_at_the_name(self, connected, api):
     api.on("GET", RECORDS, ok([{"id": "1", "name": "a.example.test", "type": "A"},
@@ -482,7 +580,7 @@ class TestCreateDnsRecord:
     assert body(update) == {"name": "a.example.test", "content": "2.2.2.2", "type": "A", "ttl": 60, "comment": "mine"}
 
   def test_a_record_that_is_already_right_is_left_alone(self, connected, api):
-    api.on("GET", RECORDS, ok([{"id": "7", "name": "a.example.test", "content": "1.1.1.1", "comment": "mine"}]))
+    api.on("GET", RECORDS, ok([{"id": "7", "name": "a.example.test", "content": "1.1.1.1", "comment": "mine", "type": "A", "ttl": 60}]))
 
     connected.create_dns_record("a.example.test", "1.1.1.1", comment="mine", type="A")
 
@@ -543,12 +641,6 @@ class TestCreateTunnel:
         {"hostname": "*.example.test", "service": "http://traefik:80"},
         {"service": "http_status:404"},
     ]}}
-
-  def test_the_wildcard_record_points_at_the_tunnel(self, connected, healthy):
-    connected.create_tunnel(TUNNEL_NAME)
-
-    assert body(healthy.sent("POST", RECORDS)[0]) == {
-        "name": "*.example.test", "content": f"{TUNNEL}.cfargotunnel.com", "type": "CNAME", "proxied": True, "comment": TUNNEL_NAME}
 
   def test_it_returns_the_tunnel_id(self, connected, healthy):
     assert connected.create_tunnel(TUNNEL_NAME) == TUNNEL

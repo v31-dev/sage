@@ -1,4 +1,5 @@
 import inspect
+from types import SimpleNamespace
 
 import botocore.exceptions
 import httpx
@@ -81,3 +82,49 @@ class TestIsApplying:
       (key, name, params) for key, tasks in APPLYING_TASKS.items() for name, params in tasks if name != f"check_{key}"])
   def test_the_other_tasks_are_manager_methods_that_take_those_parameters(self, key, name, params):
     assert set(params) <= set(inspect.signature(getattr(Manager, name)).parameters)
+
+
+class TestTailscaleCheck:
+  def check(self, state="Running", dns_name="manager.tail1234.ts.net."):
+    status = {"BackendState": state, "Self": {"HostName": "manager", "DNSName": dns_name}}
+    tailscale = SimpleNamespace(status=lambda: status, peers=lambda: ["w1", "w2"])
+    return SettingsMixin._test_tailscale(SimpleNamespace(tailscale=tailscale), {}, False)
+
+  def test_a_node_named_ts_name_says_so(self):
+    assert self.check() == "The node is running as manager; 2 other machine(s) on the tailnet."
+
+  @pytest.mark.parametrize("dns_name", ["manager-1.tail1234.ts.net.", "renamed.tail1234.ts.net."])
+  def test_a_node_under_another_name_says_which(self, dns_name):
+    machine = dns_name.split(".")[0]
+
+    assert self.check(dns_name=dns_name) == (
+        f"The node is running as {machine}, not manager (TS_NAME); 2 other machine(s) on the tailnet.")
+
+  def test_a_node_that_is_not_running_fails_the_check(self):
+    with pytest.raises(ValueError, match=r"not running \(NeedsLogin\)"):
+      self.check(state="NeedsLogin")
+
+
+class TestCloudflareCheck:
+  def check(self, statuses, listed=("w1", "w2")):
+    cloudflare = SimpleNamespace(
+        config={}, check_config=lambda config: None, tunnel_name="sage-example.test",
+        tunnels=lambda: {name: {"id": name, "status": status} for name, status in statuses.items()},
+        tunnel_status=None, domain="example.test", worker_tunnel_name=lambda hostname: f"sage-example.test-{hostname}")
+    pushed = {}
+    manager = SimpleNamespace(cloudflare=cloudflare, worker_list=[{"hostname": hostname} for hostname in listed],
+                              update_workers=pushed.update)
+    message = SettingsMixin._test_cloudflare(manager, {}, False)
+    return message, cloudflare.tunnel_status, pushed
+
+  def test_the_platform_tunnels_health_is_kept_and_each_listed_worker_gets_its_own_tunnels(self):
+    message, status, pushed = self.check({
+        "sage-example.test": "degraded", "sage-example.test-w1": "healthy", "sage-other.test-w2": "down"})
+
+    assert message == "API token, zone example.test and account verified; tunnel degraded."
+    assert status == "degraded"
+    assert pushed == {"w1": {"tunnel": "healthy"}, "w2": {"tunnel": None}}
+
+  def test_without_the_platform_tunnel_the_check_fails(self):
+    with pytest.raises(ValueError, match="The tunnel sage-example.test is not in the account."):
+      self.check({"sage-example.test-w1": "healthy"})

@@ -6,6 +6,7 @@ import sys
 
 from cryptography.fernet import Fernet
 from peewee import CharField, TextField
+from pydantic import AnyHttpUrl
 
 from utils.common import strip_env_comment
 from utils.logging import LOG_FORMAT
@@ -102,6 +103,37 @@ class JSONField(TextField):
     return value
 
 
+class OriginListField(JSONField):
+  @staticmethod
+  def validate(value):
+    if value is None or value == "":
+      return None
+    if not isinstance(value, list):
+      raise ValueError("Allowed origins must be a list.")
+    origins = []
+    for origin in value:
+      if not isinstance(origin, str):
+        raise ValueError("Allowed origins must contain strings.")
+      origin = origin.strip()
+      if not origin:
+        continue
+      if origin not in ("*", "null"):
+        try:
+          if any(char.isspace() or ord(char) < 32 or ord(char) == 127 for char in origin) or "@" in origin or "\\" in origin:
+            raise ValueError()
+          url = AnyHttpUrl(origin)
+          if url.path not in (None, "/") or url.query is not None or url.fragment is not None or "*" in url.host:
+            raise ValueError()
+          origin = str(url).rstrip("/")
+        except ValueError as error:
+          raise ValueError(f"Invalid origin {origin!r}: use an HTTP(S) origin without a path, credentials, query or fragment, or '*'.") from error
+      origins.append(origin)
+    return list(dict.fromkeys(origins)) or None
+
+  def db_value(self, value):
+    return super().db_value(self.validate(value))
+
+
 class CleanCharField(CharField):
   """Lowercase alphanumerics and dashes."""
 
@@ -132,12 +164,30 @@ class AlphaNumericField(CharField):
       )
     return cleaned
 
-  @staticmethod
-  def validate(value):
+  def validate(self, value):
     if value is not None and not re.fullmatch(r"[a-z][a-z0-9]*", value):
       raise ValueError(
           f"Invalid name {value!r}: must be lowercase letters and digits only, starting with a letter."
       )
+    if value is not None and len(value) > self.max_length:
+      raise ValueError(f"Invalid name {value!r}: at most {self.max_length} characters.")
+    return value
+
+  def db_value(self, value):
+    return self.validate(value)
+
+
+class LabelField(CharField):
+  """One label of a domain name: lowercase letters, digits and dashes, at most 63, not starting or ending with a dash."""
+
+  def __init__(self, *args, **kwargs):
+    super().__init__(*args, max_length=63, **kwargs)
+
+  def validate(self, value):
+    if value is not None and not re.fullmatch(r"[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?", value):
+      raise ValueError(
+          f"Invalid name {value!r}: must be lowercase letters, digits and dashes, at most 63, "
+          "not starting or ending with a dash.")
     return value
 
   def db_value(self, value):

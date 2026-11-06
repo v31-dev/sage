@@ -13,6 +13,8 @@ from utils.db import like_literal
 
 logger = logging.getLogger(__name__)
 
+SCOPES = frozenset({"platform", "app", "domain", "common", "metrics"})
+
 
 class QueueMixin:
   """Manager-facing surface for the operation queue."""

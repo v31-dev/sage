@@ -4,6 +4,8 @@ import re
 from datetime import datetime
 from pathlib import Path
 
+from services.domains import ROUTING_TEMPLATES
+
 # This module lives at app/services/manager/_common.py, so three .parent hops
 # reach the app/ root. Defined here once so every mixin shares the same path.
 app_dir = Path(__file__).parent.parent.parent
@@ -51,36 +53,17 @@ WORKER_INFRA_TEMPLATES = templates_digest(
     "worker/worker.env",
     "worker/traefik/traefik.yml",
     "worker/traefik/config.yml",
-    "worker/traefik/certs.yml",
     "worker/vector/vector.yml",
     "worker/telegraf/telegraf.conf",
 )
 
-# Per-application routing files, pushed by `sync_application_traefik_domains_config`
-# behind each application's own stamp.
-APPLICATION_ROUTING_TEMPLATES = templates_digest(
-    "worker/traefik/service_public.yml",
-    "worker/traefik/service_public_pool.yml",
-    "worker/traefik/service_internal.yml",
-    "worker/traefik/service_internal_pool.yml",
-    "worker/traefik/service_internal_tcp.yml",
+DOMAIN_ROUTING_TEMPLATES = templates_digest(*(f"worker/traefik/{template}" for template in ROUTING_TEMPLATES.values()))
+
+
+# The discovery files, pushed by `sync_discovery` behind each worker's `discovery` stamp.
+DISCOVERY_TEMPLATES = templates_digest(
+    "worker/traefik/discovery_public.yml",
+    "worker/traefik/discovery_internal.yml",
 )
 
-
-def routing_input_hash(domain_name: str, domains, containers, is_online) -> str:
-  """Hash of everything that determines an application's rendered Traefik
-  files on any single worker; `is_online` says whether a worker (by hostname) is.
-  The receiving-worker set is deliberately excluded: a worker that missed a
-  sync is repaired through its own stamp, and one worker going offline must not
-  invalidate the others' stamps."""
-  return content_hash({
-      "templates": APPLICATION_ROUTING_TEMPLATES,
-      "domain": domain_name,
-      "domains": sorted((d.name, d.type, d.port) for d in domains),
-      "tags": sorted({c.domain_tag for c in containers if c.domain_tag}),
-      "active": sorted(
-          (c.worker.hostname, c.worker.ip, c.domain_tag or "")
-          for c in containers
-          if is_online(c.worker.hostname) and c.status == "active"
-      ),
-  })
+CERTIFICATE_TEMPLATES = templates_digest("worker/traefik/certs.yml")

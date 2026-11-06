@@ -10,6 +10,7 @@ import {
   CircleArrowUp,
   Cloud,
   ExternalLink,
+  Globe,
   HardDrive,
   Home,
   ListTodo,
@@ -63,6 +64,11 @@ const menu = computed<MenuInterface[]>(() => [
         name: 'Projects',
         path: '/projects',
         icon: Briefcase,
+      },
+      {
+        name: 'Domains',
+        path: '/domains',
+        icon: Globe,
       },
       {
         name: 'Requests',

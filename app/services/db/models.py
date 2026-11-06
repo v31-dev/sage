@@ -2,13 +2,15 @@ import hashlib
 import json
 import re
 import secrets
+import string
 from dataclasses import dataclass
 
-from peewee import BooleanField, CharField, DateTimeField, FixedCharField, ForeignKeyField, IntegerField, SqliteDatabase
+from peewee import SQL, BooleanField, CharField, DateTimeField, FixedCharField, ForeignKeyField, IntegerField, SqliteDatabase
 from playhouse.signals import Model
 
 from utils.common import utcnow
-from utils.db import AlphaNumericField, CleanCharField, EncryptedJSONField, EncryptedTextField, JSONField, validate_multiline_kv
+from utils.db import (AlphaNumericField, CleanCharField, EncryptedJSONField, EncryptedTextField, JSONField, LabelField, OriginListField,
+                      validate_multiline_kv)
 
 # Deferred: opened by Database at startup.
 db = SqliteDatabase(None)
@@ -45,6 +47,20 @@ class Instance(BaseModel):
 class Worker(BaseModel):
   hostname = CleanCharField(primary_key=True)
   ip = FixedCharField(15)
+  # Its internal names are under `<subdomain>.int.<domain>`.
+  subdomain = LabelField(null=True)
+
+  @staticmethod
+  def random_subdomain() -> str:
+    """A subdomain no worker has: a letter and five letters or digits."""
+    while True:
+      subdomain = secrets.choice(string.ascii_lowercase) + "".join(
+          secrets.choice(string.ascii_lowercase + string.digits) for _ in range(5))
+      if not Worker.select().where(Worker.subdomain == subdomain).exists():
+        return subdomain
+
+  class Meta:
+    indexes = ((("subdomain",), True),)
 
 
 class Project(BaseModel):
@@ -116,7 +132,6 @@ class Application(BaseModel):
   build_secrets = EncryptedTextField(null=True)
   command = CharField(null=True)
   status = CharField(choices=STATUS_CHOICES, default="inactive")
-  domains_synced = BooleanField(default=False)
   container_count = IntegerField(default=0)
   deployed_at = DateTimeField(null=True)
   deployed_hash = CharField(null=True)
@@ -195,30 +210,78 @@ class Application(BaseModel):
     indexes = ((("project", "name"), True),)
 
 
-class Domain(BaseModel):
-  application = ForeignKeyField(Application, backref="domains", on_delete="CASCADE")
-  name = AlphaNumericField(null=False)
-  type = CharField(choices=["internal", "public", "tcp"], default="internal")
-  port = IntegerField(null=False)
-
-  class Meta:
-    indexes = ((("application", "name", "type"), True),)
-
-
 class Container(BaseModel):
   application = ForeignKeyField(Application, backref="containers", on_delete="RESTRICT")
   worker = ForeignKeyField(Worker, backref="containers")
   status = CharField(choices=STATUS_CHOICES, default="inactive")
-  domain_tag = AlphaNumericField(null=True)
-
-  def save(self, *args, **kwargs):
-    if self.domain_tag and self.domain_tag == "x_tag":
-      raise ValueError("Domain tag cannot be 'x_tag' as it is reserved for internal use.")
-
-    return super().save(*args, **kwargs)
 
   class Meta:
     indexes = ((("application", "worker"), True),)
+
+
+RESERVED_DOMAIN_NAMES = {"core", "int", "discovery"}
+
+
+class Domain(BaseModel):
+  """A name linked to one container, which it routes to on `port`: public `<name>.<domain>`, or internal or TCP
+  `<name>.<subdomain>.int.<domain>` under its worker's subdomain. Deleting the container unlinks it. `service` groups
+  names for discovery, apart for each namespace (public, or internal and TCP), and `pool` is a subgroup of a service."""
+  name = LabelField()
+  type = CharField(choices=["internal", "public", "tcp"], default="internal")
+  port = IntegerField()
+  container = ForeignKeyField(Container, backref="domains", null=True, on_delete="SET NULL")
+  # Internal and TCP: the worker whose subdomain the name is under, kept when the container is unlinked.
+  worker = ForeignKeyField(Worker, backref="domains", null=True, on_delete="RESTRICT")
+  service = LabelField(null=True)
+  pool = LabelField(null=True)
+  cors_origins = OriginListField(null=True)
+  status = CharField(choices=["pending", "synced", "error"], default="pending")
+  sync_error = CharField(null=True)
+  synced_hash = CharField(null=True)
+  synced_at = DateTimeField(null=True)
+
+  def save(self, *args, **kwargs):
+    if self.type == "tcp" and self.cors_origins is not None:
+      self.cors_origins = None
+    elif any(field is Domain.cors_origins for field in self.dirty_fields):
+      self.cors_origins = Domain.cors_origins.validate(self.cors_origins)
+    if self.type == "public":
+      if self.name in RESERVED_DOMAIN_NAMES:
+        raise ValueError(f"'{self.name}' is reserved for Sage's own addresses.")
+      self.worker = None
+    elif self.container_id is not None:
+      self.worker = self.container.worker
+    elif self.worker_id is None:
+      raise ValueError("An internal or TCP domain without a container is not allowed.")
+
+    namespace = Domain.worker == self.worker_id if self.worker_id else Domain.worker.is_null()
+    if Domain.select().where((Domain.name == self.name) & namespace & (Domain.id != self.id)).exists():
+      raise ValueError(f"'{self.name}' is already a public domain." if self.type == "public"
+                       else f"'{self.name}' is already an internal or TCP domain on worker {self.worker_id}.")
+
+    return super().save(*args, **kwargs)
+
+  def host(self, base_domain: str) -> str | None:
+    """The domain's full name; none for an internal or TCP one without a worker."""
+    if self.type == "public":
+      return f"{self.name}.{base_domain}"
+    return f"{self.name}.{self.worker.subdomain}.int.{base_domain}" if self.worker_id else None
+
+  def address(self, base_domain: str) -> str | None:
+    """How a client reaches it: an https URL, or `host:8443` for TCP."""
+    host = self.host(base_domain)
+    if host is None:
+      return None
+    return f"{host}:8443" if self.type == "tcp" else f"https://{host}"
+
+  def allowed_origins(self, base_domain: str) -> tuple[str, ...]:
+    if self.type == "tcp" or self.host(base_domain) is None:
+      return ()
+    return tuple(sorted(self.cors_origins or [self.address(base_domain)]))
+
+
+# A name once among the public domains, and once per worker among the internal and TCP ones.
+Domain.add_index(Domain.index(Domain.name, SQL("coalesce(worker_id, '')"), unique=True, name="domain_name_worker"))
 
 
 class Volume(BaseModel):

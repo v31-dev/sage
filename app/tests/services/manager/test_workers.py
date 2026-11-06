@@ -1,4 +1,5 @@
 import asyncio
+import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
@@ -7,16 +8,16 @@ from types import SimpleNamespace
 import pytest
 
 import config
-from services.db import Container, Worker
+from services.certs import Certs
+from services.db import Container, Domain, Worker
 from services.logs import Logs
-from services.manager._common import routing_input_hash
 from services.manager.decisions import WorkerReboot
 from services.manager.workers import WorkersMixin
 from services.worker_reports import ContainerReading, HostReading, Snapshot, WorkerReports
 from utils.executor import active_executor
 from utils.logging import TaskFailed
 
-STACK = ("traefik", "vector", "telegraf", "cloudflared")
+STACK = config.WORKER_STACK_SERVICES
 
 
 class FakeTailscale:
@@ -82,22 +83,67 @@ class Harness(WorkersMixin):
     self.worker_stack_repairs = {}
     self.notices = []
     self.setups = []
+    self.setup_subdomains = {}
     self.deleted_containers = []
     self.offlined = []
     self.failing = set()
     self._worker_inputs = {}
     self.worker_list = []
     self._worker_list_lock = threading.Lock()
-    self.dns_deleted = []
-    self.cloudflare = SimpleNamespace(domain="example.test", delete_dns_record=lambda **kw: self.dns_deleted.append(kw))
+    self.worker_discovery = self.workers_discovery_fact()
+    self.worker_records = []
+    self.tunnels_deleted = []
+    self.tunnel_delete_error = None
+    self.cloudflare = SimpleNamespace(
+        domain="example.test", worker_tunnel_name=lambda hostname: f"sage-example.test-{hostname}",
+        delete_tunnel=self.delete_tunnel,
+        sync_worker_records=lambda hostname, subdomain=None, ip=None: self.worker_records.append((hostname, subdomain, ip)))
+    self.certs = Certs()
+    self.tasks = []
+    self.renewals = 0
+    self.records_requests = 0
+    self.discovery_requests = 0
+    self.discovery_stamp = "d1"
+    self.synced_applications = []
+
+  def add_task(self, task, **kwargs):
+    self.tasks.append((task.__name__, kwargs.get("params")))
+
+  def request_certificate_renewal(self):
+    self.renewals += 1
+
+  def request_domain_records_sync(self):
+    self.records_requests += 1
+
+  def request_discovery_sync(self):
+    self.discovery_requests += 1
+
+  def discovery_services(self):
+    return []
+
+  def discovery_hash(self, services):
+    return self.discovery_stamp
+
+  def request_domain_sync(self, domain):
+    self.synced_applications.append(domain.id)
+
+  def request_domain_syncs(self, domains):
+    for domain in domains:
+      self.request_domain_sync(domain)
+
+  def delete_tunnel(self, name):
+    if self.tunnel_delete_error:
+      raise self.tunnel_delete_error
+    self.tunnels_deleted.append(name)
 
   def notify(self, message, level="info"):
     self.notices.append((level, message))
 
-  async def setup_worker(self, worker, force=False):
+  async def setup_worker(self, worker, force=False, subdomain=None):
     if worker.hostname in self.failing:
       raise Exception("boom")
     self.setups.append((worker.hostname, force))
+    self.setup_subdomains[worker.hostname] = subdomain
 
   async def delete_container(self, container_id, force=False):
     self.deleted_containers.append((container_id, force))
@@ -147,6 +193,22 @@ class TestSyncWorkers:
     clock.advance(timedelta(seconds=config.REPORT_STALE_SECONDS + 1))
     self.sync(harness)
     assert (harness.worker_list[0]["status"], harness.worker_list[0]["container_count"]) == ("not ready", None)
+
+  def test_every_worker_without_a_subdomain_gets_one_online_or_not_and_a_subdomain_stays(self, harness):
+    add(harness, "w1", True)
+    add(harness, "w2", False)
+    add(harness, "w3", True)
+    Worker.update(subdomain=None).where(Worker.hostname.in_(["w1", "w2"])).execute()
+    Worker.update(subdomain="eu3").where(Worker.hostname == "w3").execute()
+    harness.tailscale.listed = [("w1", "100.64.0.2"), ("w3", "100.64.0.2")]
+    harness.tailscale.answering = {"w1", "w3"}
+
+    self.sync(harness)
+
+    subdomains = {worker.hostname: worker.subdomain for worker in Worker.select()}
+    assert all(re.fullmatch(r"[a-z][a-z0-9]{5}", subdomains[name]) for name in ("w1", "w2"))
+    assert subdomains["w3"] == "eu3" and len(set(subdomains.values())) == 3
+    assert {entry["hostname"]: entry["subdomain"] for entry in harness.worker_list}["w2"] == subdomains["w2"]
 
   def test_a_machine_that_is_not_a_known_worker_is_not_checked_or_set_up(self, harness):
     add(harness, "w1", True)
@@ -216,7 +278,7 @@ class TestRepairWorkerStacks:
 
   def test_a_stack_the_report_shows_down_is_started_and_said_so(self, harness):
     add(harness, "w1", True)
-    WorkerReports().accept("w1", snapshot(running=("vector", "telegraf", "cloudflared")))
+    WorkerReports().accept("w1", snapshot(running=("vector", "telegraf", "cloudflared", "cloudflared-discovery")))
     harness.tailscale.up_output = ["Container traefik  Starting", "Container traefik  Started"]
     self.repair(harness)
     host, command = harness.tailscale.commands[0]
@@ -335,6 +397,12 @@ class TestAddWorker:
     self.add(harness)
     assert harness.setups == [("w3", False)]
 
+  def test_the_subdomain_asked_for_reaches_its_setup(self, harness):
+    harness.tailscale.listed = [("w3", "100.64.0.3")]
+    harness.tailscale.answering = {"w3"}
+    asyncio.run(harness.add_worker("w3", subdomain="eu1"))
+    assert harness.setup_subdomains == {"w3": "eu1"}
+
   def test_a_machine_that_is_not_in_the_tailnet_is_refused_and_said_so(self, harness):
     with pytest.raises(TaskFailed):
       self.add(harness)
@@ -353,62 +421,19 @@ class TestSetWorkerOffline:
   class Offlining(Harness):
     set_worker_offline = WorkersMixin.set_worker_offline
 
-  def test_the_worker_is_no_longer_online_and_its_dns_record_and_the_list_follow(self, db, clock):
+  def test_the_worker_is_no_longer_online_and_the_list_follows_and_its_dns_records_stay(self, db, clock):
     WorkerReports()
     harness = self.Offlining()
     worker = add(harness, "w1", True)
+    before = harness.discovery_requests
 
     harness.set_worker_offline(worker)
 
     assert harness.is_worker_online("w1") is False
     assert harness.worker_list[0]["status"] == "offline"
-    assert harness.dns_deleted == [{"name": "*.int.example.test", "content": "100.64.0.2"}]
+    assert harness.worker_records == []
+    assert harness.discovery_requests > before
     assert harness.notices == [("error", "Worker w1 is offline.")]
-
-
-class TestRequestStaleApplicationSyncs:
-  class Requesting(Harness):
-    request_stale_application_syncs = WorkersMixin.request_stale_application_syncs
-
-    def __init__(self):
-      super().__init__()
-      self.requested = []
-
-    def request_application_traefik_sync(self, application):
-      self.requested.append(application.qualified_name)
-
-  @pytest.fixture
-  def harness(self, db, clock):
-    WorkerReports()
-    return self.Requesting()
-
-  def stamp(self, harness, application):
-    return routing_input_hash("example.test", list(application.domains), list(application.containers), harness.is_worker_online)
-
-  def test_an_application_whose_stamp_is_what_its_files_would_be_is_left_alone(self, harness, application, worker):
-    Container.create(application=application, worker=worker, status="active")
-    harness.load_workers()
-    harness.update_worker("w1", online=True)
-    stamps = {application.qualified_name: self.stamp(harness, application)}
-
-    assert harness.request_stale_application_syncs("example.test", stamps) == []
-    assert harness.requested == []
-
-  def test_an_application_with_another_stamp_or_none_is_requested_and_named(self, harness, application, worker):
-    assert harness.request_stale_application_syncs("example.test", {application.qualified_name: "old"}) == [
-        application.qualified_name]
-    assert harness.request_stale_application_syncs("example.test", {}) == [application.qualified_name]
-    assert harness.requested == [application.qualified_name] * 2
-
-  def test_the_stamp_follows_whether_the_worker_the_container_is_on_is_online(self, harness, application, worker):
-    Container.create(application=application, worker=worker, status="active")
-    harness.load_workers()
-    harness.update_worker("w1", online=True)
-    stamps = {application.qualified_name: self.stamp(harness, application)}
-
-    harness.update_worker("w1", online=False)
-
-    assert harness.request_stale_application_syncs("example.test", stamps) == [application.qualified_name]
 
 
 class TestRefreshWorkerPaths:
@@ -426,6 +451,9 @@ class TestRefreshWorkerPaths:
 
 
 class SetupHarness(Harness):
+  async def sync_certificates_to_worker(self, worker):
+    return False
+
   """The real `setup_worker`, up to the first file it writes (the fake tailnet then stops it)."""
   setup_worker = WorkersMixin.setup_worker
 
@@ -435,8 +463,8 @@ class SetupHarness(Harness):
     super().__init__()
     self.cloudflare.tunnel_id = "tunnel"
     self.cloudflare.connect = lambda: None
-    self.cloudflare.create_dns_record = lambda **kwargs: None
-    self.cloudflare.get_tunnel_token = lambda: SimpleNamespace(token="token")
+    self.cloudflare.create_tunnel = lambda name: f"id-of-{name}"
+    self.cloudflare.get_tunnel_token = lambda tunnel_id=None: SimpleNamespace(token=f"token-of-{tunnel_id or 'shared'}")
     self.tailscale.sync_error = Exception("stop here")
 
 
@@ -502,13 +530,10 @@ class CompleteSetupHarness(SetupHarness):
   def __init__(self):
     super().__init__()
     self.tailscale.sync_error = None
-    self.certs = SimpleNamespace(workers=SimpleNamespace(is_valid=lambda: False))
-    self.dns_created = []
-    self.cloudflare.create_dns_record = lambda **kwargs: self.dns_created.append(kwargs)
     self.traffic_syncs = []
 
-  def request_application_traefik_sync(self, application):
-    self.traffic_syncs.append(application.qualified_name)
+  def request_domain_sync(self, domain):
+    self.traffic_syncs.append(domain.id)
 
 
 class TestSetupWorkerToTheEnd:
@@ -531,10 +556,41 @@ class TestSetupWorkerToTheEnd:
         ("w3", "100.64.0.3", True, "online")]
     assert setup.notices == [("info", "Worker w3 added.")]
 
-  def test_the_infra_stamp_is_written_last_and_the_dns_record_is_made(self, setup):
+  def test_the_infra_stamp_is_written_last(self, setup):
     self.run(setup)
     assert setup.tailscale.synced[-1][0] == "/opt/sage/revisions/infra"
-    assert setup.dns_created == [{"name": "*.int.example.test", "content": "100.64.0.3", "comment": "sage-worker-w3", "type": "A"}]
+
+  def test_a_new_worker_asks_for_a_certificate_with_its_names_and_for_the_records_of_its_tunnel(self, setup):
+    self.run(setup)
+    assert setup.renewals == 1
+    assert setup.discovery_requests > 0
+
+  def test_a_worker_that_comes_back_requests_missing_certificates(self, setup):
+    add(setup, "w3", False, "100.64.0.9")
+    self.run(setup)
+    assert setup.renewals == 1
+
+  @pytest.mark.parametrize("stamp", ["d1", "d0", None])
+  def test_setup_requests_discovery_even_when_its_files_are_current(self, setup, stamp):
+    if stamp:
+      setup.tailscale.up_output = [f"/opt/sage/revisions/discovery:{stamp}"]
+    self.run(setup)
+    assert setup.discovery_requests > 0
+
+  def test_the_certificate_stamp_it_read_reaches_the_list(self, setup):
+    setup.tailscale.up_output = ['/opt/sage/revisions/certs:{"worker": "abc", "discovery": "def"}']
+    self.run(setup)
+    assert setup._worker_inputs["w3"].certs == {"worker": "abc", "discovery": "def"}
+
+  def test_it_runs_its_own_tunnel_beside_the_shared_one(self, setup):
+    self.run(setup)
+    env = dict(setup.tailscale.synced)["/opt/sage/.env"]
+    assert (env["TUNNEL_TOKEN"], env["DISCOVERY_TUNNEL_TOKEN"]) == ("token-of-id-of-sage-example.test-w3", "token-of-shared")
+
+  def test_its_infra_stamp_is_that_of_its_own_tunnel_so_another_tunnel_sets_it_up_again(self, setup):
+    self.run(setup)
+    stamp = setup.tailscale.synced[-1][1]["CONTENT"]
+    assert stamp == setup.infra_hash("id-of-sage-example.test-w3") != setup.infra_hash("id-of-sage-example.test-w4")
 
   def test_a_worker_that_was_offline_is_online_again_with_its_new_ip(self, setup):
     add(setup, "w3", False, "100.64.0.9")
@@ -543,10 +599,14 @@ class TestSetupWorkerToTheEnd:
     assert [(worker["ip"], worker["online"]) for worker in setup.worker_list] == [("100.64.0.3", True)]
     assert setup.notices == [("info", "Worker w3 synced.")]
 
-  def test_the_applications_whose_stamp_is_stale_are_asked_to_sync_once_the_worker_is_online(self, setup, application, worker):
+  def test_worker_rejoin_requests_parent_artifact_checks(self, setup, application, worker):
+    container = Container.create(application=application, worker=worker, status="active")
+    Domain.create(name="shop", type="public", port=80, container=container)
     setup.load_workers()
+    before = setup.discovery_requests
     self.run(setup, hostname="w1", ip="100.64.0.2")
-    assert setup.traffic_syncs == [application.qualified_name]
+    assert setup.traffic_syncs == []
+    assert setup.discovery_requests > before
 
   def test_a_new_worker_whose_setup_fails_is_forgotten_again_and_never_online(self, setup):
     setup.tailscale.fail_when = "up -d"
@@ -588,7 +648,16 @@ class TestRemoveWorker:
     assert "docker-compose.yml down --remove-orphans" in stop and stop.endswith("&& rm -rf /opt/sage")
     assert Worker.get_or_none(Worker.hostname == "w1") is None
     assert harness.notices == []
-    assert harness.dns_deleted == [{"name": "*.int.example.test", "content": "100.64.0.2"}]
+    assert harness.worker_records == [("w1", None, None)]
+    assert harness.tunnels_deleted == ["sage-example.test-w1"]
+
+  def test_a_tunnel_cloudflare_will_not_delete_still_lets_the_worker_go_and_says_so(self, harness):
+    add(harness, "w1", False)
+    harness.tunnel_delete_error = Exception("tunnel has active connections")
+    self.remove(harness)
+    assert Worker.get_or_none(Worker.hostname == "w1") is None
+    assert ("warning", "Worker w1 is removed from Sage, but its Cloudflare tunnel sage-example.test-w1 could not be "
+            "deleted: tunnel has active connections. Delete it by hand.") in harness.notices
 
   @pytest.mark.parametrize("online", [True, False])
   def test_the_pooled_ssh_connection_of_a_removed_worker_is_closed(self, harness, online):
@@ -629,6 +698,22 @@ class TestRemoveWorker:
     assert Worker.get_or_none(Worker.hostname == "w1") is None
     (level, message), = harness.notices
     assert level == "warning" and "could not be stopped: connection lost" in message
+
+  @pytest.mark.parametrize("online", [True, False])
+  def test_a_worker_with_an_internal_domain_is_refused_whether_it_is_online_or_not(self, harness, application, online):
+    add(harness, "w1", online)
+    container = Container.create(application=application, worker="w1")
+    Domain.create(name="shop", type="internal", port=80, container=container)
+    container.delete_instance()
+    with pytest.raises(TaskFailed):
+      self.remove(harness)
+    assert Worker.get_or_none(Worker.hostname == "w1") is not None
+
+  def test_a_removal_asks_for_the_records_so_the_workers_discovery_record_goes(self, harness):
+    add(harness, "w1", False)
+    before = harness.discovery_requests
+    self.remove(harness)
+    assert harness.discovery_requests > before
 
   def test_an_online_worker_with_containers_is_refused_and_nothing_changes(self, harness, application):
     add(harness, "w1", True)

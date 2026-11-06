@@ -13,12 +13,19 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card'
+import { FieldGroup } from '@/components/ui/field'
+import { InputGroup, InputGroupAddon, InputGroupInput } from '@/components/ui/input-group'
 import { Label } from '@/components/ui/label'
 
 import ConfirmationButton from '@/components/ConfirmationButton.vue'
+import CopyButton from '@/components/CopyButton.vue'
+import SettingField from '@/components/SettingField.vue'
+import { formatDate } from '@/lib/utils'
 import {
   deleteWorker,
   rebootWorker,
+  type Indicator,
+  type TunnelStatus,
   type Worker,
   type WorkerMetricsResponse,
   type WorkerStatus,
@@ -26,10 +33,12 @@ import {
 import SectionTitle from '@/components/SectionTitle.vue'
 import StateIndicator from '@/components/StateIndicator.vue'
 import { useAppStore } from '@/stores/app'
+import EditWorkerButton from './EditWorkerButton.vue'
 
 interface Props {
   worker: Worker
   workerMetrics: WorkerMetricsResponse
+  loadWorkerStatus: () => Promise<void>
 }
 
 const router = useRouter()
@@ -37,7 +46,7 @@ const appStore = useAppStore()
 
 const props = withDefaults(defineProps<Props>(), {})
 
-// Shown from the moment Restart is confirmed (undone if the manager refuses) until the next poll replaces `worker`
+// Shown from the moment Restart is confirmed (undone if the manager refuses) until the next push replaces `worker`
 // with the manager's answer.
 const requested = ref<WorkerStatus | null>(null)
 watch(
@@ -51,6 +60,54 @@ const deleteBody = computed(() =>
     ? 'This worker is offline, so Sage cannot clean it up. It is removed from Sage together with its containers; delete the VM yourself if it is not deleted already.'
     : 'Are you sure you want to delete this worker? Sage stops its services and removes its files from the VM; the VM itself is not deleted. Delete its containers first.'
 )
+
+const STACK_DESCRIPTIONS: Record<string, string> = {
+  traefik: "Routes this worker's names to its containers.",
+  vector: "Sends Traefik's and the applications' logs to the manager.",
+  telegraf: "Sends the worker's metrics and its containers' state to the manager.",
+  cloudflared: "This worker's own tunnel, which carries its public names.",
+  'cloudflared-discovery': "The platform's tunnel, run on every worker, for discovery.",
+}
+
+interface StackDetail {
+  indicator?: Indicator
+  value: string
+  copy?: string
+}
+
+const certificates = computed(() => [
+  {
+    id: 'worker',
+    label: 'Worker certificate',
+    description: "For this worker's internal and TCP names.",
+    state: props.worker.certificate,
+  },
+  {
+    id: 'discovery',
+    label: 'Discovery certificate',
+    description: 'For internal discovery, shared by all workers.',
+    state: props.worker.discovery_certificate,
+  },
+])
+
+const stack = computed(() => {
+  const details = appStore.info?.settings?.cloudflare.details
+  const tunnel = (name: string, status: TunnelStatus | null): StackDetail => ({
+    indicator: status ? appStore.tunnelIndicator(status) : undefined,
+    value: status ? `${name} · ${status}` : name,
+    copy: name,
+  })
+  const carried: Record<string, StackDetail | undefined> = {
+    cloudflared: tunnel(props.worker.tunnel_name, props.worker.tunnel),
+    'cloudflared-discovery': details
+      ? tunnel(details.tunnel_name, details.tunnel_status)
+      : undefined,
+  }
+  return (props.worker.infra ?? []).map(container => ({
+    container,
+    detail: carried[container.name],
+  }))
+})
 
 function goToMetrics() {
   router.push(`/workers/${props.worker.hostname}/metrics`)
@@ -76,7 +133,7 @@ async function onConfirmRestart() {
 
 <template>
   <Card>
-    <CardHeader class="border-b">
+    <CardHeader class="border-b flex flex-col gap-3 md:flex-row md:justify-between">
       <CardTitle>
         <SectionTitle :title="props.worker.hostname" :size="3">
           <StateIndicator v-bind="appStore.workerIndicator(status)" show-label />
@@ -90,6 +147,7 @@ async function onConfirmRestart() {
       </CardTitle>
       <CardAction>
         <ButtonGroup class="space-x-1">
+          <EditWorkerButton :worker="props.worker" :loadWorkerStatus="props.loadWorkerStatus" />
           <ConfirmationButton
             triggerText="Restart"
             title="Restart Worker"
@@ -113,12 +171,17 @@ async function onConfirmRestart() {
       </CardAction>
     </CardHeader>
 
-    <CardContent class="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-5">
+    <CardContent class="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-7">
       <div>
         <Label>IP</Label>
         <p class="text-sm text-muted-foreground font-mono break-all">
           {{ props.workerMetrics.meta.ip || props.worker.ip }}
         </p>
+      </div>
+
+      <div>
+        <Label>Subdomain</Label>
+        <p class="text-sm text-muted-foreground font-mono">{{ props.worker.subdomain ?? '-' }}</p>
       </div>
 
       <div>
@@ -145,16 +208,73 @@ async function onConfirmRestart() {
         </p>
       </div>
 
-      <div class="md:col-span-2 lg:col-span-5">
+      <div class="md:col-span-2 lg:col-span-7">
+        <Label>Certificates</Label>
+        <FieldGroup class="mt-3 gap-5">
+          <SettingField
+            v-for="certificate in certificates"
+            :key="certificate.id"
+            :id="`certificate-${certificate.id}`"
+            :label="certificate.label"
+            :description="certificate.description"
+            :error="certificate.state?.error ?? undefined"
+            :data-certificate="certificate.id"
+          >
+            <div class="flex flex-col items-start gap-2">
+              <template v-if="certificate.state">
+                <StateIndicator
+                  v-bind="appStore.certificateIndicator(certificate.state)"
+                  show-label
+                />
+                <p
+                  v-if="
+                    certificate.state.covered &&
+                    certificate.state.synced &&
+                    certificate.state.expiry
+                  "
+                  class="text-sm text-muted-foreground"
+                >
+                  Valid until {{ formatDate(certificate.state.expiry) }}
+                </p>
+              </template>
+              <p v-else class="text-sm text-muted-foreground">No certificate status yet.</p>
+            </div>
+          </SettingField>
+        </FieldGroup>
+      </div>
+
+      <div class="md:col-span-2 lg:col-span-7">
         <Label>Stack</Label>
-        <div v-if="props.worker.infra" class="mt-1 flex flex-wrap gap-2">
-          <StateIndicator
-            v-for="container in props.worker.infra"
+        <FieldGroup v-if="props.worker.infra" class="mt-3 gap-5">
+          <SettingField
+            v-for="{ container, detail } in stack"
             :key="container.name"
-            v-bind="appStore.infraIndicator(container)"
-            show-label
-          />
-        </div>
+            :id="`stack-${container.name}`"
+            :label="container.name"
+            :description="STACK_DESCRIPTIONS[container.name]"
+            data-stack
+          >
+            <div class="flex flex-col items-start gap-2">
+              <StateIndicator
+                v-bind="{ ...appStore.infraIndicator(container), label: container.status }"
+                show-label
+              />
+              <InputGroup v-if="detail">
+                <InputGroupAddon v-if="detail.indicator">
+                  <StateIndicator v-bind="detail.indicator" />
+                </InputGroupAddon>
+                <InputGroupInput
+                  :id="`stack-${container.name}`"
+                  :model-value="detail.value"
+                  readonly
+                />
+                <InputGroupAddon v-if="detail.copy" align="inline-end">
+                  <CopyButton compact :text="detail.copy" />
+                </InputGroupAddon>
+              </InputGroup>
+            </div>
+          </SettingField>
+        </FieldGroup>
         <p v-else class="text-sm text-muted-foreground">No current report from the worker.</p>
       </div>
     </CardContent>
