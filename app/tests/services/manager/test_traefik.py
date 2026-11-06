@@ -107,31 +107,6 @@ class TestSetupDomain:
     assert f"Cloudflare setup failed during startup: {error}. Continuing on the current certificate." in caplog.text
 
 
-class TestSyncCertificatesToWorker:
-  async def test_the_private_key_is_synced_with_a_mode_that_keeps_it_private_and_the_rest_is_not(self):
-    calls = []
-
-    async def sync_file(hostname, source, destination, keys=None, formatter=None, timeout=120, mode=None):
-      calls.append((destination, mode))
-
-    async def write_worker_revision(hostname, key, value):
-      pass
-
-    manager = SimpleNamespace(
-        worker_home_dir="/opt/sage",
-        tailscale=SimpleNamespace(sync_file=sync_file),
-        certs=SimpleNamespace(workers=SimpleNamespace(fullchain_path="fullchain.pem", key_path="key.pem", hash=lambda: "abc")),
-        write_worker_revision=write_worker_revision, update_worker=lambda hostname, **inputs: None)
-
-    await TraefikMixin.sync_certificates_to_worker(manager, SimpleNamespace(hostname="w1"))
-
-    assert dict(calls) == {
-        "/opt/sage/traefik/certs/fullchain.pem": None,
-        "/opt/sage/traefik/certs/key.pem": 0o600,
-        "/opt/sage/traefik/dynamic/certs.yml": None,
-    }
-
-
 class LocalWorkers:
   """Workers whose Sage home is a folder each under `root`; their commands run in a local shell, and every file
   written or command run is logged in order."""
@@ -159,6 +134,7 @@ class LocalWorkers:
     path = self.home(hostname) / Path(dst).relative_to("/opt/sage")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content)
+    path.chmod(mode)
     self.log.append((hostname, "write", dst))
 
   async def exec_command(self, hostname, command, timeout=300):

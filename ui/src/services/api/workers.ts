@@ -9,12 +9,12 @@ export interface InfraContainer {
   status: string
 }
 
-// Whether the workers' certificate as issued covers the worker's names, whether it is the one on the worker, and then
-// until when it is valid.
+// Validity and application of one certificate on a worker.
 export interface WorkerCertificate {
   covered: boolean
   synced: boolean
   expiry: string | null
+  error: string | null
 }
 
 export type WorkerStatus =
@@ -38,6 +38,7 @@ export interface Worker {
   infra?: InfraContainer[] | null
   metrics: WorkerMinute | null
   certificate: WorkerCertificate | null
+  discovery_certificate: WorkerCertificate | null
   // The health of its own tunnel at the last Cloudflare check, and that tunnel's name.
   tunnel: TunnelStatus | null
   tunnel_name: string
@@ -59,6 +60,7 @@ export interface WorkerListItem {
   infra: InfraContainer[] | null
   metrics: WorkerMinute | null
   certificate: WorkerCertificate
+  discovery_certificate: WorkerCertificate
   tunnel: TunnelStatus | null
 }
 

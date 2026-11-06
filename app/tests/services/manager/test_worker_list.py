@@ -10,6 +10,7 @@ import pytest
 import config
 from services.certs import Certs
 from services.db import Application, Container, Domain, Worker
+from services.manager._common import CERTIFICATE_TEMPLATES
 from services.manager.decisions import WorkerInputs, WorkerReboot, worker_entry, worker_with_row, worker_without_row
 from services.manager.workers import WorkersMixin
 from services.metrics import Metrics
@@ -94,17 +95,52 @@ class TestEntries:
     workers.add("w1", True, "100.64.0.2", subdomain="eu1")
     workers.update_worker("w1", report=report(running=("traefik", "web", "telegraf")))
 
-    assert workers.worker_list == [
-        {"hostname": "w1", "ip": "100.64.0.2", "subdomain": "eu1", "online": True, "status": "online", "path": "direct",
-         "container_count": 3,
-         "infra": [{"name": "traefik", "status": "running"}, {"name": "vector", "status": "missing"},
-                   {"name": "telegraf", "status": "running"}, {"name": "cloudflared", "status": "missing"},
-                   {"name": "cloudflared-discovery", "status": "missing"}],
-         "metrics": None, "certificate": {"covered": False, "synced": False, "expiry": None}, "tunnel": None},
-        {"hostname": "w2", "ip": "100.64.0.3", "subdomain": "w2", "online": False, "status": "offline", "path": None,
-         "container_count": None,
-         "infra": None, "metrics": None, "certificate": {"covered": False, "synced": False, "expiry": None}, "tunnel": None},
-    ]
+    assert workers.worker_list == [{"hostname": "w1",
+                                    "ip": "100.64.0.2",
+                                    "subdomain": "eu1",
+                                    "online": True,
+                                    "status": "online",
+                                    "path": "direct",
+                                    "container_count": 3,
+                                    "infra": [{"name": "traefik",
+                                                "status": "running"},
+                                              {"name": "vector",
+                                               "status": "missing"},
+                                              {"name": "telegraf",
+                                               "status": "running"},
+                                              {"name": "cloudflared",
+                                               "status": "missing"},
+                                              {"name": "cloudflared-discovery",
+                                               "status": "missing"}],
+                                    "metrics": None,
+                                    "certificate": {"covered": False,
+                                                    "synced": False,
+                                                    "expiry": None,
+                                                    "error": None},
+                                    "discovery_certificate": {"covered": False,
+                                                              "synced": False,
+                                                              "expiry": None,
+                                                              "error": None},
+                                    "tunnel": None},
+                                   {"hostname": "w2",
+                                    "ip": "100.64.0.3",
+                                    "subdomain": "w2",
+                                    "online": False,
+                                    "status": "offline",
+                                    "path": None,
+                                    "container_count": None,
+                                    "infra": None,
+                                    "metrics": None,
+                                    "certificate": {"covered": False,
+                                                    "synced": False,
+                                                    "expiry": None,
+                                                    "error": None},
+                                    "discovery_certificate": {"covered": False,
+                                                              "synced": False,
+                                                              "expiry": None,
+                                                              "error": None},
+                                    "tunnel": None},
+                                   ]
 
   def test_the_order_is_by_name(self, workers):
     for hostname in ("w3", "w1", "w2"):
@@ -201,7 +237,7 @@ class TestSubdomain:
     changes.keyed.clear()
     workers.save_worker_subdomain("w1", "eu2")
     assert self.subdomain(workers, "w1") == "eu2"
-    assert changes.sources == [UpdateSource.WORKER_LIST, UpdateSource.DOMAINS]
+    assert changes.sources == [UpdateSource.CERTIFICATES, UpdateSource.WORKER_LIST, UpdateSource.DOMAINS]
     assert changes.keyed == [(UpdateSource.WORKER_ENTRY, "w1")]
 
   def test_a_new_subdomain_resyncs_the_applications_its_internal_names_route_to_and_asks_for_the_certificate_and_the_setup(
@@ -229,21 +265,24 @@ class TestSubdomain:
   def test_a_worker_shows_the_certificate_as_issued_and_as_last_synced_to_it(self, workers, data_dir):
     workers.add("w1", True, subdomain="eu1")
     workers.add("w2", True, "100.64.0.3", subdomain="us1")
-    write_certificate(data_dir / "certs/workers", ["*.int.example.test", "*.eu1.int.example.test"])
-    workers.certs.workers.load()
-    workers.update_worker("w1", certs=workers.certs.workers.hash())
-    workers.update_worker("w2", certs="old")
+    certificate = workers.certs.workers["w1"]
+    write_certificate(certificate.fullchain_path.parent, certificate.names)
+    workers.certs.reload(certificate)
+    workers.update_worker("w1", certs={"worker": certificate.info(CERTIFICATE_TEMPLATES)["proof"]})
+    workers.update_worker("w2", certs={"worker": "old"})
     assert {hostname: entry["certificate"] for hostname, entry in entries(workers).items()} == {
-        "w1": {"covered": True, "synced": True, "expiry": workers.certs.workers.expiry().isoformat()},
-        "w2": {"covered": False, "synced": False, "expiry": None}}
+        "w1": {"covered": True, "synced": True, "expiry": certificate.expiry().isoformat(), "error": None},
+        "w2": {"covered": False, "synced": False, "expiry": None, "error": None}}
 
-  def test_the_workers_certificate_is_to_cover_the_names_of_the_workers_listed(self, workers):
+  def test_each_workers_certificate_covers_only_its_own_namespace(self, workers):
     workers.add("w2", True, "100.64.0.3", subdomain="us1")
     workers.add("w1", True, subdomain="eu1")
-    assert workers.certs.workers.names == ["*.int.example.test", "*.eu1.int.example.test", "*.us1.int.example.test"]
+    assert {host: certificate.names for host, certificate in workers.certs.workers.items()} == {
+        "w1": ("*.eu1.int.example.test",), "w2": ("*.us1.int.example.test",)}
     workers.save_worker_subdomain("w1", "eu2")
     workers._forget_worker("w2")
-    assert workers.certs.workers.names == ["*.int.example.test", "*.eu2.int.example.test"]
+    assert {host: certificate.names for host, certificate in workers.certs.workers.items()} == {
+        "w1": ("*.eu2.int.example.test",), "w2": ()}
 
   def test_loading_the_table_brings_each_worker_its_subdomain(self, workers):
     Worker.create(hostname="w1", ip="100.64.0.2", subdomain="eu1")
@@ -277,9 +316,27 @@ class TestPresence:
     workers.add("w1", True)
     workers.paths["100.64.0.9"] = "direct"
     workers._save_worker("w1", "100.64.0.9")
-    assert entries(workers)["w1"] == {"hostname": "w1", "ip": "100.64.0.9", "subdomain": "w1", "online": True,
-                                      "status": "online", "path": "direct", "container_count": None, "infra": None,
-                                      "metrics": None, "certificate": {"covered": False, "synced": False, "expiry": None}, "tunnel": None}
+    assert entries(workers)["w1"] == {
+        "hostname": "w1",
+        "ip": "100.64.0.9",
+        "subdomain": "w1",
+        "online": True,
+        "status": "online",
+        "path": "direct",
+        "container_count": None,
+        "infra": None,
+        "metrics": None,
+        "certificate": {
+            "covered": False,
+            "synced": False,
+            "expiry": None,
+            "error": None},
+        "discovery_certificate": {
+            "covered": False,
+            "synced": False,
+            "expiry": None,
+            "error": None},
+        "tunnel": None}
     assert Worker.get(Worker.hostname == "w1").ip == "100.64.0.9"
 
   def test_forgetting_a_worker_deletes_its_row_and_its_entry(self, workers):
@@ -418,7 +475,7 @@ class TestFiringForOneWorker:
 class TestFiring:
   def test_a_list_that_differs_fires_the_list_source(self, workers, changes):
     workers.add("w1", True)
-    assert changes.sources == [UpdateSource.WORKER_LIST] * 2
+    assert changes.sources == [UpdateSource.CERTIFICATES] + [UpdateSource.WORKER_LIST] * 2
 
   def test_a_push_that_changes_nothing_fires_nothing(self, workers, changes):
     workers.add("w1", True)
@@ -452,7 +509,7 @@ class TestFiring:
     workers.add("w1", True)
     changes.sources.clear()
     workers._forget_worker("w1")
-    assert changes.sources == [UpdateSource.WORKER_LIST]
+    assert changes.sources == [UpdateSource.CERTIFICATES, UpdateSource.WORKER_LIST]
 
 
 class TestTheClock:
@@ -568,11 +625,30 @@ class TestFromManyThreads:
             "certificate": {
                 "covered": False,
                 "synced": False,
-                "expiry": None},
+                "expiry": None, "error": None},
+            "discovery_certificate": {"covered": False, "synced": False, "expiry": None, "error": None},
             "tunnel": None} for index,
         name in enumerate(names)}
     if flapper_present:
-      expected["wx"] = {"hostname": "wx", "ip": "100.64.0.99", "subdomain": "wx", "online": True, "status": "online",
-                        "path": None, "container_count": None,
-                        "infra": None, "metrics": None, "certificate": {"covered": False, "synced": False, "expiry": None}, "tunnel": None}
+      expected["wx"] = {
+          "hostname": "wx",
+          "ip": "100.64.0.99",
+          "subdomain": "wx",
+          "online": True,
+          "status": "online",
+          "path": None,
+          "container_count": None,
+          "infra": None,
+          "metrics": None,
+          "certificate": {
+              "covered": False,
+              "synced": False,
+              "expiry": None,
+              "error": None},
+          "discovery_certificate": {
+              "covered": False,
+              "synced": False,
+              "expiry": None,
+              "error": None},
+          "tunnel": None}
     assert workers.worker_list == [expected[name] for name in sorted(expected)]

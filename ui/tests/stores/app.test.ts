@@ -53,7 +53,8 @@ function worker(hostname: string, status: WorkerStatus = 'online'): WorkerListIt
     container_count: null,
     infra: null,
     metrics: null,
-    certificate: { covered: true, synced: true, expiry: null },
+    certificate: { covered: true, synced: true, expiry: null, error: null },
+    discovery_certificate: { covered: true, synced: true, expiry: null, error: null },
     tunnel: 'healthy',
   }
 }
@@ -247,6 +248,24 @@ describe('sectionIndicator', () => {
 })
 
 describe('the indicators by status', () => {
+  it.each([
+    [false, false, null, 'busy', 'waiting for the certificate'],
+    [false, true, null, 'busy', 'waiting for the certificate'],
+    [true, false, null, 'busy', 'syncing the certificate'],
+    [true, true, null, 'ok', 'certificate ready'],
+    [false, false, 'CA unavailable', 'error', 'certificate update failed'],
+    [true, false, 'copy failed', 'error', 'certificate update failed'],
+    [true, true, 'renewal rejected', 'warning', 'certificate ready'],
+  ] as const)(
+    'certificateIndicator: coverage %s, applied %s, error %s',
+    (covered, synced, error, state, label) => {
+      expect(useAppStore().certificateIndicator({ covered, synced, error, expiry: null })).toEqual({
+        state,
+        label,
+      })
+    }
+  )
+
   it.each([
     ['active', 'ok'],
     ['error', 'error'],

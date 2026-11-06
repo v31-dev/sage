@@ -74,16 +74,19 @@ export const useAppStore = defineStore('app', () => {
     return workers.value?.find(worker => worker.hostname === hostname)?.status
   }
 
-  // The workers' certificate on the worker in the list, as `workerStatus`.
+  // The worker's own certificate in the list, as `workerStatus`.
   function workerCertificate(hostname: string): WorkerCertificate | undefined {
     return workers.value?.find(worker => worker.hostname === hostname)?.certificate
   }
 
   // Whether the worker's internal names have their certificate: issued for them, then synced to the worker.
   function certificateIndicator(certificate: WorkerCertificate): Indicator {
+    if (certificate.error && (!certificate.covered || !certificate.synced)) {
+      return { state: 'error', label: 'certificate update failed' }
+    }
     if (!certificate.covered) return { state: 'busy', label: 'waiting for the certificate' }
     if (!certificate.synced) return { state: 'busy', label: 'syncing the certificate' }
-    return { state: 'ok', label: 'certificate ready' }
+    return { state: certificate.error ? 'warning' : 'ok', label: 'certificate ready' }
   }
 
   function tunnelIndicator(status: TunnelStatus): Indicator {

@@ -1,6 +1,6 @@
 tcp:
   routers:
-    # Routed by the SNI in the client's TLS ClientHello; TLS ends here with the workers' certificate (Traefik handles
+    # Routed by the SNI in the client's TLS ClientHello; TLS ends here with this worker's certificate (Traefik handles
     # Postgres STARTTLS, so libpq with sslmode=require works without sslnegotiation=direct).
     domain_${ID}:
       rule: HostSNI(`${HOST}`)

@@ -11,8 +11,27 @@ def report():
 
 
 def listed(hostname="w1", **overrides):
-  return {"hostname": hostname, "ip": "100.64.0.2", "online": True, "status": "online", "path": None, "container_count": None,
-          "infra": None, "metrics": None, "certificate": {"covered": False, "synced": False, "expiry": None}, "tunnel": None, **overrides}
+  return {
+      "hostname": hostname,
+      "ip": "100.64.0.2",
+      "online": True,
+      "status": "online",
+      "path": None,
+      "container_count": None,
+      "infra": None,
+      "metrics": None,
+      "certificate": {
+          "covered": False,
+          "synced": False,
+          "expiry": None,
+          "error": None},
+      "discovery_certificate": {
+          "covered": False,
+          "synced": False,
+          "expiry": None,
+          "error": None},
+      "tunnel": None,
+      **overrides}
 
 
 class TestInfra:

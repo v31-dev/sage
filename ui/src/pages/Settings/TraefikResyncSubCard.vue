@@ -86,12 +86,14 @@ async function onConfirmResync() {
           <div class="space-y-3 py-2 text-sm text-muted-foreground">
             <p>The following will happen:</p>
             <ul class="ml-4 list-disc space-y-1 text-xs">
-              <li>Certificates that are missing or about to expire are renewed.</li>
               <li>
-                Every online worker gets the current certificate, routing configuration and DNS
-                record.
+                Obsolete certificates are retired; missing or expiring certificates are issued.
               </li>
-              <li>Every application's routing is resynced.</li>
+              <li>
+                Every online worker gets its own certificate, the shared discovery certificate,
+                routing configuration and DNS record.
+              </li>
+              <li>Every domain's routing and discovery are resynced.</li>
             </ul>
           </div>
 

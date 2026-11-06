@@ -13,7 +13,7 @@ from services.updates import Feed, Topic, UpdateFeed, Updates, UpdateSource, Upd
 
 TOPICS = {
     UpdateTopic.INFO: Topic(info, frozenset({UpdateSource.QUEUE_STATE, UpdateSource.RESTORING, UpdateSource.SETTINGS_APPLYING,
-                                             UpdateSource.CHECKS, UpdateSource.LATEST_VERSION})),
+                                             UpdateSource.CHECKS, UpdateSource.CERTIFICATES, UpdateSource.LATEST_VERSION})),
     UpdateTopic.TASKS: Topic(list_tasks, frozenset({UpdateSource.TASKS})),
     UpdateTopic.BACKUP_STATUS: Topic(get_platform_backup_status, frozenset({UpdateSource.BACKUP_STATUS})),
     UpdateTopic.BACKUPS: Topic(list_platform_backups, frozenset({UpdateSource.BACKUPS})),

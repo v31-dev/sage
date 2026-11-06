@@ -93,8 +93,8 @@ describe('a domain on its application page', () => {
   )
 
   it.each([
-    [{ covered: false, synced: false, expiry: null }, 'waiting for the certificate'],
-    [{ covered: true, synced: false, expiry: null }, 'syncing the certificate'],
+    [{ covered: false, synced: false, expiry: null, error: null }, 'waiting for the certificate'],
+    [{ covered: true, synced: false, expiry: null, error: null }, 'syncing the certificate'],
   ])(
     'of an internal domain shows the certificate on its worker until it is ready there',
     (certificate, shown) => {
@@ -105,7 +105,10 @@ describe('a domain on its application page', () => {
       expect(mountCard(domain(), workers).text()).not.toContain(shown)
       expect(
         mountCard(internal, [
-          { hostname: 'w1', certificate: { covered: true, synced: true, expiry: null } },
+          {
+            hostname: 'w1',
+            certificate: { covered: true, synced: true, expiry: null, error: null },
+          },
         ]).text()
       ).not.toContain('certificate')
     }

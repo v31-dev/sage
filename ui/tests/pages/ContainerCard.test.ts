@@ -16,7 +16,8 @@ function listed(hostname: string, status: WorkerStatus): WorkerListItem {
     container_count: null,
     infra: null,
     metrics: null,
-    certificate: { covered: true, synced: true, expiry: null },
+    certificate: { covered: true, synced: true, expiry: null, error: null },
+    discovery_certificate: { covered: true, synced: true, expiry: null, error: null },
     tunnel: 'healthy',
   }
 }

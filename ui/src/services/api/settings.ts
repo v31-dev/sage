@@ -30,17 +30,20 @@ export interface SettingSectionStatus {
 
 export type TunnelStatus = 'healthy' | 'degraded' | 'down' | 'inactive'
 
-// The Cloudflare section's: the platform tunnel and its health, and both certificates. The workers' is to cover each
-// name listed; `covered` says whether the one issued does, and the error is why its last issuance failed.
+export interface CertificateInfo {
+  id: string
+  names: string[]
+  valid: boolean
+  expiry: string | null
+  error: string | null
+}
+
 export interface CloudflareDetails {
   account_id: string | null
   tunnel_id: string | null
   tunnel_name: string
   tunnel_status: TunnelStatus | null
-  manager_certificate_expiry: string | null
-  workers_certificate_expiry: string | null
-  workers_certificate_names: { name: string; covered: boolean }[]
-  workers_certificate_error: string | null
+  certificates: CertificateInfo[]
 }
 
 export type SettingsStatus = Record<SettingSection, SettingSectionStatus>

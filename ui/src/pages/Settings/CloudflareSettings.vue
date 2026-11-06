@@ -28,7 +28,12 @@ const tunnel = computed(() => {
 })
 
 function expiry(value: string | null | undefined) {
-  return value ? `Valid until ${formatDate(value)}` : 'Not issued yet'
+  return value ? `Expires ${formatDate(value)}` : 'Not issued yet'
+}
+
+const certificateLabels: Record<string, string> = {
+  manager: 'Manager certificate',
+  discovery: 'Discovery certificate',
 }
 
 const tunnelUrl = computed(() =>
@@ -57,20 +62,6 @@ const fields = computed(() => [
     description: "Run on every worker; each worker's own tunnel carries its public names",
     readonly: true,
     value: tunnel.value,
-  },
-  {
-    key: 'manager_certificate',
-    label: 'Manager Certificate',
-    description: 'For the manager address; never leaves the manager',
-    readonly: true,
-    value: expiry(details.value?.manager_certificate_expiry),
-  },
-  {
-    key: 'workers_certificate',
-    label: "Workers' Certificate",
-    description: 'For the internal and TCP names, copied to every worker',
-    readonly: true,
-    value: expiry(details.value?.workers_certificate_expiry),
   },
 ])
 </script>
@@ -112,22 +103,24 @@ const fields = computed(() => [
         <CardContent>
           <FieldSet>
             <FieldGroup>
-              <Field>
-                <FieldLabel>Names of the Workers' Certificate</FieldLabel>
-                <FieldDescription>
-                  Each worker's internal names, and *.int. A new worker or subdomain reissues it.
-                </FieldDescription>
+              <Field v-for="certificate in details.certificates" :key="certificate.id">
+                <FieldLabel>{{
+                  certificateLabels[certificate.id] ?? `Worker ${certificate.id.slice(7)}`
+                }}</FieldLabel>
+                <FieldDescription>{{
+                  certificate.names.length ? expiry(certificate.expiry) : 'Pending retirement'
+                }}</FieldDescription>
                 <div data-certificate-names class="flex flex-wrap gap-2">
                   <StateIndicator
-                    v-for="name in details.workers_certificate_names"
-                    :key="name.name"
-                    :state="name.covered ? 'ok' : 'warning'"
-                    :label="name.covered ? name.name : `${name.name}: not issued yet`"
+                    v-for="name in certificate.names"
+                    :key="name"
+                    :state="certificate.valid ? 'ok' : 'warning'"
+                    :label="certificate.valid ? name : `${name}: not ready`"
                     show-label
                   />
                 </div>
-                <FieldError v-if="details.workers_certificate_error">
-                  The last issuance failed: {{ details.workers_certificate_error }}
+                <FieldError v-if="certificate.error">
+                  {{ certificate.error }}
                 </FieldError>
               </Field>
             </FieldGroup>

@@ -372,7 +372,9 @@ class PlatformMixin:
       raise
     finally:
       # The restore rewrote worker state in the DB; force-resync the workers.
-      follow_ups = [dict(task=self.sync_workers, scopes={"platform"}, params={"force": True},
+      follow_ups = [dict(task=self.renew_certificates, scopes={"platform", "app", "domain"},
+                         executor="platform", on_conflict=OnConflict.REPLACE),
+                    dict(task=self.sync_workers, scopes={"platform"}, params={"force": True},
                          executor="platform", on_conflict=OnConflict.REPLACE),
                     dict(task=self.sync_discovery, scopes={"domain"}, params={"repair": True},
                          executor="app", on_conflict=OnConflict.REPLACE, quiet=True)]

@@ -53,7 +53,6 @@ WORKER_INFRA_TEMPLATES = templates_digest(
     "worker/worker.env",
     "worker/traefik/traefik.yml",
     "worker/traefik/config.yml",
-    "worker/traefik/certs.yml",
     "worker/vector/vector.yml",
     "worker/telegraf/telegraf.conf",
 )
@@ -66,3 +65,5 @@ DISCOVERY_TEMPLATES = templates_digest(
     "worker/traefik/discovery_public.yml",
     "worker/traefik/discovery_internal.yml",
 )
+
+CERTIFICATE_TEMPLATES = templates_digest("worker/traefik/certs.yml")

@@ -8,6 +8,7 @@ import pytest
 
 from services.db import Task
 from services.manager.queue import SCOPES, QueueMixin
+from services.manager.traefik import TraefikMixin
 from utils.queue import OnConflict, QueuedTask, TaskQueue
 
 
@@ -135,3 +136,27 @@ class TestDomainScopes:
 
     assert {task["task_id"] for task in queue.snapshot()["running"]} == {"deploy", "other"}
     assert [task["task_id"] for task in queue.snapshot()["queued"]] == ["linked"]
+
+
+@pytest.mark.parametrize("other_scope", ["platform", "app:demo-web", "domain:42", "common", "metrics"])
+async def test_certificate_maintenance_holds_primary_scopes_and_leaves_secondary_work_running(other_scope):
+  class Maintenance(TraefikMixin):
+    async def renew_certificates(self):
+      await hold()
+
+  with ThreadPoolExecutor(max_workers=1) as pool:
+    queue = TaskQueue(SCOPES, {"platform": pool, "app": pool})
+    manager = Maintenance()
+    manager.add_task = queue.add_task
+    try:
+      manager.request_certificate_renewal()
+      queue.dispatch_tick()
+      queue.add_task(hold, scopes={other_scope}, executor="app", task_id="other")
+      queue.dispatch_tick()
+      assert ("other" in {task["task_id"] for task in queue.snapshot()["running"]}) == (other_scope in {"common", "metrics"})
+    finally:
+      queue.stop()
+      running = tuple(queue._tasks)
+      for task in running:
+        task.cancel()
+      await asyncio.gather(*running, return_exceptions=True)

@@ -93,7 +93,7 @@ def update_worker(request: Request, hostname: str, worker_data: dict = Body(...)
 
 def worker_payload(worker: Worker) -> dict:
   """The worker with its containers and their applications, and what the worker list holds of it: `infra` (the state
-  of the containers of its stack), `online`, `status`, `path`, `metrics` (its newest minute), `certificate` and
+  of the containers of its stack), `online`, `status`, `path`, `metrics` (its newest minute), both certificate states and
   `tunnel` (its own tunnel's health), with that tunnel's name."""
   data = model_to_dict(
       worker,
@@ -118,6 +118,7 @@ def worker_payload(worker: Worker) -> dict:
   data["path"] = entry.get("path")
   data["metrics"] = entry.get("metrics")
   data["certificate"] = entry.get("certificate")
+  data["discovery_certificate"] = entry.get("discovery_certificate")
   data["tunnel"] = entry.get("tunnel")
   data["tunnel_name"] = Manager().cloudflare.worker_tunnel_name(worker.hostname)
   return data

@@ -5,6 +5,7 @@ from dataclasses import replace
 from typing import Callable
 
 import config
+from services.certs import Certs
 from services.db import Application, Container, Domain, Instance, Worker
 from services.domains import domains_changed
 from services.metrics import Metrics
@@ -15,7 +16,7 @@ from utils.executor import run_in_executor_with_context
 from utils.logging import TaskFailed
 from utils.queue import OnConflict
 
-from ._common import WORKER_INFRA_TEMPLATES, app_dir, content_hash
+from ._common import CERTIFICATE_TEMPLATES, WORKER_INFRA_TEMPLATES, app_dir, content_hash
 from .application import mark
 from .decisions import (WORKER_TASKS, WorkerInputs, WorkerReboot, WorkerRow, plan_worker_sync, worker_claim_refusal, worker_entry, worker_owner,
                         worker_stack_problem, worker_with_row, worker_without_row)
@@ -221,10 +222,10 @@ class WorkersMixin:
         del self._worker_inputs[hostname]
       now, started = utcnow(), WorkerReports().started
       workers = [(hostname, record) for hostname, record in sorted(self._worker_inputs.items()) if record.ip is not None]
-      self.certs.set_worker_subdomains(record.subdomain for _, record in workers if record.subdomain)
+      self.certs.set_workers({hostname: record.subdomain for hostname, record in workers})
       listed = {entry["hostname"]: entry for entry in self.worker_list}
-      self.worker_list = [worker_entry(hostname, record, now, started, self.certs.workers.hash(),
-                                       self.certs.workers.expiry(), self.certs.covers_subdomain)
+      self.worker_list = [worker_entry(hostname, record, now, started,
+                                       self.certs.worker_state(hostname, record.certs, CERTIFICATE_TEMPLATES))
                           for hostname, record in workers]
       now_listed = {entry["hostname"]: entry for entry in self.worker_list}
     differing = [hostname for hostname in listed.keys() | now_listed.keys() if listed.get(hostname) != now_listed.get(hostname)]
@@ -418,7 +419,7 @@ class WorkersMixin:
                      or is_new or existing.ip != worker.ip)
 
       row = self._save_worker(worker.hostname, worker.ip, subdomain)
-      self.update_worker(worker.hostname, certs=revisions.get("certs"))
+      self.update_worker(worker.hostname, certs=Certs.read_proofs(revisions.get("certs")))
       if is_new:
         self.request_certificate_renewal()
       await run_in_executor_with_context(self.cloudflare.sync_worker_records, worker.hostname, row.subdomain, worker.ip)
@@ -464,12 +465,6 @@ class WorkersMixin:
             f"{self.worker_home_dir}/traefik/dynamic/config.yml",
             {"DOMAIN": domain or "", "HOSTNAME": worker.hostname},
         )
-        # File-provider TLS config pointing at the PEM the manager syncs below.
-        await self.tailscale.sync_file(
-            worker.hostname,
-            app_dir / "templates/worker/traefik/certs.yml",
-            f"{self.worker_home_dir}/traefik/dynamic/certs.yml",
-        )
         await self.tailscale.sync_file(
             worker.hostname,
             app_dir / "templates/worker/vector/vector.yml",
@@ -488,12 +483,11 @@ class WorkersMixin:
             },
         )
 
-      # Land the cert before any container start/restart below
       repaired = []
-      if (self.certs.workers.is_valid()
-              and revisions.get("certs") != self.certs.workers.hash()):
-        await self.sync_certificates_to_worker(worker)
+      if await self.sync_certificates_to_worker(worker):
         repaired.append("certificates")
+      if not is_new and any(not certificate.is_valid() for certificate in self.certs.for_worker(worker.hostname).values()):
+        self.request_certificate_renewal()
 
       if infra_stale:
         # Start containers
@@ -628,6 +622,7 @@ class WorkersMixin:
           f"Worker {worker.hostname} was offline, so Sage could not clean it up. It is removed from Sage "
           "only; anything on the VM, including the VM itself, has to be removed by hand.", "warning")
     self._forget_worker(worker.hostname)
+    self.request_certificate_renewal()
     WorkerReports().forget(worker.hostname)
     Metrics().forget(worker.hostname)
     await self.tailscale.forget(worker.hostname)

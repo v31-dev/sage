@@ -1,6 +1,8 @@
 import hashlib
+import json
 import logging
 import time
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -15,6 +17,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 import config
 from services.base import Base
 from services.cloudflare import Cloudflare
+from services.updates import Fact, UpdateSource
 from utils.common import get_env, utcnow
 from utils.retry import retry
 
@@ -29,87 +32,238 @@ def _aware_now():
 CHALLENGE_COMMENT = "sage-acme-challenge"
 
 
+@dataclass(frozen=True)
+class CertificateMaterial:
+  certificate: x509.Certificate | None = None
+  covered: frozenset[str] = frozenset()
+  fingerprint: str | None = None
+  key_matches: bool = False
+
+
 class Certificate:
   """One issued certificate: the names it must cover and its PEM files."""
 
   def __init__(self, directory: Path, names: list[str]):
     directory.mkdir(parents=True, exist_ok=True)
-    self.names = names
+    self.names = tuple(names)
     self.fullchain_path = directory / "fullchain.pem"
     self.key_path = directory / "key.pem"
-    # Why the last issuance failed, until one succeeds.
+    self.retired_directory = directory / "retired"
+    # The latest issuance or retirement failure.
     self.error = None
-    self._cert = None
-    self._hash = None
-    self.covered = frozenset()
+    self.material = CertificateMaterial()
     self.load()
 
   def load(self):
     """Read the certificate into memory, so checks and the status never touch the disk.
     At start, and after every write of the PEM file."""
-    self._cert, self._hash, self.covered = None, None, frozenset()
+    certificate, covered, fingerprint, key_matches = None, frozenset(), None, False
     if not self.fullchain_path.exists():
+      self.material = CertificateMaterial()
       return
     pem = self.fullchain_path.read_bytes()
-    self._hash = hashlib.sha256(pem).hexdigest()[:16]
+    fingerprint = hashlib.sha256(pem).hexdigest()[:16]
     try:
-      self._cert = x509.load_pem_x509_certificate(pem)
-      self.covered = frozenset(self._cert.extensions.get_extension_for_class(
+      certificate = x509.load_pem_x509_certificate(pem)
+      covered = frozenset(certificate.extensions.get_extension_for_class(
           x509.SubjectAlternativeName).value.get_values_for_type(x509.DNSName))
-    except Exception:
+      key = serialization.load_pem_private_key(self.key_path.read_bytes(), password=None)
+      key_matches = certificate.public_key().public_bytes(
+          serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo) == key.public_key().public_bytes(
+          serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
+    except (ValueError, TypeError, OSError, x509.ExtensionNotFound):
       pass
+    self.material = CertificateMaterial(certificate, covered, fingerprint, key_matches)
+
+  @property
+  def covered(self):
+    return self.material.covered
 
   def expiry(self):
-    return self._cert.not_valid_after_utc if self._cert else None
+    return self.material.certificate.not_valid_after_utc if self.material.certificate else None
 
   def is_valid(self):
-    """Unexpired and covering every name (so a domain change makes it stale)."""
-    cert = self._cert
-    if cert is None or cert.not_valid_after_utc <= _aware_now():
-      return False
-    return all(name in self.covered for name in self.names)
+    return self.info()["valid"]
 
-  def needs_renewal(self, days: int = config.RENEWAL_THRESHOLD_DAYS):
-    if self._cert is None:
+  def info(self, template: str = "") -> dict:
+    material = self.material
+    expiry = material.certificate.not_valid_after_utc if material.certificate else None
+    valid = bool(self.names and material.key_matches and expiry and expiry > _aware_now()
+                 and material.covered == frozenset(self.names))
+    return {"names": list(self.names), "valid": valid, "expiry": expiry.isoformat() if expiry else None,
+            "error": self.error, "hash": material.fingerprint,
+            "proof": hashlib.sha256(f"{material.fingerprint}:{template}".encode()).hexdigest()[:16] if valid else None}
+
+  def obsolete(self) -> bool:
+    return not self.names or bool(self.material.certificate and (
+        self.material.covered != frozenset(self.names) or not self.material.key_matches))
+
+  def stash(self):
+    if self.fullchain_path.exists():
+      if self.material.certificate:
+        self.retired_directory.mkdir(exist_ok=True)
+        self.fullchain_path.replace(self.retired_directory / f"{self.material.fingerprint}.pem")
+      else:
+        self.fullchain_path.unlink()
+    self.key_path.unlink(missing_ok=True)
+    self.load()
+
+  def needs_renewal(self, days: int | None = None):
+    if self.material.certificate is None:
       return True
-    return self._cert.not_valid_after_utc <= _aware_now() + timedelta(days=days)
+    return self.material.certificate.not_valid_after_utc <= _aware_now() + timedelta(days=config.RENEWAL_THRESHOLD_DAYS if days is None else days)
 
   def hash(self):
-    """Content hash of the chain (None when absent); compared against a worker's
-    `revisions/certs` stamp to detect missed rotations."""
-    return self._hash
+    """Content hash of the loaded chain, or None when absent."""
+    return self.material.fingerprint
 
 
 class Certs(Base):
-  """Owns Sage's two TLS certificates — in-process ACME issuance (Let's Encrypt
-  DNS-01 via the Cloudflare client), PEM storage, renewal, and the :443 in-place
-  reload. The manager's certificate covers only its own address and never leaves the
-  manager; the workers' covers `*.int.<domain>` and each worker's `*.<subdomain>.int.<domain>`,
-  and is synced to every worker."""
+  """Owns certificate material, desired names, ACME issuance and retirement."""
 
   def __init__(self):
     super().__init__()
 
-    cert_dir = config.DATA_DIR / "certs"
-    cert_dir.mkdir(parents=True, exist_ok=True)
-    self.account_key_path = cert_dir / "account.key"
+    self.directory = config.DATA_DIR / "certs"
+    self.directory.mkdir(parents=True, exist_ok=True)
+    self.account_key_path = self.directory / "account.key"
     self.domain = get_env("DOMAIN")
-    self.manager = Certificate(cert_dir / "manager", [Cloudflare().manager_hostname])
-    self.workers = Certificate(cert_dir / "workers", [])
-    self.set_worker_subdomains([])
+    self.manager = Certificate(self.directory / "manager", [Cloudflare().manager_hostname])
+    self.discovery = Certificate(self.directory / "discovery", [f"discovery.int.{self.domain}"])
+    self.workers: dict[str, Certificate] = {}
 
     # The uvicorn :443 SSLContext, set by main once the server is built. Holding
     # the reference lets renewal swap the cert in place (new handshakes get the
     # new cert, live connections keep theirs) without restarting the server.
     self.tls_context = None
+    self.changed = Fact(self.status, UpdateSource.CERTIFICATES)
 
-  def set_worker_subdomains(self, subdomains):
-    """The workers' certificate is to cover the names under these workers' subdomains."""
-    self.workers.names = [f"*.int.{self.domain}", *sorted(f"*.{subdomain}.int.{self.domain}" for subdomain in subdomains)]
+  def set_workers(self, workers: dict[str, str | None]):
+    with self.lock:
+      for hostname in self.workers.keys() | workers.keys():
+        if Path(hostname).name != hostname or hostname in {".", ".."}:
+          raise ValueError("Invalid worker hostname.")
+        names = (f"*.{workers[hostname]}.int.{self.domain}",) if workers.get(hostname) else ()
+        if hostname not in self.workers and not names:
+          continue
+        if hostname not in self.workers or self.workers[hostname].names != names:
+          if hostname in self.workers:
+            self.workers[hostname].stash()
+          self.workers[hostname] = Certificate(self.directory / "workers" / hostname, names)
+    self.changed.check()
 
-  def covers_subdomain(self, subdomain: str | None) -> bool:
-    """Whether the workers' certificate as issued covers the names under this subdomain."""
-    return f"*.{subdomain}.int.{self.domain}" in self.workers.covered
+  def inventory(self) -> dict[str, Certificate]:
+    with self.lock:
+      return {"manager": self.manager, "discovery": self.discovery,
+              **{f"worker:{hostname}": certificate for hostname, certificate in sorted(self.workers.items())}}
+
+  def stored(self) -> dict[str, Certificate]:
+    with self.lock:
+      if (self.directory / "workers").exists():
+        for directory in (self.directory / "workers").iterdir():
+          if directory.is_dir() and not directory.is_symlink() and directory.name not in self.workers:
+            self.workers[directory.name] = Certificate(directory, ())
+      certificates = {"manager": self.manager, "discovery": self.discovery,
+                      **{f"worker:{hostname}": certificate for hostname, certificate in sorted(self.workers.items())}}
+      for certificate in certificates.values():
+        certificate.load()
+    self.changed.check()
+    return certificates
+
+  def status(self) -> list[dict]:
+    return [{"id": identity, **{key: value for key, value in certificate.info().items() if key not in {"hash", "proof"}}}
+            for identity, certificate in self.inventory().items()]
+
+  def is_current(self, identity: str, certificate: Certificate) -> bool:
+    return self.inventory().get(identity) is certificate
+
+  def for_worker(self, hostname: str) -> dict[str, Certificate]:
+    with self.lock:
+      return {"discovery": self.discovery,
+              **({"worker": self.workers[hostname]} if hostname in self.workers and self.workers[hostname].names else {})}
+
+  def worker_state(self, hostname: str, applied: dict | None, template: str) -> dict:
+    certificates = self.for_worker(hostname)
+    result = {}
+    for role in ("worker", "discovery"):
+      info = certificates[role].info(template) if role in certificates else None
+      synced = bool(info and info["valid"] and (applied or {}).get(role) == info["proof"])
+      result[role] = {"covered": bool(info and info["valid"]), "synced": synced,
+                      "expiry": info["expiry"] if synced else None, "error": info["error"] if info else None}
+    return result
+
+  @staticmethod
+  def read_proofs(value: str | None) -> dict:
+    try:
+      proofs = json.loads(value or "{}")
+      return proofs if isinstance(proofs, dict) and all(isinstance(k, str) and isinstance(v, str) for k, v in proofs.items()) else {}
+    except (ValueError, TypeError):
+      return {}
+
+  def reload(self, certificate: Certificate):
+    with self.lock:
+      certificate.load()
+      for current in (self.manager, self.discovery, *self.workers.values()):
+        if current is not certificate and current.fullchain_path == certificate.fullchain_path:
+          current.load()
+          current.error = certificate.error
+    self.changed.check()
+
+  def retire(self, certificate: Certificate):
+    try:
+      with self.lock:
+        obsolete = certificate.obsolete()
+        if obsolete:
+          certificate.stash()
+      pending = sorted(certificate.retired_directory.glob("*.pem"))
+      if not obsolete and not pending:
+        return
+      failures = []
+      acme_client = None
+      for path in pending:
+        try:
+          retired = x509.load_pem_x509_certificate(path.read_bytes())
+          if retired.not_valid_after_utc > _aware_now():
+            if acme_client is None:
+              acme_client, _ = self.acme_client()
+            try:
+              acme_client.revoke(retired, 5)
+            except messages.Error as error:
+              if error.code != "alreadyRevoked":
+                raise
+          path.unlink()
+        except Exception as error:
+          failures.append(f"{path.name}: {error}")
+      certificate.error = "; ".join(failures) or None
+      self.reload(certificate)
+      if failures:
+        raise RuntimeError(certificate.error)
+      if certificate.retired_directory.exists():
+        certificate.retired_directory.rmdir()
+      if not certificate.names:
+        with self.lock:
+          for hostname, current in list(self.workers.items()):
+            if not current.names and current.fullchain_path == certificate.fullchain_path:
+              current.fullchain_path.parent.rmdir()
+              del self.workers[hostname]
+      self.changed.check()
+    except Exception as error:
+      certificate.error = str(error)
+      self.reload(certificate)
+      raise
+
+  def acme_client(self, profile: str | None = None):
+    account_key = self._account_key()
+    net = client.ClientNetwork(account_key, user_agent="sage")
+    directory = client.ClientV2.get_directory(config.ACME_DIRECTORY, net)
+    if profile is not None and profile not in (directory.meta.profiles or {}):
+      raise ValueError(f"ACME directory does not advertise the required '{profile}' certificate profile.")
+    acme_client = client.ClientV2(directory, net=net)
+    try:
+      acme_client.new_account(messages.NewRegistration.from_data(terms_of_service_agreed=True))
+    except errors.ConflictError as error:
+      acme_client.net.account = messages.RegistrationResource(body=messages.Registration(), uri=error.location)
+    return acme_client, account_key
 
   def _account_key(self):
     if self.account_key_path.exists():
@@ -130,17 +284,7 @@ class Certs(Base):
     """Run one ACME DNS-01 order for the certificate's names and persist the PEM
     cert + key. Blocking (network I/O plus a DNS propagation wait) — offload to
     an executor lane, never call on the event loop."""
-    account_key = self._account_key()
-    net = client.ClientNetwork(account_key, user_agent="sage")
-    directory = client.ClientV2.get_directory(config.ACME_DIRECTORY, net)
-    acme_client = client.ClientV2(directory, net=net)
-    try:
-      # No contact email: Let's Encrypt doesn't send expiry mail.
-      acme_client.new_account(messages.NewRegistration.from_data(terms_of_service_agreed=True))
-    except errors.ConflictError as e:
-      # The account key is already registered
-      acme_client.net.account = messages.RegistrationResource(
-          body=messages.Registration(), uri=e.location)
+    acme_client, account_key = self.acme_client(config.ACME_PROFILE)
 
     cert_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     cert_key_pem = cert_key.private_bytes(
@@ -148,7 +292,7 @@ class Certs(Base):
         serialization.PrivateFormat.PKCS8,
         serialization.NoEncryption(),
     )
-    order = acme_client.new_order(crypto_util.make_csr(cert_key_pem, certificate.names))
+    order = acme_client.new_order(crypto_util.make_csr(cert_key_pem, certificate.names), profile=config.ACME_PROFILE)
 
     # One DNS-01 authorization per identifier: clear any stale record, publish
     # the TXT, wait for it to be visible on the authoritative nameservers, then
@@ -183,10 +327,17 @@ class Certs(Base):
         except Exception as e:
           logger.warning(f"Failed to remove ACME challenge record {record_name}: {e}")
 
-    certificate.fullchain_path.write_text(order.fullchain_pem)
-    certificate.key_path.write_bytes(cert_key_pem)
-    certificate.key_path.chmod(0o600)
-    certificate.load()
+    with self.lock:
+      current = next((item for item in self.inventory().values() if item.fullchain_path == certificate.fullchain_path), None)
+      if current is not None and current is not certificate:
+        certificate.retired_directory.mkdir(exist_ok=True)
+        fingerprint = hashlib.sha256(order.fullchain_pem.encode()).hexdigest()[:16]
+        (certificate.retired_directory / f"{fingerprint}.pem").write_text(order.fullchain_pem)
+        raise RuntimeError("Certificate ownership changed during issuance.")
+      certificate.fullchain_path.write_text(order.fullchain_pem)
+      certificate.key_path.write_bytes(cert_key_pem)
+      certificate.key_path.chmod(0o600)
+    self.reload(certificate)
     logger.info(f"Issued certificate for {', '.join(certificate.names)}; expires {certificate.expiry()}.")
 
   def _wait_for_dns(self, records):
@@ -239,6 +390,7 @@ class Certs(Base):
   def ensure(self, certificate: Certificate):
     """Issue only when there is no valid cert or it is within the renewal
     window. Returns True if a new cert was written. Blocking — offload."""
+    self.retire(certificate)
     if certificate.is_valid() and not certificate.needs_renewal():
       return False
     logger.info(f"Requesting a certificate for {', '.join(certificate.names)} from Let's Encrypt.")
@@ -247,7 +399,10 @@ class Certs(Base):
     except Exception as e:
       certificate.error = str(e)
       raise
-    certificate.error = None
+    else:
+      certificate.error = None
+    finally:
+      self.changed.check()
     return True
 
   def ensure_manager_at_startup(self):

@@ -7,9 +7,13 @@ Sage is a manager-and-workers platform designed for Docker workloads connected t
 - The manager is the control plane.
 - Workers run application containers and edge components.
 - Cloudflare is required (env vars): DNS records, a tunnel per worker for public apps, and the DNS-01 challenge for Sage's certificates.
-- Traefik provides ingress on workers, each routing only to its own containers. The manager issues two certificates in-process (ACME DNS-01): its own for `<TS_NAME>.core.<domain>`, whose key never leaves it, and the workers', covering `*.int.<domain>` and each worker's `*.<subdomain>.int.<domain>`, synced to every worker.
+- Traefik provides ingress on workers, each routing only to its own containers. The manager issues certificates in-process (ACME DNS-01): its own for `<TS_NAME>.core.<domain>`, whose key never leaves it; one shared exact `discovery.int.<domain>` certificate; and a distinct-key `*.<subdomain>.int.<domain>` certificate for each worker. Each worker receives discovery plus its own wildcard only.
 - Vector runs on workers and forwards Traefik's and the applications' logs to the manager, a batch at least every 10 s; the manager captures its tasks' logs in-process.
 - Telegraf runs on workers and pushes the host's and the containers' metrics and the containers' state to the manager every 10 s; the manager collects its own container metrics in-process.
+
+Sage requests Let's Encrypt's [`tlsserver` profile](https://letsencrypt.org/docs/profiles/#tlsserver) for 45-day
+certificates. Renewal becomes due when seven days remain before the certificate's signed expiry. Certificates
+are checked at startup and daily; valid certificates outside that window stay in use.
 
 ## Manager Runtime
 
@@ -35,7 +39,7 @@ The manager process starts these concurrent services from `app/main.py`:
 Startup is service-driven:
 
 - `Manager()` initializes the platform services.
-- Before serving, startup sets up the domain (`Manager.setup_domain`): connect to Cloudflare (zone, tunnel, the manager's record) and get the manager's certificate, retrying a failure that clears by itself (a network error, HTTP 5xx or 429) after 1, 4 and 16 minutes and then exiting; any other failure, such as a rejected token, and a rate limit exit at once, and a still-valid certificate lets startup continue. Other startup work that touches the network (release check, the workers' certificate, S3 backup discovery, settings checks, re-checking online workers against their stamps) runs as queued tasks once the servers are up. S3 and notifications are optional.
+- Before serving, startup sets up the domain (`Manager.setup_domain`): connect to Cloudflare (zone, tunnel, the manager's record) and get the manager's certificate, retrying a failure that clears by itself (a network error, HTTP 5xx or 429) after 1, 4 and 16 minutes and then exiting; any other failure, such as a rejected token, and a rate limit exit at once, and a still-valid certificate lets startup continue. Other startup work that touches the network (release check, worker and discovery certificates, S3 backup discovery, settings checks, re-checking online workers against their stamps) runs as queued tasks once the servers are up. S3 and notifications are optional.
 - If service initialization fails, the process exits.
 
 ## Worker Runtime
@@ -59,6 +63,24 @@ The worker stack currently includes:
 `vector` and `telegraf` run with a 128 MiB memory limit, swap included: their executables are large, and the kernel keeps the pages it has read in the container's memory, which on a small worker the applications could use.
 
 Applications themselves are also deployed onto workers as Docker workloads.
+
+## Certificate Lifecycle
+
+Adding a worker requests its own wildcard leaf. Changing its subdomain removes and revokes its obsolete leaf
+before issuance of the replacement; other workers' leaves and the shared discovery certificate remain independent.
+Deleting a worker also retires its leaf. Revocation can run while a worker is offline; its next setup repairs the
+remote certificate inventory. An offline removed VM still needs manual decommissioning.
+
+Maintenance runs sequentially under the platform/app/domain scopes, leaving common and metrics independent.
+An individual failure is reported while other certificate owners continue. A valid leaf stays in use if ordinary
+renewal fails. Retired public leaves survive restart until revocation succeeds or they expire; their private keys
+are removed. [Certificate state and worker application](backend.md)
+are described in the backend guide.
+
+Let's Encrypt's [rate limits](https://letsencrypt.org/docs/rate-limits/) apply across worker certificates:
+new names share the registered-domain allowance, and repeated issuance for one exact name set has its own limit.
+These limits refill gradually; revocation does not refund issuance capacity. Sage uses one ACME account and
+serializes its orders. Provider failures surface in certificate status, tasks and notifications.
 
 ## Traffic Model
 
@@ -143,8 +165,8 @@ linked to, and optionally a service and a pool:
 - `internal` — `https://<name>.<subdomain>.int.<domain>`, under its worker's subdomain, on the tailnet only (the
   `tailscale-only` allow list). WebSockets work unchanged (HTTP Upgrade).
 - `tcp` — a raw TCP service (redis, postgres, ...) at `<name>.<subdomain>.int.<domain>:8443`, on the tailnet only. TCP
-  has no Host header, so Traefik routes by **TLS SNI** on one shared port (`tcps`, `:8443`), ends TLS with the workers'
-  certificate and forwards plain TCP to the container, so the container needs no TLS of its own. Clients connect with
+  has no Host header, so Traefik routes by **TLS SNI** on one shared port (`tcps`, `:8443`), ends TLS with that worker's
+  wildcard certificate and forwards plain TCP to the container, so the container needs no TLS of its own. Clients connect with
   TLS (e.g. `rediss://`, libpq `sslmode=require`); Traefik handles Postgres STARTTLS (Traefik 3.x), so no
   `sslnegotiation=direct` or sidecar is needed.
 
@@ -175,7 +197,7 @@ const url = process.env.REDIS_URL // rediss://<name>.<subdomain>.int.<domain>:84
 createClient({ url, socket: { servername: new URL(url).hostname } })
 ```
 
-To see what a worker presents for a given SNI (the workers' certificate vs. the default one):
+To see what a worker presents for a given SNI (its wildcard certificate or the default one):
 
 ```bash
 # with -servername -> issued by Let's Encrypt; with -noservername -> TRAEFIK DEFAULT CERT

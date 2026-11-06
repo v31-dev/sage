@@ -46,7 +46,7 @@ const appStore = useAppStore()
 
 const props = withDefaults(defineProps<Props>(), {})
 
-// Shown from the moment Restart is confirmed (undone if the manager refuses) until the next poll replaces `worker`
+// Shown from the moment Restart is confirmed (undone if the manager refuses) until the next push replaces `worker`
 // with the manager's answer.
 const requested = ref<WorkerStatus | null>(null)
 watch(
@@ -75,27 +75,29 @@ interface StackDetail {
   copy?: string
 }
 
-// Each container of the stack, with what it carries besides its state: Traefik the workers' certificate (its expiry
-// once it is ready on the worker), cloudflared the worker's own tunnel, cloudflared-discovery the platform's.
+const certificates = computed(() => [
+  {
+    id: 'worker',
+    label: 'Worker certificate',
+    description: "For this worker's internal and TCP names.",
+    state: props.worker.certificate,
+  },
+  {
+    id: 'discovery',
+    label: 'Discovery certificate',
+    description: 'For internal discovery, shared by all workers.',
+    state: props.worker.discovery_certificate,
+  },
+])
+
 const stack = computed(() => {
   const details = appStore.info?.settings?.cloudflare.details
-  const certificate = props.worker.certificate
   const tunnel = (name: string, status: TunnelStatus | null): StackDetail => ({
     indicator: status ? appStore.tunnelIndicator(status) : undefined,
     value: status ? `${name} · ${status}` : name,
     copy: name,
   })
   const carried: Record<string, StackDetail | undefined> = {
-    traefik: certificate
-      ? {
-          indicator: appStore.certificateIndicator(certificate),
-          value:
-            appStore.certificateIndicator(certificate).label +
-            (certificate.covered && certificate.synced && certificate.expiry
-              ? `, valid until ${formatDate(certificate.expiry)}`
-              : ''),
-        }
-      : undefined,
     cloudflared: tunnel(props.worker.tunnel_name, props.worker.tunnel),
     'cloudflared-discovery': details
       ? tunnel(details.tunnel_name, details.tunnel_status)
@@ -131,7 +133,7 @@ async function onConfirmRestart() {
 
 <template>
   <Card>
-    <CardHeader class="border-b">
+    <CardHeader class="border-b flex flex-col gap-3 md:flex-row md:justify-between">
       <CardTitle>
         <SectionTitle :title="props.worker.hostname" :size="3">
           <StateIndicator v-bind="appStore.workerIndicator(status)" show-label />
@@ -204,6 +206,41 @@ async function onConfirmRestart() {
         <p class="text-sm text-muted-foreground">
           {{ props.worker.containers.length }}
         </p>
+      </div>
+
+      <div class="md:col-span-2 lg:col-span-7">
+        <Label>Certificates</Label>
+        <FieldGroup class="mt-3 gap-5">
+          <SettingField
+            v-for="certificate in certificates"
+            :key="certificate.id"
+            :id="`certificate-${certificate.id}`"
+            :label="certificate.label"
+            :description="certificate.description"
+            :error="certificate.state?.error ?? undefined"
+            :data-certificate="certificate.id"
+          >
+            <div class="flex flex-col items-start gap-2">
+              <template v-if="certificate.state">
+                <StateIndicator
+                  v-bind="appStore.certificateIndicator(certificate.state)"
+                  show-label
+                />
+                <p
+                  v-if="
+                    certificate.state.covered &&
+                    certificate.state.synced &&
+                    certificate.state.expiry
+                  "
+                  class="text-sm text-muted-foreground"
+                >
+                  Valid until {{ formatDate(certificate.state.expiry) }}
+                </p>
+              </template>
+              <p v-else class="text-sm text-muted-foreground">No certificate status yet.</p>
+            </div>
+          </SettingField>
+        </FieldGroup>
       </div>
 
       <div class="md:col-span-2 lg:col-span-7">

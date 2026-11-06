@@ -88,7 +88,7 @@ Nothing is published on the host; everything is reached over the tailnet:
   `:5173`); `:80` and other hostnames don't serve the UI. Config: `dev/traefik/`
   (templated with `TS_NAME` and `DOMAIN`). Compose restarts it whenever `sage` restarts,
   since it loses its network with it. It doesn't watch the certificate files: after the
-  manager's certificate renews (about every 60 days), run `docker compose restart traefik`.
+  manager's certificate renews, run `docker compose restart traefik`.
 - `<TS_NAME>:5678` — debugpy. The VS Code "Attach to dev manager" configuration prompts
   for the address. debugpy has no authentication, so only allow your own devices to reach
   this port in the tailnet policy.

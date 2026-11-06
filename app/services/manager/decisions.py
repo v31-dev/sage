@@ -190,7 +190,7 @@ class WorkerInputs:
   report: Received | None = None        # the newest report of its Telegraf
   path: str | None = None               # how the manager reaches it
   metrics: dict | None = None           # its newest minute of metrics written, with the machine's size
-  certs: str | None = None              # the hash of the workers' certificate on it, as its stamp was last read or written
+  certs: dict[str, str] | None = None    # the applied certificate proofs, as their stamp was last read or written
   tunnel: str | None = None             # the health of its own tunnel at the last Cloudflare check
 
 
@@ -226,18 +226,14 @@ def worker_status(worker: WorkerInputs, now: datetime, started: datetime) -> str
   return "online" if worker_ready(worker, now, started) else "not ready"
 
 
-def worker_entry(hostname: str, worker: WorkerInputs, now: datetime, started: datetime, certificate_hash: str | None,
-                 certificate_expiry: datetime | None, covers: Callable[[str | None], bool]) -> dict:
+def worker_entry(hostname: str, worker: WorkerInputs, now: datetime, started: datetime, certificates: dict) -> dict:
   """The worker as the worker list shows it. `container_count` and `infra` (the state of the containers of its stack)
   are those of its current report, and `metrics` its newest minute while that began less than
-  WORKER_METRICS_STALE_SECONDS ago. `certificate` says whether the workers' certificate, whose hash is
-  `certificate_hash`, covers the worker's names (`covers` its subdomain) and is the one on it, and then until when it is
-  valid."""
+  WORKER_METRICS_STALE_SECONDS ago. Certificate projections come from their owner with the worker's apply proofs."""
   current = _current_report(worker, now)
   metrics = worker.metrics
   if metrics is not None and (now - metrics["ts"]).total_seconds() >= config.WORKER_METRICS_STALE_SECONDS:
     metrics = None
-  synced = certificate_hash is not None and worker.certs == certificate_hash
   return {
       "hostname": hostname,
       "ip": worker.ip,
@@ -248,8 +244,8 @@ def worker_entry(hostname: str, worker: WorkerInputs, now: datetime, started: da
       "container_count": len(current.snapshot.containers) if current else None,
       "infra": infra_of(current) if current else None,
       "metrics": metrics,
-      "certificate": {"covered": covers(worker.subdomain), "synced": synced,
-                      "expiry": certificate_expiry.isoformat() if synced and certificate_expiry else None},
+      "certificate": certificates["worker"],
+      "discovery_certificate": certificates["discovery"],
       "tunnel": worker.tunnel,
   }
 

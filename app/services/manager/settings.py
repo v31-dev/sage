@@ -155,30 +155,22 @@ class SettingsMixin:
         # Checked at startup, every 5 minutes and after a save; this is before the first.
         entry.update(state="applying", message="Checking…")
       elif key == "cloudflare" and check["state"] == "ok":
-        certificates = (self.certs.manager, self.certs.workers)
-        invalid = [certificate for certificate in certificates if not certificate.is_valid()]
-        if invalid:
-          # The names it lacks, or all of them when it has expired.
-          names = [name for certificate in invalid
-                   for name in [name for name in certificate.names if name not in certificate.covered] or certificate.names]
-          errors = [certificate.error for certificate in invalid if certificate.error]
-          entry.update(state="error", message=f"No valid certificate for {', '.join(names)}"
-                       + (f": {' '.join(errors)}" if errors else ". Resync Traefik to issue it."))
+        certificates = self.certs.status()
+        failed = [certificate for certificate in certificates if not certificate["valid"] or certificate["error"]]
+        if failed:
+          entry.update(state="error", message="Certificates need attention: " + "; ".join(
+              f"{', '.join(certificate['names']) or certificate['id']}: {certificate['error'] or 'not valid'}"
+              for certificate in failed))
         else:
-          expiry = min(certificate.expiry() for certificate in certificates)
-          entry["message"] += f" Certificates valid until {expiry:%Y-%m-%d}."
+          expiry = min(certificate["expiry"] for certificate in certificates)
+          entry["message"] += f" Certificates valid until {expiry[:10]}."
       if key == "cloudflare":
-        manager_expiry, workers_expiry = self.certs.manager.expiry(), self.certs.workers.expiry()
         entry["details"] = {
             "account_id": self.cloudflare.account_id,
             "tunnel_id": self.cloudflare.tunnel_id,
             "tunnel_name": self.cloudflare.tunnel_name,
             "tunnel_status": self.cloudflare.tunnel_status,
-            "manager_certificate_expiry": manager_expiry.isoformat() if manager_expiry else None,
-            "workers_certificate_expiry": workers_expiry.isoformat() if workers_expiry else None,
-            "workers_certificate_names": [{"name": name, "covered": name in self.certs.workers.covered}
-                                          for name in self.certs.workers.names],
-            "workers_certificate_error": self.certs.workers.error,
+            "certificates": self.certs.status(),
         }
       status[key] = entry
     return status

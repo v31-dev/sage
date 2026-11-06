@@ -1,5 +1,8 @@
 import asyncio
+import hashlib
+import json
 import logging
+import shlex
 
 import config
 from services.db import Domain, Worker
@@ -7,7 +10,7 @@ from utils.executor import run_in_executor_with_context
 from utils.queue import OnConflict
 from utils.retry import is_transient, retry
 
-from ._common import app_dir
+from ._common import CERTIFICATE_TEMPLATES, app_dir
 
 logger = logging.getLogger(__name__)
 
@@ -41,30 +44,48 @@ class TraefikMixin:
       return
     self.certs.ensure_manager_at_startup()
 
-  async def renew_certificates(self):
-    """Issue each certificate that is missing or within its renewal window, hot-reload
-    the manager's :443 server in place, then push the workers' certificate to any worker
-    whose stamp is stale."""
-    if await run_in_executor_with_context(self.certs.ensure, self.certs.manager):
-      self.certs.reload_local_tls()
-      self.notify(f"Renewed the manager's certificate; expires {self.certs.manager.expiry()}.", "success")
-    if await run_in_executor_with_context(self.certs.ensure, self.certs.workers):
+  async def renew_certificates(self, force_sync: bool = False):
+    failures = []
+    self.certs.set_workers({worker.hostname: worker.subdomain for worker in Worker.select()})
+    stored = await run_in_executor_with_context(self.certs.stored)
+    try:
+      await self.sync_certificates_to_workers()
+    except Exception as error:
+      failures.append(str(error))
+    blocked = set()
+    for identity, certificate in stored.items():
+      if not self.certs.is_current(identity, certificate):
+        continue
+      try:
+        await run_in_executor_with_context(self.certs.retire, certificate)
+      except Exception as error:
+        blocked.add(identity)
+        failures.append(f"{identity} retirement: {error}")
       self.update_workers({})
-      self.notify(f"Renewed the workers' certificate; expires {self.certs.workers.expiry()}.", "success")
-    await self.sync_certificates_to_workers()
+    for identity, certificate in self.certs.inventory().items():
+      if not certificate.names or identity in blocked or not self.certs.is_current(identity, certificate):
+        continue
+      try:
+        if await run_in_executor_with_context(self.certs.ensure, certificate):
+          if identity == "manager":
+            self.certs.reload_local_tls()
+          self.notify(f"Issued certificate for {', '.join(certificate.names)}; expires {certificate.expiry()}.", "success")
+      except Exception as error:
+        failures.append(f"{identity} issuance: {error}")
+      self.update_workers({})
+    try:
+      await self.sync_certificates_to_workers(force=force_sync)
+    except Exception as error:
+      failures.append(str(error))
+    if failures:
+      self.notify("Certificate maintenance failed: " + "; ".join(failures), "error")
+      raise RuntimeError("; ".join(failures))
 
   async def refresh_traefik(self):
-    """Ensure both certificates are valid and resync everything that depends on them —
-    the manager's :443 server, each worker's PEM, Traefik config and `*.<subdomain>.int` DNS
-    record, and app routing. Triggered by Resync Traefik."""
+    """Maintain certificate inventory and resync worker TLS, Traefik, DNS and routing."""
     try:
-      if await run_in_executor_with_context(self.certs.ensure, self.certs.manager):
-        self.certs.reload_local_tls()
-      if await run_in_executor_with_context(self.certs.ensure, self.certs.workers):
-        self.update_workers({})
-
+      await self.renew_certificates(force_sync=True)
       domain = self.cloudflare.domain
-      await self.sync_certificates_to_workers(force=True)
 
       # Worker Traefik picks up config.yml from its watched dynamic dir (file
       # provider), so no restart is needed.
@@ -87,48 +108,50 @@ class TraefikMixin:
       raise
 
   async def sync_certificates_to_workers(self, force: bool = False):
-    """Push the workers' certificate to every online worker whose stamp is stale, or
-    to all of them when forced."""
-    if not self.certs.workers.is_valid():
-      self.notify(
-          "No valid certificate available; skipping certificate sync to workers.",
-          type="error",
-      )
-      return
+    results = await asyncio.gather(*[self.sync_certificates_to_worker(worker, force=force)
+                                     for worker in self.online_workers()], return_exceptions=True)
+    failures = [str(result) for result in results if isinstance(result, Exception)]
+    if failures:
+      raise RuntimeError("Worker certificate sync failed: " + "; ".join(failures))
 
-    cert_hash = self.certs.workers.hash()
-    workers = self.online_workers()
-    if force:
-      targets = workers
-    else:
-      revisions = await asyncio.gather(
-          *[self.read_worker_revisions(worker.hostname) for worker in workers])
-      targets = [
-          worker for worker, revision in zip(workers, revisions)
-          if revision.get("certs") != cert_hash
-      ]
-
-    # Workers are independent, so sync them concurrently: the asyncssh SFTP
-    # leaves fan out and drain on the event loop.
-    await asyncio.gather(
-        *[self.sync_certificates_to_worker(worker) for worker in targets],
-        return_exceptions=False,
-    )
-
-  async def sync_certificates_to_worker(self, worker: Worker):
-    traefik_dir = f"{self.worker_home_dir}/traefik"
-    await self.tailscale.sync_file(
-        worker.hostname, self.certs.workers.fullchain_path, f"{traefik_dir}/certs/fullchain.pem")
-    await self.tailscale.sync_file(
-        worker.hostname, self.certs.workers.key_path, f"{traefik_dir}/certs/key.pem", mode=0o600)
-    # Re-write the watched dynamic cert config so Traefik's file-provider watch
-    # fires and reloads the new PEM; overwriting only the cert files is not a
-    # reliable reload trigger.
-    await self.tailscale.sync_file(
-        worker.hostname,
-        app_dir / "templates/worker/traefik/certs.yml",
-        f"{traefik_dir}/dynamic/certs.yml")
-    await self.write_worker_revision(
-        worker.hostname, "certs", self.certs.workers.hash() or "")
-    self.update_worker(worker.hostname, certs=self.certs.workers.hash())
-    logger.info(f"Synced certificate to worker {worker.hostname}.")
+  async def sync_certificates_to_worker(self, worker: Worker, force: bool = False):
+    hostname = worker.hostname
+    dynamic = f"{self.worker_home_dir}/traefik/dynamic/certs.yml"
+    managed = f"{self.worker_home_dir}/traefik/certs/managed"
+    revisions, listing = await asyncio.gather(
+        self.read_worker_revisions(hostname),
+        self.tailscale.exec_command(hostname, f"if [ -f {shlex.quote(dynamic)} ]; then printf '@config '; "
+                                    f"sha256sum {shlex.quote(dynamic)} | cut -d ' ' -f 1; fi; "
+                                    f"if [ -d {shlex.quote(managed)} ]; then find {shlex.quote(managed)} -mindepth 1 -maxdepth 1 -printf '%f\\n'; fi",
+                                    timeout=30))
+    actual = set(listing[1])
+    configured = next((line.removeprefix("@config ") for line in actual if line.startswith("@config ")), None)
+    actual = {line for line in actual if not line.startswith("@config ")}
+    material = {role: (certificate, certificate.info(CERTIFICATE_TEMPLATES))
+                for role, certificate in self.certs.for_worker(hostname).items() if certificate.is_valid()}
+    proofs = {role: info["proof"] for role, (_, info) in material.items()}
+    expected = {f"{role}-{info['hash']}.{suffix}" for role, (_, info) in material.items() for suffix in ("pem", "key")}
+    certificates = [{"certFile": f"/etc/traefik/certs/managed/{role}-{info['hash']}.pem",
+                     "keyFile": f"/etc/traefik/certs/managed/{role}-{info['hash']}.key"} for role, (_, info) in material.items()]
+    rendered = (app_dir / "templates/worker/traefik/certs.yml").read_text().replace("${CERTIFICATES}", json.dumps(certificates))
+    if (not force and configured == hashlib.sha256(rendered.encode()).hexdigest() and actual == expected
+            and self.certs.read_proofs(revisions.get("certs")) == proofs):
+      self.update_worker(hostname, certs=proofs)
+      return False
+    for role, (certificate, info) in material.items():
+      for source, suffix, mode in ((certificate.fullchain_path, "pem", 0o644), (certificate.key_path, "key", 0o600)):
+        name = f"{role}-{info['hash']}.{suffix}"
+        if force or name not in actual:
+          await self.tailscale.sync_file(hostname, source, f"{managed}/{name}", mode=mode)
+    current = {role: certificate.info(CERTIFICATE_TEMPLATES)["proof"] for role, certificate in self.certs.for_worker(hostname).items()
+               if certificate.is_valid()}
+    if current != proofs:
+      raise RuntimeError(f"{hostname}: certificate configuration changed during sync")
+    await self.tailscale.sync_file(hostname, app_dir / "templates/worker/traefik/certs.yml", dynamic,
+                                   {"CERTIFICATES": json.dumps(certificates)})
+    if actual - expected:
+      await self.tailscale.exec_command(hostname, "rm -rf -- " + " ".join(
+          shlex.quote(f"{managed}/{name}") for name in sorted(actual - expected)))
+    await self.write_worker_revision(hostname, "certs", json.dumps(proofs, sort_keys=True))
+    self.update_worker(hostname, certs=proofs)
+    return True

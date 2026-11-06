@@ -12,6 +12,7 @@ VERSION = (Path(__file__).parent / "VERSION").read_text().strip()
 
 CLOUDFLARE_API_URL = "https://api.cloudflare.com/client/v4"
 ACME_DIRECTORY = "https://acme-v02.api.letsencrypt.org/directory"
+ACME_PROFILE = "tlsserver"
 LATEST_RELEASE_URL = "https://api.github.com/repos/v31-dev/sage/releases/latest"
 RELEASE_PAGE_URL = "https://github.com/v31-dev/sage/releases/tag/v{version}"
 
@@ -50,7 +51,7 @@ CLOUDFLARE_RETRY_DELAYS = (1, 2)
 S3_RETRY_DELAYS = (1, 2)
 # A cold start without a certificate retries before giving up (seconds).
 STARTUP_RETRY_DELAYS = (60, 240, 960)
-RENEWAL_THRESHOLD_DAYS = 30
+RENEWAL_THRESHOLD_DAYS = 7
 DNS_PROPAGATION_TIMEOUT = 180
 DNS_POLL_INTERVAL = 5
 FINALIZE_TIMEOUT_SECONDS = 180

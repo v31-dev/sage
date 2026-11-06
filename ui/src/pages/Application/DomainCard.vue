@@ -26,7 +26,7 @@ const container = computed(() =>
   )
 )
 
-// The workers' certificate on the worker of an internal or TCP name, shown until it is ready there.
+// The owning worker's certificate for an internal or TCP name, shown until it is ready there.
 const pendingCertificate = computed(() => {
   if (props.domain.type === 'public' || !props.domain.worker) return undefined
   const certificate = appStore.workerCertificate(props.domain.worker)

@@ -190,8 +190,12 @@ The tag is for the tailnet policy above, which lets the manager reach the machin
 not read it. Add the machine on the Workers page by its hostname or Tailscale IP: Sage checks
 that it answers, then sets it up over SSH. In Sage a worker has a subdomain, given or
 random, which its internal names are under (`<name>.<subdomain>.int.<DOMAIN>`). A new
-worker or a new subdomain reissues the workers' certificate, which Let's Encrypt allows 5
-times for the same names and 50 times for the domain every 7 days. Deleting a worker stops
+worker gets its own certificate and private key; changing its subdomain replaces only that
+certificate. Workers share a separate certificate for internal discovery. Certificates use
+45-day validity and renew with seven days remaining. The worker's page shows each certificate's
+status and applied expiry separately; Settings → Cloudflare shows the full inventory and any issuance or
+retirement errors. See [Certificate Lifecycle](docs/architecture.md#certificate-lifecycle) for cleanup and rate limits.
+Deleting a worker stops
 Sage's services on it and removes Sage's files from it, so delete its containers first; a
 worker with internal domains can't be deleted until they are moved or deleted. A worker that is offline is
 removed from Sage as it is, with its containers; its VM has to be deleted by hand.

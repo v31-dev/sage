@@ -171,7 +171,7 @@ class TestTopics:
 
   def test_the_info_follows_what_the_manager_status_is_made_of(self):
     assert TOPICS["info"].sources == {UpdateSource.QUEUE_STATE, UpdateSource.RESTORING, UpdateSource.SETTINGS_APPLYING,
-                                      UpdateSource.CHECKS, UpdateSource.LATEST_VERSION}
+                                      UpdateSource.CHECKS, UpdateSource.CERTIFICATES, UpdateSource.LATEST_VERSION}
 
   @pytest.mark.parametrize("topic, source", [("tasks", UpdateSource.TASKS), ("backup-status", UpdateSource.BACKUP_STATUS),
                                              ("backups", UpdateSource.BACKUPS), ("release", UpdateSource.RELEASE),

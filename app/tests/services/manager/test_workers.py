@@ -451,6 +451,9 @@ class TestRefreshWorkerPaths:
 
 
 class SetupHarness(Harness):
+  async def sync_certificates_to_worker(self, worker):
+    return False
+
   """The real `setup_worker`, up to the first file it writes (the fake tailnet then stops it)."""
   setup_worker = WorkersMixin.setup_worker
 
@@ -562,10 +565,10 @@ class TestSetupWorkerToTheEnd:
     assert setup.renewals == 1
     assert setup.discovery_requests > 0
 
-  def test_a_worker_that_comes_back_asks_for_no_certificate(self, setup):
+  def test_a_worker_that_comes_back_requests_missing_certificates(self, setup):
     add(setup, "w3", False, "100.64.0.9")
     self.run(setup)
-    assert setup.renewals == 0
+    assert setup.renewals == 1
 
   @pytest.mark.parametrize("stamp", ["d1", "d0", None])
   def test_setup_requests_discovery_even_when_its_files_are_current(self, setup, stamp):
@@ -575,9 +578,9 @@ class TestSetupWorkerToTheEnd:
     assert setup.discovery_requests > 0
 
   def test_the_certificate_stamp_it_read_reaches_the_list(self, setup):
-    setup.tailscale.up_output = ["/opt/sage/revisions/certs:abc"]
+    setup.tailscale.up_output = ['/opt/sage/revisions/certs:{"worker": "abc", "discovery": "def"}']
     self.run(setup)
-    assert setup._worker_inputs["w3"].certs == "abc"
+    assert setup._worker_inputs["w3"].certs == {"worker": "abc", "discovery": "def"}
 
   def test_it_runs_its_own_tunnel_beside_the_shared_one(self, setup):
     self.run(setup)

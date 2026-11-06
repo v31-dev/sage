@@ -138,11 +138,30 @@ Every date shown goes through `formatDate` or `formatDateStringAgo` (`lib/utils.
 raw. Both parse with `parseDate`: backend timestamps without a timezone are UTC; ones with
 `Z` or an offset are read as given.
 
+## Certificate Status
+
+The Worker page shows its wildcard and the shared internal discovery certificate separately, even without a
+current worker report. Both come from the worker topic's `certificate` and `discovery_certificate` fields. A
+certificate is ready only when valid and applied; its expiry is shown only with that matching applied proof.
+Missing status stays unknown, and pending or stale material has no displayed expiry. Settings inventory expiry
+is not used for a worker's applied certificate.
+
+The app store's `certificateIndicator` maps both roles to waiting, syncing or ready. An unusable certificate
+with an update error is failed. A ready certificate whose update failed keeps its applied expiry, with a warning
+and the error shown alongside it. Connectivity and stack health keep their own states. Ordinary worker pushes
+update the fields without page polling.
+
 ## Settings Pages
 
 Every settings page is a `SettingsSection.vue` given a `fields` list (`key`, `label`, and optionally `description`, `placeholder`, `type`, `secret`, `readonly`, `value`). A `readonly` field shows its `value` and is never loaded or saved. Tailscale and Cloudflare are env vars, so all their fields are read-only: the section then shows no Save / Test / Reset, and the page adds its dashboard links (`links` slot: the manager's machine in the Tailscale console; the tunnel and DNS records in Cloudflare) and its resync actions (`after` slot). S3 and notifications have editable fields: for those the section draws the inputs, loads, saves, tests and resets the values, shows a failing field's reason from the status under it, and handles the unsaved-changes dialog and the route-leave guard. Errors show inline; successes as toasts. The sidebar
 and the pages read each section's status from the app store (`info.settings`). States are
 drawn by `components/StateIndicator.vue` (see State Indicators).
+
+Cloudflare's certificate inventory comes from `info.settings.cloudflare.details.certificates`: manager,
+shared discovery, and hostname-owned worker entries. Each shows its desired names, local validity, expiry and
+maintenance error; removed owners with retained public leaves show pending retirement. This inventory describes
+the manager's material; worker pages independently show what is applied. Resync Traefik runs the global
+maintenance/application operation and exposes its queued/running state through the existing settings indicator.
 
 ## API Layer
 

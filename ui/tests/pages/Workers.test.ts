@@ -28,7 +28,8 @@ function worker(hostname: string, overrides: Partial<WorkerListItem> = {}): Work
     container_count: 3,
     infra: null,
     metrics: null,
-    certificate: { covered: true, synced: true, expiry: null },
+    certificate: { covered: true, synced: true, expiry: null, error: null },
+    discovery_certificate: { covered: true, synced: true, expiry: null, error: null },
     tunnel: 'healthy',
     ...overrides,
   }

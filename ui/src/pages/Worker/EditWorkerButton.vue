@@ -81,9 +81,9 @@ async function onConfirm() {
               to this worker.
             </FieldDescription>
             <FieldDescription>
-              ⚠ A new subdomain changes the worker's internal names and reissues the workers'
-              certificate. Let's Encrypt issues at most 5 for the same names and 50 for the domain
-              every 7 days.
+              Changing the subdomain renames its internal addresses and revokes its old certificate.
+              Those addresses become available once its replacement is ready. Let's Encrypt rate
+              limits apply across this domain.
             </FieldDescription>
           </Field>
           <Field>
