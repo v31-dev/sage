@@ -253,6 +253,7 @@ for local development; see [docs/development.md](docs/development.md).
 ## More Docs
 
 - [docs/architecture.md](docs/architecture.md)
+- [Scheduler and data-write diagrams](docs/operations.md)
 - [docs/backend.md](docs/backend.md)
 - [docs/frontend.md](docs/frontend.md)
 - [docs/development.md](docs/development.md)

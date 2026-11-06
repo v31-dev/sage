@@ -238,6 +238,7 @@ The main manager database is SQLite with WAL mode and lives at `/app/data/data.d
 Core entities:
 
 - `Setting`
+- `Instance`
 - `Worker`
 - `Project`
 - `Application`
@@ -260,8 +261,12 @@ later one, so a different key stops startup (`main.py`).
 Relationships are centered on:
 
 - project -> applications
-- application -> containers, domains, volumes, backups
-- worker -> containers
+- application -> containers, volumes, backups
+- container -> domains, events
+- worker -> containers and internal/TCP domains
+
+The [model writer index](operations.md#model-writer-index) lists every model's direct, queued and implicit
+writers. The [flow diagrams](operations.md) show how scheduler, route and startup work reach them.
 
 ## Metrics And Logs Storage
 
@@ -310,6 +315,9 @@ APScheduler is a pure cron/interval trigger: each scheduled coroutine only calls
 - certificate renewal
 
 All execution and mutual exclusion live in an in-memory operation queue on the `Manager` singleton (`app/utils/queue.py`). Routes (deploy, stop, delete, backup, restore, worker removal and reboot) and the cron triggers above enqueue through the same `add_task` path; a single one-second dispatcher starts each pending task whose scope is free. See [backend.md](backend.md) for the queue model and execution semantics.
+
+For the visual execution flows, exact schedules, complete task catalog and synchronous model writers, see
+[Scheduler and data writes](operations.md).
 
 ## Service Pattern
 
