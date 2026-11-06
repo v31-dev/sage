@@ -23,15 +23,26 @@ let stop: (() => void) | undefined
 // Each namespace with its domains, by service and then by pool; the domains without one last.
 const namespaces = computed(() =>
   [
-    { title: 'Public', domains: state.value.domains.filter(domain => domain.type === 'public') },
-    { title: 'Internal', domains: state.value.domains.filter(domain => domain.type !== 'public') },
+    {
+      title: 'Public',
+      discovery: 'discovery',
+      domains: state.value.domains.filter(domain => domain.type === 'public'),
+    },
+    {
+      title: 'Internal',
+      discovery: 'discovery.int',
+      domains: state.value.domains.filter(domain => domain.type !== 'public'),
+    },
   ]
     .filter(namespace => namespace.domains.length > 0)
-    .map(namespace => ({ title: namespace.title, services: groups(namespace.domains, 'service') }))
     .map(namespace => ({
       title: namespace.title,
-      services: namespace.services.map(service => ({
+      services: groups(namespace.domains, 'service').map(service => ({
         name: service.name,
+        discoveryUrl:
+          service.name && appStore.info?.domain
+            ? `https://${namespace.discovery}.${appStore.info.domain}/?service=${encodeURIComponent(service.name)}`
+            : null,
         pools: groups(service.domains, 'pool'),
       })),
     }))
@@ -110,7 +121,21 @@ onUnmounted(() => stop?.())
           <CardContent class="space-y-6">
             <section v-for="service in namespace.services" :key="service.name ?? ''" data-service>
               <h3 class="mb-2 text-sm font-medium">
-                {{ service.name ? `Service ${service.name}` : 'No service' }}
+                <Button
+                  v-if="service.discoveryUrl"
+                  as="a"
+                  :href="service.discoveryUrl"
+                  target="_blank"
+                  rel="noreferrer"
+                  variant="link"
+                  class="h-auto p-0 has-[>svg]:px-0"
+                >
+                  Service {{ service.name }}
+                  <ExternalLink />
+                </Button>
+                <template v-else>{{
+                  service.name ? `Service ${service.name}` : 'No service'
+                }}</template>
               </h3>
               <div v-for="pool in service.pools" :key="pool.name ?? ''" class="mb-3 ml-2" data-pool>
                 <p class="mb-1 text-xs text-muted-foreground">
