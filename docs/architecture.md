@@ -145,9 +145,10 @@ Cloudflare's Free quota is 200 records per zone; some Free zones have a 1,000-re
 not by itself increase the API allowance. See [Cloudflare's DNS quotas](https://developers.cloudflare.com/dns/manage-dns-records/#dns-records-quota).
 
 The API allows 1,200 requests per five minutes per user, shared across tokens and dashboard activity. Exceeding it
-can block calls for five minutes with HTTP 429. Sage inventories DNS and tunnels once per discovery pass, reuses
-those lists for cleanup and writes only drift. A clean pass with one page per inventory needs two API calls;
-record repairs, worker setup, certificates and other operations add calls. Sage applies no proactive rate limiter.
+can block calls for five minutes with HTTP 429. Sage inventories DNS once per discovery pass and account tunnels
+only for full repair scans, reuses those lists for cleanup and writes only drift. With one page per inventory,
+a clean full scan needs two API calls and a clean cleanup-only pass needs one; record repairs, worker setup,
+certificates and other operations add calls. Sage applies no proactive rate limiter.
 See [Cloudflare's API limits](https://developers.cloudflare.com/fundamentals/api/reference/limits/).
 
 Retryable requests use bounded retries and honor a valid `Retry-After` minimum wait when supplied. Long provider

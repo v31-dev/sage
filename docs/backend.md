@@ -371,10 +371,10 @@ cleanup/discovery can observe its result without immediately retrying failed or 
 follow-up cannot run with the child or displace a queued full scan. This keeps retry with the scheduled/external
 full scan instead of creating a child/parent retry loop.
 
-The parent inventories each online worker's files and revision stamps, plus one list of zone DNS and one list of
-account tunnels, before reading Domain rows in a local transaction. Inventory precedes owners so an artifact
-materialized during an instant create cannot be misclassified as orphaned. Each worker inventory command has a
-30-second timeout. Failed inventories remain unknown;
+The parent inventories each online worker's files and revision stamps, plus one list of zone DNS and, for full
+repair scans only, one list of account tunnels, before reading Domain rows in a local transaction. Inventory
+precedes owners so an artifact materialized during an instant create cannot be misclassified as orphaned. Each
+worker inventory command has a 30-second timeout. Failed inventories remain unknown;
 they cannot establish a missing file or DNS record. Other workers still progress and a failed parent records its
 own error without changing a successful Domain proof.
 

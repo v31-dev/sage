@@ -88,16 +88,13 @@ def test_a_success_or_offline_pending_record_does_not_notify_an_error(manager, a
   assert list_notifications() == []
 
 
-@pytest.mark.parametrize("source", ["DNS inventory", "Tunnel inventory", "Discovery DNS", "worker write"])
-def test_a_failed_parent_notifies_once_and_preserves_successful_domain_proof(manager, application, monkeypatch, source):
+@pytest.mark.parametrize("repair", [False, True])
+@pytest.mark.parametrize("source", ["DNS inventory", "Discovery DNS", "worker write"])
+def test_a_failed_parent_notifies_once_and_preserves_successful_domain_proof(manager, application, monkeypatch, source, repair):
   domain = applied(manager, application)
   error = CloudflareError(429, "API rate limit exceeded", "300")
   if source == "DNS inventory":
     manager.cloudflare.zone_error = error
-  elif source == "Tunnel inventory":
-    def inventory():
-      raise error
-    monkeypatch.setattr(manager.cloudflare, "tunnels", inventory)
   elif source == "Discovery DNS":
     manager.cloudflare.failure = error
   else:
@@ -110,7 +107,7 @@ def test_a_failed_parent_notifies_once_and_preserves_successful_domain_proof(man
     monkeypatch.setattr(manager.tailscale, "sync_file", failing_write)
 
   with pytest.raises(RuntimeError, match="Domain reconciliation failed"):
-    manager.reconcile(repair=False)
+    manager.reconcile(repair=repair)
 
   stored = Domain.get_by_id(domain.id)
   assert (stored.status, stored.sync_error, stored.synced_hash, stored.synced_at) == (
@@ -120,6 +117,32 @@ def test_a_failed_parent_notifies_once_and_preserves_successful_domain_proof(man
   assert "Domain reconciliation failed" in notice["content"]
   assert ("worker write refused" if source == "worker write" else "API rate limit exceeded") in notice["content"]
   assert "_discovery-internal-shop.yml" in manager.tailscale.files("w2")
+
+
+@pytest.mark.parametrize("repair", [False, True])
+def test_tunnel_inventory_failure_only_fails_a_full_repair(manager, application, monkeypatch, repair):
+  domain = applied(manager, application, type="public")
+  manager.tailscale.place("w1", "domain-999.yml")
+
+  def inventory():
+    raise CloudflareError(429, "API rate limit exceeded")
+  monkeypatch.setattr(manager.cloudflare, "tunnels", inventory)
+
+  if repair:
+    with pytest.raises(RuntimeError, match="Tunnel inventory: .*API rate limit exceeded"):
+      manager.reconcile(repair=repair)
+  else:
+    manager.reconcile(repair=repair)
+
+  stored = Domain.get_by_id(domain.id)
+  assert (stored.status, stored.sync_error, stored.synced_hash, stored.synced_at) == (
+      "synced", None, domain.synced_hash, domain.synced_at)
+  assert "domain-999.yml" not in manager.tailscale.files("w1")
+  for hostname in ("w1", "w2"):
+    assert '"shop.example.test";online' in manager.tailscale.files(hostname)["_discovery-public-shop.yml"]
+    assert (manager.tailscale.home(hostname) / "revisions/discovery").read_text().strip() == manager.discovery_hash(
+        manager.discovery_services())
+  assert len(list_notifications()) == int(repair)
 
 
 def test_a_successful_parent_does_not_create_an_error_notification(manager, application):

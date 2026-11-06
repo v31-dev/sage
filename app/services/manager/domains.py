@@ -177,9 +177,12 @@ class DomainsMixin:
     zone, tunnels = None, None
     try:
       await run_in_executor_with_context(self.cloudflare.connect)
-      zone, tunnels = await asyncio.gather(
-          run_in_executor_with_context(self.cloudflare.get_dns_records),
-          run_in_executor_with_context(self.cloudflare.tunnels), return_exceptions=True)
+      if repair:
+        zone, tunnels = await asyncio.gather(
+            run_in_executor_with_context(self.cloudflare.get_dns_records),
+            run_in_executor_with_context(self.cloudflare.tunnels), return_exceptions=True)
+      else:
+        zone, = await asyncio.gather(run_in_executor_with_context(self.cloudflare.get_dns_records), return_exceptions=True)
       if isinstance(zone, Exception):
         failures.append(f"DNS inventory: {zone}")
         zone = None
