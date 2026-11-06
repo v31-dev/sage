@@ -39,6 +39,7 @@ Non-negotiable patterns for the manager backend. Read the root [../AGENTS.md](..
 
 - Main state is stored in SQLite with WAL mode. The database is deferred: `Database` opens it at `config.DB_PATH` at startup, and importing the models touches no disk.
 - Metrics are stored in per-host SQLite files.
+- `Domain.container` owns a name's binding; use `Container.domains`, with no application-level domain collection. Enriched container responses share `routes.containers.container_payload`, and Domain fields share `routes.domains.domain_payload`. Domain changes and queue state notify the linked application and worker views.
 - Times are naive UTC, the way the UI reads a timestamp that has no zone. Read the clock through `utils.common.utcnow()`; ruff (`DTZ003`, `DTZ005`) rejects `datetime.utcnow()` and a `datetime.now()` without a zone. Retry with backoff goes through `utils.retry` (`retry`, `retry_async`, and `is_transient` as the one meaning of "transient"); provider minimum waits belong to the error's numeric `retry_after_seconds`, which both retry helpers honor without adding attempts.
 - Logs are stored in per-application SQLite files with FTS5 search; Traefik's access lines as requests in columns (`logs/requests.db`); a queued task's lines in `logs/tasks.db`, read by task id. The manager's other lines are in stdout only (`docker logs`).
 - Preserve the existing lightweight storage approach unless the task explicitly requires otherwise.

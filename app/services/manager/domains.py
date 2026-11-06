@@ -5,9 +5,9 @@ import shlex
 
 import config
 from services.cloudflare import dns_record_matches
-from services.db import APPLICATION_BUSY_STATUSES, Application, Domain, db
+from services.db import APPLICATION_BUSY_STATUSES, Application, Container, Domain, db
 from services.domains import ROUTING_TEMPLATES, DomainConfig, domain_artifact_owner, domains_changed
-from services.updates import Fact, UpdateSource
+from services.updates import Fact, Updates, UpdateSource
 from utils.common import get_env, utcnow
 from utils.executor import run_in_executor_with_context
 from utils.queue import OnConflict
@@ -22,6 +22,8 @@ def domain_changed(domain: Domain, previous_container=None):
   domains_changed()
   for application in {container.application for container in (domain.container, previous_container) if container}:
     application_changed(application)
+  for hostname in {container.worker_id for container in (domain.container, previous_container) if container}:
+    Updates().changed(UpdateSource.WORKER_CONTAINERS, hostname)
 
 
 def save_domain(domain: Domain):
@@ -44,10 +46,15 @@ class DomainsMixin:
 
     def changed(current):
       nonlocal previous
-      applications = {application for _, application in current ^ previous if application is not None}
+      affected = current ^ previous
+      applications = {application for _, application in affected if application is not None}
       previous = current
       for application in Application.select().where(Application.id.in_(applications)):
         application_changed(application)
+      hostnames = {container.worker_id for container in Container.select(Container.worker).join(Domain).where(
+          Domain.id.in_({domain_id for domain_id, _ in affected}))}
+      for hostname in hostnames:
+        Updates().changed(UpdateSource.WORKER_CONTAINERS, hostname)
 
     return [Fact(self.domain_tasks_busy, UpdateSource.DOMAINS, on_change=changed)]
 

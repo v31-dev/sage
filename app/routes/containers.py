@@ -1,9 +1,11 @@
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
+from playhouse.shortcuts import model_to_dict
 
-from services.db import APPLICATION_BUSY_STATUSES, Container, Worker
+from routes.domains import domain_payload
+from services.db import APPLICATION_BUSY_STATUSES, Application, Container, Domain, Event, Project, Worker
 from services.manager import Manager
 from services.manager.application import container_changed
-from utils.api import generic_create, generic_get, generic_list, get_request_models
+from utils.api import generic_create, generic_get, get_request_models
 from utils.queue import OnConflict
 
 
@@ -46,12 +48,27 @@ router = APIRouter()
 CONTAINER_BUSY_STATUSES = APPLICATION_BUSY_STATUSES
 
 
+def container_payload(container: Container) -> dict:
+  data = model_to_dict(
+      container, backrefs=True,
+      only=(
+          set(Container._meta.sorted_fields)
+          | {Container.events}
+          | set(Event._meta.sorted_fields)
+          | set(Worker._meta.sorted_fields)
+          | {Application.name, Application.label, Application.project, Project.name, Project.label}
+      ),
+  )
+  data["domains"] = [domain_payload(domain) for domain in container.domains.order_by(Domain.type, Domain.name)]
+  return data
+
+
 @router.get("/")
 def list_containers(request: Request):
   if "application" in request.state.models:
-    return generic_list(Container, Container.application == request.state.models["application"])
+    return [container_payload(container) for container in request.state.models["application"].containers]
   elif "worker" in request.state.models:
-    return generic_list(Container, Container.worker == request.state.models["worker"])
+    return [container_payload(container) for container in request.state.models["worker"].containers]
 
 
 @router.post("/")
@@ -74,8 +91,9 @@ def create_container(request: Request, container_data: dict = Body(...)):
         status_code=409, detail=f"Container already exists on worker '{worker.hostname}'.")
 
   result = generic_create(Container, {"application": application, "worker": worker})
-  container_changed(Container.get_by_id(result["id"]))
-  return result
+  container = Container.get_by_id(result["id"])
+  container_changed(container)
+  return container_payload(container)
 
 
 @router.delete("/{container}", dependencies=[Depends(inject_container)])

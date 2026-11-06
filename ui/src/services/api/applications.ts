@@ -17,8 +17,6 @@ export interface Application {
   args: string | null
   build_secrets: string | null
   command: string | null
-  // The domains linked to its containers.
-  domains: Domain[]
   containers: Container[]
   volumes: Volume[]
   container_count: number
@@ -48,12 +46,20 @@ export interface Event {
 }
 
 export interface Container {
+  id: number
+  domains: Domain[]
   worker: Worker
   status: 'active' | 'inactive' | 'deploying' | 'stopping' | 'backup' | 'restoring' | 'error'
   events: Event[]
   created_at: Date
   updated_at: Date
-  application: Application
+  application: ContainerApplication
+}
+
+export interface ContainerApplication {
+  name: string
+  label: string
+  project: { name: string; label: string }
 }
 
 export interface Volume {

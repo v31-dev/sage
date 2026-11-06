@@ -70,19 +70,19 @@ class TestContainers:
 
 
 class TestDomains:
-  def test_each_write_tells_the_page_of_its_application_and_the_domains_page(self, client, application, worker, manager,
-                                                                             changes):
+  def test_each_write_tells_the_application_worker_and_domains_pages(self, client, application, worker, manager,
+                                                                     changes):
     container = Container.create(application=application, worker=worker)
     changes.signals.clear()
     response = client.post("/api/domains/", json={"name": "web", "type": "public", "port": 80, "container": container.id})
     assert response.status_code == 200, response.json()
-    assert said(changes) == [WEB, DOMAINS]
+    assert said(changes) == sorted([WEB, DOMAINS, (UpdateSource.WORKER_CONTAINERS, "w1")], key=str)
     changes.signals.clear()
     assert client.put(f"/api/domains/{response.json()['id']}", json={"port": 8080}).status_code == 200
-    assert said(changes) == [WEB, DOMAINS]
+    assert said(changes) == sorted([WEB, DOMAINS, (UpdateSource.WORKER_CONTAINERS, "w1")], key=str)
     changes.signals.clear()
     assert client.delete(f"/api/domains/{response.json()['id']}").status_code == 200
-    assert said(changes) == [WEB, DOMAINS]
+    assert said(changes) == sorted([WEB, DOMAINS, (UpdateSource.WORKER_CONTAINERS, "w1")], key=str)
 
   def test_a_domain_that_is_refused_tells_nothing(self, client, application, worker, manager, changes):
     container = Container.create(application=application, worker=worker)

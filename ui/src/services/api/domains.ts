@@ -1,13 +1,6 @@
 import { request } from '@/lib/api'
 import type { Fields } from './_common'
-import type { Application } from './applications'
-
-// The application a container belongs to, as the Domains page shows it.
-export interface ContainerApplication {
-  name: string
-  label: string
-  project: { name: string; label: string }
-}
+import type { Application, ContainerApplication } from './applications'
 
 // A name linked to one container: public `<name>.<domain>`, or internal or TCP `<name>.<subdomain>.int.<domain>` under
 // its worker's subdomain. Deleting the container unlinks it (`container` is none); an internal one keeps its worker.

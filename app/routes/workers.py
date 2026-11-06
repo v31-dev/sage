@@ -3,8 +3,9 @@ from typing import Literal
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from playhouse.shortcuts import model_to_dict
 
+from routes.containers import container_payload
 from routes.containers import router as container_router
-from services.db import Application, Container, Project, Worker
+from services.db import Worker
 from services.manager import Manager
 from services.metrics import Metrics
 from services.tailscale import Tailscale
@@ -95,22 +96,8 @@ def worker_payload(worker: Worker) -> dict:
   """The worker with its containers and their applications, and what the worker list holds of it: `infra` (the state
   of the containers of its stack), `online`, `status`, `path`, `metrics` (its newest minute), both certificate states and
   `tunnel` (its own tunnel's health), with that tunnel's name."""
-  data = model_to_dict(
-      worker,
-      backrefs=True,
-      only=(
-          set(Worker._meta.sorted_fields)
-          | {Worker.containers}
-          | set(Container._meta.sorted_fields)
-          | {
-              Application.name,
-              Application.label,
-              Application.project,
-              Project.name,
-              Project.label,
-          }
-      ),
-  )
+  data = model_to_dict(worker)
+  data["containers"] = [container_payload(container) for container in worker.containers]
   entry = Manager().worker_entry(worker.hostname) or {}
   data["infra"] = entry.get("infra")
   data["online"] = entry.get("online", False)

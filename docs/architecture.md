@@ -89,7 +89,7 @@ Current traffic and naming patterns are driven by Cloudflare, Traefik, and Tails
 - The manager UI and API are only at `https://<TS_NAME>.core.<domain>`: a DNS-only record pointing at its tailnet IP, served with the manager's own certificate on `:443`. Plain HTTP (`:80`) only redirects there, and so does `:443` for any other hostname (the tailnet name or IP); in dev the dev Traefik enforces the same by matching the hostname. `.core` is a namespace apps never use, and workers hold no certificate for it.
 - A domain is a name linked to one container, and the worker that runs it routes it to that container with its own
   Traefik: there is no hop between workers. Domains are managed on the Domains page; an application's page lists the
-  names linked to its containers.
+  linked names on each container's card.
 - A worker has a **subdomain** (one DNS label, unique; random when none is given) that its internal names are under.
 - Public names are proxied CNAMEs to the tunnel of the worker their container is on. Every worker's tunnel carries the
   same ingress (`*.<domain>` to Traefik, then 404), so the record alone decides the worker.

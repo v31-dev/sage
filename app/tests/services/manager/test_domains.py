@@ -304,7 +304,7 @@ class TestDomainQueueState:
     manager.task_queue.stop()
     assert manager.domain_status(Domain.get_by_id(linked.id)) == "pending"
 
-  def test_queue_completion_notifies_the_domain_and_application_views(self, manager, linked):
+  def test_queue_completion_notifies_the_domain_application_and_worker_views(self, manager, linked):
     manager.request_domain_sync(linked)
     expected_id = manager.task_snapshot()["queued"][0]["task_id"]
     context = []
@@ -320,6 +320,7 @@ class TestDomainQueueState:
     assert manager.domain_status(Domain.get_by_id(linked.id)) == "synced"
     assert (UpdateSource.DOMAINS, None) in manager.signals
     assert (UpdateSource.APPLICATION, "demo/web") in manager.signals
+    assert (UpdateSource.WORKER_CONTAINERS, "w1") in manager.signals
     assert context == [expected_id]
 
   def test_cancelling_queued_work_publishes_the_persisted_state_again(self, manager, linked):
@@ -330,19 +331,22 @@ class TestDomainQueueState:
 
     assert manager.domain_status(Domain.get_by_id(linked.id)) == "pending"
     assert sorted(manager.signals, key=str) == sorted([
-        (UpdateSource.DOMAINS, None), (UpdateSource.APPLICATION, "demo/web")], key=str)
+        (UpdateSource.DOMAINS, None), (UpdateSource.APPLICATION, "demo/web"),
+        (UpdateSource.WORKER_CONTAINERS, "w1")], key=str)
 
-  def test_relinking_notifies_both_application_views(self, manager, linked, project):
+  def test_relinking_notifies_both_applications_and_workers(self, manager, linked, project):
     before = linked.container
     other = Application.create(project=project, name="api", label="API", image="nginx")
-    linked.container = Container.create(application=other, worker="w1", status="active")
+    linked.container = Container.create(
+        application=other, worker=Worker.create(hostname="w2", ip="100.64.0.3", subdomain="blue"), status="active")
     linked.save()
     manager.signals.clear()
 
     domain_changed(linked, before)
 
     assert set(manager.signals) == {
-        (UpdateSource.DOMAINS, None), (UpdateSource.APPLICATION, "demo/web"), (UpdateSource.APPLICATION, "demo/api")}
+        (UpdateSource.DOMAINS, None), (UpdateSource.APPLICATION, "demo/web"), (UpdateSource.APPLICATION, "demo/api"),
+        (UpdateSource.WORKER_CONTAINERS, "w1"), (UpdateSource.WORKER_CONTAINERS, "w2")}
 
 
 def test_summary_counts_domain_sync_results_independently_of_container_health(application, worker):

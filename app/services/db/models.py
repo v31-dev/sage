@@ -171,11 +171,6 @@ class Application(BaseModel):
     )
 
   @property
-  def domains(self):
-    """The domains linked to its containers."""
-    return Domain.select().join(Container).where(Container.application == self).order_by(Domain.type, Domain.name)
-
-  @property
   def config_dirty(self) -> bool:
     """True when the current deploy inputs differ from those of the last deploy.
     A null baseline (never deployed) is not dirty."""

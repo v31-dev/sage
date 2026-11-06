@@ -12,7 +12,6 @@ import { useAppStore } from '@/stores/app'
 import ApplicationHeader from './ApplicationHeader.vue'
 import AddContainerButton from './AddContainerButton.vue'
 import ContainerCard from './ContainerCard.vue'
-import DomainCard from './DomainCard.vue'
 import AddVolumeButton from './AddVolumeButton.vue'
 import VolumeCard from './VolumeCard.vue'
 import SectionTitle from '@/components/SectionTitle.vue'
@@ -149,39 +148,6 @@ function goBack() {
               :application="application"
               :volume="volume"
               :loadApplication="loadApplication"
-            />
-          </div>
-        </div>
-
-        <!-- Domains -->
-        <div class="space-y-4">
-          <div class="flex justify-between items-center">
-            <SectionTitle
-              title="Domains"
-              :size="4"
-              tooltip="The names linked to this application's containers, each routed to its own container."
-            />
-          </div>
-
-          <!-- Empty Domains State -->
-          <div
-            v-if="application.domains.length === 0"
-            class="flex items-center justify-center py-8"
-          >
-            <Card class="w-full">
-              <CardContent class="flex flex-col items-center justify-center py-12">
-                <p class="text-muted-foreground text-lg">No domains</p>
-              </CardContent>
-            </Card>
-          </div>
-
-          <!-- Domains Grid -->
-          <div v-else class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            <DomainCard
-              v-for="domain in application.domains"
-              :key="domain.id"
-              :application="application"
-              :domain="domain"
             />
           </div>
         </div>

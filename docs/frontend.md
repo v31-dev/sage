@@ -90,6 +90,10 @@ Routes in `ui/src/router/index.ts` currently cover:
 - Backups and restore flows
 - Settings: one page per section, listed under a "Settings" group in the sidebar
 
+The Application page shows linked domains on their container cards. Each domain keeps its address/copy controls,
+sync state, type, service and pool; internal/TCP names also show the worker's pending certificate state. The
+card reads `container.domains` from the application's pushed data. Domain editing stays on the Domains page.
+
 ## Forms
 
 - Placeholders are only examples, written "e.g. …". They never stand in for a label, a

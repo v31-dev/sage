@@ -340,8 +340,14 @@ means both routing and DNS completed for the captured configuration; its fingerp
 placement, activity and templates. A failure identifies its phase, retains the previous successful proof/time,
 and fails the queued task. A result for a configuration edited during I/O cannot certify the new configuration:
 the row stays pending and a new request is queued. Running or queued work projects `syncing` through the queue,
-without persisting it. Domain writes and queue transitions publish `domains` and the affected application topics.
+without persisting it. Domain writes and queue transitions publish `domains` and the affected application and
+worker topics; a relink updates both former and current parents.
 Application rows hold no domain progress state; summary counts use Domain status independently of health.
+
+The nullable `Domain.container` foreign key gives each Container its `domains` backref. Container API payloads
+include that collection through `routes/containers.py`'s shared serializer, using the Domain projection for
+addresses, sync state and binding details. Application and worker details nest these container payloads;
+applications have no domain collection of their own. Deleting a container leaves its Domain records unlinked.
 
 Domain also owns nullable `cors_origins`, a JSON list validated by `OriginListField` on every database write.
 Blank derives the record's own current HTTPS origin. Explicit origins are normalized HTTP(S) origins, `*` or `null`;

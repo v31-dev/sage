@@ -69,8 +69,9 @@ class TestGet:
     assert [row["name"] for row in body["volumes"]] == ["data"]
     assert body["containers"] == []
 
-  def test_it_lists_the_domains_linked_to_its_containers_with_their_names_workers_and_states(
-          self, client, application, worker, project):
+  @pytest.mark.parametrize("path", [f"{URL}/web", "/api/workers/w1", f"{URL}/web/containers/", "/api/workers/w1/containers/"])
+  def test_containers_carry_their_linked_domains_with_their_names_workers_and_states(
+          self, client, application, worker, project, path):
     Worker.update(subdomain="red").where(Worker.hostname == "w1").execute()
     container = Container.create(application=application, worker=worker, status="active")
     Domain.create(name="shop", type="public", port=80, container=container)
@@ -78,13 +79,36 @@ class TestGet:
     other = Application.create(project=project, name="api", label="API", image="nginx")
     Domain.create(name="api", type="public", port=80, container=Container.create(application=other, worker=worker))
 
-    body = client.get(f"{URL}/web").json()
-    domains = body["domains"]
+    empty = Container.create(application=application, worker=Worker.create(hostname="w2", ip="100.64.0.3"))
+    body = client.get(path).json()
+    containers = body if isinstance(body, list) else body["containers"]
+    domains = next(row["domains"] for row in containers if row["id"] == container.id)
 
     assert [(domain["address"], domain["worker"], domain["container"]["status"]) for domain in domains] == [
         ("https://shop.example.test", "w1", "active"), ("db.red.int.example.test:8443", "w1", "active")]
     assert domains == client.get("/api/domains/").json()["domains"][1:]
-    assert all("domains" not in container for container in body["containers"])
+    assert isinstance(body, list) or "domains" not in body
+    assert all(domain["container"]["id"] == row["id"] for row in containers for domain in row["domains"])
+    if path.startswith(URL):
+      assert next(row["domains"] for row in containers if row["id"] == empty.id) == []
+
+  def test_a_domain_relink_changes_which_container_and_application_expose_it(self, client, application, worker, project):
+    first = Container.create(application=application, worker=worker)
+    other = Application.create(project=project, name="api", label="API", image="nginx")
+    second = Container.create(application=other, worker=worker)
+    domain = Domain.create(name="shop", type="public", port=80, container=first)
+
+    response = client.put(f"/api/domains/{domain.id}", json={"container": second.id})
+
+    assert response.status_code == 200
+    assert client.get(f"{URL}/web").json()["containers"][0]["domains"] == []
+    assert [row["id"] for row in client.get(f"{URL}/api").json()["containers"][0]["domains"]] == [domain.id]
+
+  def test_a_created_container_exposes_its_empty_domain_collection(self, client, application, worker):
+    response = client.post(f"{URL}/web/containers/", json={"worker": worker.hostname})
+
+    assert response.status_code == 200
+    assert response.json()["domains"] == []
 
   def test_a_new_application_is_not_dirty(self, client, application):
     assert client.get(f"{URL}/web").json()["config_dirty"] is False
