@@ -251,7 +251,9 @@ Core entities:
 - `Backup`
 - `Task` (log of finished queue operations)
 
-Its sensitive fields are encrypted with `ENCRYPTION_KEY` (Fernet, `utils/db.py`). The
+Its sensitive fields are encrypted with `ENCRYPTION_KEY` (Fernet, `services/db/encryption.py`).
+Bootstrap initializes the cipher explicitly before encrypted storage access; importing value rules or
+DB fields does not read the key or open storage. The
 same key encrypts every backup, platform and volume alike, in one format (`utils/archive.py`
 on the manager, `backup.sh` and `restore.sh` on workers): `openssl enc -aes-256-cbc
 -pbkdf2`, then a 32-byte HMAC-SHA256 trailer that is checked before anything is decrypted.

@@ -6,7 +6,6 @@ import pytest
 from cryptography.fernet import Fernet
 from peewee import SqliteDatabase
 
-# Set before any test module imports the app: utils.db reads the key at import.
 # TZ puts the suite away from UTC (+5:30), so a time read from the local clock fails a test.
 os.environ.update(
     TZ="Asia/Kolkata",

@@ -14,8 +14,8 @@ from services.manager import Manager
 from services.manager.application import application_changed, hosts_changed
 from services.metrics import Metrics
 from utils.api import generic_create, generic_delete, generic_get, generic_list, generic_update, get_request_models, parse_api_data
-from utils.db import AlphaNumericField
 from utils.logging import NO_ACCESS_LOG
+from values.names import derive_name
 
 
 def inject_application(request: Request):
@@ -48,7 +48,7 @@ def create_application(
 ):
   data = parse_api_data(application_data, ["label", "description"])
   data["project"] = request.state.models["project"]
-  data["name"] = AlphaNumericField.clean(data.get("label"))
+  data["name"] = derive_name(data.get("label"))
   result = generic_create(Application, data)
   application_changed(Application.get_by_id(result["id"]))
   return result

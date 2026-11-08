@@ -5,7 +5,7 @@ from routes.applications import router as app_router
 from services.db import Project
 from services.manager.application import hosts_changed
 from utils.api import generic_create, generic_delete, generic_get, generic_list, generic_update, get_request_models, parse_api_data
-from utils.db import AlphaNumericField
+from values.names import derive_name
 
 
 def inject_project(request: Request):
@@ -30,7 +30,7 @@ def list_projects():
 @router.post("/")
 def create_project(project_data: dict = Body(...)):
   data = parse_api_data(project_data, ["label", "description"])
-  data["name"] = AlphaNumericField.clean(data.get("label"))
+  data["name"] = derive_name(data.get("label"))
   return generic_create(Project, data)
 
 

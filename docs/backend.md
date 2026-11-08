@@ -20,6 +20,13 @@ NAME`, so a test can override one attribute. The required env vars are read with
 The main database is deferred: `Database` opens it at `config.DB_PATH` at startup, so importing
 the models touches no disk.
 
+Stored-value codecs live in `services/db/fields.py`; pure name, origin and multiline key/value rules
+live in `values/`. Importing these modules needs no runtime configuration and loads no database models
+or signals. Bootstrap explicitly calls `initialize_encryption` from `services/db/encryption.py` before
+encrypted storage access. JSON fields share serialization, encrypted fields share Fernet conversion,
+and `EncryptedKeyValueField` validates text without rewriting comments or quoting. `ChoiceField`
+derives Python write validation and a SQLite `CHECK` from the same allowed values.
+
 ## API Surface
 
 The main API is mounted in `app/api.py` and exposes route groups for:
@@ -516,7 +523,7 @@ write path: project and application names, volume names and setting keys are
 domain names, services and pools and worker subdomains are `LabelField` (one
 DNS label: lowercase letters, digits and dashes, at most 63, not starting or
 ending with a dash). Project/application names are derived from the free-text
-`label` via `AlphaNumericField.clean`, which itself raises when no valid name
+`label` via `values.names.derive_name`, which raises when no valid name
 can be derived (no letters, or digits before the first letter); the others are
 typed directly by the user and rejected as-is on violation. A qualified name therefore contains exactly one dash, so it is
 injective and no qn can dash-prefix another — every `{qn}-` glob and prefix

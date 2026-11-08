@@ -15,6 +15,7 @@ from api_ingest import app as app_fastapi_ingest
 from scheduler import shutdown as shutdown_scheduler
 from scheduler import start as start_scheduler
 from services.db import SchemaRefused
+from services.db.encryption import initialize_encryption
 from services.manager import Manager
 from utils.logging import setup_logger, unlogged_paths
 
@@ -31,6 +32,13 @@ def caused_by(error: BaseException | None, kind: type) -> BaseException | None:
       return error
     error = error.__cause__ or error.__context__
   return None
+
+
+try:
+  initialize_encryption(os.getenv("ENCRYPTION_KEY"))
+except ValueError as e:
+  logger.critical(str(e))
+  sys.exit(1)
 
 
 try:

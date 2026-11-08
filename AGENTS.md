@@ -51,12 +51,13 @@ After compaction, reread the relevant `docs/` page before continuing.
 | `app/routes/` | API route handlers |
 | `app/services/` | Singleton service layer |
 | `app/services/manager/` | Manager singleton (mixins): the operation orchestrator |
-| `app/services/db/` | Peewee models and DB bootstrap |
+| `app/services/db/` | Peewee models, storage fields, encryption and DB bootstrap |
+| `app/values/` | Pure name, origin and multiline key/value rules |
 | `app/scheduler.py` | APScheduler cron/interval triggers that enqueue operations |
 | `app/utils/queue.py` | In-memory operation queue (scopes + single-dispatcher) |
 | `app/utils/executor.py` | Thread-pool lanes + context-preserving offload helpers |
 | `app/templates/` | Generated manager and worker runtime files |
-| `app/utils/` | Logging, API helpers, encrypted DB utilities |
+| `app/utils/` | Logging, API helpers and independent mechanics |
 | `ui/` | Vue 3 frontend |
 | `docs/` | Human-facing project docs |
 

@@ -8,9 +8,9 @@ from dataclasses import dataclass
 from peewee import SQL, BooleanField, CharField, DateTimeField, FixedCharField, ForeignKeyField, IntegerField, SqliteDatabase
 from playhouse.signals import Model
 
+from services.db.fields import AlphaNumericField, CleanCharField, EncryptedJSONField, EncryptedTextField, JSONField, LabelField, OriginListField
 from utils.common import utcnow
-from utils.db import (AlphaNumericField, CleanCharField, EncryptedJSONField, EncryptedTextField, JSONField, LabelField, OriginListField,
-                      validate_multiline_kv)
+from values.key_values import validate_multiline_kv
 
 # Deferred: opened by Database at startup.
 db = SqliteDatabase(None)

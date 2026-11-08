@@ -10,10 +10,11 @@ from services.domains import domains_changed
 from services.logs import Logs
 from services.updates import Updates, UpdateSource
 from services.worker_reports import WorkerReports
-from utils.common import format_yaml, parse_multiline_kv, utcnow
+from utils.common import format_yaml, utcnow
 from utils.executor import LOGS_EXECUTOR, run_in_executor_with_context
 from utils.logging import new_task_id, sub_task_id, task_id
 from utils.queue import OnConflict
+from values.key_values import parse_multiline_kv
 
 from ._common import app_dir
 from .decisions import ABSENT, OFFLINE, SEEN, UNKNOWN, Observation, reconcile_container, rollup_status
