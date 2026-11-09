@@ -7,7 +7,7 @@ from typing import Callable
 import config
 from services.certs import Certs
 from services.db import Application, Container, Domain, Instance, Worker
-from services.domains import domains_changed
+from services.domains.updates import domain_changed, domains_changed
 from services.metrics import Metrics
 from services.updates import Fact, Updates, UpdateSource
 from services.worker_reports import WorkerReports
@@ -20,7 +20,6 @@ from ._common import CERTIFICATE_TEMPLATES, WORKER_INFRA_TEMPLATES, app_dir, con
 from .application import mark
 from .decisions import (WORKER_TASKS, WorkerInputs, WorkerReboot, WorkerRow, plan_worker_sync, worker_claim_refusal, worker_entry, worker_owner,
                         worker_stack_problem, worker_with_row, worker_without_row)
-from .domains import domain_changed
 
 logger = logging.getLogger(__name__)
 

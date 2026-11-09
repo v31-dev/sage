@@ -96,6 +96,21 @@ def register():
   return _register
 
 
+class Signals:
+  def __init__(self):
+    self.signals = []
+
+  def changed(self, source, key=None):
+    self.signals.append((source, key))
+
+
+@pytest.fixture
+def signals(register):
+  """What was published to the update hub, as (source, key) pairs in order."""
+  from services.updates import Updates
+  return register(Updates, Signals()).signals
+
+
 @pytest.fixture
 def data_dir(tmp_path, monkeypatch):
   import config

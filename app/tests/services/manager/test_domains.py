@@ -7,9 +7,8 @@ import pytest
 import yaml
 
 from services.db import Application, Container, Domain, Worker
-from services.domains import DomainConfig
 from services.manager.core import CoreMixin
-from services.manager.domains import DomainsMixin, domain_changed
+from services.manager.domains import DomainsMixin
 from services.manager.queue import SCOPES, QueueMixin
 from services.updates import Updates, UpdateSource
 from tests.services.manager.test_traefik import LocalWorkers
@@ -94,43 +93,6 @@ def linked(application, worker):
   Worker.update(subdomain="red").where(Worker.hostname == worker.hostname).execute()
   container = Container.create(application=application, worker=worker, status="active")
   return Domain.create(name="shop", type="public", port=8080, container=container, service="shop")
-
-
-class TestDomainConfig:
-  def test_the_snapshot_is_immutable_and_does_not_follow_later_record_edits(self, linked):
-    snapshot = DomainConfig.capture(linked, "example.test", "templates")
-    linked.port = 9000
-    linked.save()
-
-    assert snapshot.port == 8080
-    assert snapshot.content_hash != DomainConfig.capture(linked, "example.test", "templates").content_hash
-    with pytest.raises(FrozenInstanceError):
-      snapshot.port = 9000
-
-  @pytest.mark.parametrize("field, value", [("name", "store"), ("port", 9000), ("type", "tcp")])
-  def test_the_fingerprint_changes_with_rendered_configuration(self, linked, field, value):
-    before = DomainConfig.capture(linked, "example.test", "templates")
-    setattr(linked, field, value)
-    linked.save()
-
-    assert before.content_hash != DomainConfig.capture(linked, "example.test", "templates").content_hash
-    assert (before.filename, before.dns_comment) == (
-        DomainConfig.capture(linked, "example.test", "templates").filename,
-        DomainConfig.capture(linked, "example.test", "templates").dns_comment)
-
-  def test_discovery_metadata_and_sync_results_do_not_change_the_apply_fingerprint(self, linked):
-    before = DomainConfig.capture(linked, "example.test", "templates")
-    linked.service, linked.pool, linked.status, linked.sync_error = "other", "eu", "error", "DNS: unavailable"
-    linked.save()
-
-    assert before.content_hash == DomainConfig.capture(linked, "example.test", "templates").content_hash
-
-  def test_the_fingerprint_includes_the_domain_template_and_container_activity(self, linked):
-    before = DomainConfig.capture(linked, "example.test", "templates")
-    assert before.content_hash != DomainConfig.capture(linked, "other.test", "templates").content_hash
-    assert before.content_hash != DomainConfig.capture(linked, "example.test", "changed").content_hash
-    Container.update(status="inactive").where(Container.id == linked.container_id).execute()
-    assert before.content_hash != DomainConfig.capture(Domain.get_by_id(linked.id), "example.test", "templates").content_hash
 
 
 class TestSyncDomain:
@@ -333,20 +295,6 @@ class TestDomainQueueState:
     assert sorted(manager.signals, key=str) == sorted([
         (UpdateSource.DOMAINS, None), (UpdateSource.APPLICATION, "demo/web"),
         (UpdateSource.WORKER_CONTAINERS, "w1")], key=str)
-
-  def test_relinking_notifies_both_applications_and_workers(self, manager, linked, project):
-    before = linked.container
-    other = Application.create(project=project, name="api", label="API", image="nginx")
-    linked.container = Container.create(
-        application=other, worker=Worker.create(hostname="w2", ip="100.64.0.3", subdomain="blue"), status="active")
-    linked.save()
-    manager.signals.clear()
-
-    domain_changed(linked, before)
-
-    assert set(manager.signals) == {
-        (UpdateSource.DOMAINS, None), (UpdateSource.APPLICATION, "demo/web"), (UpdateSource.APPLICATION, "demo/api"),
-        (UpdateSource.WORKER_CONTAINERS, "w1"), (UpdateSource.WORKER_CONTAINERS, "w2")}
 
 
 def test_summary_counts_domain_sync_results_independently_of_container_health(application, worker):

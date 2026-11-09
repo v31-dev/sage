@@ -6,7 +6,6 @@ import pytest
 
 from services.cloudflare import dns_record_matches
 from services.db import Application, Container, Domain, Worker
-from services.domains import domain_artifact_name, domain_artifact_owner
 from services.manager.domains import DomainsMixin
 from services.manager.workers import WorkersMixin
 from services.updates import Updates, UpdateSource
@@ -367,19 +366,3 @@ class TestParentRequests:
 ])
 def test_dns_matching_checks_requested_fields_only(actual, desired, matches):
   assert dns_record_matches(actual, desired) is matches
-
-
-@pytest.mark.parametrize("kind, value, owner", [
-    ("file", "domain-42.yml", 42), ("dns", "sage-domain-42", 42),
-    ("file", "domain-042.yml", None), ("dns", "sage-domain-042", None),
-    ("file", "domain-0.yml", None), ("dns", "sage-domain--1", None),
-    ("file", "their-domain-42.yml", None), ("dns", "SAGE-DOMAIN-42", None),
-    ("file", "certs.yml", None), ("dns", "sage-worker-w1", None),
-    ("file", "sage-domain-42", None), ("dns", "domain-42.yml", None),
-    ("file", "domain-42.yml.old", None), ("dns", "sage-domain-42-other", None),
-    ("file", "domain-42.yml\n", None), ("dns", "sage-domain-42\n", None),
-])
-def test_artifact_identity_names_only_its_exact_record_owner(kind, value, owner):
-  assert domain_artifact_owner(kind, value) == owner
-  if owner is not None:
-    assert domain_artifact_name(kind, owner) == value

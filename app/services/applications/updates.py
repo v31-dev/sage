@@ -1,5 +1,4 @@
 from services.db.models import Application, Container
-from services.domains import domains_changed
 from services.updates import Updates, UpdateSource
 
 
@@ -12,7 +11,7 @@ def container_changed(container: Container):
   """A container was written: its application's page, its worker's page and the Domains page show it."""
   application_changed(container.application)
   Updates().changed(UpdateSource.WORKER_CONTAINERS, container.worker_id)
-  domains_changed()
+  Updates().changed(UpdateSource.DOMAINS)
 
 
 def hosts_changed(application: Application):
@@ -23,4 +22,4 @@ def hosts_changed(application: Application):
   for hostname in hostnames:
     Updates().changed(UpdateSource.WORKER_CONTAINERS, hostname)
   if hostnames:
-    domains_changed()
+    Updates().changed(UpdateSource.DOMAINS)

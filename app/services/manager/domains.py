@@ -7,7 +7,8 @@ import config
 from services.applications.updates import application_changed
 from services.cloudflare import dns_record_matches
 from services.db import APPLICATION_BUSY_STATUSES, Application, Container, Domain, db
-from services.domains import ROUTING_TEMPLATES, DomainConfig, domain_artifact_owner, domains_changed
+from services.domains.config import ROUTING_TEMPLATES, DomainConfig, domain_artifact_owner
+from services.domains.updates import domain_changed
 from services.updates import Fact, Updates, UpdateSource
 from utils.common import get_env, utcnow
 from utils.executor import run_in_executor_with_context
@@ -18,14 +19,6 @@ from ._common import DISCOVERY_TEMPLATES, DOMAIN_ROUTING_TEMPLATES, app_dir, con
 logger = logging.getLogger(__name__)
 
 
-def domain_changed(domain: Domain, previous_container=None):
-  domains_changed()
-  for application in {container.application for container in (domain.container, previous_container) if container}:
-    application_changed(application)
-  for hostname in {container.worker_id for container in (domain.container, previous_container) if container}:
-    Updates().changed(UpdateSource.WORKER_CONTAINERS, hostname)
-
-
 def save_domain(domain: Domain):
   if domain.dirty_fields:
     domain.save()
@@ -34,7 +27,9 @@ def save_domain(domain: Domain):
 
 class DomainsMixin:
   def domain_config(self, domain: Domain) -> DomainConfig:
-    return DomainConfig.capture(domain, get_env("DOMAIN"), DOMAIN_ROUTING_TEMPLATES)
+    # TODO(36 step 3): runtime eligibility comes from the Container decisions; Container.status is gone.
+    active = domain.container is not None and domain.container.status == "active"
+    return DomainConfig.capture(domain, get_env("DOMAIN"), DOMAIN_ROUTING_TEMPLATES, active)
 
   def domain_tasks_busy(self) -> frozenset:
     snapshot = self.task_snapshot()

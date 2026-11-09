@@ -1,8 +1,8 @@
 from fastapi import APIRouter, Body, HTTPException
 
 from services.db import Container, Domain
+from services.domains.updates import domain_changed
 from services.manager import Manager
-from services.manager.domains import domain_changed
 from utils.api import generic_create, generic_delete, generic_get, generic_update, parse_api_data
 from utils.common import get_env
 

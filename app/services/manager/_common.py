@@ -4,7 +4,7 @@ import re
 from datetime import datetime
 from pathlib import Path
 
-from services.domains import ROUTING_TEMPLATES
+from services.domains.config import ROUTING_TEMPLATES
 
 # This module lives at app/services/manager/_common.py, so three .parent hops
 # reach the app/ root. Defined here once so every mixin shares the same path.

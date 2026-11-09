@@ -15,8 +15,11 @@ def utcnow() -> datetime:
   return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
+OPAQUE_ID = r"[0-9a-f]{16}"
+
+
 def new_id() -> str:
-  """A fresh opaque identity: 16 hex characters."""
+  """A fresh opaque identity, matching `OPAQUE_ID`."""
   return secrets.token_hex(8)
 
 
