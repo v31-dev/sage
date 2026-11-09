@@ -4,6 +4,7 @@ import logging
 import shlex
 
 import config
+from services.applications.updates import application_changed
 from services.cloudflare import dns_record_matches
 from services.db import APPLICATION_BUSY_STATUSES, Application, Container, Domain, db
 from services.domains import ROUTING_TEMPLATES, DomainConfig, domain_artifact_owner, domains_changed
@@ -13,7 +14,6 @@ from utils.executor import run_in_executor_with_context
 from utils.queue import OnConflict
 
 from ._common import DISCOVERY_TEMPLATES, DOMAIN_ROUTING_TEMPLATES, app_dir, content_hash
-from .application import application_changed
 
 logger = logging.getLogger(__name__)
 

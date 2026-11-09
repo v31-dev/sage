@@ -2,8 +2,8 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from playhouse.shortcuts import model_to_dict
 
 from routes.applications import router as app_router
+from services.applications.updates import hosts_changed
 from services.db import Project
-from services.manager.application import hosts_changed
 from utils.api import generic_create, generic_delete, generic_get, generic_list, generic_update, get_request_models, parse_api_data
 from values.names import derive_name
 

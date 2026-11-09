@@ -3,7 +3,7 @@ import json
 import re
 from dataclasses import asdict, dataclass
 
-from services.db import Domain
+from services.db.models import Domain
 from services.updates import Updates, UpdateSource
 
 ROUTING_TEMPLATES = {

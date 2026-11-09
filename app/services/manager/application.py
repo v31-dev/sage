@@ -5,10 +5,9 @@ import re
 import shlex
 from contextlib import contextmanager
 
+from services.applications.updates import application_changed, container_changed
 from services.db import APPLICATION_BUSY_STATUSES, Application, Container, DeployConfig, Domain, Event, Project, Worker, db
-from services.domains import domains_changed
 from services.logs import Logs
-from services.updates import Updates, UpdateSource
 from services.worker_reports import WorkerReports
 from utils.common import format_yaml, utcnow
 from utils.executor import LOGS_EXECUTOR, run_in_executor_with_context
@@ -28,29 +27,6 @@ _ROLLUP_NOTICES = {
     "active": ("is active as all containers are active.", "success"),
     "inactive": ("is inactive as all containers are inactive.", "warning"),
 }
-
-
-def application_changed(application: Application):
-  """The application, or a container, domain or volume of it, was written: the page of that application is sent again."""
-  Updates().changed(UpdateSource.APPLICATION, f"{application.project.name}/{application.name}")
-
-
-def container_changed(container: Container):
-  """A container was written: its application's page, its worker's page and the Domains page show it."""
-  application_changed(container.application)
-  Updates().changed(UpdateSource.WORKER_CONTAINERS, container.worker_id)
-  domains_changed()
-
-
-def hosts_changed(application: Application):
-  """What the pages of the workers show of an application (its label, its project's) was written, besides the
-  application itself."""
-  application_changed(application)
-  hostnames = {container.worker_id for container in application.containers}
-  for hostname in hostnames:
-    Updates().changed(UpdateSource.WORKER_CONTAINERS, hostname)
-  if hostnames:
-    domains_changed()
 
 
 def save_application(application: Application):

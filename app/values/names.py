@@ -11,6 +11,11 @@ def derive_name(label: str | None) -> str:
   return cleaned
 
 
+def qualified_name(project: str, application: str) -> str:
+  """The application's name on the workers, unique across projects."""
+  return f"{project}-{application}"
+
+
 def validate_name(value: str | None) -> str | None:
   if value is not None and (not isinstance(value, str) or not re.fullmatch(r"[a-z0-9-]+", value)):
     raise ValueError(f"Invalid name {value!r}: must contain lowercase letters, digits, or dashes.")

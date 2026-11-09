@@ -9,6 +9,7 @@ from cryptography.fernet import InvalidToken
 from peewee import chunked
 
 import config
+from services.applications.updates import application_changed
 from services.db import Application, Backup, Database, Event, Notification, Task, Worker, db
 from services.notification import Notifications
 from services.settings import Settings
@@ -19,7 +20,6 @@ from utils.executor import run_in_executor_with_context
 from utils.queue import OnConflict
 
 from ._common import BACKUP_TIMESTAMP_FORMAT, is_expired_backup_key, timestamp_from_key
-from .application import application_changed
 
 logger = logging.getLogger(__name__)
 

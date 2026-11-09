@@ -2,9 +2,9 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from playhouse.shortcuts import model_to_dict
 
 from routes.domains import domain_payload
+from services.applications.updates import container_changed
 from services.db import APPLICATION_BUSY_STATUSES, Application, Container, Domain, Event, Project, Worker
 from services.manager import Manager
-from services.manager.application import container_changed
 from utils.api import generic_create, generic_get, get_request_models
 from utils.queue import OnConflict
 

@@ -19,7 +19,7 @@ import config
 from routes.notifications import list_notifications
 from services.db import Application, Backup, Container, Domain, Notification, Task, Worker
 from services.manager import Manager
-from services.manager.application import ApplicationMixin, application_changed, container_changed, hosts_changed, save_application
+from services.manager.application import ApplicationMixin, save_application
 from services.manager.core import CoreMixin
 from services.manager.decisions import WORKER_TASKS
 from services.manager.platform import PlatformMixin
@@ -413,26 +413,6 @@ class TestApplicationAndContainerChanges:
     other = Worker.create(hostname="w2", ip="100.64.0.3")
     return Container.create(application=application, worker=worker), Container.create(
         application=Application.create(project=application.project, name="api", label="Api"), worker=other)
-
-  def test_a_change_of_an_application_tells_its_page_only(self, keyed, application):
-    application_changed(application)
-    assert keyed.signals == [(UpdateSource.APPLICATION, "demo/web")]
-
-  def test_a_change_of_a_container_tells_its_applications_page_and_its_workers(self, keyed, hosted):
-    container_changed(hosted[1])
-    assert keyed.signals == [(UpdateSource.APPLICATION, "demo/api"), (UpdateSource.WORKER_CONTAINERS, "w2"),
-                             (UpdateSource.DOMAINS, None)]
-
-  def test_a_change_of_what_the_workers_show_of_an_application_tells_each_worker_it_is_on_once(self, keyed, hosted, application):
-    Container.create(application=application, worker=Worker.create(hostname="w3", ip="100.64.0.4"))
-    hosts_changed(application)
-    assert sorted(keyed.signals, key=str) == sorted([
-        (UpdateSource.APPLICATION, "demo/web"), (UpdateSource.WORKER_CONTAINERS, "w1"), (UpdateSource.WORKER_CONTAINERS, "w3"),
-        (UpdateSource.DOMAINS, None)], key=str)
-
-  def test_an_application_with_no_containers_tells_only_itself(self, keyed, application):
-    hosts_changed(application)
-    assert keyed.signals == [(UpdateSource.APPLICATION, "demo/web")]
 
   def test_saving_an_application_writes_it_and_says_so(self, keyed, application):
     application.status = "deploying"
