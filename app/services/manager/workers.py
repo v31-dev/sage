@@ -221,10 +221,9 @@ class WorkersMixin:
         del self._worker_inputs[hostname]
       now, started = utcnow(), WorkerReports().started
       workers = [(hostname, record) for hostname, record in sorted(self._worker_inputs.items()) if record.ip is not None]
-      self.certs.set_workers({hostname: record.subdomain for hostname, record in workers})
       listed = {entry["hostname"]: entry for entry in self.worker_list}
       self.worker_list = [worker_entry(hostname, record, now, started,
-                                       self.certs.worker_state(hostname, record.certs, CERTIFICATE_TEMPLATES))
+                                       self.certs.worker_state(hostname, record.subdomain, record.certs, CERTIFICATE_TEMPLATES))
                           for hostname, record in workers]
       now_listed = {entry["hostname"]: entry for entry in self.worker_list}
     differing = [hostname for hostname in listed.keys() | now_listed.keys() if listed.get(hostname) != now_listed.get(hostname)]
