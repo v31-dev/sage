@@ -28,9 +28,9 @@ def volume_dir(home: str, container_id: str, volume_id: str) -> str:
   return f"{placement_dir(home, container_id)}/volumes/{volume_id}"
 
 
-def records_command(home: str) -> str:
-  """Lists every record on the worker for `record.parse_record_listing`."""
-  return f"grep -H . {placements_dir(home)}/*/record.json 2>/dev/null || true"
+def records_command(home: str, container_id: str = "*") -> str:
+  """Lists the container's record, or every record on the worker, for `record.parse_record_listing`."""
+  return f"grep -H . {placements_dir(home)}/{container_id}/record.json 2>/dev/null || true"
 
 
 def runtime_name(container_id: str) -> str:

@@ -5,6 +5,7 @@ from pathlib import Path
 DATA_DIR = Path("/app/data")
 DB_PATH = DATA_DIR / "data.db"
 STATIC_DIR = Path("/app/static")
+TEMPLATES_DIR = Path(__file__).parent / "templates"
 WORKER_HOME_DIR = "/opt/sage"
 CGROUP_ROOT = Path("/sys/fs/cgroup")
 

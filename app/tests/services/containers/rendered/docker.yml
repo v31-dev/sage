@@ -1,0 +1,28 @@
+name: sage-2222222222222222
+
+services:
+  sage-2222222222222222:
+    image: nginx:1.27
+    pull_policy: always
+    container_name: sage-2222222222222222
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"
+    labels:
+      sage.instance: "1234567e89012345"
+      sage.generation: "0000000000000123"
+      sage.container: "2222222222222222"
+      sage.deployment: "5555555555555e55"
+      sage.application: "shop-web"
+    restart: unless-stopped
+    command: ["python", "-m", "app", "--name", "a b", "8080"]
+    volumes: [ "/opt/sage/containers/2222222222222222/volumes/3333333333333333:/data", "/opt/sage/containers/2222222222222222/volumes/4444444444444444:/var/cache" ]
+    env_file: .env
+    networks:
+      - sage_default
+
+networks:
+  sage_default:
+    external: true

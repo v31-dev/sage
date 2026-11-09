@@ -57,7 +57,7 @@ After compaction, reread the relevant `docs/` page before continuing.
 | `app/services/workers/` | Worker row commands (add with a subdomain, subdomain change, removal) and the pure worker status and reboot decisions |
 | `app/services/history.py` | Container and worker event append, task parts and event retention |
 | `app/services/backups/` | Backup key policy (archives by volume and placement id) and the catalog's reconciliation with the configured store |
-| `app/services/containers/` | Container target record (types, codec, listing), placement names and labels, and the pure status decision |
+| `app/services/containers/` | Container target record (types, codec, listing), placement names and labels, deployment rendering, the `Containers` owner of each placement's last record read, and the pure status decision |
 | `app/values/` | Pure name, origin and multiline key/value rules |
 | `app/scheduler.py` | APScheduler cron/interval triggers that enqueue operations |
 | `app/utils/queue.py` | In-memory operation queue (scopes + single-dispatcher) |

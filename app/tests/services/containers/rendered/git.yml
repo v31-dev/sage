@@ -1,0 +1,37 @@
+name: sage-2222222222222222
+
+services:
+  sage-2222222222222222:
+    build:
+      context: https://github.com/user/api.git#main
+      dockerfile: docker/Dockerfile
+      args: [ "VERSION=1.2", "QUOTED=x y" ]
+      secrets: [ NPM_TOKEN, OTHER ]
+    container_name: sage-2222222222222222
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"
+    labels:
+      sage.instance: "1234567e89012345"
+      sage.generation: "0000000000000123"
+      sage.container: "2222222222222222"
+      sage.deployment: "5555555555555e55"
+      sage.application: "shop-api"
+    restart: unless-stopped
+    command: 
+    volumes: [  ]
+    env_file: .env
+    networks:
+      - sage_default
+
+networks:
+  sage_default:
+    external: true
+
+secrets:
+  NPM_TOKEN:
+    file: ./secrets/NPM_TOKEN
+  OTHER:
+    file: ./secrets/OTHER
