@@ -46,12 +46,13 @@ class OnConflict(Enum):
   """How add_task admits a task when a task with the same key is pending or running.
 
   Admission decides whether a request queues a task. It is separate from mutual exclusion: the dispatcher always
-  serializes conflicting scopes, so a queued task waits for its scopes to free. DEDUP and REPLACE compare keys,
-  never scopes; QUEUE ignores the key (every request runs).
+  serializes conflicting scopes, so a queued task waits for its scopes to free. DEDUP, REPLACE and REVISE compare
+  keys, never scopes; QUEUE ignores the key (every request runs).
   """
   DEDUP = "dedup"      # a pending or running task with the key is the request's task; else enqueue
   QUEUE = "queue"      # always enqueue
   REPLACE = "replace"  # supersede the pending tasks with the key (latest wins), then enqueue
+  REVISE = "revise"    # busy while a task with the key runs; else supersede the pending ones and enqueue
 
 
 class QueueState(Enum):
@@ -69,7 +70,8 @@ class QueueState(Enum):
 
 @dataclass(frozen=True)
 class QueuedTask:
-  key: tuple[str, ...]          # the operation's name, then its subject's ids and its intent
+  name: str                     # what it does, shown and recorded
+  key: tuple[str, ...]          # what its request competes for (see add_task)
   scopes: frozenset[str]
   task: Callable
   executor: str                 # key into TaskQueue executors
@@ -83,22 +85,19 @@ class QueuedTask:
   started_at: datetime | None = None
   lines: TaskLines | None = None  # from its start: where its lines go, and what tells this run apart
 
-  @property
-  def name(self) -> str:
-    return self.key[0]
-
 
 class Outcome(Enum):
   ACCEPTED = "accepted"   # queued as a new task
   EXISTING = "existing"   # a pending or running task with its key does it
+  BUSY = "busy"           # not queued (REVISE): a task with its key is running
   REFUSED = "refused"     # not queued: the queue is stopping, or a restore while it is not running
 
 
 @dataclass(frozen=True)
 class Admission:
   """What `admit` decides for a new task. Accepted: `task` is what to queue, at `position` once the `superseded` are
-  removed. Existing: `task` is the pending or running one with its key, made visible when `reveal`. Refused: recorded
-  as cancelled when `cancelled`."""
+  removed. Existing: `task` is the pending or running one with its key, made visible when `reveal`. Busy: `task` is the
+  running one with its key. Refused: recorded as cancelled when `cancelled`."""
   outcome: Outcome
   task: QueuedTask | None = None
   superseded: tuple[QueuedTask, ...] = ()
@@ -109,8 +108,8 @@ class Admission:
 
 @dataclass(frozen=True)
 class Added:
-  """What add_task did with a request: the id of its task, or of the task already doing it; none when it was refused
-  without a record."""
+  """What add_task did with a request: the id of its task, of the task already doing it, or of the running task that
+  makes it busy; none when it was refused without a record."""
   outcome: Outcome
   task_id: str | None = None
 
@@ -130,8 +129,13 @@ def admit(state: QueueState, running: list[QueuedTask], queue: list[QueuedTask],
     if existing is not None:
       return Admission(Outcome.EXISTING, existing, reveal=existing.quiet and not new.quiet)
 
+  if on_conflict == OnConflict.REVISE:
+    current = next((task for task in running if task.key == new.key), None)
+    if current is not None:
+      return Admission(Outcome.BUSY, current)
+
   superseded = ()
-  if on_conflict == OnConflict.REPLACE:
+  if on_conflict in (OnConflict.REPLACE, OnConflict.REVISE):
     superseded = tuple(task for task in queue if task.key == new.key)
     queue = [task for task in queue if task.key != new.key]
     if not all(task.quiet for task in superseded):
@@ -199,16 +203,20 @@ class TaskQueue:
     self._tasks: set[asyncio.Task] = set()
 
   def add_task(self, task: Callable, key: tuple[str, ...], scopes: frozenset[str], executor: str,
-               params: dict | None = None, inputs: dict | None = None, labels: dict[str, str] | None = None,
-               task_id: str | None = None, on_conflict: OnConflict = OnConflict.DEDUP,
-               priority: bool = False, quiet: bool = False, restore: bool = False) -> Added:
-    """Request a task: accepted (queued), existing (a pending or running task with the same key does it) or refused
-    (the queue is stopping, recorded as cancelled; or a restore while the queue isn't running).
+               name: str | None = None, params: dict | None = None, inputs: dict | None = None,
+               labels: dict[str, str] | None = None, task_id: str | None = None,
+               on_conflict: OnConflict = OnConflict.DEDUP, priority: bool = False, quiet: bool = False,
+               restore: bool = False) -> Added:
+    """Request a task: accepted (queued), existing (a pending or running task with the same key does it), busy (REVISE:
+    a task with the same key is running) or refused (the queue is stopping, recorded as cancelled; or a restore while
+    the queue isn't running).
 
     ### Parameters
     - task: the callable to run (sync or async).
-    - key: the operation's name, then its subject's ids and its intent, e.g. `("deploy", container_id)`: what
-      DEDUP and REPLACE compare. Its first part is the task's name.
+    - key: what the request competes for, which DEDUP, REPLACE and REVISE compare: the operation's name, then its
+      subject's ids and its intent, e.g. `("sync_domain", domain_id)`; requests that take turns on one subject share
+      one, e.g. a container's lifecycle requests `("lifecycle", container_id)`.
+    - name: what the task does, shown and recorded; the key's first part when omitted.
     - scopes: scopes this task needs exclusive access to. A parent scope ("app")
       conflicts with all children ("app:app1"); siblings never conflict; `*`
       conflicts with every task. Each scope's root must be one of the roots passed
@@ -232,9 +240,10 @@ class TaskQueue:
       have finished); the task ends that state with `end_restore`.
     """
     scopes = frozenset({EVERYTHING}) if EVERYTHING in scopes else frozenset(scopes)
-    new_task = QueuedTask(key=tuple(key), scopes=scopes, task=task, executor=executor, params=params or {},
-                          inputs=inputs or {}, labels=labels or {}, task_id=task_id or new_task_id(), quiet=quiet,
-                          restore=restore)
+    key = tuple(key)
+    new_task = QueuedTask(name=name or (key[0] if key else ""), key=key, scopes=scopes, task=task, executor=executor,
+                          params=params or {}, inputs=inputs or {}, labels=labels or {},
+                          task_id=task_id or new_task_id(), quiet=quiet, restore=restore)
     self._validate(new_task)
     with self._lock:
       admission = admit(self._state, self._running, self._queue, new_task, on_conflict, priority)
@@ -260,6 +269,20 @@ class TaskQueue:
     if admission.outcome == Outcome.REFUSED:
       return Added(Outcome.REFUSED, new_task.task_id if admission.cancelled else None)
     return Added(admission.outcome, admission.task.task_id)
+
+  def cancel(self, key: tuple[str, ...]) -> list[str]:
+    """Cancel the pending tasks with `key`, recorded as cancelled; a running one is left to finish, and the restore is
+    never cancelled (only it ends the restoring state). The ids of the tasks cancelled."""
+    key = tuple(key)
+    kept, cancelled = [], []
+    with self._lock:
+      for task in self._queue:
+        (cancelled if task.key == key and not task.restore else kept).append(task)
+      self._queue[:] = kept
+    self._record_cancelled(cancelled)
+    if cancelled:
+      self._emit()
+    return [task.task_id for task in cancelled]
 
   def is_busy(self, scopes: frozenset[str]) -> bool:
     """True if any running or pending task conflicts with the given scopes."""
@@ -400,7 +423,7 @@ class TaskQueue:
   def _record_cancelled(self, tasks: list[QueuedTask]):
     """Log and persist already-removed pending tasks as cancelled. Call this
     OUTSIDE the lock -- `_record` writes to the DB, which must not run inside the
-    critical section. Callers (admission, end_restore, stop()) remove
+    critical section. Callers (admission, cancel, end_restore, stop()) remove
     the tasks from the queue under the lock, then hand them here."""
     for task in tasks:
       logger.info(f"{task.name}: cancelled")

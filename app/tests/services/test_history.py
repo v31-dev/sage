@@ -102,8 +102,9 @@ def test_purging_deletes_the_events_of_both_kinds_recorded_before_the_cutoff(con
   assert [event.action for event in WorkerEvent.select()] == ["repair"]
 
 
-def finished(task_id_="t1", key=("deploy", "c1"), labels=None, scopes=("worker:w1:container:c1",), **fields):
-  return QueuedTask(key=key, scopes=frozenset(scopes), task=lambda: None, executor="app", task_id=task_id_,
+def finished(task_id_="t1", key=("lifecycle", "c1"), labels=None, scopes=("worker:w1:container:c1",), name="deploy",
+             **fields):
+  return QueuedTask(name=name, key=key, scopes=frozenset(scopes), task=lambda: None, executor="app", task_id=task_id_,
                     params={"container_id": "c1"}, inputs={"snapshot": {"secret": "s"}},
                     labels={"Application": "shop / web", "Worker": "w1"} if labels is None else labels, **fields)
 

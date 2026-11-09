@@ -12,7 +12,7 @@ from utils.queue import Added, OnConflict, Outcome, QueuedTask, QueueState, Task
 
 
 def queued(name, *scopes, key=None, quiet=False, restore=False):
-  return QueuedTask(key=key or (name,), scopes=frozenset(scopes), task=lambda: None, executor="app",
+  return QueuedTask(name=name, key=key or (name,), scopes=frozenset(scopes), task=lambda: None, executor="app",
                     task_id=f"{name}-{'-'.join(sorted(scopes))}", quiet=quiet, restore=restore)
 
 
@@ -74,6 +74,23 @@ class TestAdmit:
                        queue=[queued("sync", "domain:id:d1", key=("sync", "d2"))])
     assert result.superseded == ()
 
+  def test_revise_is_busy_with_the_running_task_with_the_key_whatever_its_name(self):
+    current = queued("deploy", "worker:w1:container:c1", key=("lifecycle", "c1"))
+    result = admission(queued("stop", "worker:w1:container:c1", key=("lifecycle", "c1")), on_conflict=OnConflict.REVISE,
+                       running=[current])
+    assert (result.outcome, result.task, result.superseded) == (Outcome.BUSY, current, ())
+
+  def test_revise_supersedes_the_pending_task_with_the_key_whatever_its_name_and_takes_the_end(self):
+    old = queued("deploy", "worker:w1:container:c1", key=("lifecycle", "c1"))
+    new = queued("stop", "worker:w1:container:c1", key=("lifecycle", "c1"))
+    result = admission(new, on_conflict=OnConflict.REVISE, queue=[old, queued("x", "worker:w3")])
+    assert (result.outcome, result.task, result.superseded, result.position) == (Outcome.ACCEPTED, new, (old,), 1)
+
+  def test_revise_is_accepted_beside_a_running_task_with_another_key_on_its_scope(self):
+    result = admission(queued("deploy", "worker:w1:container:c1", key=("lifecycle", "c1")),
+                       on_conflict=OnConflict.REVISE, running=[queued("backup", "worker:w1:container:c1")])
+    assert (result.outcome, result.superseded) == (Outcome.ACCEPTED, ())
+
   def test_a_visible_request_makes_the_quiet_task_with_its_key_visible(self):
     quiet = queued("reconcile", "worker:w1:container:c1", quiet=True)
     assert admission(queued("reconcile", "worker:w1:container:c1"), queue=[quiet]).reveal is True
@@ -83,12 +100,14 @@ class TestAdmit:
     existing = queued("reconcile", "worker:w1:container:c1", quiet=existing_quiet)
     assert admission(queued("reconcile", "worker:w1:container:c1", quiet=new_quiet), running=[existing]).reveal is False
 
+  @pytest.mark.parametrize("on_conflict", [OnConflict.REPLACE, OnConflict.REVISE])
   @pytest.mark.parametrize("superseded_quiet, new_quiet, expected", [
       ((True, True), True, True), ((True, False), True, False), ((True,), False, False), ((), True, True)])
-  def test_a_replacement_is_visible_when_it_or_a_task_it_supersedes_is(self, superseded_quiet, new_quiet, expected):
+  def test_a_replacement_is_visible_when_it_or_a_task_it_supersedes_is(self, superseded_quiet, new_quiet, expected,
+                                                                       on_conflict):
     queue = [queued("reconcile", "worker:w1:container:c1", quiet=quiet) for quiet in superseded_quiet]
     result = admission(queued("reconcile", "worker:w1:container:c1", quiet=new_quiet), queue=queue,
-                       on_conflict=OnConflict.REPLACE)
+                       on_conflict=on_conflict)
     assert result.task.quiet is expected
 
   def test_a_priority_task_goes_behind_the_tasks_that_cover_it_and_ahead_of_the_rest(self):
@@ -470,6 +489,26 @@ class TestAddTask:
     lane.queue.stop()
     assert lane.add(done, key=("b",), task_id="t6") == Added(Outcome.REFUSED, "t6")
 
+  async def test_a_request_while_a_task_with_its_key_runs_is_busy_with_its_id_and_leaves_no_trace(self, lane):
+    work, release = holding()
+    lane.add(work, key=("lifecycle", "c1"), name="deploy", task_id="t1", on_conflict=OnConflict.REVISE)
+    lane.queue.dispatch_tick()
+    changes = lane.changes
+    assert lane.add(done, key=("lifecycle", "c1"), name="stop", task_id="t2",
+                    on_conflict=OnConflict.REVISE) == Added(Outcome.BUSY, "t1")
+    assert (lane.queue.snapshot()["queued"], lane.recorded, lane.changes) == ([], [], changes)
+    release.set()
+    await lane.run()
+    assert lane.recorded == [("deploy", "completed")]
+
+  def test_a_task_is_named_by_the_start_of_its_key_unless_named(self, lane):
+    lane.add(done, key=("lifecycle", "c1"), name="deploy")
+    lane.add(done, key=("sync_domain", "d1"))
+    assert [(task["name"], task["key"]) for task in lane.queue.snapshot()["queued"]] == [
+        ("deploy", ["lifecycle", "c1"]), ("sync_domain", ["sync_domain", "d1"])]
+    lane.add(done, key=("lifecycle", "c1"), name="stop", on_conflict=OnConflict.REVISE)
+    assert lane.recorded == [("deploy", "cancelled")]
+
   def test_a_replaced_pending_task_is_recorded_as_cancelled(self, lane):
     lane.add(done, key=("sync",), on_conflict=OnConflict.REPLACE)
     lane.add(done, key=("sync",), on_conflict=OnConflict.REPLACE)
@@ -489,6 +528,43 @@ class TestAddTask:
   def test_a_restore_puts_the_queue_in_the_restoring_state(self, lane):
     assert lane.add(done, key=("restore",), scope="*", executor="platform", restore=True).outcome == Outcome.ACCEPTED
     assert lane.queue.state == QueueState.RESTORING
+
+
+class TestCancel:
+  def test_it_cancels_the_pending_tasks_with_the_key_and_records_them(self, lane):
+    for task_id in ("t1", "t2"):
+      lane.add(done, key=("lifecycle", "c1"), name="deploy", task_id=task_id, on_conflict=OnConflict.QUEUE)
+    lane.add(done, key=("lifecycle", "c2"), name="deploy", task_id="t3", scope="worker:w2")
+    assert lane.queue.cancel(("lifecycle", "c1")) == ["t1", "t2"]
+    assert [task["task_id"] for task in lane.queue.snapshot()["queued"]] == ["t3"]
+    assert lane.recorded == [("deploy", "cancelled"), ("deploy", "cancelled")]
+    assert lane.changes == 4
+
+  async def test_it_leaves_a_running_task_with_the_key_to_finish(self, lane):
+    work, release = holding()
+    lane.add(work, key=("lifecycle", "c1"), name="deploy")
+    lane.queue.dispatch_tick()
+    changes = lane.changes
+    assert lane.queue.cancel(("lifecycle", "c1")) == []
+    assert (len(lane.queue.snapshot()["running"]), lane.recorded, lane.changes) == (1, [], changes)
+    release.set()
+    await lane.run()
+    assert lane.recorded == [("deploy", "completed")]
+
+  def test_a_quiet_task_it_cancels_leaves_no_record(self, lane):
+    lane.add(done, key=("reconcile", "c1"), quiet=True)
+    assert lane.queue.cancel(("reconcile", "c1")) != []
+    assert (lane.queue.snapshot()["queued"], lane.recorded) == ([], [])
+
+  def test_the_restore_is_never_cancelled(self, lane):
+    lane.add(done, key=("restore",), scope="*", executor="platform", restore=True)
+    assert lane.queue.cancel(("restore",)) == []
+    assert lane.queue.state == QueueState.RESTORING and len(lane.queue.snapshot()["queued"]) == 1
+
+  def test_cancelling_what_is_not_there_changes_nothing(self, lane):
+    lane.add(done, key=("lifecycle", "c1"))
+    assert lane.queue.cancel(("lifecycle", "c2")) == []
+    assert (lane.recorded, lane.changes) == ([], 1)
 
 
 class TestStates:

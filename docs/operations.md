@@ -79,11 +79,14 @@ async task bodies can still overlap while their offloads wait for it. Pool size 
 
 `*` conflicts with every queued task, one holding no scope included; the platform restore holds it.
 
-| Admission | Effect on an operation with the same **key** (its name, subject ids and intent), whatever its scopes |
+| Admission | Effect on an operation with the same **key** (by default its name, subject ids and intent; a container's lifecycle requests share `("lifecycle", <container id>)`), whatever its scopes |
 | --- | --- |
 | `DEDUP` | A pending task with the key, else a running one, does the request (`existing`, with its id); otherwise enqueue. Default. |
 | `REPLACE` | Supersede the pending tasks with the key, even on other scopes; keep a running one and queue its successor. |
+| `REVISE` | `busy` (with the running task's id) while a task with the key runs; otherwise supersede the pending ones and enqueue. |
 | `QUEUE` | Keep every request. |
+
+A pending task can be cancelled by its key (`cancel_tasks`); the Manager offers it for a container's lifecycle request only.
 
 A visible request joining a quiet task with its key makes that task visible. Conflicting scopes defer admitted work; they do not reject it. Pending tasks reserve no scopes, so a broad
 task can wait while later work starts. Paused queues admit work but start nothing; restoring starts only the

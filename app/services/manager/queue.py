@@ -15,6 +15,9 @@ class QueueMixin:
   def add_task(self, **params) -> Added:
     return self.task_queue.add_task(**params)
 
+  def cancel_tasks(self, key: tuple[str, ...]) -> list[str]:
+    return self.task_queue.cancel(key)
+
   def is_busy(self, scopes: frozenset[str]) -> bool:
     return self.task_queue.is_busy(scopes)
 
