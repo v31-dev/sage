@@ -7,7 +7,8 @@ from playhouse.migrate import SqliteMigrator, migrate
 
 import config
 from services.db.database import MODELS, Database, SchemaRefused
-from services.db.models import Application, Backup, BaseEvent, BaseModel, Container, ContainerEvent, Domain, Instance, Project, Volume, Worker
+from services.db.models import (Application, Backup, BaseEvent, BaseModel, Container, ContainerEvent, Domain, Instance, Project, Volume, Worker,
+                                WorkerEvent)
 from services.db.models import db as database
 
 ORPHAN_DOMAIN = [
@@ -160,13 +161,13 @@ class TestReconcileSchema:
     db.execute_sql("DROP TABLE worker")
     db.execute_sql(
         "CREATE TABLE worker (hostname VARCHAR(255) NOT NULL PRIMARY KEY, ip CHAR(15) NOT NULL, online INTEGER NOT NULL, "
-        "created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL)")
+        "created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL, subdomain VARCHAR(63) NOT NULL)")
 
     Database().reconcile_schema()
 
     assert columns(db, "worker") == {"hostname", "created_at", "updated_at", "subdomain"}
-    Worker.create(hostname="w1")
-    assert Worker.get_by_id("w1").hostname == "w1"
+    Worker.create(hostname="w1", subdomain="red")
+    assert Worker.get_by_id("w1").subdomain == "red"
 
   def test_logs_the_column_it_drops(self, db, caplog):
     db.execute_sql("ALTER TABLE project ADD COLUMN retired INTEGER NOT NULL DEFAULT 0")
@@ -179,18 +180,18 @@ class TestReconcileSchema:
     with pytest.raises(ValueError, match="not null but has no default"):
       Database().reconcile_schema()
 
-  def test_a_new_column_with_an_index_gets_both_on_a_table_with_rows(self, db):
-    Worker.create(hostname="w1", subdomain="aaa111")
-    Worker.create(hostname="w2", subdomain="bbb222")
-    db.execute_sql("DROP INDEX worker_subdomain")
-    db.execute_sql("ALTER TABLE worker DROP COLUMN subdomain")
+  def test_a_new_column_with_an_index_gets_both_on_a_table_with_rows(self, db, worker):
+    WorkerEvent.create(worker=worker, subject_id="w1", action="add", transition="succeeded", dedupe_key="a")
+    WorkerEvent.create(worker=worker, subject_id="w1", action="add", transition="succeeded", dedupe_key="b")
+    db.execute_sql("DROP INDEX workerevent_dedupe_key")
+    db.execute_sql("ALTER TABLE worker_event DROP COLUMN dedupe_key")
 
     Database().reconcile_schema()
 
-    assert "subdomain" in columns(db, "worker")
-    assert [row[0] for row in db.execute_sql("SELECT sql FROM sqlite_master WHERE name = 'worker_subdomain'")] == [
-        'CREATE UNIQUE INDEX "worker_subdomain" ON "worker" ("subdomain")']
-    assert Worker.select().count() == 2
+    assert "dedupe_key" in columns(db, "worker_event")
+    assert [row[0] for row in db.execute_sql("SELECT sql FROM sqlite_master WHERE name = 'workerevent_dedupe_key'")] == [
+        'CREATE UNIQUE INDEX "workerevent_dedupe_key" ON "worker_event" ("dedupe_key")']
+    assert WorkerEvent.select().count() == 2
 
   def test_an_existing_domain_table_gets_the_name_index(self, db):
     db.execute_sql("DROP INDEX domain_name_namespace_worker")

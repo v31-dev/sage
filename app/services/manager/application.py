@@ -59,15 +59,6 @@ async def mark(container: Container, text: str):
     logger.warning(f"Could not mark '{text}' in the logs of {container.application.qualified_name}.", exc_info=True)
 
 
-def task_parts(task_id: str) -> list[dict]:
-  """The parts of a task that logged lines, in the order of their first line, each with its kind and worker from its
-  `Event` (None when the event went with its container)."""
-  events = {part: {"type": kind, "worker": worker} for part, kind, worker in (
-      Event.select(Event.container_task_id, Event.type, Container.worker).join(Container)
-      .where(Event.application_task_id == task_id).tuples())}
-  return [{"id": part, **events.get(part, {"type": None, "worker": None})} for part in Logs().query_task_parts(task_id)]
-
-
 class ApplicationMixin:
   def save_container(self, container: Container):
     was_active = Container.select(Container.status).where(Container.id == container.id).scalar() == "active"

@@ -127,7 +127,7 @@ class TestContainer:
       Container.create(application=application, worker=worker)
 
   def test_an_application_can_run_on_two_workers(self, container, application):
-    Container.create(application=application, worker=Worker.create(hostname="w2"))
+    Container.create(application=application, worker=Worker.create(hostname="w2", subdomain="blue"))
 
   def test_an_application_with_a_container_cannot_be_deleted(self, container, application):
     with pytest.raises(IntegrityError):
@@ -203,6 +203,10 @@ class TestDomain:
 
 
 class TestWorker:
+  def test_a_worker_needs_a_subdomain(self, db):
+    with pytest.raises(IntegrityError, match="NOT NULL constraint failed: worker.subdomain"):
+      Worker.create(hostname="w1")
+
   @pytest.mark.parametrize("value", ["EU1", "-eu1", "eu1-", "a" * 64, "eu_1"])
   def test_a_subdomain_is_a_valid_domain_label(self, db, value):
     with pytest.raises(ValueError):

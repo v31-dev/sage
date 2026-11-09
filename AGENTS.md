@@ -54,6 +54,8 @@ After compaction, reread the relevant `docs/` page before continuing.
 | `app/services/db/` | Peewee models, storage fields, encryption and DB bootstrap |
 | `app/services/applications/` | Project, Application, Volume and container-placement commands, their value rules, deploy input capture and update publication |
 | `app/services/domains/` | Domain commands, routing config, artifact names, host and origin derivation and update publication |
+| `app/services/workers/` | Worker row commands: add with a subdomain, subdomain change, removal |
+| `app/services/history.py` | Container and worker event append, task parts and event retention |
 | `app/values/` | Pure name, origin and multiline key/value rules |
 | `app/scheduler.py` | APScheduler cron/interval triggers that enqueue operations |
 | `app/utils/queue.py` | In-memory operation queue (scopes + single-dispatcher) |

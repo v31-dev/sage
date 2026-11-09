@@ -6,7 +6,7 @@ from services.updates import UpdateSource
 def test_a_relinked_domain_tells_both_applications_and_both_workers(signals, application, worker):
   before = Container.create(application=application, worker=worker)
   other = Container.create(application=Application.create(project=application.project, name="api", label="API"),
-                           worker=Worker.create(hostname="w2"))
+                           worker=Worker.create(hostname="w2", subdomain="blue"))
   domain = Domain.create(name="shop", type="public", port=80, container=other)
 
   domain_changed(domain, before)

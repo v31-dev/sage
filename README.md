@@ -188,8 +188,8 @@ tailscale up --ssh --auth-key=tskey-auth-...   # a key tagged tag:sage-worker
 
 The tag is for the tailnet policy above, which lets the manager reach the machine; Sage does
 not read it. Add the machine on the Workers page by its hostname or Tailscale IP: Sage checks
-that it answers, then sets it up over SSH. In Sage a worker has a subdomain, given or
-random, which its internal names are under (`<name>.<subdomain>.int.<DOMAIN>`). A new
+that it answers, then sets it up over SSH. In Sage a worker has a subdomain, given when
+it is added, which its internal names are under (`<name>.<subdomain>.int.<DOMAIN>`). A new
 worker gets its own certificate and private key; changing its subdomain replaces only that
 certificate. Workers share a separate certificate for internal discovery. Certificates use
 45-day validity and renew with seven days remaining. The worker's page shows each certificate's

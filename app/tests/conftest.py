@@ -165,4 +165,4 @@ def application(project):
 @pytest.fixture
 def worker(db):
   from services.db.models import Worker
-  return Worker.create(hostname="w1")
+  return Worker.create(hostname="w1", subdomain="red")

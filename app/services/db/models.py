@@ -37,7 +37,7 @@ class Instance(BaseModel):
 class Worker(BaseModel):
   hostname = CleanCharField(primary_key=True)
   # Its internal names are under `<subdomain>.int.<domain>`.
-  subdomain = LabelField(null=True)
+  subdomain = LabelField()
 
   class Meta:
     indexes = ((("subdomain",), True),)

@@ -7,7 +7,7 @@ from services.updates import UpdateSource
 
 @pytest.fixture
 def hosted(application, worker):
-  other = Worker.create(hostname="w2")
+  other = Worker.create(hostname="w2", subdomain="blue")
   return Container.create(application=application, worker=worker), Container.create(
       application=Application.create(project=application.project, name="api", label="Api"), worker=other)
 
@@ -24,7 +24,7 @@ def test_a_change_of_a_container_tells_its_applications_page_and_its_workers(sig
 
 
 def test_a_change_of_what_the_workers_show_of_an_application_tells_each_worker_it_is_on_once(signals, hosted, application):
-  Container.create(application=application, worker=Worker.create(hostname="w3"))
+  Container.create(application=application, worker=Worker.create(hostname="w3", subdomain="green"))
   hosts_changed(application)
   assert sorted(signals, key=str) == sorted([
       (UpdateSource.APPLICATION, "demo/web"), (UpdateSource.WORKER_CONTAINERS, "w1"), (UpdateSource.WORKER_CONTAINERS, "w3"),

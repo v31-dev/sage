@@ -4,9 +4,9 @@ from typing import Annotated
 from fastapi import APIRouter, Query
 
 import config
+from services.history import task_parts
 from services.logs import Logs
 from services.manager import Manager
-from services.manager.application import task_parts
 from services.manager.queue import task_history, task_history_filters
 from utils.logging import NO_ACCESS_LOG
 

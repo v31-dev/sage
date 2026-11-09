@@ -48,10 +48,11 @@ describe('adding a worker', () => {
     expect(addWorker).toHaveBeenCalledWith({ host: 'w9', subdomain: 'eu-1' })
   })
 
-  it('sends no subdomain when none is given, for the manager to pick one', async () => {
-    await add({ 'worker-host': 'w9' })
+  it('refuses a worker without a subdomain before sending it', async () => {
+    const wrapper = await add({ 'worker-host': 'w9', 'worker-subdomain': '  ' })
 
-    expect(addWorker).toHaveBeenCalledWith({ host: 'w9', subdomain: '' })
+    expect(addWorker).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('Subdomain is required')
   })
 
   it("shows the manager's refusal", async () => {
