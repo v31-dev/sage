@@ -1,4 +1,5 @@
 import logging
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -205,29 +206,31 @@ def parse_batch(batch) -> list[Snapshot]:
 
 
 class WorkerReports(Base):
-  """The newest snapshot Telegraf reported for each worker, in memory. The report route fills
-  it and decides nothing; the operation queue reads it. `started` is when the manager started: a worker
+  """The snapshots Telegraf reported for each worker, the newest REPORT_HISTORY_SIZE of them, in memory. The report
+  route fills it and decides nothing; the operation queue reads it. `started` is when the manager started: a worker
   that has not reported is given a grace after it."""
 
   def __init__(self):
     super().__init__()
     self.started = utcnow()
-    self._latest: dict[str, Received] = {}
+    self._history: dict[str, deque[Received]] = {}
     self._unknown: set[str] = set()
 
   def accept(self, hostname: str, snapshots: list[Snapshot]) -> Arrival | None:
-    """Keep the newest snapshot of the batch and say what it changed. A batch that is older than what
-    is held (a replay arriving late) is ignored and gives None."""
-    if not snapshots:
-      return None
-    newest = snapshots[-1]
+    """Keep the snapshots of the batch gathered after the newest one held, and say what the newest changed. A batch
+    with none (a replay arriving late, or the same snapshot again) is ignored and gives None, so a replay does not
+    make what is held look recently received."""
     now = utcnow()
     with self.lock:
-      current = self._latest.get(hostname)
-      if current is not None and newest.at < current.snapshot.at:
+      held = self._history.get(hostname)
+      current = held[-1] if held else None
+      fresh = [snapshot for snapshot in snapshots if current is None or snapshot.at > current.snapshot.at]
+      if not fresh:
         return None
-      received = Received(now, newest)
-      self._latest[hostname] = received
+      held = self._history.setdefault(hostname, deque(maxlen=config.REPORT_HISTORY_SIZE))
+      held.extend(Received(now, snapshot) for snapshot in fresh)
+      received = held[-1]
+    newest = received.snapshot
     if current is None:
       changed = frozenset(newest.containers)
     else:
@@ -251,7 +254,13 @@ class WorkerReports(Base):
 
   def latest(self, hostname: str) -> Received | None:
     with self.lock:
-      return self._latest.get(hostname)
+      held = self._history.get(hostname)
+      return held[-1] if held else None
+
+  def history(self, hostname: str) -> list[Received]:
+    """The snapshots held for the worker, oldest first."""
+    with self.lock:
+      return list(self._history.get(hostname, ()))
 
   def current(self, hostname: str) -> Received | None:
     """The newest report, if it is recent enough to describe the worker now."""
@@ -283,4 +292,4 @@ class WorkerReports(Base):
 
   def forget(self, hostname: str):
     with self.lock:
-      self._latest.pop(hostname, None)
+      self._history.pop(hostname, None)

@@ -60,8 +60,9 @@ class Recovery:
 
 @dataclass(frozen=True)
 class Operation:
-  """The latest admitted operation. `effect_bound_seconds` is how long work it launched can still run; `outcome` and
-  `finished_at` stay None until it is decided."""
+  """The latest admitted operation. `effect_bound_seconds` is how long work it launched can still run; `outcome`,
+  `finished_at` and `verified_on_worker_at` stay None until it settles. `verified_on_worker_at` is on the worker's
+  clock, when its outcome was verified there: a report gathered before it says nothing about that outcome."""
   id: str
   contract: str
   phase: str
@@ -74,6 +75,7 @@ class Operation:
   reason: str | None = None
   recovery: Recovery | None = None
   task_ref: str | None = None
+  verified_on_worker_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -158,7 +160,7 @@ def decode_record(text: str) -> TargetRecord:
 
   def operation(value):
     value = fields(value, ("id", "contract", "phase", "admitted_at", "effect_bound_seconds", "finished_at", "input_hash",
-                           "baseline", "outcome", "reason", "recovery", "task_ref"))
+                           "baseline", "outcome", "reason", "recovery", "task_ref", "verified_on_worker_at"))
     bound = value["effect_bound_seconds"]
     if isinstance(bound, bool) or not isinstance(bound, int) or bound < 0:
       raise ValueError(f"Invalid effect bound {bound!r}.")
@@ -166,9 +168,15 @@ def decode_record(text: str) -> TargetRecord:
         text_of(value["id"]), choice(value["contract"], CONTRACTS), choice(value["phase"], PHASES), time(value["admitted_at"]),
         bound, time(value["finished_at"], nullable=True), text_of(value["input_hash"], nullable=True, pattern="[0-9a-f]{64}"),
         optional(value["baseline"], baseline), choice(value["outcome"], OUTCOMES, nullable=True),
-        text_of(value["reason"], nullable=True), optional(value["recovery"], recovery), text_of(value["task_ref"], nullable=True))
-    if (decoded.phase == "settled") != (decoded.outcome is not None and decoded.finished_at is not None):
-      raise ValueError("Only a settled operation has an outcome and a finish.")
+        text_of(value["reason"], nullable=True), optional(value["recovery"], recovery), text_of(value["task_ref"], nullable=True),
+        time(value["verified_on_worker_at"], nullable=True))
+    if decoded.phase == "settled":
+      if None in (decoded.outcome, decoded.finished_at, decoded.verified_on_worker_at):
+        raise ValueError("A settled operation has an outcome, a finish and a verification.")
+    elif decoded.finished_at is not None or decoded.verified_on_worker_at is not None:
+      raise ValueError("Only a settled operation has a finish and a verification.")
+    if decoded.phase == "executing" and decoded.outcome is not None:
+      raise ValueError("An executing operation has no outcome yet.")
     if decoded.phase == "recovering" and decoded.outcome not in ("failed", "interrupted"):
       raise ValueError("A recovering operation has failed or been interrupted.")
     if (decoded.contract == "deploy") != (decoded.input_hash is not None):

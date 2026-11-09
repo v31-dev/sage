@@ -75,6 +75,8 @@ LOG_INTAKE_MAX_BYTES = 8 * 1024 * 1024
 # (a gather, a flush and a request), since a snapshot taken before that change says nothing about it.
 REPORT_STALE_SECONDS = 30
 REPORT_SETTLE_SECONDS = 15
+# The snapshots kept for each worker, newest last.
+REPORT_HISTORY_SIZE = 5
 # After the manager starts, a worker that has not reported yet is not called not ready for this long.
 REPORT_STARTUP_GRACE_SECONDS = 60
 # The names of unknown senders remembered so that each is logged once.

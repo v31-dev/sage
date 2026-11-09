@@ -144,6 +144,26 @@ class TestReports:
     assert received.snapshot.host.cpu_idle_percent == 30
     assert received.arrived_at == datetime(2026, 1, 1, 12, 0, 0)
 
+  def test_a_replay_of_the_held_snapshot_is_ignored_and_leaves_its_arrival(self, clock):
+    reports = WorkerReports()
+    reports.accept("w1", snapshots_at(30))
+    clock.advance(timedelta(seconds=25))
+    assert reports.accept("w1", snapshots_at(30)) is None
+    assert reports.latest("w1").arrived_at == datetime(2026, 1, 1, 12, 0, 0)
+
+  def test_it_keeps_the_newest_snapshots_up_to_the_history_size_oldest_first(self, monkeypatch):
+    monkeypatch.setattr(config, "REPORT_HISTORY_SIZE", 3)
+    reports = WorkerReports()
+    for seconds in (10, 20, 30, 40):
+      reports.accept("w1", snapshots_at(seconds))
+    assert [received.snapshot.host.cpu_idle_percent for received in reports.history("w1")] == [20, 30, 40]
+
+  def test_a_batch_adds_each_snapshot_newer_than_the_newest_held(self):
+    reports = WorkerReports()
+    reports.accept("w1", snapshots_at(20))
+    reports.accept("w1", snapshots_at(10) + snapshots_at(20) + snapshots_at(30) + snapshots_at(40))
+    assert [received.snapshot.host.cpu_idle_percent for received in reports.history("w1")] == [20, 30, 40]
+
   def test_each_worker_has_its_own(self):
     reports = WorkerReports()
     reports.accept("w1", snapshots_at(10))
@@ -171,6 +191,7 @@ class TestReports:
     reports.forget("w1")
     reports.forget("never-seen")
     assert reports.latest("w1") is None
+    assert reports.history("w1") == []
 
   def test_an_unknown_name_is_first_only_once(self):
     reports = WorkerReports()

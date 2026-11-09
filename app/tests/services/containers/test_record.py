@@ -22,8 +22,9 @@ FULL = TargetRecord(
 )
 
 
-def mutated(change) -> str:
-  value = json.loads(encode_record(FULL))
+def mutated(change, record=FULL) -> str:
+  """The record's JSON with `change` applied to it."""
+  value = json.loads(encode_record(record))
   change(value)
   return json.dumps(value)
 
@@ -39,11 +40,11 @@ def test_a_record_survives_its_encoding_on_one_line_with_its_format_version():
     TargetRecord(AUTHORITY),
     TargetRecord(AUTHORITY, operation=Operation("d2", "deploy", "executing", AT, 960, input_hash=HASH, task_ref="t1")),
     TargetRecord(AUTHORITY, Applied("d2", HASH, AT), Settled("d2", "running", "succeeded", AT),
-                 Operation("d2", "deploy", "settled", AT, 0, AT, HASH, outcome="succeeded")),
+                 Operation("d2", "deploy", "settled", AT, 0, AT, HASH, outcome="succeeded", verified_on_worker_at=AT)),
     TargetRecord(AUTHORITY, settled=Settled("d3", "stopped", "failed", AT, "pull: timeout"),
                  operation=Operation("d3", "deploy", "recovering", AT, 960, input_hash=HASH, outcome="failed", reason="pull: timeout",
                                      recovery=Recovery("verified"))),
-    TargetRecord(AUTHORITY, operation=Operation("s1", "stop", "settled", AT, 0, AT, outcome="succeeded")),
+    TargetRecord(AUTHORITY, operation=Operation("s1", "stop", "settled", AT, 0, AT, outcome="succeeded", verified_on_worker_at=AT)),
 ], ids=["new", "a deploy running", "a deploy committed", "a failed deploy recovered", "a stop"])
 def test_each_shape_of_record_survives_its_encoding(record):
   assert decode_record(encode_record(record)) == record
@@ -101,14 +102,34 @@ def test_anything_else_is_refused(text):
     decode_record(text)
 
 
-def test_a_settled_operation_needs_its_finish_and_an_executing_one_has_none():
-  record = TargetRecord(AUTHORITY, operation=Operation("s1", "stop", "settled", AT, 0, AT, outcome="succeeded"))
-  with pytest.raises(ValueError, match="Only a settled operation"):
-    decode_record(encode_record(TargetRecord(AUTHORITY, operation=Operation("s1", "stop", "executing", AT, 0, AT, outcome="succeeded"))))
-  value = json.loads(encode_record(record))
-  value["operation"]["finished_at"] = None
-  with pytest.raises(ValueError, match="Only a settled operation"):
-    decode_record(json.dumps(value))
+SETTLED_STOP = TargetRecord(AUTHORITY, operation=Operation("s1", "stop", "settled", AT, 0, AT, outcome="succeeded",
+                                                           verified_on_worker_at=AT))
+
+
+@pytest.mark.parametrize("field, value, message", [
+    ("finished_at", None, "A settled operation has an outcome, a finish and a verification."),
+    ("verified_on_worker_at", None, "A settled operation has an outcome, a finish and a verification."),
+    ("outcome", None, "A settled operation has an outcome, a finish and a verification."),
+], ids=["no finish", "no verification", "no outcome"])
+def test_a_settled_operation_has_its_outcome_finish_and_verification(field, value, message):
+  with pytest.raises(ValueError, match=message):
+    decode_record(mutated(put(value, "operation", field), SETTLED_STOP))
+
+
+@pytest.mark.parametrize("phase, field, value, message", [
+    ("executing", "verified_on_worker_at", AT.isoformat(), "Only a settled operation has a finish and a verification."),
+    ("executing", "finished_at", AT.isoformat(), "Only a settled operation has a finish and a verification."),
+    ("recovering", "verified_on_worker_at", AT.isoformat(), "Only a settled operation has a finish and a verification."),
+    ("executing", "outcome", "failed", "An executing operation has no outcome yet."),
+])
+def test_an_unsettled_operation_has_no_finish_verification_or_early_outcome(phase, field, value, message):
+  def change(record):
+    operation = record["operation"]
+    operation.update(phase=phase, outcome="interrupted" if phase == "recovering" else None, finished_at=None,
+                     verified_on_worker_at=None)
+    operation[field] = value
+  with pytest.raises(ValueError, match=message):
+    decode_record(mutated(change, SETTLED_STOP))
 
 
 def listing_line(container_id: str, content: str) -> str:
