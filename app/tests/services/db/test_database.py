@@ -346,7 +346,7 @@ class TestANotNullColumnAddedToATableOtherRowsReference:
   def undeployed(self, project):
     application = Application.create(project=project, name="api", label="API", image="nginx")
     Volume.create(application=application, name="data", path="/data")
-    Backup.create(type="application", s3_path="backups/api", application=application)
+    Backup.create(storage_id="aaaaaaaaaaaaaaaa", type="application", s3_path="backups/api", application=application)
 
   @pytest.mark.parametrize("table, rows", [
       ("project", "deployed"),

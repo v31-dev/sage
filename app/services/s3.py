@@ -1,4 +1,7 @@
+import hashlib
+import json
 import logging
+from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -15,25 +18,68 @@ from utils.retry import retry_async
 logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True)
+class StorageTarget:
+  """Where backups are stored: an endpoint, a bucket and the base path in it, with the credentials for them."""
+  endpoint: str
+  bucket: str
+  path: str
+  access_key: str = field(repr=False)
+  secret_key: str = field(repr=False)
+
+  @classmethod
+  def of(cls, values: dict) -> "StorageTarget":
+    return cls(values["endpoint"], values["bucket"], values["path"].strip("/"), values["access_key"], values["secret_key"])
+
+  @property
+  def identity(self) -> str:
+    """The store it names, apart from the credentials that reach it."""
+    return hashlib.sha256(json.dumps([self.endpoint, self.bucket, self.path]).encode()).hexdigest()[:16]
+
+
+def region_of(endpoint: str) -> str | None:
+  hostname = urlparse(endpoint).hostname or ""
+  if hostname.startswith("s3.") and hostname.endswith(".backblazeb2.com"):
+    parts = hostname.split(".")
+    if len(parts) >= 4:
+      return parts[1]
+  return None
+
+
+def client_kwargs(endpoint: str, access_key: str, secret_key: str) -> dict:
+  kwargs = {
+      "aws_access_key_id": access_key,
+      "aws_secret_access_key": secret_key,
+      "endpoint_url": endpoint,
+      "config": Config(signature_version='s3v4'),
+  }
+  if region := region_of(endpoint):
+    kwargs["region_name"] = region
+  return kwargs
+
+
 class S3(Base):
+  """The configured store, as a session that `load` replaces when the settings change."""
+
   def __init__(self):
     super().__init__()
-
-    self.s3_config = None
-    self._client = None
-
+    self._session = None
     self.load()
-
-    if not self.s3_config:
+    if self._session is None:
       logger.warning("No complete S3 config found in settings, S3 functionality will be disabled")
 
   def load(self):
     with self.lock:
       settings = Settings()
-      config = settings.get("s3")
-      self.s3_config = config if settings.is_valid("s3") else None
-      self._client = (boto3.session.Session().client('s3', **self._get_client_kwargs())
-                      if self.s3_config else None)
+      self._session = S3Session(StorageTarget.of(settings.get("s3"))) if settings.is_valid("s3") else None
+
+  def session(self) -> "S3Session":
+    """The configured store's session, for an operation to hold from start to end; raises when S3 is not set."""
+    with self.lock:
+      session = self._session
+    if session is None:
+      raise Exception("S3 configuration is not set. Please set it in settings.")
+    return session
 
   def check_config(self, config: dict, write: bool = False):
     """Check a candidate S3 config against its bucket; raises with the reason. A config with
@@ -44,10 +90,10 @@ class S3(Base):
     if not all(provided):
       raise ValueError("Fill in every S3 field, or leave them all empty.")
 
-    client_kwargs = self._get_client_kwargs(config)
-    client_kwargs["config"] = Config(signature_version='s3v4', connect_timeout=5, read_timeout=10,
-                                     retries={"max_attempts": 2})
-    client = boto3.session.Session().client('s3', **client_kwargs)
+    kwargs = client_kwargs(config["endpoint"], config["access_key"], config["secret_key"])
+    kwargs["config"] = Config(signature_version='s3v4', connect_timeout=5, read_timeout=10,
+                              retries={"max_attempts": 2})
+    client = boto3.session.Session().client('s3', **kwargs)
     prefix = config["path"].strip('/')
     client.list_objects_v2(Bucket=config["bucket"], Prefix=prefix, MaxKeys=1)
     if write:
@@ -55,49 +101,28 @@ class S3(Base):
       client.put_object(Bucket=config["bucket"], Key=marker, Body=b"")
       client.delete_object(Bucket=config["bucket"], Key=marker)
 
-  def check_config_exists(self):
-    if not self.s3_config:
-      raise Exception("S3 configuration is not set. Please set it in settings.")
+
+class S3Session:
+  """One storage target with its own client. An operation holds one session from start to end, so a settings save
+  meanwhile never moves its work to another store."""
+
+  def __init__(self, target: StorageTarget):
+    self.target = target
+    self._client = boto3.session.Session().client(
+        's3', **client_kwargs(target.endpoint, target.access_key, target.secret_key))
+
+  @property
+  def identity(self) -> str:
+    return self.target.identity
 
   def get_full_path(self, s3_path):
-    """
-    Get the full S3 path by combining the base path from config with the provided s3_path.
-    """
-    self.check_config_exists()
-    return f"{self.s3_config['path'].strip('/')}/{s3_path.strip('/')}"
-
-  def _get_region(self, endpoint):
-    hostname = urlparse(endpoint).hostname or ""
-    if hostname.startswith("s3.") and hostname.endswith(".backblazeb2.com"):
-      parts = hostname.split(".")
-      if len(parts) >= 4:
-        return parts[1]
-
-    return None
-
-  def _get_client_kwargs(self, config=None):
-    if config is None:
-      config = self.s3_config
-
-    client_kwargs = {
-        "aws_access_key_id": config['access_key'],
-        "aws_secret_access_key": config['secret_key'],
-        "endpoint_url": config['endpoint'],
-        "config": Config(signature_version='s3v4'),
-    }
-
-    region_name = self._get_region(config['endpoint'])
-    if region_name:
-      client_kwargs["region_name"] = region_name
-
-    return client_kwargs
+    """The key of `s3_path` under the target's base path."""
+    return f"{self.target.path}/{s3_path.strip('/')}"
 
   def create_presigned_upload_url(self, s3_path, expires_in, raw_path=False):
     """
     Create a presigned PUT URL for direct uploads.
     """
-    self.check_config_exists()
-
     if raw_path:
       s3_key = s3_path.strip('/')
     else:
@@ -106,7 +131,7 @@ class S3(Base):
     return self._client.generate_presigned_url(
         'put_object',
         Params={
-            'Bucket': self.s3_config['bucket'],
+            'Bucket': self.target.bucket,
             'Key': s3_key,
             'ContentType': 'application/octet-stream',
         },
@@ -119,15 +144,13 @@ class S3(Base):
     Create a presigned GET URL for direct downloads. With a filename, the response asks
     the browser to save the file under that name.
     """
-    self.check_config_exists()
-
     if raw_path:
       s3_key = s3_path.strip('/')
     else:
       s3_key = self.get_full_path(s3_path)
 
     params = {
-        'Bucket': self.s3_config['bucket'],
+        'Bucket': self.target.bucket,
         'Key': s3_key,
     }
     if filename:
@@ -142,11 +165,9 @@ class S3(Base):
 
   def key_exists(self, s3_path, raw_path=False) -> bool:
     """True if the object is in the bucket. Blocking."""
-    self.check_config_exists()
-
     s3_key = s3_path.strip('/') if raw_path else self.get_full_path(s3_path)
     try:
-      self._client.head_object(Bucket=self.s3_config['bucket'], Key=s3_key)
+      self._client.head_object(Bucket=self.target.bucket, Key=s3_key)
       return True
     except ClientError as e:
       if e.response.get('Error', {}).get('Code') in ('404', 'NoSuchKey', 'NotFound'):
@@ -169,10 +190,8 @@ class S3(Base):
     Returns:
       List of deleted S3 paths
     """
-    self.check_config_exists()
-
     async def attempt():
-      bucket_name = self.s3_config['bucket']
+      bucket_name = self.target.bucket
       deleted_paths = []
 
       # List all objects at the given prefix
@@ -218,10 +237,8 @@ class S3(Base):
       file_path: Local file or directory path to upload
       s3_path: S3 path relative to base config path (will be combined)
     """
-    self.check_config_exists()
-
     try:
-      bucket_name = self.s3_config['bucket']
+      bucket_name = self.target.bucket
       # Combine base path with s3_path using explicit / separator
       base_s3_path = self.get_full_path(s3_path)
       local_path = Path(file_path)
@@ -266,11 +283,9 @@ class S3(Base):
     Returns:
       Path to downloaded file
     """
-    self.check_config_exists()
-
     try:
       # Use the provided s3_path as-is (should already be the full key from Backup record)
-      bucket_name = self.s3_config['bucket']
+      bucket_name = self.target.bucket
       # Ensure s3_key doesn't have leading slash (S3 keys don't start with /)
       s3_key = s3_path.strip('/')
       if not raw_path:
@@ -294,7 +309,7 @@ class S3(Base):
     paginator = self._client.get_paginator('list_objects_v2')
     return [
         obj['Key']
-        for page in paginator.paginate(Bucket=self.s3_config['bucket'], Prefix=full_prefix)
+        for page in paginator.paginate(Bucket=self.target.bucket, Prefix=full_prefix)
         for obj in page.get('Contents', [])
         if not obj['Key'].endswith('/')
     ]
@@ -309,8 +324,6 @@ class S3(Base):
     Returns:
       List of full S3 keys (relative to bucket) for all objects found
     """
-    self.check_config_exists()
-
     try:
       return await run_in_executor_with_context(self._list_keys, self.get_full_path(prefix))
     except NoCredentialsError:

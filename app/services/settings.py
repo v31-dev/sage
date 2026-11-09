@@ -1,7 +1,7 @@
 import logging
 
 from services.base import Base
-from services.db import Setting
+from services.db.models import Setting
 
 logger = logging.getLogger(__name__)
 

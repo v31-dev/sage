@@ -238,8 +238,12 @@ class TestVolume:
 
 
 class TestBackup:
+  def test_a_backup_names_the_store_it_was_written_to(self, application):
+    with pytest.raises(IntegrityError, match="NOT NULL constraint failed: backup.storage_id"):
+      Backup.create(type="platform", s3_path="backups/platform/x")
+
   def test_backups_go_with_their_application(self, application):
-    Backup.create(type="application", s3_path="backups/applications/x.tar.gz.enc", application=application)
+    Backup.create(storage_id="aaaaaaaaaaaaaaaa", type="application", s3_path="backups/applications/x.tar.gz.enc", application=application)
 
     application.delete_instance()
 
@@ -247,7 +251,7 @@ class TestBackup:
 
   def test_a_backup_keeps_its_source_volume_after_the_volume_is_deleted(self, application):
     volume = Volume.create(application=application, name="data", path="/data")
-    backup = Backup.create(type="application", s3_path="backups/x", application=application,
+    backup = Backup.create(storage_id="aaaaaaaaaaaaaaaa", type="application", s3_path="backups/x", application=application,
                            source_volume_id=volume.id, source_volume_name="data")
 
     volume.delete_instance()
@@ -302,7 +306,7 @@ class TestEvents:
 @pytest.fixture
 def one_row_each(container, worker):
   Domain.create(name="shop", type="public", port=80)
-  Backup.create(s3_path="backups/x")
+  Backup.create(storage_id="aaaaaaaaaaaaaaaa", s3_path="backups/x")
   Notification.create(content="hello")
   Task.create(task_id="t1", name="deploy", executor="common", status="completed")
   ContainerEvent.create(container=container, subject_id=container.id, action="deploy", transition="succeeded",

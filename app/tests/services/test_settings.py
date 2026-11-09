@@ -1,6 +1,6 @@
 import pytest
 
-from services.db import Setting
+from services.db.models import Setting
 from services.settings import SETTING_DEFINITIONS, Settings
 
 S3_VALUES = {"access_key": "AK", "secret_key": "SK", "bucket": "bucket", "endpoint": "https://s3.example.test", "path": "backups"}

@@ -10,6 +10,7 @@ from peewee import chunked
 
 import config
 from services.applications.updates import application_changed
+from services.backups.keys import APPLICATIONS_PREFIX, BACKUP_TIMESTAMP_FORMAT, PLATFORM_PREFIX, is_expired_backup_key, timestamp_from_key
 from services.db import Application, Backup, Database, Event, Notification, Task, Worker, db
 from services.notification import Notifications
 from services.settings import Settings
@@ -18,8 +19,6 @@ from utils.archive import BackupDecryptError, decrypt_file, encrypt_file
 from utils.common import utcnow
 from utils.executor import run_in_executor_with_context
 from utils.queue import OnConflict
-
-from ._common import BACKUP_TIMESTAMP_FORMAT, is_expired_backup_key, timestamp_from_key
 
 logger = logging.getLogger(__name__)
 
@@ -45,13 +44,13 @@ class PlatformMixin:
     the project and application names in its key.
     """
     try:
-      platform_keys = set(await self.s3.get_keys(self.s3_backup_path_platform))
-      volume_keys = set(await self.s3.get_keys(self.s3_backup_path_applications))
+      platform_keys = set(await self.s3.get_keys(PLATFORM_PREFIX))
+      volume_keys = set(await self.s3.get_keys(APPLICATIONS_PREFIX))
     except Exception as e:
       self.notify(f"Backup discovery failed: {e}", "error")
       return
 
-    volume_prefix = self.s3.get_full_path(self.s3_backup_path_applications) + "/"
+    volume_prefix = self.s3.get_full_path(APPLICATIONS_PREFIX) + "/"
 
     def reconcile():
       recorded = {backup.s3_path: backup.id for backup in Backup.select(Backup.id, Backup.s3_path)}
@@ -159,7 +158,7 @@ class PlatformMixin:
     # Cleanup application backups from S3
     try:
       deleted_application_backups = await self.s3.delete_key(
-          self.s3_backup_path_applications,
+          APPLICATIONS_PREFIX,
           filter=partial(is_expired_backup_key, cutoff=cutoff),
       )
       logger.info(
@@ -171,7 +170,7 @@ class PlatformMixin:
     # Cleanup platform backups from S3
     try:
       deleted_platform_backups = await self.s3.delete_key(
-          self.s3_backup_path_platform,
+          PLATFORM_PREFIX,
           filter=partial(is_expired_backup_key, cutoff=cutoff),
       )
       logger.info(
@@ -200,10 +199,10 @@ class PlatformMixin:
         await run_in_executor_with_context(encrypt_file, snapshot_file, backup_file)
 
         # Upload to S3
-        await self.s3.upload_to_key(backup_file, self.s3_backup_path_platform)
+        await self.s3.upload_to_key(backup_file, PLATFORM_PREFIX)
 
         # Record backup in database
-        full_backup_path = f"{self.s3.get_full_path(self.s3_backup_path_platform)}/{backup_file.name}"
+        full_backup_path = f"{self.s3.get_full_path(PLATFORM_PREFIX)}/{backup_file.name}"
         Backup.create(s3_path=full_backup_path, type="platform")
         Updates().changed(UpdateSource.BACKUPS)
 

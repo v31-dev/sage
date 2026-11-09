@@ -161,6 +161,8 @@ class Notification(BaseModel):
 class Backup(BaseModel):
   type = ChoiceField(("platform", "application"), default="platform")
   s3_path = CharField()
+  # The store it was written to (`S3Session.identity`): a backup is reached only through that store.
+  storage_id = CharField()
   # Not a foreign key: a backup outlives its volume.
   source_volume_id = CharField(null=True)
   source_volume_name = CharField(null=True)

@@ -1,5 +1,4 @@
 import re
-from datetime import datetime
 
 import pytest
 
@@ -20,54 +19,6 @@ class TestContentHash:
   def test_known_value(self):
     # Worker revision stamps are compared against this: a change of format makes every worker re-sync.
     assert _common.content_hash({"a": 1}) == "f9d86028c6e0d64e"
-
-
-class TestTimestampFromKey:
-  @pytest.mark.parametrize("key", [
-      "backups/platform/20260102_030405.db.enc",
-      "/backups/platform/20260102_030405.db.enc/",
-      "bucket/backups/applications/project/app/worker/data/20260102_030405.tar.gz.enc",
-      "20260102_030405",
-  ])
-  def test_finds_the_timestamp_in_the_file_name(self, key):
-    assert _common.timestamp_from_key(key) == "20260102_030405"
-
-  @pytest.mark.parametrize("key", [
-      "backups/platform/notes.txt",
-      "backups/platform/2026010_030405.db.enc",
-      "backups/platform/20260102-030405.db.enc",
-      "",
-  ])
-  def test_no_timestamp_gives_none(self, key):
-    assert _common.timestamp_from_key(key) is None
-
-  def test_only_the_last_path_component_counts(self):
-    assert _common.timestamp_from_key("backups/20260102_030405/readme.txt") is None
-
-
-class TestIsExpired:
-  cutoff = datetime(2026, 1, 10, 0, 0, 0)
-
-  @pytest.mark.parametrize("timestamp, expired", [
-      ("20260109_235959", True),
-      ("20260110_000000", False),
-      ("20260110_000001", False),
-      ("20250101_000000", True),
-  ])
-  def test_timestamp_before_the_cutoff_is_expired(self, timestamp, expired):
-    assert _common.is_expired_timestamp(timestamp, self.cutoff) is expired
-
-  @pytest.mark.parametrize("timestamp", ["", "garbage", "20261340_000000", "20260102"])
-  def test_unparseable_timestamp_is_not_expired(self, timestamp):
-    assert _common.is_expired_timestamp(timestamp, self.cutoff) is False
-
-  @pytest.mark.parametrize("key, expired", [
-      ("backups/platform/20260101_000000.db.enc", True),
-      ("backups/platform/20260201_000000.db.enc", False),
-      ("backups/platform/readme.txt", False),
-  ])
-  def test_backup_key_is_judged_by_its_timestamp(self, key, expired):
-    assert _common.is_expired_backup_key(key, self.cutoff) is expired
 
 
 class TestTemplatesDigest:

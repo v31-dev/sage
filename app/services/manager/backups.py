@@ -6,11 +6,12 @@ from pathlib import Path
 from croniter import croniter
 
 import config
+from services.backups.keys import APPLICATIONS_PREFIX, BACKUP_TIMESTAMP_FORMAT
 from services.db import APPLICATION_BUSY_STATUSES, Application, Backup, Container, Volume
 from services.updates import Updates, UpdateSource
 from utils.common import get_env, utcnow
 
-from ._common import BACKUP_TIMESTAMP_FORMAT, app_dir
+from ._common import app_dir
 from .application import container_part, mark, save_application
 
 logger = logging.getLogger(__name__)
@@ -177,7 +178,7 @@ class BackupsMixin:
       timestamp: str,
   ):
     object_key = (
-        f"{self.s3_backup_path_applications}/{application.project.name}/{application.name}/"
+        f"{APPLICATIONS_PREFIX}/{application.project.name}/{application.name}/"
         f"{container.worker.hostname}/{volume.name}/{timestamp}.tar.gz.enc"
     )
     archive_name = Path(object_key).name.removesuffix(".tar.gz.enc")
