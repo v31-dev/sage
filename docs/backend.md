@@ -238,10 +238,12 @@ Main database:
 - some fields are encrypted through custom Peewee field types
 - its schema follows the models: at boot and after a platform restore, `Database.reconcile_schema` creates the
   missing tables and indexes, adds the missing columns and drops those no model has, in one transaction with foreign
-  keys off (SQLite's procedure for changes that rebuild a table, as adding a `NOT NULL` column does). Data that
-  refuses the change (a unique index, the foreign key check) rolls all of it back and raises `SchemaRefused`: the
-  boot stops with one `[CRITICAL]` line naming what failed and linking the running version's release, whose notes
-  give the fix
+  keys off (SQLite's procedure for changes that rebuild a table, as adding a `NOT NULL` column does). It then
+  compares each table with the model's, built in a throwaway in-memory database: a column whose type, `NOT NULL`,
+  primary key or foreign key differs, or a table whose `CHECK` clauses differ (a new choice value is one), is
+  refused, since SQLite can't change those in place. A refused column, or data that refuses the change (a unique
+  index, the foreign key check), rolls all of it back and raises `SchemaRefused`: the boot stops with one
+  `[CRITICAL]` line naming what failed and linking the running version's release, whose notes give the fix
 
 A Domain keeps its durable sync result in `status` (`pending`, `synced`, `error`), with `sync_error` for failure
 detail. `synced_hash` and `synced_at` hold the last fully applied configuration's fingerprint and naive-UTC time;

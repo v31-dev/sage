@@ -105,9 +105,12 @@ def data_dir(tmp_path, monkeypatch):
 
 
 @pytest.fixture
-def db(data_dir):
-  from services.db import Database
-  from services.db import db as database
+def db(data_dir, monkeypatch):
+  from services.db import encryption
+  from services.db.database import Database
+  from services.db.models import db as database
+  monkeypatch.setattr(encryption, "_cipher", None)
+  encryption.initialize_encryption(os.environ["ENCRYPTION_KEY"])
   Database()
   yield database
   database.close()
@@ -134,17 +137,17 @@ def thread_connections(db, monkeypatch):
 
 @pytest.fixture
 def project(db):
-  from services.db import Project
+  from services.db.models import Project
   return Project.create(name="demo", label="Demo")
 
 
 @pytest.fixture
 def application(project):
-  from services.db import Application
+  from services.db.models import Application
   return Application.create(project=project, name="web", label="Web", image="nginx")
 
 
 @pytest.fixture
 def worker(db):
-  from services.db import Worker
-  return Worker.create(hostname="w1", ip="100.64.0.2")
+  from services.db.models import Worker
+  return Worker.create(hostname="w1")

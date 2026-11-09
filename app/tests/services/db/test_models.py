@@ -1,19 +1,19 @@
-import dataclasses
 import re
-import secrets
 from datetime import datetime
 
 import pytest
 from peewee import IntegrityError
 
-from services.db import Application, Backup, Container, DeployConfig, Domain, Event, Project, Task, Volume, Worker
+from services.db.models import Application, Backup, Container, ContainerEvent, Domain, Notification, Project, Task, Volume, Worker, WorkerEvent
 from utils.common import utcnow
 
 PAST = datetime(2000, 1, 2, 3, 4, 5)
+OPAQUE_ID = re.compile(r"[0-9a-f]{16}")
 
-DEPLOY_CONFIG = DeployConfig(
-    qualified_name="demo-web", deploy_stamp="2026-10-23T10:05:07.123456", type="docker", image="nginx:1.27", repo=None, path="Dockerfile",
-    env="A=1", args="", build_secrets="", command="", project_env="P=1", volumes=(("data", "/data"),))
+
+@pytest.fixture
+def container(application, worker):
+  return Container.create(application=application, worker=worker)
 
 
 class TestBaseModel:
@@ -85,40 +85,7 @@ class TestProject:
     assert "a-very-distinctive-secret" not in raw
 
 
-class TestDeployConfig:
-  def test_the_hash_is_pinned_because_a_change_marks_every_deployed_application_as_changed(self):
-    assert DEPLOY_CONFIG.content_hash == "f8d26f1528f2d00750808c69e9e96a47f7e84ea2418d42ee71e55caab67ed380"
-
-  def test_the_deploy_stamp_and_the_name_are_not_part_of_it(self):
-    other = dataclasses.replace(DEPLOY_CONFIG, qualified_name="other-name", deploy_stamp="2030-01-01T00:00:00.000000")
-    assert other.content_hash == DEPLOY_CONFIG.content_hash
-
-  @pytest.mark.parametrize("field, value", [
-      ("type", "git"),
-      ("image", "nginx:1.28"),
-      ("repo", "https://github.com/user/repo.git"),
-      ("path", "docker/Dockerfile"),
-      ("env", "A=2"),
-      ("args", "ARG=1"),
-      ("build_secrets", "SECRET=1"),
-      ("command", "serve"),
-      ("project_env", "P=2"),
-      ("volumes", (("data", "/other"),)),
-      ("volumes", ()),
-  ])
-  def test_every_deploy_input_is_part_of_it(self, field, value):
-    changed = dataclasses.replace(DEPLOY_CONFIG, **{field: value})
-    assert changed.content_hash != DEPLOY_CONFIG.content_hash
-
-  def test_it_is_a_snapshot_that_cannot_be_changed(self):
-    with pytest.raises(dataclasses.FrozenInstanceError):
-      DEPLOY_CONFIG.env = "A=2"
-
-
 class TestApplication:
-  def test_the_qualified_name_joins_the_project_and_the_application(self, application):
-    assert application.qualified_name == "demo-web"
-
   def test_the_name_is_unique_within_a_project(self, project, application):
     with pytest.raises(IntegrityError):
       Application.create(project=project, name="web", label="Again")
@@ -131,307 +98,126 @@ class TestApplication:
     with pytest.raises(IntegrityError):
       project.delete_instance()
 
-  def test_a_docker_application_drops_the_settings_that_belong_to_git(self, project):
-    application = Application.create(
-        project=project, name="docker", label="Docker", type="docker", image="nginx",
-        repo="https://github.com/user/repo.git", path="other/Dockerfile", args="A=1", build_secrets="S=1")
-
-    stored = Application.get_by_id(application.id)
-    assert (stored.repo, stored.path, stored.args, stored.build_secrets) == (None, "Dockerfile", None, None)
-    assert stored.image == "nginx"
-
-  def test_a_git_application_builds_the_root_dockerfile_unless_told_otherwise(self, project):
-    application = Application.create(project=project, name="git", label="Git", type="git", repo="https://github.com/user/repo.git")
-    assert Application.get_by_id(application.id).path == "Dockerfile"
-
-  def test_a_git_application_drops_the_image_and_keeps_its_build_settings(self, project):
-    application = Application.create(
-        project=project, name="git", label="Git", type="git", image="nginx",
-        repo="https://github.com/user/repo.git", path="docker/Dockerfile", args="A=1", build_secrets="S=1")
-
-    stored = Application.get_by_id(application.id)
-    assert stored.image is None
-    assert (stored.repo, stored.path, stored.args, stored.build_secrets) == (
-        "https://github.com/user/repo.git", "docker/Dockerfile", "A=1", "S=1")
-
-  @pytest.mark.parametrize("repo", [
-      "https://github.com/user/repo.git",
-      "http://git.example.test/user/repo.git",
-      "https://github.com/user/repo.git#main",
-      "https://github.com/user/repo.git#release-1.2",
-      "https://github.com/user/repo.git:sub/dir",
-      "https://github.com/user/repo.git#main:sub/dir",
-  ])
-  def test_a_repository_url_in_the_documented_format_is_accepted(self, project, repo):
-    Application.create(project=project, name="git", label="Git", type="git", repo=repo)
-
-  @pytest.mark.parametrize("repo", [
-      "git@github.com:user/repo.git",
-      "https://github.com/user/repo",
-      "https://github.com/repo.git",
-      "https://github.com/group/sub/repo.git",
-      "ftp://github.com/user/repo.git",
-      "https://github.com/user/repo.git#",
-      "https://github.com/user/repo.git extra",
-      "https://github.com/user/repo.git\n--evil",
-      "https://github.com/user/repo.git\n",
-      "https://github.com/user/repo.git#main\n",
-  ])
-  def test_any_other_repository_url_is_refused(self, project, repo):
-    with pytest.raises(ValueError, match="Invalid Git repository URL"):
-      Application.create(project=project, name="git", label="Git", type="git", repo=repo)
-
-  @pytest.mark.parametrize("image", ["nginx", "nginx:1.27", "ghcr.io/org/app:v1.2", "registry.test:5000/app@sha256:abc123", "a_b-c.d"])
-  def test_an_image_reference_is_accepted(self, project, image):
-    Application.create(project=project, name="web2", label="Web", image=image)
-
-  @pytest.mark.parametrize("image", ["-nginx", "nginx latest", "nginx;rm -rf /", "$(whoami)", "nginx\nlatest", "image`id`", "nginx'"])
-  def test_an_image_reference_with_odd_characters_is_refused(self, project, image):
-    with pytest.raises(ValueError, match="Invalid image reference"):
-      Application.create(project=project, name="web2", label="Web", image=image)
-
-  @pytest.mark.parametrize("field, label", [("env", "application.env"), ("args", "application.args"), ("build_secrets", "application.build_secrets")])
-  def test_env_style_fields_are_checked_and_the_error_names_the_field(self, project, field, label):
-    with pytest.raises(ValueError, match=label):
+  @pytest.mark.parametrize("field", ["env", "args", "build_secrets"])
+  def test_env_style_fields_are_checked_and_the_error_names_the_field(self, project, field):
+    with pytest.raises(ValueError, match=f"application.{field}"):
       Application.create(project=project, name="git", label="Git", type="git", **{field: "9BAD=1"})
 
-  def test_env_is_read_back_unchanged(self, application):
-    application.env = "A=1\nB=2"
+  @pytest.mark.parametrize("field", ["env", "args", "build_secrets"])
+  def test_env_style_fields_are_read_back_unchanged_and_encrypted(self, db, application, field):
+    setattr(application, field, "TOKEN='a-very-distinctive-secret' # kept")
     application.save()
-    assert Application.get_by_id(application.id).env == "A=1\nB=2"
+
+    assert getattr(Application.get_by_id(application.id), field) == "TOKEN='a-very-distinctive-secret' # kept"
+    raw = db.execute_sql(f"SELECT {field} FROM application WHERE id = ?", (application.id,)).fetchone()[0]
+    assert "a-very-distinctive-secret" not in raw
 
 
-class TestApplicationDeployState:
-  def test_the_stamp_is_none_until_the_first_deploy(self, application):
-    assert application.deploy_stamp is None
+class TestContainer:
+  def test_its_id_is_opaque_and_a_recreated_placement_gets_a_new_one(self, application, worker):
+    first = Container.create(application=application, worker=worker)
+    first.delete_instance()
+    second = Container.create(application=application, worker=worker)
 
-  @pytest.mark.parametrize("deployed_at, stamp", [
-      (datetime(2026, 10, 23, 10, 5, 7, 123456), "2026-10-23T10:05:07.123456"),
-      (datetime(2026, 1, 2, 3, 4, 5), "2026-01-02T03:04:05.000000"),
-  ])
-  def test_the_stamp_is_the_deploy_time_with_microseconds(self, application, deployed_at, stamp):
-    application.deployed_at = deployed_at
-    assert application.deploy_stamp == stamp
+    assert OPAQUE_ID.fullmatch(first.id) and OPAQUE_ID.fullmatch(second.id)
+    assert first.id != second.id
 
-  def test_the_snapshot_holds_the_current_deploy_inputs(self, application):
-    application.env = "A=1"
-    application.command = "serve"
-    application.project.env = "P=1"
-    application.deployed_at = datetime(2026, 1, 2, 3, 4, 5)
+  def test_one_container_per_application_and_worker(self, container, application, worker):
+    with pytest.raises(IntegrityError):
+      Container.create(application=application, worker=worker)
 
-    config = application.deploy_config
+  def test_an_application_can_run_on_two_workers(self, container, application):
+    Container.create(application=application, worker=Worker.create(hostname="w2"))
 
-    assert config == DeployConfig(
-        qualified_name="demo-web", deploy_stamp="2026-01-02T03:04:05.000000", type="docker", image="nginx", repo=None, path="Dockerfile",
-        env="A=1", args="", build_secrets="", command="serve", project_env="P=1", volumes=())
+  def test_an_application_with_a_container_cannot_be_deleted(self, container, application):
+    with pytest.raises(IntegrityError):
+      application.delete_instance()
 
-  def test_unset_text_fields_are_empty_strings_in_the_snapshot(self, application):
-    config = application.deploy_config
-    assert (config.env, config.args, config.build_secrets, config.command, config.project_env) == ("", "", "", "", "")
-
-  def test_volumes_are_sorted_so_creation_order_does_not_matter(self, application):
-    Volume.create(application=application, name="zeta", path="/z")
-    Volume.create(application=application, name="alpha", path="/a")
-
-    assert application.deploy_config.volumes == (("alpha", "/a"), ("zeta", "/z"))
-
-
-class TestConfigDirty:
-  @pytest.fixture
-  def deployed(self, application):
-    application.deployed_hash = application.deploy_config.content_hash
-    application.save()
-    return application
-
-  def test_an_application_never_deployed_is_not_dirty(self, application):
-    application.env = "A=1"
-    assert application.config_dirty is False
-
-  def test_an_unchanged_deployed_application_is_not_dirty(self, deployed):
-    assert deployed.config_dirty is False
-
-  @pytest.mark.parametrize("field, value", [("env", "A=2"), ("image", "nginx:1.28"), ("command", "serve")])
-  def test_changing_a_deploy_input_makes_it_dirty(self, deployed, field, value):
-    setattr(deployed, field, value)
-    assert deployed.config_dirty is True
-
-  def test_changing_the_project_env_makes_it_dirty(self, deployed):
-    deployed.project.env = "P=1"
-    assert deployed.config_dirty is True
-
-  def test_adding_a_volume_makes_it_dirty(self, deployed):
-    Volume.create(application=deployed, name="data", path="/data")
-    assert deployed.config_dirty is True
-
-  def test_changing_only_the_label_or_the_deploy_time_does_not(self, deployed):
-    deployed.label = "A new label"
-    deployed.description = "Something else"
-    deployed.deployed_at = datetime(2030, 1, 1)
-    assert deployed.config_dirty is False
-
-  def test_changing_it_back_clears_it(self, deployed):
-    deployed.env = "A=2"
-    deployed.env = None
-    assert deployed.config_dirty is False
+  def test_a_worker_with_a_container_cannot_be_deleted(self, container, worker):
+    with pytest.raises(IntegrityError):
+      worker.delete_instance()
 
 
 class TestDomain:
   @pytest.fixture
-  def red(self, application):
-    return Container.create(application=application, worker=Worker.create(hostname="w1", ip="100.64.0.2", subdomain="red"))
+  def other_worker(self, db):
+    return Worker.create(hostname="w2", subdomain="blue")
 
-  @pytest.fixture
-  def blue(self, project):
-    other = Application.create(project=project, name="api", label="API", image="nginx")
-    return Container.create(application=other, worker=Worker.create(hostname="w2", ip="100.64.0.3", subdomain="blue"))
+  def test_its_id_is_opaque(self, container):
+    assert OPAQUE_ID.fullmatch(Domain.create(name="shop", type="public", port=80, container=container).id)
 
-  @pytest.mark.parametrize("type, host, address", [
-      ("public", "shop.example.test", "https://shop.example.test"),
-      ("internal", "shop.red.int.example.test", "https://shop.red.int.example.test"),
-      ("tcp", "shop.red.int.example.test", "shop.red.int.example.test:8443"),
-  ])
-  def test_its_name_is_public_or_under_its_workers_subdomain(self, red, type, host, address):
-    domain = Domain.create(name="shop", type=type, port=80, container=red)
+  def test_deleting_its_container_unlinks_it_and_an_internal_one_keeps_its_namespace(self, container, worker):
+    public = Domain.create(name="shop", type="public", port=80, container=container)
+    internal = Domain.create(name="shop", type="internal", port=80, container=container, namespace_worker=worker)
 
-    assert (domain.host("example.test"), domain.address("example.test")) == (host, address)
-
-  def test_an_internal_name_is_on_its_containers_worker_and_moves_with_another_container(self, red, blue):
-    domain = Domain.create(name="shop", type="internal", port=80, container=red)
-    assert domain.worker_id == "w1"
-
-    domain.container = blue
-    domain.save()
-
-    assert Domain.get_by_id(domain.id).host("example.test") == "shop.blue.int.example.test"
-
-  def test_a_public_name_has_no_worker_of_its_own(self, red):
-    assert Domain.create(name="shop", type="public", port=80, container=red).worker_id is None
-
-  def test_deleting_its_container_unlinks_it_and_an_internal_one_keeps_its_name(self, red):
-    public = Domain.create(name="shop", type="public", port=80, container=red)
-    internal = Domain.create(name="shop", type="internal", port=80, container=red)
-
-    red.delete_instance()
+    container.delete_instance()
 
     public, internal = Domain.get_by_id(public.id), Domain.get_by_id(internal.id)
     assert (public.container_id, internal.container_id) == (None, None)
-    assert internal.host("example.test") == "shop.red.int.example.test"
+    assert internal.namespace_worker_id == worker.hostname
 
-  def test_a_worker_with_internal_domains_cannot_be_deleted(self, red):
-    Domain.create(name="shop", type="internal", port=80, container=red)
-    red.delete_instance()
+  def test_a_worker_whose_namespace_holds_a_domain_cannot_be_deleted(self, worker):
+    Domain.create(name="shop", type="internal", port=80, namespace_worker=worker)
 
     with pytest.raises(IntegrityError):
-      Worker.get_by_id("w1").delete_instance()
+      worker.delete_instance()
+
+  def test_a_public_name_is_taken_once(self, db):
+    Domain.create(name="shop", type="public", port=80)
+
+    with pytest.raises(IntegrityError):
+      Domain.create(name="shop", type="public", port=81)
 
   @pytest.mark.parametrize("first, second", [("internal", "internal"), ("internal", "tcp"), ("tcp", "internal")])
-  def test_an_internal_or_tcp_name_is_taken_once_on_a_worker(self, red, first, second):
-    Domain.create(name="shop", type=first, port=80, container=red)
+  def test_an_internal_or_tcp_name_is_taken_once_in_a_workers_namespace(self, worker, first, second):
+    Domain.create(name="shop", type=first, port=80, namespace_worker=worker)
 
-    with pytest.raises(ValueError, match="'shop' is already an internal or TCP domain on worker w1."):
-      Domain.create(name="shop", type=second, port=81, container=red)
+    with pytest.raises(IntegrityError):
+      Domain.create(name="shop", type=second, port=81, namespace_worker=worker)
 
-  def test_a_public_name_is_taken_once_whatever_its_container(self, red, blue):
-    Domain.create(name="shop", type="public", port=80, container=red)
-    red.delete_instance()
-
-    with pytest.raises(ValueError, match="'shop' is already a public domain."):
-      Domain.create(name="shop", type="public", port=80, container=blue)
-
-  def test_the_same_name_can_be_internal_on_two_workers_and_public(self, red, blue):
-    Domain.create(name="shop", type="internal", port=80, container=red)
-    Domain.create(name="shop", type="tcp", port=80, container=blue)
-    Domain.create(name="shop", type="public", port=80, container=red)
+  def test_the_same_name_can_be_in_two_workers_namespaces_and_public(self, worker, other_worker):
+    Domain.create(name="shop", type="internal", port=80, namespace_worker=worker)
+    Domain.create(name="shop", type="tcp", port=80, namespace_worker=other_worker)
+    Domain.create(name="shop", type="public", port=80)
 
     assert Domain.select().where(Domain.name == "shop").count() == 3
 
-  def test_a_domain_saved_again_is_not_refused_by_itself(self, red):
-    domain = Domain.create(name="shop", type="tcp", port=80, container=red)
+  @pytest.mark.parametrize("port", [1, 65535])
+  def test_a_port_in_range_is_accepted(self, db, port):
+    Domain.create(name="shop", type="public", port=port)
 
-    domain.port = 81
-    domain.save()
-
-    assert Domain.get_by_id(domain.id).port == 81
-
-  @pytest.mark.parametrize("name", ["core", "int", "discovery"])
-  def test_sages_own_public_names_are_reserved_and_free_inside(self, red, name):
-    with pytest.raises(ValueError, match="reserved for Sage's own addresses"):
-      Domain.create(name=name, type="public", port=80, container=red)
-    Domain.create(name=name, type="internal", port=80, container=red)
-
-  def test_an_internal_or_tcp_domain_needs_a_container_or_a_worker(self, db):
-    with pytest.raises(ValueError, match="without a container is not allowed"):
-      Domain.create(name="shop", type="internal", port=80)
-
-  def test_the_database_refuses_a_clash_that_skips_the_check(self, red):
-    Domain.create(name="shop", type="internal", port=80, container=red)
-
-    with pytest.raises(IntegrityError):
-      Domain.insert(name="shop", type="tcp", port=80, container=red, worker="w1").execute()
+  @pytest.mark.parametrize("port", [0, 65536, -1])
+  def test_a_port_out_of_range_is_refused(self, db, port):
+    with pytest.raises(IntegrityError, match="CHECK constraint failed"):
+      Domain.create(name="shop", type="public", port=port)
 
   @pytest.mark.parametrize("name", ["shop", "shop-eu", "1shop", "a" * 63, "a-b-c"])
-  def test_a_name_service_and_pool_are_any_valid_domain_label(self, red, name):
-    Domain.create(name=name, type="public", port=80, container=red, service=name, pool=name)
+  def test_a_name_service_and_pool_are_any_valid_domain_label(self, db, name):
+    Domain.create(name=name, type="public", port=80, service=name, pool=name)
 
   @pytest.mark.parametrize("name", ["Shop", "-shop", "shop-", "a" * 64, "shop_eu", "shop.eu", ""])
   @pytest.mark.parametrize("field", ["name", "service", "pool"])
-  def test_anything_else_is_refused(self, red, field, name):
+  def test_anything_else_is_refused(self, db, field, name):
     with pytest.raises(ValueError, match="lowercase letters, digits and dashes, at most 63"):
-      Domain.create(**{"name": "shop", "type": "public", "port": 80, "container": red, field: name})
+      Domain.create(**{"name": "shop", "type": "public", "port": 80, field: name})
 
 
 class TestWorker:
   @pytest.mark.parametrize("value", ["EU1", "-eu1", "eu1-", "a" * 64, "eu_1"])
   def test_a_subdomain_is_a_valid_domain_label(self, db, value):
-    Worker.create(hostname="w1", ip="100.64.0.2", subdomain="eu-1")
-
     with pytest.raises(ValueError):
-      Worker.create(hostname="w2", ip="100.64.0.3", subdomain=value)
+      Worker.create(hostname="w1", subdomain=value)
 
   def test_two_workers_cannot_share_a_subdomain(self, db):
-    Worker.create(hostname="w1", ip="100.64.0.2", subdomain="eu1")
+    Worker.create(hostname="w1", subdomain="eu1")
 
     with pytest.raises(IntegrityError):
-      Worker.create(hostname="w3", ip="100.64.0.4", subdomain="eu1")
-
-  def test_a_random_subdomain_is_a_letter_and_five_letters_or_digits(self, db):
-    assert re.fullmatch(r"[a-z][a-z0-9]{5}", Worker.random_subdomain())
-
-  def test_a_random_subdomain_is_never_one_a_worker_has(self, db, monkeypatch):
-    Worker.create(hostname="w1", ip="100.64.0.2", subdomain="aaaaaa")
-    draws = iter("aaaaaabbbbbb")
-    monkeypatch.setattr(secrets, "choice", lambda letters: next(draws))
-
-    assert Worker.random_subdomain() == "bbbbbb"
-
-
-class TestContainer:
-  def test_one_container_per_application_and_worker(self, application, worker):
-    Container.create(application=application, worker=worker)
-
-    with pytest.raises(IntegrityError):
-      Container.create(application=application, worker=worker)
-
-  def test_an_application_can_run_on_two_workers(self, application, worker):
-    Container.create(application=application, worker=worker)
-    Container.create(application=application, worker=Worker.create(hostname="w2", ip="100.64.0.3"))
-
-  def test_an_application_with_a_container_cannot_be_deleted(self, application, worker):
-    Container.create(application=application, worker=worker)
-
-    with pytest.raises(IntegrityError):
-      application.delete_instance()
+      Worker.create(hostname="w2", subdomain="eu1")
 
 
 class TestVolume:
-  @pytest.mark.parametrize("path", ["/data", "/var/lib/my app", "/", "/a/b/c.d", "/data/"])
-  def test_an_absolute_path_is_accepted(self, application, path):
-    assert Volume.create(application=application, name="data", path=path).path == path
-
-  @pytest.mark.parametrize("path", ["data", "./data", "", None, "/data:ro", "/data:/other", '/da"ta', "/da\nta", "/da\rta"])
-  def test_a_relative_path_or_one_with_a_colon_quote_or_line_break_is_refused(self, application, path):
-    with pytest.raises(ValueError, match="Invalid volume path"):
-      Volume.create(application=application, name="data", path=path)
+  def test_its_id_is_opaque(self, application):
+    assert OPAQUE_ID.fullmatch(Volume.create(application=application, name="data", path="/data").id)
 
   def test_the_name_is_unique_within_an_application(self, application):
     Volume.create(application=application, name="data", path="/data")
@@ -447,29 +233,6 @@ class TestVolume:
     assert Volume.select().count() == 0
 
 
-class TestEvent:
-  @pytest.fixture
-  def container(self, application, worker):
-    return Container.create(application=application, worker=worker)
-
-  def test_the_same_pair_of_task_ids_is_recorded_once_per_container(self, container):
-    Event.create(container=container, type="deploy", application_task_id="a1", container_task_id="c1")
-
-    with pytest.raises(IntegrityError):
-      Event.create(container=container, type="deploy", application_task_id="a1", container_task_id="c1")
-
-  def test_another_container_task_is_a_new_event(self, container):
-    Event.create(container=container, type="deploy", application_task_id="a1", container_task_id="c1")
-    Event.create(container=container, type="deploy", application_task_id="a1", container_task_id="c2")
-
-  def test_events_go_with_their_container(self, container):
-    Event.create(container=container, type="deploy", application_task_id="a1", container_task_id="c1")
-
-    container.delete_instance()
-
-    assert Event.select().count() == 0
-
-
 class TestBackup:
   def test_backups_go_with_their_application(self, application):
     Backup.create(type="application", s3_path="backups/applications/x.tar.gz.enc", application=application)
@@ -477,6 +240,86 @@ class TestBackup:
     application.delete_instance()
 
     assert Backup.select().count() == 0
+
+  def test_a_backup_keeps_its_source_volume_after_the_volume_is_deleted(self, application):
+    volume = Volume.create(application=application, name="data", path="/data")
+    backup = Backup.create(type="application", s3_path="backups/x", application=application,
+                           source_volume_id=volume.id, source_volume_name="data")
+
+    volume.delete_instance()
+
+    stored = Backup.get_by_id(backup.id)
+    assert (stored.source_volume_id, stored.source_volume_name) == (volume.id, "data")
+
+
+@pytest.fixture(params=["container", "worker"])
+def subject(request, application, worker):
+  """An event model, its subject and the fields of one event about that subject."""
+  if request.param == "container":
+    container = Container.create(application=application, worker=worker)
+    return ContainerEvent, container, dict(container=container, subject_id=container.id, action="deploy",
+                                           application_name="demo-web", worker_hostname=worker.hostname)
+  return WorkerEvent, worker, dict(worker=worker, subject_id=worker.hostname, action="reboot")
+
+
+class TestEvents:
+  def test_an_event_outlives_its_subject_and_keeps_what_it_was(self, subject):
+    model, resource, fields = subject
+    event = model.create(transition="succeeded", operation_id="op1", **fields)
+
+    resource.delete_instance()
+
+    stored = model.get_by_id(event.id)
+    link = "container_id" if model is ContainerEvent else "worker_id"
+    assert getattr(stored, link) is None
+    assert (stored.subject_id, stored.action, stored.transition, stored.operation_id) == (
+        fields["subject_id"], fields["action"], "succeeded", "op1")
+    if model is ContainerEvent:
+      assert (stored.application_name, stored.worker_hostname) == ("demo-web", "w1")
+
+  def test_the_transitions_of_one_operation_share_its_id(self, subject):
+    model, _, fields = subject
+    for transition in ("admitted", "failed", "recovered"):
+      model.create(transition=transition, operation_id="op1", **fields)
+
+    assert [event.transition for event in model.select().where(model.operation_id == "op1").order_by(model.id)] == [
+        "admitted", "failed", "recovered"]
+
+  def test_a_dedupe_key_is_recorded_once_and_events_without_one_repeat(self, subject):
+    model, _, fields = subject
+    model.create(transition="succeeded", dedupe_key="op1:succeeded", **fields)
+    model.create(transition="observed", **fields)
+    model.create(transition="observed", **fields)
+
+    with pytest.raises(IntegrityError):
+      model.create(transition="succeeded", dedupe_key="op1:succeeded", **fields)
+
+
+@pytest.fixture
+def one_row_each(container, worker):
+  Domain.create(name="shop", type="public", port=80)
+  Backup.create(s3_path="backups/x")
+  Notification.create(content="hello")
+  Task.create(task_id="t1", name="deploy", executor="common", status="completed")
+  ContainerEvent.create(container=container, subject_id=container.id, action="deploy", transition="succeeded",
+                        application_name="demo-web", worker_hostname=worker.hostname)
+  WorkerEvent.create(worker=worker, subject_id=worker.hostname, action="reboot", transition="succeeded")
+
+
+@pytest.mark.parametrize("table, column", [
+    ("application", "type"), ("domain", "type"), ("backup", "type"), ("notification", "type"), ("task", "status"),
+    ("container_event", "action"), ("container_event", "transition"), ("worker_event", "action"),
+    ("worker_event", "transition"),
+])
+def test_the_database_refuses_a_value_outside_a_columns_choices(db, one_row_each, table, column):
+  with pytest.raises(IntegrityError, match="CHECK constraint failed"):
+    db.execute_sql(f'UPDATE "{table}" SET "{column}" = ?', ("bogus",))
+
+
+@pytest.mark.parametrize("table, column", [("project", "application_count"), ("application", "container_count")])
+def test_the_database_refuses_a_negative_count(db, application, table, column):
+  with pytest.raises(IntegrityError, match="CHECK constraint failed"):
+    db.execute_sql(f'UPDATE "{table}" SET "{column}" = -1')
 
 
 class TestTask:

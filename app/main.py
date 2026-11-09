@@ -14,7 +14,7 @@ from api import app_asgi, app_redirect
 from api_ingest import app as app_fastapi_ingest
 from scheduler import shutdown as shutdown_scheduler
 from scheduler import start as start_scheduler
-from services.db import SchemaRefused
+from services.db.database import SchemaRefused
 from services.db.encryption import initialize_encryption
 from services.manager import Manager
 from utils.logging import setup_logger, unlogged_paths

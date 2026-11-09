@@ -66,6 +66,7 @@ Non-negotiable patterns for the manager backend. Read the root [../AGENTS.md](..
 - New writes should carry the new desired state going forward (e.g. a new default on create); reconciling what already exists is a documented manual action, not code.
 - The upgrade itself is the release notes' too: what an existing install goes through while it moves to a change (a record gone before its replacement is written, a step to run first) never decides where code runs or in what order. Design for the final state.
 - A schema change that existing data can refuse (a new unique index, say) stops the boot: Sage exits with one `[CRITICAL]` line holding what it knows of the failure and a link to the running version's release. The code prints no remediation; the release notes hold it, so it can be corrected without a release.
+- Changing an existing column's type, `NOT NULL`, primary key, foreign key or `CHECK` (a new `ChoiceField` value included) is refused the same way on every existing database, since SQLite can't alter them in place. Such a change reaches existing installs only through the release notes' manual step, so name it there.
 
 ## Operation Queue And Scheduler
 
