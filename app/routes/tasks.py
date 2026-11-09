@@ -4,10 +4,9 @@ from typing import Annotated
 from fastapi import APIRouter, Query
 
 import config
-from services.history import task_parts
+from services.history import task_history, task_history_filters, task_parts
 from services.logs import Logs
 from services.manager import Manager
-from services.manager.queue import task_history, task_history_filters
 from utils.logging import NO_ACCESS_LOG
 
 router = APIRouter()
@@ -20,11 +19,11 @@ def list_tasks():
 
 
 @router.get("/history")
-def list_task_history(name: str = "", scope: str = "", executor: str = "", status: str = "",
+def list_task_history(name: str = "", scope: str = "", label: str = "", executor: str = "", status: str = "",
                       from_ts: datetime | None = None, to_ts: datetime | None = None,
                       limit: Annotated[int, Query(ge=1, le=config.LIST_MAX_ROWS)] = config.LIST_MAX_ROWS):
   """Finished tasks, newest finished first: the newest `limit` that match, and how many match."""
-  return task_history(name, scope, executor, status, from_ts, to_ts, limit)
+  return task_history(name, scope, label, executor, status, from_ts, to_ts, limit)
 
 
 @router.get("/history/filters")

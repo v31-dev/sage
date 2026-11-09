@@ -2,6 +2,7 @@ import logging
 import os
 import re
 import sys
+import threading
 import uuid
 from collections.abc import Callable, Iterable
 from contextvars import ContextVar
@@ -15,24 +16,28 @@ sub_task_id = ContextVar("sub_task_id", default="")
 
 
 class TaskLines:
-  """Where the lines of the queued task the code runs in are written. A quiet task's are held until it ends:
-  written if it fails, dropped with it if it succeeds."""
+  """Where the lines of the queued task the code runs in are written, in the order they were logged. A quiet task's
+  are held until it fails or a request makes it visible, then written; dropped with it if it succeeds quietly."""
 
   def __init__(self, quiet: bool):
     self.quiet = quiet
     self.held: list[Callable[[], None]] = []
+    self._lock = threading.Lock()
 
   def write(self, write: Callable[[], None]):
-    if self.quiet:
-      self.held.append(write)
-    else:
-      write()
+    with self._lock:
+      if self.quiet:
+        self.held.append(write)
+      else:
+        write()
 
   def release(self):
-    """The task failed: write what was held."""
-    held, self.held = self.held, []
-    for write in held:
-      write()
+    """Write what was held, and every later line as it comes."""
+    with self._lock:
+      self.quiet = False
+      held, self.held = self.held, []
+      for write in held:
+        write()
 
 
 # Set while a queued task runs, and nowhere else: a request's own lines are not a task's.

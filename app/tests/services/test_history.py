@@ -1,11 +1,12 @@
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 import pytest
 
-from services.db.models import Container, ContainerEvent, WorkerEvent
-from services.history import purge_events, record_container_event, record_worker_event, task_parts
+from services.db.models import Container, ContainerEvent, Task, WorkerEvent
+from services.history import purge_events, record_container_event, record_task, record_worker_event, task_history, task_history_filters, task_parts
 from services.logs import Logs
 from utils.logging import sub_task_id, task_id
+from utils.queue import QueuedTask
 
 
 @pytest.fixture
@@ -99,3 +100,66 @@ def test_purging_deletes_the_events_of_both_kinds_recorded_before_the_cutoff(con
 
   assert [event.action for event in ContainerEvent.select()] == ["stop"]
   assert [event.action for event in WorkerEvent.select()] == ["repair"]
+
+
+def finished(task_id_="t1", key=("deploy", "c1"), labels=None, scopes=("worker:w1:container:c1",), **fields):
+  return QueuedTask(key=key, scopes=frozenset(scopes), task=lambda: None, executor="app", task_id=task_id_,
+                    params={"container_id": "c1"}, inputs={"snapshot": {"secret": "s"}},
+                    labels={"Application": "shop / web", "Worker": "w1"} if labels is None else labels, **fields)
+
+
+class TestTaskRecords:
+  def test_a_finished_task_keeps_what_identifies_it_and_what_people_call_it_but_not_its_inputs(self, db, clock):
+    task = finished(queued_at=datetime(2026, 1, 1, 11, 58), started_at=datetime(2026, 1, 1, 11, 59))
+    row = record_task(task, "completed")
+
+    stored = Task.get()
+    assert (stored.task_id, stored.name, stored.scopes, stored.params, stored.labels, stored.executor, stored.status) == (
+        "t1", "deploy", ["worker:w1:container:c1"], {"container_id": "c1"},
+        {"Application": "shop / web", "Worker": "w1"}, "app", "completed")
+    assert (stored.created_at, stored.started_at, stored.finished_at) == (
+        datetime(2026, 1, 1, 11, 58), datetime(2026, 1, 1, 11, 59), datetime(2026, 1, 1, 12, 0))
+    assert row["task_id"] == "t1" and "secret" not in str(row)
+
+  def test_a_task_cancelled_before_it_started_has_no_start(self, db):
+    record_task(finished(), "cancelled")
+    assert Task.get().started_at is None
+
+
+class TestTaskHistory:
+  @pytest.fixture
+  def tasks(self, db, clock):
+    for index, (labels, scopes) in enumerate([
+        ({"Application": "shop / web", "Worker": "w1"}, ["worker:w1:container:c1"]),
+        ({"Application": "shop / api", "Worker": "w2"}, ["worker:w2:container:c2"]),
+        ({"Domain": "100%_off.example.com"}, ["domain:id:d1"]),
+        ({}, ["certificate"]),
+    ]):
+      record_task(finished(f"t{index}", labels=labels, scopes=scopes), "completed")
+      clock.advance(timedelta(minutes=1))
+    Task.insert(task_id="old", name="deploy", scopes=["worker:w1"], params={}, executor="app", status="failed",
+                finished_at=clock.current).execute()
+
+  def ids(self, **filters):
+    return sorted(task["task_id"] for task in task_history(**filters)["tasks"])
+
+  @pytest.mark.parametrize("label, expected", [
+      ("web", ["t0"]), ("SHOP", ["t0", "t1"]), ("w2", ["t1"]), ("100%_off", ["t2"]), ("100%x", []), ("_", ["t2"]),
+      ("Application", [])])
+  def test_a_label_matches_any_label_holding_the_text_in_any_case(self, tasks, label, expected):
+    assert self.ids(label=label) == expected
+
+  def test_a_scope_still_matches_itself_and_its_children(self, tasks):
+    assert self.ids(scope="worker:w1") == ["old", "t0"]
+    assert self.ids(scope="worker:w*") == ["old", "t0", "t1"]
+
+  def test_filters_combine(self, tasks):
+    assert self.ids(label="shop", scope="worker:w2") == ["t1"]
+
+  def test_the_newest_finished_come_first_with_how_many_match(self, tasks):
+    result = task_history(label="shop", limit=1)
+    assert ([task["task_id"] for task in result["tasks"]], result["total"]) == (["t1"], 2)
+
+  def test_the_filters_offer_the_stored_names_and_executors(self, tasks):
+    assert task_history_filters() == {"names": ["deploy"], "executors": ["app"],
+                                      "statuses": ["completed", "failed", "cancelled"]}

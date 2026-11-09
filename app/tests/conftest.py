@@ -1,4 +1,5 @@
 import os
+import sys
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -40,6 +41,15 @@ def _reset_singletons():
   yield
   Singleton._instances.clear()
   Singleton._locks.clear()
+
+
+@pytest.fixture
+def eager_threads():
+  """Threads switch as often as they can, which is what exposes a missing lock."""
+  interval = sys.getswitchinterval()
+  sys.setswitchinterval(1e-6)
+  yield
+  sys.setswitchinterval(interval)
 
 
 class Clock:

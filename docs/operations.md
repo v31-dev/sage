@@ -53,7 +53,7 @@ its caller, then hands webhook delivery to a separate pool. Those shared effects
 operation-specific writes below; ordinary log statements do not create notifications.
 
 Sources: [scheduler](../app/scheduler.py), [queue engine](../app/utils/queue.py),
-[history writer](../app/services/manager/queue.py), [notification writer](../app/services/manager/core.py),
+[history writer](../app/services/history.py), [notification writer](../app/services/manager/core.py),
 [pools](../app/utils/executor.py).
 
 ## Scopes and admission
@@ -77,13 +77,15 @@ There is no per-worker scope. Linked Domain tasks hold **both** `domain:<id>` an
 Different records linked to the same application therefore serialize. The `common` pool has one thread;
 async task bodies can still overlap while their offloads wait for it. Pool size is not a lock.
 
-| Admission | Effect on an operation with the same **name and exact scope set** |
-| --- | --- |
-| `DEDUP` | Drop the new request if a duplicate is queued or running; otherwise enqueue. Default. |
-| `REPLACE` | Supersede a pending duplicate; keep a running one and queue its successor. |
-| `QUEUE` | Keep every request. Parameters do not distinguish duplicates in the other modes. |
+`*` conflicts with every queued task, one holding no scope included; the platform restore holds it.
 
-Conflicting scopes defer admitted work; they do not reject it. Pending tasks reserve no scopes, so a broad
+| Admission | Effect on an operation with the same **key** (its name, subject ids and intent), whatever its scopes |
+| --- | --- |
+| `DEDUP` | A pending task with the key, else a running one, does the request (`existing`, with its id); otherwise enqueue. Default. |
+| `REPLACE` | Supersede the pending tasks with the key, even on other scopes; keep a running one and queue its successor. |
+| `QUEUE` | Keep every request. |
+
+A visible request joining a quiet task with its key makes that task visible. Conflicting scopes defer admitted work; they do not reject it. Pending tasks reserve no scopes, so a broad
 task can wait while later work starts. Paused queues admit work but start nothing; restoring starts only the
 restore; stopping cancels pending/new work and drains running tasks. The main API refuses mutations while
 the queue is not running, except pause/resume. The separate ingestion API keeps accepting pushes.

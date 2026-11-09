@@ -178,6 +178,7 @@ class Task(BaseModel):
   name = CharField()
   scopes = JSONField(null=True)
   params = JSONField(null=True)
+  labels = JSONField(null=True)
   executor = CharField()
   status = ChoiceField(("completed", "failed", "cancelled"))
   started_at = DateTimeField(null=True)  # none for a task cancelled before it started

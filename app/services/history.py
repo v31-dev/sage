@@ -1,8 +1,15 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
-from services.db.models import Container, ContainerEvent, Worker, WorkerEvent
+from peewee import SQL, NodeList
+from playhouse.shortcuts import model_to_dict
+
+import config
+from services.db.models import Container, ContainerEvent, Task, Worker, WorkerEvent
 from services.logs import Logs
+from utils.common import utcnow
+from utils.db import like_literal
 from utils.logging import sub_task_id, task_id
+from utils.queue import QueuedTask
 from values.names import qualified_name
 
 
@@ -43,3 +50,73 @@ def task_parts(task_id: str) -> list[dict]:
 def purge_events(before: datetime) -> int:
   """Deletes the container and worker events recorded before `before`, and returns how many."""
   return sum(model.delete().where(model.created_at < before).execute() for model in (ContainerEvent, WorkerEvent))
+
+
+def record_task(task: QueuedTask, status: str) -> dict:
+  """Stores a task that reached `status` (completed, failed or cancelled) and returns its row. Running and queued tasks
+  are in the queue's memory only."""
+  row = Task.create(
+      task_id=task.task_id,
+      name=task.name,
+      scopes=sorted(task.scopes),
+      params=task.params,
+      labels=task.labels,
+      executor=task.executor,
+      status=status,
+      created_at=task.queued_at,
+      started_at=task.started_at,
+      finished_at=utcnow(),
+  )
+  return model_to_dict(row, recurse=False)
+
+
+def _naive_utc(value: datetime) -> datetime:
+  """A time as the naive UTC the database keeps."""
+  return value.astimezone(timezone.utc).replace(tzinfo=None) if value.tzinfo is not None else value
+
+
+def _in_scope(scope: str):
+  """A task with a scope that matches `scope` or is one of its children (`app` matches `app:demo-web`), where `*`
+  matches any characters and case does not matter (`app:test*` matches `app:test-nginx`)."""
+  pattern = "%".join(like_literal(part) for part in scope.split("*"))
+  return NodeList((SQL("EXISTS (SELECT 1 FROM json_each("), Task.scopes,
+                   SQL(") WHERE value LIKE ? ESCAPE '\\' OR value LIKE ? ESCAPE '\\')", (pattern, f"{pattern}:%"))), glue="")
+
+
+def _labelled(text: str):
+  """A task with a label that holds `text`, in any case (`web` matches the application `shop / web`)."""
+  return NodeList((SQL("EXISTS (SELECT 1 FROM json_each("), Task.labels,
+                   SQL(") WHERE value LIKE ? ESCAPE '\\')", (f"%{like_literal(text)}%",))), glue="")
+
+
+def task_history(name: str = "", scope: str = "", label: str = "", executor: str = "", status: str = "",
+                 from_ts: datetime | None = None, to_ts: datetime | None = None,
+                 limit: int = config.LIST_MAX_ROWS) -> dict:
+  """The finished tasks `record_task` stored, newest finished first: the newest `limit` and how many match. A name,
+  an executor and a status match exactly, a scope as `_in_scope` says, a label as `_labelled` says, and a window
+  holds a task active at any point in it, from queued to finished."""
+  query = Task.select()
+  if name:
+    query = query.where(Task.name == name)
+  if scope:
+    query = query.where(_in_scope(scope))
+  if label:
+    query = query.where(_labelled(label))
+  if executor:
+    query = query.where(Task.executor == executor)
+  if status:
+    query = query.where(Task.status == status)
+  if from_ts:
+    query = query.where(Task.finished_at >= _naive_utc(from_ts))
+  if to_ts:
+    query = query.where(Task.created_at <= _naive_utc(to_ts))
+  newest = query.order_by(Task.finished_at.desc(), Task.task_id.desc()).limit(limit)
+  return {"tasks": list(newest.dicts()), "total": query.count()}
+
+
+def task_history_filters() -> dict:
+  """The choices of the history's filters: the names and executors stored, and the statuses."""
+  def stored(field):
+    return [value for (value,) in Task.select(field).distinct().order_by(field).tuples()]
+
+  return {"names": stored(Task.name), "executors": stored(Task.executor), "statuses": list(Task.status.choices)}

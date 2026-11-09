@@ -29,8 +29,8 @@ class Tasks:
     self.pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="lane")
     self.queue = TaskQueue(frozenset(["app"]), {"app": self.pool}, record=lambda task, status: None, notify=lambda: None)
 
-  def add(self, task, scope="app:a", **kwargs):
-    return self.queue.add_task(task=task, scopes={scope}, executor="app", **kwargs)
+  def add(self, task, scope="app:a", key=None, **kwargs):
+    return self.queue.add_task(task=task, key=key or (task.__name__,), scopes={scope}, executor="app", **kwargs)
 
   async def run(self):
     self.queue.dispatch_tick()
@@ -104,8 +104,8 @@ class TestTaskLines:
         log.info(f"{word} {index}")
         await asyncio.sleep(0)
 
-    tasks.add(chatty, scope="app:a", params={"word": "a"}, task_id="ta")
-    tasks.add(chatty, scope="app:b", params={"word": "b"}, task_id="tb")
+    tasks.add(chatty, scope="app:a", key=("chatty", "a"), params={"word": "a"}, task_id="ta")
+    tasks.add(chatty, scope="app:b", key=("chatty", "b"), params={"word": "b"}, task_id="tb")
     await tasks.run()
     for word in ("a", "b"):
       assert tasks.messages(f"t{word}") == ["chatty: started", *(f"{word} {index}" for index in range(5)), "chatty: completed"]
@@ -143,6 +143,49 @@ class TestTaskLines:
     tasks.add(sync, task_id="q1", quiet=quiet)
     await tasks.run()
     assert tasks.messages("q1") == ["sync: started", "checking w1", "sync: failed"]
+
+  async def test_a_running_quiet_task_made_visible_keeps_its_lines_in_order(self, tasks):
+    reached, made_visible = asyncio.Event(), asyncio.Event()
+
+    async def sync():
+      log.info("before")
+      await run_in_executor_with_context(lambda: log.info("in a thread"))
+      reached.set()
+      await made_visible.wait()
+      log.info("after")
+
+    tasks.add(sync, task_id="q1", quiet=True)
+    tasks.queue.dispatch_tick()
+    await reached.wait()
+    assert tasks.captured.empty()
+    tasks.add(sync, task_id="v1")
+    made_visible.set()
+    await tasks.run()
+    assert tasks.messages("q1") == ["sync: started", "before", "in a thread", "after", "sync: completed"]
+    assert tasks.messages("v1") == []
+
+  async def test_threads_logging_while_the_task_is_made_visible_lose_no_line_and_keep_each_threads_order(
+          self, tasks, eager_threads):
+    halfway = threading.Barrier(5)
+
+    def chatter(number):
+      for index in range(1000):
+        if index == 500:
+          halfway.wait(timeout=5)
+        log.info(f"{number}:{index}")
+
+    async def sync():
+      await asyncio.gather(*(run_in_executor_with_context(chatter, number) for number in range(4)))
+
+    tasks.add(sync, task_id="q1", quiet=True)
+    tasks.queue.dispatch_tick()
+    await asyncio.get_running_loop().run_in_executor(None, halfway.wait, 5)
+    tasks.add(sync, task_id="v1")
+    await tasks.run()
+    lines = tasks.messages("q1")[1:-1]
+    assert len(lines) == 4000
+    for number in range(4):
+      assert [line for line in lines if line.startswith(f"{number}:")] == [f"{number}:{index}" for index in range(1000)]
 
   def test_a_line_that_cannot_be_written_is_a_warning_and_the_next_one_is_written(self, logs, monkeypatch, caplog):
     written = threading.Event()

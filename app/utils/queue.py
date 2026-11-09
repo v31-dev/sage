@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
@@ -14,11 +15,13 @@ from utils.logging import TaskFailed, TaskLines, new_task_id, task_id, task_line
 
 logger = logging.getLogger(__name__)
 
+# The scope that conflicts with every task, one holding no scope included.
+EVERYTHING = "*"
+
 
 def _is_ancestor_or_equal(a: str, b: str) -> bool:
-  # True when scope `a` is at the same level as, or an ancestor of, `b` in the
-  # ":"-delimited hierarchy (i.e. `a` covers `b`).
-  return b == a or b.startswith(a + ":")
+  # True when scope `a` covers `b`: `*`, the same scope, or an ancestor of it in the ":"-delimited hierarchy.
+  return a == EVERYTHING or b == a or b.startswith(a + ":")
 
 
 def _scope_conflict(a: str, b: str) -> bool:
@@ -29,29 +32,26 @@ def _scope_conflict(a: str, b: str) -> bool:
 
 
 def _scopes_conflict(a: frozenset[str], b: frozenset[str]) -> bool:
-  return any(_scope_conflict(sa, sb) for sa in a for sb in b)
+  return EVERYTHING in a or EVERYTHING in b or any(_scope_conflict(sa, sb) for sa in a for sb in b)
 
 
 def _dominates(a: frozenset[str], b: frozenset[str]) -> bool:
   # True when `a` is at the same level or higher than `b`. Used for priority
   # insertion: a priority task is placed behind tasks that dominate it (other
   # platform tasks) and ahead of everything else (app tasks).
-  return any(_is_ancestor_or_equal(sa, sb) for sa in a for sb in b)
+  return EVERYTHING in a or any(_is_ancestor_or_equal(sa, sb) for sa in a for sb in b)
 
 
 class OnConflict(Enum):
-  """How add_task admits a task when an identical or conflicting task exists.
+  """How add_task admits a task when a task with the same key is pending or running.
 
-  Admission decides *drop vs. enqueue*. It is separate from mutual exclusion:
-  the dispatcher always serializes conflicting scopes regardless of mode, so a
-  task that is enqueued simply waits for its scope to free.
-
-  Identity for dedupe is name + exact scope (params are not part of it). DEDUP
-  and REPLACE act on that identity; QUEUE ignores it (every call runs).
+  Admission decides whether a request queues a task. It is separate from mutual exclusion: the dispatcher always
+  serializes conflicting scopes, so a queued task waits for its scopes to free. DEDUP and REPLACE compare keys,
+  never scopes; QUEUE ignores the key (every request runs).
   """
-  DEDUP = "dedup"      # skip if an identical op (name + scope) is pending/running; else enqueue
-  QUEUE = "queue"      # always enqueue; wait for the scope to free (no dedupe)
-  REPLACE = "replace"  # cancel a pending duplicate (latest wins); then enqueue
+  DEDUP = "dedup"      # a pending or running task with the key is the request's task; else enqueue
+  QUEUE = "queue"      # always enqueue
+  REPLACE = "replace"  # supersede the pending tasks with the key (latest wins), then enqueue
 
 
 class QueueState(Enum):
@@ -69,52 +69,73 @@ class QueueState(Enum):
 
 @dataclass(frozen=True)
 class QueuedTask:
-  name: str
+  key: tuple[str, ...]          # the operation's name, then its subject's ids and its intent
   scopes: frozenset[str]
   task: Callable
-  params: dict
   executor: str                 # key into TaskQueue executors
+  params: dict = field(default_factory=dict)  # JSON-safe arguments of `task`, recorded and shown
+  inputs: dict = field(default_factory=dict)  # arguments of `task` that are never recorded or shown
+  labels: dict = field(default_factory=dict)  # what people call its subjects, as they were named when it was queued
   task_id: str | None = None
-  quiet: bool = False           # persist only on failure (high-frequency housekeeping)
+  quiet: bool = False           # recorded and its lines kept only on failure (housekeeping)
   restore: bool = False         # the platform restore: the one task that starts while restoring
   queued_at: datetime = field(default_factory=utcnow)
   started_at: datetime | None = None
+  lines: TaskLines | None = None  # from its start: where its lines go, and what tells this run apart
+
+  @property
+  def name(self) -> str:
+    return self.key[0]
 
 
-class Admit(Enum):
-  DROP = "drop"        # not admitted, nothing recorded
-  CANCEL = "cancel"    # not admitted because the queue is stopping: recorded as cancelled
-  ENQUEUE = "enqueue"
+class Outcome(Enum):
+  ACCEPTED = "accepted"   # queued as a new task
+  EXISTING = "existing"   # a pending or running task with its key does it
+  REFUSED = "refused"     # not queued: the queue is stopping, or a restore while it is not running
 
 
 @dataclass(frozen=True)
 class Admission:
-  """What `admit` decides for a new task. An enqueue also carries the pending duplicates it supersedes and
-  the position it takes in the queue once they are removed."""
-  admit: Admit
+  """What `admit` decides for a new task. Accepted: `task` is what to queue, at `position` once the `superseded` are
+  removed. Existing: `task` is the pending or running one with its key, made visible when `reveal`. Refused: recorded
+  as cancelled when `cancelled`."""
+  outcome: Outcome
+  task: QueuedTask | None = None
   superseded: tuple[QueuedTask, ...] = ()
   position: int = 0
+  reveal: bool = False
+  cancelled: bool = False
+
+
+@dataclass(frozen=True)
+class Added:
+  """What add_task did with a request: the id of its task, or of the task already doing it; none when it was refused
+  without a record."""
+  outcome: Outcome
+  task_id: str | None = None
 
 
 def admit(state: QueueState, running: list[QueuedTask], queue: list[QueuedTask], new: QueuedTask,
-          on_conflict: OnConflict, restore: bool, priority: bool) -> Admission:
-  """Whether `new` is dropped, cancelled or enqueued, and where. Identity for DEDUP and REPLACE is name and
-  exact scope; a different task on a conflicting scope is enqueued and waits."""
-  if restore and state != QueueState.RUNNING:
-    return Admission(Admit.DROP)
+          on_conflict: OnConflict, priority: bool) -> Admission:
+  """Whether `new` is queued, done by a task with its key, or refused, and where it goes. A task with another key on a
+  conflicting scope never stops it: it is queued and waits. A visible request makes the task that does it visible."""
+  if new.restore and state != QueueState.RUNNING:
+    return Admission(Outcome.REFUSED)
   if state == QueueState.STOPPING:
-    return Admission(Admit.CANCEL)
+    return Admission(Outcome.REFUSED, cancelled=True)
 
-  def duplicate(task: QueuedTask) -> bool:
-    return task.name == new.name and task.scopes == new.scopes
-
-  if on_conflict == OnConflict.DEDUP and any(duplicate(task) for task in (*running, *queue)):
-    return Admission(Admit.DROP)
+  if on_conflict == OnConflict.DEDUP:
+    # A pending task starts later than a running one, so it is the one that does what was asked.
+    existing = next((task for task in (*queue, *running) if task.key == new.key), None)
+    if existing is not None:
+      return Admission(Outcome.EXISTING, existing, reveal=existing.quiet and not new.quiet)
 
   superseded = ()
   if on_conflict == OnConflict.REPLACE:
-    superseded = tuple(task for task in queue if duplicate(task))
-    queue = [task for task in queue if not duplicate(task)]
+    superseded = tuple(task for task in queue if task.key == new.key)
+    queue = [task for task in queue if task.key != new.key]
+    if not all(task.quiet for task in superseded):
+      new = replace(new, quiet=False)
 
   position = len(queue)
   if priority:
@@ -124,7 +145,7 @@ def admit(state: QueueState, running: list[QueuedTask], queue: list[QueuedTask],
       if not _dominates(queued.scopes, new.scopes):
         break
       position += 1
-  return Admission(Admit.ENQUEUE, superseded, position)
+  return Admission(Outcome.ACCEPTED, new, superseded, position)
 
 
 def next_to_start(state: QueueState, queue: list[QueuedTask], running: list[QueuedTask]) -> list[QueuedTask]:
@@ -150,7 +171,7 @@ class TaskQueue:
   Scopes form a ":"-delimited hierarchy. A task holding a parent scope ("app")
   conflicts with every child ("app:app1", "app:app2"); siblings never conflict,
   so operations on different applications run in parallel while a platform-wide
-  task (holding the parent) excludes them all.
+  task (holding the parent) excludes them all. `*` conflicts with every task.
 
   The dispatcher is the only place that starts tasks, so the single FIFO scan
   per tick is race-free. A threading.Lock guards the queue because producers may
@@ -177,65 +198,68 @@ class TaskQueue:
     self._running: list[QueuedTask] = []
     self._tasks: set[asyncio.Task] = set()
 
-  def add_task(self, task: Callable, scopes: frozenset[str], executor: str,
-               name: str | None = None, params: dict | None = None,
-               task_id: str | None = None,
-               on_conflict: OnConflict = OnConflict.DEDUP,
-               priority: bool = False, quiet: bool = False,
-               restore: bool = False) -> bool:
-    """Add a task; return False if it was dropped (DEDUP when an identical op is
-    already pending or running, the queue is stopping, or a restore is added while
-    the queue isn't running).
+  def add_task(self, task: Callable, key: tuple[str, ...], scopes: frozenset[str], executor: str,
+               params: dict | None = None, inputs: dict | None = None, labels: dict[str, str] | None = None,
+               task_id: str | None = None, on_conflict: OnConflict = OnConflict.DEDUP,
+               priority: bool = False, quiet: bool = False, restore: bool = False) -> Added:
+    """Request a task: accepted (queued), existing (a pending or running task with the same key does it) or refused
+    (the queue is stopping, recorded as cancelled; or a restore while the queue isn't running).
 
     ### Parameters
     - task: the callable to run (sync or async).
+    - key: the operation's name, then its subject's ids and its intent, e.g. `("deploy", container_id)`: what
+      DEDUP and REPLACE compare. Its first part is the task's name.
     - scopes: scopes this task needs exclusive access to. A parent scope ("app")
-      conflicts with all children ("app:app1"); siblings never conflict. Each
-      scope's root must be one of the roots passed to the constructor.
+      conflicts with all children ("app:app1"); siblings never conflict; `*`
+      conflicts with every task. Each scope's root must be one of the roots passed
+      to the constructor.
     - executor: name of the executor (key in the constructor's executors dict).
-    - name: log/UI label; defaults to the task callable's name. Also the identity
-      (with the exact scope) DEDUP/REPLACE use to detect a duplicate.
-    - params: keyword arguments passed to `task`; defaults to none.
+    - params: JSON-safe keyword arguments of `task` (ids and flags), recorded and shown.
+    - inputs: keyword arguments of `task` that are never recorded or shown (a frozen
+      snapshot, a storage session).
+    - labels: what people call the task's subjects, e.g. `{"Application": "shop / web"}`,
+      recorded and shown.
     - task_id: log-correlation id; generated here when omitted (scheduled work).
-    - on_conflict: admission policy (see OnConflict). DEDUP skips if an identical
-      op (same name + exact scope) is already pending or running, else enqueues
-      and waits; QUEUE always enqueues and waits; REPLACE supersedes a pending
-      duplicate (same name + exact scope) then enqueues and waits.
+    - on_conflict: admission policy (see OnConflict).
     - priority: insert ahead of lower/unrelated tasks but behind tasks that
       dominate it (same level or higher) -- a platform task jumps over app
       tasks but not over other platform tasks.
-    - quiet: persist this task to the record store only when it fails, so
-      high-frequency housekeeping (e.g. metrics) does not flood it.
-    - restore: this is the platform restore. Adding it puts the queue in the
-      restoring state, where only it starts (once the running tasks it conflicts
-      with have finished); the task ends that state with `end_restore`.
+    - quiet: record this task and keep its lines only when it fails, so
+      high-frequency housekeeping (e.g. metrics) does not flood the record. A
+      visible request with the same key makes it visible.
+    - restore: this is the platform restore, which holds `*`. Adding it puts the
+      queue in the restoring state, where only it starts (once the running tasks
+      have finished); the task ends that state with `end_restore`.
     """
-    name = name or task.__name__
-    scopes = frozenset(scopes)
-    self._validate(scopes, executor)
-    task_id = task_id or new_task_id()
-    new_task = QueuedTask(name=name, scopes=scopes, task=task,
-                          params=params or {}, executor=executor, task_id=task_id,
-                          quiet=quiet, restore=restore)
+    scopes = frozenset({EVERYTHING}) if EVERYTHING in scopes else frozenset(scopes)
+    new_task = QueuedTask(key=tuple(key), scopes=scopes, task=task, executor=executor, params=params or {},
+                          inputs=inputs or {}, labels=labels or {}, task_id=task_id or new_task_id(), quiet=quiet,
+                          restore=restore)
+    self._validate(new_task)
     with self._lock:
-      admission = admit(self._state, self._running, self._queue, new_task, on_conflict, restore, priority)
-      if admission.admit == Admit.DROP:
-        return False
-      if admission.admit == Admit.ENQUEUE:
-        for duplicate in admission.superseded:
-          self._queue.remove(duplicate)
-        self._queue.insert(admission.position, new_task)
+      admission = admit(self._state, self._running, self._queue, new_task, on_conflict, priority)
+      if admission.outcome == Outcome.ACCEPTED:
+        for superseded in admission.superseded:
+          self._queue.remove(superseded)
+        self._queue.insert(admission.position, admission.task)
         if restore:
           self._state = QueueState.RESTORING
           logger.info("Restoring: nothing else starts until the restore has finished.")
+      elif admission.reveal:
+        for tasks in (self._queue, self._running):
+          tasks[:] = [replace(entry, quiet=False) if entry is admission.task else entry for entry in tasks]
 
     # Persist cancellations outside the lock: _record does a DB write, which must
     # stay off the critical section so the event loop never blocks on it.
-    cancelled = [new_task] if admission.admit == Admit.CANCEL else list(admission.superseded)
+    cancelled = [new_task] if admission.cancelled else list(admission.superseded)
     self._record_cancelled(cancelled)
-    if admission.admit != Admit.DROP:
+    if admission.reveal and admission.task.lines is not None:
+      admission.task.lines.release()
+    if admission.outcome == Outcome.ACCEPTED or cancelled or admission.reveal:
       self._emit()
-    return admission.admit == Admit.ENQUEUE
+    if admission.outcome == Outcome.REFUSED:
+      return Added(Outcome.REFUSED, new_task.task_id if admission.cancelled else None)
+    return Added(admission.outcome, admission.task.task_id)
 
   def is_busy(self, scopes: frozenset[str]) -> bool:
     """True if any running or pending task conflicts with the given scopes."""
@@ -243,33 +267,13 @@ class TaskQueue:
     with self._lock:
       return any(_scopes_conflict(scopes, task.scopes) for task in (*self._running, *self._queue))
 
-  def is_task_running(self, task: Callable | str, scopes: frozenset[str] | None = None) -> bool:
-    """True if a task with this identity is currently executing (not merely queued).
-    Pass the task callable (rename-safe; its `__name__` is the identity add_task
-    stores by default) or, for a task enqueued with an explicit `name=`, that
-    string. When scopes is given, the running task must also conflict with them, so
-    a per-resource task (e.g. app:<qualified_name>) is matched for one specific
-    resource rather than by name across every resource. For UI/route status of a
-    named operation, as distinct from is_busy's scope-only check."""
-    name = task if isinstance(task, str) else task.__name__
+  def has_task(self, prefix: tuple[str, ...], running_only: bool = False) -> bool:
+    """True if a task whose key starts with `prefix` is running, or pending unless `running_only`: `("sync_domain",
+    domain_id)` for that domain's sync, `("backup_database",)` for any platform backup."""
+    prefix = tuple(prefix)
     with self._lock:
-      return any(
-          running.name == name and (scopes is None or _scopes_conflict(scopes, running.scopes))
-          for running in self._running
-      )
-
-  def has_task(self, task: Callable | str, params: dict | None = None) -> bool:
-    """True if a task with this identity is running or queued. When params is
-    given, every provided key must also match the task's params — a
-    params-scoped duplicate check for QUEUE-admitted work, since admission
-    identity itself deliberately ignores params."""
-    name = task if isinstance(task, str) else task.__name__
-    with self._lock:
-      return any(
-          t.name == name
-          and (params is None or all(t.params.get(k) == v for k, v in params.items()))
-          for t in (*self._running, *self._queue)
-      )
+      tasks = self._running if running_only else (*self._running, *self._queue)
+      return any(task.key[:len(prefix)] == prefix for task in tasks)
 
   @property
   def state(self) -> QueueState:
@@ -340,6 +344,8 @@ class TaskQueue:
     return {
         "task_id": task.task_id,
         "name": task.name,
+        "key": list(task.key),
+        "labels": task.labels,
         "scopes": sorted(task.scopes),
         "params": task.params,
         "executor": task.executor,
@@ -349,16 +355,27 @@ class TaskQueue:
         "started_at": task.started_at,
     }
 
-  def _validate(self, scopes: frozenset[str], executor: str):
-    # Fail fast on wiring mistakes: every scope's root and the executor name
-    # must be declared on the queue. Scope roots are dynamic below the root
+  def _validate(self, task: QueuedTask):
+    # Fail fast on wiring mistakes. Scope roots are dynamic below the root
     # (e.g. "app:app1"), so only the root segment is checked.
-    for scope in scopes:
+    if not task.key or not all(isinstance(part, str) and part for part in task.key):
+      raise ValueError(f"A task key is a tuple of names, not {task.key!r}")
+    for scope in task.scopes:
       root = scope.split(":", 1)[0]
-      if root not in self._scopes:
+      if scope != EVERYTHING and root not in self._scopes:
         raise ValueError(f"Unknown scope root '{root}' (allowed: {sorted(self._scopes)})")
-    if executor not in self._executors:
-      raise ValueError(f"Unknown executor '{executor}' (allowed: {sorted(self._executors)})")
+    if task.executor not in self._executors:
+      raise ValueError(f"Unknown executor '{task.executor}' (allowed: {sorted(self._executors)})")
+    if task.restore and task.scopes != {EVERYTHING}:
+      raise ValueError("The restore holds '*'")
+    if task.params.keys() & task.inputs.keys():
+      raise ValueError(f"An argument is both a param and an input: {sorted(task.params.keys() & task.inputs.keys())}")
+    try:
+      json.dumps(task.params)
+    except (TypeError, ValueError) as e:
+      raise ValueError(f"Task params are recorded, so they must be JSON: {e}") from None
+    if not all(isinstance(name, str) and isinstance(label, str) for name, label in task.labels.items()):
+      raise ValueError(f"Task labels name each subject in text, not {task.labels!r}")
 
   def dispatch_tick(self):
     """Start every pending task whose scopes do not conflict with running work."""
@@ -366,7 +383,7 @@ class TaskQueue:
       starting = next_to_start(self._state, self._queue, self._running)
       for task in starting:
         self._queue.remove(task)
-        task = replace(task, started_at=utcnow())
+        task = replace(task, started_at=utcnow(), lines=TaskLines(quiet=task.quiet))
         self._running.append(task)
         handle = asyncio.create_task(self.run_task(task))
         self._tasks.add(handle)
@@ -392,40 +409,39 @@ class TaskQueue:
 
   async def run_task(self, task: QueuedTask):
     token = task_id.set(task.task_id)
-    lines = TaskLines(quiet=task.quiet)
-    lines_token = task_lines.set(lines)
+    lines_token = task_lines.set(task.lines)
     # Bind the task's pool so blocking offloads inside it (and the sync task
     # itself) flow to that executor without each call site naming it.
     executor_token = active_executor.set(self._executors[task.executor])
+    status = "failed"
     try:
       logger.info(f"{task.name}: started")
       if iscoroutinefunction(task.task):
-        await task.task(**task.params)
+        await task.task(**task.params, **task.inputs)
       else:
-        await run_in_executor_with_context(task.task, **task.params)
+        await run_in_executor_with_context(task.task, **task.params, **task.inputs)
       logger.info(f"{task.name}: completed")
-      # Quiet reconcilers (metrics, per-app syncs) skip routine completion so
-      # they don't flood the store; failures and cancellations always record.
-      if not task.quiet:
-        self._record(task, "completed")
+      status = "completed"
     except TaskFailed:
       logger.error(f"{task.name}: failed")
-      lines.release()
-      self._record(task, "failed")
     except asyncio.CancelledError:
       # Loop shutdown mid-task. Records as failed
       logger.warning(f"{task.name}: failed (interrupted by shutdown)")
-      lines.release()
-      self._record(task, "failed")
       raise
     except Exception:
       logger.exception(f"{task.name}: failed")
-      lines.release()
-      self._record(task, "failed")
     finally:
+      if status == "failed":
+        task.lines.release()
       active_executor.reset(executor_token)
       task_lines.reset(lines_token)
       task_id.reset(token)
       with self._lock:
-        self._running.remove(task)
+        # A visible request may have replaced this run's entry; its lines are what this run alone has.
+        current = next(entry for entry in self._running if entry.lines is task.lines)
+        self._running.remove(current)
+      # Quiet reconcilers (metrics, per-app syncs) skip routine completion so
+      # they don't flood the store; failures and cancellations always record.
+      if status == "failed" or not current.quiet:
+        self._record(current, status)
       self._emit()
