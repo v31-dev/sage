@@ -53,7 +53,7 @@ After compaction, reread the relevant `docs/` page before continuing.
 | `app/services/manager/` | Manager singleton (mixins): the operation orchestrator |
 | `app/services/db/` | Peewee models, storage fields, encryption and DB bootstrap |
 | `app/services/applications/` | Project, Application, Volume and container-placement commands, their value rules, deploy input capture and update publication |
-| `app/services/domains/` | Domain commands, routing config, artifact names, host and origin derivation and update publication |
+| `app/services/domains/` | Domain commands, routing config, artifact names and route listing, host and origin derivation, the pure apply-status decision and update publication |
 | `app/services/workers/` | Worker row commands (add with a subdomain, subdomain change, removal) and the pure worker status and reboot decisions |
 | `app/services/history.py` | Container and worker event append, task parts and event retention |
 | `app/services/containers/` | Container target record (types, codec, listing), placement names and labels, and the pure status decision |

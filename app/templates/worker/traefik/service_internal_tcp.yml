@@ -1,3 +1,4 @@
+# sage-domain ${ID} ${FINGERPRINT}
 tcp:
   routers:
     # Routed by the SNI in the client's TLS ClientHello; TLS ends here with this worker's certificate (Traefik handles

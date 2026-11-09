@@ -90,45 +90,44 @@ def test_anything_else_is_refused(port):
 
 class TestDomainConfig:
   def test_the_snapshot_is_immutable_and_does_not_follow_later_record_edits(self, linked):
-    snapshot = DomainConfig.capture(linked, "example.test", "templates", True)
+    snapshot = DomainConfig.capture(linked, "example.test", "templates")
     linked.port = 9000
     linked.save()
 
     assert snapshot.port == 8080
-    assert snapshot.content_hash != DomainConfig.capture(linked, "example.test", "templates", True).content_hash
+    assert snapshot.content_hash != DomainConfig.capture(linked, "example.test", "templates").content_hash
     with pytest.raises(FrozenInstanceError):
       snapshot.port = 9000
 
   @pytest.mark.parametrize("field, value", [("name", "store"), ("port", 9000), ("type", "tcp")])
   def test_the_fingerprint_changes_with_rendered_configuration_and_the_artifact_names_do_not(self, linked, field, value):
-    before = DomainConfig.capture(linked, "example.test", "templates", True)
+    before = DomainConfig.capture(linked, "example.test", "templates")
     setattr(linked, field, value)
     linked.save()
 
-    after = DomainConfig.capture(linked, "example.test", "templates", True)
+    after = DomainConfig.capture(linked, "example.test", "templates")
     assert before.content_hash != after.content_hash
     assert (before.filename, before.dns_comment) == (after.filename, after.dns_comment) == (
         f"domain-{linked.id}.yml", f"sage-domain-{linked.id}")
 
   def test_discovery_metadata_does_not_change_the_apply_fingerprint(self, linked):
-    before = DomainConfig.capture(linked, "example.test", "templates", True)
+    before = DomainConfig.capture(linked, "example.test", "templates")
     linked.service, linked.pool = "other", "eu"
     linked.save()
 
-    assert before.content_hash == DomainConfig.capture(linked, "example.test", "templates", True).content_hash
+    assert before.content_hash == DomainConfig.capture(linked, "example.test", "templates").content_hash
 
-  def test_the_fingerprint_includes_the_domain_the_template_and_the_runtime_eligibility(self, linked):
-    before = DomainConfig.capture(linked, "example.test", "templates", True)
-    assert before.content_hash != DomainConfig.capture(linked, "other.test", "templates", True).content_hash
-    assert before.content_hash != DomainConfig.capture(linked, "example.test", "changed", True).content_hash
-    assert before.content_hash != DomainConfig.capture(linked, "example.test", "templates", False).content_hash
+  def test_the_fingerprint_includes_the_domain_and_the_template(self, linked):
+    before = DomainConfig.capture(linked, "example.test", "templates")
+    assert before.content_hash != DomainConfig.capture(linked, "other.test", "templates").content_hash
+    assert before.content_hash != DomainConfig.capture(linked, "example.test", "changed").content_hash
 
   def test_it_names_the_application_and_the_worker_it_routes_to(self, linked):
-    snapshot = DomainConfig.capture(linked, "example.test", "templates", True)
+    snapshot = DomainConfig.capture(linked, "example.test", "templates")
     assert (snapshot.application, snapshot.worker, snapshot.container_id) == ("demo-web", "w1", linked.container_id)
 
   def test_a_linked_public_domain_points_its_name_at_its_workers_tunnel(self, linked):
-    snapshot = DomainConfig.capture(linked, "example.test", "templates", True)
+    snapshot = DomainConfig.capture(linked, "example.test", "templates")
     assert snapshot.dns_records({"id": "tunnel1"}) == {"shop.example.test": "tunnel1.cfargotunnel.com"}
     with pytest.raises(ValueError, match="Worker w1 has no tunnel."):
       snapshot.dns_records(None)
@@ -138,4 +137,4 @@ class TestDomainConfig:
                              namespace_worker=worker.hostname)
     unlinked = Domain.create(name="old", type="public", port=80)
     for domain in (internal, unlinked):
-      assert DomainConfig.capture(domain, "example.test", "templates", False).dns_records(None) == {}
+      assert DomainConfig.capture(domain, "example.test", "templates").dns_records(None) == {}

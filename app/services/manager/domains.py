@@ -27,9 +27,9 @@ def save_domain(domain: Domain):
 
 class DomainsMixin:
   def domain_config(self, domain: Domain) -> DomainConfig:
-    # TODO(36 step 3): runtime eligibility comes from the Container decisions; Container.status is gone.
-    active = domain.container is not None and domain.container.status == "active"
-    return DomainConfig.capture(domain, get_env("DOMAIN"), DOMAIN_ROUTING_TEMPLATES, active)
+    # TODO(36 step 4): the sync and the scan below still read `snapshot.active`; whether a route is present comes from
+    # the container's `routable` through `services.domains.decisions.route_goal`.
+    return DomainConfig.capture(domain, get_env("DOMAIN"), DOMAIN_ROUTING_TEMPLATES)
 
   def domain_tasks_busy(self) -> frozenset:
     snapshot = self.task_snapshot()
