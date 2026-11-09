@@ -43,7 +43,8 @@ class TestParseBatch:
   def test_container_readings_join_the_measurements_by_name(self):
     web = parse_batch(BATCH)[0].containers["web"]
     assert web.status == "running"
-    assert web.deployed_at == "2026-10-24T23:08:35.718155"
+    assert web.labels == {"sage.instance": "aaaaaaaaaaaaaaaa", "sage.generation": "bbbbbbbbbbbbbbbb",
+                          "sage.container": "0123456789abcdef", "sage.deployment": "d1", "sage.application": "demo-web"}
     assert web.health == "healthy"
     assert web.exit_code == 0 and web.oom_killed is False
     assert web.mem_bytes is not None and web.cpu_percent is not None
@@ -59,7 +60,7 @@ class TestParseBatch:
     old = parse_batch(BATCH)[0].containers["old-job"]
     assert old.status == "exited"
     assert old.finished_at is not None and old.started_at < old.finished_at
-    assert old.deployed_at is None
+    assert old.labels == {}
 
   def test_the_traefik_check(self):
     assert parse_batch(BATCH)[0].traefik_reachable is True
@@ -197,9 +198,9 @@ def with_containers(seconds, *readings):
   return [Snapshot(at=base.at, host=host, containers={c.name: c for c in readings}, traefik_reachable=True)]
 
 
-def reading(name, status="running", started_at=1, deployed_at="stamp"):
+def reading(name, status="running", started_at=1, deployment="d1"):
   from services.worker_reports import ContainerReading
-  return ContainerReading(name=name, status=status, image="img", deployed_at=deployed_at, exit_code=0, oom_killed=False,
+  return ContainerReading(name=name, status=status, image="img", labels={"sage.deployment": deployment}, exit_code=0, oom_killed=False,
                           started_at=started_at, finished_at=None, health=None, cpu_percent=None, mem_bytes=None,
                           net_rx_bytes=None, net_tx_bytes=None)
 
@@ -217,7 +218,7 @@ class TestWhatChanged:
   @pytest.mark.parametrize("after", [
       reading("web", status="restarting"),
       reading("web", started_at=2),
-      reading("web", deployed_at="newer"),
+      reading("web", deployment="d2"),
   ])
   def test_a_new_state_start_or_version_changes_the_container(self, after):
     reports = WorkerReports()

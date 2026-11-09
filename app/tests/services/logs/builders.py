@@ -26,9 +26,12 @@ def task_entries(first, count, task="t1", sub=""):
           for index in range(first, first + count)]
 
 
-def event(container, message, index=0, stream="stdout"):
-  """A line as a worker's Vector pushes it."""
-  return {"container_name": container, "timestamp": stamp(index), "stream": stream, "message": message}
+def event(source, message, index=0, stream="stdout"):
+  """A line as a worker's Vector pushes it: Traefik's when `source` is traefik, else one of the application `source`
+  names, from its placement's container."""
+  container, application = ("traefik", None) if source == "traefik" else ("sage-0123456789abcdef", source)
+  return {"container_name": container, "application": application, "timestamp": stamp(index), "stream": stream,
+          "message": message}
 
 
 def access_line(index=0, **fields):

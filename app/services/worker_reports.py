@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 
 import config
 from services.base import Base
+from services.containers.placement import LABEL_DEPLOYMENT, LABELS
 from utils.common import utcnow
 
 logger = logging.getLogger(__name__)
@@ -11,12 +12,12 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class ContainerReading:
-  """One container as Telegraf saw it. Times are nanoseconds since the epoch (the worker's
-  clock); `finished_at` is absent for a container that never stopped."""
+  """One container as Telegraf saw it, with the Sage labels it carries. Times are nanoseconds since the epoch (the
+  worker's clock); `finished_at` is absent for a container that never stopped."""
   name: str
   status: str
   image: str
-  deployed_at: str | None
+  labels: dict[str, str]
   exit_code: int | None
   oom_killed: bool
   started_at: int | None
@@ -93,7 +94,7 @@ def container_started_at(received: Received | None, container: str) -> int | Non
 
 
 def _fingerprint(container: ContainerReading):
-  return (container.status, container.started_at, container.deployed_at)
+  return (container.status, container.started_at, container.labels.get(LABEL_DEPLOYMENT))
 
 
 def _number(value):
@@ -157,7 +158,7 @@ def _containers(metrics) -> dict[str, ContainerReading]:
         name=name,
         status=str(tags.get("container_status", "")),
         image=str(tags.get("container_image", "")),
-        deployed_at=tags.get("sage.deployed_at"),
+        labels={label: tags[label] for label in LABELS if label in tags},
         exit_code=_integer(fields.get("exitcode")),
         oom_killed=fields.get("oomkilled") is True,
         started_at=_integer(fields.get("started_at")),

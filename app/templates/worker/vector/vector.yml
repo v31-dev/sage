@@ -5,15 +5,16 @@ sources:
     type: docker_logs
 
 transforms:
-  # Traefik's lines and the applications' (whose containers have this label), each with only what the manager stores.
+  # Traefik's lines and the applications' (whose containers have these labels), each with only what the manager stores.
   shipped:
     type: remap
     inputs: ["container_logs"]
     source: |
-      if .container_name != "traefik" && !exists(.label."sage.deployed_at") {
+      if .container_name != "traefik" && !exists(.label."sage.container") {
         abort
       }
-      . = {"container_name": .container_name, "timestamp": .timestamp, "stream": .stream, "message": .message}
+      . = {"container_name": .container_name, "application": .label."sage.application", "timestamp": .timestamp,
+           "stream": .stream, "message": .message}
 
 sinks:
   fastapi_http:

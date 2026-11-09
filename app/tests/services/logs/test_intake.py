@@ -44,6 +44,12 @@ class TestIngest:
     assert skipped == 6
     assert [row["message"] for row in logs.query_application_lines("demo-web")["lines"]] == ["kept"]
 
+  def test_a_line_of_a_container_that_names_no_application_is_skipped(self, logs):
+    skipped = logs.ingest("w1", push({**event("demo-web", "lost"), "application": None}, event("demo-web", "kept")))
+
+    assert skipped == 1
+    assert [row["message"] for row in logs.query_application_lines("demo-web")["lines"]] == ["kept"]
+
   def test_a_write_that_fails_is_raised_once_the_other_files_are_written(self, logs):
     (logs.db_path / "logs" / "demo-web.db").mkdir()
 
