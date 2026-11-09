@@ -14,13 +14,14 @@ RUNNING = ("running", "paused", "restarting")
 
 @dataclass(frozen=True)
 class RuntimeReading:
-  """Docker's state of the container (`absent` when the worker has none), the deployment its labels name, its health
-  and how it last exited."""
+  """Docker's state of the container (`absent` when the worker has none), the authority and deployment its labels
+  name, its health and how it last exited."""
   state: str
   deployment_id: str | None = None
   health: str | None = None
   exit_code: int | None = None
   oom_killed: bool = False
+  authority: Authority | None = None
 
 
 @dataclass(frozen=True)
@@ -56,11 +57,13 @@ class ContainerView:
 
 
 def decide_container(facts: ContainerFacts) -> ContainerView:
-  """The headline and the configuration comparison. The headline is decided in precedence order: a record of another
-  authority, a live operation's progress, a known failure, too little evidence, then the committed goal against the
+  """The headline and the configuration comparison. The headline is decided in precedence order: a record or a
+  current runtime of another authority, a live operation's progress, a known failure, too little evidence, then the committed goal against the
   current runtime."""
   record, runtime = facts.target.record, facts.runtime
   foreign = record is not None and record.authority != facts.expected
+  foreign_runtime = (runtime.knowledge == "known" and runtime.reading.authority is not None
+                     and runtime.reading.authority != facts.expected)
   if record is None or foreign:
     config = "not_deployed" if facts.target.kind == "absent" else "unknown"
   elif record.applied is None:
@@ -73,7 +76,7 @@ def decide_container(facts: ContainerFacts) -> ContainerView:
   def view(headline, reason=None, detail=None):
     return ContainerView(headline, config, reason, detail)
 
-  if foreign:
+  if foreign or foreign_runtime:
     return view("error", "authority")
   if facts.live in PROGRESS:
     return view(PROGRESS[facts.live])

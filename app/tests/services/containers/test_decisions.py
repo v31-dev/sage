@@ -1,17 +1,19 @@
 import itertools
 from dataclasses import replace
+from datetime import datetime
 
 import pytest
 
 from services.containers.decisions import CONFIG, HEADLINES, KNOWLEDGE, ContainerFacts, Runtime, RuntimeReading, decide_container
 from services.containers.record import CONTRACTS, PHASES, READS, Applied, Authority, Operation, Settled, TargetRead, TargetRecord
 
+AT = datetime(2026, 1, 1, 12)
 OURS = Authority("instance1", "generation1", "container1")
 RESTORED = Authority("instance1", "generation2", "container1")
-APPLIED = Applied("d1", "h1")
-RUNNING_OK = Settled("d1", "running", "succeeded")
-STOPPED_OK = Settled("s1", "stopped", "succeeded")
-FAILED = Settled("d2", "stopped", "failed", "pull: timeout")
+APPLIED = Applied("d1", "h1", AT)
+RUNNING_OK = Settled("d1", "running", "succeeded", AT)
+STOPPED_OK = Settled("s1", "stopped", "succeeded", AT)
+FAILED = Settled("d2", "stopped", "failed", AT, "pull: timeout")
 PROGRESS = {"deploy": "deploying", "stop": "stopping", "delete": "stopping", "backup_stopped": "backup",
             "backup_preserve": "backup", "restore_stopped": "restoring"}
 REASONS = {None, "authority", "invalid_record", "interrupted", "backup_interrupted", "failed", "unreachable", "unexpected_running",
@@ -26,8 +28,8 @@ def present(**fields):
   return TargetRead("present", record(**fields))
 
 
-def known(state="running", deployment="d1", **fields):
-  return Runtime("known", RuntimeReading(state, deployment, **fields))
+def known(state="running", deployment="d1", authority=OURS, **fields):
+  return Runtime("known", RuntimeReading(state, deployment, authority=authority, **fields))
 
 
 def decide(target, runtime, live=None, desired="h1"):
@@ -43,7 +45,7 @@ SCENARIOS = {
     "a successful deploy running": (DEPLOYED, known(), None, "h1", "active", "current", None),
     "running with saved config drift": (DEPLOYED, known(), None, "h2", "active", "dirty", None),
     "another container still runs its own older deployment": (
-        present(applied=Applied("d0", "h0"), settled=Settled("d0", "running", "succeeded")), known(deployment="d0"), None, "h1",
+        present(applied=Applied("d0", "h0", AT), settled=Settled("d0", "running", "succeeded", AT)), known(deployment="d0"), None, "h1",
         "active", "dirty", None),
     "a started deploy failed": (present(applied=APPLIED, settled=FAILED), known("exited"), None, "h1", "error", "current", "failed"),
     "a stop after the failed deploy succeeded": (present(applied=APPLIED, settled=STOPPED_OK), known("exited"), None, "h1", "inactive",
@@ -51,12 +53,12 @@ SCENARIOS = {
     "a manual backup or volume restore from stopped": (present(settled=STOPPED_OK), known("absent", None), None, "h1", "inactive",
                                                        "not_deployed", None),
     "an automatic backup cut off by a restart": (
-        present(applied=APPLIED, settled=RUNNING_OK, operation=Operation("b1", "backup_preserve", "executing")), known("exited"), None,
+        present(applied=APPLIED, settled=RUNNING_OK, operation=Operation("b1", "backup_preserve", "executing", AT, 0)), known("exited"), None,
         "h1", "checking", "current", "backup_interrupted"),
-    "a deploy cut off by a restart": (present(applied=APPLIED, settled=RUNNING_OK, operation=Operation("d3", "deploy", "executing")),
+    "a deploy cut off by a restart": (present(applied=APPLIED, settled=RUNNING_OK, operation=Operation("d3", "deploy", "executing", AT, 0)),
                                       known(), None, "h1", "error", "current", "interrupted"),
     "a live operation that owns its unfinished record": (
-        present(applied=APPLIED, settled=RUNNING_OK, operation=Operation("d3", "deploy", "executing")), known("exited"), "deploy", "h1",
+        present(applied=APPLIED, settled=RUNNING_OK, operation=Operation("d3", "deploy", "executing", AT, 0)), known("exited"), "deploy", "h1",
         "deploying", "current", None),
     "a deployed container that exited by itself": (DEPLOYED, known("exited", exit_code=137, oom_killed=True), None, "h1", "error",
                                                    "current", "unexpected_exit"),
@@ -76,9 +78,15 @@ SCENARIOS = {
                                        "error", "unknown", "authority"),
     "a live deploy over a record from before a restore": (TargetRead("present", TargetRecord(RESTORED, APPLIED, RUNNING_OK)), known(),
                                                           "deploy", "h1", "error", "unknown", "authority"),
+    "a runtime from before a restore still running": (DEPLOYED, known(authority=RESTORED), None, "h1", "error", "current",
+                                                      "authority"),
+    "a live deploy while the runtime from before a restore still runs": (DEPLOYED, known(authority=RESTORED), "deploy", "h1",
+                                                                         "error", "current", "authority"),
+    "a stale reading of a foreign runtime": (DEPLOYED, Runtime("stale", RuntimeReading("running", "d1", authority=RESTORED)), None,
+                                             "h1", "checking", "current", None),
     "another deployment running than the applied one": (DEPLOYED, known(deployment="d0"), None, "h1", "error", "current",
                                                         "unexpected_deployment"),
-    "a reset after a failure": (present(applied=APPLIED, settled=FAILED, operation=Operation("r1", "reset", "executing")),
+    "a reset after a failure": (present(applied=APPLIED, settled=FAILED, operation=Operation("r1", "reset", "executing", AT, 0)),
                                 known("exited"), "reset", "h1", "error", "current", "failed"),
     "a live delete": (DEPLOYED, known(), "delete", "h1", "stopping", "current", None),
     "the record kept while its worker cannot be read": (TargetRead("unreachable", DEPLOYED.record), known(), None, "h1", "active",
@@ -105,9 +113,9 @@ def test_a_known_runtime_needs_a_reading():
 
 
 def every_record():
-  operations = [None] + [Operation("o1", contract, phase) for contract, phase in itertools.product(CONTRACTS, PHASES)]
+  operations = [None] + [Operation("o1", contract, phase, AT, 0) for contract, phase in itertools.product(CONTRACTS, PHASES)]
   for authority, applied, settled, operation in itertools.product(
-          (OURS, RESTORED), (None, APPLIED), (None, RUNNING_OK, STOPPED_OK, FAILED, Settled("d2", "running", "failed")), operations):
+          (OURS, RESTORED), (None, APPLIED), (None, RUNNING_OK, STOPPED_OK, FAILED, Settled("d2", "running", "failed", AT)), operations):
     yield TargetRecord(authority, applied, settled, operation)
 
 
@@ -120,8 +128,9 @@ def every_target():
 
 
 def every_runtime():
-  for state, deployment in itertools.product(("running", "exited", "absent", "paused", "restarting"), ("d1", "d0")):
-    yield known(state, deployment)
+  for state, deployment, authority in itertools.product(("running", "exited", "absent", "paused", "restarting"), ("d1", "d0"),
+                                                        (OURS, RESTORED, None)):
+    yield known(state, deployment, authority)
   yield Runtime("stale", RuntimeReading("running", "d1"))
   yield Runtime("unreachable", RuntimeReading("running", "d1"))
   yield Runtime("unreachable")
@@ -146,7 +155,8 @@ def test_every_combination_of_facts_keeps_the_invariants():
     seen_headlines.add(view.headline)
     seen_reasons.add(view.reason)
     record = target.record
-    foreign = record is not None and record.authority != OURS
+    foreign = (record is not None and record.authority != OURS) or (
+        runtime.knowledge == "known" and runtime.reading.authority not in (None, OURS))
     orphaned = record is not None and record.operation is not None and record.operation.phase != "settled" and live is None
     settled = record.settled if record else None
     facts = (target, runtime, live)

@@ -1,0 +1,55 @@
+"""Where a container lives on its worker and how its runtime is named and labelled, all by its opaque id."""
+import re
+
+from services.containers.record import Authority
+from utils.common import OPAQUE_ID
+
+LABEL_INSTANCE = "sage.instance"
+LABEL_GENERATION = "sage.generation"
+LABEL_CONTAINER = "sage.container"
+LABEL_DEPLOYMENT = "sage.deployment"
+LABEL_APPLICATION = "sage.application"
+LABELS = (LABEL_INSTANCE, LABEL_GENERATION, LABEL_CONTAINER, LABEL_DEPLOYMENT, LABEL_APPLICATION)
+
+
+def placements_dir(home: str) -> str:
+  return f"{home}/containers"
+
+
+def placement_dir(home: str, container_id: str) -> str:
+  return f"{placements_dir(home)}/{container_id}"
+
+
+def record_path(home: str, container_id: str) -> str:
+  return f"{placement_dir(home, container_id)}/record.json"
+
+
+def volume_dir(home: str, container_id: str, volume_id: str) -> str:
+  return f"{placement_dir(home, container_id)}/volumes/{volume_id}"
+
+
+def records_command(home: str) -> str:
+  """Lists every record on the worker for `record.parse_record_listing`."""
+  return f"grep -H . {placements_dir(home)}/*/record.json 2>/dev/null || true"
+
+
+def runtime_name(container_id: str) -> str:
+  """The Compose project and the Docker container of the placement."""
+  return f"sage-{container_id}"
+
+
+def runtime_owner(name: str) -> str | None:
+  """The container id a runtime name belongs to."""
+  match = re.fullmatch(rf"sage-({OPAQUE_ID})", name)
+  return match[1] if match else None
+
+
+def runtime_labels(authority: Authority, deployment_id: str, application: str) -> dict[str, str]:
+  return {LABEL_INSTANCE: authority.instance_id, LABEL_GENERATION: authority.state_generation,
+          LABEL_CONTAINER: authority.container_id, LABEL_DEPLOYMENT: deployment_id, LABEL_APPLICATION: application}
+
+
+def labels_authority(labels: dict[str, str]) -> Authority | None:
+  """The authority a runtime's labels name; None unless all three are there."""
+  values = [labels.get(label) for label in (LABEL_INSTANCE, LABEL_GENERATION, LABEL_CONTAINER)]
+  return Authority(*values) if all(values) else None
