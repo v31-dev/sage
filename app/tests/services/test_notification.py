@@ -64,8 +64,9 @@ def notifications(db):
 
 @pytest.fixture
 def configured_notifications(db):
-  Settings().set("notifications", {"discord_webhook": URL})
-  return Notifications()
+  notifications = Notifications()
+  notifications.install({"discord_webhook": URL})
+  return notifications
 
 
 class TestWebhookFailure:
@@ -165,17 +166,17 @@ class TestDiscordPayload:
 
 
 class TestLoadingTheConfig:
-  def test_values_come_from_the_notifications_settings(self, configured_notifications):
+  def test_values_come_from_the_installed_section(self, configured_notifications):
     assert configured_notifications.get_notification_value("discord_webhook") == URL
 
   def test_an_unknown_key_gives_the_default(self, notifications):
     assert notifications.get_notification_value("nope", "fallback") == "fallback"
 
-  def test_changed_settings_are_picked_up_on_reload(self, configured_notifications):
-    Settings().set("notifications", {"discord_webhook": "https://discord.test/other"})
+  def test_a_newly_installed_section_replaces_the_last_and_saved_settings_alone_do_not(self, configured_notifications):
+    Settings().set("notifications", {"discord_webhook": "https://discord.test/saved"})
     assert configured_notifications.get_notification_value("discord_webhook") == URL
 
-    configured_notifications.load_notifications_config()
+    configured_notifications.install({"discord_webhook": "https://discord.test/other"})
 
     assert configured_notifications.get_notification_value("discord_webhook") == "https://discord.test/other"
 

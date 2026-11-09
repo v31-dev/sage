@@ -5,7 +5,7 @@ from services.db import Setting
 from services.manager import Manager
 from services.notification import Notifications
 from services.s3 import S3
-from services.settings import SETTING_DEFINITIONS, Settings
+from services.settings import SETTING_DEFINITIONS, Settings, validate_section
 from utils.api import generic_get, generic_list, get_request_models, parse_api_data
 from utils.queue import OnConflict
 
@@ -52,30 +52,22 @@ def update_setting(request: Request, setting_data: dict = Body(...)):
   merged_setting_value = dict(old_setting_value)
   merged_setting_value.update(new_setting_value)
 
-  # Validate the settings before update
+  try:
+    validate_section(setting_key, merged_setting_value)
+  except ValueError as e:
+    raise HTTPException(status_code=400, detail=str(e))
+  Settings().set(setting_key, merged_setting_value)
+  saved = Settings().snapshot(setting_key).values
   if setting_key == "s3":
-    try:
-      S3().check_config(merged_setting_value)
-    except Exception as e:
-      raise HTTPException(status_code=400, detail=f"S3 check failed: {Manager().describe_check_error(e)[0]}")
-
-    Settings().set("s3", merged_setting_value)
-    S3().load()
+    S3().install(saved)
     # The bucket or path may hold backups this manager hasn't listed yet.
     Manager().add_task(
         task=Manager().discover_s3_backups,
         scopes={"platform", "app", "domain"},
         executor="platform",
     )
-
   elif setting_key == "notifications":
-    try:
-      Notifications().check_config(merged_setting_value)
-    except Exception as e:
-      raise HTTPException(status_code=400, detail=Manager().describe_check_error(e)[0])
-
-    Settings().set("notifications", merged_setting_value)
-    Notifications().load_notifications_config()
+    Notifications().install(saved)
 
   if Settings().is_configured(setting_key):
     Manager().add_task(

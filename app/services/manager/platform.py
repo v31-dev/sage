@@ -353,8 +353,8 @@ class PlatformMixin:
           raise Exception(f"Database verification failed and recovery unsuccessful: {e}")
 
         # Services built from the settings pick up the restored values.
-        self.s3.load()
-        Notifications().load_notifications_config()
+        self.s3.install(Settings().snapshot("s3").values)
+        Notifications().install(Settings().snapshot("notifications").values)
         self.load_workers()
         # The pages of applications and workers followed the rows that were replaced.
         for application in Application.select():

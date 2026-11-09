@@ -4,7 +4,6 @@ from types import SimpleNamespace
 import requests
 
 from services.base import Base
-from services.settings import Settings
 from utils.common import get_env
 from utils.retry import is_transient
 
@@ -94,11 +93,11 @@ class Notifications(Base):
   def __init__(self):
     super().__init__()
     self.notifications_config = {}
-    self.load_notifications_config()
 
-  def load_notifications_config(self):
+  def install(self, values: dict):
+    """Deliver to the channels of `values`, a saved notifications section."""
     with self.lock:
-      self.notifications_config = Settings().get("notifications")
+      self.notifications_config = dict(values)
 
   def get_notification_value(self, key: str, default=None):
     with self.lock:

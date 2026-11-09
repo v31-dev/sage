@@ -3,7 +3,7 @@ import logging
 import httpx
 
 from services.notification import ChannelCheckFailed, Notifications
-from services.settings import SETTING_DEFINITIONS, Settings
+from services.settings import SETTING_DEFINITIONS, SettingCheck, Settings, section_status
 from services.updates import Fact, Updates, UpdateSource
 from utils.common import get_env, utcnow
 from utils.executor import run_in_executor_with_context
@@ -106,20 +106,20 @@ class SettingsMixin:
     return key not in SETTING_DEFINITIONS or Settings().is_configured(key)
 
   async def check_setting(self, key: str):
-    """Check a section's configuration and record the result for its status."""
-    value = Settings().get(key) if key in SETTING_DEFINITIONS else {}
+    """Check a section as saved now and record the result for its status, unless it was saved or reloaded meanwhile:
+    the result then says nothing about what is saved, and the next check, which that save queued, does."""
+    snapshot = Settings().snapshot(key)
     channels = None
     try:
-      message = await run_in_executor_with_context(self.test_setting, key, value, False)
+      message = await run_in_executor_with_context(self.test_setting, key, snapshot.values, False)
       state = "ok"
     except Exception as e:
       message, transient = self.describe_check_error(e)
       state = "retrying" if transient else "error"
       channels = e.channels if isinstance(e, ChannelCheckFailed) else None
       logger.warning(f"{key} check failed: {message}")
-    self.setting_checks[key] = {"state": state, "message": message, "channels": channels,
-                                "checked_at": utcnow().isoformat()}
-    Updates().changed(UpdateSource.CHECKS)
+    if Settings().record_check(key, SettingCheck(snapshot.revision, state, message, utcnow().isoformat(), channels)):
+      Updates().changed(UpdateSource.CHECKS)
 
   def applying_tasks(self) -> dict:
     """Per section, the queued or running task that makes it apply, or None. A quiet task is
@@ -140,37 +140,15 @@ class SettingsMixin:
     applying_tasks = self.applying_tasks()
     status = {}
     for key in SETTING_SECTIONS:
-      check = self.setting_checks.get(key) or {}
-      entry = {"state": check.get("state"), "message": check.get("message"), "task_id": None,
-               "checked_at": check.get("checked_at"), "details": None,
-               # Why each failing channel failed, by settings field (a section of channels).
-               "channels": check.get("channels")}
       applying = applying_tasks[key]
-
-      if not self.section_configured(key):
-        entry.update(state="not_configured", message=None, channels=None)
-      elif applying:
-        entry.update(state="applying", task_id=applying["task_id"])
-      elif not check:
-        # Checked at startup, every 5 minutes and after a save; this is before the first.
-        entry.update(state="applying", message="Checking…")
-      elif key == "cloudflare" and check["state"] == "ok":
-        certificates = self.certs.status()
-        failed = [certificate for certificate in certificates if not certificate["valid"] or certificate["error"]]
-        if failed:
-          entry.update(state="error", message="Certificates need attention: " + "; ".join(
-              f"{', '.join(certificate['names']) or certificate['id']}: {certificate['error'] or 'not valid'}"
-              for certificate in failed))
-        else:
-          expiry = min(certificate["expiry"] for certificate in certificates)
-          entry["message"] += f" Certificates valid until {expiry[:10]}."
+      status[key] = section_status(self.section_configured(key), applying and applying["task_id"], Settings().check(key),
+                                   self.certs.status() if key == "cloudflare" else None)
       if key == "cloudflare":
-        entry["details"] = {
+        status[key]["details"] = {
             "account_id": self.cloudflare.account_id,
             "tunnel_id": self.cloudflare.tunnel_id,
             "tunnel_name": self.cloudflare.tunnel_name,
             "tunnel_status": self.cloudflare.tunnel_status,
             "certificates": self.certs.status(),
         }
-      status[key] = entry
     return status

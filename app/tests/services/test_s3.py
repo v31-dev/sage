@@ -23,10 +23,11 @@ def unconfigured(db):
 
 @pytest.fixture
 def make_s3(db):
-  """Writes the S3 settings, then builds S3 from them: `make_s3(bucket="other")`."""
+  """S3 with these settings installed: `make_s3(bucket="other")`."""
   def make(**overrides):
-    Settings().set("s3", {**VALUES, **overrides})
-    return S3()
+    s3 = S3()
+    s3.install({**VALUES, **overrides})
+    return s3
   return make
 
 
@@ -35,18 +36,18 @@ def parse(url):
   return parts, {key: values[0] for key, values in parse_qs(parts.query).items()}
 
 
-class TestLoad:
-  def test_without_settings_it_is_off_and_says_so(self, db, caplog):
+class TestInstall:
+  def test_until_a_section_is_installed_it_is_off(self, unconfigured):
+    with pytest.raises(Exception, match="S3 configuration is not set"):
+      unconfigured.session()
+
+  def test_incomplete_settings_leave_it_off_and_say_so(self, unconfigured, caplog):
     with caplog.at_level(logging.WARNING, logger="services.s3"):
-      s3 = S3()
+      unconfigured.install({**VALUES, "bucket": ""})
 
     with pytest.raises(Exception, match="S3 configuration is not set"):
-      s3.session()
+      unconfigured.session()
     assert "S3 functionality will be disabled" in caplog.text
-
-  def test_incomplete_settings_leave_it_off(self, make_s3):
-    with pytest.raises(Exception, match="S3 configuration is not set"):
-      make_s3(bucket="").session()
 
   def test_complete_settings_turn_it_on(self, make_s3):
     session = make_s3().session()
@@ -54,15 +55,14 @@ class TestLoad:
     assert session.target == StorageTarget.of(VALUES)
     assert session._client.meta.endpoint_url == "https://s3.example.test"
 
-  def test_load_follows_changed_settings(self, make_s3):
+  def test_it_follows_each_installed_section_and_reads_no_saved_settings(self, make_s3):
     s3 = make_s3()
+    Settings().set("s3", {**VALUES, "bucket": "saved"})
 
-    Settings().set("s3", {"bucket": "other"})
-    s3.load()
+    s3.install({**VALUES, "bucket": "other"})
     assert s3.session().target.bucket == "other"
 
-    Settings().set("s3", {"bucket": ""})
-    s3.load()
+    s3.install({**VALUES, "bucket": ""})
     with pytest.raises(Exception, match="S3 configuration is not set"):
       s3.session()
 
@@ -72,8 +72,7 @@ class TestFrozenSession:
     s3 = make_s3()
     held = s3.session()
 
-    Settings().set("s3", {"bucket": "other"})
-    s3.load()
+    s3.install({**VALUES, "bucket": "other"})
 
     assert (held.target.bucket, s3.session().target.bucket) == ("bucket", "other")
     assert held.identity != s3.session().identity
@@ -141,7 +140,7 @@ class TestCheckConfig:
 
   @pytest.mark.parametrize("missing", list(VALUES))
   def test_a_partly_filled_config_is_refused(self, unconfigured, no_client, missing):
-    with pytest.raises(ValueError, match="Fill in every S3 field"):
+    with pytest.raises(ValueError, match="Fill in every field, or leave them all empty."):
       unconfigured.check_config({**VALUES, missing: ""})
 
 

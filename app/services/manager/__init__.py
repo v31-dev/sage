@@ -53,8 +53,6 @@ class Manager(
       self.latest_version = self.version
       self.latest_release = None
 
-      # Last check result per settings section (services/manager/settings.py).
-      self.setting_checks = {}
       # The workers: what their owners pushed (`WorkerInputs` by hostname), the entry derived from each (status, path,
       # container count, and whether it answered the last sync and was set up, `online`, which is not known until a
       # sync has looked at it) (services/manager/workers.py).
@@ -77,13 +75,14 @@ class Manager(
       Database()
       Settings()
       Logs().start_capture()
-      Notifications()
+      Notifications().install(Settings().snapshot("notifications").values)
       Metrics().start_sampler()
       WorkerReports()
       self.tailscale = Tailscale()
       self.cloudflare = Cloudflare()
       self.certs = Certs()
       self.s3 = S3()
+      self.s3.install(Settings().snapshot("s3").values)
       self.load_workers()
 
       self.notify("Manager started.")

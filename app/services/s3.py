@@ -11,7 +11,7 @@ from botocore.exceptions import ClientError, NoCredentialsError
 
 import config
 from services.base import Base
-from services.settings import SETTING_DEFINITIONS, Settings
+from services.settings import SETTING_DEFINITIONS, Settings, validate_section
 from utils.executor import run_in_executor_with_context
 from utils.retry import retry_async
 
@@ -59,19 +59,19 @@ def client_kwargs(endpoint: str, access_key: str, secret_key: str) -> dict:
 
 
 class S3(Base):
-  """The configured store, as a session that `load` replaces when the settings change."""
+  """The configured store, as a session that `install` replaces when the settings are saved or restored."""
 
   def __init__(self):
     super().__init__()
     self._session = None
-    self.load()
-    if self._session is None:
-      logger.warning("No complete S3 config found in settings, S3 functionality will be disabled")
 
-  def load(self):
+  def install(self, values: dict):
+    """Use the store `values` name, a saved S3 section; none unless every field is set."""
+    session = S3Session(StorageTarget.of(values)) if Settings().is_valid("s3", values) else None
+    if session is None:
+      logger.warning("No complete S3 config found in settings, S3 functionality will be disabled")
     with self.lock:
-      settings = Settings()
-      self._session = S3Session(StorageTarget.of(settings.get("s3"))) if settings.is_valid("s3") else None
+      self._session = session
 
   def session(self) -> "S3Session":
     """The configured store's session, for an operation to hold from start to end; raises when S3 is not set."""
@@ -84,11 +84,9 @@ class S3(Base):
   def check_config(self, config: dict, write: bool = False):
     """Check a candidate S3 config against its bucket; raises with the reason. A config with
     no values at all is valid (S3 off). With write, also writes and deletes a marker object."""
-    provided = [config.get(key) for key in SETTING_DEFINITIONS["s3"]]
-    if not any(provided):
+    validate_section("s3", config)
+    if not any(config.get(key) for key in SETTING_DEFINITIONS["s3"]):
       return
-    if not all(provided):
-      raise ValueError("Fill in every S3 field, or leave them all empty.")
 
     kwargs = client_kwargs(config["endpoint"], config["access_key"], config["secret_key"])
     kwargs["config"] = Config(signature_version='s3v4', connect_timeout=5, read_timeout=10,
