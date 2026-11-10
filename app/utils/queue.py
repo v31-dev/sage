@@ -270,14 +270,19 @@ class TaskQueue:
       return Added(Outcome.REFUSED, new_task.task_id if admission.cancelled else None)
     return Added(admission.outcome, admission.task.task_id)
 
-  def cancel(self, key: tuple[str, ...]) -> list[str]:
-    """Cancel the pending tasks with `key`, recorded as cancelled; a running one is left to finish, and the restore is
-    never cancelled (only it ends the restoring state). The ids of the tasks cancelled."""
-    key = tuple(key)
+  def cancel(self, key: tuple[str, ...] | None = None, name: str | None = None, scope: str | None = None) -> list[str]:
+    """Cancel the pending tasks with `key`, named `name` and holding `scope` or a scope below it (each when given),
+    recorded as cancelled; a running one is left to finish, and the restore is never cancelled (only it ends the
+    restoring state). The ids of the tasks cancelled."""
+    if key is None and scope is None:
+      raise ValueError("A cancel names a key or a scope.")
+    key = tuple(key) if key is not None else None
     kept, cancelled = [], []
     with self._lock:
       for task in self._queue:
-        (cancelled if task.key == key and not task.restore else kept).append(task)
+        matched = ((key is None or task.key == key) and (name is None or task.name == name)
+                   and (scope is None or any(_is_ancestor_or_equal(scope, held) for held in task.scopes)))
+        (cancelled if matched and not task.restore else kept).append(task)
       self._queue[:] = kept
     self._record_cancelled(cancelled)
     if cancelled:

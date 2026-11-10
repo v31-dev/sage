@@ -86,7 +86,7 @@ async task bodies can still overlap while their offloads wait for it. Pool size 
 | `REVISE` | `busy` (with the running task's id) while a task with the key runs; otherwise supersede the pending ones and enqueue. |
 | `QUEUE` | Keep every request. |
 
-A pending task can be cancelled by its key (`cancel_tasks`); the Manager offers it for a container's lifecycle request only.
+Pending tasks can be cancelled by key, name, or a scope and the scopes below it (`cancel_tasks`); the Manager cancels a container's queued Deploy, Stop or Delete on request, and every queued task of a container when it is deleted.
 
 A visible request joining a quiet task with its key makes that task visible. Conflicting scopes defer admitted work; they do not reject it. Pending tasks reserve no scopes, so a broad
 task can wait while later work starts. Paused queues admit work but start nothing; restoring starts only the
@@ -143,7 +143,7 @@ Route paths use `<app>` for `/projects/{project}/applications/{application}`; al
 | --- | --- | --- | --- | --- |
 | `deploy` (`deploy_container`) | `worker:<host>:container:<id>` · app | REVISE on `("lifecycle", <id>)` / H | `request_deploy`, `request_deploy_all` | ContainerEvents (admitted, rejected, succeeded, failed); no other main-DB write. Reads and writes the worker's `record.json`; stops the container, writes `.env`, secrets, Compose file and volume directories, `compose up`, verifies; the `Containers` owner holds the record. |
 | `stop` (`stop_container`) | `worker:<host>:container:<id>` · app | REVISE on `("lifecycle", <id>)` / H | `request_stop`, `request_stop_all` | ContainerEvents; the worker's `record.json`; `compose down`, verifies nothing runs. |
-| `delete_container` | `app:<qn>` · app | QUEUE / H | DELETE `<app>/containers/{worker}`; also called inline by `remove_worker` under its broader scopes | Container `status`, then delete row; Events and domain unlinking via [implicit writes](#implicit-model-writes). Remote cleanup unless force-deleting a known-offline worker's container; enqueue unlinked Domain syncs. Route rejects a duplicate delete of this container. |
+| `delete` (`delete_container`) | `worker:<host>:container:<id>` · app | REPLACE on `("delete", <id>)`, after cancelling the container's queued tasks / H | `request_delete` | ContainerEvents; the worker's `record.json`; `compose down --volumes --rmi all --remove-orphans`, removes the placement directory; then deletes the Container row through `detach_container` (unlinks its Domains). Force on a worker that can't be asked: only the row. |
 | `sync_application_status` | `app:<qn>` · app | REPLACE / Q | Every minute; changed container state in Telegraf reports; `sync_domain` finding a busy container | Repair interrupted busy states and reconcile Container/Application `status` from trusted reports; may stop stale-version containers remotely. Enqueue affected Domain syncs when container state changes. |
 | `backup_application_s3` | `app:<qn>` · app | DEDUP / H | Due-volume scan every minute; POST `<app>/volumes/{volume}/backups` | Application/Container `status` during backup and runtime recovery; backup Events; one Backup per successful container-volume archive. Upload encrypted worker archives, restore runtime; failed runtime recovery can leave error status. The stop helper skips containers already marked backup; see [consistency boundaries](#consistency-boundaries). Manual route requires inactive app. |
 | `restore_application_volume_from_s3` | `app:<qn>` · app | DEDUP / H | POST `<app>/volumes/{volume}/backups/{backup}/restore` | Application and target Container `status` become restoring; restore Event; restore worker volume; finally restore saved statuses, including on failure. Does not create a Backup. Requires inactive app. |
@@ -309,7 +309,7 @@ flowchart LR
 `BaseModel.save` advances `updated_at`; dirty-field saving preserves unrelated columns. Query-level updates,
 bulk inserts/deletes and SQLite FK actions do not invoke instance `save` or the instance signals. In particular,
 counter signals use direct SQL updates, and Domain unlinking does not run `Domain.save`, mark pending or emit
-its own UI source. `delete_container` supplies the notification and record-sync request after deletion.
+its own UI source. `detach_container` publishes the container's pages after deletion.
 
 ## Startup and other writers
 

@@ -14,7 +14,7 @@ from services.applications.deploy_input import capture_deploy_config
 from services.containers.placement import placement_dir, record_path, runtime_name
 from services.containers.record import Applied, Authority, Operation, Settled, TargetRead, TargetRecord, decode_record, encode_record
 from services.containers.targets import Containers
-from services.db.models import Application, Container, ContainerEvent, Instance, Volume
+from services.db.models import Application, Container, ContainerEvent, Domain, Instance, Volume
 from services.logs import Logs
 from services.manager.containers import ContainersMixin, mark
 from services.manager.queue import SCOPES, QueueMixin
@@ -377,6 +377,157 @@ class TestRefusals:
     assert ContainerEvent.select().count() == 0
 
 
+def unsettled(container):
+  return TargetRecord(authority(container), operation=Operation("d9", "deploy", "executing", VERIFIED, 905, input_hash="a" * 64))
+
+
+class TestDelete:
+  async def test_a_delete_removes_the_placement_then_the_row_and_unlinks_its_domains(
+          self, manager, worker_host, container, application):
+    place(container, deployed(container))
+    worker_host.run(container, "running d0")
+    domain = Domain.create(name="shop", type="public", port=80, container=container)
+    await manager.delete_container(container.id)
+
+    assert not Path(placement_dir(config.WORKER_HOME_DIR, container.id)).exists()
+    assert worker_host.runtime(container) is None
+    assert Container.get_or_none(Container.id == container.id) is None
+    assert Domain.get_by_id(domain.id).container is None
+    assert Containers().target(container.id) == TargetRead("unobserved")
+    assert [(action, transition) for action, transition, _ in events(container)] == [("delete", "admitted"), ("delete", "succeeded")]
+    assert [line["message"] for line in Logs().query_application_lines("demo-web")["lines"]] == [
+        "Removed from this worker (task t1)"]
+
+  @pytest.mark.parametrize("found", ["unsettled", "invalid"])
+  async def test_a_delete_does_not_wait_for_old_work(self, manager, worker_host, container, found):
+    place(container, unsettled(container) if found == "unsettled" else "not a record\n")
+    worker_host.run(container, "running d9")
+    await manager.delete_container(container.id)
+    assert Container.get_or_none(Container.id == container.id) is None and worker_host.runtime(container) is None
+
+  @pytest.mark.parametrize("found", ["unsettled", "invalid"])
+  async def test_a_failed_delete_over_old_work_keeps_its_allowance(self, manager, worker_host, container, found):
+    place(container, unsettled(container) if found == "unsettled" else "not a record\n")
+    worker_host.run(container, "running d9")
+    worker_host.flag("down-is-ignored")
+    with pytest.raises(TaskFailed):
+      await manager.delete_container(container.id)
+    record = worker_record(container)
+    assert (record.operation.contract, record.operation.phase, record.operation.effect_bound_seconds) == (
+        "delete", "recovering", 905)
+    assert Container.get_or_none(Container.id == container.id) is not None
+    assert [(action, transition) for action, transition, _ in events(container)] == [("delete", "admitted"), ("delete", "failed")]
+
+  async def test_an_unreachable_worker_refuses_a_delete_without_force(self, manager, worker_host, container):
+    worker_host.reachable = False
+    with pytest.raises(TaskFailed):
+      await manager.delete_container(container.id)
+    assert Container.get_or_none(Container.id == container.id) is not None
+    assert events(container) == [("delete", "rejected", {"refusal": "unreachable"})]
+
+  async def test_a_forced_delete_of_a_worker_that_is_gone_removes_only_the_row(self, manager, worker_host, container):
+    place(container, deployed(container))
+    worker_host.run(container, "running d0")
+    worker_host.reachable = False
+    await manager.delete_container(container.id, force=True)
+    assert Container.get_or_none(Container.id == container.id) is None
+    assert (worker_record(container), worker_host.runtime(container)) == (deployed(container), "running d0")
+    assert events(container) == [("delete", "admitted", {"worker": "unreachable"}),
+                                 ("delete", "succeeded", {"worker": "not cleaned up"})]
+
+  async def test_a_forced_delete_of_a_worker_that_answers_cleans_it(self, manager, worker_host, container):
+    place(container, deployed(container))
+    await manager.delete_container(container.id, force=True)
+    assert not Path(placement_dir(config.WORKER_HOME_DIR, container.id)).exists()
+
+  async def test_another_sages_record_refuses_a_delete(self, manager, worker_host, container):
+    place(container, replace(deployed(container), authority=Authority("ffffffffffffffff", "1111111111111111", container.id)))
+    with pytest.raises(TaskFailed):
+      await manager.delete_container(container.id, force=True)
+    assert events(container) == [("delete", "rejected", {"refusal": "authority"})]
+    assert worker_record(container) is not None
+
+  async def test_a_failed_delete_keeps_the_row_and_says_why(self, manager, worker_host, container):
+    place(container, deployed(container))
+    worker_host.run(container, "running d0")
+    worker_host.flag("down-fails")
+    with pytest.raises(TaskFailed):
+      await manager.delete_container(container.id)
+    record = worker_record(container)
+    assert Container.get_or_none(Container.id == container.id) is not None
+    assert (record.operation.contract, record.operation.outcome) == ("delete", "failed")
+    assert "down failed" in record.operation.reason
+
+
+class TestDeleteRequests:
+  @pytest.fixture
+  def other(self, application):
+    from services.db.models import Worker
+    return Container.create(application=application, worker=Worker.create(hostname="w2", subdomain="blue"))
+
+  def test_a_delete_cancels_the_containers_queued_tasks_and_no_other(self, manager, container, other):
+    manager.request_deploy(container.id)
+    kept = manager.request_deploy(other.id)
+    delete = manager.request_delete(container.id)
+    assert [entry["task_id"] for entry in manager.task_queue.snapshot()["queued"]] == [kept, delete]
+    [entry] = [entry for entry in manager.task_queue.snapshot()["queued"] if entry["task_id"] == delete]
+    assert (entry["name"], entry["key"], entry["params"]) == (
+        "delete", ["delete", container.id], {"container_id": container.id, "force": False})
+
+  async def test_a_delete_waits_for_the_running_operation_instead_of_being_refused(self, manager, container):
+    release, ran = asyncio.Event(), []
+
+    async def holds(container_id, deploy):
+      await release.wait()
+      ran.append("deploy")
+
+    async def deletes(container_id, force):
+      ran.append("delete")
+
+    manager.deploy_container, manager.delete_container = holds, deletes
+    manager.request_deploy(container.id)
+    manager.task_queue.dispatch_tick()
+    assert manager.request_delete(container.id)
+    release.set()
+    await manager.run()
+    await manager.run()
+    assert ran == ["deploy", "delete"]
+
+  @pytest.mark.parametrize("request_name", ["request_deploy", "request_stop"])
+  def test_deploy_and_stop_are_refused_while_it_is_being_deleted(self, manager, container, request_name):
+    manager.request_delete(container.id)
+    with pytest.raises(Conflict, match="being deleted"):
+      getattr(manager, request_name)(container.id)
+
+  def test_a_request_for_all_is_refused_while_a_container_is_being_deleted(self, manager, application, container, other):
+    manager.request_delete(other.id)
+    with pytest.raises(Conflict, match="has an operation in progress"):
+      manager.request_deploy_all(application.id)
+
+  async def test_a_forced_delete_asked_while_a_delete_runs_waits_for_it(self, manager, container):
+    release, given = asyncio.Event(), []
+
+    async def deletes(container_id, force):
+      given.append(force)
+      if not force:
+        await release.wait()
+
+    manager.delete_container = deletes
+    manager.request_delete(container.id)
+    manager.task_queue.dispatch_tick()
+    await asyncio.sleep(0)
+    assert manager.request_delete(container.id, force=True)
+    release.set()
+    await manager.run()
+    await manager.run()
+    assert given == [False, True]
+
+  def test_a_forced_delete_replaces_a_waiting_one(self, manager, container):
+    manager.request_delete(container.id)
+    manager.request_delete(container.id, force=True)
+    assert [entry["params"]["force"] for entry in manager.task_queue.snapshot()["queued"]] == [True]
+
+
 class TestMark:
   def lines(self, application):
     return [(line["hostname"], line["stream"], line["message"])
@@ -488,9 +639,16 @@ class TestRequestsForAll:
 
 
 class TestCancel:
-  def test_a_queued_request_is_cancelled(self, manager, container):
+  def test_a_queued_request_is_cancelled_by_its_operation(self, manager, container):
     task = manager.request_deploy(container.id)
-    assert manager.request_cancel(container.id) == task
+    with pytest.raises(LookupError, match="no queued stop"):
+      manager.request_cancel(container.id, "stop")
+    assert manager.request_cancel(container.id, "deploy") == task
+    assert manager.task_queue.snapshot()["queued"] == []
+
+  def test_a_queued_delete_is_cancelled(self, manager, container):
+    task = manager.request_delete(container.id)
+    assert manager.request_cancel(container.id, "delete") == task
     assert manager.task_queue.snapshot()["queued"] == []
 
   async def test_a_started_operation_is_not_cancelled(self, manager, container):
@@ -502,11 +660,13 @@ class TestCancel:
     manager.stop_container = holds
     manager.request_stop(container.id)
     manager.task_queue.dispatch_tick()
-    with pytest.raises(Conflict, match="already started"):
-      manager.request_cancel(container.id)
+    with pytest.raises(Conflict, match="The stop of this container has already started"):
+      manager.request_cancel(container.id, "stop")
     release.set()
     await manager.run()
 
   def test_nothing_queued_is_nothing_to_cancel(self, manager, container):
-    with pytest.raises(LookupError, match="no queued operation"):
-      manager.request_cancel(container.id)
+    with pytest.raises(LookupError, match="no queued deploy"):
+      manager.request_cancel(container.id, "deploy")
+    with pytest.raises(ValueError):
+      manager.request_cancel(container.id, "backup")

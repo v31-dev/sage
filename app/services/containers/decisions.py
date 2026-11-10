@@ -56,20 +56,21 @@ class ContainerView:
     return self.headline == "active"
 
 
-def lifecycle_refusal(target: TargetRead, expected: Authority) -> str | None:
+def lifecycle_refusal(target: TargetRead, expected: Authority, contract: str) -> str | None:
   """Why a lifecycle operation may not begin, from the read of the container's record just taken: its worker cannot
-  be asked, the record cannot be read, it is another Sage's, or its operation never settled. A record of this Sage
-  from an earlier state generation whose operation settled does not stop it."""
+  be asked, or the record is another Sage's; and for all but a Delete, which never waits for old work, the record
+  cannot be read or its operation never settled. A record of this Sage from an earlier state generation whose
+  operation settled does not stop it."""
   if target.kind in ("unobserved", "unreachable"):
     return "unreachable"
+  record = target.record
+  if record is not None and record.authority.instance_id != expected.instance_id:
+    return "authority"
+  if contract == "delete":
+    return None
   if target.kind == "invalid":
     return "invalid_record"
-  record = target.record
-  if record is None:
-    return None
-  if record.authority.instance_id != expected.instance_id:
-    return "authority"
-  if record.operation is not None and record.operation.phase != "settled":
+  if record is not None and record.operation is not None and record.operation.phase != "settled":
     return "interrupted"
   return None
 

@@ -561,6 +561,27 @@ class TestCancel:
     assert lane.queue.cancel(("restore",)) == []
     assert lane.queue.state == QueueState.RESTORING and len(lane.queue.snapshot()["queued"]) == 1
 
+  def test_it_cancels_the_pending_tasks_at_or_below_a_scope_whatever_their_key(self, lane):
+    lane.add(done, key=("lifecycle", "c1"), scope="worker:w1:container:c1", task_id="deploy")
+    lane.add(done, key=("backup", "c1"), scopes={"worker:w1:container:c1:volume:v1", "settings:s3"}, task_id="backup")
+    lane.add(done, key=("lifecycle", "c2"), scope="worker:w1:container:c2", task_id="other")
+    lane.add(done, key=("setup", "w1"), scope="worker:w1", task_id="host")
+    assert lane.queue.cancel(scope="worker:w1:container:c1") == ["deploy", "backup"]
+    assert [task["task_id"] for task in lane.queue.snapshot()["queued"]] == ["other", "host"]
+
+  def test_a_name_narrows_what_a_key_cancels(self, lane):
+    lane.add(done, key=("lifecycle", "c1"), name="stop", task_id="stop")
+    assert lane.queue.cancel(("lifecycle", "c1"), name="deploy") == []
+    assert lane.queue.cancel(("lifecycle", "c1"), name="stop") == ["stop"]
+
+  def test_the_restore_is_not_cancelled_by_a_scope_either(self, lane):
+    lane.add(done, key=("restore",), scope="*", executor="platform", restore=True)
+    assert lane.queue.cancel(scope="*") == []
+
+  def test_a_cancel_names_a_key_or_a_scope(self, lane):
+    with pytest.raises(ValueError):
+      lane.queue.cancel(name="deploy")
+
   def test_cancelling_what_is_not_there_changes_nothing(self, lane):
     lane.add(done, key=("lifecycle", "c1"))
     assert lane.queue.cancel(("lifecycle", "c2")) == []

@@ -1,11 +1,12 @@
 """Container lifecycle requests and the operations they queue: Deploy and Stop of one container, which share its
-lifecycle slot, Deploy all and Stop all of an application's containers, and Cancel of a queued request."""
+lifecycle slot, its Delete, Deploy all and Stop all of an application's containers, and Cancel of a queued request."""
 import logging
 import re
 from dataclasses import replace
 from datetime import datetime, timedelta
 
 import config
+from services.applications.commands import detach_container
 from services.applications.deploy_input import DeployConfig, capture_deploy_config
 from services.containers.decisions import RUNNING, lifecycle_refusal
 from services.containers.placement import LABEL_DEPLOYMENT, placement_dir, runtime_name, volume_dir
@@ -24,6 +25,12 @@ from utils.queue import Added, OnConflict, Outcome
 from values.names import qualified_name
 
 logger = logging.getLogger(__name__)
+
+# Each request's key and admission. Deploy and Stop share the container's lifecycle slot: the latest waiting request
+# wins and none is taken while one runs. A Delete outranks them: it cancels the container's queued tasks and waits for
+# the one running.
+REQUESTS = {"deploy": ("lifecycle", OnConflict.REVISE), "stop": ("lifecycle", OnConflict.REVISE),
+            "delete": ("delete", OnConflict.REPLACE)}
 
 REFUSALS = {
     "unreachable": "its worker can't be reached",
@@ -73,14 +80,23 @@ class ContainersMixin:
              for container in self._application_containers(application_id)]
     return [result.task_id for result in added if result.outcome == Outcome.ACCEPTED]
 
-  def request_cancel(self, container_id: str) -> str:
-    """Cancels the container's queued lifecycle request; the cancelled task's id."""
-    cancelled = self.cancel_tasks(("lifecycle", container_id))
+  def request_delete(self, container_id: str, force: bool = False) -> str:
+    """Queues a Delete of the container, after cancelling its queued tasks; with `force`, a worker that can't be
+    reached is left as it is. The task's id."""
+    return self._admitted(self._request_lifecycle(
+        self._lifecycle_container(container_id), "delete", self.delete_container, {}, {"force": force}))
+
+  def request_cancel(self, container_id: str, operation: str) -> str:
+    """Cancels the container's queued `operation` (deploy, stop or delete); the cancelled task's id."""
+    if operation not in REQUESTS:
+      raise ValueError(f"Unknown operation {operation!r}.")
+    key = (REQUESTS[operation][0], container_id)
+    cancelled = self.cancel_tasks(key, operation)
     if cancelled:
       return cancelled[0]
-    if self.has_task(("lifecycle", container_id), running_only=True):
-      raise Conflict("The operation on this container has already started.")
-    raise LookupError("This container has no queued operation.")
+    if self.has_task(key, running_only=True):
+      raise Conflict(f"The {operation} of this container has already started.")
+    raise LookupError(f"This container has no queued {operation}.")
 
   def _lifecycle_container(self, container_id: str) -> Container:
     container = (Container.select(Container, Application, Project).join(Application).join(Project)
@@ -96,18 +112,23 @@ class ContainersMixin:
                       .where(Container.application == application_id).order_by(Container.worker))
     if not containers:
       raise ValueError("This application has no containers.")
-    if any(self.has_task(("lifecycle", container.id)) for container in containers):
+    if any(self.has_task((slot, container.id)) for container in containers for slot in ("lifecycle", "delete")):
       raise Conflict("A container of this application has an operation in progress.")
     return containers
 
-  def _request_lifecycle(self, container: Container, name: str, task, inputs: dict) -> Added:
+  def _request_lifecycle(self, container: Container, name: str, task, inputs: dict, params: dict | None = None) -> Added:
+    slot, on_conflict = REQUESTS[name]
+    scope = f"worker:{container.worker_id}:container:{container.id}"
+    if name == "delete":
+      self.cancel_tasks(scope=scope)
+    elif self.has_task(("delete", container.id)):
+      raise Conflict("This container is being deleted.")
     application = container.application
     return self.add_task(
-        task=task, key=("lifecycle", container.id), name=name,
-        scopes={f"worker:{container.worker_id}:container:{container.id}"}, executor="app",
-        params={"container_id": container.id}, inputs=inputs,
+        task=task, key=(slot, container.id), name=name, scopes={scope}, executor="app",
+        params={"container_id": container.id, **(params or {})}, inputs=inputs,
         labels={"Application": f"{application.project.label} / {application.label}", "Worker": container.worker_id},
-        on_conflict=OnConflict.REVISE)
+        on_conflict=on_conflict)
 
   @staticmethod
   def _admitted(added: Added) -> str:
@@ -188,10 +209,38 @@ class ContainersMixin:
     # TODO(36 step 4E): self.request_domain_syncs(Domain.select().where(Domain.container == container.id))
     # TODO(36 step 4H): self.notify(f"Container {container.id} stopped on worker {container.worker_id}.")
 
-  async def _begin(self, container_id: str, contract: str,
-                   input_hash: str | None = None) -> tuple[Container, TargetRecord] | None:
+  async def delete_container(self, container_id: str, force: bool = False):
+    """Stops the container and removes its placement from the worker, then its row. With `force`, a worker that can't
+    be reached is left as it is and only the row goes."""
+    begun = await self._begin(container_id, "delete", force=force)
+    if begun is None:
+      return
+    container, record = begun
+    if record is None:
+      record_container_event(container, "delete", "succeeded", reason={"worker": "not cleaned up"})
+      await mark(container, "Removed from Sage; the worker was not cleaned up")
+    else:
+      operation = record.operation
+      try:
+        await Containers().write(container, record)
+        await self._stop_runtime(container, "--volumes --rmi all --remove-orphans")
+        await Tailscale().exec_command(
+            container.worker_id, f"rm -rf {placement_dir(config.WORKER_HOME_DIR, container.id)}", timeout=30)
+      except Exception as error:
+        await self._fail(container, record, error)
+      record_container_event(container, "delete", "succeeded", operation.id, dedupe_key=f"{operation.id}:succeeded")
+      await mark(container, "Removed from this worker")
+    domains = detach_container(container.id)
+    Containers().forget(container.id)
+    # TODO(36 step 4E): self.request_domain_syncs(Domain.select().where(Domain.id.in_(domains)))
+    # TODO(36 step 4H): self.notify(f"Container {container.id} deleted from worker {container.worker_id}.")
+    logger.info(f"Container {container.id} deleted; {len(domains)} domains unlinked.")
+
+  async def _begin(self, container_id: str, contract: str, input_hash: str | None = None,
+                   force: bool = False) -> tuple[Container, TargetRecord | None] | None:
     """The container and the record that begins the operation on it, once its record was read and nothing refuses it;
-    None when the container is gone. A refusal is recorded and fails the task, with the record untouched."""
+    None when the container is gone. A refusal is recorded and fails the task, with the record untouched. A forced
+    operation on a worker that can't be asked begins with no record."""
     container = Container.get_or_none(Container.id == container_id)
     if container is None:
       logger.info(f"Container {container_id} was deleted before its {contract}; nothing to do.")
@@ -199,14 +248,26 @@ class ContainersMixin:
     instance = Instance.get()
     authority = Authority(instance.id, instance.state_generation, container.id)
     target = await Containers().read(container)
-    refusal = lifecycle_refusal(target, authority)
+    refusal = lifecycle_refusal(target, authority, contract)
+    if refusal == "unreachable" and force:
+      record_container_event(container, contract, "admitted", reason={"worker": "unreachable"})
+      return container, None
     if refusal is not None:
       record_container_event(container, contract, "rejected", reason={"refusal": refusal})
       logger.error(f"{contract.capitalize()} refused: {REFUSALS[refusal]}.")
       raise TaskFailed()
     kept = target.record if target.record is not None and target.record.authority == authority else None
-    timeout = {"deploy": config.CONTAINER_UP_TIMEOUT_SECONDS, "stop": config.CONTAINER_DOWN_TIMEOUT_SECONDS}[contract]
-    operation = Operation(new_id(), contract, "executing", utcnow(), timeout + config.COMMAND_KILL_AFTER_SECONDS,
+    timeout = {"deploy": config.CONTAINER_UP_TIMEOUT_SECONDS, "stop": config.CONTAINER_DOWN_TIMEOUT_SECONDS,
+               "delete": config.CONTAINER_DOWN_TIMEOUT_SECONDS}[contract]
+    bound = timeout + config.COMMAND_KILL_AFTER_SECONDS
+    earlier = target.record.operation if target.record is not None else None
+    # Taking over from work that may still run (only a Delete does), the record keeps that work's allowance; an
+    # unreadable record's is unknown, so the longest one's.
+    if target.kind == "invalid":
+      bound = max(bound, config.CONTAINER_UP_TIMEOUT_SECONDS + config.COMMAND_KILL_AFTER_SECONDS)
+    elif earlier is not None and earlier.phase != "settled":
+      bound = max(bound, earlier.effect_bound_seconds)
+    operation = Operation(new_id(), contract, "executing", utcnow(), bound,
                           input_hash=input_hash, task_ref=task_id.get() or None)
     record_container_event(container, contract, "admitted", operation.id, dedupe_key=f"{operation.id}:admitted")
     return container, TargetRecord(authority, kept.applied if kept else None, kept.settled if kept else None, operation)
@@ -234,10 +295,10 @@ class ContainersMixin:
     # TODO(36 step 4H): self.notify(f"... {operation.contract} failed on worker {container.worker_id}: {reason}", "error")
     raise TaskFailed()
 
-  async def _stop_runtime(self, container: Container) -> datetime:
-    """Stops the container's runtime; when the worker verified it stopped, on the worker's clock. Raises when it was
-    not stopped."""
-    await Tailscale().exec_command(container.worker_id, f"docker compose -p {runtime_name(container.id)} down",
+  async def _stop_runtime(self, container: Container, options: str = "") -> datetime:
+    """Stops the container's runtime (`options` for `docker compose down`); when the worker verified it stopped, on the
+    worker's clock. Raises when it was not stopped."""
+    await Tailscale().exec_command(container.worker_id, f"docker compose -p {runtime_name(container.id)} down {options}".strip(),
                                    timeout=config.CONTAINER_DOWN_TIMEOUT_SECONDS)
     state, _, verified_at = await self._inspect(container)
     if state in RUNNING:

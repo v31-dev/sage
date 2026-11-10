@@ -195,10 +195,10 @@ def test_every_combination_of_facts_keeps_the_invariants():
 
 
 class TestLifecycleRefusal:
-  """Whether a Deploy or Stop may begin, from the read of the record just taken, over every read kind, authority and
-  operation phase."""
+  """Whether a lifecycle operation may begin, from the read of the record just taken, over every read kind, authority,
+  operation phase and operation."""
 
-  def expected(self, target):
+  def deploy_expected(self, target):
     if target.kind in ("unobserved", "unreachable"):
       return "unreachable"
     if target.kind == "invalid":
@@ -220,11 +220,13 @@ class TestLifecycleRefusal:
         target = TargetRead(kind, kept if kind in ("present", "unreachable") else None)
         if kind == "present" and kept is None:
           continue
-        refusal = lifecycle_refusal(target, OURS)
-        assert refusal == self.expected(target), target
-        seen.add(refusal)
+        deploy = lifecycle_refusal(target, OURS, "deploy")
+        assert deploy == self.deploy_expected(target) == lifecycle_refusal(target, OURS, "stop"), target
+        # A Delete never waits for old work: it is refused only when Deploy is refused for the worker or the owner.
+        assert lifecycle_refusal(target, OURS, "delete") == (deploy if deploy in ("unreachable", "authority") else None)
+        seen.add(deploy)
     assert seen == {None, "unreachable", "invalid_record", "authority", "interrupted"}
 
   def test_a_settled_record_from_before_a_restore_does_not_refuse(self):
     settled = Operation("o1", "deploy", "settled", AT, 905, AT, outcome="succeeded", verified_on_worker_at=AT)
-    assert lifecycle_refusal(TargetRead("present", TargetRecord(RESTORED, APPLIED, RUNNING_OK, settled)), OURS) is None
+    assert lifecycle_refusal(TargetRead("present", TargetRecord(RESTORED, APPLIED, RUNNING_OK, settled)), OURS, "deploy") is None

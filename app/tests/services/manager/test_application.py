@@ -1,11 +1,8 @@
-import asyncio
-from types import SimpleNamespace
 
 import pytest
 
-from services.db import Container, Domain, Event
-from services.manager.application import ApplicationMixin, container_part
-from services.updates import Updates
+from services.db import Container, Event
+from services.manager.application import container_part
 from utils.logging import sub_task_id, task_id
 
 
@@ -47,52 +44,3 @@ class TestContainerPart:
 
     assert sub_task_id.get() == ""
     assert Event.get().type == "stop"
-
-
-class Deleting(ApplicationMixin):
-  """The container deletion of a manager whose workers answer every command."""
-  worker_home_dir = "/opt/sage"
-
-  def __init__(self):
-    self.commands = []
-    self.synced = []
-    self.discovery_syncs = 0
-    self.tailscale = SimpleNamespace(exec_command=self.exec_command)
-
-  async def exec_command(self, hostname, command, timeout=300):
-    self.commands.append(command)
-    return 0, []
-
-  def worker_online(self, hostname):
-    return True
-
-  def notify(self, message, type="info", link=None):
-    pass
-
-  def request_domain_syncs(self, domains):
-    self.synced.extend(domain.id for domain in domains)
-
-  def request_discovery_sync(self):
-    self.discovery_syncs += 1
-
-
-class TestDeleteContainer:
-  @pytest.fixture(autouse=True)
-  def quiet(self, register):
-    register(Updates, SimpleNamespace(changed=lambda source, key=None: None))
-
-  @pytest.mark.parametrize("status", ["active", "inactive"])
-  def test_its_domains_are_unlinked_and_selected_for_record_sync_without_removing_routes_here(
-          self, container, in_task, thread_connections, status):
-    container.status = status
-    container.save()
-    public = Domain.create(name="shop", type="public", port=80, container=container)
-    internal = Domain.create(name="shop", type="internal", port=80, container=container)
-    manager = Deleting()
-
-    asyncio.run(manager.delete_container(container.id))
-
-    assert Container.get_or_none(Container.id == container.id) is None
-    assert sorted(manager.synced) == [public.id, internal.id]
-    assert [domain.container_id for domain in Domain.select().order_by(Domain.id)] == [None, None]
-    assert not any("traefik" in command for command in manager.commands)

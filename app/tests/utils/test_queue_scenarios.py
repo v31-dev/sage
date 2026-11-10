@@ -196,29 +196,35 @@ class Sim:
       self.check_admission(job, before, priority)
     return job
 
-  def cancel(self, key):
-    """Cancel the pending tasks with `key`, checked against the model: the pending ones with the key go, except the
-    restore, and nothing else changes."""
+  def cancel(self, key=None, name=None, scope=None):
+    """Cancel pending tasks, checked against the model: the pending ones with the key, the name and a scope at or below
+    `scope` (each when given) go, except the restore, and nothing else changes."""
     before = self.queue.snapshot() if self.verify_admission else None
     notified = self.notified
-    cancelled = self.queue.cancel(key)
+    cancelled = self.queue.cancel(key, name, scope)
     for label in cancelled:
       self.jobs[label].cancelled = True
     if before:
       expected = [entry["task_id"] for entry in before["queued"]
-                  if tuple(entry["key"]) == tuple(key) and not self.jobs[entry["task_id"]].restore]
-      assert cancelled == expected, f"cancelling {key} cancelled {cancelled}, the model says {expected}"
+                  if (key is None or tuple(entry["key"]) == tuple(key)) and (name is None or entry["name"] == name)
+                  and (scope is None or any(scope in ("*", held) or held.startswith(scope + ":") for held in entry["scopes"]))
+                  and not self.jobs[entry["task_id"]].restore]
+      assert cancelled == expected, f"cancelling {key} {name} {scope} cancelled {cancelled}, the model says {expected}"
       after = self.queue.snapshot()
       assert [entry["task_id"] for entry in after["queued"]] == [
           entry["task_id"] for entry in before["queued"] if entry["task_id"] not in expected]
       assert after["running"] == before["running"]
-      assert (self.notified > notified) == bool(cancelled), f"cancelling {key} announced {self.notified - notified}"
+      assert (self.notified > notified) == bool(cancelled), f"the cancel announced {self.notified - notified}"
     return cancelled
 
   def perform(self, label, scopes, options):
-    """A request from `random_operation`: a cancel, or a task to add."""
+    """A request from `random_operation`: a cancel, or a task to add, after cancelling the pending tasks within
+    `clears` (a Delete)."""
+    options = dict(options)
     if "cancel" in options:
-      return self.cancel(options["cancel"])
+      return self.cancel(**options["cancel"])
+    if "clears" in options:
+      self.cancel(scope=options.pop("clears"))
     return self.add(label, *scopes, **options)
 
   def check_admission(self, job, before, priority):
@@ -488,6 +494,22 @@ class TestContainerOperations:
     sim.verify()
     assert pending.runs == 0 and ("stop#2", "cancelled") in sim.recorded
 
+  async def test_a_delete_clears_the_containers_queued_tasks_and_waits_for_the_running_one(self, sim):
+    running = lifecycle(sim, "deploy#1", 1, "deploy", hold=True)
+    await sim.settle()
+    backup = sim.add("backup", container(1), key=("backup", "c1"))
+    other = lifecycle(sim, "deploy#2", 2, "deploy", hold=True)
+    delete = sim.perform("delete", [container(1)], dict(key=("delete", "c1"), name="delete",
+                                                        on_conflict=OnConflict.REPLACE, clears=container(1)))
+    assert (backup.cancelled, other.cancelled, delete.outcome) == (True, False, Outcome.ACCEPTED)
+    await sim.settle()
+    assert sim.queued() == ["delete"]
+    running.release()
+    other.release()
+    await sim.drain()
+    sim.verify()
+    assert sim.trace.index(("start", "delete")) > sim.trace.index(("end", "deploy#1"))
+
   async def test_a_host_wide_change_waits_for_the_hosts_containers_and_holds_them_back_but_not_another_hosts(self, sim):
     a = sim.add("deploy-a", "worker:w1:container:ca", hold=True)
     b = sim.add("deploy-b", "worker:w1:container:cb", hold=True)
@@ -520,7 +542,7 @@ class TestContainerOperations:
     sim.verify()
     assert sorted(sim.recorded) == [("backup-a", "completed"), ("deploy-a", "failed"), ("deploy-b", "failed"),
                                     ("deploy-c", "completed")]
-    assert sim.starts().index("backup-a") > sim.trace.index(("end", "deploy-a"))
+    assert sim.trace.index(("start", "backup-a")) > sim.trace.index(("end", "deploy-a"))
 
   async def test_blocking_work_of_many_deploys_is_limited_by_the_size_of_the_lane(self, sim):
     for index in range(10):
@@ -944,9 +966,9 @@ def random_operation(rng, index):
   number = rng.choice(CONTAINERS)
   placement = container(number)
   kind = rng.choices(
-      ["deploy", "stop", "cancel", "reconcile", "user-reconcile", "observe", "setup", "certificate", "backup", "check",
-       "metrics", "delete-archive", "domain"],
-      weights=[20, 8, 3, 24, 4, 6, 4, 3, 4, 5, 6, 5, 6])[0]
+      ["deploy", "stop", "cancel", "delete", "reconcile", "user-reconcile", "observe", "setup", "certificate", "backup",
+       "check", "metrics", "delete-archive", "domain"],
+      weights=[20, 8, 3, 3, 24, 4, 6, 4, 3, 4, 5, 6, 5, 6])[0]
   options = dict(delay=rng.uniform(0, 0.012), fail=rng.choices([None, "task", "error"], [90, 5, 5])[0],
                  block=rng.choice([None, None, rng.uniform(0, 0.006)]), sync=rng.random() < 0.2)
   label = f"{kind}#{index}"
@@ -954,7 +976,11 @@ def random_operation(rng, index):
     return label, [placement], dict(key=("lifecycle", f"c{number}"), name=kind, on_conflict=OnConflict.REVISE,
                                     priority=kind == "deploy" and rng.random() < 0.1, **options)
   if kind == "cancel":
-    return label, [], dict(cancel=("lifecycle", f"c{number}"))
+    operation = rng.choice(["deploy", "stop", "delete"])
+    return label, [], dict(cancel=dict(key=("delete" if operation == "delete" else "lifecycle", f"c{number}"), name=operation))
+  if kind == "delete":
+    return label, [placement], dict(key=("delete", f"c{number}"), name="delete", on_conflict=OnConflict.REPLACE,
+                                    clears=placement, **options)
   if kind in ("reconcile", "user-reconcile"):
     return label, [placement], dict(key=("reconcile", f"c{number}"), on_conflict=OnConflict.REPLACE,
                                     quiet=kind == "reconcile", **options)
@@ -1006,7 +1032,8 @@ class TestAdmission:
     sim.queue.pause()
     for index in range(600):
       if rng.random() < 0.05:
-        sim.cancel(rng.choice([*KEYS, ("restore",)]))
+        sim.cancel(**rng.choice([dict(key=rng.choice([*KEYS, ("restore",)])), dict(scope=rng.choice([*SCOPE_CHOICES, "*"])),
+                                 dict(key=rng.choice(KEYS), name=rng.choice(["deploy", "reconcile", "check"]))]))
         continue
       restore = rng.random() < 0.03
       scopes = ["*"] if restore else random_scopes(rng)
@@ -1028,7 +1055,7 @@ class TestAdmission:
     ticker = asyncio.create_task(sim.run_ticker(stop))
     for index in range(500):
       if rng.random() < 0.05:
-        sim.cancel(rng.choice(KEYS))
+        sim.cancel(**rng.choice([dict(key=rng.choice(KEYS)), dict(scope=rng.choice(SCOPE_CHOICES))]))
         continue
       sim.add(f"op#{index}", *random_scopes(rng), key=rng.choice(KEYS), on_conflict=rng.choice(list(OnConflict)),
               quiet=rng.random() < 0.4, priority=rng.random() < 0.2, delay=rng.uniform(0, 0.006),
@@ -1134,7 +1161,7 @@ class TestBruteForce:
       for index in range(per_thread):
         placement = rng.randrange(3)
         if rng.random() < 0.2:
-          sim.cancel(("lifecycle", f"c{placement}"))
+          sim.cancel(key=("lifecycle", f"c{placement}"))
         else:
           name = rng.choice(["deploy", "stop"])
           lifecycle(sim, f"t{number}-{name}#{index}", placement, name, delay=rng.uniform(0, 0.004),
@@ -1221,7 +1248,8 @@ class TestBruteForce:
       sim.perform(label, scopes, options)
       if index == restore_at:
         sim.add("restore", "*", restore=True, delay=0.02, during=end)
-        sim.cancel(("restore",))
+        sim.cancel(key=("restore",))
+        sim.cancel(scope="*")
       await asyncio.sleep(rng.uniform(0, 0.003))
     await sim.drain()
     stop.set()

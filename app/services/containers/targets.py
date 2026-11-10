@@ -39,6 +39,11 @@ class Containers(Base):
                                 record_path(config.WORKER_HOME_DIR, container.id), {"CONTENT": encode_record(record)})
     self._hold(container, TargetRead("present", record))
 
+  def forget(self, container_id: str):
+    """Drops the container's read once its row is gone."""
+    with self.lock:
+      self._reads.pop(container_id, None)
+
   def _hold(self, container: Container, read: TargetRead):
     with self.lock:
       changed = self._reads.get(container.id) != read
