@@ -111,9 +111,12 @@ WORKER_SETUP_RETRY_SECONDS = 300
 # deadline before it gives up on a worker that answers nothing.
 COMMAND_KILL_AFTER_SECONDS = 5
 COMMAND_WAIT_GRACE_SECONDS = 15
-# A container's `docker compose up --build --wait` (a Git build, an image pull and the health check) and its `down`.
+# A container's `docker compose up --build --wait` (a Git build, an image pull and the health check), and its `down`,
+# `stop` or `start`.
 CONTAINER_UP_TIMEOUT_SECONDS = 900
 CONTAINER_DOWN_TIMEOUT_SECONDS = 60
+# A volume's archive and upload on its worker.
+BACKUP_TIMEOUT_SECONDS = 900
 # How long to wait for a closed SSH connection to finish closing.
 SSH_CLOSE_WAIT_SECONDS = 5
 

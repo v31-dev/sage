@@ -43,16 +43,7 @@ async def list_container_records():
 
 
 async def schedule_application_backups():
-  if not Manager().s3.s3_config:
-    return
-  now = utcnow()
-  for application, volumes in Manager().get_due_volume_backups(now):
-    Manager().add_task(
-        task=Manager().backup_application_s3,
-        scopes={f"app:{application.qualified_name}"},
-        params={"application_id": application.id, "volume_ids": [volume.id for volume in volumes]},
-        executor="app",
-    )
+  Manager().request_automatic_backups(utcnow())
 
 
 async def reconcile_domains():

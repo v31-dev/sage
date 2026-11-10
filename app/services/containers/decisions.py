@@ -2,7 +2,7 @@
 of its runtime and the operation running on it."""
 from dataclasses import dataclass, replace
 
-from services.containers.record import Authority, TargetRead
+from services.containers.record import Applied, Authority, Settled, TargetRead
 
 HEADLINES = ("active", "inactive", "deploying", "stopping", "backup", "restoring", "error", "checking")
 CONFIG = ("current", "dirty", "not_deployed", "unknown")
@@ -71,6 +71,25 @@ def lifecycle_refusal(target: TargetRead, expected: Authority, contract: str) ->
   return None
 
 
+def maintenance_refusal(contract: str, settled: Settled | None, applied: Applied | None,
+                        reading: RuntimeReading | None) -> str | None:
+  """Why a backup may not begin on a container, from its last intentional outcome under this Sage's current authority
+  and its runtime (None when not known): a manual backup needs it stopped; an automatic one keeps the runtime it finds,
+  so it needs that outcome to have succeeded and the runtime to agree with it, running the deployment it applied."""
+  if settled is None:
+    return "not_deployed"
+  running = reading is not None and reading.state in RUNNING
+  if contract != "backup_preserve":
+    return "running" if settled.runtime_goal != "stopped" or running else None
+  if settled.result != "succeeded":
+    return "failed"
+  if settled.runtime_goal == "running":
+    agrees = running and applied is not None and reading.deployment_id == applied.deployment_id
+  else:
+    agrees = reading is not None and not running
+  return None if agrees else "unexpected_runtime"
+
+
 @dataclass(frozen=True)
 class Correction:
   """What reconciliation does about a container: `read` its record, `recover` from an operation that never settled,
@@ -105,8 +124,7 @@ def correction(target: TargetRead, runtime: Runtime, live: str | None, expected:
     return None
   operation = record.operation
   if operation is not None and operation.phase != "settled":
-    # TODO(36 step 4G): an interrupted automatic backup restores its recorded runtime.
-    return None if operation.contract == "backup_preserve" else Correction("recover", "interrupted")
+    return Correction("recover", "interrupted")
   if record.authority != expected:
     return Correction("reset", "restored")
   if not (running and ours):

@@ -29,15 +29,27 @@ WORKER_CLOCK = 1767268800
 VERIFIED = datetime(2026, 1, 1, 12, 0, 1)
 
 DOCKER = """#!/bin/sh
-# The worker's Docker: one runtime file per Compose project under $FAKE_DOCKER, and flags there that make it fail.
+# The worker's Docker: one runtime file per Compose project under $FAKE_DOCKER, and flags there that make it fail. A
+# runtime's Docker container is `id-<project>` until it is recreated (`replaced`).
 state="$FAKE_DOCKER"
 for last; do :; done
-case "$1 $2" in
-  "compose -p")
+case "$1 $2 $4" in
+  "compose -p stop")
+    [ -e "$state/stop-fails" ] && { echo "stop failed"; exit 1; }
+    [ -e "$state/runtime-$3" ] && sed -i 's/^running|/exited|/' "$state/runtime-$3"
+    ;;
+  "compose -p start")
+    [ -e "$state/start-fails" ] && { echo "start failed"; exit 1; }
+    [ -e "$state/runtime-$3" ] && sed -i 's/^exited|/running|/' "$state/runtime-$3"
+    ;;
+  "compose -p ps")
+    grep -qs '^running|' "$state/runtime-$3" && { [ -e "$state/replaced" ] && echo "other-$3" || echo "id-$3"; }
+    ;;
+  "compose -p "*)
     [ -e "$state/down-fails" ] && { echo "down failed"; exit 1; }
     [ -e "$state/down-is-ignored" ] || rm -f "$state/runtime-$3"
     ;;
-  "compose -f")
+  "compose -f "*)
     file="$3"
     name=$(sed -n 's/^name: //p' "$file")
     label() { sed -n "s/^ *sage.$1: \\"\\(.*\\)\\"$/\\1/p" "$file"; }

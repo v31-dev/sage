@@ -1,6 +1,7 @@
 """Container lifecycle requests and the operations they queue: Deploy and Stop of one container, which share its
 lifecycle slot, its Delete, Deploy all and Stop all of an application's containers, and Cancel of a queued request;
-and each container's state, with what tells its pages that it changed."""
+the recovery of an operation that never settled; and each container's state, with what tells its pages that it
+changed."""
 import logging
 import re
 from dataclasses import replace
@@ -15,7 +16,7 @@ from services.containers.decisions import PROGRESS, RUNNING, Runtime, RuntimeRea
 from services.containers.placement import (LABEL_APPLICATION, LABEL_CONTAINER, LABEL_DEPLOYMENT, LABEL_GENERATION, LABEL_INSTANCE, labels_authority,
                                            parse_placements, placement_dir, placements_command, records_command, runtime_name, runtime_owner,
                                            volume_dir)
-from services.containers.record import Applied, Authority, Operation, Recovery, Settled, TargetRead, TargetRecord, parse_record_listing
+from services.containers.record import Applied, Authority, Baseline, Operation, Recovery, Settled, TargetRead, TargetRecord, parse_record_listing
 from services.containers.rendering import render_placement
 from services.containers.state import ContainerState, container_state
 from services.containers.targets import Containers
@@ -34,11 +35,11 @@ from values.names import qualified_name
 
 logger = logging.getLogger(__name__)
 
-# Each request's key and admission. Deploy and Stop share the container's lifecycle slot: the latest waiting request
-# wins and none is taken while one runs. A Delete outranks them: it cancels the container's queued tasks and waits for
-# the one running.
+# Each request's key and admission. Deploy, Stop and a manual backup share the container's lifecycle slot: the latest
+# waiting request wins and none is taken while one runs. A Delete outranks them: it cancels the container's queued
+# tasks and waits for the one running.
 REQUESTS = {"deploy": ("lifecycle", OnConflict.REVISE), "stop": ("lifecycle", OnConflict.REVISE),
-            "delete": ("delete", OnConflict.REPLACE)}
+            "backup_stopped": ("lifecycle", OnConflict.REVISE), "delete": ("delete", OnConflict.REPLACE)}
 
 # Why a reset stopped a container, as its log marker says it.
 RESETS = {
@@ -53,7 +54,26 @@ REFUSALS = {
     "invalid_record": "its record on the worker can't be read",
     "authority": "its placement on the worker belongs to another Sage",
     "interrupted": "an earlier operation on it is still being recovered",
+    "store_changed": "the backup store is not the one it was requested for",
+    "not_deployed": "it was never deployed",
+    "running": "it runs, and it must be stopped first",
+    "failed": "its last action failed",
+    "unexpected_runtime": "its runtime is not what its last action left",
+    "no_volumes": "none of the volumes asked for is configured",
 }
+
+
+# What people call each operation on a container, in log lines and markers.
+NAMES = {"deploy": "Deploy", "stop": "Stop", "delete": "Delete", "backup_stopped": "Backup",
+         "backup_preserve": "Automatic backup", "restore_stopped": "Restore", "reset": "Reset"}
+
+
+class Refused(Exception):
+  """A pre-check of an operation that refuses it, with the refusal (one of REFUSALS)."""
+
+  def __init__(self, refusal: str):
+    super().__init__(refusal)
+    self.refusal = refusal
 
 
 async def mark(container: Container, text: str):
@@ -194,8 +214,10 @@ class ContainersMixin:
   async def recover_container(self, container_id: str, incident: str, final: bool):
     """Recovers from an operation on the container that never settled, or from its unreadable record, once no task
     owns it: stops the container and keeps the record recovering with the old work's allowance; once that allowance
-    has passed (`final`), stops it again and settles the record stopped, failed by the interruption. Nothing is done
-    when the record no longer shows that incident."""
+    has passed (`final`), stops it again and settles the record stopped, failed by the interruption. An operation that
+    kept a baseline under this Sage's current authority (an automatic backup) is stopped as it is instead, and at the
+    end brought back to that baseline, its last intentional outcome kept; when that fails it is stopped and settled
+    failed. Nothing is done when the record no longer shows that incident."""
     container = Container.get_or_none(Container.id == container_id)
     if container is None:
       logger.info(f"Container {container_id} was deleted before its recovery; nothing to do.")
@@ -215,8 +237,25 @@ class ContainersMixin:
       logger.info(f"Container {container.id} no longer needs the recovery of {incident}; nothing to do.")
       return
     contract = operation.contract if operation is not None else "reset"
+    baseline = operation.baseline if operation is not None and record.authority == authority else None
+    resume_failure = None
+    if final and baseline is not None:
+      try:
+        verified_at = await self._resume(container.worker_id, container.id, baseline)
+      except Exception as error:
+        resume_failure = f"it could not be started again as it was before the backup: {error}"
+      else:
+        await Containers().write(container, replace(record, operation=replace(
+            operation, phase="settled", outcome=operation.outcome or "interrupted", finished_at=utcnow(),
+            verified_on_worker_at=verified_at, recovery=Recovery("verified"))))
+        record_container_event(container, contract, "recovered", operation.id, dedupe_key=f"{operation.id}:recovered")
+        await mark(container, "Back as it was before an interrupted backup")
+        return
     try:
-      verified_at = await self._stop_runtime(container.worker_id, container.id)
+      if baseline is not None and not final:
+        await self._quiesce(container.worker_id, container.id)
+      else:
+        verified_at = await self._stop_runtime(container.worker_id, container.id)
     except Exception as error:
       record_container_event(container, contract, "recovery_failed", operation.id if operation else None,
                              reason={"error": str(error)})
@@ -235,7 +274,7 @@ class ContainersMixin:
       record_container_event(container, contract, "interrupted", operation.id, dedupe_key=f"{operation.id}:interrupted")
       await mark(container, "Stopped: an earlier operation on it was interrupted")
       return
-    reason = operation.reason or "interrupted"
+    reason = resume_failure or operation.reason or "interrupted"
     kept = record if record is not None and record.authority == authority else None
     await Containers().write(container, TargetRecord(
         authority, kept.applied if kept else None, Settled(operation.id, "stopped", "failed", now, reason),
@@ -442,7 +481,8 @@ class ContainersMixin:
       raise Conflict("A container of this application has an operation in progress.")
     return containers
 
-  def _request_lifecycle(self, container: Container, name: str, task, inputs: dict, params: dict | None = None) -> Added:
+  def _request_lifecycle(self, container: Container, name: str, task, inputs: dict, params: dict | None = None,
+                         scopes: tuple[str, ...] = ()) -> Added:
     slot, on_conflict = REQUESTS[name]
     scope = f"worker:{container.worker_id}:container:{container.id}"
     if name == "delete":
@@ -450,7 +490,7 @@ class ContainersMixin:
     elif self.has_task(("delete", container.id)):
       raise Conflict("This container is being deleted.")
     return self.add_task(
-        task=task, key=(slot, container.id), name=name, scopes={scope}, executor="app",
+        task=task, key=(slot, container.id), name=name, scopes={scope, *scopes}, executor="app",
         params={"container_id": container.id, **(params or {})}, inputs=inputs, labels=self._labels(container),
         on_conflict=on_conflict)
 
@@ -568,11 +608,13 @@ class ContainersMixin:
     # TODO(36 step 4H): self.notify(f"Container {container.id} deleted from worker {container.worker_id}.")
     logger.info(f"Container {container.id} deleted; {len(domains)} domains unlinked.")
 
-  async def _begin(self, container_id: str, contract: str, input_hash: str | None = None,
-                   force: bool = False) -> tuple[Container, TargetRecord | None] | None:
+  async def _begin(self, container_id: str, contract: str, input_hash: str | None = None, force: bool = False,
+                   prepare=None) -> tuple[Container, TargetRecord | None] | None:
     """The container and the record that begins the operation on it, once its record was read and nothing refuses it;
-    None when the container is gone. A refusal is recorded and fails the task, with the record untouched. A forced
-    operation on a worker that can't be asked begins with no record."""
+    None when the container is gone. `prepare`, awaited with the container and its record under this Sage's current
+    authority (None without one), checks what the operation itself needs, raising `Refused`, and gives the baseline
+    it records. A refusal is recorded and fails the task, with the record untouched. A forced operation on a worker
+    that can't be asked begins with no record."""
     container = Container.get_or_none(Container.id == container_id)
     if container is None:
       logger.info(f"Container {container_id} was deleted before its {contract}; nothing to do.")
@@ -584,13 +626,20 @@ class ContainersMixin:
     if refusal == "unreachable" and force:
       record_container_event(container, contract, "admitted", reason={"worker": "unreachable"})
       return container, None
+    kept = target.record if target.record is not None and target.record.authority == authority else None
+    baseline = None
+    if refusal is None and prepare is not None:
+      try:
+        baseline = await prepare(container, kept)
+      except Refused as refused:
+        refusal = refused.refusal
     if refusal is not None:
       record_container_event(container, contract, "rejected", reason={"refusal": refusal})
-      logger.error(f"{contract.capitalize()} refused: {REFUSALS[refusal]}.")
+      logger.error(f"{NAMES[contract]} refused: {REFUSALS[refusal]}.")
       raise TaskFailed()
-    kept = target.record if target.record is not None and target.record.authority == authority else None
     timeout = {"deploy": config.CONTAINER_UP_TIMEOUT_SECONDS, "stop": config.CONTAINER_DOWN_TIMEOUT_SECONDS,
-               "delete": config.CONTAINER_DOWN_TIMEOUT_SECONDS}[contract]
+               "delete": config.CONTAINER_DOWN_TIMEOUT_SECONDS, "backup_stopped": config.BACKUP_TIMEOUT_SECONDS,
+               "backup_preserve": config.BACKUP_TIMEOUT_SECONDS}[contract]
     bound = timeout + config.COMMAND_KILL_AFTER_SECONDS
     earlier = target.record.operation if target.record is not None else None
     # Taking over from work that may still run (only a Delete does), the record keeps that work's allowance; an
@@ -600,7 +649,7 @@ class ContainersMixin:
     elif earlier is not None and earlier.phase != "settled":
       bound = max(bound, earlier.effect_bound_seconds)
     operation = Operation(new_id(), contract, "executing", utcnow(), bound,
-                          input_hash=input_hash, task_ref=task_id.get() or None)
+                          input_hash=input_hash, baseline=baseline, task_ref=task_id.get() or None)
     record_container_event(container, contract, "admitted", operation.id, dedupe_key=f"{operation.id}:admitted")
     return container, TargetRecord(authority, kept.applied if kept else None, kept.settled if kept else None, operation)
 
@@ -608,7 +657,7 @@ class ContainersMixin:
     """After a failure of a begun operation: stops the container, settles the record stopped with the failure, or
     leaves it recovering when the stop is not verified, then fails the task."""
     operation, reason = record.operation, str(error) or type(error).__name__
-    logger.error(f"{operation.contract.capitalize()} failed: {reason}")
+    logger.error(f"{NAMES[operation.contract]} failed: {reason}")
     try:
       verified_at = await self._stop_runtime(container.worker_id, container.id)
       now = utcnow()
@@ -623,7 +672,7 @@ class ContainersMixin:
       logger.error(f"The failure could not be recorded on the worker: {write_error}")
     record_container_event(container, operation.contract, "failed", operation.id, reason={"error": reason},
                            dedupe_key=f"{operation.id}:failed")
-    await mark(container, f"{operation.contract.capitalize()} failed: {reason}")
+    await mark(container, f"{NAMES[operation.contract]} failed: {reason}")
     self.request_domain_applies(domain.id for domain in container.domains)
     # TODO(36 step 4H): self.notify(f"... {operation.contract} failed on worker {container.worker_id}: {reason}", "error")
     raise TaskFailed()
@@ -637,6 +686,39 @@ class ContainersMixin:
     if reading.state in RUNNING:
       raise Exception(f"The container is still {reading.state} after it was stopped.")
     return verified_at
+
+  async def _quiesce(self, hostname: str, container_id: str):
+    """Stops the container's runtime on the worker and keeps it, to be started again as it is. Raises when it was not
+    stopped."""
+    await Tailscale().exec_command(hostname, f"docker compose -p {runtime_name(container_id)} stop",
+                                   timeout=config.CONTAINER_DOWN_TIMEOUT_SECONDS)
+    reading, _ = await self._inspect(hostname, container_id)
+    if reading.state in RUNNING:
+      raise Exception(f"The container is still {reading.state} after it was stopped.")
+
+  async def _resume(self, hostname: str, container_id: str, baseline: Baseline) -> datetime:
+    """Brings the container back to the runtime `baseline` holds: started again as it was, the same Docker containers
+    running the same deployment, or still stopped. When the worker verified it, on the worker's clock; raises when it
+    is not that runtime."""
+    if baseline.runtime == "running":
+      await Tailscale().exec_command(hostname, f"docker compose -p {runtime_name(container_id)} start",
+                                     timeout=config.CONTAINER_DOWN_TIMEOUT_SECONDS)
+    reading, verified_at = await self._inspect(hostname, container_id)
+    if baseline.runtime == "stopped":
+      if reading.state in RUNNING:
+        raise Exception(f"The container is {reading.state}, though it was stopped before the backup.")
+      return verified_at
+    if reading.state != "running" or reading.deployment_id != baseline.deployment_id:
+      raise Exception(f"The container is {reading.state} with deployment {reading.deployment_id} after it was started again, "
+                      f"not running {baseline.deployment_id}.")
+    if await self._runtime_ids(hostname, container_id) != baseline.docker_ids:
+      raise Exception("Other Docker containers run than those stopped for the backup.")
+    return verified_at
+
+  async def _runtime_ids(self, hostname: str, container_id: str) -> tuple[str, ...]:
+    """Docker's ids of the containers of the runtime that run, sorted."""
+    _, lines = await Tailscale().exec_command(hostname, f"docker compose -p {runtime_name(container_id)} ps -q", timeout=30)
+    return tuple(sorted(line.strip() for line in lines if line.strip()))
 
   async def _inspect(self, hostname: str, container_id: str) -> tuple[RuntimeReading, datetime]:
     """The runtime as Docker has it now (absent without one: its state, deployment and the authority its labels name),

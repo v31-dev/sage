@@ -5,7 +5,7 @@ from datetime import datetime
 import pytest
 
 from services.containers.decisions import (CONFIG, HEADLINES, KNOWLEDGE, RUNNING, ContainerFacts, Correction, Runtime, RuntimeReading, correction,
-                                           decide_container, lifecycle_refusal, routable)
+                                           decide_container, lifecycle_refusal, maintenance_refusal, routable)
 from services.containers.record import CONTRACTS, PHASES, READS, Applied, Authority, Operation, Settled, TargetRead, TargetRecord
 
 AT = datetime(2026, 1, 1, 12)
@@ -270,7 +270,7 @@ CORRECTIONS = {
                                                           known(), True, Correction("recover", "interrupted")),
     "an automatic backup that never settled": (
         present(applied=APPLIED, settled=RUNNING_OK, operation=Operation("b1", "backup_preserve", "executing", AT, 930)),
-        known("exited"), True, None),
+        known("exited"), True, Correction("recover", "interrupted")),
     "another Sage's record": (TargetRead("present", TargetRecord(FOREIGN, APPLIED, RUNNING_OK)), known(authority=FOREIGN),
                               True, None),
     "a record from before a restore": (TargetRead("present", TargetRecord(RESTORED, APPLIED, RUNNING_OK)),
@@ -316,10 +316,8 @@ def test_every_combination_of_facts_gets_the_correction_its_rules_give():
       assert result == Correction("read"), facts
     elif record is not None and record.authority.instance_id != OURS.instance_id:
       assert result is None, facts
-    elif target.kind == "invalid" or (unsettled and record.operation.contract != "backup_preserve"):
+    elif target.kind == "invalid" or unsettled:
       assert result is not None and result.kind == "recover", facts
-    elif unsettled:
-      assert result is None, facts
     elif record is not None and record.authority != OURS:
       assert result == Correction("reset", "restored"), facts
     elif not (reading is not None and reading.state in RUNNING and labelled_ours):
@@ -332,3 +330,48 @@ def test_every_combination_of_facts_gets_the_correction_its_rules_give():
   assert {result.kind for result in seen if result} == {"read", "recover", "reset"}
   assert {result.cause for result in seen if result and result.kind == "reset"} == {
       "restored", "unexpected_running", "unexpected_deployment", "no_record"}
+
+
+MAINTENANCE = {
+    "a manual backup of a stopped container": ("backup_stopped", STOPPED_OK, APPLIED, RuntimeReading("absent"), None),
+    "a manual backup after a failure that left it stopped": ("backup_stopped", FAILED, APPLIED, RuntimeReading("exited"), None),
+    "a manual backup of a running container": ("backup_stopped", RUNNING_OK, APPLIED, RuntimeReading("running", "d1"), "running"),
+    "a manual backup of one stopped by its record that runs": ("backup_stopped", STOPPED_OK, APPLIED, RuntimeReading("running", "d1"),
+                                                               "running"),
+    "a manual backup of one never deployed": ("backup_stopped", None, None, RuntimeReading("absent"), "not_deployed"),
+    "an automatic backup of one running its deployment": ("backup_preserve", RUNNING_OK, APPLIED, RuntimeReading("running", "d1"), None),
+    "an automatic backup of one stopped": ("backup_preserve", STOPPED_OK, APPLIED, RuntimeReading("absent"), None),
+    "an automatic backup after a failure": ("backup_preserve", FAILED, APPLIED, RuntimeReading("exited"), "failed"),
+    "an automatic backup of one that exited": ("backup_preserve", RUNNING_OK, APPLIED, RuntimeReading("exited", "d1"), "unexpected_runtime"),
+    "an automatic backup of one running another deployment": ("backup_preserve", RUNNING_OK, APPLIED, RuntimeReading("running", "d0"),
+                                                              "unexpected_runtime"),
+    "an automatic backup of one stopped that runs": ("backup_preserve", STOPPED_OK, APPLIED, RuntimeReading("running", "d1"),
+                                                     "unexpected_runtime"),
+    "an automatic backup whose runtime is not known": ("backup_preserve", STOPPED_OK, APPLIED, None, "unexpected_runtime"),
+    "an automatic backup of one never deployed": ("backup_preserve", None, None, RuntimeReading("absent"), "not_deployed"),
+}
+
+
+@pytest.mark.parametrize("contract, settled, applied, reading, expected", MAINTENANCE.values(), ids=MAINTENANCE.keys())
+def test_the_backup_refusal_table(contract, settled, applied, reading, expected):
+  assert maintenance_refusal(contract, settled, applied, reading) == expected
+
+
+def test_every_combination_gets_the_backup_refusal_its_rules_give():
+  readings = [None, *(RuntimeReading(state, deployment) for state in ("absent", "exited", "created", *RUNNING) for deployment in (None, "d0", "d1"))]
+  for contract, settled, applied, reading in itertools.product(
+          ("backup_stopped", "backup_preserve"), (None, RUNNING_OK, STOPPED_OK, FAILED, Settled("d1", "running", "failed", AT)),
+          (None, APPLIED), readings):
+    result = maintenance_refusal(contract, settled, applied, reading)
+    running = reading is not None and reading.state in RUNNING
+    facts = (contract, settled, applied, reading)
+    if settled is None:
+      assert result == "not_deployed", facts
+    elif contract == "backup_stopped":
+      assert result == (None if settled.runtime_goal == "stopped" and not running else "running"), facts
+    elif settled.result == "failed":
+      assert result == "failed", facts
+    else:
+      kept = (running and applied is not None and reading.deployment_id == applied.deployment_id if settled.runtime_goal == "running"
+              else reading is not None and not running)
+      assert result == (None if kept else "unexpected_runtime"), facts

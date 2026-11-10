@@ -114,7 +114,7 @@ uses a 30-second misfire grace period.
 | `refresh_worker_paths` | Interval 60 s | Yes | `refresh_worker_paths` |
 | `observe_containers` | Every minute, `* * * * *` | No | `observe_containers` |
 | `list_container_records` | Every 10 minutes, `*/10 * * * *` | No | One `list_records` per worker whose report is current |
-| `schedule_application_backups` | Every minute, `* * * * *` | No | One `backup_application_s3` per app with due volumes; S3 required |
+| `schedule_application_backups` | Every minute, `* * * * *` | No | One `backup_preserve` per container of an application with due volumes; nothing without a store |
 | `collect_metrics` | Every minute, `* * * * *` | No | `collect_self` and `flush_worker_metrics` |
 | `reconcile_domains` | Every 5 min, `*/5 * * * *` | Yes | `reconcile_domains` |
 | `check_settings` | Every 5 min, `*/5 * * * *` | Yes | `check_<section>` for each configured section |
@@ -125,8 +125,8 @@ uses a 30-second misfire grace period.
 | `send_summary_notification` | Daily 08:00, `0 8 * * *` | No | `send_summary_notification` |
 | `discover_backups` | Startup only | Yes | `discover_s3_backups`; S3 required |
 
-Due volume backups require an active/inactive application with containers, a matching `Volume.backup_cron`, and
-no Backup for that app/volume already recorded in that UTC minute. Due volumes are grouped into one app task.
+A volume is due when its `Volume.backup_cron` matches the UTC minute and no Backup of it was recorded in that minute;
+each container of its application gets one automatic backup of the application's due volumes.
 `croniter` uses Sunday = 0 for these expressions; APScheduler's numeric weekday 0 means Monday.
 Sources: [trigger definitions](../app/scheduler.py), [due-volume selection](../app/services/manager/backups.py).
 
@@ -150,12 +150,13 @@ Route paths use `<app>` for `/projects/{project}/applications/{application}`; al
 | `stop` (`stop_container`) | `worker:<host>:container:<id>` · app | REVISE on `("lifecycle", <id>)` / H | `request_stop`, `request_stop_all` | ContainerEvents; the worker's `record.json`; `compose down`, verifies nothing runs. |
 | `delete` (`delete_container`) | `worker:<host>:container:<id>` · app | REPLACE on `("delete", <id>)`, after cancelling the container's queued tasks / H | `request_delete` | ContainerEvents; the worker's `record.json`; `compose down --volumes --rmi local --remove-orphans`, removes the placement directory; then deletes the Container row through `detach_container` (unlinks its Domains) and requests their applies and, when it unlinked any, `reconcile_domains`. Force on a worker that can't be asked: only the row. |
 | `observe_containers` | none · app | DEDUP / Q | Every minute | No main-DB write. Decides every container's state, tells the pages of those whose state changed, and asks for each container's correction: a record read, a recovery or a reset. Holds each recovery's first-seen time. |
-| `recover` (`recover_container`) | `worker:<host>:container:<id>` · app | DEDUP on `("recover", <id>)` / H | `observe_containers`: at an interrupted operation or unreadable record, then once its allowance has passed | ContainerEvents; the worker's `record.json` (recovering, then settled stopped/failed); `compose down` and the check. |
+| `recover` (`recover_container`) | `worker:<host>:container:<id>` · app | DEDUP on `("recover", <id>)` / H | `observe_containers`: at an interrupted operation or unreadable record, then once its allowance has passed | ContainerEvents; the worker's `record.json` (recovering, then settled stopped/failed); `compose down` and the check. An interrupted automatic backup: `compose stop` at once, then `compose start` back to its baseline with its settled outcome kept, or stopped and settled failed when it does not come back or its authority is from before a platform restore. |
 | `reset` (`reset_container`) | `worker:<host>:container:<id>` · app | DEDUP on `("reset", <id>)` / H | `observe_containers`: a runtime that contradicts its record, or a record from before a restore | ContainerEvents; reads the record and inspects the runtime again; `compose down`, the check, the record with the cause. |
 | `read_record` | `worker:<host>:container:<id>` · app | DEDUP / Q | `observe_containers` (a record never read, or whose read failed while the worker reports); `list_records` (a listed record that differs) | No main-DB write. Reads the container's `record.json`; the `Containers` owner holds it. |
 | `list_records` | none · app | DEDUP / Q | Every 10 minutes, for each worker whose report is current | No main-DB write. Lists every placement directory and record on the worker; requests `read_record` for a container whose listed record differs from the held one and `cleanup_orphan` for this Sage's placements with no row. |
 | `cleanup_orphan` | `worker:<host>:container:<id>` · app | DEDUP on `("cleanup_orphan", <host>, <id>)` / H | `list_records`; `observe_containers` (a reported runtime labelled as this Sage's with no row) | No main-DB write. Re-checks the row and the owner; `compose down --volumes --rmi local --remove-orphans` by project name, the check, removes the placement directory. Waits out an unsettled operation's allowance first. |
-| `backup_application_s3` | `app:<qn>` · app | DEDUP / H | Due-volume scan every minute; POST `<app>/volumes/{volume}/backups` | Application/Container `status` during backup and runtime recovery; backup Events; one Backup per successful container-volume archive. Upload encrypted worker archives, restore runtime; failed runtime recovery can leave error status. The stop helper skips containers already marked backup; see [consistency boundaries](#consistency-boundaries). Manual route requires inactive app. |
+| `backup_stopped` (`backup_container`) | `worker:<host>:container:<id>`, `backup:store:<identity>:write:<id>` · app | REVISE on `("lifecycle", <id>)` / H | `request_backup`: one per container of the application, refused unless every one is stopped | ContainerEvents; the worker's `record.json` (stopped/succeeded, or the failure); one Backup per archive uploaded (`storage_id`). Refused when the store changed, it runs or it was never deployed. |
+| `backup_preserve` (`backup_container_preserving`) | `worker:<host>:container:<id>`, `backup:store:<identity>:write:<id>` · app | DEDUP on `("backup_preserve", <id>)` / H | `request_automatic_backups`, each minute, for the containers of an application with due volumes | ContainerEvents; the record's operation with its baseline; `compose stop`, the archives, `compose start` and the check of the same Docker containers; one Backup per archive uploaded. Settled outcome kept unless the runtime does not come back (then stopped/failed). Refused when its last action failed, its runtime disagrees, or the store changed. |
 | `restore_application_volume_from_s3` | `app:<qn>` · app | DEDUP / H | POST `<app>/volumes/{volume}/backups/{backup}/restore` | Application and target Container `status` become restoring; restore Event; restore worker volume; finally restore saved statuses, including on failure. Does not create a Backup. Requires inactive app. |
 
 A change of whether a container with a service's Domain can be routed to publishes discovery again. Application/Container write helpers emit the affected UI sources; container log markers go
@@ -417,10 +418,6 @@ These are useful places to check when changing a flow:
   explicitly use `get_or_none` and return for a missing target. Volume restore uses `get_by_id` for its inputs,
   so a vanished target raises and fails its task. A uniform quiet-no-op policy
   is not implemented across all entity operations.
-- **Backup state and stop eligibility disagree.** `backup_application_s3` persists each Container as `backup`,
-  then re-fetches it for `_stop_container_for_backup`. That helper returns unless the row is `active`, so this
-  path skips the remote stop before archiving an active application's volumes. A `backup` status does not
-  establish that the runtime is stopped. See [the backup implementation](../app/services/manager/backups.py).
 - **Row deletion does not imply artifact deletion.** Backup DELETE removes its row before queued S3 cleanup;
   Application deletion cascades Backup rows without deleting S3 objects; S3 discovery can list matching objects
   again. Container and Domain deletion use separate follow-ups to remove routing artifacts.
