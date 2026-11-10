@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 import pytest
 
 import config
+from services.certs import TEMPLATE_DIGEST, Certs
 from services.tailscale import Tailscale
 from services.worker_reports import ContainerReading, HostReading, Snapshot, WorkerReports
 from services.workers.state import Workers, worker_state
@@ -24,8 +25,16 @@ class Observed:
     return self.paths.get(address)
 
 
+class Catalog:
+  """The certificates: what each worker's state shows of them, by the names of its subdomain and what it applied."""
+
+  def worker_state(self, hostname, subdomain, applied, template):
+    return {"worker": {"for": (hostname, subdomain, applied, template)}}
+
+
 @pytest.fixture
 def observed(register, clock):
+  register(Certs, Catalog())
   return register(Tailscale, Observed())
 
 
@@ -45,42 +54,56 @@ class TestWorkers:
     Workers().record_setup("w1", None)
     assert Workers().setup("w1") is None
 
+  def test_the_certificates_a_worker_applied_are_none_until_recorded_and_a_removal_forgets_them_with_its_setup(self):
+    assert Workers().certificates("w1") is None
+    Workers().record_certificates("w1", {"worker": "p1"})
+    Workers().record_setup("w1", "succeeded")
+    Workers().record_setup("w1", None)
+    assert Workers().certificates("w1") == {"worker": "p1"}
+    Workers().record_setup("w1", "succeeded")
+    Workers().forget("w1")
+    assert (Workers().certificates("w1"), Workers().setup("w1")) == (None, None)
+
 
 class TestWorkerState:
   def test_a_reachable_worker_set_up_and_reporting_a_working_stack_is_online_with_its_address_and_path(self, observed):
     observed.ssh_of["w1"], observed.addresses["w1"], observed.paths["100.64.0.2"] = "reachable", "100.64.0.2", "direct"
     Workers().record_setup("w1", "succeeded")
     report()
-    state = worker_state("w1", frozenset())
+    state = worker_state("w1", "red", frozenset())
     assert (state.view.status, state.view.ready, state.address, state.path, state.ssh, state.setup) == (
         "online", True, "100.64.0.2", "direct", "reachable", "succeeded")
 
+  def test_its_certificates_are_judged_against_its_subdomain_and_what_it_applied(self, observed):
+    Workers().record_certificates("w1", {"worker": "p1"})
+    assert worker_state("w1", "red", frozenset()).certificates == {"worker": {"for": ("w1", "red", {"worker": "p1"}, TEMPLATE_DIGEST)}}
+
   def test_a_worker_never_observed_is_checking(self, observed):
-    assert worker_state("w1", frozenset()).view.status == "checking"
+    assert worker_state("w1", "red", frozenset()).view.status == "checking"
 
   def test_a_reachable_worker_not_set_up_yet_is_checking(self, observed):
     observed.ssh_of["w1"] = "reachable"
     report()
-    assert (worker_state("w1", frozenset()).view.status, worker_state("w1", frozenset()).view.reason) == ("checking", "unobserved")
+    assert (worker_state("w1", "red", frozenset()).view.status, worker_state("w1", "red", frozenset()).view.reason) == ("checking", "unobserved")
 
   def test_a_worker_whose_ssh_server_does_not_answer_is_offline(self, observed):
     observed.ssh_of["w1"] = "unreachable"
-    assert worker_state("w1", frozenset()).view.status == "offline"
+    assert worker_state("w1", "red", frozenset()).view.status == "offline"
 
   def test_a_task_under_way_is_what_it_shows(self, observed):
     observed.ssh_of["w1"] = "reachable"
-    assert worker_state("w1", frozenset({"reboot_worker"})).view.status == "rebooting"
+    assert worker_state("w1", "red", frozenset({"reboot_worker"})).view.status == "rebooting"
 
   def test_a_worker_that_never_reported_is_not_ready_once_the_grace_after_the_start_is_over(self, observed, clock):
     observed.ssh_of["w1"] = "reachable"
     Workers().record_setup("w1", "succeeded")
     WorkerReports()
-    assert worker_state("w1", frozenset()).view.status == "checking"
+    assert worker_state("w1", "red", frozenset()).view.status == "checking"
     clock.advance(timedelta(seconds=config.REPORT_STARTUP_GRACE_SECONDS))
-    assert (worker_state("w1", frozenset()).view.status, worker_state("w1", frozenset()).view.reason) == ("not ready", "not_reporting")
+    assert (worker_state("w1", "red", frozenset()).view.status, worker_state("w1", "red", frozenset()).view.reason) == ("not ready", "not_reporting")
 
   def test_traefik_not_answering_makes_it_not_ready(self, observed):
     observed.ssh_of["w1"] = "reachable"
     Workers().record_setup("w1", "succeeded")
     report(traefik=False)
-    assert worker_state("w1", frozenset()).view.reason == "traefik_down"
+    assert worker_state("w1", "red", frozenset()).view.reason == "traefik_down"

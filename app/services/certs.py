@@ -30,6 +30,9 @@ def _aware_now():
 
 
 CHALLENGE_COMMENT = "sage-acme-challenge"
+# The worker's certificates file's template digest, part of every applied proof: it ships in the image, so it is worked
+# out once.
+TEMPLATE_DIGEST = hashlib.sha256(b"certs.yml" + (config.TEMPLATES_DIR / "worker/traefik/certs.yml").read_bytes()).hexdigest()[:16]
 
 
 @dataclass(frozen=True)

@@ -123,13 +123,16 @@ class Provider:
 
 
 class Catalog:
-  """The certificates as worker setup sees them: whether each of the worker's covers its names (`covered`, by role)."""
+  """The certificates as worker setup sees them: whether each of the worker's covers its names (`covered`, by role),
+  and whether the worker applied the current one, which is the proof `current` names for the role."""
 
   def __init__(self):
     self.covered = {"worker": True, "discovery": True}
+    self.current = {"worker": "p1", "discovery": "p2"}
 
   def worker_state(self, hostname, subdomain, applied, template):
-    return {role: {"covered": covered} for role, covered in self.covered.items()}
+    return {role: {"covered": covered, "synced": covered and (applied or {}).get(role) == self.current[role]}
+            for role, covered in self.covered.items()}
 
 
 class Manager(WorkersMixin, DomainsMixin, QueueMixin):
@@ -138,7 +141,7 @@ class Manager(WorkersMixin, DomainsMixin, QueueMixin):
     self.queue_facts = self.workers_queue_facts()
     self.worker_state = self.workers_state_fact()
     self.setup_failures, self.stack_repairs = {}, {}
-    self.applied, self.reconciled, self.discovered, self.renewals = [], 0, 0, 0
+    self.applied, self.reconciled, self.discovered, self.renewals, self.distributions = [], 0, 0, 0, []
     self.task_queue = TaskQueue(SCOPES, {"app": self.pool}, record=lambda task, status: None, notify=self._queue_changed)
 
   def request_domain_applies(self, domain_ids):
@@ -153,6 +156,9 @@ class Manager(WorkersMixin, DomainsMixin, QueueMixin):
 
   def request_certificate_renewal(self):
     self.renewals += 1
+
+  def request_certificate_distribution(self, hostname, force=False):
+    self.distributions.append(hostname)
 
 
 @pytest.fixture
@@ -282,15 +288,24 @@ class TestConvergence:
     await manager.converge_worker("w1")
     assert manager.reconciled == 1
 
-  async def test_a_worker_whose_certificates_cover_its_names_asks_for_no_renewal(self, manager, hosts, worker):
+  async def test_a_worker_that_applied_the_current_certificates_asks_for_neither_renewal_nor_copy(self, manager, hosts, worker):
+    hosts.files[f"w1:{HOME}/revisions/certs"] = ('{"discovery": "p2", "worker": "p1"}', 0o644)
     await manager.converge_worker("w1")
-    assert manager.renewals == 0
+    assert Workers().certificates("w1") == {"discovery": "p2", "worker": "p1"}
+    assert (manager.renewals, manager.distributions) == (0, [])
+
+  @pytest.mark.parametrize("stamp", [None, '{"discovery": "p2", "worker": "old"}', "not json"])
+  async def test_a_worker_that_did_not_apply_them_gets_its_copy(self, manager, hosts, worker, stamp):
+    if stamp is not None:
+      hosts.files[f"w1:{HOME}/revisions/certs"] = (stamp, 0o644)
+    await manager.converge_worker("w1")
+    assert (manager.renewals, manager.distributions) == (0, ["w1"])
 
   @pytest.mark.parametrize("role", ["worker", "discovery"])
   async def test_a_certificate_that_does_not_cover_its_names_is_renewed(self, manager, hosts, worker, catalog, role):
     catalog.covered[role] = False
     await manager.converge_worker("w1")
-    assert manager.renewals == 1
+    assert (manager.renewals, manager.distributions) == (1, [])
 
   async def test_a_setup_that_fails_or_is_refused_asks_for_no_pass(self, manager, hosts, worker):
     hosts.fails = "up -d --wait"
@@ -457,9 +472,11 @@ class TestRemove:
     assert (Workers().setup("w1"), WorkerReports().latest("w1"), manager.setup_failures) == (None, None, {})
     assert events()[-2:] == [("remove", "admitted"), ("remove", "succeeded")]
 
-  async def test_a_removal_renews_the_certificates_so_its_leaf_is_retired(self, manager, hosts, provider, worker):
+  async def test_a_removal_renews_the_certificates_so_its_leaf_is_retired_and_forgets_what_it_applied(
+          self, manager, hosts, provider, worker):
+    Workers().record_certificates("w1", {"worker": "p1"})
     await manager.remove_worker("w1")
-    assert manager.renewals == 1
+    assert (manager.renewals, Workers().certificates("w1")) == (1, None)
 
   async def test_removing_a_worker_that_was_set_up_republishes_discovery_without_it(self, manager, hosts, provider, worker):
     await manager.converge_worker("w1")

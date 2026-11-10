@@ -1,14 +1,18 @@
 import inspect
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import botocore.exceptions
 import httpx
 import pytest
 
+from services.certs import Certs
 from services.cloudflare import CloudflareError
 from services.manager import Manager
 from services.manager.settings import APPLYING_TASKS, SETTING_SECTIONS, SettingsMixin, _is_applying
 from services.notification import ChannelCheckFailed
+from services.updates import Updates
+from tests.services.test_certs import write_certificate
 
 
 def describe(error):
@@ -128,3 +132,27 @@ class TestCloudflareCheck:
   def test_without_the_platform_tunnel_the_check_fails(self):
     with pytest.raises(ValueError, match="The tunnel sage-example.test is not in the account."):
       self.check({"sage-example.test-w1": "healthy"})
+
+
+@pytest.fixture
+def catalog(db, clock, register):
+  clock.set(datetime.now(timezone.utc).replace(tzinfo=None))
+  register(Updates, SimpleNamespace(changed=lambda source: None))
+  return Certs()
+
+
+class TestCertificateSettings:
+  def test_settings_report_a_failed_renewal_even_when_the_leaf_remains_valid(self, catalog, monkeypatch):
+    for certificate in catalog.inventory().values():
+      write_certificate(certificate.fullchain_path.parent, certificate.names)
+      catalog.reload(certificate)
+    catalog.discovery.error = "order rejected"
+    manager = SimpleNamespace(
+        certs=catalog, setting_checks={key: {"state": "ok", "message": "Provider reachable"} for key in SETTING_SECTIONS},
+        applying_tasks=lambda: dict.fromkeys(SETTING_SECTIONS), section_configured=lambda key: True,
+        cloudflare=SimpleNamespace(account_id="a", tunnel_id="t", tunnel_name="platform", tunnel_status="healthy"))
+    monkeypatch.setattr(type(catalog.directory), "read_bytes", lambda self: pytest.fail("settings read certificate files"))
+    status = SettingsMixin.settings_status(manager)["cloudflare"]
+    assert status["state"] == "error"
+    assert "order rejected" in status["message"]
+    assert status["details"]["certificates"][1]["valid"]

@@ -218,7 +218,7 @@ A task callable is sync or async, and `run_task` handles both:
 
 **Ambient executor.** Before running a task, `run_task` binds its lane to the `active_executor` `ContextVar`. Any `run_in_executor_with_context(fn)` inside the task with no explicit `executor=` offloads to that lane, so the lane is declared once at `add_task` and inner call sites don't repeat it. `active_executor` is a `ContextVar`, so concurrent tasks on different lanes never see each other's binding.
 
-**Fan-out is safe because orchestrators are async.** The backup/restore container loops and the worker cert sync (`sync_certificates_to_workers`) `await asyncio.gather(...)` over offloaded children. The async parent runs on the loop (holds no worker), so children just queue and drain on the lane pool — no parent-starves-child deadlock. A task is marked "running" once its scope is acquired, independent of pool-thread availability, so its offloads may briefly queue inside the pool; that is bounded throughput, not a stall. The invariant: **never make a sync task that submits to its own lane and blocks on the result** — that deadlocks a single-worker lane. (`run_in_executor_with_context` enforces part of this by requiring a running loop; keep any raw `submit` calls fire-and-forget.)
+**Fan-out is safe because orchestrators are async.** The backup/restore container loops and the Domain pass `await asyncio.gather(...)` over offloaded children. The async parent runs on the loop (holds no worker), so children just queue and drain on the lane pool — no parent-starves-child deadlock. A task is marked "running" once its scope is acquired, independent of pool-thread availability, so its offloads may briefly queue inside the pool; that is bounded throughput, not a stall. The invariant: **never make a sync task that submits to its own lane and blocks on the result** — that deadlocks a single-worker lane. (`run_in_executor_with_context` enforces part of this by requiring a running loop; keep any raw `submit` calls fire-and-forget.)
 
 ## Choosing A Task Shape
 
@@ -465,9 +465,10 @@ whatever applied the artifact, and deliberately **outside** `traefik/dynamic/`
 `infra` — `infra_fingerprint` of the stack's inputs and templates, written
 as the **final step** of `converge_worker` so it is a commit marker (an interrupted
 setup leaves the old stamp and gets retried); `certs` — a JSON map of independent `worker` and
-`discovery` proofs, each folding the leaf-chain fingerprint and certificate-template digest. Applied state is
-shown separately as `certificate` and `discovery_certificate` on worker entries; each holds `covered`, `synced`,
-`expiry` (only for a valid matching applied proof) and `error`;
+`discovery` proofs, each folding the leaf-chain fingerprint and certificate-template digest, written last by
+`distribute_certificates` and read into `Workers` at each setup. Each worker's state carries both certificates
+(`certificates`, by role) from `Certs`, judged against its current subdomain and the proofs it applied; each holds
+`covered`, `synced`, `expiry` (only for a valid matching applied proof) and `error`, and stays out of readiness;
 `discovery` — the fingerprint of the services the discovery files list (`discovery_fingerprint`), written last by `publish_discovery`;
 `owner` — `<instance id> <domain>` of the Sage that manages the worker, written first by `converge_worker`, which
 another Sage refuses to set up. Each Domain's applied proof is its routing file's first line, `# sage-domain <id> <fingerprint>`.
@@ -487,14 +488,23 @@ continues with independent owners. A certificate returned after its owner change
 Renewal (`renew_certificates`, under `certificate`) sets the worker names from the Worker rows, then takes one
 certificate at a time: it retires what no longer covers its names, a removed worker's included, and issues what is
 missing or due. A worker's setup requests it when the worker's own or the discovery certificate does not cover its
-names, and so do a worker's removal and subdomain change. A worker uses `traefik/certs/managed/{worker|discovery}-<hash>.{pem|key}`
-and a stock `tls.certificates` list. Complete pairs precede configuration publication; unwanted managed files are
-removed and proofs written last. Both the actual file set and rendered configuration digest are checked even
-with matching proofs. Certificate-template changes belong to these proofs, rather than the infrastructure stamp.
+names, and so do a worker's removal and subdomain change. Renewal ends by requesting the distribution of every
+worker reachable and set up; a worker's setup requests its own when the proofs its `certs` stamp holds are not the
+current ones.
+
+`distribute_certificates(<hostname>)` copies a worker's own and the shared discovery certificate to it: quiet with
+`REPLACE` on `("distribute_certificates", <hostname>)` (forced, visible, on its own key with `"force"`), under
+`certificate:worker:<hostname>`, so renewal, holding `certificate`, never has a chain replaced under a copy, and
+`worker:<hostname>:tls`, so the worker's setup, reboot or removal excludes it while other workers' copies go on. It
+checks again that the worker is there, reachable and set up. A worker uses
+`traefik/certs/managed/{worker|discovery}-<hash>.{pem|key}` (keys `0600`) and a stock `tls.certificates` list in
+`traefik/dynamic/certs.yml`; only valid material is published. Complete pairs precede the list; unwanted managed files
+are removed and proofs written last. The actual file set and the list's digest are checked as well as the proofs, so
+a missing or unwanted file is repaired under a matching stamp; forced, everything is written again. Certificate-template changes belong to these proofs, rather than the infrastructure stamp.
 Valid material remains published through failed routine renewal. Offline edited workers converge when they return;
 offline removed VMs still require manual decommissioning. Shared discovery remains an explicit shared key.
 
-Artifact fingerprints fold in their **template files themselves**, since templates ship inside the image and a changed template must reach the workers without another input changing. A worker's infra stamp holds `infra_fingerprint` (`services/workers/rendering.py`): its address, the manager's, the domain, the platform's and the worker's tunnels, the version, the report interval and the stack's templates; `render_infrastructure` writes the files from the same inputs, the Compose file as it is (its `${...}` are Compose's own, read from the `.env` beside it). Domain routing has its own digest (`ROUTING_DIGEST` in `services/domains/config.py`), as have discovery (`TEMPLATES_DIGEST` in `services/domains/discovery.py`) and certificates (`templates_digest` in `services/manager/_common.py`), each computed once at import. Templates pushed unconditionally, such as the revision writer and the per-application compose/backup/restore scripts, need no digest. A container's deployment is its record's `applied.deployment_id`, which its runtime carries as the `sage.deployment` label with the instance, generation and container ids; the status decision compares them, so a runtime of another deployment or authority is an error, not active.
+Artifact fingerprints fold in their **template files themselves**, since templates ship inside the image and a changed template must reach the workers without another input changing. A worker's infra stamp holds `infra_fingerprint` (`services/workers/rendering.py`): its address, the manager's, the domain, the platform's and the worker's tunnels, the version, the report interval and the stack's templates; `render_infrastructure` writes the files from the same inputs, the Compose file as it is (its `${...}` are Compose's own, read from the `.env` beside it). Domain routing has its own digest (`ROUTING_DIGEST` in `services/domains/config.py`), as have discovery (`TEMPLATES_DIGEST` in `services/domains/discovery.py`) and certificates (`TEMPLATE_DIGEST` in `services/certs.py`), each computed once at import. Templates pushed unconditionally, such as the revision writer and the per-application compose/backup/restore scripts, need no digest. A container's deployment is its record's `applied.deployment_id`, which its runtime carries as the `sage.deployment` label with the instance, generation and container ids; the status decision compares them, so a runtime of another deployment or authority is an error, not active.
 
 `refresh_traefik` (Resync Traefik) rewrites each online worker's
 traefik files directly but deliberately does **not** advance their `infra`

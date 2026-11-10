@@ -15,6 +15,7 @@ from services.cloudflare import Cloudflare, CloudflareError
 from services.db.models import Worker
 from services.manager.certificates import CertificatesMixin
 from services.manager.queue import SCOPES, QueueMixin
+from services.tailscale import Tailscale
 from services.updates import Updates
 from tests.services.test_certs import write_certificate
 from utils.executor import active_executor
@@ -95,6 +96,7 @@ class Manager(CertificatesMixin, QueueMixin):
   def __init__(self):
     self.pool = ThreadPoolExecutor(max_workers=1)
     self.queue_facts = []
+    self.worker_state = SimpleNamespace(check=lambda: None)
     self.task_queue = TaskQueue(SCOPES, {"platform": self.pool}, record=lambda task, status: None, notify=self._queue_changed)
 
 
@@ -106,7 +108,8 @@ def certs(data_dir, clock, register):
 
 
 @pytest.fixture
-def manager():
+def manager(register):
+  register(Tailscale, SimpleNamespace(ssh=lambda hostname: "unreachable"))
   manager = Manager()
   token = active_executor.set(manager.pool)
   yield manager

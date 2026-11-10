@@ -1,10 +1,12 @@
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+from types import SimpleNamespace
 
 import pytest
 
 import config
+from services.certs import Certs
 from services.db.models import Container, Domain, Worker, WorkerEvent
 from services.manager.queue import SCOPES, QueueMixin
 from services.manager.workers import WorkersMixin
@@ -52,7 +54,15 @@ class Manager(WorkersMixin, QueueMixin):
 
 
 @pytest.fixture
-def tailnet(register, clock):
+def certificates(register):
+  """What the certificates give each worker's state, which a test can change."""
+  shown = {}
+  register(Certs, SimpleNamespace(worker_state=lambda hostname, subdomain, applied, template: dict(shown.get(hostname, {}))))
+  return shown
+
+
+@pytest.fixture
+def tailnet(register, clock, certificates):
   return register(Tailscale, Tailnet())
 
 
@@ -147,6 +157,13 @@ class TestPublication:
     assert signals[:2] == pages("w2")
     assert sorted(signals[2:]) == sorted([(UpdateSource.DOMAINS, None), (UpdateSource.APPLICATION, "demo/web"),
                                           (UpdateSource.WORKER_CONTAINERS, "w2"), (UpdateSource.DOMAINS, None)])
+
+  async def test_a_change_of_its_certificates_shows_its_worker_again(self, manager, tailnet, workers, signals, certificates):
+    await manager.observe_workers()
+    signals.clear()
+    certificates["w1"] = {"worker": {"covered": True, "synced": True}}
+    manager.worker_state.check()
+    assert signals == pages("w1")
 
   async def test_a_report_shows_its_worker_again_when_its_state_changed(self, manager, tailnet, workers, signals):
     tailnet.answers = {"w1": "reachable"}
