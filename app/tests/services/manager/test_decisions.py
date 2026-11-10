@@ -1,90 +1,13 @@
-import random
 from dataclasses import replace
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 import pytest
 
 import config
-from services.manager.decisions import (ABSENT, OFFLINE, SEEN, UNKNOWN, WORKER_TASKS, Observation, WorkerInputs, WorkerReboot, WorkerRow,
-                                        is_worker_rebooting, plan_worker_sync, reconcile_container, rollup_status, worker_claim_refusal, worker_entry,
-                                        worker_owner, worker_ready, worker_stack_problem, worker_status, worker_with_row, worker_without_row)
+from services.manager.decisions import (WORKER_TASKS, WorkerInputs, WorkerReboot, WorkerRow, is_worker_rebooting, plan_worker_sync,
+                                        worker_claim_refusal, worker_entry, worker_owner, worker_ready, worker_stack_problem, worker_status,
+                                        worker_with_row, worker_without_row)
 from services.worker_reports import ContainerReading, HostReading, Received, Snapshot
-
-STAMP = "2026-10-24T23:08:35.718155"
-
-
-def seen(state, label=STAMP):
-  return Observation(SEEN, state, label)
-
-
-def reconcile(status, observation, stamp=STAMP):
-  return reconcile_container("w1-demo-web", status, observation, stamp)
-
-
-class TestReconcileContainer:
-  @pytest.mark.parametrize("status", ["active", "inactive", "error"])
-  def test_a_container_that_could_not_be_looked_at_keeps_its_status(self, status):
-    assert reconcile(status, Observation(UNKNOWN)).status is None
-
-  def test_an_active_container_on_a_worker_that_is_out_of_the_pool_is_an_error(self):
-    result = reconcile("active", Observation(OFFLINE))
-    assert result.status == "error" and "worker offline" in result.message and result.level == "error"
-
-  @pytest.mark.parametrize("status", ["inactive", "error"])
-  def test_a_container_that_was_not_active_stays_as_it_is_when_it_is_not_running(self, status):
-    assert reconcile(status, Observation(OFFLINE)).status is None
-    assert reconcile(status, Observation(ABSENT)).status is None
-
-  def test_an_active_container_that_is_gone_is_an_error(self):
-    result = reconcile("active", Observation(ABSENT))
-    assert result.status == "error" and "not running" in result.message
-
-  @pytest.mark.parametrize("state", ["exited", "created", "dead", "removing"])
-  def test_an_active_container_in_a_stopped_state_is_an_error_that_names_the_state(self, state):
-    result = reconcile("active", seen(state))
-    assert result.status == "error" and state in result.message
-
-  @pytest.mark.parametrize("state", ["paused", "restarting"])
-  def test_an_active_container_that_is_paused_or_restarting_is_an_error(self, state):
-    result = reconcile("active", seen(state))
-    assert result.status == "error" and state in result.message
-
-  @pytest.mark.parametrize("state", ["paused", "restarting"])
-  def test_a_container_already_in_error_is_not_reported_again(self, state):
-    assert reconcile("error", seen(state)).status is None
-
-  @pytest.mark.parametrize("status", ["inactive", "error"])
-  def test_a_container_that_is_running_the_current_version_is_active_again(self, status):
-    result = reconcile(status, seen("running"))
-    assert result.status == "active" and result.level == "success" and not result.stop_stale
-
-  def test_an_active_container_running_the_current_version_needs_nothing(self):
-    result = reconcile("active", seen("running"))
-    assert result.status is None and result.message is None
-
-  @pytest.mark.parametrize("status", ["active", "inactive", "error"])
-  def test_a_running_container_of_another_version_is_stopped_and_becomes_inactive(self, status):
-    result = reconcile(status, seen("running", label="older"))
-    assert result.stop_stale and result.status == "inactive" and result.level == "error"
-
-  def test_a_running_container_with_no_label_is_of_another_version(self):
-    assert reconcile("active", seen("running", label="")).stop_stale
-
-
-class TestRollupStatus:
-  @pytest.mark.parametrize("statuses, expected", [
-      (["error"], "error"),
-      (["active", "error", "inactive"], "error"),
-      (["active", "active"], "active"),
-      (["inactive", "inactive"], "inactive"),
-      (["active", "inactive"], None),
-      ([], None),
-  ])
-  def test_table(self, statuses, expected):
-    assert rollup_status(statuses) == expected
-
-  def test_it_takes_any_iterable(self):
-    assert rollup_status(s for s in ("active", "active")) == "active"
 
 
 def row(name, online, ip="100.64.0.2"):
@@ -144,7 +67,7 @@ class TestPlanWorkerSync:
 
 def snapshot(running=config.WORKER_STACK_SERVICES, traefik_reachable=True):
   def reading(name, status):
-    return ContainerReading(name=name, status=status, image="", deployed_at=None, exit_code=0, oom_killed=False,
+    return ContainerReading(name=name, status=status, image="", labels={}, exit_code=0, oom_killed=False,
                             started_at=1, finished_at=None, health=None, cpu_percent=None, mem_bytes=None,
                             net_rx_bytes=None, net_tx_bytes=None)
   from datetime import datetime

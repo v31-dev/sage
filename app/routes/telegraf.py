@@ -34,7 +34,7 @@ async def telegraf_report(request: Request):
     logger.info(f"Receiving reports from {hostname}.")
   Metrics().ingest(hostname, snapshots)
   if arrival is not None and arrival.changed:
-    Manager().request_status_sync_for_containers(hostname, arrival.changed)
+    Manager().containers_reported(hostname, arrival.changed)
   if arrival is not None:
     Manager().update_worker(hostname, report=arrival.received)
   return Response(status_code=204)

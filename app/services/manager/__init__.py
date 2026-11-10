@@ -56,7 +56,8 @@ class Manager(
       # self.worker_stack_repairs = {}
       # What each owner works out from the queue at every change of it.
       # TODO(36 step 4X): the settings, platform, workers and domains queue facts.
-      self.queue_facts = [*self.tasks_queue_facts()]
+      self.queue_facts = [*self.tasks_queue_facts(), *self.containers_queue_facts()]
+      self.container_state = self.containers_state_fact()
 
       self.task_queue = TaskQueue(scopes=SCOPES, executors=LANES, record=self._persist_task,
                                   notify=self._queue_changed)

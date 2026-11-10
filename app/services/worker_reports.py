@@ -269,16 +269,6 @@ class WorkerReports(Base):
       return None
     return received
 
-  def trusted(self, hostname: str, since: datetime) -> Snapshot | None:
-    """The newest snapshot, if it can be compared with rows last written at `since`: current, and
-    received at least REPORT_SETTLE_SECONDS after that write, so it cannot predate it."""
-    received = self.current(hostname)
-    if received is None:
-      return None
-    if (received.arrived_at - since).total_seconds() < config.REPORT_SETTLE_SECONDS:
-      return None
-    return received.snapshot
-
   def started_at(self, hostname: str, container: str, current: bool = True) -> int | None:
     """When the container last started, on the worker's clock (nanoseconds), from the current report or,
     with `current` false, from the newest one however old. None when the report does not list it."""

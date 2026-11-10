@@ -309,7 +309,7 @@ What is pushed, and what the API keeps:
 APScheduler is a pure cron/interval trigger: each scheduled coroutine only calls `Manager().add_task(...)` to enqueue work and owns no execution or concurrency logic. Recurring triggers cover:
 
 - worker sync
-- application status sync
+- the look at every container's status
 - scheduled volume backup dispatch
 - Domain artifact cleanup, repair scanning and discovery synchronization
 - metrics collection

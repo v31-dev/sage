@@ -77,12 +77,13 @@ def lifecycle_refusal(target: TargetRead, expected: Authority, contract: str) ->
 
 def decide_container(facts: ContainerFacts) -> ContainerView:
   """The headline and the configuration comparison. The headline is decided in precedence order: a record or a
-  current runtime of another authority, a live operation's progress, a known failure, too little evidence, then the committed goal against the
+  current runtime of another authority (this Sage's before a restore, or another Sage's), a live operation's progress, a known failure, too little evidence, then the committed goal against the
   current runtime."""
   record, runtime = facts.target.record, facts.runtime
   foreign = record is not None and record.authority != facts.expected
-  foreign_runtime = (runtime.knowledge == "known" and runtime.reading.authority is not None
-                     and runtime.reading.authority != facts.expected)
+  others = [authority for authority in (record.authority if record is not None else None,
+                                        runtime.reading.authority if runtime.knowledge == "known" else None)
+            if authority not in (None, facts.expected)]
   if record is None or foreign:
     config = "not_deployed" if facts.target.kind == "absent" else "unknown"
   elif record.applied is None:
@@ -95,8 +96,11 @@ def decide_container(facts: ContainerFacts) -> ContainerView:
   def view(headline, reason=None, detail=None):
     return ContainerView(headline, config, reason, detail)
 
-  if foreign or foreign_runtime:
-    return view("error", "authority")
+  if others:
+    # This Sage's own record or runtime from before a restore, or another Sage's.
+    restored = all((authority.instance_id, authority.container_id) == (facts.expected.instance_id, facts.expected.container_id)
+                   for authority in others)
+    return view("error", "restored" if restored else "authority")
   if facts.live in PROGRESS:
     return view(PROGRESS[facts.live])
   if facts.target.kind == "invalid":

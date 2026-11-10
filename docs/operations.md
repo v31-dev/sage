@@ -107,7 +107,7 @@ uses a 30-second misfire grace period.
 | `dispatch_tick` | Interval 1 s | No | Start eligible queued operations; no task of its own |
 | `sync_workers` | Interval 30 s | Separate `check_worker_stamps` trigger | `sync_workers` |
 | `refresh_worker_paths` | Interval 60 s | Yes | `refresh_worker_paths` |
-| `sync_application_status` | Every minute, `* * * * *` | No | One `sync_application_status` per application |
+| `observe_containers` | Every minute, `* * * * *` | No | `observe_containers` |
 | `schedule_application_backups` | Every minute, `* * * * *` | No | One `backup_application_s3` per app with due volumes; S3 required |
 | `collect_metrics` | Every minute, `* * * * *` | No | `collect_self` and `flush_worker_metrics` |
 | `sync_discovery` | Every 5 min, `*/5 * * * *` | Yes | Full `sync_discovery(repair=True)` |
@@ -144,7 +144,7 @@ Route paths use `<app>` for `/projects/{project}/applications/{application}`; al
 | `deploy` (`deploy_container`) | `worker:<host>:container:<id>` · app | REVISE on `("lifecycle", <id>)` / H | `request_deploy`, `request_deploy_all` | ContainerEvents (admitted, rejected, succeeded, failed); no other main-DB write. Reads and writes the worker's `record.json`; stops the container, writes `.env`, secrets, Compose file and volume directories, `compose up`, verifies; the `Containers` owner holds the record. |
 | `stop` (`stop_container`) | `worker:<host>:container:<id>` · app | REVISE on `("lifecycle", <id>)` / H | `request_stop`, `request_stop_all` | ContainerEvents; the worker's `record.json`; `compose down`, verifies nothing runs. |
 | `delete` (`delete_container`) | `worker:<host>:container:<id>` · app | REPLACE on `("delete", <id>)`, after cancelling the container's queued tasks / H | `request_delete` | ContainerEvents; the worker's `record.json`; `compose down --volumes --rmi all --remove-orphans`, removes the placement directory; then deletes the Container row through `detach_container` (unlinks its Domains). Force on a worker that can't be asked: only the row. |
-| `sync_application_status` | `app:<qn>` · app | REPLACE / Q | Every minute; changed container state in Telegraf reports; `sync_domain` finding a busy container | Repair interrupted busy states and reconcile Container/Application `status` from trusted reports; may stop stale-version containers remotely. Enqueue affected Domain syncs when container state changes. |
+| `observe_containers` | none · app | DEDUP / Q | Every minute | No main-DB write. Decides every container's state and tells the pages of those whose state changed since the last look. |
 | `backup_application_s3` | `app:<qn>` · app | DEDUP / H | Due-volume scan every minute; POST `<app>/volumes/{volume}/backups` | Application/Container `status` during backup and runtime recovery; backup Events; one Backup per successful container-volume archive. Upload encrypted worker archives, restore runtime; failed runtime recovery can leave error status. The stop helper skips containers already marked backup; see [consistency boundaries](#consistency-boundaries). Manual route requires inactive app. |
 | `restore_application_volume_from_s3` | `app:<qn>` · app | DEDUP / H | POST `<app>/volumes/{volume}/backups/{backup}/restore` | Application and target Container `status` become restoring; restore Event; restore worker volume; finally restore saved statuses, including on failure. Does not create a Backup. Requires inactive app. |
 
@@ -351,7 +351,7 @@ Sources: [entrypoint](../app/entrypoint.sh), [process startup](../app/main.py),
 
 | Process / source | Cadence or trigger | Queue scopes | Writes |
 | --- | --- | --- | --- |
-| Telegraf report intake | Worker report interval, 10 s (`REPORT_INTERVAL_SECONDS`) | None | WorkerReports snapshots and metric peaks in memory; worker cached report/readiness. Changed containers enqueue app status sync; readiness changes can enqueue discovery. No direct main-DB rows. |
+| Telegraf report intake | Worker report interval, 10 s (`REPORT_INTERVAL_SECONDS`) | None | WorkerReports snapshots and metric peaks in memory; worker cached report/readiness. The pages of the containers a report changed are told; readiness changes can enqueue discovery. No direct main-DB rows. |
 | Vector log intake | Worker batch, up to 10 s batching delay; pushes can also flush when full | None; `LOGS_EXECUTOR` | Request/application log shards, with FTS triggers for application lines; post-write size trimming can delete old lines. No main-DB rows. |
 | Manager metric sampler | Service-owned daemon, every 5 s (`METRICS_SAMPLE_INTERVAL`) | None | In-memory minute peaks only; queued `collect_self` persists them |
 | Task-log capture | Service-owned drain thread, on captured task log lines | None | `logs/tasks.db`; quiet-task lines released on failure; post-write size trimming |
@@ -376,8 +376,8 @@ writes above apply in addition to the listed fields.
 | `Instance` | None | Restore may supply identity | Schema reconciliation creates identity if absent |
 | `Worker` | Worker PUT: `subdomain` | Add/convergence: insert or IP update; sync: fill null subdomain; remove/failed-new-setup rollback: delete | Worker health/status is memory, not a Worker column |
 | `Project` | Project CRUD: configuration | None directly | Application instance create/delete signal recomputes `application_count` |
-| `Application` | Application CRUD: configuration/defaults | Deploy/stop/status/backup/volume restore: `status`; deploy: `deployed_at`, `deployed_hash` | Container instance create/delete signals recompute `container_count`; last delete sets inactive |
-| `Container` | Create placement with inactive default | Deploy/stop/status/delete/backup/restore: `status`; delete/remove-worker: delete row | No direct report-to-row write |
+| `Application` | Application CRUD: configuration/defaults | Backup/volume restore: `status` | Container instance create/delete signals recompute `container_count`; last delete sets inactive |
+| `Container` | Create placement | Delete: delete row (`detach_container`); backup/restore: `status`; remove-worker: delete row | No direct report-to-row write |
 | `Domain` | Domain CRUD; worker subdomain helper requests pending state | Request helper: pending/error-clear; record sync: result/proof/time; full discovery/refresh: pending via helper | Container FK deletion clears `container`; model save derives worker/CORS policy |
 | `Volume` | Volume CRUD: mounts and backup cron | None directly | Application FK deletion cascades row deletion |
 | `Backup` | Backup DELETE | Volume/platform backup inserts; S3 discovery inserts/deletes; retention deletes | Application FK deletion cascades app Backup deletion |
@@ -398,7 +398,7 @@ These are useful places to check when changing a flow:
 - **Inline work keeps its caller's scope.** Normal worker removal holds the broad barrier; failed-new-worker
   setup rollback calls that same method while holding only `platform`. Its preconditions and reachable writes
   must be assessed in that context.
-- **Missing-target behavior varies.** Deploy, Stop, status sync, Domain sync, app backup and container deletion
+- **Missing-target behavior varies.** Deploy, Stop and Delete of a container, Domain sync and app backup
   explicitly use `get_or_none` and return for a missing target. Volume restore uses `get_by_id` for its inputs,
   so a vanished target raises and fails its task. A uniform quiet-no-op policy
   is not implemented across all entity operations.

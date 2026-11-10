@@ -260,7 +260,7 @@ class TestArrival:
     assert reports.accept("w1", snapshots_at(20)).received is reports.latest("w1")
 
 
-class TestCurrentAndTrusted:
+class TestCurrent:
   def test_a_report_is_current_for_the_stale_window(self, clock):
     reports = WorkerReports()
     reports.accept("w1", snapshots_at(10))
@@ -271,27 +271,6 @@ class TestCurrentAndTrusted:
 
   def test_a_worker_that_never_reported_has_no_current_report(self):
     assert WorkerReports().current("w1") is None
-
-  def test_a_snapshot_counts_only_if_it_arrived_after_the_last_write_and_the_settle_time(self, clock):
-    reports = WorkerReports()
-    wrote = clock.current
-    clock.advance(timedelta(seconds=config.REPORT_SETTLE_SECONDS - 1))
-    reports.accept("w1", snapshots_at(10))
-    assert reports.trusted("w1", wrote) is None
-
-  def test_a_snapshot_that_arrived_after_the_settle_time_counts(self, clock):
-    reports = WorkerReports()
-    wrote = clock.current
-    clock.advance(timedelta(seconds=config.REPORT_SETTLE_SECONDS))
-    reports.accept("w1", snapshots_at(10))
-    assert reports.trusted("w1", wrote) is not None
-
-  def test_a_snapshot_that_is_no_longer_current_does_not_count(self, clock):
-    reports = WorkerReports()
-    wrote = clock.current - timedelta(minutes=5)
-    reports.accept("w1", snapshots_at(10))
-    clock.advance(timedelta(seconds=config.REPORT_STALE_SECONDS + 1))
-    assert reports.trusted("w1", wrote) is None
 
   def test_the_seconds_since_the_last_report_or_since_the_start(self, clock):
     reports = WorkerReports()

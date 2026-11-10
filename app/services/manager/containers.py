@@ -1,5 +1,6 @@
 """Container lifecycle requests and the operations they queue: Deploy and Stop of one container, which share its
-lifecycle slot, its Delete, Deploy all and Stop all of an application's containers, and Cancel of a queued request."""
+lifecycle slot, its Delete, Deploy all and Stop all of an application's containers, and Cancel of a queued request;
+and each container's state, with what tells its pages that it changed."""
 import logging
 import re
 from dataclasses import replace
@@ -8,15 +9,18 @@ from datetime import datetime, timedelta
 import config
 from services.applications.commands import detach_container
 from services.applications.deploy_input import DeployConfig, capture_deploy_config
-from services.containers.decisions import RUNNING, lifecycle_refusal
-from services.containers.placement import LABEL_DEPLOYMENT, placement_dir, runtime_name, volume_dir
+from services.applications.updates import container_changed
+from services.containers.decisions import PROGRESS, RUNNING, lifecycle_refusal
+from services.containers.placement import LABEL_DEPLOYMENT, placement_dir, runtime_name, runtime_owner, volume_dir
 from services.containers.record import Applied, Authority, Operation, Settled, TargetRecord
 from services.containers.rendering import render_placement
+from services.containers.state import ContainerState, container_state
 from services.containers.targets import Containers
 from services.db.models import Application, Container, Instance, Project
 from services.history import record_container_event
 from services.logs import Logs
 from services.tailscale import Tailscale
+from services.updates import Fact
 from utils.common import OPAQUE_ID, new_id, utcnow
 from utils.errors import Conflict
 from utils.executor import LOGS_EXECUTOR, run_in_executor_with_context
@@ -53,6 +57,67 @@ async def mark(container: Container, text: str):
 
 
 class ContainersMixin:
+  def container_states(self, containers) -> dict[str, ContainerState]:
+    """The state of each of `containers` now, by id, each application's inputs read once."""
+    live = self._live_operations()
+    instance = Instance.get()
+    hashes, states = {}, {}
+    for container in containers:
+      if container.application_id not in hashes:
+        try:
+          hashes[container.application_id] = capture_deploy_config(container.application_id).content_hash
+        except LookupError:
+          hashes[container.application_id] = None
+      states[container.id] = container_state(container, instance, live.get(container.id), hashes[container.application_id])
+    return states
+
+  def containers_queue_facts(self) -> list[Fact]:
+    """The operations running on containers: a container whose operation starts or ends is shown again."""
+    previous = frozenset()
+
+    def changed(current):
+      nonlocal previous
+      affected = {container_id for container_id, _ in current ^ previous}
+      previous = current
+      for container in Container.select().where(Container.id.in_(affected)):
+        container_changed(container)
+
+    return [Fact(lambda: frozenset(self._live_operations().items()), on_change=changed)]
+
+  def containers_state_fact(self) -> Fact:
+    """Every container's state, checked once a minute: a container whose state changed with time alone (its report
+    grown stale, say) is shown again."""
+    previous = {}
+
+    def changed(current):
+      nonlocal previous
+      affected = {container_id for container_id in current.keys() | previous.keys()
+                  if current.get(container_id) != previous.get(container_id)}
+      previous = current
+      for container in Container.select().where(Container.id.in_(affected)):
+        container_changed(container)
+      # TODO(36 step 4E): request the Domain syncs and discovery of a container whose `routable` changed.
+
+    return Fact(lambda: self.container_states(Container.select()), on_change=changed)
+
+  def containers_reported(self, hostname: str, names):
+    """A report from the worker changed these runtimes: their containers are shown again."""
+    ids = {runtime_owner(name) for name in names} - {None}
+    for container in Container.select().where(Container.id.in_(ids) & (Container.worker == hostname)):
+      container_changed(container)
+
+  def request_container_observation(self):
+    """Queues the minutely look at every container's state."""
+    self.add_task(task=self.observe_containers, key=("observe_containers",), scopes=set(), executor="app", quiet=True)
+
+  async def observe_containers(self):
+    self.container_state.check()
+
+  def _live_operations(self) -> dict[str, str]:
+    """The operation running on each container that shows its progress, by container id."""
+    return {task["params"]["container_id"]: task["name"] for task in self.task_snapshot()["running"]
+            if task["name"] in PROGRESS and "container_id" in task["params"]}
+
   def request_deploy(self, container_id: str) -> str:
     """Queues a Deploy of the container with its application's inputs as they are now; the task's id."""
     container = self._lifecycle_container(container_id)

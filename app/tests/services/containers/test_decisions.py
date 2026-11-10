@@ -10,13 +10,14 @@ from services.containers.record import CONTRACTS, PHASES, READS, Applied, Author
 AT = datetime(2026, 1, 1, 12)
 OURS = Authority("instance1", "generation1", "container1")
 RESTORED = Authority("instance1", "generation2", "container1")
+FOREIGN = Authority("instance2", "generation1", "container1")
 APPLIED = Applied("d1", "h1", AT)
 RUNNING_OK = Settled("d1", "running", "succeeded", AT)
 STOPPED_OK = Settled("s1", "stopped", "succeeded", AT)
 FAILED = Settled("d2", "stopped", "failed", AT, "pull: timeout")
 PROGRESS = {"deploy": "deploying", "stop": "stopping", "delete": "stopping", "backup_stopped": "backup",
             "backup_preserve": "backup", "restore_stopped": "restoring"}
-REASONS = {None, "authority", "invalid_record", "interrupted", "backup_interrupted", "failed", "unreachable", "unexpected_running",
+REASONS = {None, "authority", "restored", "invalid_record", "interrupted", "backup_interrupted", "failed", "unreachable", "unexpected_running",
            "unexpected_exit", "unexpected_deployment"}
 
 
@@ -75,13 +76,18 @@ SCENARIOS = {
                                        "unexpected_running"),
     "an unreadable record": (TargetRead("invalid"), known(), None, "h1", "error", "unknown", "invalid_record"),
     "a record from before a restore": (TargetRead("present", TargetRecord(RESTORED, APPLIED, RUNNING_OK)), known(), None, "h1",
-                                       "error", "unknown", "authority"),
+                                       "error", "unknown", "restored"),
     "a live deploy over a record from before a restore": (TargetRead("present", TargetRecord(RESTORED, APPLIED, RUNNING_OK)), known(),
-                                                          "deploy", "h1", "error", "unknown", "authority"),
+                                                          "deploy", "h1", "error", "unknown", "restored"),
     "a runtime from before a restore still running": (DEPLOYED, known(authority=RESTORED), None, "h1", "error", "current",
-                                                      "authority"),
+                                                      "restored"),
     "a live deploy while the runtime from before a restore still runs": (DEPLOYED, known(authority=RESTORED), "deploy", "h1",
-                                                                         "error", "current", "authority"),
+                                                                         "error", "current", "restored"),
+    "another Sage's record": (TargetRead("present", TargetRecord(FOREIGN, APPLIED, RUNNING_OK)), known(), None, "h1",
+                              "error", "unknown", "authority"),
+    "another Sage's runtime under this Sage's record from before a restore": (
+        TargetRead("present", TargetRecord(RESTORED, APPLIED, RUNNING_OK)), known(authority=FOREIGN), None, "h1",
+        "error", "unknown", "authority"),
     "a stale reading of a foreign runtime": (DEPLOYED, Runtime("stale", RuntimeReading("running", "d1", authority=RESTORED)), None,
                                              "h1", "checking", "current", None),
     "another deployment running than the applied one": (DEPLOYED, known(deployment="d0"), None, "h1", "error", "current",
@@ -115,7 +121,8 @@ def test_a_known_runtime_needs_a_reading():
 def every_record():
   operations = [None] + [Operation("o1", contract, phase, AT, 0) for contract, phase in itertools.product(CONTRACTS, PHASES)]
   for authority, applied, settled, operation in itertools.product(
-          (OURS, RESTORED), (None, APPLIED), (None, RUNNING_OK, STOPPED_OK, FAILED, Settled("d2", "running", "failed", AT)), operations):
+          (OURS, RESTORED, FOREIGN), (None, APPLIED), (None, RUNNING_OK, STOPPED_OK, FAILED, Settled("d2", "running", "failed", AT)),
+          operations):
     yield TargetRecord(authority, applied, settled, operation)
 
 
@@ -129,7 +136,7 @@ def every_target():
 
 def every_runtime():
   for state, deployment, authority in itertools.product(("running", "exited", "absent", "paused", "restarting"), ("d1", "d0"),
-                                                        (OURS, RESTORED, None)):
+                                                        (OURS, RESTORED, FOREIGN, None)):
     yield known(state, deployment, authority)
   yield Runtime("stale", RuntimeReading("running", "d1"))
   yield Runtime("unreachable", RuntimeReading("running", "d1"))
@@ -155,8 +162,8 @@ def test_every_combination_of_facts_keeps_the_invariants():
     seen_headlines.add(view.headline)
     seen_reasons.add(view.reason)
     record = target.record
-    foreign = (record is not None and record.authority != OURS) or (
-        runtime.knowledge == "known" and runtime.reading.authority not in (None, OURS))
+    others = {authority for authority in (record.authority if record else None,
+                                          runtime.reading.authority if runtime.knowledge == "known" else None)} - {None, OURS}
     orphaned = record is not None and record.operation is not None and record.operation.phase != "settled" and live is None
     settled = record.settled if record else None
     facts = (target, runtime, live)
@@ -164,8 +171,8 @@ def test_every_combination_of_facts_keeps_the_invariants():
     assert view.headline in HEADLINES and view.config in CONFIG and view.reason in REASONS, facts
     assert view.routable == (view.headline == "active"), facts
     assert (view.reason is not None) == (view.headline == "error") or view.reason == "backup_interrupted", facts
-    if foreign:
-      assert (view.headline, view.reason) == ("error", "authority"), facts
+    if others:
+      assert (view.headline, view.reason) == ("error", "authority" if FOREIGN in others else "restored"), facts
     elif live in PROGRESS:
       assert (view.headline, view.reason) == (PROGRESS[live], None), facts
     elif target.kind != "invalid" and not orphaned and settled is not None and settled.result == "failed":
@@ -173,7 +180,7 @@ def test_every_combination_of_facts_keeps_the_invariants():
     elif target.kind != "invalid" and not orphaned and runtime.knowledge == "unreachable":
       assert (view.headline, view.reason) == ("error", "unreachable"), facts
     if view.headline == "active":
-      assert not foreign and live not in PROGRESS and not orphaned and settled == RUNNING_OK, facts
+      assert not others and live not in PROGRESS and not orphaned and settled == RUNNING_OK, facts
       assert runtime.knowledge == "known" and runtime.reading.state == "running", facts
       assert runtime.reading.deployment_id == record.applied.deployment_id, facts
     if view.headline == "inactive":
@@ -211,8 +218,7 @@ class TestLifecycleRefusal:
     return "interrupted" if operation is not None and operation.phase != "settled" else None
 
   def test_every_read(self):
-    foreign = Authority("instance2", "generation1", "container1")
-    records = [None, *(TargetRecord(authority, APPLIED, RUNNING_OK, operation) for authority in (OURS, RESTORED, foreign)
+    records = [None, *(TargetRecord(authority, APPLIED, RUNNING_OK, operation) for authority in (OURS, RESTORED, FOREIGN)
                        for operation in (None, *(Operation("o1", "deploy", phase, AT, 905) for phase in PHASES)))]
     seen = set()
     for kind in READS:

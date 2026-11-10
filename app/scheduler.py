@@ -56,9 +56,8 @@ async def check_worker_stamps():
   )
 
 
-async def sync_application_status():
-  for application in Application.select(Application, Project).join(Project):
-    Manager().request_application_status_sync(application)
+async def observe_containers():
+  Manager().request_container_observation()
 
 
 async def schedule_application_backups():
@@ -189,7 +188,7 @@ _JOBS = [
     (dispatch_tick, IntervalTrigger(seconds=1)),
     (sync_workers, IntervalTrigger(seconds=30)),
     (refresh_worker_paths, IntervalTrigger(seconds=60)),
-    (sync_application_status, CronTrigger.from_crontab("* * * * *")),
+    (observe_containers, CronTrigger.from_crontab("* * * * *")),
     (schedule_application_backups, CronTrigger.from_crontab("* * * * *")),
     (collect_metrics, CronTrigger.from_crontab("* * * * *")),
     (refresh_latest_release, CronTrigger.from_crontab("0 */4 * * *")),

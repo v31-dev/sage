@@ -120,4 +120,4 @@ def test_a_report_that_does_not_list_the_container_reads_it_absent():
 def test_a_runtime_labelled_with_another_authority_is_an_authority_error():
   foreign = sample(gathered=10, received=12, authority=RESTORED)
   assert runtime_of(foreign, ID, deployed(5, 5), at(13), True).reading.authority == RESTORED
-  assert view(foreign, deployed(5, 5), at(13)).reason == "authority"
+  assert view(foreign, deployed(5, 5), at(13)).reason == "restored"

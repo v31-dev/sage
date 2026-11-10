@@ -1,83 +1,10 @@
-"""The decisions of the worker sync and the status sync, as plain functions of the state they are
-given. The async tasks gather that state, call these, and apply the answer."""
+"""The decisions of the worker sync, as plain functions of the state they are given. The async tasks gather that
+state, call these, and apply the answer."""
 from dataclasses import dataclass, replace
 from datetime import datetime
-from typing import Callable, Iterable
 
 import config
 from services.worker_reports import Received, Snapshot, container_started_at, infra_of, is_current
-
-# What a look at a worker's containers found for one application.
-SEEN = "seen"          # the container is there, in `state`
-ABSENT = "absent"      # the worker answered and has no such container running
-UNKNOWN = "unknown"    # the worker could not be asked: nothing is known
-OFFLINE = "offline"    # the worker is out of the pool
-
-
-@dataclass(frozen=True)
-class Observation:
-  kind: str
-  state: str | None = None
-  deployed_label: str | None = None
-
-
-@dataclass(frozen=True)
-class Reconcile:
-  """What to do with a container's status. `status` is the new one, None to leave it; with
-  `stop_stale` the container is stopped first and `status` is the result of that succeeding."""
-  status: str | None = None
-  stop_stale: bool = False
-  message: str | None = None
-  level: str = "info"
-
-
-def reconcile_container(name: str, status: str, observation: Observation, deploy_stamp: str | None) -> Reconcile:
-  """The new status of a container that is not busy, from what was seen of it.
-
-  A container that could not be looked at keeps its status: not knowing is not an error."""
-  if observation.kind == UNKNOWN:
-    return Reconcile()
-
-  def not_running(why: str) -> Reconcile:
-    if status != "active":
-      return Reconcile()
-    return Reconcile("error", message=f"Application container {name} is in error state ({why}).", level="error")
-
-  if observation.kind == OFFLINE:
-    return not_running("worker offline")
-  if observation.kind == ABSENT:
-    return not_running("not running")
-
-  state = observation.state
-  if state == "running":
-    if observation.deployed_label != deploy_stamp:
-      return Reconcile(
-          "inactive", stop_stale=True, level="error",
-          message=f"Application container {name} was running a stale version and has been stopped; "
-          "redeploy the application to update it.")
-    if status != "active":
-      return Reconcile("active", message=f"Application container {name} is active again.", level="success")
-    return Reconcile()
-  if state in ("paused", "restarting"):
-    if status != "error":
-      return Reconcile("error", message=f"Application container {name} is in error state ({state}).", level="error")
-    return Reconcile()
-  return not_running(str(state))
-
-
-def rollup_status(statuses: Iterable[str]) -> str | None:
-  """The application's status from its containers': error if any is, active or inactive if all are,
-  otherwise None (leave it)."""
-  statuses = list(statuses)
-  if not statuses:
-    return None
-  if "error" in statuses:
-    return "error"
-  if all(s == "active" for s in statuses):
-    return "active"
-  if all(s == "inactive" for s in statuses):
-    return "inactive"
-  return None
 
 
 @dataclass(frozen=True)

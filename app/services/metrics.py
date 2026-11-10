@@ -10,7 +10,7 @@ from peewee import CharField, CompositeKey, DateTimeField, FloatField, IntegerFi
 
 import config
 from services.base import Base
-from services.db import Worker
+from services.db.models import Worker
 from services.worker_reports import Snapshot
 from utils.common import get_env, utcnow
 

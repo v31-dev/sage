@@ -167,7 +167,7 @@ def host(idle=90.0, rx=None, tx=None, **overrides):
 
 
 def container(name="web", status="running", cpu=100.0, mem=100 * 1024**2, rx=None, tx=None, started_at=1):
-  return ContainerReading(name=name, status=status, image="img", deployed_at=None, exit_code=0, oom_killed=False,
+  return ContainerReading(name=name, status=status, image="img", labels={}, exit_code=0, oom_killed=False,
                           started_at=started_at, finished_at=None, health=None, cpu_percent=cpu, mem_bytes=mem,
                           net_rx_bytes=rx, net_tx_bytes=tx)
 
