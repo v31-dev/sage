@@ -115,7 +115,7 @@ COMMAND_WAIT_GRACE_SECONDS = 15
 # `stop` or `start`.
 CONTAINER_UP_TIMEOUT_SECONDS = 900
 CONTAINER_DOWN_TIMEOUT_SECONDS = 60
-# A volume's archive and upload on its worker.
+# A volume's archive and upload on its worker, or its download and unpacking.
 BACKUP_TIMEOUT_SECONDS = 900
 # How long to wait for a closed SSH connection to finish closing.
 SSH_CLOSE_WAIT_SECONDS = 5

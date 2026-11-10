@@ -349,6 +349,10 @@ MAINTENANCE = {
                                                      "unexpected_runtime"),
     "an automatic backup whose runtime is not known": ("backup_preserve", STOPPED_OK, APPLIED, None, "unexpected_runtime"),
     "an automatic backup of one never deployed": ("backup_preserve", None, None, RuntimeReading("absent"), "not_deployed"),
+    "a restore into a stopped container": ("restore_stopped", STOPPED_OK, APPLIED, RuntimeReading("absent"), None),
+    "a restore into one never deployed": ("restore_stopped", None, None, RuntimeReading("absent"), None),
+    "a restore into a running container": ("restore_stopped", RUNNING_OK, APPLIED, RuntimeReading("running", "d1"), "running"),
+    "a restore into one never deployed that runs": ("restore_stopped", None, None, RuntimeReading("running", "d1"), "running"),
 }
 
 
@@ -360,12 +364,14 @@ def test_the_backup_refusal_table(contract, settled, applied, reading, expected)
 def test_every_combination_gets_the_backup_refusal_its_rules_give():
   readings = [None, *(RuntimeReading(state, deployment) for state in ("absent", "exited", "created", *RUNNING) for deployment in (None, "d0", "d1"))]
   for contract, settled, applied, reading in itertools.product(
-          ("backup_stopped", "backup_preserve"), (None, RUNNING_OK, STOPPED_OK, FAILED, Settled("d1", "running", "failed", AT)),
+          ("backup_stopped", "backup_preserve", "restore_stopped"), (None, RUNNING_OK, STOPPED_OK, FAILED, Settled("d1", "running", "failed", AT)),
           (None, APPLIED), readings):
     result = maintenance_refusal(contract, settled, applied, reading)
     running = reading is not None and reading.state in RUNNING
     facts = (contract, settled, applied, reading)
-    if settled is None:
+    if contract == "restore_stopped":
+      assert result == ("running" if running or (settled is not None and settled.runtime_goal == "running") else None), facts
+    elif settled is None:
       assert result == "not_deployed", facts
     elif contract == "backup_stopped":
       assert result == (None if settled.runtime_goal == "stopped" and not running else "running"), facts

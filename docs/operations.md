@@ -157,7 +157,7 @@ Route paths use `<app>` for `/projects/{project}/applications/{application}`; al
 | `cleanup_orphan` | `worker:<host>:container:<id>` · app | DEDUP on `("cleanup_orphan", <host>, <id>)` / H | `list_records`; `observe_containers` (a reported runtime labelled as this Sage's with no row) | No main-DB write. Re-checks the row and the owner; `compose down --volumes --rmi local --remove-orphans` by project name, the check, removes the placement directory. Waits out an unsettled operation's allowance first. |
 | `backup_stopped` (`backup_container`) | `worker:<host>:container:<id>`, `backup:store:<identity>:write:<id>` · app | REVISE on `("lifecycle", <id>)` / H | `request_backup`: one per container of the application, refused unless every one is stopped | ContainerEvents; the worker's `record.json` (stopped/succeeded, or the failure); one Backup per archive uploaded (`storage_id`). Refused when the store changed, it runs or it was never deployed. |
 | `backup_preserve` (`backup_container_preserving`) | `worker:<host>:container:<id>`, `backup:store:<identity>:write:<id>` · app | DEDUP on `("backup_preserve", <id>)` / H | `request_automatic_backups`, each minute, for the containers of an application with due volumes | ContainerEvents; the record's operation with its baseline; `compose stop`, the archives, `compose start` and the check of the same Docker containers; one Backup per archive uploaded. Settled outcome kept unless the runtime does not come back (then stopped/failed). Refused when its last action failed, its runtime disagrees, or the store changed. |
-| `restore_application_volume_from_s3` | `app:<qn>` · app | DEDUP / H | POST `<app>/volumes/{volume}/backups/{backup}/restore` | Application and target Container `status` become restoring; restore Event; restore worker volume; finally restore saved statuses, including on failure. Does not create a Backup. Requires inactive app. |
+| `restore_stopped` (`restore_container`) | `worker:<host>:container:<id>`, `backup:store:<identity>:read:<backup id>` · app | REVISE on `("lifecycle", <id>)` / H | `request_restore`: a backup of one of the application's volumes into any volume of a container of that application, on any worker | ContainerEvents; the worker's `record.json` (stopped/succeeded, or stopped/failed with Deploy allowed); `restore.sh` replaces the container's copy of the volume. No Backup row. Refused when the store changed, it runs, or the backup or volume is gone; a container never deployed can receive it. |
 
 A change of whether a container with a service's Domain can be routed to publishes discovery again. Application/Container write helpers emit the affected UI sources; container log markers go
 to the application's log shard on `LOGS_EXECUTOR`. No deployment follows an ordinary configuration edit.
@@ -414,10 +414,9 @@ These are useful places to check when changing a flow:
 - **Inline work keeps its caller's scope.** Normal worker removal holds the broad barrier; failed-new-worker
   setup rollback calls that same method while holding only `platform`. Its preconditions and reachable writes
   must be assessed in that context.
-- **Missing-target behavior varies.** Deploy, Stop and Delete of a container, Domain sync and app backup
-  explicitly use `get_or_none` and return for a missing target. Volume restore uses `get_by_id` for its inputs,
-  so a vanished target raises and fails its task. A uniform quiet-no-op policy
-  is not implemented across all entity operations.
+- **Missing-target behavior varies.** A container's operations (Deploy, Stop, Delete, backups, volume restore) and a
+  Domain's apply use `get_or_none` and return for a missing target; a restore whose backup or target volume is gone
+  is refused with a `rejected` event. A uniform quiet-no-op policy is not implemented across all entity operations.
 - **Row deletion does not imply artifact deletion.** Backup DELETE removes its row before queued S3 cleanup;
   Application deletion cascades Backup rows without deleting S3 objects; S3 discovery can list matching objects
   again. Container and Domain deletion use separate follow-ups to remove routing artifacts.

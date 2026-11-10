@@ -35,11 +35,12 @@ from values.names import qualified_name
 
 logger = logging.getLogger(__name__)
 
-# Each request's key and admission. Deploy, Stop and a manual backup share the container's lifecycle slot: the latest
-# waiting request wins and none is taken while one runs. A Delete outranks them: it cancels the container's queued
-# tasks and waits for the one running.
+# Each request's key and admission. Deploy, Stop, a manual backup and a volume restore share the container's lifecycle
+# slot: the latest waiting request wins and none is taken while one runs. A Delete outranks them: it cancels the
+# container's queued tasks and waits for the one running.
 REQUESTS = {"deploy": ("lifecycle", OnConflict.REVISE), "stop": ("lifecycle", OnConflict.REVISE),
-            "backup_stopped": ("lifecycle", OnConflict.REVISE), "delete": ("delete", OnConflict.REPLACE)}
+            "backup_stopped": ("lifecycle", OnConflict.REVISE), "restore_stopped": ("lifecycle", OnConflict.REVISE),
+            "delete": ("delete", OnConflict.REPLACE)}
 
 # Why a reset stopped a container, as its log marker says it.
 RESETS = {
@@ -60,6 +61,7 @@ REFUSALS = {
     "failed": "its last action failed",
     "unexpected_runtime": "its runtime is not what its last action left",
     "no_volumes": "none of the volumes asked for is configured",
+    "no_backup": "the backup is no longer listed",
 }
 
 
@@ -482,7 +484,7 @@ class ContainersMixin:
     return containers
 
   def _request_lifecycle(self, container: Container, name: str, task, inputs: dict, params: dict | None = None,
-                         scopes: tuple[str, ...] = ()) -> Added:
+                         scopes: tuple[str, ...] = (), labels: dict[str, str] | None = None) -> Added:
     slot, on_conflict = REQUESTS[name]
     scope = f"worker:{container.worker_id}:container:{container.id}"
     if name == "delete":
@@ -491,8 +493,8 @@ class ContainersMixin:
       raise Conflict("This container is being deleted.")
     return self.add_task(
         task=task, key=(slot, container.id), name=name, scopes={scope, *scopes}, executor="app",
-        params={"container_id": container.id, **(params or {})}, inputs=inputs, labels=self._labels(container),
-        on_conflict=on_conflict)
+        params={"container_id": container.id, **(params or {})}, inputs=inputs,
+        labels={**self._labels(container), **(labels or {})}, on_conflict=on_conflict)
 
   @staticmethod
   def _labels(container: Container) -> dict[str, str]:
@@ -639,7 +641,7 @@ class ContainersMixin:
       raise TaskFailed()
     timeout = {"deploy": config.CONTAINER_UP_TIMEOUT_SECONDS, "stop": config.CONTAINER_DOWN_TIMEOUT_SECONDS,
                "delete": config.CONTAINER_DOWN_TIMEOUT_SECONDS, "backup_stopped": config.BACKUP_TIMEOUT_SECONDS,
-               "backup_preserve": config.BACKUP_TIMEOUT_SECONDS}[contract]
+               "backup_preserve": config.BACKUP_TIMEOUT_SECONDS, "restore_stopped": config.BACKUP_TIMEOUT_SECONDS}[contract]
     bound = timeout + config.COMMAND_KILL_AFTER_SECONDS
     earlier = target.record.operation if target.record is not None else None
     # Taking over from work that may still run (only a Delete does), the record keeps that work's allowance; an

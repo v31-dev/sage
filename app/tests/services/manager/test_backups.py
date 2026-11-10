@@ -25,8 +25,9 @@ from utils.errors import Conflict
 from utils.logging import TaskFailed, task_id
 
 CURL = """#!/bin/sh
-# Uploads to a presigned link that is a local path: copies the file there and answers 200, or 403 with `upload-fails`
-# naming a part of the path.
+# A presigned link is a local path: an upload copies the file there and answers 200, or 403 with `upload-fails` naming a
+# part of the path; a download copies it from there, or answers 404 without one.
+file=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --upload-file) file="$2"; shift ;;
@@ -39,6 +40,10 @@ if [ -e "$FAKE_DOCKER/upload-fails" ] && grep -qF "$(cat "$FAKE_DOCKER/upload-fa
 $url
 EOF
 then echo "AccessDenied" > "$out"; printf 403; exit 0; fi
+if [ -z "$file" ]; then
+  [ -e "$url" ] && cp "$url" "$out" && printf 200 || printf 404
+  exit 0
+fi
 mkdir -p "$(dirname "$url")" && cp "$file" "$url" && printf 200
 """
 
@@ -83,6 +88,9 @@ class Store:
     return f"base/{key.strip('/')}"
 
   def create_presigned_upload_url(self, key, expires_in, raw_path=False):
+    return str(self.root / key)
+
+  def create_presigned_download_url(self, key, expires_in, raw_path=False, filename=None):
     return str(self.root / key)
 
   def archive(self, row) -> dict[str, bytes]:
@@ -469,3 +477,130 @@ class TestInterruptedAutomaticBackup:
     settled = worker_record(container).settled
     assert (settled.runtime_goal, settled.result) == ("stopped", "failed") and worker_host.runtime(container) is None
     assert worker_record(container).authority == authority(container)
+
+
+class TestRestore:
+  @pytest.fixture
+  def other(self, application):
+    """A container of the application on another worker, never deployed."""
+    from services.db.models import Worker as Host
+    return Container.create(application=application, worker=Host.create(hostname="w2", subdomain="blue"))
+
+  @pytest.fixture
+  async def archived(self, manager, worker_host, container, volumes):
+    """The volumes of `container` backed up, by volume name."""
+    place(container, stopped(container))
+    await manager.backup_container(container.id, ids(volumes), "s1")
+    return {row.source_volume_name: row for row in Backup.select()}
+
+  def files(self, container, volume):
+    directory = Path(volume_dir(config.WORKER_HOME_DIR, container.id, volume.id))
+    return {path.name: path.read_text() for path in directory.iterdir()} if directory.exists() else None
+
+  async def test_a_backup_is_restored_into_a_container_on_another_worker_never_deployed(
+          self, manager, worker_host, container, other, volumes, archived):
+    await manager.restore_container(other.id, archived["data"].id, volumes[0].id, "s1")
+    assert self.files(other, volumes[0]) == {"data.txt": f"data of {container.id}"}
+    record = worker_record(other)
+    assert (record.applied, record.settled.runtime_goal, record.settled.result) == (None, "stopped", "succeeded")
+    assert events(other)[-1] == ("restore_stopped", "succeeded", {"volume": "data", "backup_of": "data"})
+
+  async def test_it_is_restored_into_another_volume_of_the_application_whose_files_it_replaces(
+          self, manager, worker_host, container, volumes, archived):
+    await manager.restore_container(container.id, archived["data"].id, volumes[1].id, "s1")
+    assert self.files(container, volumes[1]) == {"data.txt": f"data of {container.id}"}
+    assert self.files(container, volumes[0]) == {"data.txt": f"data of {container.id}"}
+
+  async def test_a_deploy_after_it_keeps_the_restored_data(self, manager, worker_host, container, other, volumes, archived):
+    await manager.restore_container(other.id, archived["logs"].id, volumes[1].id, "s1")
+    await manager.deploy_container(other.id, capture_deploy_config(other.application_id))
+    assert worker_host.runtime(other).startswith("running") and self.files(other, volumes[1]) == {"logs.txt": f"logs of {container.id}"}
+
+  @pytest.mark.parametrize("setup, refusal", [
+      ("running", "running"), ("runs though stopped", "running"), ("another store", "store_changed"),
+      ("backup in another store", "store_changed"), ("backup gone", "no_backup"), ("volume gone", "no_volumes")])
+  async def test_it_is_refused_with_the_container_untouched(self, manager, worker_host, container, volumes, archived, setup, refusal):
+    store_id, backup = "s1", archived["data"]
+    if setup == "running":
+      running(container, worker_host)
+    elif setup == "runs though stopped":
+      worker_host.run(container, "running d0")
+    elif setup == "another store":
+      store_id = "s0"
+    elif setup == "backup in another store":
+      Backup.update(storage_id="s0").where(Backup.id == backup.id).execute()
+    elif setup == "backup gone":
+      Backup.delete().where(Backup.id == backup.id).execute()
+    else:
+      Volume.delete().where(Volume.id == volumes[1].id).execute()
+    before = worker_record(container)
+    with pytest.raises(TaskFailed):
+      await manager.restore_container(container.id, backup.id, volumes[1].id, store_id)
+    assert worker_record(container) == before and self.files(container, volumes[1]) in (None, {"logs.txt": f"logs of {container.id}"})
+    assert events(container)[-1] == ("restore_stopped", "rejected", {"refusal": refusal})
+
+  @pytest.mark.parametrize("damage", ["altered", "missing"])
+  async def test_a_failed_restore_leaves_the_container_in_error_and_a_deploy_allowed(
+          self, manager, worker_host, store, container, other, volumes, archived, damage):
+    path = store.root / archived["data"].s3_path
+    if damage == "altered":
+      path.write_bytes(path.read_bytes()[:-1] + b"\0")
+    else:
+      path.unlink()
+    with pytest.raises(TaskFailed):
+      await manager.restore_container(other.id, archived["data"].id, volumes[0].id, "s1")
+    settled = worker_record(other).settled
+    assert (settled.runtime_goal, settled.result) == ("stopped", "failed") and self.files(other, volumes[0]) is None
+    await manager.deploy_container(other.id, capture_deploy_config(other.application_id))
+    assert worker_record(other).settled.result == "succeeded"
+
+
+class TestRestoreRequests:
+  @pytest.fixture
+  def backup(self, container, volumes):
+    return Backup.create(s3_path="base/backups/applications/x", storage_id="s1", type="application", source_volume_id=volumes[0].id,
+                         source_volume_name="data", application=container.application_id)
+
+  async def test_a_restore_takes_the_lifecycle_slot_holding_the_backup_and_names_both_volumes(
+          self, manager, worker_host, container, volumes, backup):
+    from services.containers.targets import Containers
+    place(container, stopped(container))
+    await Containers().read(container)
+    manager.request_restore(container.id, backup.id, volumes[1].id)
+    [task] = manager.task_queue.snapshot()["queued"]
+    assert (tuple(task["key"]), task["name"], task["params"]) == (
+        ("lifecycle", container.id), "restore_stopped", {"container_id": container.id, "backup_id": backup.id, "volume_id": volumes[1].id,
+                                                         "storage_id": "s1"})
+    assert task["scopes"] == sorted({f"worker:{container.worker_id}:container:{container.id}", f"backup:store:s1:read:{backup.id}"})
+    assert (task["labels"]["Volume"], task["labels"]["Backup of"]) == ("logs", "data")
+
+  async def test_it_is_refused_while_the_container_runs(self, manager, worker_host, container, volumes, backup):
+    from services.containers.targets import Containers
+    running(container, worker_host)
+    await Containers().read(container)
+    with pytest.raises(Conflict, match="it runs"):
+      manager.request_restore(container.id, backup.id, volumes[0].id)
+
+  def test_a_backup_in_another_store_is_refused(self, manager, container, volumes, backup):
+    Backup.update(storage_id="s0").where(Backup.id == backup.id).execute()
+    with pytest.raises(Conflict, match="not in the configured store"):
+      manager.request_restore(container.id, backup.id, volumes[0].id)
+
+  def test_a_backup_or_volume_of_another_application_is_refused(self, manager, container, volumes, backup, project):
+    from services.db.models import Application
+    elsewhere = Application.create(project=project, name="api", label="API", image="nginx")
+    foreign = Volume.create(application=elsewhere, name="data", path="/data")
+    with pytest.raises(ValueError):
+      manager.request_restore(container.id, backup.id, foreign.id)
+    Backup.update(application=elsewhere).where(Backup.id == backup.id).execute()
+    with pytest.raises(ValueError):
+      manager.request_restore(container.id, backup.id, volumes[0].id)
+
+  async def test_a_container_deleted_before_its_restore_runs_is_a_quiet_no_op(self, manager, worker_host, container, volumes, backup):
+    Container.delete().where(Container.id == container.id).execute()
+    await manager.restore_container(container.id, backup.id, volumes[0].id, "s1")
+    assert events(container) == []
+
+  def test_a_backup_not_listed_is_not_found(self, manager, container, volumes):
+    with pytest.raises(LookupError):
+      manager.request_restore(container.id, 999, volumes[0].id)

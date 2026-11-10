@@ -1,5 +1,7 @@
 """Volume backups: the manual backup of a stopped container's volumes and the automatic one that keeps its
-container's runtime, with the requests that queue them."""
+container's runtime, and the restore of a backup into a stopped container's volume, with the requests that queue them.
+Tasks name volumes by their names in their labels: their ids mean nothing to people, and a backup can be restored into
+another volume, on another container and worker."""
 import logging
 from dataclasses import replace
 from datetime import datetime
@@ -41,23 +43,17 @@ class BackupsMixin:
     """Queues a backup of the volumes from each of the application's containers into the configured store, each in
     its container's lifecycle slot; refused unless every one of them is stopped. The ids of the tasks queued."""
     session = S3().session()
-    if not volume_ids or Volume.select().where(
-            (Volume.application == application_id) & Volume.id.in_(volume_ids)).count() != len(set(volume_ids)):
+    names = [volume.name for volume in Volume.select(Volume.name).where(
+        (Volume.application == application_id) & Volume.id.in_(volume_ids)).order_by(Volume.name)]
+    if not volume_ids or len(names) != len(set(volume_ids)):
       raise ValueError("Choose volumes of this application to back up.")
     containers = self._application_containers(application_id)
-    instance, states = Instance.get(), self.container_states(containers)
-    for container in containers:
-      state = states[container.id]
-      record = state.target.record
-      kept = record if record is not None and record.authority == Authority(
-          instance.id, instance.state_generation, container.id) else None
-      refusal = maintenance_refusal("backup_stopped", kept.settled if kept else None, None,
-                                    state.runtime.reading if state.runtime.knowledge == "known" else None)
-      if refusal is not None:
-        raise Conflict(f"A container of this application can't be backed up: {REFUSALS[refusal]}.")
+    refusal = self._request_refusal("backup_stopped", containers)
+    if refusal is not None:
+      raise Conflict(f"A container of this application can't be backed up: {REFUSALS[refusal]}.")
     added = [self._request_lifecycle(container, "backup_stopped", self.backup_container, {},
                                      {"volume_ids": sorted(set(volume_ids)), "storage_id": session.identity},
-                                     (f"backup:store:{session.identity}:write:{container.id}",))
+                                     (f"backup:store:{session.identity}:write:{container.id}",), {"Volumes": ", ".join(names)})
              for container in containers]
     return [result.task_id for result in added if result.outcome == Outcome.ACCEPTED]
 
@@ -68,7 +64,7 @@ class BackupsMixin:
     session = configured_session()
     if session is None:
       return
-    minute, due = now.replace(second=0, microsecond=0), {}
+    minute, due, names = now.replace(second=0, microsecond=0), {}, {}
     for volume in Volume.select().where(Volume.backup_cron.is_null(False) & (Volume.backup_cron != "")):
       if not croniter.is_valid(volume.backup_cron):
         logger.error(f"Volume {volume.name} has an invalid backup schedule: {volume.backup_cron!r}")
@@ -76,6 +72,7 @@ class BackupsMixin:
       if croniter.match(volume.backup_cron, now) and not Backup.select().where(
               (Backup.source_volume_id == volume.id) & (Backup.created_at >= minute)).exists():
         due.setdefault(volume.application_id, []).append(volume.id)
+        names.setdefault(volume.application_id, []).append(volume.name)
     for container in (Container.select(Container, Application, Project).join(Application).join(Project)
                       .where(Container.application.in_(list(due)))):
       self.add_task(task=self.backup_container_preserving, key=("backup_preserve", container.id),
@@ -83,7 +80,29 @@ class BackupsMixin:
                             f"backup:store:{session.identity}:write:{container.id}"},
                     executor="app", params={"container_id": container.id, "volume_ids": sorted(due[container.application_id]),
                                             "storage_id": session.identity},
-                    labels=self._labels(container))
+                    labels={**self._labels(container), "Volumes": ", ".join(sorted(names[container.application_id]))})
+
+  def request_restore(self, container_id: str, backup_id: int, volume_id: str) -> str:
+    """Queues the restore of a backup of one of the application's volumes into the container's copy of `volume_id`,
+    any volume of that application, in the container's lifecycle slot; refused unless the container is stopped or never
+    deployed, and the backup is in the configured store. The task's id."""
+    session = S3().session()
+    container = self._lifecycle_container(container_id)
+    backup = Backup.get_or_none(Backup.id == backup_id)
+    if backup is None:
+      raise LookupError("Backup not found.")
+    volume = Volume.get_or_none((Volume.id == volume_id) & (Volume.application == container.application_id))
+    if backup.type != "application" or backup.application_id != container.application_id or volume is None:
+      raise ValueError("Choose a backup of this application's volumes, and one of its volumes.")
+    if backup.storage_id != session.identity:
+      raise Conflict("This backup is not in the configured store.")
+    refusal = self._request_refusal("restore_stopped", [container])
+    if refusal is not None:
+      raise Conflict(f"This container can't receive a restore: {REFUSALS[refusal]}.")
+    return self._admitted(self._request_lifecycle(
+        container, "restore_stopped", self.restore_container, {},
+        {"backup_id": backup.id, "volume_id": volume.id, "storage_id": session.identity},
+        (f"backup:store:{session.identity}:read:{backup.id}",), {"Volume": volume.name, "Backup of": backup.source_volume_name}))
 
   async def backup_container(self, container_id: str, volume_ids: list[str], storage_id: str):
     """Archives the volumes of a stopped container into the store it was requested for, then commits it stopped and
@@ -149,6 +168,67 @@ class BackupsMixin:
       raise TaskFailed()
     record_container_event(container, "backup_preserve", "succeeded", operation.id, dedupe_key=f"{operation.id}:succeeded")
     await mark(container, "Backed up")
+
+  async def restore_container(self, container_id: str, backup_id: int, volume_id: str, storage_id: str):
+    """Replaces the container's copy of the volume with the backup, read from the store it was requested for, and
+    commits the container stopped and succeeded. Refused while it runs, once the configured store is another, or when
+    the backup or the volume is gone; a failed restore leaves it stopped and in error, the volume possibly part
+    replaced, and a Deploy allowed."""
+    session = configured_session(storage_id)
+
+    async def prepare(container: Container, kept) -> None:
+      backup = Backup.get_or_none((Backup.id == backup_id) & (Backup.application == container.application_id))
+      if session is None or (backup is not None and backup.storage_id != session.identity):
+        raise Refused("store_changed")
+      if backup is None or backup.source_volume_id is None:
+        raise Refused("no_backup")
+      if not Volume.select().where((Volume.id == volume_id) & (Volume.application == container.application_id)).exists():
+        raise Refused("no_volumes")
+      reading, _ = await self._inspect(container.worker_id, container.id)
+      refusal = maintenance_refusal("restore_stopped", kept.settled if kept is not None else None, None, reading)
+      if refusal is not None:
+        raise Refused(refusal)
+
+    begun = await self._begin(container_id, "restore_stopped", prepare=prepare)
+    if begun is None:
+      return
+    container, record = begun
+    operation = record.operation
+    try:
+      await Containers().write(container, record)
+      backup, volume = Backup.get_by_id(backup_id), Volume.get_by_id(volume_id)
+      script = f"/tmp/sage-restore-{new_id()}.sh"
+      await Tailscale().sync_file(container.worker_id, config.TEMPLATES_DIR / "worker/application/restore.sh", script, {
+          "PLACEMENT_DIR": placement_dir(config.WORKER_HOME_DIR, container.id), "ARCHIVED_VOLUME_ID": backup.source_volume_id,
+          "VOLUME_ID": volume.id, "ENCRYPTION_KEY": get_env("ENCRYPTION_KEY"),
+          "DOWNLOAD_URL": session.create_presigned_download_url(backup.s3_path, config.WORKER_LINK_SECONDS, raw_path=True),
+      }, mode=0o700)
+      await Tailscale().exec_command(container.worker_id, script, timeout=config.BACKUP_TIMEOUT_SECONDS)
+      verified_at = await self._stop_runtime(container.worker_id, container.id)
+      now = utcnow()
+      await Containers().write(container, replace(
+          record, settled=Settled(operation.id, "stopped", "succeeded", now),
+          operation=replace(operation, phase="settled", outcome="succeeded", finished_at=now, verified_on_worker_at=verified_at)))
+    except Exception as error:
+      await self._fail(container, record, error)
+    record_container_event(container, "restore_stopped", "succeeded", operation.id,
+                           reason={"volume": volume.name, "backup_of": backup.source_volume_name}, dedupe_key=f"{operation.id}:succeeded")
+    await mark(container, f"Volume {volume.name} restored from a backup of {backup.source_volume_name}")
+    # TODO(36 step 4H): self.notify(f"Volume {volume.name} restored on container {container.id}.", "success")
+
+  def _request_refusal(self, contract: str, containers: list[Container]) -> str | None:
+    """The first refusal `maintenance_refusal` gives one of the containers, from its record and its runtime as held."""
+    instance, states = Instance.get(), self.container_states(containers)
+    for container in containers:
+      state = states[container.id]
+      record = state.target.record
+      kept = record if record is not None and record.authority == Authority(
+          instance.id, instance.state_generation, container.id) else None
+      refusal = maintenance_refusal(contract, kept.settled if kept else None, None,
+                                    state.runtime.reading if state.runtime.knowledge == "known" else None)
+      if refusal is not None:
+        return refusal
+    return None
 
   def _backup_check(self, contract: str, session: S3Session | None, volume_ids: list[str]):
     """The pre-check of a backup, for `_begin`: the store it was requested for is the configured one, one of its
