@@ -5,14 +5,16 @@ import logging
 import re
 from dataclasses import replace
 from datetime import datetime, timedelta
+from time import monotonic
 
 import config
 from services.applications.commands import detach_container
 from services.applications.deploy_input import DeployConfig, capture_deploy_config
 from services.applications.updates import container_changed
-from services.containers.decisions import PROGRESS, RUNNING, correction, lifecycle_refusal
-from services.containers.placement import LABEL_DEPLOYMENT, placement_dir, records_command, runtime_name, runtime_owner, volume_dir
-from services.containers.record import Applied, Authority, Operation, Settled, TargetRead, TargetRecord, parse_record_listing
+from services.containers.decisions import PROGRESS, RUNNING, Runtime, RuntimeReading, correction, lifecycle_refusal
+from services.containers.placement import (LABEL_CONTAINER, LABEL_DEPLOYMENT, LABEL_GENERATION, LABEL_INSTANCE, labels_authority, placement_dir,
+                                           records_command, runtime_name, runtime_owner, volume_dir)
+from services.containers.record import Applied, Authority, Operation, Recovery, Settled, TargetRead, TargetRecord, parse_record_listing
 from services.containers.rendering import render_placement
 from services.containers.state import ContainerState, container_state
 from services.containers.targets import Containers
@@ -36,6 +38,14 @@ logger = logging.getLogger(__name__)
 # the one running.
 REQUESTS = {"deploy": ("lifecycle", OnConflict.REVISE), "stop": ("lifecycle", OnConflict.REVISE),
             "delete": ("delete", OnConflict.REPLACE)}
+
+# Why a reset stopped a container, as its log marker says it.
+RESETS = {
+    "restored": "its record is from before a platform restore",
+    "unexpected_running": "it ran after it was stopped",
+    "unexpected_deployment": "it ran a deployment it was not deployed with",
+    "no_record": "it ran without a record",
+}
 
 REFUSALS = {
     "unreachable": "its worker can't be reached",
@@ -126,18 +136,136 @@ class ContainersMixin:
         reporting[container.worker_id] = WorkerReports().current(container.worker_id) is not None
       found = correction(state.target, state.runtime, state.live,
                          Authority(instance.id, instance.state_generation, container.id), reporting[container.worker_id])
-      if found is not None and found.kind == "read":
+      if found is None or found.kind != "recover":
+        self.recoveries.pop(container.id, None)
+      if found is None:
+        continue
+      if found.kind == "read":
         self.request_record_read(container)
-      # TODO(36 step 4C-2b): request the container's recovery or reset.
+      elif found.kind == "reset":
+        self.request_reset(container, found.cause)
+      else:
+        operation = state.target.record.operation if state.target.record is not None else None
+        incident = operation.id if operation is not None else "unreadable"
+        bound = (operation.effect_bound_seconds if operation is not None
+                 else config.CONTAINER_UP_TIMEOUT_SECONDS + config.COMMAND_KILL_AFTER_SECONDS)
+        seen = self.recoveries.get(container.id)
+        if seen is None or seen[0] != incident:
+          self.recoveries[container.id] = (incident, monotonic())
+          self.request_recovery(container, incident, final=False)
+        elif monotonic() - seen[1] >= bound:
+          self.request_recovery(container, incident, final=True)
+    for container_id in self.recoveries.keys() - containers.keys():
+      self.recoveries.pop(container_id, None)
+
+  def request_recovery(self, container: Container, incident: str, final: bool):
+    """Queues the recovery of the operation `incident` on the container (or of its unreadable record): its
+    containment, or once the old work's allowance has passed its settlement."""
+    self.add_task(task=self.recover_container, key=("recover", container.id),
+                  scopes={f"worker:{container.worker_id}:container:{container.id}"}, executor="app",
+                  params={"container_id": container.id, "incident": incident, "final": final}, labels=self._labels(container))
+
+  def request_reset(self, container: Container, cause: str):
+    """Queues the reset of a container whose runtime contradicts its record."""
+    self.add_task(task=self.reset_container, key=("reset", container.id),
+                  scopes={f"worker:{container.worker_id}:container:{container.id}"}, executor="app",
+                  params={"container_id": container.id, "cause": cause}, labels=self._labels(container))
+
+  async def recover_container(self, container_id: str, incident: str, final: bool):
+    """Recovers from an operation on the container that never settled, or from its unreadable record, once no task
+    owns it: stops the container and keeps the record recovering with the old work's allowance; once that allowance
+    has passed (`final`), stops it again and settles the record stopped, failed by the interruption. Nothing is done
+    when the record no longer shows that incident."""
+    container = Container.get_or_none(Container.id == container_id)
+    if container is None:
+      logger.info(f"Container {container_id} was deleted before its recovery; nothing to do.")
+      return
+    instance = Instance.get()
+    authority = Authority(instance.id, instance.state_generation, container.id)
+    target = await Containers().read(container)
+    record = target.record if target.kind == "present" else None
+    operation = record.operation if record is not None else None
+    if target.kind == "invalid":
+      found = "unreadable"
+    elif record is not None and record.authority.instance_id == instance.id and operation is not None and operation.phase != "settled":
+      found = operation.id
+    else:
+      found = None
+    if found != incident:
+      logger.info(f"Container {container.id} no longer needs the recovery of {incident}; nothing to do.")
+      return
+    contract = operation.contract if operation is not None else "reset"
+    try:
+      verified_at = await self._stop_runtime(container)
+    except Exception as error:
+      record_container_event(container, contract, "recovery_failed", operation.id if operation else None,
+                             reason={"error": str(error)})
+      logger.error(f"The recovery could not stop the container: {error}")
+      raise TaskFailed()
+    now = utcnow()
+    if operation is None:
+      operation = Operation(new_id(), "reset", "recovering", now, config.CONTAINER_UP_TIMEOUT_SECONDS + config.COMMAND_KILL_AFTER_SECONDS,
+                            outcome="interrupted", reason="its record could not be read", recovery=Recovery("unresolved"),
+                            task_ref=task_id.get() or None)
+    if not final:
+      await Containers().write(container, TargetRecord(
+          record.authority if record is not None else authority, record.applied if record else None,
+          record.settled if record else None,
+          replace(operation, phase="recovering", outcome=operation.outcome or "interrupted", recovery=Recovery("unresolved"))))
+      record_container_event(container, contract, "interrupted", operation.id, dedupe_key=f"{operation.id}:interrupted")
+      await mark(container, "Stopped: an earlier operation on it was interrupted")
+      return
+    reason = operation.reason or "interrupted"
+    kept = record if record is not None and record.authority == authority else None
+    await Containers().write(container, TargetRecord(
+        authority, kept.applied if kept else None, Settled(operation.id, "stopped", "failed", now, reason),
+        replace(operation, phase="settled", outcome=operation.outcome or "interrupted", finished_at=now,
+                verified_on_worker_at=verified_at, recovery=Recovery("verified"))))
+    record_container_event(container, contract, "recovered", operation.id, dedupe_key=f"{operation.id}:recovered")
+    await mark(container, "Stopped and settled after an interrupted operation")
+    # TODO(36 step 4H): self.notify(f"Container {container.id} recovered after an interrupted {contract}.", "warning")
+
+  async def reset_container(self, container_id: str, cause: str):
+    """Stops a container whose runtime contradicts its record, once its record and its runtime, read again now, still
+    call for it, and records the cause as its failure."""
+    container = Container.get_or_none(Container.id == container_id)
+    if container is None:
+      logger.info(f"Container {container_id} was deleted before its reset; nothing to do.")
+      return
+    instance = Instance.get()
+    authority = Authority(instance.id, instance.state_generation, container.id)
+    target = await Containers().read(container)
+    reading, _ = await self._inspect(container)
+    found = correction(target, Runtime("known", reading), None, authority, True)
+    if found is None or found.kind != "reset":
+      logger.info(f"Container {container.id} no longer needs a reset; nothing to do.")
+      return
+    kept = target.record if target.record is not None and target.record.authority == authority else None
+    operation = Operation(new_id(), "reset", "executing", utcnow(),
+                          config.CONTAINER_DOWN_TIMEOUT_SECONDS + config.COMMAND_KILL_AFTER_SECONDS, task_ref=task_id.get() or None)
+    record = TargetRecord(authority, kept.applied if kept else None, kept.settled if kept else None, operation)
+    record_container_event(container, "reset", "admitted", operation.id, reason={"cause": found.cause},
+                           dedupe_key=f"{operation.id}:admitted")
+    try:
+      await Containers().write(container, record)
+      verified_at = await self._stop_runtime(container)
+      now = utcnow()
+      await Containers().write(container, replace(
+          record, settled=Settled(operation.id, "stopped", "failed", now, found.cause),
+          operation=replace(operation, phase="settled", outcome="succeeded", reason=found.cause, finished_at=now,
+                            verified_on_worker_at=verified_at)))
+    except Exception as error:
+      await self._fail(container, record, error)
+    record_container_event(container, "reset", "succeeded", operation.id, reason={"cause": found.cause},
+                           dedupe_key=f"{operation.id}:succeeded")
+    await mark(container, f"Stopped: {RESETS[found.cause]}")
+    # TODO(36 step 4H): self.notify(f"Container {container.id} stopped: {RESETS[found.cause]}.", "warning")
 
   def request_record_read(self, container: Container):
     """Queues a read of the container's record from its worker, under its scope so it never crosses a write."""
-    application = container.application
     self.add_task(
         task=self.read_record, key=("read_record", container.id), scopes={f"worker:{container.worker_id}:container:{container.id}"},
-        executor="app", params={"container_id": container.id},
-        labels={"Application": f"{application.project.label} / {application.label}", "Worker": container.worker_id},
-        quiet=True)
+        executor="app", params={"container_id": container.id}, labels=self._labels(container), quiet=True)
 
   async def read_record(self, container_id: str):
     container = Container.get_or_none(Container.id == container_id)
@@ -244,12 +372,16 @@ class ContainersMixin:
       self.cancel_tasks(scope=scope)
     elif self.has_task(("delete", container.id)):
       raise Conflict("This container is being deleted.")
-    application = container.application
     return self.add_task(
         task=task, key=(slot, container.id), name=name, scopes={scope}, executor="app",
-        params={"container_id": container.id, **(params or {})}, inputs=inputs,
-        labels={"Application": f"{application.project.label} / {application.label}", "Worker": container.worker_id},
+        params={"container_id": container.id, **(params or {})}, inputs=inputs, labels=self._labels(container),
         on_conflict=on_conflict)
+
+  @staticmethod
+  def _labels(container: Container) -> dict[str, str]:
+    """What people call a container task's subjects."""
+    application = container.application
+    return {"Application": f"{application.project.label} / {application.label}", "Worker": container.worker_id}
 
   @staticmethod
   def _admitted(added: Added) -> str:
@@ -290,11 +422,11 @@ class ContainersMixin:
       await Tailscale().exec_command(
           host, f"docker compose -f {directory}/docker-compose.yml up -d --wait --remove-orphans --quiet-pull --build",
           timeout=config.CONTAINER_UP_TIMEOUT_SECONDS)
-      state, deployment, verified_at = await self._inspect(container)
-      if state != "running":
-        raise Exception(f"The container is {state} after the deploy.")
-      if deployment != operation.id:
-        raise Exception(f"The container runs deployment {deployment}, not {operation.id}.")
+      reading, verified_at = await self._inspect(container)
+      if reading.state != "running":
+        raise Exception(f"The container is {reading.state} after the deploy.")
+      if reading.deployment_id != operation.id:
+        raise Exception(f"The container runs deployment {reading.deployment_id}, not {operation.id}.")
       now = utcnow()
       await Containers().write(container, replace(
           record, applied=Applied(operation.id, deploy.content_hash, now),
@@ -421,20 +553,25 @@ class ContainersMixin:
     worker's clock. Raises when it was not stopped."""
     await Tailscale().exec_command(container.worker_id, f"docker compose -p {runtime_name(container.id)} down {options}".strip(),
                                    timeout=config.CONTAINER_DOWN_TIMEOUT_SECONDS)
-    state, _, verified_at = await self._inspect(container)
-    if state in RUNNING:
-      raise Exception(f"The container is still {state} after it was stopped.")
+    reading, verified_at = await self._inspect(container)
+    if reading.state in RUNNING:
+      raise Exception(f"The container is still {reading.state} after it was stopped.")
     return verified_at
 
-  async def _inspect(self, container: Container) -> tuple[str, str | None, datetime]:
-    """The runtime's Docker state (absent without one) and its deployment, and the worker's time just before it
-    looked, rounded up to the second so a report gathered before the look never counts as after it."""
+  async def _inspect(self, container: Container) -> tuple[RuntimeReading, datetime]:
+    """The runtime as Docker has it now (absent without one: its state, deployment and the authority its labels name),
+    and the worker's time just before it looked, rounded up to the second so a report gathered before the look never
+    counts as after it."""
+    labels = (LABEL_DEPLOYMENT, LABEL_INSTANCE, LABEL_GENERATION, LABEL_CONTAINER)
+    fields = "|".join(["{{.State.Status}}", *(f'{{{{index .Config.Labels "{label}"}}}}' for label in labels)])
     _, lines = await Tailscale().exec_command(
-        container.worker_id,
-        f"date -u +%s; docker inspect --format '{{{{.State.Status}}}} {{{{index .Config.Labels \"{LABEL_DEPLOYMENT}\"}}}}' "
-        f"{runtime_name(container.id)} 2>/dev/null || echo absent", timeout=30)
-    if len(lines) != 2 or not lines[0].strip().isdigit() or not lines[1].strip():
+        container.worker_id, f"date -u +%s; docker inspect --format '{fields}' {runtime_name(container.id)} 2>/dev/null || echo absent",
+        timeout=30)
+    parts = lines[1].strip().split("|") if len(lines) == 2 else []
+    if len(lines) != 2 or not lines[0].strip().isdigit() or len(parts) not in (1, len(labels) + 1) or not parts[0]:
       raise Exception(f"Unexpected answer from the worker: {lines}")
-    state, _, deployment = lines[1].strip().partition(" ")
-    return (state, deployment if deployment not in ("", "<no value>") else None,
-            datetime(1970, 1, 1) + timedelta(seconds=int(lines[0]) + 1))
+    verified_at = datetime(1970, 1, 1) + timedelta(seconds=int(lines[0]) + 1)
+    if parts == ["absent"]:
+      return RuntimeReading("absent"), verified_at
+    values = dict(zip(labels, (None if value in ("", "<no value>") else value for value in parts[1:])))
+    return RuntimeReading(parts[0], values[LABEL_DEPLOYMENT], authority=labels_authority(values)), verified_at

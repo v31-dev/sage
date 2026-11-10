@@ -58,6 +58,9 @@ class Manager(
       # TODO(36 step 4X): the settings, platform, workers and domains queue facts.
       self.queue_facts = [*self.tasks_queue_facts(), *self.containers_queue_facts()]
       self.container_state = self.containers_state_fact()
+      # Each container recovering from an interrupted operation: the incident and when it was first seen, on this
+      # process's monotonic clock, so a restart waits the old work's whole allowance again.
+      self.recoveries = {}
 
       self.task_queue = TaskQueue(scopes=SCOPES, executors=LANES, record=self._persist_task,
                                   notify=self._queue_changed)

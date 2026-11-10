@@ -12,7 +12,7 @@ import pytest
 import config
 from services.applications.deploy_input import capture_deploy_config
 from services.containers.placement import placement_dir, record_path, runtime_name
-from services.containers.record import Applied, Authority, Operation, Settled, TargetRead, TargetRecord, decode_record, encode_record
+from services.containers.record import Applied, Authority, Operation, Recovery, Settled, TargetRead, TargetRecord, decode_record, encode_record
 from services.containers.targets import Containers
 from services.db.models import Application, Container, ContainerEvent, Domain, Instance, Volume
 from services.logs import Logs
@@ -37,12 +37,15 @@ case "$1 $2" in
     [ -e "$state/down-is-ignored" ] || rm -f "$state/runtime-$3"
     ;;
   "compose -f")
-    name=$(sed -n 's/^name: //p' "$3")
-    deployment=$(sed -n 's/^ *sage.deployment: "\\(.*\\)"$/\\1/p' "$3")
+    file="$3"
+    name=$(sed -n 's/^name: //p' "$file")
+    label() { sed -n "s/^ *sage.$1: \\"\\(.*\\)\\"$/\\1/p" "$file"; }
+    deployment=$(label deployment)
     [ -e "$state/runs-another" ] && deployment=another
-    echo "running $deployment" > "$state/runtime-$name"
+    labels="$deployment|$(label instance)|$(label generation)|$(label container)"
+    echo "running|$labels" > "$state/runtime-$name"
     [ -e "$state/up-fails" ] && { echo "pull access denied"; exit 1; }
-    [ -e "$state/exits" ] && echo "exited $deployment" > "$state/runtime-$name"
+    [ -e "$state/exits" ] && echo "exited|$labels" > "$state/runtime-$name"
     ;;
   inspect*)
     [ -e "$state/runtime-$last" ] || { echo "Error: No such object: $last" >&2; exit 1; }
@@ -75,11 +78,16 @@ class Worker:
       (self.state / name).touch()
 
   def runtime(self, container) -> str | None:
+    """The runtime's state and deployment, "running d1"; None without one."""
     path = self.state / f"runtime-{runtime_name(container.id)}"
-    return path.read_text().strip() if path.exists() else None
+    return " ".join(path.read_text().strip().split("|")[:2]) if path.exists() else None
 
-  def run(self, container, state):
-    (self.state / f"runtime-{runtime_name(container.id)}").write_text(state + "\n")
+  def run(self, container, state, labelled=None):
+    """A runtime of the container, "running d1", labelled as `labelled` (this Sage's current authority by default)."""
+    authority = labelled or authority_of(container)
+    status, deployment = state.split()
+    (self.state / f"runtime-{runtime_name(container.id)}").write_text(
+        "|".join([status, deployment, authority.instance_id, authority.state_generation, authority.container_id]) + "\n")
 
   def answer(self, what):
     if self.breaks_at is not None and self.breaks_at in what:
@@ -110,6 +118,7 @@ class Lifecycle(ContainersMixin, QueueMixin):
   def __init__(self):
     self.pool = ThreadPoolExecutor(max_workers=2)
     self.queue_facts = []
+    self.recoveries = {}
     self.task_queue = TaskQueue(SCOPES, {"app": self.pool}, record=lambda task, status: None, notify=self._queue_changed)
 
   async def run(self):
@@ -147,6 +156,9 @@ def in_task():
 def authority(container, generation=None):
   instance = Instance.get()
   return Authority(instance.id, generation or instance.state_generation, container.id)
+
+
+authority_of = authority
 
 
 def worker_record(container) -> TargetRecord | None:
@@ -526,6 +538,126 @@ class TestDeleteRequests:
     manager.request_delete(container.id)
     manager.request_delete(container.id, force=True)
     assert [entry["params"]["force"] for entry in manager.task_queue.snapshot()["queued"]] == [True]
+
+
+class TestRecovery:
+  async def test_containment_stops_it_and_keeps_the_record_recovering_with_the_old_works_allowance(
+          self, manager, worker_host, container):
+    place(container, replace(unsettled(container), applied=Applied("d0", "a" * 64, VERIFIED)))
+    worker_host.run(container, "running d9")
+    await manager.recover_container(container.id, "d9", final=False)
+    record = worker_record(container)
+    assert worker_host.runtime(container) is None
+    assert (record.operation.id, record.operation.phase, record.operation.outcome, record.operation.recovery,
+            record.operation.effect_bound_seconds) == ("d9", "recovering", "interrupted", Recovery("unresolved"), 905)
+    assert events(container) == [("deploy", "interrupted", None)]
+
+  async def test_settling_after_the_allowance_records_the_interruption_and_lets_a_deploy_run(
+          self, manager, worker_host, container):
+    place(container, replace(unsettled(container), applied=Applied("d0", "a" * 64, VERIFIED)))
+    await manager.recover_container(container.id, "d9", final=False)
+    worker_host.run(container, "running d9")
+    await manager.recover_container(container.id, "d9", final=True)
+    record = worker_record(container)
+    assert worker_host.runtime(container) is None
+    assert (record.settled.operation_id, record.settled.runtime_goal, record.settled.result, record.settled.reason) == (
+        "d9", "stopped", "failed", "interrupted")
+    assert (record.operation.phase, record.operation.recovery, record.operation.verified_on_worker_at) == (
+        "settled", Recovery("verified"), VERIFIED)
+    assert record.applied == Applied("d0", "a" * 64, VERIFIED)
+    assert [transition for _, transition, _ in events(container)] == ["interrupted", "recovered"]
+    await deploy(manager, container)
+    assert worker_record(container).settled.result == "succeeded"
+
+  async def test_an_unreadable_record_is_replaced_by_a_reset_that_waits_the_longest_allowance(
+          self, manager, worker_host, container):
+    place(container, "not a record\n")
+    worker_host.run(container, "running d9")
+    await manager.recover_container(container.id, "unreadable", final=False)
+    record = worker_record(container)
+    assert (record.authority, record.operation.contract, record.operation.phase, record.operation.effect_bound_seconds) == (
+        authority(container), "reset", "recovering", 905)
+    await manager.recover_container(container.id, record.operation.id, final=True)
+    assert worker_record(container).settled.result == "failed" and worker_record(container).operation.phase == "settled"
+
+  async def test_a_record_from_before_a_restore_settles_under_the_current_authority_without_its_proof(
+          self, manager, worker_host, container):
+    place(container, replace(unsettled(container), authority=authority(container, generation="9999999999999999"),
+                             applied=Applied("d0", "a" * 64, VERIFIED)))
+    await manager.recover_container(container.id, "d9", final=True)
+    record = worker_record(container)
+    assert (record.authority, record.applied, record.settled.result) == (authority(container), None, "failed")
+
+  async def test_a_recovery_the_record_no_longer_needs_does_nothing(self, manager, worker_host, container):
+    place(container, deployed(container))
+    worker_host.run(container, "running d0")
+    await manager.recover_container(container.id, "d9", final=True)
+    assert (worker_record(container), worker_host.runtime(container), events(container)) == (deployed(container), "running d0", [])
+
+  async def test_a_recovery_of_one_incident_leaves_a_newer_one_to_its_own_wait(self, manager, worker_host, container):
+    newer = TargetRecord(authority(container), operation=Operation("d10", "deploy", "executing", VERIFIED, 905, input_hash="b" * 64))
+    place(container, newer)
+    worker_host.run(container, "running d10")
+    await manager.recover_container(container.id, "d9", final=True)
+    assert (worker_record(container), worker_host.runtime(container)) == (newer, "running d10")
+
+  async def test_a_recovery_that_cannot_stop_it_is_a_failure_and_leaves_the_record(self, manager, worker_host, container):
+    place(container, unsettled(container))
+    worker_host.run(container, "running d9")
+    worker_host.flag("down-is-ignored")
+    with pytest.raises(TaskFailed):
+      await manager.recover_container(container.id, "d9", final=False)
+    assert worker_record(container) == unsettled(container)
+    assert [(action, transition) for action, transition, _ in events(container)] == [("deploy", "recovery_failed")]
+
+
+class TestReset:
+  async def test_a_runtime_running_after_a_stop_is_stopped_and_the_cause_recorded(self, manager, worker_host, container):
+    stopped = replace(deployed(container), settled=Settled("s1", "stopped", "succeeded", VERIFIED))
+    place(container, stopped)
+    worker_host.run(container, "running d0")
+    await manager.reset_container(container.id, "unexpected_running")
+    record = worker_record(container)
+    assert worker_host.runtime(container) is None
+    assert (record.applied, record.settled.result, record.settled.reason) == (stopped.applied, "failed", "unexpected_running")
+    assert (record.operation.contract, record.operation.phase, record.operation.outcome) == ("reset", "settled", "succeeded")
+    assert events(container) == [("reset", "admitted", {"cause": "unexpected_running"}),
+                                 ("reset", "succeeded", {"cause": "unexpected_running"})]
+    assert [line["message"] for line in Logs().query_application_lines("demo-web")["lines"]] == [
+        "Stopped: it ran after it was stopped (task t1)"]
+
+  async def test_a_record_from_before_a_restore_is_reset_without_its_proof(self, manager, worker_host, container):
+    place(container, replace(deployed(container), authority=authority(container, generation="9999999999999999")))
+    worker_host.run(container, "running d0", labelled=authority(container, generation="9999999999999999"))
+    await manager.reset_container(container.id, "restored")
+    record = worker_record(container)
+    assert (record.authority, record.applied, record.settled.reason) == (authority(container), None, "restored")
+    assert worker_host.runtime(container) is None
+
+  async def test_a_runtime_without_a_record_is_stopped(self, manager, worker_host, container):
+    worker_host.run(container, "running d5")
+    await manager.reset_container(container.id, "no_record")
+    assert worker_host.runtime(container) is None and worker_record(container).settled.reason == "no_record"
+
+  async def test_a_runtime_checked_again_that_agrees_with_its_record_is_left_running(self, manager, worker_host, container):
+    place(container, deployed(container))
+    worker_host.run(container, "running d0")
+    await manager.reset_container(container.id, "unexpected_deployment")
+    assert (worker_host.runtime(container), worker_record(container), events(container)) == ("running d0", deployed(container), [])
+
+  async def test_another_sages_runtime_is_left_alone(self, manager, worker_host, container):
+    worker_host.run(container, "running d5", labelled=Authority("ffffffffffffffff", "1111111111111111", container.id))
+    await manager.reset_container(container.id, "no_record")
+    assert worker_host.runtime(container) == "running d5" and worker_record(container) is None
+
+  async def test_a_reset_that_cannot_stop_it_is_left_recovering(self, manager, worker_host, container):
+    place(container, replace(deployed(container), settled=Settled("s1", "stopped", "succeeded", VERIFIED)))
+    worker_host.run(container, "running d0")
+    worker_host.flag("down-is-ignored")
+    with pytest.raises(TaskFailed):
+      await manager.reset_container(container.id, "unexpected_running")
+    record = worker_record(container)
+    assert (record.operation.contract, record.operation.phase) == ("reset", "recovering")
 
 
 class TestMark:

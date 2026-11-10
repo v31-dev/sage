@@ -52,6 +52,7 @@ class Manager(ContainersMixin, QueueMixin):
     self.pool = ThreadPoolExecutor(max_workers=2)
     self.queue_facts = self.containers_queue_facts()
     self.container_state = self.containers_state_fact()
+    self.recoveries = {}
     self.task_queue = TaskQueue(SCOPES, {"app": self.pool}, record=lambda task, status: None, notify=self._queue_changed)
 
   async def run(self):
@@ -282,3 +283,77 @@ class TestListings:
     manager.request_record_listings()
     assert [(task["key"], task["quiet"], task["scopes"]) for task in manager.task_queue.snapshot()["queued"]] == [
         (["list_records", "w2"], True, [])]
+
+
+class Monotonic:
+  def __init__(self):
+    self.now = 1000.0
+
+  def __call__(self):
+    return self.now
+
+
+@pytest.fixture
+def monotonic(monkeypatch):
+  import services.manager.containers as module
+  clock = Monotonic()
+  monkeypatch.setattr(module, "monotonic", clock)
+  return clock
+
+
+def requested(manager):
+  return [(task["name"], task["params"], task["quiet"]) for task in manager.task_queue.snapshot()["queued"]]
+
+
+class TestCorrections:
+  async def test_an_interrupted_operation_is_contained_once_and_settled_after_its_allowance(
+          self, manager, containers, monotonic):
+    container = containers[0]
+    place(container, TargetRecord(authority(container), operation=Operation("d9", "deploy", "executing", datetime(2026, 1, 1),
+                                                                            905, input_hash="a" * 64)))
+    await Containers().read(container)
+    report(container)
+    await manager.observe_containers()
+    assert ("recover", {"container_id": container.id, "incident": "d9", "final": False}, False) in requested(manager)
+    manager.task_queue.cancel(scope="worker")
+    monotonic.now += 904
+    await manager.observe_containers()
+    assert [name for name, _, _ in requested(manager) if name == "recover"] == []
+    monotonic.now += 1
+    await manager.observe_containers()
+    assert ("recover", {"container_id": container.id, "incident": "d9", "final": True}, False) in requested(manager)
+
+  async def test_a_restart_waits_the_whole_allowance_again(self, manager, containers, monotonic):
+    container = containers[0]
+    place(container, TargetRecord(authority(container), operation=Operation("d9", "deploy", "executing", datetime(2026, 1, 1),
+                                                                            905, input_hash="a" * 64)))
+    await Containers().read(container)
+    report(container)
+    await manager.observe_containers()
+    manager.task_queue.cancel(scope="worker")
+    monotonic.now += 2000
+    manager.recoveries.clear()
+    await manager.observe_containers()
+    assert [params["final"] for name, params, _ in requested(manager) if name == "recover"] == [False]
+
+  async def test_a_contradicting_runtime_is_reset_visibly(self, manager, containers):
+    container = containers[0]
+    await Containers().write(container, TargetRecord(authority(container), settled=Settled("s1", "stopped", "succeeded",
+                                                                                           datetime(2026, 1, 1))))
+    report(container)
+    await manager.observe_containers()
+    assert ("reset", {"container_id": container.id, "cause": "unexpected_running"}, False) in requested(manager)
+
+  async def test_the_bookkeeping_goes_when_the_record_no_longer_needs_recovery_or_the_container_is_gone(
+          self, manager, containers, monotonic):
+    for container in containers:
+      place(container, TargetRecord(authority(container), operation=Operation("d9", "deploy", "executing", datetime(2026, 1, 1),
+                                                                              905, input_hash="a" * 64)))
+      await Containers().read(container)
+      report(container)
+    await manager.observe_containers()
+    assert set(manager.recoveries) == {container.id for container in containers}
+    await deployed(containers[0])
+    containers[1].delete_instance()
+    await manager.observe_containers()
+    assert manager.recoveries == {}
