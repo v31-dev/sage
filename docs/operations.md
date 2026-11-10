@@ -177,7 +177,9 @@ Implementation: [worker operations](../app/services/manager/workers.py),
 
 | Operation | Scopes · executor | Admission / history | Every initiating source | Model writes and other effects |
 | --- | --- | --- | --- | --- |
-| `observe_workers` | none · app | DEDUP / Q | Interval 30 s | No main-DB write. Asks every configured worker's SSH server (`Tailscale.observe_workers`), drops the setup outcome of a worker that stopped answering, and tells the pages of the workers whose state changed; observed status changes are WorkerEvents. |
+| `observe_workers` | none · app | DEDUP / Q | Interval 30 s | No main-DB write. Asks every configured worker's SSH server (`Tailscale.observe_workers`), drops the setup outcome of a worker that stopped answering, tells the pages of the workers whose state changed (observed status changes are WorkerEvents), and requests `converge_worker` and `repair_worker_stack`. |
+| `converge_worker` | `worker:<host>` · app | DEDUP / Q; force on its own key `("converge_worker", <host>, "force")` / H | `observe_workers` (not set up since the start or since it came back, a new address, a failed or refused setup after the retry time); force: Resync workers | No main-DB write. Owner stamp, worker tunnel and `*.<subdomain>.int` record (Cloudflare), the stack's files, `compose up --wait` and restarts and the infra stamp when it differs or on force, else `compose up -d`; the setup outcome and applied address in `Workers`; WorkerEvents. |
+| `repair_worker_stack` | `worker:<host>:stack` · app | DEDUP / Q | `observe_workers`: set up but not ready for its stack, Traefik or a minute's silence, once per cooldown | No main-DB write. `compose up -d` of the stack's services; a repair WorkerEvent when it started something. |
 | `add_worker` | `platform` · platform | QUEUE / H | POST `/workers` | Check reachability and ownership, then inline `setup_worker`: write Worker row, infra and DNS; request renewal for new worker and discovery. A failed new setup calls `remove_worker` inline as rollback, retaining only the add task's `platform` scope. |
 | `remove_worker` | `{platform, app, domain}` · platform | QUEUE / H | DELETE `/workers/{host}`; also inline rollback from `setup_worker` | Inline force-delete offline worker containers, including their Events/unlinks/counters; delete Worker. Forget report/metric/path caches; clean reachable owned stack and Cloudflare resources; enqueue certificate maintenance and discovery. Re-check container and internal-domain preconditions. |
 | `reboot_worker` | `{platform, app, domain}` · platform | QUEUE / H | POST `/workers/{host}/reboot` | No operation-specific main-DB write. Remote reboot, application log markers and in-memory reboot tracking; later worker/status syncs own the resulting state changes. |
@@ -185,8 +187,7 @@ Implementation: [worker operations](../app/services/manager/workers.py),
 | `renew_certificates` | `{platform, app, domain}` · platform | REPLACE / H | Daily 03:00 and startup; worker add/removal/subdomain change; setup detecting invalid certificates; successful restore; inline from `refresh_traefik` | No operation-specific main-DB write. Sequential certificate retirement/revocation/issuance; manager TLS reload; worker certificate files and proof stamps; update in-memory certificate inventory and worker applied proofs. |
 | `refresh_traefik` | `{platform, app, domain}` · platform | DEDUP / H | POST `/settings/resync_traefik` | Inline certificate maintenance; rewrite worker Traefik config and wildcard DNS. Through request helpers, mark all Domains pending/clear errors and enqueue their syncs plus full discovery. Does not advance infra stamps. |
 
-`setup_worker`, `repair_worker_stacks`, `set_worker_offline` and `sync_certificates_to_worker` are inline work, not separate
-tasks. They retain the caller's scopes.
+`sync_certificates_to_worker` is inline work, not a separate task. They retain the caller's scopes.
 `save_worker_subdomain` also runs directly in the [worker update route](#synchronous-routes).
 
 ### Platform, settings and maintenance

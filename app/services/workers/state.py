@@ -18,7 +18,8 @@ class Workers(Base):
 
   def __init__(self):
     super().__init__()
-    self._setups: dict[str, str] = {}
+    # By hostname: the outcome and the address the setup applied.
+    self._setups: dict[str, tuple[str, str | None]] = {}
 
   async def read_revisions(self, hostname: str) -> dict[str, str]:
     """The worker's stamps by name; none when it has none yet."""
@@ -37,14 +38,19 @@ class Workers(Base):
 
   def setup(self, hostname: str) -> str | None:
     with self.lock:
-      return self._setups.get(hostname)
+      return self._setups.get(hostname, (None, None))[0]
 
-  def record_setup(self, hostname: str, outcome: str | None):
+  def setup_address(self, hostname: str) -> str | None:
+    """The worker's address its last setup applied."""
+    with self.lock:
+      return self._setups.get(hostname, (None, None))[1]
+
+  def record_setup(self, hostname: str, outcome: str | None, address: str | None = None):
     with self.lock:
       if outcome is None:
         self._setups.pop(hostname, None)
       else:
-        self._setups[hostname] = outcome
+        self._setups[hostname] = (outcome, address)
 
 
 @dataclass(frozen=True)

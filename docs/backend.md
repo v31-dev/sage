@@ -309,7 +309,7 @@ Container create is an **instant route-side model write**, like most entities' C
 
 **Worker status.** In this order: `removing`, `adding` or `rebooting` while that worker task is queued or running; `offline` when its SSH server is unreachable; `checking` while the manager is cut off from the tailnet, or the worker is not observed or not set up since the manager started; `not ready` when another Sage owns it, its setup failed, it is not reporting, part of its stack is down or Traefik does not answer (the reason says which); otherwise `online`, the only status where it is ready (unknown while checking). Its `path` is how the last `tailscale ping` reached it (`direct`, or `relay <region>` for a DERP relay), refreshed every 60 s for the reachable workers (`refresh_worker_paths`).
 
-Worker convergence (`setup_worker`, reached through `sync_workers` and `add_worker`) runs on the **`platform` scope only** — it does not barrier app work, so the 30-second worker poll is never starved by long builds and worker drift is detected (and converged) within ~30s regardless of app activity. This is safe because app tasks already treat workers as unreliable — a worker can vanish mid-exec regardless of scheduling: deploy/stop/delete/backup **fast-fail on an offline-flagged worker**, any per-exec failure lands the container in `error`, and the status syncs converge from there. The residual race — a deploy targeting a worker whose setup is still mid-flight — fails loudly and converges identically, which is the same outcome as deploying to an offline worker (already possible at any time; placement doesn't require `online`). Tasks that mutate fleet-wide state keep the broad `{platform, app, domain}` barrier: `remove_worker` (deletes the row), `reboot_worker` (restarts the machine), `refresh_traefik` (maintains certificates and rewrites worker Traefik config), and the daily `renew_certificates` — the latter holds `{platform, app, domain}` so it also serializes with `setup_worker`'s per-worker cert sync. The manager issues required certificates in-process (`Certs`, via ACME DNS-01), sequentially within the global operation. Worker setup only distributes available material and requests maintenance when a certificate is missing. Traefik watches its dynamic configuration and reloads certificate changes without a restart. Platform database backup/restore and backup discovery hold the same three roots, covering discovery and unlinked record tasks. There is deliberately no per-worker scope dimension; at ≤10 workers it isn't worth the fragility.
+Worker convergence (`converge_worker`, `services/manager/workers.py`) holds the worker's own scope `worker:<host>`, so it waits for that worker's container tasks and holds them back while it rewrites and restarts the stack; other workers' work goes on. `observe_workers` asks for it for each reachable worker not set up since the manager started or since it came back, whose address differs from the one its last setup applied, or whose last setup failed or was refused at least `WORKER_SETUP_RETRY_SECONDS` ago (the Manager keeps when, `setup_failures`). It reads the worker's stamps, refuses another Sage's worker (setup outcome `refused`, shown as not ready, recorded once as an ownership event), claims an unclaimed one, makes the worker's tunnel and its `*.<subdomain>.int.<domain>` record, and, when the infra stamp differs from `infra_fingerprint` or on force, writes the stack's files (`render_infrastructure`), runs `compose up --wait`, restarts Traefik, Vector and Telegraf and writes the stamp last; otherwise it runs `compose up -d` to start what is stopped. It records the setup outcome and the address applied (`Workers`), and an applied or failed infrastructure as a worker event. Force (`request_convergence(host, force=True)`, its own visible key) applies whatever the stamp says and deletes no stamp. Stack repair (`repair_worker_stack`) starts what is stopped of a set-up worker that is not ready because part of its stack is down, Traefik does not answer, or it has been silent for `WORKER_STACK_SILENCE_SECONDS`, at most once per `WORKER_STACK_REPAIR_COOLDOWN_SECONDS` (`stack_repairs`); it holds the stack's own scope `worker:<host>:stack`, so a deploy does not delay it while convergence and reboot exclude it. Docker does not retry a container whose start failed, which is what happens to Traefik when a worker boots before its Tailscale address exists. The manager issues required certificates in-process (`Certs`, via ACME DNS-01), sequentially within the global operation; Traefik watches its dynamic configuration and reloads certificate changes without a restart.
 
 ## Cloudflare Request Failures
 
@@ -451,14 +451,14 @@ triggers use that same inventory/cleanup operation rather than introduce another
 `{worker_home}/revisions/` — one hash stamp per artifact class, written by
 whatever applied the artifact, and deliberately **outside** `traefik/dynamic/`
 (which Traefik watches). Expected hashes are computed from current configuration on demand. The stamps:
-`infra` — hash of (worker infra template contents, sage version, domain), written
-as the **final step** of `setup_worker` so it is a commit marker (an interrupted
+`infra` — `infra_fingerprint` of the stack's inputs and templates, written
+as the **final step** of `converge_worker` so it is a commit marker (an interrupted
 setup leaves the old stamp and gets retried); `certs` — a JSON map of independent `worker` and
 `discovery` proofs, each folding the leaf-chain fingerprint and certificate-template digest. Applied state is
 shown separately as `certificate` and `discovery_certificate` on worker entries; each holds `covered`, `synced`,
 `expiry` (only for a valid matching applied proof) and `error`;
 `discovery` — the hash of the services the discovery files list (`discovery_hash`), written by `sync_discovery`;
-`owner` — `<instance id> <domain>` of the Sage that manages the worker, written first by `setup_worker`, which
+`owner` — `<instance id> <domain>` of the Sage that manages the worker, written first by `converge_worker`, which
 another Sage refuses to set up. Each Domain's applied proof lives in its own `synced_hash`.
 
 ACME orders require the advertised `config.ACME_PROFILE` (`tlsserver`), which issues 45-day certificates. An
@@ -482,20 +482,6 @@ Valid material remains published through failed routine renewal. Offline edited 
 offline removed VMs still require manual decommissioning. Shared discovery remains an explicit shared key.
 
 Artifact fingerprints fold in their **template files themselves**, since templates ship inside the image and a changed template must reach the workers without another input changing. A worker's infra stamp holds `infra_fingerprint` (`services/workers/rendering.py`): its address, the manager's, the domain, the platform's and the worker's tunnels, the version, the report interval and the stack's templates; `render_infrastructure` writes the files from the same inputs, the Compose file as it is (its `${...}` are Compose's own, read from the `.env` beside it). Certificates, domain routing and discovery have their own digests (`templates_digest` in `services/manager/_common.py`, computed once at import). Templates pushed unconditionally, such as the revision writer and the per-application compose/backup/restore scripts, need no digest. A container's deployment is its record's `applied.deployment_id`, which its runtime carries as the `sage.deployment` label with the instance, generation and container ids; the status decision compares them, so a runtime of another deployment or authority is an error, not active.
-
-**`setup_worker` is the single stamp-driven convergence.** Every path — new
-worker, offline→online rejoin, IP change, force resync — calls the same
-idempotent `setup_worker`, and the worker's stamps decide how much work that
-is: infra stamp mismatch (or a changed IP, which is rendered into infra
-files) → the full file-sync/compose/restart pass; certs mismatch → per-worker
-cert sync only. It requests the Domain parent scan once the worker is online, and
-always makes the worker's DNS record `*.<subdomain>.int.<domain>` (deleting its records at any other name), asks
-for discovery and marks the worker online.
-`force=True` means *distrust every stamp*: the `revisions/` dir is deleted
-first, so everything mismatches and the worker converges from scratch — a
-brand-new worker (no stamps) takes the same path. Matching stamps avoid infrastructure and certificate writes;
-the Domain parent scan is requested after setup. Settings → Resync Traefik remains the manual global
-routing heal.
 
 `refresh_traefik` (Resync Traefik) rewrites each online worker's
 traefik files directly but deliberately does **not** advance their `infra`

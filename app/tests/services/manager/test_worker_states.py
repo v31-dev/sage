@@ -43,6 +43,7 @@ class Manager(WorkersMixin, QueueMixin):
     self.pool = ThreadPoolExecutor(max_workers=2)
     self.queue_facts = self.workers_queue_facts()
     self.worker_state = self.workers_state_fact()
+    self.setup_failures, self.stack_repairs = {}, {}
     self.task_queue = TaskQueue(SCOPES, {"app": self.pool}, record=lambda task, status: None, notify=self._queue_changed)
 
 

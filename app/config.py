@@ -101,6 +101,8 @@ WORKER_REBOOT_LIMIT_SECONDS = 300
 # once per cooldown.
 WORKER_STACK_SILENCE_SECONDS = 60
 WORKER_STACK_REPAIR_COOLDOWN_SECONDS = 60
+# A worker whose setup failed or was refused is set up again at most this often while it answers.
+WORKER_SETUP_RETRY_SECONDS = 300
 
 # A command on a worker is wrapped in `timeout`, which stops it at its deadline and, if it
 # ignores that, kills it this many seconds later. The manager waits this much longer than the

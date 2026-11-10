@@ -185,7 +185,6 @@ _JOBS = [
 
 # Run once right after startup (as queued tasks, so the servers are already up), then on
 # their cron schedule where they have one.
-# TODO(36 step 4D-2): converge every worker against its stamps at startup, since the env may have changed.
 _AT_STARTUP = [refresh_latest_release, renew_certificates, discover_backups, check_settings, refresh_worker_paths, sync_discovery]
 
 
