@@ -15,7 +15,7 @@ import asyncssh
 
 import config
 from services.base import Base
-from utils.common import dict_to_obj, get_env
+from utils.common import dict_to_obj, fill, get_env
 from utils.executor import run_in_executor_with_context
 
 logger = logging.getLogger(__name__)
@@ -319,8 +319,7 @@ class Tailscale(Base):
       with open(src, "r") as f:
         content = f.read()
       if keys:
-        for key, value in keys.items():
-          content = content.replace("${" + key + "}", str(value))
+        content = fill(content, keys)
       if formatter:
         content = formatter(content)
       data = content.encode()

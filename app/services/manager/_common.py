@@ -26,16 +26,6 @@ def templates_digest(*relative_paths: str) -> str:
   return digest.hexdigest()[:16]
 
 
-# Worker infra files, pushed by `setup_worker` behind its `infra` stamp.
-WORKER_INFRA_TEMPLATES = templates_digest(
-    "worker/docker-compose.yml",
-    "worker/worker.env",
-    "worker/traefik/traefik.yml",
-    "worker/traefik/config.yml",
-    "worker/vector/vector.yml",
-    "worker/telegraf/telegraf.conf",
-)
-
 DOMAIN_ROUTING_TEMPLATES = templates_digest(*(f"worker/traefik/{template}" for template in ROUTING_TEMPLATES.values()))
 
 

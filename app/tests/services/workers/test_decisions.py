@@ -5,7 +5,8 @@ import pytest
 
 import config
 from services.worker_reports import ContainerReading, Received, Snapshot
-from services.workers.decisions import SETUPS, SSH, STATUSES, WorkerFacts, WorkerReport, decide_worker, reboot_outcome, report_of
+from services.workers.decisions import (SETUPS, SSH, STATUSES, WorkerFacts, WorkerReport, decide_worker, reboot_outcome, report_of,
+                                        worker_claim_refusal, worker_owner)
 
 GOOD = WorkerReport("known", True)
 LATE = config.REPORT_STARTUP_GRACE_SECONDS + 1
@@ -126,3 +127,32 @@ class TestReportOf:
 ])
 def test_a_reboot_is_verified_only_by_a_new_boot_and_a_ready_worker(boot_id, ready, outcome):
   assert reboot_outcome("old", boot_id, ready) == outcome
+
+
+class TestWorkerOwner:
+  def test_the_stamp_holds_the_instance_and_its_domain(self):
+    assert worker_owner({"owner": "abc123 example.test"}) == ("abc123", "example.test")
+
+  def test_a_stamp_without_a_domain_still_names_the_instance(self):
+    assert worker_owner({"owner": "abc123"}) == ("abc123", "")
+
+  @pytest.mark.parametrize("revisions", [{}, {"infra": "x"}, {"owner": ""}])
+  def test_a_worker_without_a_stamp_has_no_owner(self, revisions):
+    assert worker_owner(revisions) is None
+
+
+class TestWorkerClaimRefusal:
+  MINE = {"owner": "me example.test"}
+
+  def test_a_worker_nobody_owns_may_be_set_up(self):
+    assert worker_claim_refusal({}, "me") is None
+
+  def test_a_worker_of_this_sage_may_be_set_up_whatever_its_domain_says(self):
+    assert worker_claim_refusal({"owner": "me old.test"}, "me") is None
+
+  def test_a_worker_of_another_sage_is_refused_with_its_domain_and_what_to_do(self):
+    refusal = worker_claim_refusal({"owner": "other other.test"}, "me")
+    assert "managed by another Sage (other.test)" in refusal and "remove it from there first" in refusal
+
+  def test_a_worker_of_another_sage_with_no_domain_is_still_refused(self):
+    assert "unknown domain" in worker_claim_refusal({"owner": "other"}, "me")

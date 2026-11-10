@@ -1,7 +1,8 @@
-"""Each worker's state as its pages show it, worked out from the facts its owners hold, and the setup outcomes the
-Manager's convergence leaves."""
+"""Each worker's state as its pages show it, worked out from the facts its owners hold; the setup outcomes the
+Manager's convergence leaves, and the stamps Sage keeps on the worker."""
 from dataclasses import dataclass
 
+import config
 from services.base import Base
 from services.tailscale import Tailscale
 from services.worker_reports import WorkerReports
@@ -11,11 +12,28 @@ from utils.common import utcnow
 
 class Workers(Base):
   """Each worker's setup outcome since the Manager started: succeeded, failed or refused (another Sage owns it); None
-  until a setup has run, and again once its SSH server stops answering, since it is set up again when it returns."""
+  until a setup has run, and again once its SSH server stops answering, since it is set up again when it returns. And
+  the stamps on the worker: one line each under `revisions/`, its owner (`<instance id> <domain>`) and the fingerprint
+  of the infrastructure applied."""
 
   def __init__(self):
     super().__init__()
     self._setups: dict[str, str] = {}
+
+  async def read_revisions(self, hostname: str) -> dict[str, str]:
+    """The worker's stamps by name; none when it has none yet."""
+    _, lines = await Tailscale().exec_command(
+        hostname, f"grep -H . {config.WORKER_HOME_DIR}/revisions/* 2>/dev/null || true", timeout=30)
+    revisions = {}
+    for line in lines:
+      path, separator, value = line.partition(":")
+      if separator and value.strip():
+        revisions[path.rsplit("/", 1)[-1]] = value.strip()
+    return revisions
+
+  async def write_revision(self, hostname: str, name: str, value: str):
+    await Tailscale().sync_file(hostname, config.TEMPLATES_DIR / "worker/file", f"{config.WORKER_HOME_DIR}/revisions/{name}",
+                                {"CONTENT": value})
 
   def setup(self, hostname: str) -> str | None:
     with self.lock:

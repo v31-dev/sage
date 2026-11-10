@@ -92,3 +92,18 @@ def reboot_outcome(baseline_boot_id: str, boot_id: str | None, ready: bool | Non
   if boot_id == baseline_boot_id:
     return "old_boot"
   return "verified" if ready is True else "not_ready"
+
+
+def worker_owner(revisions: dict) -> tuple[str, str] | None:
+  """The Sage the worker belongs to, (instance id, domain) from its owner stamp; None when it has none."""
+  instance_id, _, domain = revisions.get("owner", "").partition(" ")
+  return (instance_id, domain) if instance_id else None
+
+
+def worker_claim_refusal(revisions: dict, instance_id: str) -> str | None:
+  """Why this Sage may not set the worker up: its owner stamp names another instance. None when it is unowned or this
+  Sage's."""
+  owner = worker_owner(revisions)
+  if owner and owner[0] != instance_id:
+    return f"it is managed by another Sage ({owner[1] or 'unknown domain'}); remove it from there first"
+  return None

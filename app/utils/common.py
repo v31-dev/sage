@@ -23,6 +23,14 @@ def new_id() -> str:
   return secrets.token_hex(8)
 
 
+def fill(text: str, values: dict) -> str:
+  """`text` with `${KEY}` replaced by its value for each key given; any other `${...}`, such as a Compose variable, is
+  left as it is."""
+  for key, value in values.items():
+    text = text.replace("${" + key + "}", str(value))
+  return text
+
+
 def format_yaml(content: str) -> str:
   """Parse and re-serialize a YAML document so templated output is canonical and
   structurally validated before upload. Preserves key order; drops comments."""

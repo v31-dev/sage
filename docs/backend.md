@@ -481,10 +481,7 @@ with matching proofs. Certificate-template changes belong to these proofs, rathe
 Valid material remains published through failed routine renewal. Offline edited workers converge when they return;
 offline removed VMs still require manual decommissioning. Shared discovery remains an explicit shared key.
 
-Artifact fingerprints fold in their **template files themselves** (`templates_digest` in
-`services/manager/_common.py`, computed once at import because templates ship inside the image). Infrastructure,
-certificates, domain routing and discovery have separate digests. Templates pushed unconditionally, such as the revision writer
-and the per-application compose/backup/restore scripts, need no digest. A container's deployment is its record's `applied.deployment_id`, which its runtime carries as the `sage.deployment` label with the instance, generation and container ids; the status decision compares them, so a runtime of another deployment or authority is an error, not active.
+Artifact fingerprints fold in their **template files themselves**, since templates ship inside the image and a changed template must reach the workers without another input changing. A worker's infra stamp holds `infra_fingerprint` (`services/workers/rendering.py`): its address, the manager's, the domain, the platform's and the worker's tunnels, the version, the report interval and the stack's templates; `render_infrastructure` writes the files from the same inputs, the Compose file as it is (its `${...}` are Compose's own, read from the `.env` beside it). Certificates, domain routing and discovery have their own digests (`templates_digest` in `services/manager/_common.py`, computed once at import). Templates pushed unconditionally, such as the revision writer and the per-application compose/backup/restore scripts, need no digest. A container's deployment is its record's `applied.deployment_id`, which its runtime carries as the `sage.deployment` label with the instance, generation and container ids; the status decision compares them, so a runtime of another deployment or authority is an error, not active.
 
 **`setup_worker` is the single stamp-driven convergence.** Every path — new
 worker, offline→online rejoin, IP change, force resync — calls the same
