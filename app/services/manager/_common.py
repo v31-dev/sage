@@ -24,10 +24,4 @@ def templates_digest(*relative_paths: str) -> str:
   return digest.hexdigest()[:16]
 
 
-# The discovery files, pushed by `sync_discovery` behind each worker's `discovery` stamp.
-DISCOVERY_TEMPLATES = templates_digest(
-    "worker/traefik/discovery_public.yml",
-    "worker/traefik/discovery_internal.yml",
-)
-
 CERTIFICATE_TEMPLATES = templates_digest("worker/traefik/certs.yml")

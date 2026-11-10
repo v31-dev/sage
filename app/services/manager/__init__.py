@@ -10,6 +10,7 @@ from utils.executor import LANES
 from utils.queue import TaskQueue
 
 from .containers import ContainersMixin
+from .discovery import DiscoveryMixin
 from .domains import DomainsMixin
 from .queue import SCOPES, QueueMixin
 from .workers import WorkersMixin
@@ -34,6 +35,7 @@ logger = logging.getLogger(__name__)
 class Manager(
     ContainersMixin,
     DomainsMixin,
+    DiscoveryMixin,
     WorkersMixin,
     QueueMixin,
     Base,

@@ -127,7 +127,7 @@ class Manager(WorkersMixin, DomainsMixin, QueueMixin):
     self.queue_facts = self.workers_queue_facts()
     self.worker_state = self.workers_state_fact()
     self.setup_failures, self.stack_repairs = {}, {}
-    self.applied, self.reconciled = [], 0
+    self.applied, self.reconciled, self.discovered = [], 0, 0
     self.task_queue = TaskQueue(SCOPES, {"app": self.pool}, record=lambda task, status: None, notify=self._queue_changed)
 
   def request_domain_applies(self, domain_ids):
@@ -136,6 +136,9 @@ class Manager(WorkersMixin, DomainsMixin, QueueMixin):
 
   def request_domain_reconciliation(self):
     self.reconciled += 1
+
+  def request_discovery(self):
+    self.discovered += 1
 
 
 @pytest.fixture
@@ -424,6 +427,13 @@ class TestRemove:
     assert (provider.records["w1"], provider.tunnels, hosts.forgotten) == ((None, None), [], ["w1"])
     assert (Workers().setup("w1"), WorkerReports().latest("w1"), manager.setup_failures) == (None, None, {})
     assert events()[-2:] == [("remove", "admitted"), ("remove", "succeeded")]
+
+  async def test_removing_a_worker_that_was_set_up_republishes_discovery_without_it(self, manager, hosts, provider, worker):
+    await manager.converge_worker("w1")
+    hosts.answering.add("w1")
+    before = manager.discovered
+    await manager.remove_worker("w1")
+    assert manager.discovered == before + 1
 
   @pytest.mark.parametrize("trouble", ["another Sage's", "does not answer"])
   async def test_a_worker_it_cannot_clean_is_removed_from_sage_only(self, manager, hosts, provider, worker, trouble):

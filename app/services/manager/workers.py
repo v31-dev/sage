@@ -62,8 +62,8 @@ class WorkersMixin:
 
   def workers_state_fact(self) -> Fact:
     """Every worker's state, checked at each observation and report: a worker whose state changed is shown again, with
-    the domains routed to it when its readiness changed, and a change of its observed status is recorded in its
-    history."""
+    the domains routed to it when its readiness changed, a change of its observed status is recorded in its history,
+    and discovery is published again when the ready workers, or those reachable and set up, changed."""
     previous = {}
 
     def changed(current):
@@ -77,12 +77,16 @@ class WorkersMixin:
                               "observed", reason={"status": after.view.status, "reason": after.view.reason})
       readiness = {hostname for hostname in affected if hostname in previous and hostname in current
                    and previous[hostname].view.ready != current[hostname].view.ready}
+      published = [({hostname for hostname, state in states.items() if state.view.ready},
+                    {(hostname, state.address) for hostname, state in states.items()
+                     if state.ssh == "reachable" and state.setup == "succeeded"}) for states in (previous, current)]
       previous = current
       self._workers_changed(affected)
       for domain in Domain.select().join(Container, JOIN.LEFT_OUTER).where(
               Container.worker.in_(readiness) | Domain.namespace_worker.in_(readiness)):
         domain_changed(domain)
-      # TODO(36 step 4E): request discovery when the set of ready workers changed.
+      if published[0] != published[1]:
+        self.request_discovery()
 
     return Fact(self.worker_states, on_change=changed)
 
@@ -181,7 +185,6 @@ class WorkersMixin:
       else:
         await self._start_stack(hostname)
       # TODO(36 step 4F): distribute the worker's certificates and request a renewal when one is not valid.
-      # TODO(36 step 4E): request discovery, which the worker answers once it is ready.
       Workers().record_setup(hostname, "succeeded", address)
       self.setup_failures.pop(hostname, None)
       self.request_domain_reconciliation()
@@ -290,7 +293,6 @@ class WorkersMixin:
     self.stack_repairs.pop(hostname, None)
     record_worker_event(hostname, "remove", "succeeded", reason={"cleaned": cleaned})
     # TODO(36 step 4F): request the certificate renewal that retires its leaf.
-    # TODO(36 step 4E): request discovery, which no longer lists it.
     # TODO(36 step 4H): notify the warnings above.
     self.worker_state.check()
 
@@ -349,7 +351,6 @@ class WorkersMixin:
     and its internal and TCP domains, whose names are under it, are applied again."""
     self.request_convergence(hostname)
     self.request_domain_applies(domain.id for domain in Domain.select(Domain.id).where(Domain.namespace_worker == hostname))
-    # TODO(36 step 4E): request discovery.
     # TODO(36 step 4F): request the renewal of its certificate, whose names are under the subdomain.
 
   async def _boot_id(self, hostname: str) -> str:

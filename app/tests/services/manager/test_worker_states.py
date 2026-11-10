@@ -44,7 +44,11 @@ class Manager(WorkersMixin, QueueMixin):
     self.queue_facts = self.workers_queue_facts()
     self.worker_state = self.workers_state_fact()
     self.setup_failures, self.stack_repairs = {}, {}
+    self.discovered = 0
     self.task_queue = TaskQueue(SCOPES, {"app": self.pool}, record=lambda task, status: None, notify=self._queue_changed)
+
+  def request_discovery(self):
+    self.discovered += 1
 
 
 @pytest.fixture
@@ -167,6 +171,31 @@ class TestPublication:
     while manager.task_queue.snapshot()["running"]:
       await asyncio.sleep(0)
     assert signals == pages("w1") * 2
+
+
+class TestDiscoveryRequests:
+  async def test_a_worker_becoming_reachable_and_set_up_ready_or_unreachable_republishes_discovery(self, manager, tailnet, workers):
+    tailnet.answers, tailnet.addresses = {"w1": "reachable"}, {"w1": "100.64.0.2"}
+    await manager.observe_workers()
+    assert manager.discovered == 0
+    Workers().record_setup("w1", "succeeded")
+    manager.worker_reported("w1")
+    ready("w1")
+    manager.worker_reported("w1")
+    tailnet.answers["w1"] = "unreachable"
+    await manager.observe_workers()
+    assert manager.discovered == 3
+
+  async def test_a_new_address_republishes_it_and_a_check_that_changes_neither_set_does_not(self, manager, tailnet, workers):
+    tailnet.answers, tailnet.addresses = {"w1": "reachable"}, {"w1": "100.64.0.2"}
+    ready("w1")
+    await manager.observe_workers()
+    before = manager.discovered
+    await manager.observe_workers()
+    assert manager.discovered == before
+    tailnet.addresses["w1"] = "100.64.0.9"
+    await manager.observe_workers()
+    assert manager.discovered == before + 1
 
 
 class TestEvents:

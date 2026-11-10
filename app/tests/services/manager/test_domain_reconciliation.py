@@ -301,6 +301,13 @@ class TestObservation:
     assert Domains().dns_conforms(public.id, fingerprint(public)) is True
     assert (state(manager, public).view.status, applies(manager)) == ("synced", [])
 
+  async def test_each_pass_republishes_discovery_failed_ones_included(self, manager, public, hosts, provider):
+    await manager.reconcile_domains()
+    hosts.listing_fails = "w1"
+    with pytest.raises(TaskFailed):
+      await manager.reconcile_domains()
+    assert manager.discovered == 2
+
   async def test_the_facts_held_of_domains_gone_are_dropped(self, manager, public, hosts, provider):
     gone = Domain.create(name="gone", type="public", port=80, container=public.container)
     for domain in (public, gone):

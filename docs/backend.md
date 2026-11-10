@@ -422,37 +422,41 @@ A worker's setup, holding `worker:<host>`, lists the worker's routing files righ
 of Domains gone or bound to another worker before its stack starts: by binding only, so a container whose state is not
 known loses nothing.
 
-Discovery lists every service-assigned record with a resolvable host, including unlinked and pending/error records.
-Each member retains its pool and has a Boolean availability parameter: `;online` for true, `;online=?0` for false.
-A member is online only when its container is active, its worker's cached status is `online`, and its Domain is
-synced with a fingerprint matching its current configuration. All-offline services still have a discovery router.
-The flag is derived from local state after the remote inventories, alongside the Domain snapshot. The worker
-owner's existing readiness policy includes report freshness, Traefik readiness and startup grace. Discovery neither
-probes targets nor runs container status reconciliation. Domain sync results and runtime availability remain
-separate facts; an active container cannot advertise an unapplied configuration as online.
+Discovery lists every Domain with a service and a full name, its pool with it, whatever the state of its worker or
+container, unlinked ones included: each name has a Boolean availability parameter, `;online` for true and
+`;online=?0` for false (`discovery_services` in `services/domains/discovery.py`). A name is online only while its
+Domain is synced for its current configuration, its container can be routed to and its worker is ready, as the
+Domain's state decides them when a worker's files are written; discovery neither probes targets nor runs container
+reconciliation, and an apply not yet made for the current configuration keeps a running container's name offline.
+All-offline services still have a discovery router.
 
-`ApplicationMixin.save_container` compares persisted active/non-active state before writing and requests the parent
-after a successful change across that boundary. Deploy, stop, status reconciliation, backup and restore share this
-writer. Worker pushes, row writes/removal/reload and the existing clock refresh check a `worker_discovery` Fact of
-the cached ready-worker set, enqueueing only when that set changes. This Fact records which readiness projection
-requested publication; it owns no health state. It is checked outside worker locks and never from queue-Fact
-callbacks: those hold a Fact lock that enqueueing could re-enter. Readiness changes due to queue intent are picked
-up on the next ordinary report or worker refresh. Unchanged reports, paths and metrics do not request publication.
-Connectivity transitions also request the parent, since discovery DNS must change even for a not-ready worker.
+`publish_discovery(<hostname>)` writes one worker's files. `request_discovery` queues it for every worker reachable
+and set up, each quiet with `REPLACE` on `("publish_discovery", <hostname>)` under `worker:<hostname>:discovery`, so
+the worker's setup, reboot or removal, holding `worker:<hostname>`, excludes it while the other workers' go on; the
+task checks again that the worker is there, reachable and set up. It reads the worker's `discovery` stamp and lists
+its `_discovery-*.yml` files; when the stamp is not the current services' fingerprint (`discovery_fingerprint`: the
+templates, the domain, the services with their availability, and the response cache time) or the files are not
+exactly the current services', it writes every service's file, then removes the stale ones in one command, then writes
+the stamp, so a failure part-way leaves a stamp that does not match and is repaired by the next publication.
 
-Every online worker receives `_discovery-<namespace>-<service>.yml`, a router on `discovery.<domain>` (public, `web`)
-or `discovery.int.<domain>` (internal/TCP, `websecure`, tailnet only), matching `?service=<service>` and HEAD, GET or
-OPTIONS. Its headers middleware supplies `Sage-Endpoints` (names, pools and availability as an RFC 9651 list),
-`Cache-Control: private, max-age=30` (`config.DISCOVERY_CACHE_SECONDS`) and CORS. CORS preflight max-age is 300 seconds.
-The discovery fingerprint includes availability and the response cache policy. A matching exact file set plus the
-template/service `discovery` stamp avoids rewriting files; a missing file is repaired even with a matching stamp.
-New files are written before stale
-discovery files are removed, and the stamp is committed last. Public discovery DNS uses comment `sage-tunnel` and
-internal online-worker addresses use `sage-discovery-<hostname>` with DNS-only A records.
+Every worker reachable and set up receives `_discovery-<namespace>-<service>.yml`, a router on `discovery.<domain>`
+(public, `web`) or `discovery.int.<domain>` (internal and TCP, `websecure`, tailnet only), matching
+`?service=<service>` and HEAD, GET or OPTIONS. Its headers middleware supplies `Sage-Endpoints` (names, pools and
+availability as an RFC 9651 list), `Cache-Control: private, max-age=30` (`config.DISCOVERY_CACHE_SECONDS`) and CORS.
+CORS preflight max-age is 300 seconds.
 
-Published availability reflects detection/report lag, queue and worker I/O, and the client's cache lifetime. Rapid
-changes coalesce into the latest state. The existing five-minute full pass repairs missed events; availability
-triggers use that same inventory/cleanup operation rather than introduce another publisher.
+`publish_discovery_dns` (quiet, `REPLACE` on `("publish_discovery_dns",)`, under `discovery`), queued with every
+request, makes the shared records from one list of the zone: `discovery.int.<domain>` an A record (DNS-only) to each
+worker reachable and set up, ready or not, under `sage-discovery-<hostname>`, with the records of any other worker,
+a removed one included, deleted; and `discovery.<domain>` a proxied CNAME to the platform's tunnel under
+`sage-tunnel`, which every worker's platform connector serves.
+
+Discovery is requested at the end of every Domain apply, failed ones included, and of every Domain pass, which every
+five minutes also repairs it; when whether a container with a service's Domain can be routed to changes, its becoming
+known included (the minutely container observation); and when the ready workers, or the workers reachable and set up
+with their addresses, change (each worker observation and report). A worker's setup and a subdomain change reach it
+through the pass and the applies they request. Published availability reflects detection and report lag, queue and
+worker I/O, and the client's cache lifetime; rapid changes coalesce into the latest state.
 
 **Revision stamps make stale worker state detectable.** Every worker carries
 `{worker_home}/revisions/` — one hash stamp per artifact class, written by
@@ -464,7 +468,7 @@ setup leaves the old stamp and gets retried); `certs` — a JSON map of independ
 `discovery` proofs, each folding the leaf-chain fingerprint and certificate-template digest. Applied state is
 shown separately as `certificate` and `discovery_certificate` on worker entries; each holds `covered`, `synced`,
 `expiry` (only for a valid matching applied proof) and `error`;
-`discovery` — the hash of the services the discovery files list (`discovery_hash`), written by `sync_discovery`;
+`discovery` — the fingerprint of the services the discovery files list (`discovery_fingerprint`), written last by `publish_discovery`;
 `owner` — `<instance id> <domain>` of the Sage that manages the worker, written first by `converge_worker`, which
 another Sage refuses to set up. Each Domain's applied proof is its routing file's first line, `# sage-domain <id> <fingerprint>`.
 
@@ -488,7 +492,7 @@ with matching proofs. Certificate-template changes belong to these proofs, rathe
 Valid material remains published through failed routine renewal. Offline edited workers converge when they return;
 offline removed VMs still require manual decommissioning. Shared discovery remains an explicit shared key.
 
-Artifact fingerprints fold in their **template files themselves**, since templates ship inside the image and a changed template must reach the workers without another input changing. A worker's infra stamp holds `infra_fingerprint` (`services/workers/rendering.py`): its address, the manager's, the domain, the platform's and the worker's tunnels, the version, the report interval and the stack's templates; `render_infrastructure` writes the files from the same inputs, the Compose file as it is (its `${...}` are Compose's own, read from the `.env` beside it). Domain routing has its own digest (`ROUTING_DIGEST` in `services/domains/config.py`), as have certificates and discovery (`templates_digest` in `services/manager/_common.py`), each computed once at import. Templates pushed unconditionally, such as the revision writer and the per-application compose/backup/restore scripts, need no digest. A container's deployment is its record's `applied.deployment_id`, which its runtime carries as the `sage.deployment` label with the instance, generation and container ids; the status decision compares them, so a runtime of another deployment or authority is an error, not active.
+Artifact fingerprints fold in their **template files themselves**, since templates ship inside the image and a changed template must reach the workers without another input changing. A worker's infra stamp holds `infra_fingerprint` (`services/workers/rendering.py`): its address, the manager's, the domain, the platform's and the worker's tunnels, the version, the report interval and the stack's templates; `render_infrastructure` writes the files from the same inputs, the Compose file as it is (its `${...}` are Compose's own, read from the `.env` beside it). Domain routing has its own digest (`ROUTING_DIGEST` in `services/domains/config.py`), as have discovery (`TEMPLATES_DIGEST` in `services/domains/discovery.py`) and certificates (`templates_digest` in `services/manager/_common.py`), each computed once at import. Templates pushed unconditionally, such as the revision writer and the per-application compose/backup/restore scripts, need no digest. A container's deployment is its record's `applied.deployment_id`, which its runtime carries as the `sage.deployment` label with the instance, generation and container ids; the status decision compares them, so a runtime of another deployment or authority is an error, not active.
 
 `refresh_traefik` (Resync Traefik) rewrites each online worker's
 traefik files directly but deliberately does **not** advance their `infra`

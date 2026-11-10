@@ -67,8 +67,9 @@ Sources: [scheduler](../app/scheduler.py), [queue engine](../app/utils/queue.py)
 | `domain:<id>` | Work for that record, and tasks holding root `domain` | Other records |
 | `domain:host:<fqdn>` | The apply of any record with that full name, so a name swapped between two records is applied by one at a time | Other names |
 | `domain` | Every Domain apply, and every other task holding it: the Domain pass, maintenance | Worker and application tasks |
-| `worker:<host>` | Work on that worker and every scope below it: its containers, its stack and its routes | Other workers |
-| `worker:<host>:container:<id>`, `worker:<host>:stack`, `worker:<host>:routing:<id>` | That one and `worker:<host>` | Their siblings: a container's operations, the stack's repair and a Domain's route on the same worker |
+| `worker:<host>` | Work on that worker and every scope below it: its containers, its stack, its routes and its discovery files | Other workers |
+| `worker:<host>:container:<id>`, `worker:<host>:stack`, `worker:<host>:routing:<id>`, `worker:<host>:discovery` | That one and `worker:<host>` | Their siblings: a container's operations, the stack's repair, a Domain's route and the discovery files on the same worker |
+| `discovery` | The discovery DNS publication | Every other root, the workers' discovery files included |
 | `{platform, app, domain}` | All queued platform, application and domain work | Common, metrics and work outside the queue |
 | `common:<section>` | That section and root `common` work | Other sections at the scope level |
 | `common` | All common work | The other roots |
@@ -155,8 +156,7 @@ Route paths use `<app>` for `/projects/{project}/applications/{application}`; al
 | `backup_application_s3` | `app:<qn>` · app | DEDUP / H | Due-volume scan every minute; POST `<app>/volumes/{volume}/backups` | Application/Container `status` during backup and runtime recovery; backup Events; one Backup per successful container-volume archive. Upload encrypted worker archives, restore runtime; failed runtime recovery can leave error status. The stop helper skips containers already marked backup; see [consistency boundaries](#consistency-boundaries). Manual route requires inactive app. |
 | `restore_application_volume_from_s3` | `app:<qn>` · app | DEDUP / H | POST `<app>/volumes/{volume}/backups/{backup}/restore` | Application and target Container `status` become restoring; restore Event; restore worker volume; finally restore saved statuses, including on failure. Does not create a Backup. Requires inactive app. |
 
-Every persisted Container transition across active/non-active, through `save_container`, also requests a full
-discovery pass. Application/Container write helpers emit the affected UI sources; container log markers go
+A change of whether a container with a service's Domain can be routed to publishes discovery again. Application/Container write helpers emit the affected UI sources; container log markers go
 to the application's log shard on `LOGS_EXECUTOR`. No deployment follows an ordinary configuration edit.
 
 ### Domains and discovery
@@ -167,7 +167,8 @@ Implementation: [Domain operations and request helpers](../app/services/manager/
 | --- | --- | --- | --- | --- |
 | `apply_domain` | `domain:<id>`; `domain:host:<fqdn>` when it has a name; `worker:<host>:routing:<id>` when it routes to a worker · app | REPLACE on `("apply_domain", <id>)` / Q | `request_domain_applies`: the end of a container's Deploy or Stop, either one's failure, and its Delete (the Domains it unlinked); `observe_containers` when a container becomes routable or stops being; a worker's subdomain change (its internal and TCP Domains); `reconcile_domains` (a Domain in error, drifted or not applied); its own follow-up after an edit during it or a move before it | No main-DB write. `domain-<id>.yml` on its worker: written while its container is routable, removed once it is not or the Domain is unlinked, left as it is while that is unknown or the worker is not reachable and set up. Then its `sage-domain-<id>` DNS records: a linked public name's CNAME to its worker's tunnel, none otherwise. The `Domains` owner holds the outcome for the fingerprint applied (a success only when the route was applied too) and what it did to the route and DNS. A failure fails the task and is not retried by itself. |
 | `reconcile_domains` | `domain` · app | REPLACE on `("reconcile_domains",)` / Q | `request_domain_reconciliation`: every 5 min and startup; the end of a worker's setup; a container Delete that unlinked Domains; Domain edits and deletes | No main-DB write. Lists the routing files on each worker reachable and set up, the zone and the tunnels, then reads the Domain rows. Removes the routing files of Domains gone or bound to another worker (one `rm -f` per worker) and the `sage-domain-<id>` records of Domains gone. `Domains` holds each Domain's route on its worker and whether its DNS conforms, and drops what it held of Domains gone. Requests `apply_domain` for each Domain in error, drifted or not applied. A failed listing or removal fails the task after the rest ran. |
-| `sync_discovery(repair=False)` | `domain` · app | DEDUP / Q | End of a Domain apply attempt | Inventory zone DNS and worker files/stamps; clean artifacts and publish discovery without listing account tunnels, requesting record repairs or changing Domain results. |
+| `publish_discovery` | `worker:<host>:discovery` · app | REPLACE on `("publish_discovery", <host>)` / Q | `request_discovery`, for each worker reachable and set up: the end of every Domain apply and Domain pass; `observe_containers` when whether a container with a service's Domain can be routed to changed; a change of the ready workers or of those reachable and set up (worker observation and reports) | No main-DB write. Re-checks the worker; reads its `discovery` stamp and lists its `_discovery-*.yml` files; when either differs from the current services, writes each service's file, removes the stale ones, then writes the stamp. Requests nothing. |
+| `publish_discovery_dns` | `discovery` · app | REPLACE on `("publish_discovery_dns",)` / Q | `request_discovery`, with every request | No main-DB write. One zone listing: `discovery.int.<domain>` A records to each worker reachable and set up under `sage-discovery-<host>` (any other worker's deleted), and `discovery.<domain>` CNAME to the platform tunnel under `sage-tunnel`. |
 
 A request writes nothing: a Domain's status is decided when it is read. See the [Domain flow](#domain-apply-and-discovery).
 
@@ -229,8 +230,9 @@ flowchart TB
     child["Domain apply<br/>hold domain:id, domain:host:fqdn,<br/>worker:host:routing:id<br/>re-check worker and name"]
     apply["Route by the container's routable,<br/>then DNS"]
     result["Domains holds the outcome<br/>for the fingerprint applied"]
-    publish["Cleanup and publish discovery<br/>hold domain; repair=False<br/>read results; no record retry"]
-    output["Worker discovery files and DNS<br/>availability derived from Domain proof,<br/>Container active state and ready workers"]
+    facts["A container's routable, or the ready<br/>or reachable workers, change"]
+    publish["Publish discovery<br/>each worker under worker:host:discovery,<br/>its DNS under discovery; requests nothing"]
+    output["Worker discovery files and DNS<br/>availability from the Domain's state,<br/>its container's routable and its worker's readiness"]
 
     edit --> request
     edit -.-> parent
@@ -240,7 +242,8 @@ flowchart TB
     child --> apply --> result
     result -.->|"edited during it: request again"| request
     result -.->|"attempt finished"| publish
-    parent --> output
+    parent -.->|"pass finished"| publish
+    facts -.-> publish
     publish --> output
     linkStyle default stroke:#ef4444,stroke-width:3px
 ```
@@ -248,23 +251,23 @@ flowchart TB
 A Domain whose worker or name changed after its request is requested again with the right scopes before any I/O. A
 container's operation does not hold the apply back: the route follows its `routable` when the apply runs, and a change
 of that requests the apply again. Failed applies, and routes left because the worker could not be written to or the
-container's state was not known, wait for the Domain pass. The cleanup-only follow-up cannot replace an already queued full scan. Domain apply proof
-and discovery availability remain separate facts.
+container's state was not known, wait for the Domain pass. Discovery's publication only reads results and requests
+no apply, so a failed apply cannot form a retry loop through it. Domain apply proof and discovery availability remain
+separate facts.
 
 ### Application and worker events
 
 | Event / writer | Immediate state change | Queued consequence |
 | --- | --- | --- |
-| `save_container`: active ↔ non-active | Persist Container status and emit UI sources | Full discovery pass |
 | Deploy or Stop end, or the failure of either | The worker's `record.json` | Apply the container's Domains |
-| `observe_containers`: a container becomes routable or stops being | None | Apply its Domains |
+| `observe_containers`: a container becomes routable or stops being | None | Apply its Domains (a change between known values); publish discovery (any change, its becoming known included, of a container with a service's Domain) |
 | Successful container delete | Delete row; FK unlinks Domains; signals update count/status | Apply the unlinked Domains; the Domain pass when there were any |
-| A worker's readiness changes | None | None; the Domains routed to it are shown again |
-| `update_workers`, Worker save/forget/reload | Replace cached worker list; compare ready-worker set | Full discovery only when ready set changes |
-| Worker setup or offline transition | Worker row/IP or cached online state; remote convergence, which removes the routing files of Domains gone or bound elsewhere | After a setup, the Domain pass; full discovery, including discovery DNS membership |
-| Worker subdomain edit | Worker row | Convergence; apply its internal and TCP Domains; full discovery, renewal |
+| A worker's readiness changes | None | Publish discovery; the Domains routed to it are shown again |
+| Worker setup or offline transition | Worker row/IP or cached online state; remote convergence, which removes the routing files of Domains gone or bound elsewhere | After a setup, the Domain pass; publish discovery when the workers reachable and set up, or their addresses, change, its DNS membership with them |
+| Worker subdomain edit | Worker row | Convergence; apply its internal and TCP Domains, whose ends publish discovery; renewal |
 | Worker setup with new owner or invalid certificate | Register Worker / inspect applied material | Certificate maintenance |
-| Domain apply ends | `Domains` holds its outcome for the fingerprint applied | Apply again when the Domain was edited during it; cleanup/discovery without repair |
+| Domain apply ends | `Domains` holds its outcome for the fingerprint applied | Apply again when the Domain was edited during it; publish discovery |
+| Domain pass ends | `Domains` holds what it saw of each Domain's route and DNS | Apply each Domain in error, drifted or not applied; publish discovery |
 
 Queue-derived worker intent does not enqueue discovery inside its Fact callback. The next ordinary report or
 worker refresh checks readiness. [Worker ownership](../app/services/manager/workers.py) and
@@ -426,7 +429,7 @@ These are useful places to check when changing a flow:
   app/container busy statuses are persistent; `syncing` is projected from queued Domain work. A synced Domain can be
   unavailable. Quiet task absence from history is not evidence that no work ran.
 - **Intervals and retries are separate.** The catalog's admission is explicit for each source: report-driven
-  status uses REPLACE even at minutely cadence; discovery child completion uses DEDUP without repair. A future
+  status uses REPLACE even at minutely cadence; discovery's publication uses REPLACE on its own keys and requests no apply. A future
   change must preserve a follow-up for edits during I/O without creating a parent/child retry loop.
 
 The diagrams describe the source's current behavior. For a change, follow both directions: trigger → scopes →

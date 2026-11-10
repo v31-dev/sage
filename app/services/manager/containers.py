@@ -98,7 +98,9 @@ class ContainersMixin:
 
   def containers_state_fact(self) -> Fact:
     """Every container's state, checked once a minute: a container whose state changed with time alone (its report
-    grown stale, say) is shown again, and the domains of one that became routable or stopped being are applied."""
+    grown stale, say) is shown again, the domains of one that became routable or stopped being are applied, and
+    discovery is published again when whether a container with a service's domain can be routed to changed, its
+    becoming known included."""
     previous = {}
 
     def changed(current):
@@ -107,11 +109,14 @@ class ContainersMixin:
                   if current.get(container_id) != previous.get(container_id)}
       rerouted = {container_id for container_id in affected if {
           state.routable for state in (previous.get(container_id), current.get(container_id)) if state is not None} == {True, False}}
+      routability = {container_id for container_id in affected if container_id in previous and container_id in current
+                     and previous[container_id].routable != current[container_id].routable}
       previous = current
       for container in Container.select().where(Container.id.in_(affected)):
         container_changed(container)
       self.request_domain_applies(domain.id for domain in Domain.select(Domain.id).where(Domain.container.in_(rerouted)))
-      # TODO(36 step 4E): request discovery when a container's `routable` changed.
+      if Domain.select().where(Domain.container.in_(routability) & Domain.service.is_null(False)).exists():
+        self.request_discovery()
 
     return Fact(lambda: self.container_states(Container.select()), on_change=changed)
 

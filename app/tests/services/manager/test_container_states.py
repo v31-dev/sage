@@ -66,12 +66,15 @@ class Manager(ContainersMixin, QueueMixin):
     self.container_state = self.containers_state_fact()
     self.recoveries = {}
     self.orphans = {}
-    self.applied = []
+    self.applied, self.discovered = [], 0
     self.task_queue = TaskQueue(SCOPES, {"app": self.pool}, record=lambda task, status: None, notify=self._queue_changed)
 
   def request_domain_applies(self, domain_ids):
     if ids := sorted(domain_ids):
       self.applied.append(ids)
+
+  def request_discovery(self):
+    self.discovered += 1
 
   async def run(self):
     self.task_queue.dispatch_tick()
@@ -272,6 +275,32 @@ class TestDomainApplies:
     manager.container_state.check()
     assert manager.container_state.last[containers[0].id].routable is True
     assert manager.applied == []
+
+
+class TestDiscoveryRequests:
+  async def test_a_change_of_routable_republishes_discovery_its_becoming_known_included(self, manager, containers, clock):
+    Domain.create(name="shop", type="public", port=80, container=containers[0], service="shop")
+    await deployed(containers[0])
+    report(containers[0])
+    manager.container_state.check()
+    first = manager.discovered
+    report(containers[0], state="exited", at=WORKER_CLOCK + timedelta(seconds=20))
+    manager.container_state.check()
+    clock.advance(timedelta(seconds=config.REPORT_STALE_SECONDS + 1))
+    manager.container_state.check()
+    assert manager.container_state.last[containers[0].id].routable is None
+    report(containers[0], at=WORKER_CLOCK + timedelta(seconds=config.REPORT_STALE_SECONDS + 5))
+    manager.container_state.check()
+    assert manager.discovered - first == 3
+
+  async def test_a_container_without_a_services_domain_republishes_nothing(self, manager, containers):
+    Domain.create(name="shop", type="public", port=80, container=containers[0])
+    await deployed(containers[0])
+    report(containers[0])
+    manager.container_state.check()
+    report(containers[0], state="exited", at=WORKER_CLOCK + timedelta(seconds=20))
+    manager.container_state.check()
+    assert manager.discovered == 0
 
 
 class TestReads:

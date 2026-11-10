@@ -86,10 +86,13 @@ class Manager(DomainsMixin, QueueMixin):
 
   def __init__(self):
     self.pool = ThreadPoolExecutor(max_workers=2)
-    self.routable, self.ready, self.finished = {}, {}, []
+    self.routable, self.ready, self.finished, self.discovered = {}, {}, [], 0
     self.queue_facts = self.domains_queue_facts()
     self.task_queue = TaskQueue(SCOPES, {"app": self.pool}, record=lambda task, status: self.finished.append((task.name, status)),
                                 notify=self._queue_changed)
+
+  def request_discovery(self):
+    self.discovered += 1
 
   def container_states(self, containers):
     return {container.id: SimpleNamespace(routable=self.routable.get(container.id)) for container in containers}
@@ -307,6 +310,12 @@ class TestApply:
     provider.fails = "rate limited"
     await applied(manager, public)
     assert (manager.finished, queued(manager)) == ([("apply_domain", "failed")], [])
+
+  async def test_each_apply_republishes_discovery_failed_ones_included(self, manager, public, provider):
+    await applied(manager, public)
+    provider.fails = "rate limited"
+    await applied(manager, public)
+    assert manager.discovered == 2
 
   async def test_a_success_after_a_failure_replaces_it(self, manager, public, provider):
     provider.fails = "rate limited"

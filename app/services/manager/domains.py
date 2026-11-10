@@ -69,7 +69,8 @@ class DomainsMixin:
     """Writes the domain's routing file on its worker while its container can be routed to and removes it once it
     can't or the domain is unlinked, leaving it alone while that is not known or the worker isn't reachable and set up;
     then makes its DNS records what its configuration gives. Holds the outcome for the fingerprint it applied, a
-    success only when the route was applied too. An edit during the apply queues another."""
+    success only when the route was applied too. An edit during the apply queues another; discovery, whose
+    availability follows the outcome, is published again."""
     domain = Domain.get_or_none(Domain.id == domain_id)
     if domain is None:
       Domains().forget(domain_id)
@@ -117,7 +118,7 @@ class DomainsMixin:
       Domains().forget(domain_id)
     elif capture(current).content_hash != fingerprint:
       self.request_domain_applies([domain_id])
-    # TODO(36 step 4E): request discovery, whose availability follows the apply.
+    self.request_discovery()
     if failure is not None:
       logger.error(f"Domain {snapshot.host or domain.name}: the {phase} apply failed: {failure}")
       # TODO(36 step 4H): self.notify(f"Domain {snapshot.host or domain.name} sync failed at {phase}: {failure}", "error", "/domains")
@@ -135,9 +136,9 @@ class DomainsMixin:
   async def reconcile_domains(self):
     """Lists the routing files on every worker reachable and set up, the zone and the tunnels; removes the routing files
     of Domains gone or bound to another worker, and the DNS records of Domains gone; holds what it saw of each Domain's
-    route and DNS; then requests the apply of each Domain in error, drifted or not applied. Holding every Domain, it
-    never crosses an apply; it lists before it reads the rows, so a Domain created meanwhile is never taken for one
-    gone."""
+    route and DNS; then requests the apply of each Domain in error, drifted or not applied, and discovery's
+    publication. Holding every Domain, it never crosses an apply; it lists before it reads the rows, so a Domain
+    created meanwhile is never taken for one gone."""
     hostnames = [worker.hostname for worker in Worker.select(Worker.hostname)
                  if Tailscale().ssh(worker.hostname) == "reachable" and Workers().setup(worker.hostname) == "succeeded"]
     cloudflare, failures = Cloudflare(), []
@@ -190,7 +191,7 @@ class DomainsMixin:
     Domains().retain(configs.keys())
     self.request_domain_applies(domain_id for domain_id, state in self.domain_states(domains.values()).items()
                                 if state.view.status == "error" or state.view.reason in ("drifted", "not_applied"))
-    # TODO(36 step 4E): request discovery, whose availability follows what the pass saw.
+    self.request_discovery()
     if failures:
       logger.error("The domain pass is incomplete: " + "; ".join(failures))
       # TODO(36 step 4H): self.notify("Domain reconciliation failed: " + "; ".join(failures), "error", "/domains")
