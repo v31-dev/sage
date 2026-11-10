@@ -130,8 +130,9 @@ class WorkersMixin:
       self.setup_failures.pop(hostname, None)
 
   def request_convergence(self, hostname: str, force: bool = False):
-    """Queues the convergence of the worker's stack with Sage; with `force`, its files are written and its stack
-    restarted whatever its infra stamp says, as a visible task of its own."""
+    """Queues the convergence of the worker's stack with Sage; with `force` (the worker's resync), as a visible task
+    of its own, its files are written and its stack restarted whatever its infra stamp says, and everything else Sage
+    keeps on it is written again: its certificates, its Domains' routes and its discovery files."""
     self.add_task(task=self.converge_worker, key=("converge_worker", hostname, *(("force",) if force else ())),
                   scopes={f"worker:{hostname}"}, executor="app", params={"hostname": hostname, "force": force},
                   labels={"Worker": hostname}, quiet=not force)
@@ -141,8 +142,9 @@ class WorkersMixin:
     to another worker, makes its tunnel and its `*.<subdomain>.int` record, and writes the stack's files and starts it
     when its infra stamp differs (or on force), else starts what is stopped. It asks for the certificates' renewal when
     its own or the shared discovery certificate does not cover its names, else for their copy to it when it did not
-    apply the current ones (its `certs` stamp), and once it is set up for the pass over the Domains' artifacts.
-    Another Sage's worker is refused and left alone."""
+    apply the current ones (its `certs` stamp), and once it is set up for the pass over the Domains' artifacts;
+    forced, for its certificates, the routes of the Domains routed to it and its discovery files to be written again
+    whatever their stamps say. Another Sage's worker is refused and left alone."""
     worker = Worker.get_or_none(Worker.hostname == hostname)
     address = Tailscale().address(hostname)
     if worker is None or address is None or Tailscale().ssh(hostname) != "reachable":
@@ -193,11 +195,16 @@ class WorkersMixin:
       certificates = Certs().worker_state(hostname, worker.subdomain, Workers().certificates(hostname), TEMPLATE_DIGEST).values()
       if not all(state["covered"] for state in certificates):
         self.request_certificate_renewal()
-      elif not all(state["synced"] for state in certificates):
+      elif not force and not all(state["synced"] for state in certificates):
         self.request_certificate_distribution(hostname)
       Workers().record_setup(hostname, "succeeded", address)
       self.setup_failures.pop(hostname, None)
       self.request_domain_reconciliation()
+      if force:
+        self.request_certificate_distribution(hostname, force=True)
+        self.request_domain_applies(domain.id for domain in Domain.select(Domain.id).join(Container, JOIN.LEFT_OUTER).where(
+            (Container.worker == hostname) | (Domain.namespace_worker == hostname)))
+        self.request_discovery(hostname, force=True)
     except Exception as error:
       Workers().record_setup(hostname, "failed", address)
       self.setup_failures[hostname] = monotonic()

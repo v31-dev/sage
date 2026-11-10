@@ -25,7 +25,7 @@ def task(name: str, **params) -> tuple[str, dict]:
 APPLYING_TASKS = {
     "tailscale": (task("check_tailscale"), task("sync_workers", force=True),
                   task("sync_workers", check_stamps=True)),
-    "cloudflare": (task("check_cloudflare"), task("refresh_traefik"), task("renew_certificates")),
+    "cloudflare": (task("check_cloudflare"), task("renew_certificates")),
     "s3": (task("check_s3"),),
     "notifications": (task("check_notifications"),),
 }

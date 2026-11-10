@@ -146,9 +146,16 @@ class TestRequests:
     hosts.found["w4"] = "reachable"
     manager.request_discovery()
     assert [(key, scopes, params, quiet) for key, scopes, params, _, quiet in queued(manager)] == [
-        (("publish_discovery", "w1"), ["worker:w1:discovery"], {"hostname": "w1"}, True),
-        (("publish_discovery", "w2"), ["worker:w2:discovery"], {"hostname": "w2"}, True),
+        (("publish_discovery", "w1"), ["worker:w1:discovery"], {"hostname": "w1", "force": False}, True),
+        (("publish_discovery", "w2"), ["worker:w2:discovery"], {"hostname": "w2", "force": False}, True),
         (("publish_discovery_dns",), ["discovery"], {}, True)]
+
+  def test_a_forced_request_names_one_worker_and_is_its_own_visible_task(self, manager, hosts, workers):
+    manager.request_discovery()
+    manager.request_discovery("w1", force=True)
+    assert [(key, params.get("force"), quiet) for key, _, params, _, quiet in queued(manager)] == [
+        (("publish_discovery", "w1"), False, True), (("publish_discovery", "w2"), False, True),
+        (("publish_discovery", "w1", "force"), True, False), (("publish_discovery_dns",), None, True)]
 
   async def test_a_request_while_one_runs_gets_one_after_it(self, manager, hosts, shop):
     seen = []
@@ -215,6 +222,12 @@ class TestPublication:
     hosts.commands.clear()
     await manager.publish_discovery("w1")
     assert writes(hosts, "w1") == []
+
+  async def test_a_forced_publication_writes_them_though_they_are_current(self, manager, hosts, shop):
+    await manager.publish_discovery("w1")
+    hosts.commands.clear()
+    await manager.publish_discovery("w1", force=True)
+    assert writes(hosts, "w1") == [f"write {DYNAMIC}/_discovery-public-shop.yml", f"write {HOME}/revisions/discovery"]
 
   async def test_a_change_of_availability_rewrites_the_files_and_the_stamp(self, manager, hosts, shop):
     await manager.publish_discovery("w1")

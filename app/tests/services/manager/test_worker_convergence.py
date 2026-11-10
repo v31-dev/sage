@@ -142,6 +142,7 @@ class Manager(WorkersMixin, DomainsMixin, QueueMixin):
     self.worker_state = self.workers_state_fact()
     self.setup_failures, self.stack_repairs = {}, {}
     self.applied, self.reconciled, self.discovered, self.renewals, self.distributions = [], 0, 0, 0, []
+    self.forced = []
     self.task_queue = TaskQueue(SCOPES, {"app": self.pool}, record=lambda task, status: None, notify=self._queue_changed)
 
   def request_domain_applies(self, domain_ids):
@@ -151,14 +152,19 @@ class Manager(WorkersMixin, DomainsMixin, QueueMixin):
   def request_domain_reconciliation(self):
     self.reconciled += 1
 
-  def request_discovery(self):
+  def request_discovery(self, hostname=None, force=False):
     self.discovered += 1
+    if force:
+      self.forced.append(("discovery", hostname))
 
   def request_certificate_renewal(self):
     self.renewals += 1
 
   def request_certificate_distribution(self, hostname, force=False):
-    self.distributions.append(hostname)
+    if force:
+      self.forced.append(("certificates", hostname))
+    else:
+      self.distributions.append(hostname)
 
 
 @pytest.fixture
@@ -250,6 +256,35 @@ class TestConvergence:
     await manager.converge_worker("w1", force=True)
     assert len(hosts.stack("w1")) == 6
     assert [transition for _, transition in events()] == ["admitted", "succeeded"] * 2
+
+  async def test_a_resync_writes_again_its_certificates_its_domains_routes_and_its_discovery(
+          self, manager, hosts, worker, application):
+    hosts.files[f"w1:{HOME}/revisions/certs"] = ('{"discovery": "p2", "worker": "old"}', 0o644)
+    here = Container.create(application=application, worker="w1")
+    routed = sorted(Domain.create(name=name, type=type, port=80, container=container, namespace_worker=namespace).id
+                    for name, type, container, namespace in (("shop", "public", here, None), ("api", "internal", here, "w1"),
+                                                             ("old", "internal", None, "w1")))
+    Worker.create(hostname="w2", subdomain="blue")
+    Domain.create(name="other", type="public", port=80, container=Container.create(application=application, worker="w2"))
+    await manager.converge_worker("w1", force=True)
+    assert manager.forced == [("certificates", "w1"), ("discovery", "w1")]
+    assert (manager.applied, manager.distributions, manager.renewals) == ([routed], [], 0)
+
+  async def test_a_resync_of_a_worker_not_covered_renews_and_still_writes_what_is_valid(self, manager, hosts, worker, catalog):
+    catalog.covered["worker"] = False
+    await manager.converge_worker("w1", force=True)
+    assert (manager.renewals, manager.forced[0]) == (1, ("certificates", "w1"))
+
+  async def test_a_setup_that_is_not_a_resync_writes_nothing_again(self, manager, hosts, worker, application):
+    Domain.create(name="shop", type="public", port=80, container=Container.create(application=application, worker="w1"))
+    await manager.converge_worker("w1")
+    assert (manager.forced, manager.applied) == ([], [])
+
+  async def test_a_failed_resync_writes_nothing_else_again(self, manager, hosts, worker):
+    hosts.fails = "up -d --wait"
+    with pytest.raises(TaskFailed):
+      await manager.converge_worker("w1", force=True)
+    assert manager.forced == []
 
   async def test_a_new_address_applies_again(self, manager, hosts, worker):
     await manager.converge_worker("w1")

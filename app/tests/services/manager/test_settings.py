@@ -65,7 +65,6 @@ class TestIsApplying:
       ("sync_workers", {"force": False}, set()),
       ("sync_workers", {"force": False, "check_stamps": False}, set()),
       ("check_cloudflare", {}, {"cloudflare"}),
-      ("refresh_traefik", {}, {"cloudflare"}),
       ("renew_certificates", {}, {"cloudflare"}),
       ("check_s3", {}, {"s3"}),
       ("check_notifications", {}, {"notifications"}),
