@@ -131,13 +131,6 @@ class PlatformMixin:
     logger.info(
         f"Notifications cleanup: removed {deleted_count} notification rows older than {days} days.")
 
-    # Cleanup backups
-    deleted_count = (Backup.delete().where(Backup.created_at < cutoff).execute())
-    if deleted_count:
-      Updates().changed(UpdateSource.BACKUPS)
-    logger.info(
-        f"Backups cleanup: removed {deleted_count} backups rows older than {days} days.")
-
     # Cleanup task log
     deleted_count = (Task.delete().where(Task.created_at < cutoff).execute())
     logger.info(f"Tasks cleanup: removed {deleted_count} task rows older than {days} days.")
@@ -151,33 +144,6 @@ class PlatformMixin:
         path.unlink(missing_ok=True)
         removed += 1
     logger.info(f"Restore safety-copy cleanup: removed {removed} older than {days} days.")
-
-    if not self.s3.s3_config:
-      return
-
-    # Cleanup application backups from S3
-    try:
-      deleted_application_backups = await self.s3.delete_key(
-          APPLICATIONS_PREFIX,
-          filter=partial(is_expired_backup_key, cutoff=cutoff),
-      )
-      logger.info(
-          f"Application backup cleanup: removed {len(deleted_application_backups)} backup files older than {days} days."
-      )
-    except Exception as e:
-      logger.error(f"Failed to cleanup old application backups: {e}")
-
-    # Cleanup platform backups from S3
-    try:
-      deleted_platform_backups = await self.s3.delete_key(
-          PLATFORM_PREFIX,
-          filter=partial(is_expired_backup_key, cutoff=cutoff),
-      )
-      logger.info(
-          f"Platform backup cleanup: removed {len(deleted_platform_backups)} backup files older than {days} days."
-      )
-    except Exception as e:
-      logger.error(f"Failed to cleanup old S3 backups: {e}")
 
   async def backup_database_s3(self):
     # Create the backup

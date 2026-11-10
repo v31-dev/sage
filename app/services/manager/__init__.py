@@ -9,6 +9,7 @@ from services.worker_reports import WorkerReports
 from utils.executor import LANES
 from utils.queue import TaskQueue
 
+from .backup_catalog import BackupCatalogMixin
 from .backups import BackupsMixin
 from .certificates import CertificatesMixin
 from .containers import ContainersMixin
@@ -34,6 +35,7 @@ logger = logging.getLogger(__name__)
 class Manager(
     ContainersMixin,
     BackupsMixin,
+    BackupCatalogMixin,
     DomainsMixin,
     DiscoveryMixin,
     WorkersMixin,

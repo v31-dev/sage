@@ -115,6 +115,7 @@ async def cleanup():
       quiet=True,
       on_conflict=OnConflict.REPLACE,
   )
+  Manager().request_backup_retention()
   Manager().add_task(
       task=Manager().cleanup,
       scopes={"platform"},
@@ -128,13 +129,7 @@ async def renew_certificates():
 
 
 async def discover_backups():
-  if not Manager().s3.s3_config:
-    return
-  Manager().add_task(
-      task=Manager().discover_s3_backups,
-      scopes={"platform", "app", "domain"},
-      executor="platform",
-  )
+  Manager().request_backup_discovery()
 
 
 async def check_settings():

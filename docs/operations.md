@@ -76,6 +76,8 @@ Sources: [scheduler](../app/scheduler.py), [queue engine](../app/utils/queue.py)
 | `common:<section>` | That section and root `common` work | Other sections at the scope level |
 | `common` | All common work | The other roots |
 | `metrics:<host>` or `metrics:workers` | The matching child and root `metrics` maintenance | Sibling metrics tasks |
+| `backup:store:<identity>` | The store's discovery and retention, and every archive's write, read or deletion in that store | Other stores' work |
+| `backup:store:<identity>:{write,read,delete}:<part>` | That one and the store's root | Other archives' work in the store |
 | `metrics` | All metric flushes and maintenance | The other roots |
 
 A Domain's apply holds its route's scope under its worker, not its container's: it does not wait for the container's
@@ -121,9 +123,9 @@ uses a 30-second misfire grace period.
 | `refresh_latest_release` | Every 4 h, `0 */4 * * *` | Yes | `refresh_latest_release` |
 | `backup_database` | 00:00 and 12:00, `0 */12 * * *` | No | `backup_database_s3`; S3 required |
 | `renew_certificates` | Daily 03:00, `0 3 * * *` | Yes | `renew_certificates` |
-| `cleanup` | Daily 04:00, `0 4 * * *` | No | Three independent tasks: `metrics_cleanup`, `logs_cleanup`, `cleanup` |
+| `cleanup` | Daily 04:00, `0 4 * * *` | No | Independent tasks: `metrics_cleanup`, `logs_cleanup`, `prune_backups` (nothing without a store), `cleanup` |
 | `send_summary_notification` | Daily 08:00, `0 8 * * *` | No | `send_summary_notification` |
-| `discover_backups` | Startup only | Yes | `discover_s3_backups`; S3 required |
+| `discover_backups` | Startup only | Yes | `discover_backups`; nothing without a store |
 
 A volume is due when its `Volume.backup_cron` matches the UTC minute and no Backup of it was recorded in that minute;
 each container of its application gets one automatic backup of the application's due volumes.
@@ -204,8 +206,9 @@ Implementation: [platform operations](../app/services/manager/platform.py),
 | --- | --- | --- | --- | --- |
 | `backup_database_s3` | `{platform, app, domain}` · platform | REPLACE / H | 00:00/12:00; POST `/backups`; S3 required | SQLite snapshot, encrypt and upload, then insert platform Backup. Snapshot precedes its own Backup/history rows. |
 | `restore_database_from_s3` | `{platform, app, domain}` · platform | DEDUP / H; `restore=True` | POST `/backups/{backup}/restore` | Replace **all main-DB tables** using SQLite backup API, with safety-copy rollback. Reconcile schema/Instance and normalize Settings; write back pre-restore S3 settings. Reload settings consumers and workers. Successful restore cancels waiting old-data work and enqueues renewal, force worker sync, full discovery and S3 discovery with priority. |
-| `discover_s3_backups` | `{platform, app, domain}` · platform | DEDUP / H | Startup; POST `/backups/discover`; PUT `/settings/s3`; successful restore; S3 required | Bulk insert missing platform/app Backup rows, delete rows whose object is absent. Volume archives are linked only when their app exists, using names in the S3 key. |
-| `delete_backup_s3` | `common` · common | QUEUE / H | DELETE a platform or nested volume backup | No operation-specific main-DB write. Delete S3 object; its Backup row was already deleted by the route. |
+| `discover_backups` | `backup:store:<identity>` · common | REPLACE on `("discover_backups",)` / H | `request_backup_discovery`: startup; POST `/backups/discover`; PUT `/settings/s3`; successful restore; nothing without a store | Lists the store, then reads the rows, and makes the table mirror the store in one transaction (`reconcile_catalog`, `apply_catalog`): rows of another store or of a gone object dropped, listed backups added, a volume archive only while its volume is configured (by its id). Archives being deleted are left out. Nothing when the store changed since the request. |
+| `delete_archive` | `backup:store:<identity>:delete:<part>` · common | DEDUP on `("delete_archive", <s3 path>)` / H | `request_backup_deletion`, which first deletes the Backup row (`remove_backup`) | Deletes exactly that key from the store the row named; refused when that is no longer the configured store, so another store's object of the same key is never touched. |
+| `prune_backups` | `backup:store:<identity>` · common | REPLACE on `("prune_backups",)` / Q | `request_backup_retention`, daily 04:00 | Deletes the store's platform backups and volume archives older than `config.RETENTION_DAYS` (14), then the rows of those deleted, a prefix that failed failing the task after the other. Nothing when the store changed. |
 | `check_<section>` → `check_setting` | `common:<section>` · common | REPLACE; periodic/startup Q, save H | Every 5 min and startup for configured sections; PUT `/settings/{s3,notifications}` when complete | No main-DB write. Set in-memory check result/time; Cloudflare check also updates cached tunnel health and worker entries. Sections: tailscale, cloudflare, s3, notifications. |
 | `refresh_latest_release` | `common` · common | REPLACE / H | Every 4 h and startup; POST `/info/release/refresh` | No operation-specific main-DB write. Fetch and replace in-memory release/version cache. |
 | `send_summary_notification` | `common` · common | REPLACE / H | Daily 08:00 | Read model/cached worker counts and dispatch summary directly to notification channels. **No Notification row** for the summary. |
@@ -213,7 +216,7 @@ Implementation: [platform operations](../app/services/manager/platform.py),
 | `flush_worker_metrics` | `metrics:workers` · metrics | DEDUP / Q | Every minute via `collect_metrics` | No main-DB write. Flush completed report minutes into worker metric shards (`WorkerMeta`, `WorkerMetrics`, `ContainerMetrics`); push newest host metrics into worker memory. |
 | `metrics_cleanup` → `Metrics.cleanup` | `metrics` · metrics | REPLACE / Q | Daily 04:00 | No main-DB write. Delete old metric rows and orphan host shards; read Worker rows to identify live hosts. |
 | `logs_cleanup` → `Logs.cleanup` | `common` · common | REPLACE / Q | Daily 04:00 | No main-DB write. Delete old log/request/task-log lines and orphan application shards; trim size limits and optimize indexes. |
-| `cleanup` | `platform` · platform | REPLACE / H | Daily 04:00 | Delete old Event, Notification, Backup and Task rows; remove old DB safety copies and S3 archives. Default retention: `config.RETENTION_DAYS` = 14. Does not hold `app`, `domain`, `common` or `metrics`. |
+| `cleanup` | `platform` · platform | REPLACE / H | Daily 04:00 | Delete old Event, Notification and Task rows; remove old DB safety copies (backups have their own retention, `prune_backups`). Default retention: `config.RETENTION_DAYS` = 14. Does not hold `app`, `domain`, `common` or `metrics`. |
 
 ## Follow-up flows
 
@@ -297,7 +300,7 @@ ordinary CRUD writer beyond the action routes already listed.
 | DELETE `/domains/{id}` | Delete Domain | Request parent cleanup/discovery; ID-owned artifacts allow cleanup after row removal |
 | PUT `/workers/{host}` | Worker `subdomain` via `save_worker_subdomain`; affected Domain pending/error-clear writes via request helper | Update worker cache; enqueue record syncs, discovery, renewal and stamp-check worker sync |
 | PUT `/settings/{s3,notifications}` | Setting `value` (merged known fields) through `Settings.set` | Validate first, reload consuming service immediately, enqueue check when complete; S3 save also requests backup discovery |
-| DELETE `/backups/{id}` or nested volume backup | Delete Backup immediately | Emit backups change; queue `delete_backup_s3` with S3 path |
+| DELETE `/backups/{id}` or nested volume backup | Delete Backup immediately (`request_backup_deletion`) | Emit backups change; queue `delete_archive` with its S3 path and store |
 
 `<app collection>` is `/projects/{project}/applications`. Route action endpoints such as deploy, stop,
 add/remove worker and backup/restore enqueue without changing their target rows in the route.
@@ -396,7 +399,7 @@ writes above apply in addition to the listed fields.
 | `Container` | Create placement | Delete: delete row (`detach_container`); backup/restore: `status`; remove-worker: delete row | No direct report-to-row write |
 | `Domain` | Domain CRUD through its commands, which derive the namespace worker and CORS policy | None: an apply's outcome and what it saw are memory (`Domains`) | Container deletion (`detach_container`) clears `container` by FK |
 | `Volume` | Volume CRUD: mounts and backup cron | None directly | Application FK deletion cascades row deletion |
-| `Backup` | Backup DELETE | Volume/platform backup inserts; S3 discovery inserts/deletes; retention deletes | Application FK deletion cascades app Backup deletion |
+| `Backup` | Backup DELETE (`remove_backup`) | Volume/platform backup inserts; discovery inserts/deletes and retention deletes (`apply_catalog`) | Application FK deletion cascades app Backup deletion |
 | `Event` | None | `container_part` inserts deploy/stop/delete/backup/restore parts; retention deletes | Container FK deletion cascades Events |
 | `Notification` | None | `Manager.notify` inserts; retention deletes | Startup calls `notify`; summary/test dispatch creates no row |
 | `Task` | None | Queue terminal hook inserts; retention deletes | Pending-task cancellations can invoke hook on producer/shutdown thread |
@@ -417,9 +420,9 @@ These are useful places to check when changing a flow:
 - **Missing-target behavior varies.** A container's operations (Deploy, Stop, Delete, backups, volume restore) and a
   Domain's apply use `get_or_none` and return for a missing target; a restore whose backup or target volume is gone
   is refused with a `rejected` event. A uniform quiet-no-op policy is not implemented across all entity operations.
-- **Row deletion does not imply artifact deletion.** Backup DELETE removes its row before queued S3 cleanup;
-  Application deletion cascades Backup rows without deleting S3 objects; S3 discovery can list matching objects
-  again. Container and Domain deletion use separate follow-ups to remove routing artifacts.
+- **Row deletion does not imply artifact deletion.** Backup DELETE removes its row before its queued archive
+  deletion, and discovery leaves out an archive while its deletion is queued or running; Application deletion
+  cascades Backup rows without deleting S3 objects, which retention removes once past the retention period. Container and Domain deletion use separate follow-ups to remove routing artifacts.
 - **Writes have different publication owners.** Model signals/FK actions do not emit UI changes; the operation
   that initiated them supplies those events. Manager row writers, route CRUD and bulk restore/discovery paths
   each publish explicitly. See [pushed updates](backend.md#pushed-updates).
