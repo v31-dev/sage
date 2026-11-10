@@ -60,6 +60,10 @@ async def observe_containers():
   Manager().request_container_observation()
 
 
+async def list_container_records():
+  Manager().request_record_listings()
+
+
 async def schedule_application_backups():
   if not Manager().s3.s3_config:
     return
@@ -189,6 +193,7 @@ _JOBS = [
     (sync_workers, IntervalTrigger(seconds=30)),
     (refresh_worker_paths, IntervalTrigger(seconds=60)),
     (observe_containers, CronTrigger.from_crontab("* * * * *")),
+    (list_container_records, CronTrigger.from_crontab("*/10 * * * *")),
     (schedule_application_backups, CronTrigger.from_crontab("* * * * *")),
     (collect_metrics, CronTrigger.from_crontab("* * * * *")),
     (refresh_latest_release, CronTrigger.from_crontab("0 */4 * * *")),

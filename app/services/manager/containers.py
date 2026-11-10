@@ -10,17 +10,18 @@ import config
 from services.applications.commands import detach_container
 from services.applications.deploy_input import DeployConfig, capture_deploy_config
 from services.applications.updates import container_changed
-from services.containers.decisions import PROGRESS, RUNNING, lifecycle_refusal
-from services.containers.placement import LABEL_DEPLOYMENT, placement_dir, runtime_name, runtime_owner, volume_dir
-from services.containers.record import Applied, Authority, Operation, Settled, TargetRecord
+from services.containers.decisions import PROGRESS, RUNNING, correction, lifecycle_refusal
+from services.containers.placement import LABEL_DEPLOYMENT, placement_dir, records_command, runtime_name, runtime_owner, volume_dir
+from services.containers.record import Applied, Authority, Operation, Settled, TargetRead, TargetRecord, parse_record_listing
 from services.containers.rendering import render_placement
 from services.containers.state import ContainerState, container_state
 from services.containers.targets import Containers
-from services.db.models import Application, Container, Instance, Project
+from services.db.models import Application, Container, Instance, Project, Worker
 from services.history import record_container_event
 from services.logs import Logs
 from services.tailscale import Tailscale
 from services.updates import Fact
+from services.worker_reports import WorkerReports
 from utils.common import OPAQUE_ID, new_id, utcnow
 from utils.errors import Conflict
 from utils.executor import LOGS_EXECUTOR, run_in_executor_with_context
@@ -111,7 +112,62 @@ class ContainersMixin:
     self.add_task(task=self.observe_containers, key=("observe_containers",), scopes=set(), executor="app", quiet=True)
 
   async def observe_containers(self):
+    """Tells the pages of the containers whose state changed, then asks for what reconciliation does about each."""
     self.container_state.check()
+    instance = Instance.get()
+    containers = {container.id: container for container in
+                  Container.select(Container, Application, Project).join(Application).join(Project)}
+    reporting = {}
+    for container_id, state in self.container_state.last.items():
+      container = containers.get(container_id)
+      if container is None:
+        continue
+      if container.worker_id not in reporting:
+        reporting[container.worker_id] = WorkerReports().current(container.worker_id) is not None
+      found = correction(state.target, state.runtime, state.live,
+                         Authority(instance.id, instance.state_generation, container.id), reporting[container.worker_id])
+      if found is not None and found.kind == "read":
+        self.request_record_read(container)
+      # TODO(36 step 4C-2b): request the container's recovery or reset.
+
+  def request_record_read(self, container: Container):
+    """Queues a read of the container's record from its worker, under its scope so it never crosses a write."""
+    application = container.application
+    self.add_task(
+        task=self.read_record, key=("read_record", container.id), scopes={f"worker:{container.worker_id}:container:{container.id}"},
+        executor="app", params={"container_id": container.id},
+        labels={"Application": f"{application.project.label} / {application.label}", "Worker": container.worker_id},
+        quiet=True)
+
+  async def read_record(self, container_id: str):
+    container = Container.get_or_none(Container.id == container_id)
+    if container is None:
+      logger.info(f"Container {container_id} was deleted before its record was read; nothing to do.")
+      return
+    await Containers().read(container)
+
+  def request_record_listings(self):
+    """Queues, for each worker that reports, a listing of the container records on it."""
+    for worker in Worker.select():
+      if WorkerReports().current(worker.hostname) is not None:
+        self.add_task(task=self.list_records, key=("list_records", worker.hostname), scopes=set(), executor="app",
+                      params={"hostname": worker.hostname}, labels={"Worker": worker.hostname}, quiet=True)
+
+  async def list_records(self, hostname: str):
+    """Lists every container record on the worker and asks for a read of each container whose listed record is not
+    the one held; the listing itself never replaces what the `Containers` owner holds, since it is taken outside the
+    containers' scopes."""
+    try:
+      _, lines = await Tailscale().exec_command(hostname, records_command(config.WORKER_HOME_DIR), timeout=30)
+    except Exception as error:
+      logger.warning(f"Could not list the container records on {hostname}: {error}")
+      return
+    listed = parse_record_listing(lines)
+    for container in (Container.select(Container, Application, Project).join(Application).join(Project)
+                      .where(Container.worker == hostname)):
+      if listed.get(container.id, TargetRead("absent")) != Containers().target(container.id):
+        self.request_record_read(container)
+    # TODO(36 step 4C-3): clean up the listed records that no container owns.
 
   def _live_operations(self) -> dict[str, str]:
     """The operation running on each container that shows its progress, by container id."""

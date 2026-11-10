@@ -75,6 +75,56 @@ def lifecycle_refusal(target: TargetRead, expected: Authority, contract: str) ->
   return None
 
 
+@dataclass(frozen=True)
+class Correction:
+  """What reconciliation does about a container: `read` its record, `recover` from an operation that never settled,
+  or `reset` a runtime that contradicts its record, with the cause."""
+  kind: str
+  cause: str | None = None
+
+
+def correction(target: TargetRead, runtime: Runtime, live: str | None, expected: Authority,
+               reporting: bool) -> Correction | None:
+  """What to do about a container no operation is running on, from its record as last read, its runtime and whether
+  its worker reports. A record never read is read; one whose read failed is read again while the worker reports, and
+  only then is anything else done. Only a current runtime counts, and only one labelled as this Sage's; a reset only
+  stops, and another Sage's record or runtime is left alone."""
+  if live is not None:
+    return None
+  if target.kind == "unobserved":
+    return Correction("read")
+  if not reporting:
+    return None
+  if target.kind == "unreachable":
+    return Correction("read")
+  if target.kind == "invalid":
+    return Correction("recover", "unreadable")
+  record = target.record
+  reading = runtime.reading if runtime.knowledge == "known" else None
+  running = reading is not None and reading.state in RUNNING
+  ours = reading is not None and reading.authority is not None and reading.authority.instance_id == expected.instance_id
+  if record is None:
+    return Correction("reset", "no_record") if running and ours else None
+  if record.authority.instance_id != expected.instance_id:
+    return None
+  operation = record.operation
+  if operation is not None and operation.phase != "settled":
+    # TODO(36 step 4G): an interrupted automatic backup restores its recorded runtime.
+    return None if operation.contract == "backup_preserve" else Correction("recover", "interrupted")
+  if record.authority != expected:
+    return Correction("reset", "restored")
+  if not (running and ours):
+    return None
+  if reading.authority != expected:
+    return Correction("reset", "restored")
+  settled = record.settled
+  if settled is None or settled.runtime_goal == "stopped":
+    return Correction("reset", "unexpected_running")
+  if record.applied is None or reading.deployment_id != record.applied.deployment_id:
+    return Correction("reset", "unexpected_deployment")
+  return None
+
+
 def decide_container(facts: ContainerFacts) -> ContainerView:
   """The headline and the configuration comparison. The headline is decided in precedence order: a record or a
   current runtime of another authority (this Sage's before a restore, or another Sage's), a live operation's progress, a known failure, too little evidence, then the committed goal against the

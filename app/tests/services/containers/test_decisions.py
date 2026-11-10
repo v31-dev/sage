@@ -4,7 +4,8 @@ from datetime import datetime
 
 import pytest
 
-from services.containers.decisions import CONFIG, HEADLINES, KNOWLEDGE, ContainerFacts, Runtime, RuntimeReading, decide_container, lifecycle_refusal
+from services.containers.decisions import (CONFIG, HEADLINES, KNOWLEDGE, RUNNING, ContainerFacts, Correction, Runtime, RuntimeReading, correction,
+                                           decide_container, lifecycle_refusal)
 from services.containers.record import CONTRACTS, PHASES, READS, Applied, Authority, Operation, Settled, TargetRead, TargetRecord
 
 AT = datetime(2026, 1, 1, 12)
@@ -236,3 +237,80 @@ class TestLifecycleRefusal:
   def test_a_settled_record_from_before_a_restore_does_not_refuse(self):
     settled = Operation("o1", "deploy", "settled", AT, 905, AT, outcome="succeeded", verified_on_worker_at=AT)
     assert lifecycle_refusal(TargetRead("present", TargetRecord(RESTORED, APPLIED, RUNNING_OK, settled)), OURS, "deploy") is None
+
+
+UNSETTLED = Operation("d3", "deploy", "executing", AT, 905)
+
+CORRECTIONS = {
+    "never read": (TargetRead("unobserved"), Runtime("unobserved"), False, Correction("read")),
+    "a read that failed, the worker reporting": (TargetRead("unreachable", DEPLOYED.record), known(), True, Correction("read")),
+    "a read that failed, the worker silent": (TargetRead("unreachable", DEPLOYED.record), Runtime("stale"), False, None),
+    "unreadable": (TargetRead("invalid"), known(), True, Correction("recover", "unreadable")),
+    "a deploy that never settled": (present(applied=APPLIED, settled=RUNNING_OK, operation=UNSETTLED), known(), True,
+                                    Correction("recover", "interrupted")),
+    "a deploy from before a restore that never settled": (TargetRead("present", TargetRecord(RESTORED, operation=UNSETTLED)),
+                                                          known(), True, Correction("recover", "interrupted")),
+    "an automatic backup that never settled": (
+        present(applied=APPLIED, settled=RUNNING_OK, operation=Operation("b1", "backup_preserve", "executing", AT, 930)),
+        known("exited"), True, None),
+    "another Sage's record": (TargetRead("present", TargetRecord(FOREIGN, APPLIED, RUNNING_OK)), known(authority=FOREIGN),
+                              True, None),
+    "a record from before a restore": (TargetRead("present", TargetRecord(RESTORED, APPLIED, RUNNING_OK)),
+                                       known(authority=RESTORED), True, Correction("reset", "restored")),
+    "a runtime from before a restore under a current record": (DEPLOYED, known(authority=RESTORED), True,
+                                                               Correction("reset", "restored")),
+    "running after a stop": (present(applied=APPLIED, settled=STOPPED_OK), known(), True,
+                             Correction("reset", "unexpected_running")),
+    "running with no outcome": (present(), known(), True, Correction("reset", "unexpected_running")),
+    "running another deployment": (DEPLOYED, known(deployment="d0"), True, Correction("reset", "unexpected_deployment")),
+    "running its deployment": (DEPLOYED, known(), True, None),
+    "exited after its deployment": (DEPLOYED, known("exited"), True, None),
+    "running without a record": (TargetRead("absent"), known(deployment="d0"), True, Correction("reset", "no_record")),
+    "another Sage's runtime without a record": (TargetRead("absent"), known(authority=FOREIGN), True, None),
+    "a stale runtime after a stop": (present(applied=APPLIED, settled=STOPPED_OK), Runtime("stale", RuntimeReading("running", "d1", authority=OURS)),
+                                     True, None),
+}
+
+
+@pytest.mark.parametrize("target, runtime, reporting, expected", CORRECTIONS.values(), ids=CORRECTIONS.keys())
+def test_the_correction_table(target, runtime, reporting, expected):
+  assert correction(target, runtime, None, OURS, reporting) == expected
+
+
+def test_every_combination_of_facts_gets_the_correction_its_rules_give():
+  seen = set()
+  for target, runtime, live, reporting in itertools.product(every_target(), every_runtime(), (None, *CONTRACTS), (True, False)):
+    result = correction(target, runtime, live, OURS, reporting)
+    seen.add(result)
+    record = target.record if target.kind == "present" else None
+    reading = runtime.reading if runtime.knowledge == "known" else None
+    labelled_ours = reading is not None and reading.authority is not None and reading.authority.instance_id == OURS.instance_id
+    unsettled = record is not None and record.operation is not None and record.operation.phase != "settled"
+    facts = (target, runtime, live, reporting)
+
+    if live is not None:
+      assert result is None, facts
+    elif target.kind == "unobserved":
+      assert result == Correction("read"), facts
+    elif not reporting:
+      assert result is None, facts
+    elif target.kind == "unreachable":
+      assert result == Correction("read"), facts
+    elif record is not None and record.authority.instance_id != OURS.instance_id:
+      assert result is None, facts
+    elif target.kind == "invalid" or (unsettled and record.operation.contract != "backup_preserve"):
+      assert result is not None and result.kind == "recover", facts
+    elif unsettled:
+      assert result is None, facts
+    elif record is not None and record.authority != OURS:
+      assert result == Correction("reset", "restored"), facts
+    elif not (reading is not None and reading.state in RUNNING and labelled_ours):
+      assert result is None, facts
+    else:
+      agrees = (record is not None and reading.authority == OURS and record.settled is not None
+                and record.settled.runtime_goal == "running" and record.applied is not None
+                and reading.deployment_id == record.applied.deployment_id)
+      assert (result is None) == agrees and (result is None or result.kind == "reset"), facts
+  assert {result.kind for result in seen if result} == {"read", "recover", "reset"}
+  assert {result.cause for result in seen if result and result.kind == "reset"} == {
+      "restored", "unexpected_running", "unexpected_deployment", "no_record"}
