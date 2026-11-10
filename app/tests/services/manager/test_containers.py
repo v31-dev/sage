@@ -1,0 +1,512 @@
+import asyncio
+import os
+import stat
+import subprocess
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
+from datetime import datetime
+from pathlib import Path
+
+import pytest
+
+import config
+from services.applications.deploy_input import capture_deploy_config
+from services.containers.placement import placement_dir, record_path, runtime_name
+from services.containers.record import Applied, Authority, Operation, Settled, TargetRead, TargetRecord, decode_record, encode_record
+from services.containers.targets import Containers
+from services.db.models import Application, Container, ContainerEvent, Instance, Volume
+from services.logs import Logs
+from services.manager.containers import ContainersMixin, mark
+from services.manager.queue import SCOPES, QueueMixin
+from services.tailscale import Tailscale
+from utils.errors import Conflict
+from utils.logging import TaskFailed, task_id
+from utils.queue import TaskQueue
+
+# The worker's clock in the tests: 2026-01-01 12:00:00 UTC.
+WORKER_CLOCK = 1767268800
+VERIFIED = datetime(2026, 1, 1, 12, 0, 1)
+
+DOCKER = """#!/bin/sh
+# The worker's Docker: one runtime file per Compose project under $FAKE_DOCKER, and flags there that make it fail.
+state="$FAKE_DOCKER"
+for last; do :; done
+case "$1 $2" in
+  "compose -p")
+    [ -e "$state/down-fails" ] && { echo "down failed"; exit 1; }
+    [ -e "$state/down-is-ignored" ] || rm -f "$state/runtime-$3"
+    ;;
+  "compose -f")
+    name=$(sed -n 's/^name: //p' "$3")
+    deployment=$(sed -n 's/^ *sage.deployment: "\\(.*\\)"$/\\1/p' "$3")
+    [ -e "$state/runs-another" ] && deployment=another
+    echo "running $deployment" > "$state/runtime-$name"
+    [ -e "$state/up-fails" ] && { echo "pull access denied"; exit 1; }
+    [ -e "$state/exits" ] && echo "exited $deployment" > "$state/runtime-$name"
+    ;;
+  inspect*)
+    [ -e "$state/runtime-$last" ] || { echo "Error: No such object: $last" >&2; exit 1; }
+    cat "$state/runtime-$last"
+    ;;
+esac
+exit 0
+"""
+
+
+class Worker:
+  """A worker whose commands run in a local shell over the test's directory, with Docker and the clock replaced, and
+  whose synced files land there, as SSH and SFTP would put them."""
+
+  def __init__(self, root: Path):
+    self.state = root / "docker"
+    self.state.mkdir()
+    binaries = root / "bin"
+    binaries.mkdir()
+    for name, script in (("docker", DOCKER), ("date", f"#!/bin/sh\necho {WORKER_CLOCK}\n")):
+      (binaries / name).write_text(script)
+      (binaries / name).chmod(stat.S_IRWXU)
+    self.env = {**os.environ, "PATH": f"{binaries}:{os.environ['PATH']}", "FAKE_DOCKER": str(self.state)}
+    self.reachable = True
+    self.breaks_at = None
+    self.records_fail = False
+
+  def flag(self, *names):
+    for name in names:
+      (self.state / name).touch()
+
+  def runtime(self, container) -> str | None:
+    path = self.state / f"runtime-{runtime_name(container.id)}"
+    return path.read_text().strip() if path.exists() else None
+
+  def run(self, container, state):
+    (self.state / f"runtime-{runtime_name(container.id)}").write_text(state + "\n")
+
+  def answer(self, what):
+    if self.breaks_at is not None and self.breaks_at in what:
+      self.reachable = False
+    if not self.reachable:
+      raise Exception("Error connecting to w1: no route")
+
+  async def exec_command(self, hostname, command, timeout=300):
+    self.answer(command)
+    result = subprocess.run(["sh", "-c", command], capture_output=True, text=True, env=self.env)
+    if result.returncode:
+      raise Exception(f"Error executing command on {hostname}: exit code {result.returncode}\n{result.stdout}")
+    return result.returncode, result.stdout.splitlines()
+
+  async def sync_file(self, hostname, src, dst, keys=None, formatter=None, timeout=120, mode=0o644):
+    self.answer(dst)
+    if self.records_fail and dst.endswith("record.json"):
+      raise Exception(f"Syncing file to {hostname} timed out after {timeout}s: {dst}")
+    content = Path(src).read_text()
+    for key, value in (keys or {}).items():
+      content = content.replace("${" + key + "}", str(value))
+    Path(dst).parent.mkdir(parents=True, exist_ok=True)
+    Path(dst).write_text(content)
+    Path(dst).chmod(mode)
+
+
+class Lifecycle(ContainersMixin, QueueMixin):
+  def __init__(self):
+    self.pool = ThreadPoolExecutor(max_workers=2)
+    self.queue_facts = []
+    self.task_queue = TaskQueue(SCOPES, {"app": self.pool}, record=lambda task, status: None, notify=self._queue_changed)
+
+  async def run(self):
+    self.task_queue.dispatch_tick()
+    while self.task_queue.snapshot()["running"]:
+      await asyncio.sleep(0)
+      self.task_queue.dispatch_tick()
+
+
+@pytest.fixture
+def worker_host(register, tmp_path, monkeypatch):
+  monkeypatch.setattr(config, "WORKER_HOME_DIR", str(tmp_path / "home"))
+  return register(Tailscale, Worker(tmp_path))
+
+
+@pytest.fixture
+def manager():
+  manager = Lifecycle()
+  yield manager
+  manager.pool.shutdown(wait=False, cancel_futures=True)
+
+
+@pytest.fixture
+def container(application, worker):
+  return Container.create(application=application, worker=worker)
+
+
+@pytest.fixture
+def in_task():
+  token = task_id.set("t1")
+  yield
+  task_id.reset(token)
+
+
+def authority(container, generation=None):
+  instance = Instance.get()
+  return Authority(instance.id, generation or instance.state_generation, container.id)
+
+
+def worker_record(container) -> TargetRecord | None:
+  path = Path(record_path(config.WORKER_HOME_DIR, container.id))
+  return decode_record(path.read_text()) if path.exists() else None
+
+
+def place(container, record: TargetRecord | str):
+  path = Path(record_path(config.WORKER_HOME_DIR, container.id))
+  path.parent.mkdir(parents=True, exist_ok=True)
+  path.write_text(record if isinstance(record, str) else encode_record(record))
+
+
+def placement_file(container, name) -> Path:
+  return Path(placement_dir(config.WORKER_HOME_DIR, container.id)) / name
+
+
+def events(container):
+  return [(event.action, event.transition, event.reason) for event in ContainerEvent.select().order_by(ContainerEvent.id)
+          if event.subject_id == container.id]
+
+
+def deployed(container, at=VERIFIED):
+  """A record of a deploy that succeeded."""
+  return TargetRecord(authority(container), Applied("d0", "a" * 64, at), Settled("d0", "running", "succeeded", at),
+                      Operation("d0", "deploy", "settled", at, 905, at, "a" * 64, outcome="succeeded", verified_on_worker_at=at))
+
+
+async def deploy(manager, container):
+  await manager.deploy_container(container.id, capture_deploy_config(container.application_id))
+
+
+pytestmark = pytest.mark.usefixtures("thread_connections", "in_task")
+
+
+class TestDeploy:
+  async def test_a_deploy_commits_what_it_verified_runs(self, manager, worker_host, container):
+    await deploy(manager, container)
+
+    record = worker_record(container)
+    operation = record.operation
+    assert (record.authority, operation.contract, operation.phase, operation.outcome) == (
+        authority(container), "deploy", "settled", "succeeded")
+    assert record.applied.deployment_id == operation.id
+    assert record.applied.config_hash == capture_deploy_config(container.application_id).content_hash
+    assert (record.settled.operation_id, record.settled.runtime_goal, record.settled.result) == (operation.id, "running", "succeeded")
+    assert operation.verified_on_worker_at == VERIFIED and operation.effect_bound_seconds == 905
+    assert worker_host.runtime(container) == f"running {operation.id}"
+    assert Containers().target(container.id) == TargetRead("present", record)
+    assert events(container) == [("deploy", "admitted", None), ("deploy", "succeeded", None)]
+
+  async def test_a_deploy_writes_the_env_file_private_and_the_compose_file(self, manager, worker_host, container, application):
+    Application.update(env="GREETING=hi").where(Application.id == application.id).execute()
+    await deploy(manager, container)
+    env = placement_file(container, ".env")
+    assert (env.read_text(), stat.S_IMODE(env.stat().st_mode)) == ("GREETING=hi", 0o600)
+    assert f'sage.deployment: "{worker_record(container).operation.id}"' in placement_file(container, "docker-compose.yml").read_text()
+
+  async def test_a_redeploy_replaces_the_running_deployment(self, manager, worker_host, container):
+    await deploy(manager, container)
+    first = worker_record(container).operation.id
+    await deploy(manager, container)
+    second = worker_record(container).operation.id
+    assert first != second and worker_host.runtime(container) == f"running {second}"
+
+  async def test_a_deploy_keeps_its_volumes_and_prunes_the_others_of_sage(self, manager, worker_host, container, application):
+    volume = Volume.create(application=application, name="data", path="/data")
+    volumes = placement_file(container, "volumes")
+    for name in (volume.id, "0123456789abcdef", "planted"):
+      (volumes / name).mkdir(parents=True)
+    await deploy(manager, container)
+    assert sorted(path.name for path in volumes.iterdir()) == sorted([volume.id, "planted"])
+
+  async def test_a_git_deploy_writes_its_build_secrets_private_and_drops_old_ones(
+          self, manager, worker_host, container, application):
+    Application.update(type="git", image=None, repo="https://github.com/user/api.git", build_secrets="TOKEN=abc").where(
+        Application.id == application.id).execute()
+    (placement_file(container, "secrets")).mkdir(parents=True)
+    placement_file(container, "secrets/OLD").write_text("old")
+    await deploy(manager, container)
+    secret = placement_file(container, "secrets/TOKEN")
+    assert (secret.read_text(), stat.S_IMODE(secret.stat().st_mode)) == ("abc", 0o600)
+    assert not placement_file(container, "secrets/OLD").exists()
+
+  async def test_a_deploy_whose_start_fails_leaves_it_stopped_with_the_failure(self, manager, worker_host, container):
+    place(container, deployed(container))
+    worker_host.run(container, "running d0")
+    worker_host.flag("up-fails")
+    with pytest.raises(TaskFailed):
+      await deploy(manager, container)
+
+    record = worker_record(container)
+    assert worker_host.runtime(container) is None
+    assert record.applied == deployed(container).applied
+    assert (record.settled.runtime_goal, record.settled.result) == ("stopped", "failed")
+    assert "pull access denied" in record.settled.reason
+    assert (record.operation.phase, record.operation.outcome, record.operation.verified_on_worker_at) == (
+        "settled", "failed", VERIFIED)
+    assert [(action, transition) for action, transition, _ in events(container)] == [("deploy", "admitted"), ("deploy", "failed")]
+
+  @pytest.mark.parametrize("flag, detail", [("runs-another", "runs deployment another"), ("exits", "is exited")])
+  async def test_a_deploy_that_does_not_run_its_deployment_has_failed(self, manager, worker_host, container, flag, detail):
+    worker_host.flag(flag)
+    with pytest.raises(TaskFailed):
+      await deploy(manager, container)
+    record = worker_record(container)
+    assert detail in record.settled.reason and record.settled.result == "failed" and record.applied is None
+    assert worker_host.runtime(container) is None
+
+  async def test_a_deploy_whose_stop_fails_changes_no_file_and_is_left_recovering(self, manager, worker_host, container):
+    place(container, deployed(container))
+    worker_host.run(container, "running d0")
+    worker_host.flag("down-fails")
+    with pytest.raises(TaskFailed):
+      await deploy(manager, container)
+
+    record = worker_record(container)
+    assert not placement_file(container, ".env").exists() and not placement_file(container, "docker-compose.yml").exists()
+    assert (record.operation.phase, record.operation.outcome) == ("recovering", "failed")
+    assert record.settled == deployed(container).settled
+    assert worker_host.runtime(container) == "running d0"
+
+  async def test_a_failed_deploy_that_cannot_be_stopped_is_left_recovering(self, manager, worker_host, container):
+    worker_host.flag("up-fails", "down-is-ignored")
+    with pytest.raises(TaskFailed):
+      await deploy(manager, container)
+    record = worker_record(container)
+    assert (record.operation.phase, record.operation.outcome, record.settled) == ("recovering", "failed", None)
+    assert worker_host.runtime(container) == f"running {record.operation.id}"
+
+  async def test_a_worker_lost_during_the_deploy_leaves_its_record_executing_for_recovery(
+          self, manager, worker_host, container):
+    worker_host.breaks_at = "up -d"
+    with pytest.raises(TaskFailed):
+      await deploy(manager, container)
+    record = worker_record(container)
+    assert (record.operation.phase, record.operation.outcome) == ("executing", None)
+    assert Containers().target(container.id) == TargetRead("present", record)
+    assert [(action, transition) for action, transition, _ in events(container)] == [("deploy", "admitted"), ("deploy", "failed")]
+
+  async def test_a_begin_write_that_may_have_failed_counts_as_begun(self, manager, worker_host, container):
+    worker_host.run(container, "running old")
+    worker_host.records_fail = True
+    with pytest.raises(TaskFailed):
+      await deploy(manager, container)
+    assert worker_host.runtime(container) is None
+    assert [(action, transition) for action, transition, _ in events(container)] == [("deploy", "admitted"), ("deploy", "failed")]
+
+  async def test_a_deploy_marks_the_application_logs(self, manager, worker_host, container, application):
+    await deploy(manager, container)
+    assert [line["message"] for line in Logs().query_application_lines("demo-web")["lines"]] == [
+        "Deployed (task t1)"]
+
+
+class TestStop:
+  async def test_a_stop_commits_stopped_and_keeps_the_applied_deployment(self, manager, worker_host, container):
+    place(container, deployed(container))
+    worker_host.run(container, "running d0")
+    await manager.stop_container(container.id)
+
+    record = worker_record(container)
+    assert worker_host.runtime(container) is None
+    assert record.applied == deployed(container).applied
+    assert (record.settled.runtime_goal, record.settled.result, record.settled.operation_id) == (
+        "stopped", "succeeded", record.operation.id)
+    assert (record.operation.contract, record.operation.phase, record.operation.effect_bound_seconds,
+            record.operation.verified_on_worker_at) == ("stop", "settled", 65, VERIFIED)
+    assert events(container) == [("stop", "admitted", None), ("stop", "succeeded", None)]
+
+  async def test_a_stop_of_a_container_never_deployed_records_it_stopped(self, manager, worker_host, container):
+    await manager.stop_container(container.id)
+    record = worker_record(container)
+    assert (record.applied, record.settled.runtime_goal, record.settled.result) == (None, "stopped", "succeeded")
+
+  async def test_a_stop_that_leaves_it_running_is_left_recovering(self, manager, worker_host, container):
+    place(container, deployed(container))
+    worker_host.run(container, "running d0")
+    worker_host.flag("down-is-ignored")
+    with pytest.raises(TaskFailed):
+      await manager.stop_container(container.id)
+    record = worker_record(container)
+    assert (record.operation.phase, record.operation.outcome, record.settled) == (
+        "recovering", "failed", deployed(container).settled)
+    assert "still running" in record.operation.reason
+
+
+class TestRefusals:
+  @pytest.mark.parametrize("operation", ["deploy", "stop"])
+  async def test_an_unreachable_worker_refuses_it_with_no_effect(self, manager, worker_host, container, operation):
+    worker_host.run(container, "running d0")
+    worker_host.reachable = False
+    with pytest.raises(TaskFailed):
+      await (deploy(manager, container) if operation == "deploy" else manager.stop_container(container.id))
+    worker_host.reachable = True
+    assert (worker_record(container), worker_host.runtime(container)) == (None, "running d0")
+    assert events(container) == [(operation, "rejected", {"refusal": "unreachable"})]
+
+  @pytest.mark.parametrize("found, refusal", [
+      ("unsettled", "interrupted"), ("invalid", "invalid_record"), ("another Sage", "authority")])
+  async def test_a_record_it_cannot_build_on_refuses_it_untouched(self, manager, worker_host, container, found, refusal):
+    record = {
+        "unsettled": TargetRecord(authority(container), operation=Operation("d9", "deploy", "executing", VERIFIED, 905,
+                                                                            input_hash="a" * 64)),
+        "invalid": "not a record\n",
+        "another Sage": replace(deployed(container), authority=Authority("ffffffffffffffff", "1111111111111111", container.id)),
+    }[found]
+    place(container, record)
+    before = Path(record_path(config.WORKER_HOME_DIR, container.id)).read_text()
+    with pytest.raises(TaskFailed):
+      await manager.stop_container(container.id)
+    assert Path(record_path(config.WORKER_HOME_DIR, container.id)).read_text() == before
+    assert events(container) == [("stop", "rejected", {"refusal": refusal})]
+
+  async def test_a_record_from_before_a_restore_does_not_refuse_and_gives_nothing_to_the_new_authority(
+          self, manager, worker_host, container):
+    place(container, replace(deployed(container), authority=authority(container, generation="9999999999999999")))
+    worker_host.run(container, "running d0")
+    await manager.stop_container(container.id)
+    record = worker_record(container)
+    assert (record.authority, record.applied, record.settled.result) == (authority(container), None, "succeeded")
+    assert worker_host.runtime(container) is None
+
+  async def test_a_container_deleted_before_its_turn_is_nothing_to_do(self, manager, worker_host, container):
+    container_id = container.id
+    container.delete_instance()
+    worker_host.reachable = False
+    await manager.stop_container(container_id)
+    assert ContainerEvent.select().count() == 0
+
+
+class TestMark:
+  def lines(self, application):
+    return [(line["hostname"], line["stream"], line["message"])
+            for line in Logs().query_application_lines("demo-web")["lines"]]
+
+  async def test_it_writes_what_sage_did_with_the_task_into_the_containers_application_logs(self, container, application):
+    await mark(container, "Deployed")
+    assert self.lines(application) == [("w1", "sage", "Deployed (task t1)")]
+
+  async def test_outside_a_task_it_is_the_text_alone(self, container, application):
+    token = task_id.set("")
+    try:
+      await mark(container, "Stopped")
+    finally:
+      task_id.reset(token)
+    assert self.lines(application) == [("w1", "sage", "Stopped")]
+
+  async def test_a_marker_that_cannot_be_written_is_a_warning_and_not_the_actions_failure(
+          self, container, monkeypatch, caplog):
+    def broken(self, *args):
+      raise OSError("disk full")
+
+    monkeypatch.setattr(Logs, "write_marker", broken)
+    await mark(container, "Deployed")
+    assert "Could not mark 'Deployed' in the logs of demo-web." in caplog.text
+
+
+class TestRequests:
+  def queued(self, manager):
+    return [{name: entry[name] for name in ("name", "key", "scopes", "params", "labels")}
+            for entry in manager.task_queue.snapshot()["queued"]]
+
+  def test_a_deploy_takes_the_containers_lifecycle_slot_with_what_people_call_it(self, manager, container):
+    task = manager.request_deploy(container.id)
+    assert manager.task_queue.snapshot()["queued"][0]["task_id"] == task
+    assert self.queued(manager) == [{
+        "name": "deploy", "key": ["lifecycle", container.id], "scopes": [f"worker:w1:container:{container.id}"],
+        "params": {"container_id": container.id}, "labels": {"Application": "Demo / Web", "Worker": "w1"}}]
+
+  def test_the_latest_request_replaces_the_one_waiting(self, manager, container):
+    manager.request_deploy(container.id)
+    manager.request_stop(container.id)
+    assert [entry["name"] for entry in self.queued(manager)] == ["stop"]
+
+  async def test_a_request_while_one_runs_is_refused(self, manager, container):
+    release = asyncio.Event()
+
+    async def holds(container_id, deploy):
+      await release.wait()
+
+    manager.deploy_container = holds
+    manager.request_deploy(container.id)
+    manager.task_queue.dispatch_tick()
+    with pytest.raises(Conflict, match="already has an operation in progress"):
+      manager.request_stop(container.id)
+    release.set()
+    await manager.run()
+
+  @pytest.mark.parametrize("change, message", [
+      ({"image": None}, "must have an image"), ({"type": "git", "image": None, "repo": None}, "must have a repo")])
+  def test_a_deploy_of_inputs_that_cannot_run_is_refused(self, manager, container, application, change, message):
+    Application.update(**change).where(Application.id == application.id).execute()
+    with pytest.raises(ValueError, match=message):
+      manager.request_deploy(container.id)
+    assert self.queued(manager) == []
+
+  def test_a_request_for_a_missing_container_is_refused(self, manager):
+    with pytest.raises(LookupError):
+      manager.request_stop("0123456789abcdef")
+
+
+class TestRequestsForAll:
+  @pytest.fixture
+  def containers(self, application, worker):
+    from services.db.models import Worker
+    second = Worker.create(hostname="w2", subdomain="blue")
+    return [Container.create(application=application, worker=host) for host in (worker, second)]
+
+  async def test_deploy_all_gives_each_container_its_own_task_and_the_inputs_of_the_request(
+          self, manager, application, containers):
+    given = {}
+
+    async def records(container_id, deploy):
+      given[container_id] = deploy
+
+    manager.deploy_container = records
+    tasks = manager.request_deploy_all(application.id)
+    Application.update(image="nginx:2").where(Application.id == application.id).execute()
+    await manager.run()
+    assert len(set(tasks)) == 2 and set(given) == {container.id for container in containers}
+    assert {deploy.image for deploy in given.values()} == {"nginx"}
+
+  def test_a_request_for_all_is_refused_while_any_container_has_one(self, manager, application, containers):
+    manager.request_stop(containers[1].id)
+    for request in (manager.request_deploy_all, manager.request_stop_all):
+      with pytest.raises(Conflict, match="has an operation in progress"):
+        request(application.id)
+    assert len(manager.task_queue.snapshot()["queued"]) == 1
+
+  def test_stop_all_stops_each_container(self, manager, application, containers):
+    assert len(manager.request_stop_all(application.id)) == 2
+    assert {tuple(entry["key"]) for entry in manager.task_queue.snapshot()["queued"]} == {
+        ("lifecycle", container.id) for container in containers}
+
+  @pytest.mark.parametrize("request_name", ["request_deploy_all", "request_stop_all"])
+  def test_an_application_without_containers_is_refused(self, manager, application, request_name):
+    with pytest.raises(ValueError, match="no containers"):
+      getattr(manager, request_name)(application.id)
+
+
+class TestCancel:
+  def test_a_queued_request_is_cancelled(self, manager, container):
+    task = manager.request_deploy(container.id)
+    assert manager.request_cancel(container.id) == task
+    assert manager.task_queue.snapshot()["queued"] == []
+
+  async def test_a_started_operation_is_not_cancelled(self, manager, container):
+    release = asyncio.Event()
+
+    async def holds(container_id):
+      await release.wait()
+
+    manager.stop_container = holds
+    manager.request_stop(container.id)
+    manager.task_queue.dispatch_tick()
+    with pytest.raises(Conflict, match="already started"):
+      manager.request_cancel(container.id)
+    release.set()
+    await manager.run()
+
+  def test_nothing_queued_is_nothing_to_cancel(self, manager, container):
+    with pytest.raises(LookupError, match="no queued operation"):
+      manager.request_cancel(container.id)

@@ -4,7 +4,7 @@ from datetime import datetime
 
 import pytest
 
-from services.containers.decisions import CONFIG, HEADLINES, KNOWLEDGE, ContainerFacts, Runtime, RuntimeReading, decide_container
+from services.containers.decisions import CONFIG, HEADLINES, KNOWLEDGE, ContainerFacts, Runtime, RuntimeReading, decide_container, lifecycle_refusal
 from services.containers.record import CONTRACTS, PHASES, READS, Applied, Authority, Operation, Settled, TargetRead, TargetRecord
 
 AT = datetime(2026, 1, 1, 12)
@@ -192,3 +192,39 @@ def test_every_combination_of_facts_keeps_the_invariants():
   assert seen_reasons == REASONS
   assert set(KNOWLEDGE) == {runtime.knowledge for runtime in every_runtime()}
   assert set(READS) == {target.kind for target in every_target()}
+
+
+class TestLifecycleRefusal:
+  """Whether a Deploy or Stop may begin, from the read of the record just taken, over every read kind, authority and
+  operation phase."""
+
+  def expected(self, target):
+    if target.kind in ("unobserved", "unreachable"):
+      return "unreachable"
+    if target.kind == "invalid":
+      return "invalid_record"
+    if target.record is None:
+      return None
+    if target.record.authority.instance_id != OURS.instance_id:
+      return "authority"
+    operation = target.record.operation
+    return "interrupted" if operation is not None and operation.phase != "settled" else None
+
+  def test_every_read(self):
+    foreign = Authority("instance2", "generation1", "container1")
+    records = [None, *(TargetRecord(authority, APPLIED, RUNNING_OK, operation) for authority in (OURS, RESTORED, foreign)
+                       for operation in (None, *(Operation("o1", "deploy", phase, AT, 905) for phase in PHASES)))]
+    seen = set()
+    for kind in READS:
+      for kept in records:
+        target = TargetRead(kind, kept if kind in ("present", "unreachable") else None)
+        if kind == "present" and kept is None:
+          continue
+        refusal = lifecycle_refusal(target, OURS)
+        assert refusal == self.expected(target), target
+        seen.add(refusal)
+    assert seen == {None, "unreachable", "invalid_record", "authority", "interrupted"}
+
+  def test_a_settled_record_from_before_a_restore_does_not_refuse(self):
+    settled = Operation("o1", "deploy", "settled", AT, 905, AT, outcome="succeeded", verified_on_worker_at=AT)
+    assert lifecycle_refusal(TargetRead("present", TargetRecord(RESTORED, APPLIED, RUNNING_OK, settled)), OURS) is None

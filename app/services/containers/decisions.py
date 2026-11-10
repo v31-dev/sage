@@ -56,6 +56,24 @@ class ContainerView:
     return self.headline == "active"
 
 
+def lifecycle_refusal(target: TargetRead, expected: Authority) -> str | None:
+  """Why a lifecycle operation may not begin, from the read of the container's record just taken: its worker cannot
+  be asked, the record cannot be read, it is another Sage's, or its operation never settled. A record of this Sage
+  from an earlier state generation whose operation settled does not stop it."""
+  if target.kind in ("unobserved", "unreachable"):
+    return "unreachable"
+  if target.kind == "invalid":
+    return "invalid_record"
+  record = target.record
+  if record is None:
+    return None
+  if record.authority.instance_id != expected.instance_id:
+    return "authority"
+  if record.operation is not None and record.operation.phase != "settled":
+    return "interrupted"
+  return None
+
+
 def decide_container(facts: ContainerFacts) -> ContainerView:
   """The headline and the configuration comparison. The headline is decided in precedence order: a record or a
   current runtime of another authority, a live operation's progress, a known failure, too little evidence, then the committed goal against the

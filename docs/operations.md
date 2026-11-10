@@ -134,14 +134,15 @@ effects described [above](#execution-flow).
 
 ### Applications and volumes
 
-Implementation: [application operations](../app/services/manager/application.py),
+Implementation: [container lifecycle](../app/services/manager/containers.py),
+[application operations](../app/services/manager/application.py),
 [backup/restore operations](../app/services/manager/backups.py).
 Route paths use `<app>` for `/projects/{project}/applications/{application}`; all paths are under `/api`.
 
 | Operation | Scopes · executor | Admission / history | Every initiating source | Model writes and other effects |
 | --- | --- | --- | --- | --- |
-| `deploy_application` | `app:<qn>` · app | DEDUP / H | POST `<app>/deploy` | Application `status`, `deployed_at`, `deployed_hash`; Container `status`; deploy Events. Freeze deploy inputs and container set in one transaction; render/build/start on workers; enqueue linked Domain syncs. |
-| `stop_application` | `app:<qn>` · app | DEDUP / H | POST `<app>/stop` | Application and Container `status`; stop Events; stop worker containers, then enqueue linked Domain syncs. |
+| `deploy` (`deploy_container`) | `worker:<host>:container:<id>` · app | REVISE on `("lifecycle", <id>)` / H | `request_deploy`, `request_deploy_all` | ContainerEvents (admitted, rejected, succeeded, failed); no other main-DB write. Reads and writes the worker's `record.json`; stops the container, writes `.env`, secrets, Compose file and volume directories, `compose up`, verifies; the `Containers` owner holds the record. |
+| `stop` (`stop_container`) | `worker:<host>:container:<id>` · app | REVISE on `("lifecycle", <id>)` / H | `request_stop`, `request_stop_all` | ContainerEvents; the worker's `record.json`; `compose down`, verifies nothing runs. |
 | `delete_container` | `app:<qn>` · app | QUEUE / H | DELETE `<app>/containers/{worker}`; also called inline by `remove_worker` under its broader scopes | Container `status`, then delete row; Events and domain unlinking via [implicit writes](#implicit-model-writes). Remote cleanup unless force-deleting a known-offline worker's container; enqueue unlinked Domain syncs. Route rejects a duplicate delete of this container. |
 | `sync_application_status` | `app:<qn>` · app | REPLACE / Q | Every minute; changed container state in Telegraf reports; `sync_domain` finding a busy container | Repair interrupted busy states and reconcile Container/Application `status` from trusted reports; may stop stale-version containers remotely. Enqueue affected Domain syncs when container state changes. |
 | `backup_application_s3` | `app:<qn>` · app | DEDUP / H | Due-volume scan every minute; POST `<app>/volumes/{volume}/backups` | Application/Container `status` during backup and runtime recovery; backup Events; one Backup per successful container-volume archive. Upload encrypted worker archives, restore runtime; failed runtime recovery can leave error status. The stop helper skips containers already marked backup; see [consistency boundaries](#consistency-boundaries). Manual route requires inactive app. |
@@ -397,9 +398,9 @@ These are useful places to check when changing a flow:
 - **Inline work keeps its caller's scope.** Normal worker removal holds the broad barrier; failed-new-worker
   setup rollback calls that same method while holding only `platform`. Its preconditions and reachable writes
   must be assessed in that context.
-- **Missing-target behavior varies.** Deploy, status sync, Domain sync, app backup and container deletion
-  explicitly use `get_or_none` and return for a missing target. `stop_application` and volume restore use
-  `get_by_id` for their inputs, so a vanished target raises and fails their task. A uniform quiet-no-op policy
+- **Missing-target behavior varies.** Deploy, Stop, status sync, Domain sync, app backup and container deletion
+  explicitly use `get_or_none` and return for a missing target. Volume restore uses `get_by_id` for its inputs,
+  so a vanished target raises and fails its task. A uniform quiet-no-op policy
   is not implemented across all entity operations.
 - **Backup state and stop eligibility disagree.** `backup_application_s3` persists each Container as `backup`,
   then re-fetches it for `_stop_container_for_backup`. That helper returns unless the row is `active`, so this

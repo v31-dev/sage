@@ -42,6 +42,14 @@ class DeployConfig:
     )
     return hashlib.sha256(payload.encode()).hexdigest()
 
+  def check_deployable(self):
+    """ValueError unless the inputs can be deployed: a Docker application needs an image, a Git one its repository
+    and Dockerfile path."""
+    if self.type == "docker" and not (self.image or "").strip():
+      raise ValueError("Docker applications must have an image specified.")
+    if self.type == "git" and not ((self.repo or "").strip() and self.path.strip()):
+      raise ValueError("Git applications must have a repo & path specified.")
+
 
 def capture_deploy_config(application_id: int) -> DeployConfig:
   """The application's deploy inputs, read in one transaction; LookupError when it is gone."""
