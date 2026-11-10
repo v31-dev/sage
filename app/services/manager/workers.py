@@ -8,6 +8,7 @@ from time import monotonic
 from peewee import JOIN
 
 import config
+from services.certs import Certs
 from services.cloudflare import Cloudflare
 from services.db.models import Container, Domain, Instance, Worker
 from services.domains.config import parse_route_listing, routes_command
@@ -26,6 +27,7 @@ from utils.errors import Conflict
 from utils.executor import run_in_executor_with_context
 from utils.logging import TaskFailed
 
+from ._common import CERTIFICATE_TEMPLATES
 from .containers import mark
 from .domains import capture
 
@@ -136,8 +138,9 @@ class WorkersMixin:
   async def converge_worker(self, hostname: str, force: bool = False):
     """Brings the worker's stack in line with Sage: claims it, removes the routing files there of Domains gone or bound
     to another worker, makes its tunnel and its `*.<subdomain>.int` record, and writes the stack's files and starts it
-    when its infra stamp differs (or on force), else starts what is stopped; once it is set up, asks for the pass over
-    the Domains' artifacts. Another Sage's worker is refused and left alone."""
+    when its infra stamp differs (or on force), else starts what is stopped; asks for the certificates' renewal when
+    its own or the shared discovery certificate does not cover its names, and once it is set up for the pass over the
+    Domains' artifacts. Another Sage's worker is refused and left alone."""
     worker = Worker.get_or_none(Worker.hostname == hostname)
     address = Tailscale().address(hostname)
     if worker is None or address is None or Tailscale().ssh(hostname) != "reachable":
@@ -184,7 +187,9 @@ class WorkersMixin:
         record_worker_event(hostname, "infrastructure", "succeeded")
       else:
         await self._start_stack(hostname)
-      # TODO(36 step 4F): distribute the worker's certificates and request a renewal when one is not valid.
+      if not all(state["covered"] for state in Certs().worker_state(hostname, worker.subdomain, None, CERTIFICATE_TEMPLATES).values()):
+        self.request_certificate_renewal()
+      # TODO(36 step 4F): request the worker's certificate distribution when what it applied is not current.
       Workers().record_setup(hostname, "succeeded", address)
       self.setup_failures.pop(hostname, None)
       self.request_domain_reconciliation()
@@ -237,7 +242,6 @@ class WorkersMixin:
       logger.error(f"Worker {hostname} is added but not set up: {Workers().setup(hostname) or 'its SSH server does not answer'}.")
       raise TaskFailed()
     record_worker_event(hostname, "add", "succeeded")
-    # TODO(36 step 4F): request the certificate renewal that covers the new worker.
 
   def request_remove_worker(self, hostname: str) -> str:
     """Queues the worker's removal; refused while it has containers or internal domains. The task's id."""
@@ -292,7 +296,7 @@ class WorkersMixin:
     self.setup_failures.pop(hostname, None)
     self.stack_repairs.pop(hostname, None)
     record_worker_event(hostname, "remove", "succeeded", reason={"cleaned": cleaned})
-    # TODO(36 step 4F): request the certificate renewal that retires its leaf.
+    self.request_certificate_renewal()
     # TODO(36 step 4H): notify the warnings above.
     self.worker_state.check()
 
@@ -348,10 +352,11 @@ class WorkersMixin:
 
   def worker_subdomain_changed(self, hostname: str):
     """After the worker's subdomain changed (its command): its `*.<subdomain>.int` record moves with its convergence,
-    and its internal and TCP domains, whose names are under it, are applied again."""
+    its internal and TCP domains, whose names are under it, are applied again, and its certificate is renewed for the
+    new names."""
     self.request_convergence(hostname)
     self.request_domain_applies(domain.id for domain in Domain.select(Domain.id).where(Domain.namespace_worker == hostname))
-    # TODO(36 step 4F): request the renewal of its certificate, whose names are under the subdomain.
+    self.request_certificate_renewal()
 
   async def _boot_id(self, hostname: str) -> str:
     _, lines = await Tailscale().exec_command(hostname, "cat /proc/sys/kernel/random/boot_id", timeout=10)

@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 import config
+from services.certs import Certs
 from services.cloudflare import Cloudflare
 from services.db.models import Container, Domain, Instance, Worker, WorkerEvent
 from services.manager.domains import DomainsMixin
@@ -121,13 +122,23 @@ class Provider:
     self.tunnels.remove(name)
 
 
+class Catalog:
+  """The certificates as worker setup sees them: whether each of the worker's covers its names (`covered`, by role)."""
+
+  def __init__(self):
+    self.covered = {"worker": True, "discovery": True}
+
+  def worker_state(self, hostname, subdomain, applied, template):
+    return {role: {"covered": covered} for role, covered in self.covered.items()}
+
+
 class Manager(WorkersMixin, DomainsMixin, QueueMixin):
   def __init__(self):
     self.pool = ThreadPoolExecutor(max_workers=2)
     self.queue_facts = self.workers_queue_facts()
     self.worker_state = self.workers_state_fact()
     self.setup_failures, self.stack_repairs = {}, {}
-    self.applied, self.reconciled, self.discovered = [], 0, 0
+    self.applied, self.reconciled, self.discovered, self.renewals = [], 0, 0, 0
     self.task_queue = TaskQueue(SCOPES, {"app": self.pool}, record=lambda task, status: None, notify=self._queue_changed)
 
   def request_domain_applies(self, domain_ids):
@@ -139,6 +150,9 @@ class Manager(WorkersMixin, DomainsMixin, QueueMixin):
 
   def request_discovery(self):
     self.discovered += 1
+
+  def request_certificate_renewal(self):
+    self.renewals += 1
 
 
 @pytest.fixture
@@ -152,7 +166,12 @@ def provider(register):
 
 
 @pytest.fixture
-def manager(hosts, provider, monkeypatch):
+def catalog(register):
+  return register(Certs, Catalog())
+
+
+@pytest.fixture
+def manager(hosts, provider, catalog, monkeypatch):
   monkeypatch.setattr(config, "WORKER_HOME_DIR", HOME)
   manager = Manager()
   # The task bodies run here as the queue runs them, with their lane bound for what they offload.
@@ -262,6 +281,16 @@ class TestConvergence:
   async def test_once_it_is_set_up_the_pass_over_the_domains_is_asked_for(self, manager, hosts, worker):
     await manager.converge_worker("w1")
     assert manager.reconciled == 1
+
+  async def test_a_worker_whose_certificates_cover_its_names_asks_for_no_renewal(self, manager, hosts, worker):
+    await manager.converge_worker("w1")
+    assert manager.renewals == 0
+
+  @pytest.mark.parametrize("role", ["worker", "discovery"])
+  async def test_a_certificate_that_does_not_cover_its_names_is_renewed(self, manager, hosts, worker, catalog, role):
+    catalog.covered[role] = False
+    await manager.converge_worker("w1")
+    assert manager.renewals == 1
 
   async def test_a_setup_that_fails_or_is_refused_asks_for_no_pass(self, manager, hosts, worker):
     hosts.fails = "up -d --wait"
@@ -428,6 +457,10 @@ class TestRemove:
     assert (Workers().setup("w1"), WorkerReports().latest("w1"), manager.setup_failures) == (None, None, {})
     assert events()[-2:] == [("remove", "admitted"), ("remove", "succeeded")]
 
+  async def test_a_removal_renews_the_certificates_so_its_leaf_is_retired(self, manager, hosts, provider, worker):
+    await manager.remove_worker("w1")
+    assert manager.renewals == 1
+
   async def test_removing_a_worker_that_was_set_up_republishes_discovery_without_it(self, manager, hosts, provider, worker):
     await manager.converge_worker("w1")
     hosts.answering.add("w1")
@@ -521,6 +554,10 @@ class TestSubdomain:
   def test_a_new_subdomain_converges_the_worker_so_its_record_moves(self, manager, worker):
     manager.worker_subdomain_changed("w1")
     assert [name for name, *_ in requested(manager)] == ["converge_worker"]
+
+  def test_its_certificate_is_renewed_for_the_new_names_whether_or_not_it_answers(self, manager, worker):
+    manager.worker_subdomain_changed("w1")
+    assert manager.renewals == 1
 
   def test_the_internal_and_tcp_domains_under_it_are_applied_again(self, manager, worker, application):
     on_it = Container.create(application=application, worker="w1")

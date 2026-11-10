@@ -71,6 +71,7 @@ Sources: [scheduler](../app/scheduler.py), [queue engine](../app/utils/queue.py)
 | `worker:<host>:container:<id>`, `worker:<host>:stack`, `worker:<host>:routing:<id>`, `worker:<host>:discovery` | That one and `worker:<host>` | Their siblings: a container's operations, the stack's repair, a Domain's route and the discovery files on the same worker |
 | `discovery` | The discovery DNS publication | Every other root, the workers' discovery files included |
 | `{platform, app, domain}` | All queued platform, application and domain work | Common, metrics and work outside the queue |
+| `certificate` | The certificates' renewal, and every task under it | Worker, domain and application work |
 | `common:<section>` | That section and root `common` work | Other sections at the scope level |
 | `common` | All common work | The other roots |
 | `metrics:<host>` or `metrics:workers` | The matching child and root `metrics` maintenance | Sibling metrics tasks |
@@ -175,7 +176,7 @@ A request writes nothing: a Domain's status is decided when it is read. See the 
 ### Workers and certificates
 
 Implementation: [worker operations](../app/services/manager/workers.py),
-[certificate and Traefik operations](../app/services/manager/traefik.py).
+[certificate operations](../app/services/manager/certificates.py).
 
 | Operation | Scopes · executor | Admission / history | Every initiating source | Model writes and other effects |
 | --- | --- | --- | --- | --- |
@@ -186,7 +187,7 @@ Implementation: [worker operations](../app/services/manager/workers.py),
 | `remove_worker` | `worker:<host>` · app | DEDUP / H | `request_remove_worker` (refused with containers or internal domains) | Deletes the Worker row through its command; stops the stack and removes Sage's home when it answers and is this Sage's; deletes its DNS records and tunnel; the sources forget it; WorkerEvents. |
 | `reboot_worker` | `worker:<host>` · app | DEDUP / H | `request_reboot` | No main-DB write but WorkerEvents. Boot id before, one reboot, the boot id again until a new one, inline convergence, readiness on a report after the new boot, within `WORKER_REBOOT_LIMIT_SECONDS`; application log markers. |
 | `refresh_worker_paths` | none · app | DEDUP / Q | Interval 60 s and startup | No main-DB write. Pings the reachable workers for their paths and tells the pages of the workers whose state changed. |
-| `renew_certificates` | `{platform, app, domain}` · platform | REPLACE / H | Daily 03:00 and startup; worker add/removal/subdomain change; setup detecting invalid certificates; successful restore; inline from `refresh_traefik` | No operation-specific main-DB write. Sequential certificate retirement/revocation/issuance; manager TLS reload; worker certificate files and proof stamps; update in-memory certificate inventory and worker applied proofs. |
+| `renew_certificates` | `certificate` · platform | REPLACE on `("renew_certificates",)` / H | `request_certificate_renewal`: daily 03:00 and startup; a worker's removal or subdomain change; a worker's setup when its own or the discovery certificate does not cover its names; successful restore; inline from `refresh_traefik` | No main-DB write. The worker names from the Worker rows; then one certificate at a time: retire what no longer covers its names (a removed worker's found on disk included), revoking its public leaf, and issue what is missing or due; the manager's TLS reloaded in place when it was issued. A failed retirement holds back that certificate's issue only; any failure fails the task after the rest ran. |
 | `refresh_traefik` | `{platform, app, domain}` · platform | DEDUP / H | POST `/settings/resync_traefik` | Inline certificate maintenance; rewrite worker Traefik config and wildcard DNS. Through request helpers, mark all Domains pending/clear errors and enqueue their syncs plus full discovery. Does not advance infra stamps. |
 
 `sync_certificates_to_worker` is inline work, not a separate task. They retain the caller's scopes.
@@ -265,7 +266,8 @@ separate facts.
 | A worker's readiness changes | None | Publish discovery; the Domains routed to it are shown again |
 | Worker setup or offline transition | Worker row/IP or cached online state; remote convergence, which removes the routing files of Domains gone or bound elsewhere | After a setup, the Domain pass; publish discovery when the workers reachable and set up, or their addresses, change, its DNS membership with them |
 | Worker subdomain edit | Worker row | Convergence; apply its internal and TCP Domains, whose ends publish discovery; renewal |
-| Worker setup with new owner or invalid certificate | Register Worker / inspect applied material | Certificate maintenance |
+| Worker setup whose own or discovery certificate does not cover its names | None | Certificate renewal |
+| Worker removal | Deletes the Worker row | Certificate renewal, which retires its leaf |
 | Domain apply ends | `Domains` holds its outcome for the fingerprint applied | Apply again when the Domain was edited during it; publish discovery |
 | Domain pass ends | `Domains` holds what it saw of each Domain's route and DNS | Apply each Domain in error, drifted or not applied; publish discovery |
 

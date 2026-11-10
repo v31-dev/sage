@@ -133,12 +133,7 @@ async def cleanup():
 
 
 async def renew_certificates():
-  Manager().add_task(
-      task=Manager().renew_certificates,
-      scopes={"platform", "app", "domain"},
-      executor="platform",
-      on_conflict=OnConflict.REPLACE,
-  )
+  Manager().request_certificate_renewal()
 
 
 async def discover_backups():

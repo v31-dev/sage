@@ -9,6 +9,7 @@ from services.worker_reports import WorkerReports
 from utils.executor import LANES
 from utils.queue import TaskQueue
 
+from .certificates import CertificatesMixin
 from .containers import ContainersMixin
 from .discovery import DiscoveryMixin
 from .domains import DomainsMixin
@@ -16,7 +17,6 @@ from .queue import SCOPES, QueueMixin
 from .workers import WorkersMixin
 
 # TODO(36 step 4X): each mixin joins the Manager again when its part reworks it.
-# from services.certs import Certs
 # from services.cloudflare import Cloudflare
 # from services.metrics import Metrics
 # from services.notification import Notifications
@@ -27,7 +27,6 @@ from .workers import WorkersMixin
 # from .core import CoreMixin
 # from .platform import PlatformMixin
 # from .settings import SettingsMixin
-# from .traefik import TraefikMixin
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +36,7 @@ class Manager(
     DomainsMixin,
     DiscoveryMixin,
     WorkersMixin,
+    CertificatesMixin,
     QueueMixin,
     Base,
 ):

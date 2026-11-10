@@ -177,9 +177,6 @@ class Certs(Base):
     return [{"id": identity, **{key: value for key, value in certificate.info().items() if key not in {"hash", "proof"}}}
             for identity, certificate in self.inventory().items()]
 
-  def is_current(self, identity: str, certificate: Certificate) -> bool:
-    return self.inventory().get(identity) is certificate
-
   def for_worker(self, hostname: str) -> dict[str, Certificate]:
     with self.lock:
       return {"discovery": self.discovery,

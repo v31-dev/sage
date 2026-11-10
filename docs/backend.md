@@ -99,8 +99,8 @@ Most high-level backend behavior ultimately flows through this service, and almo
     inventory/status fires the certificate source when validity, names, expiry or errors change
 - `services/tailscale.py`
   - Tailscale status, SSH command execution and SFTP file sync to workers (asyncssh over `tailscale nc`, since the manager's tailscaled runs in userspace mode)
-- `services/manager/traefik.py`
-  - worker-side Traefik routing-config generation (mixin)
+- `services/manager/certificates.py`
+  - the certificates' renewal and the setup of the manager's domain and certificate before serving (mixin)
 - `services/metrics.py`
   - metrics (workers' per-minute peaks from Telegraf's reports, written by the queue; the manager's own container in-process). A minute is written to its shard once it has ended; the queries add the minutes still in memory, so the latest reading is at most one report old and the `1m` view is the last two minutes
 - `services/worker_reports.py`
@@ -484,8 +484,10 @@ until revocation succeeds, `alreadyRevoked` is returned, or they expire; startup
 removed owners on disk. A revocation failure blocks that owner's replacement and reports an error, while the pass
 continues with independent owners. A certificate returned after its owner changes is retained for revocation.
 
-Maintenance first unpublishes unusable identities on online workers, retires obsolete material, issues required
-leaves serially, then applies replacements. A worker uses `traefik/certs/managed/{worker|discovery}-<hash>.{pem|key}`
+Renewal (`renew_certificates`, under `certificate`) sets the worker names from the Worker rows, then takes one
+certificate at a time: it retires what no longer covers its names, a removed worker's included, and issues what is
+missing or due. A worker's setup requests it when the worker's own or the discovery certificate does not cover its
+names, and so do a worker's removal and subdomain change. A worker uses `traefik/certs/managed/{worker|discovery}-<hash>.{pem|key}`
 and a stock `tls.certificates` list. Complete pairs precede configuration publication; unwanted managed files are
 removed and proofs written last. Both the actual file set and rendered configuration digest are checked even
 with matching proofs. Certificate-template changes belong to these proofs, rather than the infrastructure stamp.
@@ -529,8 +531,8 @@ Cloudflare and Tailscale are configured by required env vars (`DOMAIN`,
 `CLOUDFLARE_API_TOKEN`), so changing them is a
 restart. On start, `setup_domain` sets up the new domain (zone, tunnel, the manager's
 record, the manager's certificate) before serving, the `renew_certificates` startup run
-issues the shared discovery and per-worker certificates, and the `check_stamps` worker sync
-converges online workers: the `infra` stamp includes the domain and the ids of the
+issues the shared discovery and per-worker certificates, and each worker's setup converges it once it
+answers: the `infra` stamp includes the domain and the ids of the
 platform's tunnel and of the worker's own (a new account means new tunnels), the `certs` stamp proves the two applied certificate pairs, and each
 Domain configuration fingerprint includes its full host. Resources of a previous domain or account stay
 in Cloudflare.
