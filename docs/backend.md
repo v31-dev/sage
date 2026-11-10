@@ -506,15 +506,6 @@ offline removed VMs still require manual decommissioning. Shared discovery remai
 
 Artifact fingerprints fold in their **template files themselves**, since templates ship inside the image and a changed template must reach the workers without another input changing. A worker's infra stamp holds `infra_fingerprint` (`services/workers/rendering.py`): its address, the manager's, the domain, the platform's and the worker's tunnels, the version, the report interval and the stack's templates; `render_infrastructure` writes the files from the same inputs, the Compose file as it is (its `${...}` are Compose's own, read from the `.env` beside it). Domain routing has its own digest (`ROUTING_DIGEST` in `services/domains/config.py`), as have discovery (`TEMPLATES_DIGEST` in `services/domains/discovery.py`) and certificates (`TEMPLATE_DIGEST` in `services/certs.py`), each computed once at import. Templates pushed unconditionally, such as the revision writer and the per-application compose/backup/restore scripts, need no digest. A container's deployment is its record's `applied.deployment_id`, which its runtime carries as the `sage.deployment` label with the instance, generation and container ids; the status decision compares them, so a runtime of another deployment or authority is an error, not active.
 
-`refresh_traefik` (Resync Traefik) rewrites each online worker's
-traefik files directly but deliberately does **not** advance their `infra`
-stamps — the stamp vouches for every infra file (compose, `.env`, vector),
-and refresh only touched the traefik ones; advancing it could falsely certify
-a worker that also missed a version upgrade. The stale stamp costs each worker
-one redundant full setup at its next convergence (one-shot per settings
-change) — the safe direction, since the stamp never claims a worker is
-fresher than it is.
-
 **Name components are collision-free by construction.** Every name that ends
 up in a filename or constructed identity is **rejected, never cleaned**, on any
 write path: project and application names, volume names and setting keys are
@@ -535,7 +526,7 @@ exception handler in `api.py` (plus the generic route handlers, whose broad
 `except` would otherwise swallow it) maps it to a 400 carrying the message, so
 routes call `clean`/`validate` bare.
 
-## Settings And Traefik Refresh
+## Settings And Worker Resync
 
 Cloudflare and Tailscale are configured by required env vars (`DOMAIN`,
 `CLOUDFLARE_API_TOKEN`), so changing them is a
@@ -554,8 +545,13 @@ serves defined keys. UI updates follow one pattern:
 validate the merged value, persist via `Settings().set(...)`, reload the consuming service
 (`S3().load()`, `Notifications().load_notifications_config()`), then queue a check.
 
-`refresh_traefik` (Resync Traefik) runs inventory maintenance, forces each worker’s own and shared discovery
-certificate application, and rewrites Traefik config and `*.<subdomain>.int` records, and requests every Domain record's sync.
+A worker's resync is its forced setup (`converge_worker` with `force`, its own visible task; "Resync workers" queues
+it for every worker). It is the one manual repair, for what Sage keeps on the worker that looks right to its stamps
+and headers but is not: it writes the stack's files and restarts the stack whatever the `infra` stamp says, then
+requests a forced certificate distribution, the applies of the Domains routed to it (an apply always writes the
+routing file) and a forced discovery publication on it, and a renewal when its own or the discovery certificate does
+not cover its names. Shared records (each Domain's DNS, the discovery records) need no manual action: the Domain pass
+and the discovery DNS publication correct them every five minutes, and the daily renewal retries a failed issue.
 
 ## Templates
 
