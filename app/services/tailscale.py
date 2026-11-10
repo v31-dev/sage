@@ -56,6 +56,10 @@ class Tailscale(Base):
     self._misses: dict[str, int] = {}
     # How each peer (by Tailscale IP) was reached at the last `refresh_paths`.
     self._paths: dict[str, str] = {}
+    # What the last `observe_workers` found of each worker: its SSH server's answer and its address in the tailnet.
+    self._ssh: dict[str, str] = {}
+    self._addresses: dict[str, str] = {}
+    self._cut_off = False
 
   async def _get_conn(self, hostname):
     """Return a live pooled SSH connection to `hostname`, connecting if needed."""
@@ -158,19 +162,42 @@ class Tailscale(Base):
     paths = await asyncio.gather(*(self.ping(ip) for ip in ips))
     self._paths = {ip: path for ip, path in zip(ips, paths) if path}
 
-  async def online_states(self, peers: dict[str, bool | None]) -> dict[str, bool | None]:
-    """Whether each worker ({hostname: online now, None if not known}) is online: its SSH server answers
-    (`reachable`). The state lags by one missed check (see `next_online`). When the manager's own node is cut
-    off from the tailnet a miss says nothing about the workers, so their states are left as they are."""
-    results = await asyncio.gather(*(self.reachable(hostname) for hostname in peers))
-    if not all(results) and not await run_in_executor_with_context(self.connected):
-      logger.warning("The manager is not connected to the tailnet; worker states are left as they are.")
-      return dict(peers)
-    states, misses = {}, {}
-    for (hostname, online), answered in zip(peers.items(), results):
-      states[hostname], misses[hostname] = next_online(online, answered, self._misses.get(hostname, 0))
-    self._misses = misses
-    return states
+  async def observe_workers(self, hostnames: list[str]):
+    """Asks each worker's SSH server (`reachable`) and holds what it found, with each one's address in the tailnet:
+    reachable at the first answer, unreachable once OFFLINE_AFTER_MISSED_CHECKS checks in a row have gone unanswered
+    or when the tailnet does not list it, as it was until then (`next_online`). While the manager's own node is cut
+    off from the tailnet a miss says nothing of the workers: every one is unknown, and what was found before and the
+    misses stay as they were."""
+    addresses = {peer.hostname: peer.ip for peer in await run_in_executor_with_context(self.peers) if peer.hostname in hostnames}
+    listed = [hostname for hostname in hostnames if hostname in addresses]
+    answers = dict(zip(listed, await asyncio.gather(*(self.reachable(hostname) for hostname in listed))))
+    cut_off = not all(answers.values()) and not await run_in_executor_with_context(self.connected)
+    if cut_off:
+      logger.warning("The manager is not connected to the tailnet; nothing is known of the workers.")
+    with self.lock:
+      self._addresses, self._cut_off = addresses, cut_off
+      if cut_off:
+        return
+      states, misses = {}, {}
+      for hostname in hostnames:
+        if hostname not in answers:
+          states[hostname] = "unreachable"
+          continue
+        was = {"reachable": True, "unreachable": False}.get(self._ssh.get(hostname))
+        online, misses[hostname] = next_online(was, answers[hostname], self._misses.get(hostname, 0))
+        states[hostname] = {True: "reachable", False: "unreachable", None: "unobserved"}[online]
+      self._ssh, self._misses = states, misses
+
+  def ssh(self, hostname: str) -> str:
+    """What the last observation found of the worker's SSH server: reachable, unreachable, unknown (the manager was
+    cut off) or unobserved."""
+    with self.lock:
+      return "unknown" if self._cut_off else self._ssh.get(hostname, "unobserved")
+
+  def address(self, hostname: str) -> str | None:
+    """The worker's address in the tailnet at the last observation; None when it was not listed."""
+    with self.lock:
+      return self._addresses.get(hostname)
 
   def ip(self):
     if not getattr(self, "_ip", ""):

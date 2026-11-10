@@ -31,6 +31,11 @@ class WorkerHosts:
     self.root = root
     self.unreachable = set()
     self.commands = []
+    self.observed = {}
+
+  def ssh(self, hostname):
+    """What the workers' observation found of the worker's SSH server."""
+    return self.observed.get(hostname, "unobserved")
 
   def local(self, hostname, text):
     """`text` with the worker's home replaced by that worker's own directory here."""
@@ -144,6 +149,14 @@ class TestStates:
     report(containers[0])
     Instance.update(state_generation="9999999999999999").execute()
     assert (view(manager, containers[0]).headline, view(manager, containers[0]).reason) == ("error", "restored")
+
+  async def test_a_worker_whose_ssh_server_stopped_answering_makes_its_container_an_error(self, manager, hosts, containers):
+    await deployed(containers[0])
+    report(containers[0])
+    hosts.observed["w1"] = "unreachable"
+    assert (view(manager, containers[0]).headline, view(manager, containers[0]).reason) == ("error", "unreachable")
+    hosts.observed["w1"] = "reachable"
+    assert view(manager, containers[0]).headline == "active"
 
   async def test_a_report_from_another_worker_says_nothing_of_it(self, manager, containers):
     await deployed(containers[0])

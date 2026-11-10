@@ -1,0 +1,86 @@
+from datetime import datetime, timedelta
+
+import pytest
+
+import config
+from services.tailscale import Tailscale
+from services.worker_reports import ContainerReading, HostReading, Snapshot, WorkerReports
+from services.workers.state import Workers, worker_state
+
+
+class Observed:
+  """What the workers' observation found: each worker's SSH fact, address and path."""
+
+  def __init__(self):
+    self.ssh_of, self.addresses, self.paths = {}, {}, {}
+
+  def ssh(self, hostname):
+    return self.ssh_of.get(hostname, "unobserved")
+
+  def address(self, hostname):
+    return self.addresses.get(hostname)
+
+  def path(self, address):
+    return self.paths.get(address)
+
+
+@pytest.fixture
+def observed(register, clock):
+  return register(Tailscale, Observed())
+
+
+def report(hostname="w1", traefik=True, running=config.WORKER_STACK_SERVICES):
+  readings = {name: ContainerReading(name=name, status="running", image="", labels={}, exit_code=0, oom_killed=False, started_at=1,
+                                     finished_at=None, health=None, cpu_percent=None, mem_bytes=None, net_rx_bytes=None,
+                                     net_tx_bytes=None) for name in running}
+  WorkerReports().accept(hostname, [Snapshot(at=datetime(2026, 1, 1, 9), host=HostReading(*([None] * 13)), containers=readings,
+                                             traefik_reachable=traefik)])
+
+
+class TestWorkers:
+  def test_a_worker_has_no_setup_outcome_until_one_is_recorded_and_none_again_once_cleared(self):
+    assert Workers().setup("w1") is None
+    Workers().record_setup("w1", "succeeded")
+    assert Workers().setup("w1") == "succeeded"
+    Workers().record_setup("w1", None)
+    assert Workers().setup("w1") is None
+
+
+class TestWorkerState:
+  def test_a_reachable_worker_set_up_and_reporting_a_working_stack_is_online_with_its_address_and_path(self, observed):
+    observed.ssh_of["w1"], observed.addresses["w1"], observed.paths["100.64.0.2"] = "reachable", "100.64.0.2", "direct"
+    Workers().record_setup("w1", "succeeded")
+    report()
+    state = worker_state("w1", frozenset())
+    assert (state.view.status, state.view.ready, state.address, state.path, state.ssh, state.setup) == (
+        "online", True, "100.64.0.2", "direct", "reachable", "succeeded")
+
+  def test_a_worker_never_observed_is_checking(self, observed):
+    assert worker_state("w1", frozenset()).view.status == "checking"
+
+  def test_a_reachable_worker_not_set_up_yet_is_checking(self, observed):
+    observed.ssh_of["w1"] = "reachable"
+    report()
+    assert (worker_state("w1", frozenset()).view.status, worker_state("w1", frozenset()).view.reason) == ("checking", "unobserved")
+
+  def test_a_worker_whose_ssh_server_does_not_answer_is_offline(self, observed):
+    observed.ssh_of["w1"] = "unreachable"
+    assert worker_state("w1", frozenset()).view.status == "offline"
+
+  def test_a_task_under_way_is_what_it_shows(self, observed):
+    observed.ssh_of["w1"] = "reachable"
+    assert worker_state("w1", frozenset({"reboot_worker"})).view.status == "rebooting"
+
+  def test_a_worker_that_never_reported_is_not_ready_once_the_grace_after_the_start_is_over(self, observed, clock):
+    observed.ssh_of["w1"] = "reachable"
+    Workers().record_setup("w1", "succeeded")
+    WorkerReports()
+    assert worker_state("w1", frozenset()).view.status == "checking"
+    clock.advance(timedelta(seconds=config.REPORT_STARTUP_GRACE_SECONDS))
+    assert (worker_state("w1", frozenset()).view.status, worker_state("w1", frozenset()).view.reason) == ("not ready", "not_reporting")
+
+  def test_traefik_not_answering_makes_it_not_ready(self, observed):
+    observed.ssh_of["w1"] = "reachable"
+    Workers().record_setup("w1", "succeeded")
+    report(traefik=False)
+    assert worker_state("w1", frozenset()).view.reason == "traefik_down"

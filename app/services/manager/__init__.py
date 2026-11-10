@@ -11,6 +11,7 @@ from utils.queue import TaskQueue
 
 from .containers import ContainersMixin
 from .queue import SCOPES, QueueMixin
+from .workers import WorkersMixin
 
 # TODO(36 step 4X): each mixin joins the Manager again when its part reworks it.
 # from services.certs import Certs
@@ -26,13 +27,13 @@ from .queue import SCOPES, QueueMixin
 # from .platform import PlatformMixin
 # from .settings import SettingsMixin
 # from .traefik import TraefikMixin
-# from .workers import WorkersMixin
 
 logger = logging.getLogger(__name__)
 
 
 class Manager(
     ContainersMixin,
+    WorkersMixin,
     QueueMixin,
     Base,
 ):
@@ -48,16 +49,11 @@ class Manager(
       self.latest_version = self.version
       self.latest_release = None
 
-      # TODO(36 step 4D): the worker list and its stack repairs.
-      # self._worker_inputs = {}
-      # self.worker_list = []
-      # self._worker_list_lock = threading.Lock()
-      # self.worker_discovery = self.workers_discovery_fact()
-      # self.worker_stack_repairs = {}
       # What each owner works out from the queue at every change of it.
-      # TODO(36 step 4X): the settings, platform, workers and domains queue facts.
-      self.queue_facts = [*self.tasks_queue_facts(), *self.containers_queue_facts()]
+      # TODO(36 step 4X): the settings, platform and domains queue facts.
+      self.queue_facts = [*self.tasks_queue_facts(), *self.containers_queue_facts(), *self.workers_queue_facts()]
       self.container_state = self.containers_state_fact()
+      self.worker_state = self.workers_state_fact()
       # Each container recovering from an interrupted operation: the incident and when it was first seen, on this
       # process's monotonic clock, so a restart waits the old work's whole allowance again.
       self.recoveries = {}

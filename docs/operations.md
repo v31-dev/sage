@@ -105,7 +105,7 @@ uses a 30-second misfire grace period.
 | Trigger | Cadence | Also once at scheduler startup? | Work selected |
 | --- | --- | --- | --- |
 | `dispatch_tick` | Interval 1 s | No | Start eligible queued operations; no task of its own |
-| `sync_workers` | Interval 30 s | Separate `check_worker_stamps` trigger | `sync_workers` |
+| `observe_workers` | Interval 30 s | No | `observe_workers` |
 | `refresh_worker_paths` | Interval 60 s | Yes | `refresh_worker_paths` |
 | `observe_containers` | Every minute, `* * * * *` | No | `observe_containers` |
 | `list_container_records` | Every 10 minutes, `*/10 * * * *` | No | One `list_records` per worker whose report is current |
@@ -118,7 +118,6 @@ uses a 30-second misfire grace period.
 | `renew_certificates` | Daily 03:00, `0 3 * * *` | Yes | `renew_certificates` |
 | `cleanup` | Daily 04:00, `0 4 * * *` | No | Three independent tasks: `metrics_cleanup`, `logs_cleanup`, `cleanup` |
 | `send_summary_notification` | Daily 08:00, `0 8 * * *` | No | `send_summary_notification` |
-| `check_worker_stamps` | Startup only | Yes | `sync_workers(check_stamps=True)` |
 | `discover_backups` | Startup only | Yes | `discover_s3_backups`; S3 required |
 
 Due volume backups require an active/inactive application with containers, a matching `Volume.backup_cron`, and
@@ -178,11 +177,11 @@ Implementation: [worker operations](../app/services/manager/workers.py),
 
 | Operation | Scopes · executor | Admission / history | Every initiating source | Model writes and other effects |
 | --- | --- | --- | --- | --- |
-| `sync_workers` | `platform` · platform | 30 s: DEDUP / Q; stamp-check or force: REPLACE / H | Interval 30 s; startup `check_stamps=True`; POST `/settings/resync_workers` and successful restore (`force=True`); worker subdomain edit (`check_stamps=True`) | Backfill null Worker `subdomain` through its writer; `setup_worker` inserts Worker or updates its IP. Update in-memory online/readiness, repair cooldowns and applied certificate proofs; converge remote stack/stamps/DNS. Offline/setup transitions request discovery; missing certificates request renewal. |
+| `observe_workers` | none · app | DEDUP / Q | Interval 30 s | No main-DB write. Asks every configured worker's SSH server (`Tailscale.observe_workers`), drops the setup outcome of a worker that stopped answering, and tells the pages of the workers whose state changed; observed status changes are WorkerEvents. |
 | `add_worker` | `platform` · platform | QUEUE / H | POST `/workers` | Check reachability and ownership, then inline `setup_worker`: write Worker row, infra and DNS; request renewal for new worker and discovery. A failed new setup calls `remove_worker` inline as rollback, retaining only the add task's `platform` scope. |
 | `remove_worker` | `{platform, app, domain}` · platform | QUEUE / H | DELETE `/workers/{host}`; also inline rollback from `setup_worker` | Inline force-delete offline worker containers, including their Events/unlinks/counters; delete Worker. Forget report/metric/path caches; clean reachable owned stack and Cloudflare resources; enqueue certificate maintenance and discovery. Re-check container and internal-domain preconditions. |
 | `reboot_worker` | `{platform, app, domain}` · platform | QUEUE / H | POST `/workers/{host}/reboot` | No operation-specific main-DB write. Remote reboot, application log markers and in-memory reboot tracking; later worker/status syncs own the resulting state changes. |
-| `refresh_worker_paths` | `common` · common | DEDUP / Q | Interval 60 s and startup | No main-DB write. Refresh cached Tailscale paths and worker entries. |
+| `refresh_worker_paths` | none · app | DEDUP / Q | Interval 60 s and startup | No main-DB write. Pings the reachable workers for their paths and tells the pages of the workers whose state changed. |
 | `renew_certificates` | `{platform, app, domain}` · platform | REPLACE / H | Daily 03:00 and startup; worker add/removal/subdomain change; setup detecting invalid certificates; successful restore; inline from `refresh_traefik` | No operation-specific main-DB write. Sequential certificate retirement/revocation/issuance; manager TLS reload; worker certificate files and proof stamps; update in-memory certificate inventory and worker applied proofs. |
 | `refresh_traefik` | `{platform, app, domain}` · platform | DEDUP / H | POST `/settings/resync_traefik` | Inline certificate maintenance; rewrite worker Traefik config and wildcard DNS. Through request helpers, mark all Domains pending/clear errors and enqueue their syncs plus full discovery. Does not advance infra stamps. |
 

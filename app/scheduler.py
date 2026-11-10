@@ -26,34 +26,12 @@ async def dispatch_tick():
 # --- Triggers: each only enqueues onto the Manager operation queue -------------
 
 
-async def sync_workers():
-  Manager().add_task(
-      task=Manager().sync_workers,
-      scopes={"platform"},
-      executor="platform",
-      quiet=True,
-  )
+async def observe_workers():
+  Manager().request_worker_observation()
 
 
 async def refresh_worker_paths():
-  Manager().add_task(
-      task=Manager().refresh_worker_paths,
-      scopes={"common"},
-      executor="common",
-      quiet=True,
-  )
-
-
-async def check_worker_stamps():
-  # The env (domain, Cloudflare account) may have changed while Sage was stopped, so
-  # workers that stayed online are checked against their stamps too.
-  Manager().add_task(
-      task=Manager().sync_workers,
-      scopes={"platform"},
-      params={"check_stamps": True},
-      executor="platform",
-      on_conflict=OnConflict.REPLACE,
-  )
+  Manager().request_worker_paths()
 
 
 async def observe_containers():
@@ -190,7 +168,7 @@ async def check_settings():
 # Job scheduling
 _JOBS = [
     (dispatch_tick, IntervalTrigger(seconds=1)),
-    (sync_workers, IntervalTrigger(seconds=30)),
+    (observe_workers, IntervalTrigger(seconds=30)),
     (refresh_worker_paths, IntervalTrigger(seconds=60)),
     (observe_containers, CronTrigger.from_crontab("* * * * *")),
     (list_container_records, CronTrigger.from_crontab("*/10 * * * *")),
@@ -207,8 +185,8 @@ _JOBS = [
 
 # Run once right after startup (as queued tasks, so the servers are already up), then on
 # their cron schedule where they have one.
-_AT_STARTUP = [refresh_latest_release, renew_certificates, discover_backups, check_settings, check_worker_stamps, refresh_worker_paths,
-               sync_discovery]
+# TODO(36 step 4D-2): converge every worker against its stamps at startup, since the env may have changed.
+_AT_STARTUP = [refresh_latest_release, renew_certificates, discover_backups, check_settings, refresh_worker_paths, sync_discovery]
 
 
 def start():

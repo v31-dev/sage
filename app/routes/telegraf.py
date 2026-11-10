@@ -4,6 +4,7 @@ import logging
 from fastapi import APIRouter, HTTPException, Request, Response
 
 import config
+from services.db.models import Worker
 from services.manager import Manager
 from services.metrics import Metrics
 from services.worker_reports import WorkerReports, parse_batch
@@ -17,7 +18,7 @@ router = APIRouter()
 @router.post("/report", openapi_extra=NO_ACCESS_LOG)  # a report every few seconds from each worker
 async def telegraf_report(request: Request):
   hostname = request.headers.get("x-node-name", "")
-  if Manager().worker_entry(hostname) is None:
+  if Worker.get_or_none(Worker.hostname == hostname) is None:
     if WorkerReports().first_unknown(hostname):
       logger.warning(f"Ignoring reports from unknown worker {hostname!r}.")
     raise HTTPException(status_code=404, detail="Unknown worker.")
@@ -36,5 +37,5 @@ async def telegraf_report(request: Request):
   if arrival is not None and arrival.changed:
     Manager().containers_reported(hostname, arrival.changed)
   if arrival is not None:
-    Manager().update_worker(hostname, report=arrival.received)
+    Manager().worker_reported(hostname)
   return Response(status_code=204)
