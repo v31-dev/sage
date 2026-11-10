@@ -558,7 +558,8 @@ class ContainersMixin:
     domains = detach_container(container.id)
     Containers().forget(container.id)
     self.request_domain_applies(domains)
-    # TODO(36 step 4E): the routes of its public domains, unlinked, go with the cleanup of the worker's routing files.
+    if domains:
+      self.request_domain_reconciliation()
     # TODO(36 step 4H): self.notify(f"Container {container.id} deleted from worker {container.worker_id}.")
     logger.info(f"Container {container.id} deleted; {len(domains)} domains unlinked.")
 

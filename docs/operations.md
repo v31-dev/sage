@@ -66,7 +66,7 @@ Sources: [scheduler](../app/scheduler.py), [queue engine](../app/utils/queue.py)
 | `app:<qn>` | Work for that application, and tasks holding root `app` | Other applications and the domain parent pass |
 | `domain:<id>` | Work for that record, and tasks holding root `domain` | Other records |
 | `domain:host:<fqdn>` | The apply of any record with that full name, so a name swapped between two records is applied by one at a time | Other names |
-| `domain` | Every record apply and other discovery parent passes | Worker and application tasks |
+| `domain` | Every Domain apply, and every other task holding it: the Domain pass, maintenance | Worker and application tasks |
 | `worker:<host>` | Work on that worker and every scope below it: its containers, its stack and its routes | Other workers |
 | `worker:<host>:container:<id>`, `worker:<host>:stack`, `worker:<host>:routing:<id>` | That one and `worker:<host>` | Their siblings: a container's operations, the stack's repair and a Domain's route on the same worker |
 | `{platform, app, domain}` | All queued platform, application and domain work | Common, metrics and work outside the queue |
@@ -113,7 +113,7 @@ uses a 30-second misfire grace period.
 | `list_container_records` | Every 10 minutes, `*/10 * * * *` | No | One `list_records` per worker whose report is current |
 | `schedule_application_backups` | Every minute, `* * * * *` | No | One `backup_application_s3` per app with due volumes; S3 required |
 | `collect_metrics` | Every minute, `* * * * *` | No | `collect_self` and `flush_worker_metrics` |
-| `sync_discovery` | Every 5 min, `*/5 * * * *` | Yes | Full `sync_discovery(repair=True)` |
+| `reconcile_domains` | Every 5 min, `*/5 * * * *` | Yes | `reconcile_domains` |
 | `check_settings` | Every 5 min, `*/5 * * * *` | Yes | `check_<section>` for each configured section |
 | `refresh_latest_release` | Every 4 h, `0 */4 * * *` | Yes | `refresh_latest_release` |
 | `backup_database` | 00:00 and 12:00, `0 */12 * * *` | No | `backup_database_s3`; S3 required |
@@ -145,7 +145,7 @@ Route paths use `<app>` for `/projects/{project}/applications/{application}`; al
 | --- | --- | --- | --- | --- |
 | `deploy` (`deploy_container`) | `worker:<host>:container:<id>` · app | REVISE on `("lifecycle", <id>)` / H | `request_deploy`, `request_deploy_all` | ContainerEvents (admitted, rejected, succeeded, failed); no other main-DB write. Reads and writes the worker's `record.json`; stops the container, writes `.env`, secrets, Compose file and volume directories, `compose up`, verifies; the `Containers` owner holds the record. |
 | `stop` (`stop_container`) | `worker:<host>:container:<id>` · app | REVISE on `("lifecycle", <id>)` / H | `request_stop`, `request_stop_all` | ContainerEvents; the worker's `record.json`; `compose down`, verifies nothing runs. |
-| `delete` (`delete_container`) | `worker:<host>:container:<id>` · app | REPLACE on `("delete", <id>)`, after cancelling the container's queued tasks / H | `request_delete` | ContainerEvents; the worker's `record.json`; `compose down --volumes --rmi local --remove-orphans`, removes the placement directory; then deletes the Container row through `detach_container` (unlinks its Domains). Force on a worker that can't be asked: only the row. |
+| `delete` (`delete_container`) | `worker:<host>:container:<id>` · app | REPLACE on `("delete", <id>)`, after cancelling the container's queued tasks / H | `request_delete` | ContainerEvents; the worker's `record.json`; `compose down --volumes --rmi local --remove-orphans`, removes the placement directory; then deletes the Container row through `detach_container` (unlinks its Domains) and requests their applies and, when it unlinked any, `reconcile_domains`. Force on a worker that can't be asked: only the row. |
 | `observe_containers` | none · app | DEDUP / Q | Every minute | No main-DB write. Decides every container's state, tells the pages of those whose state changed, and asks for each container's correction: a record read, a recovery or a reset. Holds each recovery's first-seen time. |
 | `recover` (`recover_container`) | `worker:<host>:container:<id>` · app | DEDUP on `("recover", <id>)` / H | `observe_containers`: at an interrupted operation or unreadable record, then once its allowance has passed | ContainerEvents; the worker's `record.json` (recovering, then settled stopped/failed); `compose down` and the check. |
 | `reset` (`reset_container`) | `worker:<host>:container:<id>` · app | DEDUP on `("reset", <id>)` / H | `observe_containers`: a runtime that contradicts its record, or a record from before a restore | ContainerEvents; reads the record and inspects the runtime again; `compose down`, the check, the record with the cause. |
@@ -165,8 +165,8 @@ Implementation: [Domain operations and request helpers](../app/services/manager/
 
 | Operation | Scopes · executor | Admission / history | Every initiating source | Model writes and other effects |
 | --- | --- | --- | --- | --- |
-| `apply_domain` | `domain:<id>`; `domain:host:<fqdn>` when it has a name; `worker:<host>:routing:<id>` when it routes to a worker · app | REPLACE on `("apply_domain", <id>)` / Q | `request_domain_applies`: the end of a container's Deploy or Stop, either one's failure, and its Delete (the Domains it unlinked); `observe_containers` when a container becomes routable or stops being; a worker's subdomain change (its internal and TCP Domains); its own follow-up after an edit during it or a move before it | No main-DB write. `domain-<id>.yml` on its worker: written while its container is routable, removed once it is not or the Domain is unlinked, left as it is while that is unknown or the worker is not reachable and set up. Then its `sage-domain-<id>` DNS records: a linked public name's CNAME to its worker's tunnel, none otherwise. The `Domains` owner holds the outcome for the fingerprint applied (a success only when the route was applied too) and what it did to the route and DNS. A failure fails the task and is not retried by itself. |
-| `sync_discovery(repair=True)` | `domain` · app | REPLACE / Q | Every 5 min and startup; Domain CRUD; worker setup/offline/removal/subdomain changes; cached ready-worker changes; Container active/non-active changes; `refresh_traefik`; successful platform restore | Through `request_domain_sync`, mark drifted records pending and clear errors, then enqueue children. Inventory/clean orphan and old-placement artifacts; publish discovery files, revision stamps and DNS. No successful Domain proof writes; no Application/Container status writes. |
+| `apply_domain` | `domain:<id>`; `domain:host:<fqdn>` when it has a name; `worker:<host>:routing:<id>` when it routes to a worker · app | REPLACE on `("apply_domain", <id>)` / Q | `request_domain_applies`: the end of a container's Deploy or Stop, either one's failure, and its Delete (the Domains it unlinked); `observe_containers` when a container becomes routable or stops being; a worker's subdomain change (its internal and TCP Domains); `reconcile_domains` (a Domain in error, drifted or not applied); its own follow-up after an edit during it or a move before it | No main-DB write. `domain-<id>.yml` on its worker: written while its container is routable, removed once it is not or the Domain is unlinked, left as it is while that is unknown or the worker is not reachable and set up. Then its `sage-domain-<id>` DNS records: a linked public name's CNAME to its worker's tunnel, none otherwise. The `Domains` owner holds the outcome for the fingerprint applied (a success only when the route was applied too) and what it did to the route and DNS. A failure fails the task and is not retried by itself. |
+| `reconcile_domains` | `domain` · app | REPLACE on `("reconcile_domains",)` / Q | `request_domain_reconciliation`: every 5 min and startup; the end of a worker's setup; a container Delete that unlinked Domains; Domain edits and deletes | No main-DB write. Lists the routing files on each worker reachable and set up, the zone and the tunnels, then reads the Domain rows. Removes the routing files of Domains gone or bound to another worker (one `rm -f` per worker) and the `sage-domain-<id>` records of Domains gone. `Domains` holds each Domain's route on its worker and whether its DNS conforms, and drops what it held of Domains gone. Requests `apply_domain` for each Domain in error, drifted or not applied. A failed listing or removal fails the task after the rest ran. |
 | `sync_discovery(repair=False)` | `domain` · app | DEDUP / Q | End of a Domain apply attempt | Inventory zone DNS and worker files/stamps; clean artifacts and publish discovery without listing account tunnels, requesting record repairs or changing Domain results. |
 
 A request writes nothing: a Domain's status is decided when it is read. See the [Domain flow](#domain-apply-and-discovery).
@@ -179,7 +179,7 @@ Implementation: [worker operations](../app/services/manager/workers.py),
 | Operation | Scopes · executor | Admission / history | Every initiating source | Model writes and other effects |
 | --- | --- | --- | --- | --- |
 | `observe_workers` | none · app | DEDUP / Q | Interval 30 s | No main-DB write. Asks every configured worker's SSH server (`Tailscale.observe_workers`), drops the setup outcome of a worker that stopped answering, tells the pages of the workers whose state changed (observed status changes are WorkerEvents), and requests `converge_worker` and `repair_worker_stack`. |
-| `converge_worker` | `worker:<host>` · app | DEDUP / Q; force on its own key `("converge_worker", <host>, "force")` / H | `observe_workers` (not set up since the start or since it came back, a new address, a failed or refused setup after the retry time); force: Resync workers | No main-DB write. Owner stamp, worker tunnel and `*.<subdomain>.int` record (Cloudflare), the stack's files, `compose up --wait` and restarts and the infra stamp when it differs or on force, else `compose up -d`; the setup outcome and applied address in `Workers`; WorkerEvents. |
+| `converge_worker` | `worker:<host>` · app | DEDUP / Q; force on its own key `("converge_worker", <host>, "force")` / H | `observe_workers` (not set up since the start or since it came back, a new address, a failed or refused setup after the retry time); force: Resync workers | No main-DB write. Owner stamp; removes the routing files of Domains gone or bound to another worker; worker tunnel and `*.<subdomain>.int` record (Cloudflare), the stack's files, `compose up --wait` and restarts and the infra stamp when it differs or on force, else `compose up -d`; the setup outcome and applied address in `Workers`; WorkerEvents. Once set up, requests `reconcile_domains`. |
 | `repair_worker_stack` | `worker:<host>:stack` · app | DEDUP / Q | `observe_workers`: set up but not ready for its stack, Traefik or a minute's silence, once per cooldown | No main-DB write. `compose up -d` of the stack's services; a repair WorkerEvent when it started something. |
 | `add_worker` | `worker:<host>` · app | DEDUP / H | `request_add_worker` (the command writes the row first) | Looks at the worker, then the first convergence inline; WorkerEvents. A worker whose first setup fails is kept. |
 | `remove_worker` | `worker:<host>` · app | DEDUP / H | `request_remove_worker` (refused with containers or internal domains) | Deletes the Worker row through its command; stops the stack and removes Sage's home when it answers and is this Sage's; deletes its DNS records and tunnel; the sources forget it; WorkerEvents. |
@@ -223,9 +223,9 @@ while holding `domain`, since that scope excludes every child's `domain:<id>`.
 %%{init: {"themeVariables": {"lineColor": "#ef4444"}, "themeCSS": ".marker { overflow: visible; } .arrowMarkerPath { stroke-width: 2px !important; } .edge-pattern-dotted { stroke-dasharray: 8 6 !important; }"}}%%
 flowchart TB
     edit["Domain create or edit<br/>direct model write; no scope"]
-    trigger["5 min / startup / external change"]
+    trigger["5 min / startup / worker setup /<br/>a change that leaves a route behind"]
     request["request_domain_applies<br/>capture its worker and name<br/>for the scopes"]
-    parent["Full discovery pass<br/>hold domain<br/>inventory and find drift"]
+    parent["Domain pass<br/>hold domain<br/>list, remove what is left behind,<br/>find drift"]
     child["Domain apply<br/>hold domain:id, domain:host:fqdn,<br/>worker:host:routing:id<br/>re-check worker and name"]
     apply["Route by the container's routable,<br/>then DNS"]
     result["Domains holds the outcome<br/>for the fingerprint applied"]
@@ -248,7 +248,7 @@ flowchart TB
 A Domain whose worker or name changed after its request is requested again with the right scopes before any I/O. A
 container's operation does not hold the apply back: the route follows its `routable` when the apply runs, and a change
 of that requests the apply again. Failed applies, and routes left because the worker could not be written to or the
-container's state was not known, wait for a scheduled or externally requested full scan. The cleanup-only follow-up cannot replace an already queued full scan. Domain apply proof
+container's state was not known, wait for the Domain pass. The cleanup-only follow-up cannot replace an already queued full scan. Domain apply proof
 and discovery availability remain separate facts.
 
 ### Application and worker events
@@ -258,10 +258,10 @@ and discovery availability remain separate facts.
 | `save_container`: active ↔ non-active | Persist Container status and emit UI sources | Full discovery pass |
 | Deploy or Stop end, or the failure of either | The worker's `record.json` | Apply the container's Domains |
 | `observe_containers`: a container becomes routable or stops being | None | Apply its Domains |
-| Successful container delete | Delete row; FK unlinks Domains; signals update count/status | Apply the unlinked Domains |
+| Successful container delete | Delete row; FK unlinks Domains; signals update count/status | Apply the unlinked Domains; the Domain pass when there were any |
 | A worker's readiness changes | None | None; the Domains routed to it are shown again |
 | `update_workers`, Worker save/forget/reload | Replace cached worker list; compare ready-worker set | Full discovery only when ready set changes |
-| Worker setup or offline transition | Worker row/IP or cached online state; remote convergence | Full discovery, including discovery DNS membership |
+| Worker setup or offline transition | Worker row/IP or cached online state; remote convergence, which removes the routing files of Domains gone or bound elsewhere | After a setup, the Domain pass; full discovery, including discovery DNS membership |
 | Worker subdomain edit | Worker row | Convergence; apply its internal and TCP Domains; full discovery, renewal |
 | Worker setup with new owner or invalid certificate | Register Worker / inspect applied material | Certificate maintenance |
 | Domain apply ends | `Domains` holds its outcome for the fingerprint applied | Apply again when the Domain was edited during it; cleanup/discovery without repair |
@@ -335,7 +335,7 @@ flowchart TB
     notice["Manager.notify<br/>insert startup Notification"]
     bootstrap["setup_domain before serving<br/>Cloudflare connect + manager certificate<br/>external files/DNS; no model write"]
     serve["Start scheduler and API servers"]
-    enqueue["Startup triggers enqueue release/checks,<br/>renewal, backup discovery, worker stamp check,<br/>paths and full discovery"]
+    enqueue["Startup triggers enqueue release/checks,<br/>renewal, backup discovery, worker stamp check,<br/>paths and the Domain pass"]
     run["Dispatcher executes tasks<br/>with normal scopes"]
 
     entry --> database --> settings --> services --> notice --> bootstrap --> serve --> enqueue --> run

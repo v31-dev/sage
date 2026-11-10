@@ -50,6 +50,14 @@ class Domains(Base):
       for held in (self._outcomes, self._routes, self._dns):
         held.pop(domain_id, None)
 
+  def retain(self, domain_ids):
+    """Drops what is held of every domain but `domain_ids`, the rows there are."""
+    kept = set(domain_ids)
+    with self.lock:
+      for held in (self._outcomes, self._routes, self._dns):
+        for domain_id in held.keys() - kept:
+          del held[domain_id]
+
   def _hold(self, domain: Domain, held: dict, value):
     with self.lock:
       changed = held.get(domain.id) != value

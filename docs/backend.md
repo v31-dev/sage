@@ -390,40 +390,37 @@ HEAD probe uses the separate shared probe middleware. TCP clears its inapplicabl
 Domain edits, the end of a container's Deploy or Stop (or the failure of either), a container becoming routable or
 no longer routable at the minutely observation (a change between unknown and known requests nothing), container
 deletion (the Domains it unlinked), worker subdomain changes (its internal and TCP Domains) and manual Traefik
-refresh request the affected Domains' applies. Worker setup/rejoin requests the parent scan, which selects applies
-from the artifacts it lists. Container creation has no domains to apply. Each apply requests `sync_discovery` without
-awaiting the parent while holding its own scopes.
+refresh request the affected Domains' applies. Container creation has no domains to apply.
 
-`sync_discovery` is the parent cleanup, repair and discovery operation. It holds `domain` and uses the app lane,
-so record operations cannot overlap it while application work can. Full scans (`repair=True`) run every five
-minutes, at startup, after worker setup/rejoin or removal, on Domain create/edit/delete and manual refresh, after a
-platform restore, and on container availability or cached worker readiness changes. External requests coalesce
-with `REPLACE`, retaining a follow-up when a change arrives during a running pass. A child's completion requests
-`repair=False` with `DEDUP`:
-cleanup/discovery can observe its result without immediately retrying failed or offline records. A child's
-follow-up cannot run with the child or displace a queued full scan. This keeps retry with the scheduled/external
-full scan instead of creating a child/parent retry loop.
+`reconcile_domains` is the pass over every Domain's artifacts: it sees what they are, removes those left behind and
+requests the applies they call for. It is quiet, holds `domain`, so no apply runs while it looks and nothing it records
+can cross an apply's write, and uses the app lane. Requests coalesce with `REPLACE` on `("reconcile_domains",)`: one
+that arrives while a pass runs gets a pass of its own after it. It runs every five minutes and at startup, at the end
+of each worker setup, so a returning worker's routes are seen and applied again at once, and after a change that
+leaves a route behind: a container deletion that unlinked Domains, and Domain edits and deletes.
 
-The parent inventories each online worker's files and revision stamps, plus one list of zone DNS and, for full
-repair scans only, one list of account tunnels, before reading Domain rows in a local transaction. Inventory
-precedes owners so an artifact materialized during an instant create cannot be misclassified as orphaned. Each
-worker inventory command has a 30-second timeout. Failed inventories remain unknown;
-they cannot establish a missing file or DNS record. Other workers still progress and a failed parent records its
-own error without changing a successful Domain proof.
+It lists in parallel the routing files on each worker whose SSH server answers and whose setup succeeded (the first
+line of each, `routes_command`, with a 30-second timeout), every record of the zone and the account's tunnels (two
+Cloudflare calls), and only then reads the Domain rows, so a Domain created meanwhile is never taken for one gone. On
+each listed worker it removes, in one command, the routing files whose Domain is gone or goes to another worker (it
+moved, or it is an unlinked public Domain, which goes to none); a file whose Domain goes to that worker stays whatever
+its container's state, since whether it is there is its apply's. It deletes the records under each `sage-domain-<id>`
+comment whose Domain is gone. Only exact `domain-<id>.yml` files and `sage-domain-<id>` comments carry Domain
+ownership; infrastructure, certificate and discovery files and other records are left alone. No old-worker list,
+tombstone or cleanup column is stored: a worker that was out keeps its old routes until it is set up again, which
+removes them first.
 
-A full scan requests record work for pending/error results, stale configuration fingerprints, an exact required
-file missing (or a stopped linked target still carrying its route), or public DNS drift in name, type, target or
-proxy mode. The parent queues children without awaiting them or applying their DNS itself. Busy application or
-container states are left to the app-scoped operation and status recovery; they are not evidence for invalidating
-proof or reaping a possible working copy. A record invalidated by this scan remains in discovery marked offline.
+It then records what it saw in `Domains`: each Domain's route on its worker (present with the fingerprint its header
+names, absent, or unreachable when that worker was not listed) and, when the zone and the tunnels were both listed,
+whether its records are exactly those its configuration gives (names, CNAME, target and proxy mode). A listing that
+fails is unknown, never an empty inventory. It drops what `Domains` held of Domains gone and requests the apply of each
+Domain in error, drifted, or not applied (after a restart an unlinked public Domain has no route to observe, so it is
+applied once); one pending because its container's state is not known or its worker is not ready waits. A failed
+listing, removal or DNS deletion fails the pass after the rest of it ran, without changing a Domain's own results.
 
-Only exact `domain-<id>.yml` files and `sage-domain-<id>` DNS comments carry Domain ownership. Absent IDs are
-orphans and are removed. Existing records' old placement files are removed only when the current configuration is
-synced and its active target's required file is visible; pending/error replacements retain possible working
-copies. A synced unlinked record needs no route, so its copies on returning workers are removed. No old-worker
-list, tombstone or cleanup column is stored. Files outside the managed identities, including infrastructure and
-certificate files, are preserved. The parent maintains discovery DNS alongside orphan comment cleanup, using the
-same zone inventory; worker wildcard DNS remains worker-owned.
+A worker's setup, holding `worker:<host>`, lists the worker's routing files right after claiming it and removes those
+of Domains gone or bound to another worker before its stack starts: by binding only, so a container whose state is not
+known loses nothing.
 
 Discovery lists every service-assigned record with a resolvable host, including unlinked and pending/error records.
 Each member retains its pool and has a Boolean availability parameter: `;online` for true, `;online=?0` for false.

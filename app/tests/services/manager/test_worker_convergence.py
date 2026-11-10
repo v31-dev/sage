@@ -8,6 +8,7 @@ import pytest
 import config
 from services.cloudflare import Cloudflare
 from services.db.models import Container, Domain, Instance, Worker, WorkerEvent
+from services.manager.domains import DomainsMixin
 from services.manager.queue import SCOPES, QueueMixin
 from services.manager.workers import WorkersMixin
 from services.tailscale import Tailscale
@@ -68,6 +69,13 @@ class Hosts:
       return 0, [f"{path[len(hostname) + 1:]}:{content}" for path, (content, _) in self.files.items() if path.startswith(prefix)]
     if command.startswith("stat -c %g"):
       return 0, ["998"]
+    if command.startswith("grep -H -m1 "):
+      prefix = f"{hostname}:{HOME}/traefik/dynamic/domain-"
+      return 0, [f"{path[len(hostname) + 1:]}:{content.splitlines()[0]}" for path, (content, _) in self.files.items()
+                 if path.startswith(prefix)]
+    if command.startswith("rm -f "):
+      for path in command[len("rm -f "):].split():
+        self.files.pop(f"{hostname}:{path}", None)
     if " up -d --quiet-pull " in command:
       return 0, [" Container sage-traefik-1  Started"] if self.starts else []
     return 0, []
@@ -113,18 +121,21 @@ class Provider:
     self.tunnels.remove(name)
 
 
-class Manager(WorkersMixin, QueueMixin):
+class Manager(WorkersMixin, DomainsMixin, QueueMixin):
   def __init__(self):
     self.pool = ThreadPoolExecutor(max_workers=2)
     self.queue_facts = self.workers_queue_facts()
     self.worker_state = self.workers_state_fact()
     self.setup_failures, self.stack_repairs = {}, {}
-    self.applied = []
+    self.applied, self.reconciled = [], 0
     self.task_queue = TaskQueue(SCOPES, {"app": self.pool}, record=lambda task, status: None, notify=self._queue_changed)
 
   def request_domain_applies(self, domain_ids):
     if ids := sorted(domain_ids):
       self.applied.append(ids)
+
+  def request_domain_reconciliation(self):
+    self.reconciled += 1
 
 
 @pytest.fixture
@@ -243,6 +254,68 @@ class TestConvergence:
     hosts.found["w1"] = "unreachable"
     await manager.converge_worker("w1")
     assert hosts.files == {} and Workers().setup("w1") is None
+    assert manager.reconciled == 0
+
+  async def test_once_it_is_set_up_the_pass_over_the_domains_is_asked_for(self, manager, hosts, worker):
+    await manager.converge_worker("w1")
+    assert manager.reconciled == 1
+
+  async def test_a_setup_that_fails_or_is_refused_asks_for_no_pass(self, manager, hosts, worker):
+    hosts.fails = "up -d --wait"
+    with pytest.raises(TaskFailed):
+      await manager.converge_worker("w1")
+    hosts.fails, hosts.files = None, {f"w1:{HOME}/revisions/owner": ("ffffffffffffffff other.test", 0o644)}
+    await manager.converge_worker("w1")
+    assert manager.reconciled == 0
+
+
+class TestRoutesLeftBehind:
+  @pytest.fixture
+  def routed(self, hosts, worker, application):
+    """A Domain bound to w1 and one moved to w2, each with a routing file on w1, and the file of a Domain gone."""
+    other = Worker.create(hostname="w2", subdomain="blue")
+    here = Domain.create(name="shop", type="public", port=80, container=Container.create(application=application, worker=worker))
+    moved = Domain.create(name="api", type="public", port=80, container=Container.create(application=application, worker=other))
+    gone = "0123456789abcdef"
+    for domain_id in (here.id, moved.id, gone):
+      hosts.files[f"w1:{HOME}/traefik/dynamic/domain-{domain_id}.yml"] = (f"# sage-domain {domain_id} {'0' * 64}\n", 0o644)
+    return here, moved, gone
+
+  def left(self, hosts):
+    return sorted(path.rsplit("/", 1)[1] for path in hosts.files if "/traefik/dynamic/domain-" in path)
+
+  async def test_a_returning_worker_loses_the_routes_of_domains_gone_or_bound_elsewhere(self, manager, hosts, routed):
+    here, _, _ = routed
+    await manager.converge_worker("w1")
+    assert self.left(hosts) == [f"domain-{here.id}.yml"]
+
+  async def test_unlinked_public_domains_routes_go_and_an_unlinked_internal_one_stays_on_its_namespace_worker(
+          self, manager, hosts, routed, worker):
+    here, moved, _ = routed
+    Domain.update(container=None).where(Domain.id == here.id).execute()
+    internal = Domain.create(name="db", type="tcp", port=5432, namespace_worker=worker)
+    hosts.files[f"w1:{HOME}/traefik/dynamic/domain-{internal.id}.yml"] = (f"# sage-domain {internal.id} {'0' * 64}\n", 0o644)
+    await manager.converge_worker("w1")
+    assert self.left(hosts) == [f"domain-{internal.id}.yml"]
+
+  async def test_they_are_removed_before_the_stack_starts_in_one_command(self, manager, hosts, routed):
+    _, moved, gone = routed
+    await manager.converge_worker("w1")
+    removal = next(index for index, command in enumerate(hosts.commands) if command.startswith("rm -f "))
+    assert hosts.commands[removal] == "rm -f " + " ".join(
+        f"{HOME}/traefik/dynamic/domain-{domain_id}.yml" for domain_id in sorted((moved.id, gone)))
+    assert removal < next(index for index, command in enumerate(hosts.commands) if " up -d " in command)
+
+  async def test_a_removal_that_fails_fails_the_setup(self, manager, hosts, routed):
+    hosts.fails = "rm -f"
+    with pytest.raises(TaskFailed):
+      await manager.converge_worker("w1")
+    assert Workers().setup("w1") == "failed" and len(self.left(hosts)) == 3
+
+  async def test_another_sages_worker_keeps_its_routes(self, manager, hosts, routed):
+    hosts.files[f"w1:{HOME}/revisions/owner"] = ("ffffffffffffffff other.test", 0o644)
+    await manager.converge_worker("w1")
+    assert len(self.left(hosts)) == 3
 
 
 class TestStackRepair:

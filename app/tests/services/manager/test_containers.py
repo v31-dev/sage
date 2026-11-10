@@ -121,12 +121,15 @@ class Lifecycle(ContainersMixin, QueueMixin):
     self.queue_facts = []
     self.recoveries = {}
     self.orphans = {}
-    self.applied = []
+    self.applied, self.reconciled = [], 0
     self.task_queue = TaskQueue(SCOPES, {"app": self.pool}, record=lambda task, status: None, notify=self._queue_changed)
 
   def request_domain_applies(self, domain_ids):
     if ids := sorted(domain_ids):
       self.applied.append(ids)
+
+  def request_domain_reconciliation(self):
+    self.reconciled += 1
 
   async def run(self):
     self.task_queue.dispatch_tick()
@@ -504,9 +507,14 @@ class TestDomainApplies:
       await deploy(manager, container)
     assert manager.applied == []
 
-  async def test_a_delete_has_the_domains_it_unlinked_applied(self, manager, worker_host, container, domains):
+  async def test_a_delete_has_the_domains_it_unlinked_applied_and_their_routes_left_on_the_worker_removed(
+          self, manager, worker_host, container, domains):
     await manager.delete_container(container.id)
-    assert manager.applied == [domains]
+    assert (manager.applied, manager.reconciled) == ([domains], 1)
+
+  async def test_a_delete_that_unlinks_no_domain_asks_for_no_pass(self, manager, worker_host, container):
+    await manager.delete_container(container.id)
+    assert (manager.applied, manager.reconciled) == ([], 0)
 
 
 class TestDeleteRequests:

@@ -1,11 +1,13 @@
-"""Each Domain's apply, which brings its routing file and DNS records in line with its configuration, the requests
-that queue it, and each Domain's state, with what tells its pages that it changed."""
+"""Each Domain's apply, which brings its routing file and DNS records in line with its configuration, and the pass
+over every Domain's artifacts, which sees what they are, removes those left behind and requests the applies they call
+for; the requests that queue them, and each Domain's state, with what tells its pages that it changed."""
+import asyncio
 import logging
 
 import config
-from services.cloudflare import Cloudflare
-from services.db.models import Container, Domain
-from services.domains.config import DomainConfig
+from services.cloudflare import Cloudflare, dns_record_matches
+from services.db.models import Container, Domain, Worker
+from services.domains.config import DomainConfig, domain_artifact_name, domain_artifact_owner, parse_route_listing, routes_command
 from services.domains.decisions import ApplyOutcome, RouteObservation, route_goal
 from services.domains.state import Domains, DomainState, domain_state
 from services.domains.updates import domain_changed
@@ -123,6 +125,86 @@ class DomainsMixin:
     if not routed:
       logger.info(f"Domain {snapshot.host or domain.name}: DNS applied; its route waits for "
                   + ("its container's state to be known." if goal is None else f"worker {worker}."))
+
+  def request_domain_reconciliation(self):
+    """Queues the pass over every Domain's artifacts. A request while one runs gets a pass of its own after it, so a
+    change that pass did not see is not missed."""
+    self.add_task(task=self.reconcile_domains, key=("reconcile_domains",), scopes={"domain"}, executor="app",
+                  on_conflict=OnConflict.REPLACE, quiet=True)
+
+  async def reconcile_domains(self):
+    """Lists the routing files on every worker reachable and set up, the zone and the tunnels; removes the routing files
+    of Domains gone or bound to another worker, and the DNS records of Domains gone; holds what it saw of each Domain's
+    route and DNS; then requests the apply of each Domain in error, drifted or not applied. Holding every Domain, it
+    never crosses an apply; it lists before it reads the rows, so a Domain created meanwhile is never taken for one
+    gone."""
+    hostnames = [worker.hostname for worker in Worker.select(Worker.hostname)
+                 if Tailscale().ssh(worker.hostname) == "reachable" and Workers().setup(worker.hostname) == "succeeded"]
+    cloudflare, failures = Cloudflare(), []
+    zone, tunnels, *listings = await asyncio.gather(
+        run_in_executor_with_context(cloudflare.get_dns_records), run_in_executor_with_context(cloudflare.tunnels),
+        *(Tailscale().exec_command(hostname, routes_command(f"{config.WORKER_HOME_DIR}/traefik/dynamic"), timeout=30)
+          for hostname in hostnames), return_exceptions=True)
+    for name, listed in (("the DNS zone", zone), ("the tunnels", tunnels)):
+      if isinstance(listed, Exception):
+        failures.append(f"{name} could not be listed: {listed}")
+    routes = {}
+    for hostname, listing in zip(hostnames, listings):
+      if isinstance(listing, Exception):
+        failures.append(f"the routing files on {hostname} could not be listed: {listing}")
+      else:
+        routes[hostname] = parse_route_listing(listing[1])
+
+    domains = {domain.id: domain for domain in Domain.select()}
+    configs = {domain_id: capture(domain) for domain_id, domain in domains.items()}
+    removals = await asyncio.gather(*(self.remove_obsolete_routes(hostname, listed, configs)
+                                      for hostname, listed in routes.items()), return_exceptions=True)
+    failures += [f"the routing files on {hostname} could not be removed: {error}"
+                 for hostname, error in zip(routes, removals) if isinstance(error, Exception)]
+    if not isinstance(zone, Exception):
+      orphaned = {record["comment"] for record in zone
+                  if (owner := domain_artifact_owner("dns", record.get("comment") or "")) and owner not in configs}
+      try:
+        if orphaned:
+          await run_in_executor_with_context(cloudflare.sync_dns_records, dict.fromkeys(orphaned, {}), zone=zone)
+      except Exception as error:
+        failures.append(f"the DNS records of deleted domains could not be removed: {error}")
+
+    for domain_id, snapshot in configs.items():
+      domain = domains[domain_id]
+      if snapshot.worker is not None:
+        listed = routes.get(snapshot.worker)
+        Domains().record_route(domain, snapshot.worker, RouteObservation("unreachable") if listed is None else
+                               RouteObservation("present", listed[domain_id]) if domain_id in listed else RouteObservation("absent"))
+      if not isinstance(zone, Exception) and not isinstance(tunnels, Exception):
+        records = [record for record in zone if record.get("comment") == snapshot.dns_comment]
+        try:
+          wanted = snapshot.dns_records(tunnels.get(cloudflare.worker_tunnel_name(snapshot.worker)))
+        except ValueError:
+          conforms = False
+        else:
+          conforms = len(records) == len(wanted) and all(
+              record["name"] in wanted and dns_record_matches(record, {"content": wanted[record["name"]], "type": "CNAME", "proxied": True})
+              for record in records)
+        Domains().record_dns(domain, snapshot.content_hash, conforms)
+    Domains().retain(configs.keys())
+    self.request_domain_applies(domain_id for domain_id, state in self.domain_states(domains.values()).items()
+                                if state.view.status == "error" or state.view.reason in ("drifted", "not_applied"))
+    # TODO(36 step 4E): request discovery, whose availability follows what the pass saw.
+    if failures:
+      logger.error("The domain pass is incomplete: " + "; ".join(failures))
+      # TODO(36 step 4H): self.notify("Domain reconciliation failed: " + "; ".join(failures), "error", "/domains")
+      raise TaskFailed()
+    logger.info(f"Domains reconciled on {len(routes)} worker(s).")
+
+  async def remove_obsolete_routes(self, hostname: str, listed, configs: dict[str, DomainConfig]):
+    """Removes, in one command, the routing files on the worker among `listed` (Domain ids) whose Domain is gone or
+    goes to another worker; never for its container's state, which is its apply's."""
+    obsolete = sorted(domain_id for domain_id in listed if domain_id not in configs or configs[domain_id].worker != hostname)
+    if obsolete:
+      await Tailscale().exec_command(hostname, "rm -f " + " ".join(
+          f"{config.WORKER_HOME_DIR}/traefik/dynamic/{domain_artifact_name('file', domain_id)}" for domain_id in obsolete), timeout=30)
+      logger.info(f"Removed the routing files of {len(obsolete)} domain(s) gone or moved from {hostname}.")
 
   def _applying_domains(self) -> frozenset[str]:
     """The domains with an apply queued or running."""

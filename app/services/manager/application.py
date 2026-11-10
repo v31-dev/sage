@@ -5,7 +5,6 @@ from services.applications.updates import application_changed, container_changed
 from services.db import Application, Container, Event
 from utils.logging import new_task_id, sub_task_id, task_id
 
-
 logger = logging.getLogger(__name__)
 
 

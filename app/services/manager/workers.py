@@ -10,6 +10,7 @@ from peewee import JOIN
 import config
 from services.cloudflare import Cloudflare
 from services.db.models import Container, Domain, Instance, Worker
+from services.domains.config import parse_route_listing, routes_command
 from services.domains.updates import domain_changed
 from services.history import record_worker_event
 from services.metrics import Metrics
@@ -26,6 +27,7 @@ from utils.executor import run_in_executor_with_context
 from utils.logging import TaskFailed
 
 from .containers import mark
+from .domains import capture
 
 logger = logging.getLogger(__name__)
 
@@ -128,9 +130,10 @@ class WorkersMixin:
                   labels={"Worker": hostname}, quiet=not force)
 
   async def converge_worker(self, hostname: str, force: bool = False):
-    """Brings the worker's stack in line with Sage: claims it, makes its tunnel and its `*.<subdomain>.int` record, and
-    writes the stack's files and starts it when its infra stamp differs (or on force), else starts what is stopped.
-    Another Sage's worker is refused and left alone."""
+    """Brings the worker's stack in line with Sage: claims it, removes the routing files there of Domains gone or bound
+    to another worker, makes its tunnel and its `*.<subdomain>.int` record, and writes the stack's files and starts it
+    when its infra stamp differs (or on force), else starts what is stopped; once it is set up, asks for the pass over
+    the Domains' artifacts. Another Sage's worker is refused and left alone."""
     worker = Worker.get_or_none(Worker.hostname == hostname)
     address = Tailscale().address(hostname)
     if worker is None or address is None or Tailscale().ssh(hostname) != "reachable":
@@ -151,6 +154,8 @@ class WorkersMixin:
       await run_in_executor_with_context(cloudflare.connect)
       if revisions.get("owner") != f"{instance_id} {cloudflare.domain}":
         await Workers().write_revision(hostname, "owner", f"{instance_id} {cloudflare.domain}")
+      _, lines = await Tailscale().exec_command(hostname, routes_command(f"{home}/traefik/dynamic"), timeout=30)
+      await self.remove_obsolete_routes(hostname, parse_route_listing(lines), {domain.id: capture(domain) for domain in Domain.select()})
       tunnel = await run_in_executor_with_context(cloudflare.create_tunnel, cloudflare.worker_tunnel_name(hostname))
       await run_in_executor_with_context(cloudflare.sync_worker_records, hostname, worker.subdomain, address)
       inputs = InfraInputs(hostname, address, Tailscale().ip(), cloudflare.domain, cloudflare.tunnel_id, tunnel, config.VERSION,
@@ -179,6 +184,7 @@ class WorkersMixin:
       # TODO(36 step 4E): request discovery, which the worker answers once it is ready.
       Workers().record_setup(hostname, "succeeded", address)
       self.setup_failures.pop(hostname, None)
+      self.request_domain_reconciliation()
     except Exception as error:
       Workers().record_setup(hostname, "failed", address)
       self.setup_failures[hostname] = monotonic()

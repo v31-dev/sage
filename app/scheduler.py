@@ -55,8 +55,8 @@ async def schedule_application_backups():
     )
 
 
-async def sync_discovery():
-  Manager().request_discovery_sync()
+async def reconcile_domains():
+  Manager().request_domain_reconciliation()
 
 
 async def collect_metrics():
@@ -180,12 +180,12 @@ _JOBS = [
     (cleanup, CronTrigger.from_crontab("0 4 * * *")),
     (renew_certificates, CronTrigger.from_crontab("0 3 * * *")),
     (check_settings, CronTrigger.from_crontab("*/5 * * * *")),
-    (sync_discovery, CronTrigger.from_crontab("*/5 * * * *")),
+    (reconcile_domains, CronTrigger.from_crontab("*/5 * * * *")),
 ]
 
 # Run once right after startup (as queued tasks, so the servers are already up), then on
 # their cron schedule where they have one.
-_AT_STARTUP = [refresh_latest_release, renew_certificates, discover_backups, check_settings, refresh_worker_paths, sync_discovery]
+_AT_STARTUP = [refresh_latest_release, renew_certificates, discover_backups, check_settings, refresh_worker_paths, reconcile_domains]
 
 
 def start():
