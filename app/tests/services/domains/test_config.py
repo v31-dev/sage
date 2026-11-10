@@ -1,9 +1,11 @@
 from dataclasses import FrozenInstanceError
 
 import pytest
+import yaml
 
 from services.db.models import Container, Domain, Worker
-from services.domains.config import DomainConfig, address, allowed_origins, domain_artifact_name, domain_artifact_owner, host, validate_port
+from services.domains.config import (ROUTING_DIGEST, DomainConfig, address, allowed_origins, domain_artifact_name, domain_artifact_owner, host,
+                                     parse_route_listing, validate_port)
 from utils.common import new_id
 
 ID = "0123456789abcdef"
@@ -122,9 +124,25 @@ class TestDomainConfig:
     assert before.content_hash != DomainConfig.capture(linked, "other.test", "templates").content_hash
     assert before.content_hash != DomainConfig.capture(linked, "example.test", "changed").content_hash
 
-  def test_it_names_the_application_and_the_worker_it_routes_to(self, linked):
+  def test_it_names_the_container_and_the_worker_it_routes_to(self, linked):
     snapshot = DomainConfig.capture(linked, "example.test", "templates")
-    assert (snapshot.application, snapshot.worker, snapshot.container_id) == ("demo-web", "w1", linked.container_id)
+    assert (snapshot.worker, snapshot.container_id) == ("w1", linked.container_id)
+
+  def test_renaming_its_containers_application_does_not_change_the_fingerprint(self, linked, application):
+    before = DomainConfig.capture(linked, "example.test", "templates")
+    application.name, application.label = "store", "Store"
+    application.save()
+    assert before.content_hash == DomainConfig.capture(Domain.get_by_id(linked.id), "example.test", "templates").content_hash
+
+  def test_an_unlinked_domain_routes_to_its_namespace_worker_or_nowhere(self, linked, red, worker):
+    internal = Domain.create(name="api", type="internal", port=80, namespace_worker=worker.hostname)
+    assert DomainConfig.capture(internal, "example.test", "templates").worker == "w1"
+    linked.container = None
+    linked.save()
+    assert DomainConfig.capture(linked, "example.test", "templates").worker is None
+
+  def test_the_templates_are_part_of_the_fingerprint_by_default(self, linked):
+    assert DomainConfig.capture(linked, "example.test").templates == ROUTING_DIGEST
 
   def test_a_linked_public_domain_points_its_name_at_its_workers_tunnel(self, linked):
     snapshot = DomainConfig.capture(linked, "example.test", "templates")
@@ -138,3 +156,31 @@ class TestDomainConfig:
     unlinked = Domain.create(name="old", type="public", port=80)
     for domain in (internal, unlinked):
       assert DomainConfig.capture(domain, "example.test", "templates").dns_records(None) == {}
+
+
+class TestRoute:
+  @pytest.mark.parametrize("type", ["public", "internal", "tcp"])
+  def test_its_first_line_names_the_domain_and_the_fingerprint_it_was_rendered_from(self, red, worker, type):
+    domain = Domain.create(name="shop", type=type, port=8080, container=red,
+                           namespace_worker=None if type == "public" else worker.hostname)
+    snapshot = DomainConfig.capture(domain, "example.test")
+    route = snapshot.route()
+    assert parse_route_listing([f"/opt/sage/traefik/dynamic/{snapshot.filename}:{route.splitlines()[0]}"]) == {
+        domain.id: snapshot.content_hash}
+    assert "${" not in route
+
+  def test_an_http_route_sends_its_name_to_the_containers_runtime_with_its_origins(self, linked):
+    linked.cors_origins = ["https://b.test", "https://a.test"]
+    linked.save()
+    http = yaml.safe_load(DomainConfig.capture(linked, "example.test").route())["http"]
+    assert http["routers"][f"domain_{linked.id}"]["rule"] == "Host(`shop.example.test`)"
+    assert http["services"][f"domain_{linked.id}"]["loadBalancer"]["servers"] == [
+        {"url": f"http://sage-{linked.container_id}:8080"}]
+    assert http["middlewares"][f"domain_{linked.id}_cors"]["headers"]["accessControlAllowOriginList"] == [
+        "https://a.test", "https://b.test"]
+
+  def test_a_tcp_route_sends_its_name_to_the_containers_runtime(self, red, worker):
+    domain = Domain.create(name="db", type="tcp", port=5432, container=red, namespace_worker=worker.hostname)
+    tcp = yaml.safe_load(DomainConfig.capture(domain, "example.test").route())["tcp"]
+    assert tcp["routers"][f"domain_{domain.id}"]["rule"] == "HostSNI(`db.red.int.example.test`)"
+    assert tcp["services"][f"domain_{domain.id}"]["loadBalancer"]["servers"] == [{"address": f"sage-{red.id}:5432"}]

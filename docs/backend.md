@@ -143,7 +143,7 @@ This is a project-wide pattern, not a local implementation detail.
 The Manager owns a single in-memory `TaskQueue` (`app/utils/queue.py`). It is the one place concurrency is controlled; the scheduler only enqueues.
 
 - **Enqueue.** Every operation runs via `Manager().add_task(task=..., key=..., scopes=..., executor=..., params=..., inputs=..., labels=..., ...)`. Handlers receive ids (not ORM objects) and re-fetch, so nothing carries a stale snapshot across the queue boundary; a frozen input that must not change after the request (a deploy snapshot, an S3 session) travels in `inputs`.
-- **What a task carries.** `key` is what its request competes for: the operation's name, then its subject's ids and its intent, e.g. `("sync_domain", domain_id)`. Requests that take turns on one subject share a key: a container's lifecycle requests (Deploy, Stop) are all `("lifecycle", container_id)`, so a container has at most one running and one pending. `name` is what the task does, shown and recorded; it is the key's first part unless given. `params` are JSON-safe ids and flags, passed to the task, recorded and shown. `inputs` are passed to the task only: never recorded, pushed or shown. `labels` say what people call the task's subjects, e.g. `{"Application": "shop / web", "Worker": "w1"}`, taken when it is queued, so a task built on opaque ids can be told apart on the Tasks page and history keeps the names the task was queued under.
+- **What a task carries.** `key` is what its request competes for: the operation's name, then its subject's ids and its intent, e.g. `("apply_domain", domain_id)`. Requests that take turns on one subject share a key: a container's lifecycle requests (Deploy, Stop) are all `("lifecycle", container_id)`, so a container has at most one running and one pending. `name` is what the task does, shown and recorded; it is the key's first part unless given. `params` are JSON-safe ids and flags, passed to the task, recorded and shown. `inputs` are passed to the task only: never recorded, pushed or shown. `labels` say what people call the task's subjects, e.g. `{"Application": "shop / web", "Worker": "w1"}`, taken when it is queued, so a task built on opaque ids can be told apart on the Tasks page and history keeps the names the task was queued under.
 - **Scopes** are `:`-delimited and hierarchical. The Manager's roots are declared in `services/manager/queue.py`: `worker`, `domain`, `certificate`, `backup`, `discovery`, `settings`, `release`, `metrics`. A parent scope conflicts with all of its children; siblings never conflict. `*` conflicts with every task, one holding no scope included, needs no root, and a scope set holding it is just `{"*"}`; the platform restore holds it. Conflicting tasks are mutually excluded. Scope roots and executor lanes are registered independently; a task can require several scopes and use one existing lane. A task's scopes always include its subject's own scope, so two tasks with one key exclude each other.
 - **Dispatch.** A one-second APScheduler interval tick calls `dispatch_tick`, which starts every pending task whose scope is free. One dispatcher makes the scan race-free; a `threading.Lock` guards the queue because producers run on FastAPI/loop threads. Dispatch is **deliberately opportunistic**: conflicts are checked against *running* work only, so a blocked pending task reserves nothing and later-queued non-conflicting tasks start past it (FIFO holds within a scope, not across conflicting scopes — a queued host-wide `worker:<host>` task waits for a tick with none of that host's container tasks running, and its start can be pushed out by later container work). This is the accepted trade: a pending-scope reservation rule would let any queued broad task freeze every task under it behind long-running work, converting rare bounded delays into stalls. `priority` is queue-position only; nothing ever preempts running work. The scan (`next_to_start`) and admission (`admit`) are pure functions of plain data in `utils/queue.py`, which the queue applies under its lock.
 - **Admission policy — `on_conflict` on `add_task`** (enum `OnConflict`; decided atomically under the queue lock). Admission decides whether a request queues a task, comparing **keys, never scopes**; mutual exclusion is **separate and always scope-based** — the dispatcher serializes conflicting scopes regardless of mode, so a queued task simply waits for its scope to free. `add_task` returns `Added(outcome, task_id)`: `accepted` (queued, its id), `existing` (the pending or running task with the key does it, that task's id), `busy` (REVISE: the task with the key is running, that task's id; nothing is queued or recorded) or `refused` (the queue is stopping: recorded as cancelled, its id; or a restore while the queue isn't running: no id).
@@ -249,11 +249,9 @@ Main database:
   index, the foreign key check), rolls all of it back and raises `SchemaRefused`: the boot stops with one
   `[CRITICAL]` line naming what failed and linking the running version's release, whose notes give the fix
 
-A Domain keeps its durable sync result in `status` (`pending`, `synced`, `error`), with `sync_error` for failure
-detail. `synced_hash` and `synced_at` hold the last fully applied configuration's fingerprint and naive-UTC time;
-they are nullable until the first success. A new record starts pending, with no error or successful baseline.
-`created_at` and `updated_at` describe row writes; `synced_at` describes a complete successful sync. Running and
-queued operations belong to the in-memory task queue.
+A Domain row holds its configuration only. Its apply results and what was seen of its artifacts are memory, held by
+the `Domains` owner, and its status is decided from them when it is read: after a restart it is pending until an
+apply or a scan. Running and queued operations belong to the in-memory task queue.
 
 Additional storage:
 
@@ -325,41 +323,51 @@ Waiting occupies the operation's existing executor thread and keeps its task sco
 cooldown, proactive pacing or separate retry scheduler. DNS/API budgets are described in
 [architecture.md](architecture.md#dns-and-api-limits).
 
-Domain apply and discovery reconciliation own their failure notifications. A record failure retains its last
-successful proof/time, stores the phase and error, requests cleanup/discovery and sends an error notification linked
-to Domains before failing the task. Parent failures aggregate inventory, cleanup and publication errors into one
+Domain apply and discovery reconciliation own their failure notifications. A failed apply holds its phase and error
+for the fingerprint it applied and sends an error notification linked to Domains before failing the task. Parent failures aggregate inventory, cleanup and publication errors into one
 notification per failed pass; other workers still progress and successful Domain proofs remain intact. The queue
 records failed tasks, including quiet tasks, in task history. UI notifications use the existing notification feed.
 
-## Traefik Domain Sync
+## Domain Apply And Discovery
 
-`sync_domain` owns one Domain record's Traefik file and DNS. `request_domain_sync` marks that record pending and
-queues the operation with `REPLACE`, under `domain:<id>` plus its linked application's `app:<qn>` scope. The task
-re-fetches the record and validates its application binding before any remote work; a changed binding queues a
-fresh request with the correct exclusions. Missing rows are quiet no-ops. An interrupted busy container requests
-application status recovery. An offline target stays pending and retains the last successful proof.
+`apply_domain` owns one Domain's routing file and DNS records. `request_domain_applies` captures each Domain's
+`DomainConfig` and queues its apply with `REPLACE` on `("apply_domain", <id>)`, holding `domain:<id>`, its full name
+(`domain:host:<fqdn>`) and its route on the worker it goes to (`worker:<host>:routing:<id>`). It does not hold the
+container's scope, so a long deploy does not hold back a Domain edit; the worker's convergence and reboot, holding
+`worker:<host>`, exclude it. The task re-fetches the row: a missing one is a quiet no-op that drops what `Domains`
+held of it, and a worker or name that changed since the request queues it again with the right scopes before any
+remote work.
 
-The task captures an immutable `DomainConfig` inside a local transaction. It renders `domain-<id>.yml` on the
-active container's worker, with router/service identity `domain_<id>`, the current host and port, and the
-application's Docker name as backend. HTTP names also get a `HEAD /ping` probe answered by Traefik's `ping@internal`
-with `Timing-Allow-Origin: *`, `Access-Control-Allow-Origin: *` and `Cache-Control: no-store`; GET reaches the application.
-Stopped containers have their record's file removed.
-An unlinked record removes its own file from reachable workers. `sync_file` writes through a temporary name and
-renames it, and Traefik's file provider reloads the directory.
+The route follows the container's `routable` when the apply runs (`route_goal`): present while it can be routed to,
+absent once it cannot or the Domain is unlinked, and left as it is while that is not known, so missing observations
+never remove a working route. A container is routable when its record and runtime make it active, whatever operation
+runs on it: an operation records that it began before it stops the container. The file is written or removed only on
+a worker whose SSH server answers and whose setup succeeded since the Manager started; otherwise it is left for a
+later apply. `domain-<id>.yml` (`DomainConfig.route`) starts `# sage-domain <id> <fingerprint>`, the proof a scan
+reads back, and has router/service identity `domain_<id>`, the current host and port, and the container's runtime,
+`sage-<container id>` on `sage_default`, as backend. HTTP names also get a `HEAD /ping` probe answered by Traefik's
+`ping@internal` with `Timing-Allow-Origin: *`, `Access-Control-Allow-Origin: *` and `Cache-Control: no-store`; GET
+reaches the application. `sync_file` writes through a temporary name and renames it, and Traefik's file provider
+reloads the directory. An unlinked internal or TCP Domain removes its file from its namespace worker; the route an
+unlinked public Domain left on its old worker goes with the cleanup of routing files.
 
-Routing is prepared before DNS. Each public record owns the exact comment `sage-domain-<id>`, pointing its name at
-its worker's tunnel (`<tunnel id>.cfargotunnel.com`). A stopped container keeps DNS to avoid negative caching.
-Internal, TCP and unlinked records have no public CNAME under their comment. Grouped DNS sync removes obsolete
-names and corrects the requested fields, including proxy mode. Worker wildcard records belong to worker setup.
+Routing is applied before DNS. Each Domain owns the exact comment `sage-domain-<id>`: a linked public name points
+at its worker's tunnel (`<tunnel id>.cfargotunnel.com`), and a stopped container keeps it to avoid negative caching.
+Internal, TCP and unlinked Domains have no record under their comment. Grouped DNS sync removes obsolete names and
+corrects the requested fields, including proxy mode. Worker wildcard records belong to worker setup.
 
-Domain persists `status` (`pending`, `synced`, `error`), `sync_error`, `synced_hash` and `synced_at` (UTC). Success
-means both routing and DNS completed for the captured configuration; its fingerprint includes rendered inputs,
-placement, activity and templates. A failure identifies its phase, retains the previous successful proof/time,
-and fails the queued task. A result for a configuration edited during I/O cannot certify the new configuration:
-the row stays pending and a new request is queued. Running or queued work projects `syncing` through the queue,
-without persisting it. Domain writes and queue transitions publish `domains` and the affected application and
-worker topics; a relink updates both former and current parents.
-Application rows hold no domain progress state; summary counts use Domain status independently of health.
+`Domains` holds, by Domain id, the outcome of the last apply for the fingerprint it applied (succeeded, or failed with
+its phase, `route` or `dns`, and error), what was last seen of its routing file on the worker it was looked for on,
+and whether its DNS conformed for a fingerprint; an apply records what it did to each. An apply succeeds only when it
+applied the route too: one that left the route because its worker could not be written to or its container's state
+was not known records no outcome. `decide_domain` turns these, the container's `routable`, the worker's readiness and
+the queue into `syncing`, `pending` (with why), `synced` or `error`. The fingerprint covers the rendered inputs, the
+container and worker the route goes to and the routing templates, not whether the container runs; renaming its
+application does not change it. A result of a configuration edited during the apply counts only for the fingerprint
+it applied, and the edit queues another apply. A failure fails the task and is not retried by itself: the scheduled
+scan tries again. `Domains` publishes the Domain's pages when what it holds changes, and the queue's applies show and
+end `syncing` the same way: `domains` and the linked application and worker topics. A worker's readiness change
+shows its Domains again. Application rows hold no domain progress state.
 
 The nullable `Domain.container` foreign key gives each Container its `domains` backref. Container API payloads
 include that collection through `routes/containers.py`'s shared serializer, using the Domain projection for
@@ -379,10 +387,12 @@ Fixed credentialless preflight defaults allow methods `*`, headers `*` plus expl
 300-second preflight cache and `Vary: Origin`. Methods, headers and cookies have no editor. The higher-priority
 HEAD probe uses the separate shared probe middleware. TCP clears its inapplicable override and has no CORS middleware.
 
-Domain edits, deployment/stop outcomes, container-state changes, container deletion, worker subdomain changes and
-manual Traefik refresh request the affected records. Worker setup/rejoin requests the parent scan, which selects
-record work from the artifacts and current proof. Container creation has no domains to sync.
-Each attempt requests `sync_discovery` without awaiting the parent while holding the child's scope.
+Domain edits, the end of a container's Deploy or Stop (or the failure of either), a container becoming routable or
+no longer routable at the minutely observation (a change between unknown and known requests nothing), container
+deletion (the Domains it unlinked), worker subdomain changes (its internal and TCP Domains) and manual Traefik
+refresh request the affected Domains' applies. Worker setup/rejoin requests the parent scan, which selects applies
+from the artifacts it lists. Container creation has no domains to apply. Each apply requests `sync_discovery` without
+awaiting the parent while holding its own scopes.
 
 `sync_discovery` is the parent cleanup, repair and discovery operation. It holds `domain` and uses the app lane,
 so record operations cannot overlap it while application work can. Full scans (`repair=True`) run every five
@@ -459,7 +469,7 @@ shown separately as `certificate` and `discovery_certificate` on worker entries;
 `expiry` (only for a valid matching applied proof) and `error`;
 `discovery` — the hash of the services the discovery files list (`discovery_hash`), written by `sync_discovery`;
 `owner` — `<instance id> <domain>` of the Sage that manages the worker, written first by `converge_worker`, which
-another Sage refuses to set up. Each Domain's applied proof lives in its own `synced_hash`.
+another Sage refuses to set up. Each Domain's applied proof is its routing file's first line, `# sage-domain <id> <fingerprint>`.
 
 ACME orders require the advertised `config.ACME_PROFILE` (`tlsserver`), which issues 45-day certificates. An
 unavailable profile fails issuance rather than falling back. Renewal uses the actual signed expiry and
@@ -481,7 +491,7 @@ with matching proofs. Certificate-template changes belong to these proofs, rathe
 Valid material remains published through failed routine renewal. Offline edited workers converge when they return;
 offline removed VMs still require manual decommissioning. Shared discovery remains an explicit shared key.
 
-Artifact fingerprints fold in their **template files themselves**, since templates ship inside the image and a changed template must reach the workers without another input changing. A worker's infra stamp holds `infra_fingerprint` (`services/workers/rendering.py`): its address, the manager's, the domain, the platform's and the worker's tunnels, the version, the report interval and the stack's templates; `render_infrastructure` writes the files from the same inputs, the Compose file as it is (its `${...}` are Compose's own, read from the `.env` beside it). Certificates, domain routing and discovery have their own digests (`templates_digest` in `services/manager/_common.py`, computed once at import). Templates pushed unconditionally, such as the revision writer and the per-application compose/backup/restore scripts, need no digest. A container's deployment is its record's `applied.deployment_id`, which its runtime carries as the `sage.deployment` label with the instance, generation and container ids; the status decision compares them, so a runtime of another deployment or authority is an error, not active.
+Artifact fingerprints fold in their **template files themselves**, since templates ship inside the image and a changed template must reach the workers without another input changing. A worker's infra stamp holds `infra_fingerprint` (`services/workers/rendering.py`): its address, the manager's, the domain, the platform's and the worker's tunnels, the version, the report interval and the stack's templates; `render_infrastructure` writes the files from the same inputs, the Compose file as it is (its `${...}` are Compose's own, read from the `.env` beside it). Domain routing has its own digest (`ROUTING_DIGEST` in `services/domains/config.py`), as have certificates and discovery (`templates_digest` in `services/manager/_common.py`), each computed once at import. Templates pushed unconditionally, such as the revision writer and the per-application compose/backup/restore scripts, need no digest. A container's deployment is its record's `applied.deployment_id`, which its runtime carries as the `sage.deployment` label with the instance, generation and container ids; the status decision compares them, so a runtime of another deployment or authority is an error, not active.
 
 `refresh_traefik` (Resync Traefik) rewrites each online worker's
 traefik files directly but deliberately does **not** advance their `infra`
@@ -503,8 +513,8 @@ ending with a dash). Project/application names are derived from the free-text
 can be derived (no letters, or digits before the first letter); the others are
 typed directly by the user and rejected as-is on violation. A qualified name therefore contains exactly one dash, so it is
 injective and no qn can dash-prefix another — every `{qn}-` glob and prefix
-match below is exact, and the compose service key (= qualified name, same as
-`container_name`) is a unique Docker DNS name on `sage_default`. Worker
+match below is exact. A container's runtime is named by its id, `sage-<container id>`, a unique Docker DNS name on
+`sage_default` that its Domains' routes send to. Worker
 hostnames are Tailscale's identity, not ours: the one remaining
 `CleanCharField` (dashes allowed, still rejected-not-cleaned on violation).
 `ValueError` is the house convention for invalid user input — a global

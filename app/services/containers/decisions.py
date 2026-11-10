@@ -1,6 +1,6 @@
 """A container's status, decided from the facts its owners hold: the record on its worker, what the worker reports
 of its runtime and the operation running on it."""
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from services.containers.record import Authority, TargetRead
 
@@ -50,10 +50,6 @@ class ContainerView:
   config: str
   reason: str | None = None
   detail: str | None = None
-
-  @property
-  def routable(self) -> bool:
-    return self.headline == "active"
 
 
 def lifecycle_refusal(target: TargetRead, expected: Authority, contract: str) -> str | None:
@@ -173,3 +169,11 @@ def decide_container(facts: ContainerFacts) -> ContainerView:
   if record.applied is None or reading.deployment_id != record.applied.deployment_id:
     return view("error", "unexpected_deployment", reading.deployment_id)
   return view("active")
+
+
+def routable(facts: ContainerFacts) -> bool | None:
+  """Whether the container can be routed to: active by its record and runtime, whatever operation runs on it, since an
+  operation records that it began before it stops the container. None while that is not known: too little evidence,
+  or its worker can't be reached."""
+  view = decide_container(replace(facts, live=None))
+  return None if view.headline == "checking" or view.reason == "unreachable" else view.headline == "active"

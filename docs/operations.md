@@ -43,8 +43,7 @@ flowchart TB
 ```
 
 The scheduler's application and backup triggers read rows to select work; the dispatcher itself enqueues nothing.
-`request_domain_sync` is the request helper that writes model state. Telegraf requests application status work,
-which writes rows only when its queued task runs. [Startup, ingestion and service threads](#startup-and-other-writers)
+Telegraf requests application status work, which writes rows only when its queued task runs. [Startup, ingestion and service threads](#startup-and-other-writers)
 have additional write paths, including Vector's direct writes to log shards.
 
 Task completion, failure and pending-task cancellation can create a `Task` row. **Quiet tasks record only
@@ -65,16 +64,19 @@ Sources: [scheduler](../app/scheduler.py), [queue engine](../app/utils/queue.py)
 | --- | --- | --- |
 | `platform` | Other `platform` work | Application, domain, common and metrics work |
 | `app:<qn>` | Work for that application, and tasks holding root `app` | Other applications and the domain parent pass |
-| `domain:<id>` | Work for that record, and tasks holding root `domain` | Other records, subject to their linked app scopes |
-| `domain` | Every record sync and other discovery parent passes | Application tasks holding only `app:<qn>` |
+| `domain:<id>` | Work for that record, and tasks holding root `domain` | Other records |
+| `domain:host:<fqdn>` | The apply of any record with that full name, so a name swapped between two records is applied by one at a time | Other names |
+| `domain` | Every record apply and other discovery parent passes | Worker and application tasks |
+| `worker:<host>` | Work on that worker and every scope below it: its containers, its stack and its routes | Other workers |
+| `worker:<host>:container:<id>`, `worker:<host>:stack`, `worker:<host>:routing:<id>` | That one and `worker:<host>` | Their siblings: a container's operations, the stack's repair and a Domain's route on the same worker |
 | `{platform, app, domain}` | All queued platform, application and domain work | Common, metrics and work outside the queue |
 | `common:<section>` | That section and root `common` work | Other sections at the scope level |
 | `common` | All common work | The other roots |
 | `metrics:<host>` or `metrics:workers` | The matching child and root `metrics` maintenance | Sibling metrics tasks |
 | `metrics` | All metric flushes and maintenance | The other roots |
 
-There is no per-worker scope. Linked Domain tasks hold **both** `domain:<id>` and `app:<qn>`.
-Different records linked to the same application therefore serialize. The `common` pool has one thread;
+A Domain's apply holds its route's scope under its worker, not its container's: it does not wait for the container's
+operations, and the worker's convergence and reboot exclude it. The `common` pool has one thread;
 async task bodies can still overlap while their offloads wait for it. Pool size is not a lock.
 
 `*` conflicts with every queued task, one holding no scope included; the platform restore holds it.
@@ -163,12 +165,11 @@ Implementation: [Domain operations and request helpers](../app/services/manager/
 
 | Operation | Scopes · executor | Admission / history | Every initiating source | Model writes and other effects |
 | --- | --- | --- | --- | --- |
-| `sync_domain` | `domain:<id>` plus `app:<qn>` when linked · app | REPLACE / Q | POST/PUT `/domains`; deploy/stop/status outcomes; container deletion; worker subdomain edit; `refresh_traefik`; full parent repair scan; its own binding/config-change follow-up | Domain `status`, `sync_error`; success also `synced_hash`, `synced_at`. Publish record/queue state to Domains and the linked application/worker views. Apply its Traefik file before DNS. Offline target stays pending. Validate app binding before I/O and config hash before certifying success. Enqueue cleanup/discovery after the apply attempt. |
+| `apply_domain` | `domain:<id>`; `domain:host:<fqdn>` when it has a name; `worker:<host>:routing:<id>` when it routes to a worker · app | REPLACE on `("apply_domain", <id>)` / Q | `request_domain_applies`: the end of a container's Deploy or Stop, either one's failure, and its Delete (the Domains it unlinked); `observe_containers` when a container becomes routable or stops being; a worker's subdomain change (its internal and TCP Domains); its own follow-up after an edit during it or a move before it | No main-DB write. `domain-<id>.yml` on its worker: written while its container is routable, removed once it is not or the Domain is unlinked, left as it is while that is unknown or the worker is not reachable and set up. Then its `sage-domain-<id>` DNS records: a linked public name's CNAME to its worker's tunnel, none otherwise. The `Domains` owner holds the outcome for the fingerprint applied (a success only when the route was applied too) and what it did to the route and DNS. A failure fails the task and is not retried by itself. |
 | `sync_discovery(repair=True)` | `domain` · app | REPLACE / Q | Every 5 min and startup; Domain CRUD; worker setup/offline/removal/subdomain changes; cached ready-worker changes; Container active/non-active changes; `refresh_traefik`; successful platform restore | Through `request_domain_sync`, mark drifted records pending and clear errors, then enqueue children. Inventory/clean orphan and old-placement artifacts; publish discovery files, revision stamps and DNS. No successful Domain proof writes; no Application/Container status writes. |
 | `sync_discovery(repair=False)` | `domain` · app | DEDUP / Q | End of a Domain apply attempt | Inventory zone DNS and worker files/stamps; clean artifacts and publish discovery without listing account tunnels, requesting record repairs or changing Domain results. |
 
-`request_domain_sync` can **write pending state before its task is admitted**. It keeps the last successful
-hash/time. Its caller's scopes, if any, govern that immediate write. See the [Domain flow](#domain-apply-and-discovery).
+A request writes nothing: a Domain's status is decided when it is read. See the [Domain flow](#domain-apply-and-discovery).
 
 ### Workers and certificates
 
@@ -223,11 +224,11 @@ while holding `domain`, since that scope excludes every child's `domain:<id>`.
 flowchart TB
     edit["Domain create or edit<br/>direct model write; no scope"]
     trigger["5 min / startup / external change"]
-    request["request_domain_sync<br/>write pending, clear error<br/>capture linked app scope"]
+    request["request_domain_applies<br/>capture its worker and name<br/>for the scopes"]
     parent["Full discovery pass<br/>hold domain<br/>inventory and find drift"]
-    child["Record sync<br/>hold domain:id + linked app scope<br/>validate binding; capture config"]
-    apply["Apply Traefik, then DNS"]
-    result["Guard result against config edits<br/>write pending / error / synced<br/>success writes hash and time"]
+    child["Domain apply<br/>hold domain:id, domain:host:fqdn,<br/>worker:host:routing:id<br/>re-check worker and name"]
+    apply["Route by the container's routable,<br/>then DNS"]
+    result["Domains holds the outcome<br/>for the fingerprint applied"]
     publish["Cleanup and publish discovery<br/>hold domain; repair=False<br/>read results; no record retry"]
     output["Worker discovery files and DNS<br/>availability derived from Domain proof,<br/>Container active state and ready workers"]
 
@@ -237,16 +238,17 @@ flowchart TB
     parent -->|"drifted record"| request
     request -.-> child
     child --> apply --> result
-    result -.->|"config changed: request again"| request
+    result -.->|"edited during it: request again"| request
     result -.->|"attempt finished"| publish
     parent --> output
     publish --> output
     linkStyle default stroke:#ef4444,stroke-width:3px
 ```
 
-A binding mismatch requests a fresh child with the correct scopes before I/O. A busy linked container requests
-application status recovery and returns. Failed/offline applies wait for a scheduled or externally requested
-full scan to retry. The cleanup-only follow-up cannot replace an already queued full scan. Domain apply proof
+A Domain whose worker or name changed after its request is requested again with the right scopes before any I/O. A
+container's operation does not hold the apply back: the route follows its `routable` when the apply runs, and a change
+of that requests the apply again. Failed applies, and routes left because the worker could not be written to or the
+container's state was not known, wait for a scheduled or externally requested full scan. The cleanup-only follow-up cannot replace an already queued full scan. Domain apply proof
 and discovery availability remain separate facts.
 
 ### Application and worker events
@@ -254,13 +256,15 @@ and discovery availability remain separate facts.
 | Event / writer | Immediate state change | Queued consequence |
 | --- | --- | --- |
 | `save_container`: active ↔ non-active | Persist Container status and emit UI sources | Full discovery pass |
-| Deploy/stop end, status reconciliation changes containers | Persist operation outcomes | Sync linked Domains |
-| Successful container delete | Delete row; FK unlinks Domains; signals update count/status | Sync the unlinked Domains |
+| Deploy or Stop end, or the failure of either | The worker's `record.json` | Apply the container's Domains |
+| `observe_containers`: a container becomes routable or stops being | None | Apply its Domains |
+| Successful container delete | Delete row; FK unlinks Domains; signals update count/status | Apply the unlinked Domains |
+| A worker's readiness changes | None | None; the Domains routed to it are shown again |
 | `update_workers`, Worker save/forget/reload | Replace cached worker list; compare ready-worker set | Full discovery only when ready set changes |
 | Worker setup or offline transition | Worker row/IP or cached online state; remote convergence | Full discovery, including discovery DNS membership |
-| Worker subdomain edit | Worker row/cache; linked internal/TCP Domain requests mark pending | Record syncs, full discovery, renewal, stamp-check worker sync |
+| Worker subdomain edit | Worker row | Convergence; apply its internal and TCP Domains; full discovery, renewal |
 | Worker setup with new owner or invalid certificate | Register Worker / inspect applied material | Certificate maintenance |
-| Domain apply attempt finishes | Persist guarded record result | Cleanup/discovery without repair |
+| Domain apply ends | `Domains` holds its outcome for the fingerprint applied | Apply again when the Domain was edited during it; cleanup/discovery without repair |
 
 Queue-derived worker intent does not enqueue discovery inside its Fact callback. The next ordinary report or
 worker refresh checks readiness. [Worker ownership](../app/services/manager/workers.py) and
@@ -384,7 +388,7 @@ writes above apply in addition to the listed fields.
 | `Project` | Project CRUD: configuration | None directly | Application instance create/delete signal recomputes `application_count` |
 | `Application` | Application CRUD: configuration/defaults | Backup/volume restore: `status` | Container instance create/delete signals recompute `container_count`; last delete sets inactive |
 | `Container` | Create placement | Delete: delete row (`detach_container`); backup/restore: `status`; remove-worker: delete row | No direct report-to-row write |
-| `Domain` | Domain CRUD; worker subdomain helper requests pending state | Request helper: pending/error-clear; record sync: result/proof/time; full discovery/refresh: pending via helper | Container FK deletion clears `container`; model save derives worker/CORS policy |
+| `Domain` | Domain CRUD through its commands, which derive the namespace worker and CORS policy | None: an apply's outcome and what it saw are memory (`Domains`) | Container deletion (`detach_container`) clears `container` by FK |
 | `Volume` | Volume CRUD: mounts and backup cron | None directly | Application FK deletion cascades row deletion |
 | `Backup` | Backup DELETE | Volume/platform backup inserts; S3 discovery inserts/deletes; retention deletes | Application FK deletion cascades app Backup deletion |
 | `Event` | None | `container_part` inserts deploy/stop/delete/backup/restore parts; retention deletes | Container FK deletion cascades Events |
@@ -396,8 +400,8 @@ writes above apply in addition to the listed fields.
 These are useful places to check when changing a flow:
 
 - **A scope is not a database lock.** Direct config writes, pending-state helpers, signal updates and FK actions
-  can overlap queued work. Deploy captures a transaction snapshot; Domain apply validates binding and rejects
-  an out-of-date config proof. CRUD does not implicitly join these scopes.
+  can overlap queued work. Deploy captures a transaction snapshot; Domain apply re-checks its worker and name
+  and holds its outcome for the fingerprint it applied, so an edit during it is never certified by it. CRUD does not implicitly join these scopes.
 - **A broad barrier covers three roots.** Common work, metric flushes and ingestion remain independent of
   `{platform, app, domain}`. The restore queue state stops new ordinary tasks, but already running unrelated
   tasks and ingestion are separate writers. The main API gate does not drain a route already in progress.
@@ -418,9 +422,9 @@ These are useful places to check when changing a flow:
 - **Writes have different publication owners.** Model signals/FK actions do not emit UI changes; the operation
   that initiated them supplies those events. Manager row writers, route CRUD and bulk restore/discovery paths
   each publish explicitly. See [pushed updates](backend.md#pushed-updates).
-- **Operation state has several stores.** Pending/running tasks and worker readiness are memory; app/container
-  busy statuses and Domain results are persistent; `syncing` is projected from queued Domain work. A synced
-  Domain can be unavailable. Quiet task absence from history is not evidence that no work ran.
+- **Operation state has several stores.** Pending/running tasks, worker readiness and Domain results are memory;
+  app/container busy statuses are persistent; `syncing` is projected from queued Domain work. A synced Domain can be
+  unavailable. Quiet task absence from history is not evidence that no work ran.
 - **Intervals and retries are separate.** The catalog's admission is explicit for each source: report-driven
   status uses REPLACE even at minutely cadence; discovery child completion uses DEDUP without repair. A future
   change must preserve a follow-up for edits during I/O without creating a parent/child retry loop.

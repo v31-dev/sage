@@ -5,9 +5,12 @@ import logging
 import re
 from time import monotonic
 
+from peewee import JOIN
+
 import config
 from services.cloudflare import Cloudflare
-from services.db.models import Instance, Worker
+from services.db.models import Container, Domain, Instance, Worker
+from services.domains.updates import domain_changed
 from services.history import record_worker_event
 from services.metrics import Metrics
 from services.tailscale import Tailscale
@@ -56,8 +59,9 @@ class WorkersMixin:
                  on_change=changed)]
 
   def workers_state_fact(self) -> Fact:
-    """Every worker's state, checked at each observation and report: a worker whose state changed is shown again, and a
-    change of its observed status is recorded in its history."""
+    """Every worker's state, checked at each observation and report: a worker whose state changed is shown again, with
+    the domains routed to it when its readiness changed, and a change of its observed status is recorded in its
+    history."""
     previous = {}
 
     def changed(current):
@@ -69,8 +73,13 @@ class WorkersMixin:
                 and {before.view.status, after.view.status} <= set(OBSERVED)):
           record_worker_event(hostname, "connectivity" if "offline" in (before.view.status, after.view.status) else "readiness",
                               "observed", reason={"status": after.view.status, "reason": after.view.reason})
+      readiness = {hostname for hostname in affected if hostname in previous and hostname in current
+                   and previous[hostname].view.ready != current[hostname].view.ready}
       previous = current
       self._workers_changed(affected)
+      for domain in Domain.select().join(Container, JOIN.LEFT_OUTER).where(
+              Container.worker.in_(readiness) | Domain.namespace_worker.in_(readiness)):
+        domain_changed(domain)
       # TODO(36 step 4E): request discovery when the set of ready workers changed.
 
     return Fact(self.worker_states, on_change=changed)
@@ -330,9 +339,11 @@ class WorkersMixin:
     record_worker_event(hostname, "reboot", "verified")
 
   def worker_subdomain_changed(self, hostname: str):
-    """After the worker's subdomain changed (its command): its `*.<subdomain>.int` record moves with its convergence."""
+    """After the worker's subdomain changed (its command): its `*.<subdomain>.int` record moves with its convergence,
+    and its internal and TCP domains, whose names are under it, are applied again."""
     self.request_convergence(hostname)
-    # TODO(36 step 4E): request the syncs of its internal and TCP domains, and discovery.
+    self.request_domain_applies(domain.id for domain in Domain.select(Domain.id).where(Domain.namespace_worker == hostname))
+    # TODO(36 step 4E): request discovery.
     # TODO(36 step 4F): request the renewal of its certificate, whose names are under the subdomain.
 
   async def _boot_id(self, hostname: str) -> str:

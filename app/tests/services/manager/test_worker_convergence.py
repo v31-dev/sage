@@ -7,7 +7,7 @@ import pytest
 
 import config
 from services.cloudflare import Cloudflare
-from services.db.models import Instance, Worker, WorkerEvent
+from services.db.models import Container, Domain, Instance, Worker, WorkerEvent
 from services.manager.queue import SCOPES, QueueMixin
 from services.manager.workers import WorkersMixin
 from services.tailscale import Tailscale
@@ -119,7 +119,12 @@ class Manager(WorkersMixin, QueueMixin):
     self.queue_facts = self.workers_queue_facts()
     self.worker_state = self.workers_state_fact()
     self.setup_failures, self.stack_repairs = {}, {}
+    self.applied = []
     self.task_queue = TaskQueue(SCOPES, {"app": self.pool}, record=lambda task, status: None, notify=self._queue_changed)
+
+  def request_domain_applies(self, domain_ids):
+    if ids := sorted(domain_ids):
+      self.applied.append(ids)
 
 
 @pytest.fixture
@@ -433,3 +438,13 @@ class TestSubdomain:
   def test_a_new_subdomain_converges_the_worker_so_its_record_moves(self, manager, worker):
     manager.worker_subdomain_changed("w1")
     assert [name for name, *_ in requested(manager)] == ["converge_worker"]
+
+  def test_the_internal_and_tcp_domains_under_it_are_applied_again(self, manager, worker, application):
+    on_it = Container.create(application=application, worker="w1")
+    under = sorted(Domain.create(name=name, type=type, port=80, container=container, namespace_worker="w1").id
+                   for name, type, container in (("api", "internal", on_it), ("db", "tcp", on_it), ("old", "internal", None)))
+    Domain.create(name="shop", type="public", port=80, container=on_it)
+    Worker.create(hostname="w2", subdomain="blue")
+    Domain.create(name="api", type="internal", port=80, namespace_worker="w2")
+    manager.worker_subdomain_changed("w1")
+    assert manager.applied == [under]

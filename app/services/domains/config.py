@@ -3,15 +3,20 @@ import json
 import re
 from dataclasses import asdict, dataclass
 
+import config
+from services.containers.placement import runtime_name
 from services.db.models import Domain
-from utils.common import OPAQUE_ID
-from values.names import qualified_name
+from utils.common import OPAQUE_ID, fill
 
 ROUTING_TEMPLATES = {
     "public": "service_public.yml",
     "internal": "service_internal.yml",
     "tcp": "service_internal_tcp.yml",
 }
+# The routing templates' digest, part of every fingerprint: they ship in the image, so it is worked out once.
+ROUTING_DIGEST = hashlib.sha256(b"".join(
+    name.encode() + (config.TEMPLATES_DIR / "worker/traefik" / name).read_bytes()
+    for name in sorted(ROUTING_TEMPLATES.values()))).hexdigest()[:16]
 ARTIFACTS = {"file": ("domain-", ".yml"), "dns": ("sage-domain-", "")}
 # The first line of a routing file, naming the domain and the fingerprint it was rendered from.
 ROUTE_HEADER = "# sage-domain"
@@ -78,26 +83,23 @@ def allowed_origins(domain: Domain, base_domain: str) -> tuple[str, ...]:
 
 @dataclass(frozen=True)
 class DomainConfig:
+  """What a domain's routing and DNS are rendered from. `worker` is where its route goes: its container's, or for an
+  unlinked internal or TCP domain its namespace worker; none for an unlinked public one."""
   domain_id: str
   type: str
   host: str | None
   port: int
   worker: str | None
   container_id: str | None
-  application_id: int | None
-  application: str | None
   cors_origins: tuple[str, ...]
   templates: str
 
   @classmethod
-  def capture(cls, domain: Domain, base_domain: str, templates: str):
+  def capture(cls, domain: Domain, base_domain: str, templates: str = ROUTING_DIGEST):
     container = domain.container
-    application = container.application if container else None
     return cls(
         domain_id=domain.id, type=domain.type, host=host(domain, base_domain), port=domain.port,
-        worker=container.worker_id if container else domain.namespace_worker_id,
-        container_id=domain.container_id, application_id=application.id if application else None,
-        application=qualified_name(application.project_id, application.name) if application else None,
+        worker=container.worker_id if container else domain.namespace_worker_id, container_id=domain.container_id,
         cors_origins=allowed_origins(domain, base_domain), templates=templates,
     )
 
@@ -112,6 +114,14 @@ class DomainConfig:
   @property
   def dns_comment(self) -> str:
     return domain_artifact_name("dns", self.domain_id)
+
+  def route(self) -> str:
+    """The routing file of a linked domain, to its container's runtime on the worker's network. Its first line names
+    the domain and this fingerprint."""
+    template = (config.TEMPLATES_DIR / "worker/traefik" / ROUTING_TEMPLATES[self.type]).read_text()
+    return fill(template, {"ID": self.domain_id, "FINGERPRINT": self.content_hash, "HOST": self.host,
+                           "SERVICE": runtime_name(self.container_id), "PORT": self.port,
+                           "CORS_ORIGINS": json.dumps(list(self.cors_origins))})
 
   def dns_records(self, tunnel: dict | None) -> dict[str, str]:
     if self.type != "public" or self.container_id is None:

@@ -12,7 +12,7 @@ from services.applications.deploy_input import capture_deploy_config
 from services.containers.placement import placement_dir, record_path, runtime_labels, runtime_name
 from services.containers.record import Applied, Authority, Operation, Settled, TargetRead, TargetRecord, encode_record
 from services.containers.targets import Containers
-from services.db.models import Application, Container, Instance, Worker
+from services.db.models import Application, Container, Domain, Instance, Worker
 from services.manager.containers import ContainersMixin
 from services.manager.queue import SCOPES, QueueMixin
 from services.tailscale import Tailscale
@@ -66,7 +66,12 @@ class Manager(ContainersMixin, QueueMixin):
     self.container_state = self.containers_state_fact()
     self.recoveries = {}
     self.orphans = {}
+    self.applied = []
     self.task_queue = TaskQueue(SCOPES, {"app": self.pool}, record=lambda task, status: None, notify=self._queue_changed)
+
+  def request_domain_applies(self, domain_ids):
+    if ids := sorted(domain_ids):
+      self.applied.append(ids)
 
   async def run(self):
     self.task_queue.dispatch_tick()
@@ -135,8 +140,8 @@ class TestStates:
   async def test_a_container_running_the_deployment_its_record_committed_is_active_and_current(self, manager, containers):
     await deployed(containers[0])
     report(containers[0])
-    state = view(manager, containers[0])
-    assert (state.headline, state.config, state.routable) == ("active", "current", True)
+    state = manager.container_states([containers[0]])[containers[0].id]
+    assert (state.view.headline, state.view.config, state.routable) == ("active", "current", True)
 
   async def test_an_edit_of_its_inputs_makes_it_dirty_and_leaves_it_active(self, manager, containers, application):
     await deployed(containers[0])
@@ -234,6 +239,39 @@ def place(container, record):
   path = on_worker(container.worker_id, record_path(config.WORKER_HOME_DIR, container.id))
   path.parent.mkdir(parents=True, exist_ok=True)
   path.write_text(encode_record(record))
+
+
+class TestDomainApplies:
+  @pytest.fixture
+  def domains(self, containers):
+    Domain.create(name="other", type="public", port=80, container=containers[1])
+    return sorted(Domain.create(name=name, type="public", port=80, container=containers[0]).id for name in ("shop", "api"))
+
+  async def test_the_domains_of_a_container_that_stops_being_routable_or_becomes_it_are_applied(
+          self, manager, containers, domains):
+    await deployed(containers[0])
+    report(containers[0])
+    manager.container_state.check()
+    assert manager.applied == []
+    report(containers[0], state="exited", at=WORKER_CLOCK + timedelta(seconds=20))
+    manager.container_state.check()
+    assert manager.applied == [domains]
+    report(containers[0], at=WORKER_CLOCK + timedelta(seconds=30))
+    manager.container_state.check()
+    assert manager.applied == [domains, domains]
+
+  async def test_a_container_whose_routability_goes_unknown_and_comes_back_has_nothing_applied(
+          self, manager, containers, domains, clock):
+    await deployed(containers[0])
+    report(containers[0])
+    manager.container_state.check()
+    clock.advance(timedelta(seconds=config.REPORT_STALE_SECONDS + 1))
+    manager.container_state.check()
+    assert manager.container_state.last[containers[0].id].routable is None
+    report(containers[0], at=WORKER_CLOCK + timedelta(seconds=config.REPORT_STALE_SECONDS + 5))
+    manager.container_state.check()
+    assert manager.container_state.last[containers[0].id].routable is True
+    assert manager.applied == []
 
 
 class TestReads:

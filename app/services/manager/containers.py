@@ -19,7 +19,7 @@ from services.containers.record import Applied, Authority, Operation, Recovery, 
 from services.containers.rendering import render_placement
 from services.containers.state import ContainerState, container_state
 from services.containers.targets import Containers
-from services.db.models import Application, Container, Instance, Project, Worker
+from services.db.models import Application, Container, Domain, Instance, Project, Worker
 from services.history import record_container_event
 from services.logs import Logs
 from services.tailscale import Tailscale
@@ -98,17 +98,20 @@ class ContainersMixin:
 
   def containers_state_fact(self) -> Fact:
     """Every container's state, checked once a minute: a container whose state changed with time alone (its report
-    grown stale, say) is shown again."""
+    grown stale, say) is shown again, and the domains of one that became routable or stopped being are applied."""
     previous = {}
 
     def changed(current):
       nonlocal previous
       affected = {container_id for container_id in current.keys() | previous.keys()
                   if current.get(container_id) != previous.get(container_id)}
+      rerouted = {container_id for container_id in affected if {
+          state.routable for state in (previous.get(container_id), current.get(container_id)) if state is not None} == {True, False}}
       previous = current
       for container in Container.select().where(Container.id.in_(affected)):
         container_changed(container)
-      # TODO(36 step 4E): request the Domain syncs and discovery of a container whose `routable` changed.
+      self.request_domain_applies(domain.id for domain in Domain.select(Domain.id).where(Domain.container.in_(rerouted)))
+      # TODO(36 step 4E): request discovery when a container's `routable` changed.
 
     return Fact(lambda: self.container_states(Container.select()), on_change=changed)
 
@@ -506,7 +509,7 @@ class ContainersMixin:
       await self._fail(container, record, error)
     record_container_event(container, "deploy", "succeeded", operation.id, dedupe_key=f"{operation.id}:succeeded")
     await mark(container, "Deployed")
-    # TODO(36 step 4E): self.request_domain_syncs(Domain.select().where(Domain.container == container.id))
+    self.request_domain_applies(domain.id for domain in container.domains)
     # TODO(36 step 4H): self.notify(f"Application {deploy.qualified_name} container deployed to worker {host}.")
 
   async def stop_container(self, container_id: str):
@@ -528,7 +531,7 @@ class ContainersMixin:
       await self._fail(container, record, error)
     record_container_event(container, "stop", "succeeded", operation.id, dedupe_key=f"{operation.id}:succeeded")
     await mark(container, "Stopped")
-    # TODO(36 step 4E): self.request_domain_syncs(Domain.select().where(Domain.container == container.id))
+    self.request_domain_applies(domain.id for domain in container.domains)
     # TODO(36 step 4H): self.notify(f"Container {container.id} stopped on worker {container.worker_id}.")
 
   async def delete_container(self, container_id: str, force: bool = False):
@@ -554,7 +557,8 @@ class ContainersMixin:
       await mark(container, "Removed from this worker")
     domains = detach_container(container.id)
     Containers().forget(container.id)
-    # TODO(36 step 4E): self.request_domain_syncs(Domain.select().where(Domain.id.in_(domains)))
+    self.request_domain_applies(domains)
+    # TODO(36 step 4E): the routes of its public domains, unlinked, go with the cleanup of the worker's routing files.
     # TODO(36 step 4H): self.notify(f"Container {container.id} deleted from worker {container.worker_id}.")
     logger.info(f"Container {container.id} deleted; {len(domains)} domains unlinked.")
 
@@ -614,6 +618,7 @@ class ContainersMixin:
     record_container_event(container, operation.contract, "failed", operation.id, reason={"error": reason},
                            dedupe_key=f"{operation.id}:failed")
     await mark(container, f"{operation.contract.capitalize()} failed: {reason}")
+    self.request_domain_applies(domain.id for domain in container.domains)
     # TODO(36 step 4H): self.notify(f"... {operation.contract} failed on worker {container.worker_id}: {reason}", "error")
     raise TaskFailed()
 

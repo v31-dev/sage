@@ -10,6 +10,7 @@ from utils.executor import LANES
 from utils.queue import TaskQueue
 
 from .containers import ContainersMixin
+from .domains import DomainsMixin
 from .queue import SCOPES, QueueMixin
 from .workers import WorkersMixin
 
@@ -23,7 +24,6 @@ from .workers import WorkersMixin
 # from .application import ApplicationMixin
 # from .backups import BackupsMixin
 # from .core import CoreMixin
-# from .domains import DomainsMixin
 # from .platform import PlatformMixin
 # from .settings import SettingsMixin
 # from .traefik import TraefikMixin
@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 
 class Manager(
     ContainersMixin,
+    DomainsMixin,
     WorkersMixin,
     QueueMixin,
     Base,
@@ -50,8 +51,9 @@ class Manager(
       self.latest_release = None
 
       # What each owner works out from the queue at every change of it.
-      # TODO(36 step 4X): the settings, platform and domains queue facts.
-      self.queue_facts = [*self.tasks_queue_facts(), *self.containers_queue_facts(), *self.workers_queue_facts()]
+      # TODO(36 step 4X): the settings and platform queue facts.
+      self.queue_facts = [*self.tasks_queue_facts(), *self.containers_queue_facts(), *self.domains_queue_facts(),
+                          *self.workers_queue_facts()]
       self.container_state = self.containers_state_fact()
       self.worker_state = self.workers_state_fact()
       # When each worker's setup last failed or was refused, and when its stack was last started for being down, on

@@ -2,8 +2,6 @@ import hashlib
 import json
 from pathlib import Path
 
-from services.domains.config import ROUTING_TEMPLATES
-
 # This module lives at app/services/manager/_common.py, so three .parent hops
 # reach the app/ root. Defined here once so every mixin shares the same path.
 app_dir = Path(__file__).parent.parent.parent
@@ -24,9 +22,6 @@ def templates_digest(*relative_paths: str) -> str:
     digest.update(relative_path.encode())
     digest.update((app_dir / "templates" / relative_path).read_bytes())
   return digest.hexdigest()[:16]
-
-
-DOMAIN_ROUTING_TEMPLATES = templates_digest(*(f"worker/traefik/{template}" for template in ROUTING_TEMPLATES.values()))
 
 
 # The discovery files, pushed by `sync_discovery` behind each worker's `discovery` stamp.

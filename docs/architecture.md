@@ -127,7 +127,7 @@ characters on Cloudflare's Free plan, which has no record tags.
 | `<TS_NAME>.core.<domain>`, an A record to the manager's tailnet IP | `sage-manager` |
 | `*.<subdomain>.int.<domain>`, an A record to the worker's tailnet IP: kept while the worker is offline, so its names work again as soon as it is back, and deleted when it is removed | `sage-worker-<hostname>` |
 | `discovery.int.<domain>`, an A record to each online worker's tailnet IP, written by `sync_discovery` | `sage-discovery-<hostname>` |
-| Each public name linked to a container, a proxied CNAME to its worker's tunnel, written by its record's `sync_domain` | `sage-domain-<id>` |
+| Each public name linked to a container, a proxied CNAME to its worker's tunnel, written by its Domain's `apply_domain` | `sage-domain-<id>` |
 | `_acme-challenge.<name>`, a TXT record while a certificate is issued | `sage-acme-challenge` |
 
 After a change of domain, account or `TS_NAME`, the previous domain's or name's resources stay in Cloudflare until

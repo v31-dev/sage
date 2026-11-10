@@ -5,7 +5,7 @@ from datetime import datetime
 import pytest
 
 import config
-from services.db.models import Worker, WorkerEvent
+from services.db.models import Container, Domain, Worker, WorkerEvent
 from services.manager.queue import SCOPES, QueueMixin
 from services.manager.workers import WorkersMixin
 from services.tailscale import Tailscale
@@ -126,6 +126,23 @@ class TestPublication:
     tailnet.answers["w2"] = "unreachable"
     await manager.observe_workers()
     assert signals == pages("w2")
+
+  async def test_a_worker_whose_readiness_changed_shows_the_domains_routed_to_it_again(
+          self, manager, tailnet, workers, application, signals):
+    Domain.create(name="shop", type="public", port=80, container=Container.create(application=application, worker="w2"))
+    Domain.create(name="api", type="internal", port=80, namespace_worker="w2")
+    Domain.create(name="other", type="internal", port=80, container=Container.create(application=application, worker="w1"),
+                  namespace_worker="w1")
+    tailnet.answers = {"w1": "reachable", "w2": "reachable"}
+    ready("w1")
+    ready("w2")
+    await manager.observe_workers()
+    signals.clear()
+    tailnet.answers["w2"] = "unreachable"
+    await manager.observe_workers()
+    assert signals[:2] == pages("w2")
+    assert sorted(signals[2:]) == sorted([(UpdateSource.DOMAINS, None), (UpdateSource.APPLICATION, "demo/web"),
+                                          (UpdateSource.WORKER_CONTAINERS, "w2"), (UpdateSource.DOMAINS, None)])
 
   async def test_a_report_shows_its_worker_again_when_its_state_changed(self, manager, tailnet, workers, signals):
     tailnet.answers = {"w1": "reachable"}

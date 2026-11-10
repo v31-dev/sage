@@ -5,7 +5,7 @@ from datetime import datetime
 import pytest
 
 from services.containers.decisions import (CONFIG, HEADLINES, KNOWLEDGE, RUNNING, ContainerFacts, Correction, Runtime, RuntimeReading, correction,
-                                           decide_container, lifecycle_refusal)
+                                           decide_container, lifecycle_refusal, routable)
 from services.containers.record import CONTRACTS, PHASES, READS, Applied, Authority, Operation, Settled, TargetRead, TargetRecord
 
 AT = datetime(2026, 1, 1, 12)
@@ -170,7 +170,9 @@ def test_every_combination_of_facts_keeps_the_invariants():
     facts = (target, runtime, live)
 
     assert view.headline in HEADLINES and view.config in CONFIG and view.reason in REASONS, facts
-    assert view.routable == (view.headline == "active"), facts
+    unoccupied = decide(target, runtime)
+    assert routable(ContainerFacts(OURS, target, runtime, live, "h1")) is (
+        None if unoccupied.headline == "checking" or unoccupied.reason == "unreachable" else unoccupied.headline == "active"), facts
     assert (view.reason is not None) == (view.headline == "error") or view.reason == "backup_interrupted", facts
     if others:
       assert (view.headline, view.reason) == ("error", "authority" if FOREIGN in others else "restored"), facts
@@ -200,6 +202,22 @@ def test_every_combination_of_facts_keeps_the_invariants():
   assert seen_reasons == REASONS
   assert set(KNOWLEDGE) == {runtime.knowledge for runtime in every_runtime()}
   assert set(READS) == {target.kind for target in every_target()}
+
+
+@pytest.mark.parametrize("target, runtime, live, expected", [
+    (DEPLOYED, known(), None, True),
+    (DEPLOYED, known(), "deploy", True),
+    (present(applied=APPLIED, settled=RUNNING_OK, operation=Operation("d3", "deploy", "executing", AT, 0)), known(), "deploy", False),
+    (present(applied=APPLIED, settled=STOPPED_OK), known("exited"), None, False),
+    (present(applied=APPLIED, settled=FAILED), known("exited"), None, False),
+    (DEPLOYED, known("exited"), None, False),
+    (DEPLOYED, Runtime("unreachable", known().reading), None, None),
+    (DEPLOYED, Runtime("stale", known().reading), None, None),
+    (TargetRead("unobserved"), Runtime("unobserved"), None, None),
+], ids=["active", "a deploy before it records that it began", "a deploy that began", "stopped", "failed", "exited",
+        "its worker unreachable", "its report stale", "never read"])
+def test_a_container_is_routable_by_its_record_and_runtime(target, runtime, live, expected):
+  assert routable(ContainerFacts(OURS, target, runtime, live, "h1")) is expected
 
 
 class TestLifecycleRefusal:

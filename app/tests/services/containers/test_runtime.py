@@ -2,7 +2,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from services.containers.decisions import ContainerFacts, Runtime, RuntimeReading, decide_container
+from services.containers.decisions import ContainerFacts, Runtime, RuntimeReading, decide_container, routable
 from services.containers.record import Applied, Authority, Operation, Settled, TargetRead, TargetRecord
 from services.containers.runtime import runtime_of
 from services.worker_reports import ContainerReading, Received, Snapshot
@@ -46,16 +46,20 @@ def at(seconds: int) -> datetime:
   return MANAGER + timedelta(seconds=seconds)
 
 
+def facts(received, record, now):
+  return ContainerFacts(OURS, TargetRead("present", record), runtime_of(received, ID, record, now, True), desired_hash=HASH)
+
+
 def view(received, record, now):
-  runtime = runtime_of(received, ID, record, now, True)
-  return decide_container(ContainerFacts(OURS, TargetRead("present", record), runtime, desired_hash=HASH))
+  return decide_container(facts(received, record, now))
 
 
 class TestADelayedOldReport:
   """Item 30: a report gathered before a deploy's verification, delivered after it, while no later report has come."""
 
   def test_right_after_the_deploy_its_own_verification_makes_it_active_and_routable(self):
-    assert view(None, deployed(verified=5, finished=5), at(6)).routable is True
+    record = deployed(verified=5, finished=5)
+    assert (view(None, record, at(6)).headline, routable(facts(None, record, at(6)))) == ("active", True)
 
   def test_the_delayed_older_report_does_not_overrule_the_verification(self):
     delayed = sample(gathered=0, received=30, deployment="A")

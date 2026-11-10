@@ -121,7 +121,12 @@ class Lifecycle(ContainersMixin, QueueMixin):
     self.queue_facts = []
     self.recoveries = {}
     self.orphans = {}
+    self.applied = []
     self.task_queue = TaskQueue(SCOPES, {"app": self.pool}, record=lambda task, status: None, notify=self._queue_changed)
+
+  def request_domain_applies(self, domain_ids):
+    if ids := sorted(domain_ids):
+      self.applied.append(ids)
 
   async def run(self):
     self.task_queue.dispatch_tick()
@@ -471,6 +476,37 @@ class TestDelete:
     assert Container.get_or_none(Container.id == container.id) is not None
     assert (record.operation.contract, record.operation.outcome) == ("delete", "failed")
     assert "down failed" in record.operation.reason
+
+
+class TestDomainApplies:
+  @pytest.fixture
+  def domains(self, container, application):
+    from services.db.models import Worker
+    other = Container.create(application=application, worker=Worker.create(hostname="w2", subdomain="blue"))
+    Domain.create(name="other", type="public", port=80, container=other)
+    return sorted(Domain.create(name=name, type="public", port=80, container=container).id for name in ("shop", "api"))
+
+  async def test_a_deploy_or_a_stop_has_its_containers_domains_applied_when_it_ends(
+          self, manager, worker_host, container, domains):
+    await deploy(manager, container)
+    await manager.stop_container(container.id)
+    assert manager.applied == [domains, domains]
+
+  async def test_a_failed_deploy_has_them_applied(self, manager, worker_host, container, domains):
+    worker_host.flag("up-fails")
+    with pytest.raises(TaskFailed):
+      await deploy(manager, container)
+    assert manager.applied == [domains]
+
+  async def test_a_refused_operation_has_nothing_applied(self, manager, worker_host, container, domains):
+    worker_host.reachable = False
+    with pytest.raises(TaskFailed):
+      await deploy(manager, container)
+    assert manager.applied == []
+
+  async def test_a_delete_has_the_domains_it_unlinked_applied(self, manager, worker_host, container, domains):
+    await manager.delete_container(container.id)
+    assert manager.applied == [domains]
 
 
 class TestDeleteRequests:
