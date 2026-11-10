@@ -27,9 +27,20 @@ class Hosts:
 
   def __init__(self):
     self.found, self.addresses, self.files, self.fails, self.starts = {}, {}, {}, None, False
+    self.answering, self.boots, self.commands, self.forgotten, self.on_boot = set(), [], [], [], None
 
   async def observe_workers(self, hostnames):
     pass
+
+  async def observe_worker(self, hostname):
+    if hostname in self.answering:
+      self.found[hostname] = "reachable"
+
+  async def reachable(self, hostname):
+    return hostname in self.answering
+
+  async def forget(self, hostname):
+    self.forgotten.append(hostname)
 
   def ssh(self, hostname):
     return self.found.get(hostname, "unobserved")
@@ -44,8 +55,14 @@ class Hosts:
     return "100.64.0.1"
 
   async def exec_command(self, hostname, command, timeout=300):
+    self.commands.append(command)
     if self.fails and self.fails in command:
       raise Exception(f"Error executing command on {hostname}: exit code 1")
+    if command == "cat /proc/sys/kernel/random/boot_id":
+      boot = self.boots.pop(0) if len(self.boots) > 1 else self.boots[0]
+      if self.on_boot:
+        self.on_boot(boot)
+      return 0, [boot]
     if command.startswith("grep -H . "):
       prefix = f"{hostname}:{HOME}/revisions/"
       return 0, [f"{path[len(hostname) + 1:]}:{content}" for path, (content, _) in self.files.items() if path.startswith(prefix)]
@@ -89,6 +106,11 @@ class Provider:
 
   def get_tunnel_token(self, tunnel_id=None):
     return SimpleNamespace(token=f"token-{tunnel_id or self.tunnel_id}")
+
+  def delete_tunnel(self, name):
+    if getattr(self, "keeps_tunnels", False):
+      raise Exception("the tunnel has connections")
+    self.tunnels.remove(name)
 
 
 class Manager(WorkersMixin, QueueMixin):
@@ -148,11 +170,11 @@ def requested(manager):
   return [(task["name"], task["key"], task["scopes"], task["quiet"]) for task in manager.task_queue.snapshot()["queued"]]
 
 
-def report(hostname="w1", running=config.WORKER_STACK_SERVICES):
+def report(hostname="w1", running=config.WORKER_STACK_SERVICES, at=datetime(2026, 1, 1, 9)):
   readings = {name: ContainerReading(name=name, status="running", image="", labels={}, exit_code=0, oom_killed=False, started_at=1,
                                      finished_at=None, health=None, cpu_percent=None, mem_bytes=None, net_rx_bytes=None,
                                      net_tx_bytes=None) for name in running}
-  WorkerReports().accept(hostname, [Snapshot(at=datetime(2026, 1, 1, 9), host=HostReading(*([None] * 13)), containers=readings,
+  WorkerReports().accept(hostname, [Snapshot(at=at, host=HostReading(*([None] * 13)), containers=readings,
                                              traefik_reachable=True)])
 
 
@@ -279,3 +301,135 @@ class TestRequests:
     manager.request_convergence("w1", force=True)
     assert [(key, quiet) for _, key, _, quiet in requested(manager)] == [
         (["converge_worker", "w1"], True), (["converge_worker", "w1", "force"], False)]
+
+
+class TestAdd:
+  def test_the_request_writes_the_row_and_queues_the_add(self, manager, db):
+    manager.request_add_worker("w1", "red")
+    assert Worker.get_by_id("w1").subdomain == "red"
+    assert [(name, quiet) for name, _, _, quiet in requested(manager)] == [("add_worker", False)]
+
+  def test_a_worker_already_added_is_refused(self, manager, worker):
+    from utils.errors import Conflict
+    with pytest.raises(Conflict):
+      manager.request_add_worker("w1", "green")
+
+  async def test_the_add_looks_at_the_worker_it_has_not_observed_yet_and_is_its_first_setup(self, manager, hosts, worker):
+    hosts.found["w1"] = "unobserved"
+    hosts.answering.add("w1")
+    await manager.add_worker("w1")
+    assert Workers().setup("w1") == "succeeded"
+    assert events() == [("add", "admitted"), ("infrastructure", "admitted"), ("infrastructure", "succeeded"), ("add", "succeeded")]
+
+  @pytest.mark.parametrize("trouble", ["setup fails", "does not answer"])
+  async def test_a_worker_whose_first_setup_did_not_happen_is_kept(self, manager, hosts, worker, trouble):
+    if trouble == "setup fails":
+      hosts.answering.add("w1")
+      hosts.fails = "up -d --wait"
+    else:
+      hosts.found["w1"] = "unobserved"
+    with pytest.raises(TaskFailed):
+      await manager.add_worker("w1")
+    assert Worker.get_or_none(Worker.hostname == "w1") is not None
+    assert events()[0] == ("add", "admitted") and events()[-1] == ("add", "failed")
+
+
+class TestRemove:
+  async def test_a_worker_that_answers_and_is_this_sages_is_cleaned_and_forgotten(self, manager, hosts, provider, worker):
+    await manager.converge_worker("w1")
+    hosts.answering.add("w1")
+    manager.setup_failures["w1"] = 1.0
+    report()
+    await manager.remove_worker("w1")
+    assert Worker.get_or_none(Worker.hostname == "w1") is None
+    assert any(command.endswith(f"down --remove-orphans && rm -rf {HOME}") for command in hosts.commands)
+    assert (provider.records["w1"], provider.tunnels, hosts.forgotten) == ((None, None), [], ["w1"])
+    assert (Workers().setup("w1"), WorkerReports().latest("w1"), manager.setup_failures) == (None, None, {})
+    assert events()[-2:] == [("remove", "admitted"), ("remove", "succeeded")]
+
+  @pytest.mark.parametrize("trouble", ["another Sage's", "does not answer"])
+  async def test_a_worker_it_cannot_clean_is_removed_from_sage_only(self, manager, hosts, provider, worker, trouble):
+    if trouble == "another Sage's":
+      hosts.answering.add("w1")
+      hosts.files[f"w1:{HOME}/revisions/owner"] = ("ffffffffffffffff other.test", 0o644)
+    await manager.remove_worker("w1")
+    assert Worker.get_or_none(Worker.hostname == "w1") is None
+    assert not any("rm -rf" in command for command in hosts.commands)
+
+  async def test_a_tunnel_cloudflare_will_not_delete_does_not_stop_the_removal(self, manager, hosts, provider, worker):
+    await manager.converge_worker("w1")
+    provider.keeps_tunnels = True
+    await manager.remove_worker("w1")
+    assert Worker.get_or_none(Worker.hostname == "w1") is None and events()[-1] == ("remove", "succeeded")
+
+  async def test_a_worker_with_a_container_is_refused_and_untouched(self, manager, hosts, worker, application):
+    from services.db.models import Container
+    Container.create(application=application, worker=worker)
+    from utils.errors import Conflict
+    with pytest.raises(Conflict):
+      manager.request_remove_worker("w1")
+    with pytest.raises(TaskFailed):
+      await manager.remove_worker("w1")
+    assert Worker.get_or_none(Worker.hostname == "w1") is not None and events() == [("remove", "rejected")]
+
+
+@pytest.fixture
+def ticking(monkeypatch):
+  """The reboot's clock moves 60 s at each look, and its waits are instant."""
+  import services.manager.workers as module
+  clock = SimpleNamespace(now=0.0)
+
+  def tick():
+    clock.now += 60
+    return clock.now
+
+  monkeypatch.setattr(module, "monotonic", tick)
+  monkeypatch.setattr(config, "WORKER_REBOOT_POLL_SECONDS", 0)
+  return clock
+
+
+class TestReboot:
+  @staticmethod
+  def booting(clock, report_after=None):
+    """What happens at each look at the boot id: time passes, and a report arrives once the worker runs `report_after`."""
+    def look(boot):
+      clock.advance(timedelta(seconds=10))
+      if boot == report_after:
+        report(at=datetime(2026, 1, 1, 10))
+    return look
+
+  async def test_a_new_boot_set_up_again_and_reporting_after_it_is_verified(self, manager, hosts, worker, ticking, clock):
+    await manager.converge_worker("w1")
+    hosts.answering.add("w1")
+    report()
+    hosts.boots = ["b1", "b1", "b2"]
+    hosts.on_boot = self.booting(clock, report_after="b2")
+    await manager.reboot_worker("w1")
+    assert "(sleep 2 && reboot) </dev/null >/dev/null 2>&1 &" in hosts.commands
+    assert Workers().setup("w1") == "succeeded"
+    assert [event for event in events() if event[0] == "reboot"] == [("reboot", "admitted"), ("reboot", "verified")]
+
+  @pytest.mark.parametrize("boots, outcome", [(["b1"], "old_boot"), (["b1", "b2"], "not_ready")],
+                           ids=["it never rebooted", "no report after the new boot"])
+  async def test_a_reboot_not_verified_in_time_fails_with_how_far_it_got(self, manager, hosts, worker, ticking, clock, boots,
+                                                                         outcome):
+    await manager.converge_worker("w1")
+    hosts.answering.add("w1")
+    report()
+    hosts.boots, hosts.on_boot = boots, self.booting(clock)
+    with pytest.raises(TaskFailed):
+      await manager.reboot_worker("w1")
+    reboot = WorkerEvent.select().where(WorkerEvent.action == "reboot").order_by(WorkerEvent.id.desc()).first()
+    assert (reboot.transition, reboot.reason) == ("failed", {"outcome": outcome})
+
+  async def test_a_worker_not_set_up_is_not_rebooted(self, manager, hosts, worker):
+    with pytest.raises(TaskFailed):
+      await manager.reboot_worker("w1")
+    assert "(sleep 2 && reboot) </dev/null >/dev/null 2>&1 &" not in hosts.commands
+    assert events() == [("reboot", "rejected")]
+
+
+class TestSubdomain:
+  def test_a_new_subdomain_converges_the_worker_so_its_record_moves(self, manager, worker):
+    manager.worker_subdomain_changed("w1")
+    assert [name for name, *_ in requested(manager)] == ["converge_worker"]

@@ -1,5 +1,6 @@
 """Worker observation and each worker's state, with what tells its pages that it changed; the convergence of a
-worker's stack with Sage and its repair."""
+worker's stack with Sage and its repair; and adding, removing and rebooting a worker."""
+import asyncio
 import logging
 import re
 from time import monotonic
@@ -8,14 +9,20 @@ import config
 from services.cloudflare import Cloudflare
 from services.db.models import Instance, Worker
 from services.history import record_worker_event
+from services.metrics import Metrics
 from services.tailscale import Tailscale
 from services.updates import Fact, Updates, UpdateSource
 from services.worker_reports import WorkerReports
-from services.workers.decisions import TASKS, worker_claim_refusal
+from services.workers import commands
+from services.workers.decisions import TASKS, reboot_outcome, worker_claim_refusal, worker_owner
 from services.workers.rendering import InfraInputs, infra_fingerprint, render_infrastructure
 from services.workers.state import Workers, WorkerState, worker_state
+from utils.common import utcnow
+from utils.errors import Conflict
 from utils.executor import run_in_executor_with_context
 from utils.logging import TaskFailed
+
+from .containers import mark
 
 logger = logging.getLogger(__name__)
 
@@ -187,6 +194,150 @@ class WorkersMixin:
       # TODO(36 step 4H): self.notify(f"Worker {hostname}: started its stack.", "warning")
     else:
       logger.warning(f"Worker {hostname}'s stack was not ready, but starting it changed nothing.")
+
+  def request_add_worker(self, hostname: str, subdomain: str) -> str:
+    """Adds the machine as a worker with its subdomain: its row now, then a queued add that sets it up. The task's id."""
+    commands.add_worker(hostname, subdomain)
+    return self.add_task(task=self.add_worker, key=("add_worker", hostname), scopes={f"worker:{hostname}"}, executor="app",
+                         params={"hostname": hostname}, labels={"Worker": hostname}).task_id
+
+  async def add_worker(self, hostname: str):
+    """Sets a worker just added up: its first convergence is part of the add. A worker whose first setup fails stays,
+    and is set up again as any other is."""
+    if Worker.get_or_none(Worker.hostname == hostname) is None:
+      logger.info(f"Worker {hostname} was removed before it was set up; nothing to do.")
+      return
+    record_worker_event(hostname, "add", "admitted")
+    await Tailscale().observe_worker(hostname)
+    try:
+      await self.converge_worker(hostname)
+    except TaskFailed:
+      record_worker_event(hostname, "add", "failed", reason={"setup": "failed"})
+      raise
+    if Workers().setup(hostname) != "succeeded":
+      record_worker_event(hostname, "add", "failed", reason={"setup": Workers().setup(hostname) or "not reached"})
+      logger.error(f"Worker {hostname} is added but not set up: {Workers().setup(hostname) or 'its SSH server does not answer'}.")
+      raise TaskFailed()
+    record_worker_event(hostname, "add", "succeeded")
+    # TODO(36 step 4F): request the certificate renewal that covers the new worker.
+
+  def request_remove_worker(self, hostname: str) -> str:
+    """Queues the worker's removal; refused while it has containers or internal domains. The task's id."""
+    worker = Worker.get_or_none(Worker.hostname == hostname)
+    if worker is None:
+      raise LookupError("Worker not found.")
+    refusal = commands.removal_refusal(worker)
+    if refusal is not None:
+      raise Conflict(refusal)
+    return self.add_task(task=self.remove_worker, key=("remove_worker", hostname), scopes={f"worker:{hostname}"},
+                         executor="app", params={"hostname": hostname}, labels={"Worker": hostname}).task_id
+
+  async def remove_worker(self, hostname: str):
+    """Removes the worker from Sage: its row, then, when it answers and is this Sage's, its stack and Sage's files on
+    it; its DNS records and its tunnel; and what the sources hold of it. One that does not answer is removed from Sage
+    only, and the VM has to be cleaned up by hand."""
+    if Worker.get_or_none(Worker.hostname == hostname) is None:
+      logger.info(f"Worker {hostname} is already removed; nothing to do.")
+      return
+    try:
+      commands.remove_worker(hostname)
+    except Conflict as refusal:
+      record_worker_event(hostname, "remove", "rejected", reason={"refusal": str(refusal)})
+      logger.error(f"Worker {hostname} is not removed: {refusal}")
+      raise TaskFailed()
+    record_worker_event(hostname, "remove", "admitted")
+    home, cleaned = config.WORKER_HOME_DIR, False
+    if await Tailscale().reachable(hostname):
+      try:
+        owner = worker_owner(await Workers().read_revisions(hostname))
+        if owner is not None and owner[0] == Instance.get().id:
+          await Tailscale().exec_command(
+              hostname, f"docker compose -f {home}/docker-compose.yml down --remove-orphans && rm -rf {home}", timeout=120)
+          cleaned = True
+      except Exception as error:
+        logger.warning(f"Worker {hostname} is removed from Sage, but its stack could not be stopped: {error}. "
+                       "Stop it and remove its files by hand.")
+    else:
+      logger.warning(f"Worker {hostname} does not answer, so it is removed from Sage only; anything on the VM, including the "
+                     "VM itself, has to be removed by hand.")
+    cloudflare = Cloudflare()
+    await run_in_executor_with_context(cloudflare.connect)
+    await run_in_executor_with_context(cloudflare.sync_worker_records, hostname)
+    try:
+      await run_in_executor_with_context(cloudflare.delete_tunnel, cloudflare.worker_tunnel_name(hostname))
+    except Exception as error:
+      logger.warning(f"Worker {hostname} is removed, but its Cloudflare tunnel could not be deleted: {error}. Delete it by hand.")
+    Workers().record_setup(hostname, None)
+    WorkerReports().forget(hostname)
+    Metrics().forget(hostname)
+    await Tailscale().forget(hostname)
+    self.setup_failures.pop(hostname, None)
+    self.stack_repairs.pop(hostname, None)
+    record_worker_event(hostname, "remove", "succeeded", reason={"cleaned": cleaned})
+    # TODO(36 step 4F): request the certificate renewal that retires its leaf.
+    # TODO(36 step 4E): request discovery, which no longer lists it.
+    # TODO(36 step 4H): notify the warnings above.
+    self.worker_state.check()
+
+  def request_reboot(self, hostname: str) -> str:
+    """Queues the worker's reboot. The task's id."""
+    if Worker.get_or_none(Worker.hostname == hostname) is None:
+      raise LookupError("Worker not found.")
+    return self.add_task(task=self.reboot_worker, key=("reboot_worker", hostname), scopes={f"worker:{hostname}"},
+                         executor="app", params={"hostname": hostname}, labels={"Worker": hostname}).task_id
+
+  async def reboot_worker(self, hostname: str):
+    """Reboots the worker and waits, holding it, until a new boot of it is set up again and ready on a report that arrived
+    after that boot was seen: verified, or failed once WORKER_REBOOT_LIMIT_SECONDS have passed, saying how far it got
+    (old_boot, not_ready, unknown). A later return is ordinary observation."""
+    worker = Worker.get_or_none(Worker.hostname == hostname)
+    if worker is None:
+      return
+    if Tailscale().ssh(hostname) != "reachable" or Workers().setup(hostname) != "succeeded":
+      record_worker_event(hostname, "reboot", "rejected", reason={"ssh": Tailscale().ssh(hostname), "setup": Workers().setup(hostname)})
+      logger.error(f"Worker {hostname} is not rebooted: it is not reachable and set up.")
+      raise TaskFailed()
+    baseline = await self._boot_id(hostname)
+    record_worker_event(hostname, "reboot", "admitted", reason={"boot_id": baseline})
+    for container in worker.containers:
+      await mark(container, "Worker rebooted by Sage")
+    await Tailscale().exec_command(hostname, "(sleep 2 && reboot) </dev/null >/dev/null 2>&1 &", timeout=30)
+    Workers().record_setup(hostname, None)
+    deadline, outcome, booted_at = monotonic() + config.WORKER_REBOOT_LIMIT_SECONDS, "unknown", None
+    while monotonic() < deadline:
+      await asyncio.sleep(config.WORKER_REBOOT_POLL_SECONDS)
+      try:
+        boot = await self._boot_id(hostname)
+      except Exception:
+        boot = None
+      if boot is not None and boot != baseline:
+        booted_at = booted_at or utcnow()
+        if Workers().setup(hostname) != "succeeded":
+          await Tailscale().observe_worker(hostname)
+          try:
+            await self.converge_worker(hostname)
+          except TaskFailed:
+            pass
+      received = WorkerReports().latest(hostname)
+      reported = booted_at is not None and received is not None and received.arrived_at >= booted_at
+      outcome = reboot_outcome(baseline, boot, worker_state(hostname, frozenset()).view.ready and reported)
+      if outcome == "verified":
+        break
+    if outcome != "verified":
+      record_worker_event(hostname, "reboot", "failed", reason={"outcome": outcome})
+      logger.error(f"Worker {hostname}'s reboot was not verified in time: {outcome}.")
+      raise TaskFailed()
+    record_worker_event(hostname, "reboot", "verified")
+
+  def worker_subdomain_changed(self, hostname: str):
+    """After the worker's subdomain changed (its command): its `*.<subdomain>.int` record moves with its convergence."""
+    self.request_convergence(hostname)
+    # TODO(36 step 4E): request the syncs of its internal and TCP domains, and discovery.
+    # TODO(36 step 4F): request the renewal of its certificate, whose names are under the subdomain.
+
+  async def _boot_id(self, hostname: str) -> str:
+    _, lines = await Tailscale().exec_command(hostname, "cat /proc/sys/kernel/random/boot_id", timeout=10)
+    return lines[0].strip()
 
   async def _start_stack(self, hostname: str) -> bool:
     """`docker compose up -d` for the worker's stack: it starts what is stopped and leaves what runs alone. True when it

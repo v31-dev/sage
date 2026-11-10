@@ -38,11 +38,19 @@ def set_worker_subdomain(hostname: str, subdomain: str | None) -> bool:
   return True
 
 
+def removal_refusal(worker: Worker) -> str | None:
+  """Why the worker can't be removed now: it has containers or internal domains."""
+  if worker.containers.exists():
+    return "A worker with containers can't be removed."
+  if worker.domains.exists():
+    return "A worker with internal domains can't be removed."
+  return None
+
+
 def remove_worker(hostname: str):
   with write():
     worker = get(Worker, Worker.hostname == hostname)
-    if worker.containers.exists():
-      raise Conflict("A worker with containers can't be removed.")
-    if worker.domains.exists():
-      raise Conflict("A worker with internal domains can't be removed.")
+    refusal = removal_refusal(worker)
+    if refusal is not None:
+      raise Conflict(refusal)
     worker.delete_instance()

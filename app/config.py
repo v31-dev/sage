@@ -94,8 +94,10 @@ OFFLINE_AFTER_MISSED_CHECKS = 2
 SSH_BANNER_TIMEOUT_SECONDS = 3
 PING_TIMEOUT_SECONDS = 3
 
-# A reboot that has not finished by now (a worker that never came back) is no longer called one.
+# A requested reboot is verified (a new boot of the worker, set up again and ready) within this, its boot looked at this
+# often.
 WORKER_REBOOT_LIMIT_SECONDS = 300
+WORKER_REBOOT_POLL_SECONDS = 10
 
 # A worker whose stack is down (or silent for this long) gets `docker compose up -d`, at most
 # once per cooldown.

@@ -813,6 +813,27 @@ class TestObserveWorkers:
   def test_no_workers_is_nothing_to_ask(self, tailscale, answers):
     assert self.observe(tailscale) == {} and answers.asked == []
 
+  def test_one_worker_looked_at_now_is_reachable_with_its_address_when_it_answers(self, tailscale, answers):
+    answers.up = set()
+    self.observe(tailscale, "a")
+    self.observe(tailscale, "a")
+    assert tailscale.ssh("a") == "unreachable"
+    answers.up = {"a"}
+    asyncio.run(tailscale.observe_worker("a"))
+    assert (tailscale.ssh("a"), tailscale.address("a")) == ("reachable", "100.64.0.2")
+    answers.up = set()
+    assert self.observe(tailscale, "a") == {"a": "reachable"}
+
+  @pytest.mark.parametrize("listed", [True, False], ids=["silent", "not listed"])
+  def test_one_worker_that_does_not_answer_or_is_not_listed_is_left_as_it_was(self, tailscale, answers, listed):
+    answers.up = {"a"}
+    self.observe(tailscale, "a")
+    answers.up = set()
+    if not listed:
+      answers.listed = {}
+    asyncio.run(tailscale.observe_worker("a"))
+    assert tailscale.ssh("a") == "reachable"
+
 
 class TestRefreshPaths:
   @pytest.fixture

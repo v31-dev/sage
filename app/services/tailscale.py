@@ -188,6 +188,14 @@ class Tailscale(Base):
         states[hostname] = {True: "reachable", False: "unreachable", None: "unobserved"}[online]
       self._ssh, self._misses = states, misses
 
+  async def observe_worker(self, hostname: str):
+    """Asks one worker's SSH server now, as a workflow on it needs before it goes on: reachable when it answered, with its
+    address; otherwise as it was, its misses left to `observe_workers`."""
+    peer = next((peer for peer in await run_in_executor_with_context(self.peers) if peer.hostname == hostname), None)
+    if peer is not None and await self.reachable(hostname):
+      with self.lock:
+        self._ssh[hostname], self._addresses[hostname], self._misses[hostname] = "reachable", peer.ip, 0
+
   def ssh(self, hostname: str) -> str:
     """What the last observation found of the worker's SSH server: reachable, unreachable, unknown (the manager was
     cut off) or unobserved."""
