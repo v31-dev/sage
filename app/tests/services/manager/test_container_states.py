@@ -3,12 +3,13 @@ import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 import config
 from services.applications.deploy_input import capture_deploy_config
-from services.containers.placement import record_path, runtime_labels, runtime_name
+from services.containers.placement import placement_dir, record_path, runtime_labels, runtime_name
 from services.containers.record import Applied, Authority, Operation, Settled, TargetRead, TargetRecord, encode_record
 from services.containers.targets import Containers
 from services.db.models import Application, Container, Instance, Worker
@@ -23,18 +24,23 @@ WORKER_CLOCK = datetime(2026, 1, 1, 9)
 
 
 class WorkerHosts:
-  """The workers: commands run in a local shell over the test's directory and synced files land there, as SSH and SFTP
-  would put them; a worker in `unreachable` cannot be asked."""
+  """The workers: commands run in a local shell and synced files land in each worker's own directory under the test's,
+  as SSH and SFTP would put them on that worker; a worker in `unreachable` cannot be asked."""
 
-  def __init__(self):
+  def __init__(self, root: Path):
+    self.root = root
     self.unreachable = set()
     self.commands = []
+
+  def local(self, hostname, text):
+    """`text` with the worker's home replaced by that worker's own directory here."""
+    return text.replace(config.WORKER_HOME_DIR, str(self.root / hostname))
 
   async def exec_command(self, hostname, command, timeout=300):
     self.commands.append((hostname, command))
     if hostname in self.unreachable:
       raise Exception(f"Error connecting to {hostname}: no route")
-    result = subprocess.run(["sh", "-c", command], capture_output=True, text=True, check=True)
+    result = subprocess.run(["sh", "-c", self.local(hostname, command)], capture_output=True, text=True, check=True)
     return result.returncode, result.stdout.splitlines()
 
   async def sync_file(self, hostname, src, dst, keys=None, formatter=None, timeout=120, mode=0o644):
@@ -43,8 +49,9 @@ class WorkerHosts:
     content = Path(src).read_text()
     for key, value in (keys or {}).items():
       content = content.replace("${" + key + "}", str(value))
-    Path(dst).parent.mkdir(parents=True, exist_ok=True)
-    Path(dst).write_text(content)
+    path = Path(self.local(hostname, dst))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content)
 
 
 class Manager(ContainersMixin, QueueMixin):
@@ -53,6 +60,7 @@ class Manager(ContainersMixin, QueueMixin):
     self.queue_facts = self.containers_queue_facts()
     self.container_state = self.containers_state_fact()
     self.recoveries = {}
+    self.orphans = {}
     self.task_queue = TaskQueue(SCOPES, {"app": self.pool}, record=lambda task, status: None, notify=self._queue_changed)
 
   async def run(self):
@@ -64,8 +72,8 @@ class Manager(ContainersMixin, QueueMixin):
 
 @pytest.fixture
 def hosts(register, tmp_path, monkeypatch):
-  monkeypatch.setattr(config, "WORKER_HOME_DIR", str(tmp_path / "home"))
-  return register(Tailscale, WorkerHosts())
+  monkeypatch.setattr(config, "WORKER_HOME_DIR", "/opt/sage-under-test")
+  return register(Tailscale, WorkerHosts(tmp_path))
 
 
 @pytest.fixture
@@ -204,9 +212,13 @@ def queued(manager):
   return [(tuple(task["key"]), task["quiet"], task["scopes"]) for task in manager.task_queue.snapshot()["queued"]]
 
 
+def on_worker(hostname, path):
+  return Path(Tailscale().local(hostname, path))
+
+
 def place(container, record):
-  """A record on the worker that Sage does not hold yet."""
-  path = Path(record_path(config.WORKER_HOME_DIR, container.id))
+  """A record on the container's worker that Sage does not hold yet."""
+  path = on_worker(container.worker_id, record_path(config.WORKER_HOME_DIR, container.id))
   path.parent.mkdir(parents=True, exist_ok=True)
   path.write_text(encode_record(record))
 
@@ -357,3 +369,60 @@ class TestCorrections:
     containers[1].delete_instance()
     await manager.observe_containers()
     assert manager.recoveries == {}
+
+
+ORPHAN = "0f0f0f0f0f0f0f0f"
+
+
+def reported_runtime(hostname, container_id, labels):
+  reading = ContainerReading(
+      name=runtime_name(container_id), status="running", image="nginx", labels=labels, exit_code=0, oom_killed=False,
+      started_at=1, finished_at=None, health=None, cpu_percent=None, mem_bytes=None, net_rx_bytes=None, net_tx_bytes=None)
+  WorkerReports().accept(hostname, [Snapshot(at=WORKER_CLOCK + timedelta(seconds=10), host=HostReading(*([None] * 13)),
+                                             containers={reading.name: reading}, traefik_reachable=True)])
+
+
+def cleanups(manager):
+  return [(task["params"], task["labels"], task["quiet"]) for task in manager.task_queue.snapshot()["queued"]
+          if task["name"] == "cleanup_orphan"]
+
+
+class TestOrphans:
+  @pytest.mark.parametrize("labelled, found", [("ours", True), ("another Sage's", False), ("unlabelled", False)])
+  async def test_a_reported_runtime_no_container_owns_is_an_orphan_when_it_is_labelled_as_this_sages(
+          self, manager, containers, labelled, found):
+    labels = {"ours": runtime_labels(Authority(Instance.get().id, Instance.get().state_generation, ORPHAN), "d1", "demo-web"),
+              "another Sage's": runtime_labels(Authority("ffffffffffffffff", "1111111111111111", ORPHAN), "d1", "demo-web"),
+              "unlabelled": {}}[labelled]
+    reported_runtime("w1", ORPHAN, labels)
+    await manager.observe_containers()
+    assert cleanups(manager) == ([({"hostname": "w1", "container_id": ORPHAN},
+                                   {"Worker": "w1", "Container": ORPHAN, "Application": "demo-web"}, False)] if found else [])
+
+  async def test_a_reported_runtime_of_a_container_is_not_an_orphan(self, manager, containers):
+    report(containers[0])
+    await manager.observe_containers()
+    assert cleanups(manager) == []
+
+  async def test_a_listing_finds_this_sages_orphan_records_and_bare_directories(self, manager, containers):
+    for orphan, authority_ in (("0f0f0f0f0f0f0f0f", Authority(Instance.get().id, "1111111111111111", "0f0f0f0f0f0f0f0f")),
+                               ("0e0e0e0e0e0e0e0e", Authority("ffffffffffffffff", "1111111111111111", "0e0e0e0e0e0e0e0e"))):
+      place(SimpleNamespace(id=orphan, worker_id="w1"), TargetRecord(authority_))
+    on_worker("w1", placement_dir(config.WORKER_HOME_DIR, "0d0d0d0d0d0d0d0d")).mkdir(parents=True)
+    on_worker("w1", placement_dir(config.WORKER_HOME_DIR, containers[0].id)).mkdir(parents=True)
+    on_worker("w2", placement_dir(config.WORKER_HOME_DIR, "0c0c0c0c0c0c0c0c")).mkdir(parents=True)
+    on_worker("w1", placement_dir(config.WORKER_HOME_DIR, containers[1].id)).mkdir(parents=True)
+    await manager.list_records("w1")
+    assert sorted(params["container_id"] for params, _, _ in cleanups(manager)) == sorted(
+        ["0d0d0d0d0d0d0d0d", "0f0f0f0f0f0f0f0f", containers[1].id])
+
+  async def test_an_orphan_waiting_out_old_work_is_not_asked_for_again_until_its_allowance_has_passed(
+          self, manager, containers, monotonic):
+    reported_runtime("w1", ORPHAN, runtime_labels(Authority(Instance.get().id, Instance.get().state_generation, ORPHAN), "d1",
+                                                  "demo-web"))
+    manager.orphans[("w1", ORPHAN)] = ("d9", monotonic.now, 905)
+    await manager.observe_containers()
+    assert cleanups(manager) == []
+    monotonic.now += 905
+    await manager.observe_containers()
+    assert len(cleanups(manager)) == 1

@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -119,6 +120,7 @@ class Lifecycle(ContainersMixin, QueueMixin):
     self.pool = ThreadPoolExecutor(max_workers=2)
     self.queue_facts = []
     self.recoveries = {}
+    self.orphans = {}
     self.task_queue = TaskQueue(SCOPES, {"app": self.pool}, record=lambda task, status: None, notify=self._queue_changed)
 
   async def run(self):
@@ -658,6 +660,80 @@ class TestReset:
       await manager.reset_container(container.id, "unexpected_running")
     record = worker_record(container)
     assert (record.operation.contract, record.operation.phase) == ("reset", "recovering")
+
+
+ORPHAN = "0f0f0f0f0f0f0f0f"
+
+
+@pytest.fixture
+def monotonic(monkeypatch):
+  import services.manager.containers as module
+  clock = SimpleNamespace(now=1000.0)
+  monkeypatch.setattr(module, "monotonic", lambda: clock.now)
+  return clock
+
+
+def orphan_placement(worker_host, record=None, running=True, labelled=None):
+  """What a container this Sage has no row for left on the worker."""
+  orphan = SimpleNamespace(id=ORPHAN)
+  directory = Path(placement_dir(config.WORKER_HOME_DIR, ORPHAN))
+  (directory / "volumes" / "1111111111111111").mkdir(parents=True)
+  if record is not None:
+    (directory / "record.json").write_text(record if isinstance(record, str) else encode_record(record))
+  if running:
+    worker_host.run(orphan, "running d1", labelled=labelled or authority(orphan))
+  return directory
+
+
+class TestOrphanCleanup:
+  async def test_an_orphans_runtime_and_placement_are_removed(self, manager, worker_host, container):
+    directory = orphan_placement(worker_host, TargetRecord(authority(SimpleNamespace(id=ORPHAN)),
+                                                           settled=Settled("d1", "running", "succeeded", VERIFIED)))
+    await manager.cleanup_orphan("w1", ORPHAN)
+    assert not directory.exists() and worker_host.runtime(SimpleNamespace(id=ORPHAN)) is None
+
+  async def test_a_bare_directory_is_removed(self, manager, worker_host, container):
+    directory = orphan_placement(worker_host, running=False)
+    await manager.cleanup_orphan("w1", ORPHAN)
+    assert not directory.exists()
+
+  async def test_a_container_that_has_its_row_is_not_an_orphan(self, manager, worker_host, container):
+    place(container, deployed(container))
+    worker_host.run(container, "running d0")
+    await manager.cleanup_orphan("w1", container.id)
+    assert (worker_record(container), worker_host.runtime(container)) == (deployed(container), "running d0")
+
+  @pytest.mark.parametrize("whose", ["record", "runtime"])
+  async def test_another_sages_placement_is_left_alone(self, manager, worker_host, container, whose):
+    foreign = Authority("ffffffffffffffff", "1111111111111111", ORPHAN)
+    directory = orphan_placement(worker_host, TargetRecord(foreign) if whose == "record" else None,
+                                 labelled=foreign if whose == "runtime" else None)
+    await manager.cleanup_orphan("w1", ORPHAN)
+    assert directory.exists() and worker_host.runtime(SimpleNamespace(id=ORPHAN)) == "running d1"
+
+  @pytest.mark.parametrize("record, bound", [
+      (TargetRecord(Authority("0" * 16, "0" * 16, ORPHAN), operation=Operation("d9", "deploy", "executing", VERIFIED, 905,
+                                                                               input_hash="a" * 64)), 905),
+      ("not a record\n", 905)], ids=["unsettled", "unreadable"])
+  async def test_old_work_on_an_orphan_is_waited_out_from_when_it_was_seen(
+          self, manager, worker_host, container, monotonic, record, bound):
+    if not isinstance(record, str):
+      record = replace(record, authority=authority(SimpleNamespace(id=ORPHAN)))
+    directory = orphan_placement(worker_host, record)
+    await manager.cleanup_orphan("w1", ORPHAN)
+    monotonic.now += bound - 1
+    await manager.cleanup_orphan("w1", ORPHAN)
+    assert directory.exists() and manager.orphans[("w1", ORPHAN)][2] == bound
+    monotonic.now += 1
+    await manager.cleanup_orphan("w1", ORPHAN)
+    assert not directory.exists() and manager.orphans == {}
+
+  async def test_an_orphan_that_cannot_be_stopped_is_a_failure_and_stays(self, manager, worker_host, container):
+    directory = orphan_placement(worker_host)
+    worker_host.flag("down-is-ignored")
+    with pytest.raises(TaskFailed):
+      await manager.cleanup_orphan("w1", ORPHAN)
+    assert directory.exists()
 
 
 class TestMark:

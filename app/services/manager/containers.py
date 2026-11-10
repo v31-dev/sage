@@ -12,8 +12,9 @@ from services.applications.commands import detach_container
 from services.applications.deploy_input import DeployConfig, capture_deploy_config
 from services.applications.updates import container_changed
 from services.containers.decisions import PROGRESS, RUNNING, Runtime, RuntimeReading, correction, lifecycle_refusal
-from services.containers.placement import (LABEL_CONTAINER, LABEL_DEPLOYMENT, LABEL_GENERATION, LABEL_INSTANCE, labels_authority, placement_dir,
-                                           records_command, runtime_name, runtime_owner, volume_dir)
+from services.containers.placement import (LABEL_APPLICATION, LABEL_CONTAINER, LABEL_DEPLOYMENT, LABEL_GENERATION, LABEL_INSTANCE, labels_authority,
+                                           parse_placements, placement_dir, placements_command, records_command, runtime_name, runtime_owner,
+                                           volume_dir)
 from services.containers.record import Applied, Authority, Operation, Recovery, Settled, TargetRead, TargetRecord, parse_record_listing
 from services.containers.rendering import render_placement
 from services.containers.state import ContainerState, container_state
@@ -158,6 +159,17 @@ class ContainersMixin:
     for container_id in self.recoveries.keys() - containers.keys():
       self.recoveries.pop(container_id, None)
 
+    # Runtimes of this Sage's that no container owns any more, on the workers that report.
+    placed = {}
+    for container in containers.values():
+      placed.setdefault(container.worker_id, set()).add(container.id)
+    for worker in Worker.select():
+      received = WorkerReports().current(worker.hostname)
+      for name, reading in (received.snapshot.containers.items() if received is not None else ()):
+        orphan, owner = runtime_owner(name), labels_authority(reading.labels)
+        if orphan and orphan not in placed.get(worker.hostname, ()) and owner is not None and owner.instance_id == instance.id:
+          self.request_orphan_cleanup(worker.hostname, orphan, reading.labels.get(LABEL_APPLICATION))
+
   def request_recovery(self, container: Container, incident: str, final: bool):
     """Queues the recovery of the operation `incident` on the container (or of its unreadable record): its
     containment, or once the old work's allowance has passed its settlement."""
@@ -196,7 +208,7 @@ class ContainersMixin:
       return
     contract = operation.contract if operation is not None else "reset"
     try:
-      verified_at = await self._stop_runtime(container)
+      verified_at = await self._stop_runtime(container.worker_id, container.id)
     except Exception as error:
       record_container_event(container, contract, "recovery_failed", operation.id if operation else None,
                              reason={"error": str(error)})
@@ -235,7 +247,7 @@ class ContainersMixin:
     instance = Instance.get()
     authority = Authority(instance.id, instance.state_generation, container.id)
     target = await Containers().read(container)
-    reading, _ = await self._inspect(container)
+    reading, _ = await self._inspect(container.worker_id, container.id)
     found = correction(target, Runtime("known", reading), None, authority, True)
     if found is None or found.kind != "reset":
       logger.info(f"Container {container.id} no longer needs a reset; nothing to do.")
@@ -248,7 +260,7 @@ class ContainersMixin:
                            dedupe_key=f"{operation.id}:admitted")
     try:
       await Containers().write(container, record)
-      verified_at = await self._stop_runtime(container)
+      verified_at = await self._stop_runtime(container.worker_id, container.id)
       now = utcnow()
       await Containers().write(container, replace(
           record, settled=Settled(operation.id, "stopped", "failed", now, found.cause),
@@ -286,16 +298,73 @@ class ContainersMixin:
     the one held; the listing itself never replaces what the `Containers` owner holds, since it is taken outside the
     containers' scopes."""
     try:
-      _, lines = await Tailscale().exec_command(hostname, records_command(config.WORKER_HOME_DIR), timeout=30)
+      _, lines = await Tailscale().exec_command(hostname, placements_command(config.WORKER_HOME_DIR), timeout=30)
+      directories, listed = parse_placements(lines)
     except Exception as error:
-      logger.warning(f"Could not list the container records on {hostname}: {error}")
+      logger.warning(f"Could not list the container placements on {hostname}: {error}")
       return
-    listed = parse_record_listing(lines)
+    placed = set()
     for container in (Container.select(Container, Application, Project).join(Application).join(Project)
                       .where(Container.worker == hostname)):
+      placed.add(container.id)
       if listed.get(container.id, TargetRead("absent")) != Containers().target(container.id):
         self.request_record_read(container)
-    # TODO(36 step 4C-3): clean up the listed records that no container owns.
+    instance_id = Instance.get().id
+    orphans = {container_id for container_id in (directories | listed.keys()) - placed
+               if listed.get(container_id, TargetRead("absent")).record is None
+               or listed[container_id].record.authority.instance_id == instance_id}
+    for container_id in orphans:
+      self.request_orphan_cleanup(hostname, container_id)
+    for key in [key for key in self.orphans if key[0] == hostname and key[1] not in orphans]:
+      self.orphans.pop(key, None)
+
+  def request_orphan_cleanup(self, hostname: str, container_id: str, application: str | None = None):
+    """Queues the removal of what this Sage left on the worker for a container it has no row for, unless it is still
+    waiting out an operation its record shows unsettled."""
+    seen = self.orphans.get((hostname, container_id))
+    if seen is not None and monotonic() - seen[1] < seen[2]:
+      return
+    self.add_task(task=self.cleanup_orphan, key=("cleanup_orphan", hostname, container_id),
+                  scopes={f"worker:{hostname}:container:{container_id}"}, executor="app",
+                  params={"hostname": hostname, "container_id": container_id},
+                  labels={"Worker": hostname, "Container": container_id, **({"Application": application} if application else {})})
+
+  async def cleanup_orphan(self, hostname: str, container_id: str):
+    """Removes what this Sage left on the worker for a container it has no row for: its runtime and its placement,
+    volume data included. Nothing is done while the row is there, or when its record or runtime is another Sage's; an
+    operation its record shows unsettled (any, when the record is unreadable) is first waited out from when Sage saw it."""
+    if Container.select().where((Container.id == container_id) & (Container.worker == hostname)).exists():
+      logger.info(f"Container {container_id} is on {hostname} again; nothing to clean up.")
+      return
+    instance_id = Instance.get().id
+    _, lines = await Tailscale().exec_command(hostname, records_command(config.WORKER_HOME_DIR, container_id), timeout=30)
+    target = parse_record_listing(lines).get(container_id, TargetRead("absent"))
+    reading, _ = await self._inspect(hostname, container_id)
+    if any(authority is not None and authority.instance_id != instance_id
+           for authority in (target.record.authority if target.record else None, reading.authority)):
+      logger.info(f"The placement of {container_id} on {hostname} is another Sage's; it is left alone.")
+      return
+    operation = target.record.operation if target.record else None
+    if target.kind == "invalid" or (operation is not None and operation.phase != "settled"):
+      incident = operation.id if target.kind == "present" else "unreadable"
+      bound = (operation.effect_bound_seconds if target.kind == "present"
+               else config.CONTAINER_UP_TIMEOUT_SECONDS + config.COMMAND_KILL_AFTER_SECONDS)
+      seen = self.orphans.get((hostname, container_id))
+      if seen is None or seen[0] != incident:
+        self.orphans[(hostname, container_id)] = (incident, monotonic(), bound)
+        logger.info(f"The orphan {container_id} on {hostname} waits up to {bound} s for its earlier work to end.")
+        return
+      if monotonic() - seen[1] < seen[2]:
+        return
+    try:
+      await self._stop_runtime(hostname, container_id, "--volumes --rmi local --remove-orphans")
+      await Tailscale().exec_command(hostname, f"rm -rf {placement_dir(config.WORKER_HOME_DIR, container_id)}", timeout=30)
+    except Exception as error:
+      logger.error(f"The orphan {container_id} on {hostname} could not be removed: {error}")
+      raise TaskFailed()
+    self.orphans.pop((hostname, container_id), None)
+    logger.info(f"Removed the orphan {container_id} from {hostname}.")
+    # TODO(36 step 4H): self.notify(f"Removed an orphaned container from worker {hostname}.", "warning")
 
   def _live_operations(self) -> dict[str, str]:
     """The operation running on each container that shows its progress, by container id."""
@@ -401,7 +470,7 @@ class ContainersMixin:
     directory = placement_dir(home, container.id)
     try:
       await Containers().write(container, record)
-      await self._stop_runtime(container)
+      await self._stop_runtime(container.worker_id, container.id)
 
       files = render_placement(deploy, record.authority, operation.id, host, home)
       secrets = any(file.path.startswith("secrets/") for file in files)
@@ -422,7 +491,7 @@ class ContainersMixin:
       await Tailscale().exec_command(
           host, f"docker compose -f {directory}/docker-compose.yml up -d --wait --remove-orphans --quiet-pull --build",
           timeout=config.CONTAINER_UP_TIMEOUT_SECONDS)
-      reading, verified_at = await self._inspect(container)
+      reading, verified_at = await self._inspect(container.worker_id, container.id)
       if reading.state != "running":
         raise Exception(f"The container is {reading.state} after the deploy.")
       if reading.deployment_id != operation.id:
@@ -449,7 +518,7 @@ class ContainersMixin:
     operation = record.operation
     try:
       await Containers().write(container, record)
-      verified_at = await self._stop_runtime(container)
+      verified_at = await self._stop_runtime(container.worker_id, container.id)
       now = utcnow()
       await Containers().write(container, replace(
           record, settled=Settled(operation.id, "stopped", "succeeded", now),
@@ -476,7 +545,7 @@ class ContainersMixin:
       operation = record.operation
       try:
         await Containers().write(container, record)
-        await self._stop_runtime(container, "--volumes --rmi all --remove-orphans")
+        await self._stop_runtime(container.worker_id, container.id, "--volumes --rmi local --remove-orphans")
         await Tailscale().exec_command(
             container.worker_id, f"rm -rf {placement_dir(config.WORKER_HOME_DIR, container.id)}", timeout=30)
       except Exception as error:
@@ -531,7 +600,7 @@ class ContainersMixin:
     operation, reason = record.operation, str(error) or type(error).__name__
     logger.error(f"{operation.contract.capitalize()} failed: {reason}")
     try:
-      verified_at = await self._stop_runtime(container)
+      verified_at = await self._stop_runtime(container.worker_id, container.id)
       now = utcnow()
       failed = replace(record, settled=Settled(operation.id, "stopped", "failed", now, reason), operation=replace(
           operation, phase="settled", outcome="failed", reason=reason, finished_at=now, verified_on_worker_at=verified_at))
@@ -548,24 +617,24 @@ class ContainersMixin:
     # TODO(36 step 4H): self.notify(f"... {operation.contract} failed on worker {container.worker_id}: {reason}", "error")
     raise TaskFailed()
 
-  async def _stop_runtime(self, container: Container, options: str = "") -> datetime:
-    """Stops the container's runtime (`options` for `docker compose down`); when the worker verified it stopped, on the
-    worker's clock. Raises when it was not stopped."""
-    await Tailscale().exec_command(container.worker_id, f"docker compose -p {runtime_name(container.id)} down {options}".strip(),
+  async def _stop_runtime(self, hostname: str, container_id: str, options: str = "") -> datetime:
+    """Stops the container's runtime on the worker (`options` for `docker compose down`); when the worker verified it
+    stopped, on the worker's clock. Raises when it was not stopped."""
+    await Tailscale().exec_command(hostname, f"docker compose -p {runtime_name(container_id)} down {options}".strip(),
                                    timeout=config.CONTAINER_DOWN_TIMEOUT_SECONDS)
-    reading, verified_at = await self._inspect(container)
+    reading, verified_at = await self._inspect(hostname, container_id)
     if reading.state in RUNNING:
       raise Exception(f"The container is still {reading.state} after it was stopped.")
     return verified_at
 
-  async def _inspect(self, container: Container) -> tuple[RuntimeReading, datetime]:
+  async def _inspect(self, hostname: str, container_id: str) -> tuple[RuntimeReading, datetime]:
     """The runtime as Docker has it now (absent without one: its state, deployment and the authority its labels name),
     and the worker's time just before it looked, rounded up to the second so a report gathered before the look never
     counts as after it."""
     labels = (LABEL_DEPLOYMENT, LABEL_INSTANCE, LABEL_GENERATION, LABEL_CONTAINER)
     fields = "|".join(["{{.State.Status}}", *(f'{{{{index .Config.Labels "{label}"}}}}' for label in labels)])
     _, lines = await Tailscale().exec_command(
-        container.worker_id, f"date -u +%s; docker inspect --format '{fields}' {runtime_name(container.id)} 2>/dev/null || echo absent",
+        hostname, f"date -u +%s; docker inspect --format '{fields}' {runtime_name(container_id)} 2>/dev/null || echo absent",
         timeout=30)
     parts = lines[1].strip().split("|") if len(lines) == 2 else []
     if len(lines) != 2 or not lines[0].strip().isdigit() or len(parts) not in (1, len(labels) + 1) or not parts[0]:

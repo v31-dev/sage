@@ -306,62 +306,6 @@ class WorkersMixin:
         {"CONTENT": value},
     )
 
-  async def cleanup_orphan_containers(self, worker):
-    """
-    Existence-level cleanup during worker convergence: app containers and
-    directories with no owning Container row (e.g. force-deleted while this
-    worker was offline) would otherwise run forever and squat on a future
-    app's container name.
-    """
-    apps_root = f"{self.worker_home_dir}/applications"
-
-    # The compose working-dir label proves sage created the container, even if
-    # its app dir was deleted later; anything without it is not ours to touch.
-    _, ps_lines = await self.tailscale.exec_command(
-        worker.hostname,
-        "docker ps -a --format '{{.Names}}|{{.Label \"com.docker.compose.project.working_dir\"}}'",
-    )
-    sage_containers = set()
-    for line in ps_lines:
-      name, _, working_dir = line.partition("|")
-      if working_dir.startswith(f"{apps_root}/") and re.fullmatch(r"[a-z0-9-]+", name):
-        sage_containers.add(name)
-
-    _, dir_names = await self.tailscale.exec_command(
-        worker.hostname, f"ls -1 {apps_root} 2>/dev/null || true")
-    sage_dirs = {name for name in dir_names if re.fullmatch(r"[a-z0-9-]+", name)}
-
-    # Read the owning rows LAST: a Container row is created (instant route
-    # write) before any deploy materializes its app dir, so a dir/container
-    # captured above whose row is being created concurrently is present in this
-    # read. Anything left with no row is a genuine orphan, never an in-flight
-    # create being reaped mid-deploy.
-    expected = {
-        container.application.qualified_name
-        for container in Container.select().where(Container.worker == worker.hostname)
-    }
-
-    orphan_containers = sage_containers - expected
-    orphan_dirs = sage_dirs - expected
-
-    for name in sorted(orphan_containers | orphan_dirs):
-      # `docker rm -f` only for names the ps scan proved are sage containers
-      remove_container = f"docker rm -f {name} 2>/dev/null || true; " if name in orphan_containers else ""
-      await self.tailscale.exec_command(
-          worker.hostname,
-          f'[ ! -f "{apps_root}/{name}/docker-compose.yml" ] || '
-          f'docker compose -f "{apps_root}/{name}/docker-compose.yml" down --volumes --rmi all --remove-orphans; '
-          + remove_container +
-          f"rm -rf {apps_root}/{name}; "
-          f"rm -f {self.worker_home_dir}/revisions/{name}",
-          timeout=120,
-      )
-    if orphan_containers or orphan_dirs:
-      self.notify(
-          f"Removed orphaned containers on worker {worker.hostname}: "
-          f"{', '.join(sorted(orphan_containers | orphan_dirs))}.",
-          "warning")
-
   async def add_worker(self, worker_hostname: str, subdomain: str | None = None):
     """
     Add a machine of the tailnet as a worker, with its subdomain (random when none is given): its SSH server
@@ -523,8 +467,6 @@ class WorkersMixin:
       self.update_worker(worker.hostname, online=True)
 
       self.request_discovery_sync()
-
-      await self.cleanup_orphan_containers(worker)
 
       if infra_stale:
         # Success commit marker

@@ -61,6 +61,9 @@ class Manager(
       # Each container recovering from an interrupted operation: the incident and when it was first seen, on this
       # process's monotonic clock, so a restart waits the old work's whole allowance again.
       self.recoveries = {}
+      # Each orphan waiting out an operation its record shows unsettled, by (worker, container id): the incident, when
+      # it was first seen on the monotonic clock and its allowance.
+      self.orphans = {}
 
       self.task_queue = TaskQueue(scopes=SCOPES, executors=LANES, record=self._persist_task,
                                   notify=self._queue_changed)

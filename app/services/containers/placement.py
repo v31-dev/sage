@@ -1,7 +1,7 @@
 """Where a container lives on its worker and how its runtime is named and labelled, all by its opaque id."""
 import re
 
-from services.containers.record import Authority
+from services.containers.record import Authority, TargetRead, parse_record_listing
 from utils.common import OPAQUE_ID
 
 LABEL_INSTANCE = "sage.instance"
@@ -31,6 +31,23 @@ def volume_dir(home: str, container_id: str, volume_id: str) -> str:
 def records_command(home: str, container_id: str = "*") -> str:
   """Lists the container's record, or every record on the worker, for `record.parse_record_listing`."""
   return f"grep -H . {placements_dir(home)}/{container_id}/record.json 2>/dev/null || true"
+
+
+# Between the directories and the records in a listing of placements.
+PLACEMENTS_END = "--- records"
+
+
+def placements_command(home: str) -> str:
+  """Lists the worker's placement directories, then every record, for `parse_placements`."""
+  return f"ls -1 {placements_dir(home)} 2>/dev/null; echo '{PLACEMENTS_END}'; {records_command(home)}"
+
+
+def parse_placements(lines: list[str]) -> tuple[set[str], dict[str, TargetRead]]:
+  """The container ids of the placement directories and the records `placements_command` listed."""
+  if PLACEMENTS_END not in lines:
+    raise ValueError("Not a listing of placements.")
+  end = lines.index(PLACEMENTS_END)
+  return {name for name in lines[:end] if re.fullmatch(OPAQUE_ID, name)}, parse_record_listing(lines[end + 1:])
 
 
 def runtime_name(container_id: str) -> str:
