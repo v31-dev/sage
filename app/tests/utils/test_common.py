@@ -1,9 +1,8 @@
 from datetime import datetime, timedelta, timezone
 
 import pytest
-import yaml
 
-from utils.common import format_yaml, get_env, utcnow
+from utils.common import get_env, utcnow
 
 
 class TestUtcnow:
@@ -30,26 +29,6 @@ class TestUtcnow:
 
     clock.set(datetime(2030, 6, 1))
     assert utcnow() == datetime(2030, 6, 1)
-
-
-class TestFormatYaml:
-  def test_keeps_key_order_and_drops_comments(self):
-    assert format_yaml("b: 1\na: 2  # note\n") == "b: 1\na: 2\n"
-
-  def test_writes_flow_style_as_block_style(self):
-    assert format_yaml("a: {b: 1, c: [1, 2]}") == "a:\n  b: 1\n  c:\n  - 1\n  - 2\n"
-
-  def test_output_loads_back_to_the_same_data(self):
-    content = 'image: "nginx:1"\ncommand: ["sh", "-c", "echo hi"]\nenv:\n  A: "1"\n'
-    assert yaml.safe_load(format_yaml(content)) == yaml.safe_load(content)
-
-  def test_is_idempotent(self):
-    once = format_yaml("a: {b: 1}\nc: [x, y]\n")
-    assert format_yaml(once) == once
-
-  def test_invalid_yaml_raises(self):
-    with pytest.raises(yaml.YAMLError):
-      format_yaml("a: [unclosed")
 
 
 class TestGetEnv:

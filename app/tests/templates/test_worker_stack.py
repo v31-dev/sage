@@ -7,6 +7,7 @@ import yaml
 
 import config
 from services.containers.placement import LABEL_APPLICATION, LABEL_CONTAINER, LABELS
+from services.worker_reports import LABEL_PREFIX
 
 TEMPLATES = Path(__file__).parent.parent.parent / "templates" / "worker"
 
@@ -79,9 +80,10 @@ class TestTelegrafConfig:
     mounts = [v.split(":")[1] for v in telegraf_service()["volumes"] if v.endswith("/telegraf:/etc/telegraf:ro")]
     assert disk["mount_points"] == ["/etc/telegraf"] and mounts == ["/etc/telegraf"]
 
-  def test_every_label_of_a_placement_comes_through_as_a_tag(self):
+  def test_every_label_of_a_placement_comes_through_as_a_tag_the_reports_keep(self):
     (docker,) = telegraf_config()["inputs"]["docker"]
     assert docker["docker_label_include"] == list(LABELS)
+    assert all(label.startswith(LABEL_PREFIX) for label in LABELS)
 
 
 class TestTelegrafService:

@@ -4,12 +4,18 @@ from pathlib import Path
 import pytest
 
 from services.containers.placement import (LABEL_APPLICATION, LABEL_CONTAINER, LABEL_DEPLOYMENT, LABEL_GENERATION, LABEL_INSTANCE, LABELS,
-                                           labels_authority, parse_placements, placement_dir, placements_command, record_path, runtime_labels,
-                                           runtime_name, runtime_owner, volume_dir)
+                                           labels_authority, parse_placements, placement_dir, placements_command, record_path, runtime_name,
+                                           runtime_owner, volume_dir)
 from services.containers.record import Authority, TargetRead
 from utils.common import new_id
 
 AUTHORITY = Authority("0123456789abcdef", "1111111111111111", "2222222222222222")
+
+
+def runtime_labels(authority: Authority, deployment_id: str, application: str) -> dict[str, str]:
+  """The labels a deployment's Compose file gives its runtime."""
+  return {LABEL_INSTANCE: authority.instance_id, LABEL_GENERATION: authority.state_generation,
+          LABEL_CONTAINER: authority.container_id, LABEL_DEPLOYMENT: deployment_id, LABEL_APPLICATION: application}
 
 
 def test_a_placement_and_its_record_and_volumes_are_under_its_container_id():
@@ -30,10 +36,9 @@ def test_any_other_runtime_name_is_not_a_placement(name):
   assert runtime_owner(name) is None
 
 
-def test_the_labels_name_its_authority_deployment_and_application():
+def test_a_runtimes_labels_give_back_its_authority():
   labels = runtime_labels(AUTHORITY, "d1", "demo-web")
   assert set(labels) == set(LABELS)
-  assert (labels[LABEL_DEPLOYMENT], labels[LABEL_APPLICATION]) == ("d1", "demo-web")
   assert labels_authority(labels) == AUTHORITY
 
 

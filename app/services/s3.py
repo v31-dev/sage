@@ -11,7 +11,7 @@ from botocore.exceptions import ClientError, NoCredentialsError
 
 import config
 from services.base import Base
-from services.settings import SETTING_DEFINITIONS, Settings, validate_section
+from services.settings import SETTING_DEFINITIONS, fields_set, validate_section
 from utils.executor import run_in_executor_with_context
 from utils.retry import retry_async
 
@@ -67,7 +67,7 @@ class S3(Base):
 
   def install(self, values: dict):
     """Use the store `values` name, a saved S3 section; none unless every field is set."""
-    session = S3Session(StorageTarget.of(values)) if Settings().is_valid("s3", values) else None
+    session = S3Session(StorageTarget.of(values)) if fields_set("s3", values) else None
     if session is None:
       logger.warning("No complete S3 config found in settings, S3 functionality will be disabled")
     with self.lock:

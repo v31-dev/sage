@@ -9,6 +9,7 @@ from datetime import datetime
 from croniter import croniter
 
 import config
+from services.backups.commands import add_backup
 from services.backups.keys import BACKUP_TIMESTAMP_FORMAT, taken_at, volume_archive_key
 from services.containers.decisions import maintenance_refusal
 from services.containers.placement import placement_dir
@@ -19,7 +20,6 @@ from services.history import record_container_event
 from services.notification import Notifications
 from services.s3 import S3, S3Session
 from services.tailscale import Tailscale
-from services.updates import Updates, UpdateSource
 from utils.common import get_env, new_id, utcnow
 from utils.errors import Conflict
 from utils.logging import TaskFailed
@@ -276,8 +276,6 @@ class BackupsMixin:
       except Exception as error:
         failures.append(f"volume {volume.name}: {error}")
         continue
-      Backup.create(s3_path=key, storage_id=session.identity, type="application", source_volume_id=volume.id,
-                    source_volume_name=volume.name, application=container.application_id)
-      Updates().changed(UpdateSource.BACKUPS)
+      add_backup(key, session.identity, volume.id, volume.name, container.application_id)
       logger.info(f"Volume {volume.name} of container {container.id} backed up to {key}.")
     return failures

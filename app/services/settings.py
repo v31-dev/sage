@@ -51,6 +51,13 @@ def validate_section(key: str, values: dict):
     raise ValueError("Fill in every field, or leave them all empty.")
 
 
+def fields_set(key: str, values: dict) -> bool:
+  """Whether every field of the section is set in `values`."""
+  if key not in SETTING_DEFINITIONS:
+    raise KeyError(f"Unknown setting key: {key}")
+  return all(values.get(field) not in (None, "") for field in SETTING_DEFINITIONS[key])
+
+
 def section_status(configured: bool, applying_task_id: str | None, check: SettingCheck | None,
                    certificates: list[dict] | None = None) -> dict:
   """What a settings section shows: not_configured, applying (with the task), or the state of its current check, which
@@ -182,18 +189,7 @@ class Settings(Base):
 
   def is_valid(self, key: str, value: dict | None = None):
     """Whether every field is set, in the stored value or the one given."""
-    if key not in SETTING_DEFINITIONS:
-      raise KeyError(f"Unknown setting key: {key}")
-
-    if value is None:
-      value = self.get(key)
-
-    for field in SETTING_DEFINITIONS[key]:
-      field_value = value.get(field)
-      if field_value is None or field_value == "":
-        return False
-
-    return True
+    return fields_set(key, self.get(key) if value is None else value)
 
   def is_configured(self, key: str, value: dict | None = None):
     """Whether the section has what it needs: every field set, or for a section of

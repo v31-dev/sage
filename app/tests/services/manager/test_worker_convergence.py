@@ -619,6 +619,14 @@ class TestReboot:
     assert (reboot.transition, reboot.reason) == ("failed", {"outcome": outcome})
     assert notices()[-1] == ("error", f"Worker w1's reboot could not be confirmed in time: {why}.", WORKER_PAGE)
 
+  def test_the_request_queues_a_visible_reboot_of_its_worker_and_an_unknown_one_is_refused(self, manager, worker):
+    manager.request_reboot("w1")
+    [queued] = manager.task_queue.snapshot()["queued"]
+    assert (queued["name"], queued["key"], queued["scopes"], queued["quiet"], queued["params"], queued["labels"]) == (
+        "reboot_worker", ["reboot_worker", "w1"], ["worker:w1"], False, {"hostname": "w1"}, {"Worker": "w1"})
+    with pytest.raises(LookupError):
+      manager.request_reboot("w2")
+
   async def test_a_worker_not_set_up_is_not_rebooted(self, manager, hosts, worker, notices):
     with pytest.raises(TaskFailed):
       await manager.reboot_worker("w1")

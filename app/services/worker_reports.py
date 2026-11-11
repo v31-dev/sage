@@ -5,10 +5,12 @@ from datetime import datetime, timezone
 
 import config
 from services.base import Base
-from services.containers.placement import LABEL_DEPLOYMENT, LABELS
 from utils.common import utcnow
 
 logger = logging.getLogger(__name__)
+
+# Telegraf reports the container labels it includes as tags, beside tags of its own; Sage's labels share this prefix.
+LABEL_PREFIX = "sage."
 
 
 @dataclass(frozen=True)
@@ -80,13 +82,6 @@ def is_current(arrived_at: datetime, now: datetime) -> bool:
   return (now - arrived_at).total_seconds() <= config.REPORT_STALE_SECONDS
 
 
-def infra_of(received: Received) -> list[dict]:
-  """The state of each container of the worker's stack in a report ("missing" when the report does not list it)."""
-  containers = received.snapshot.containers
-  return [{"name": name, "status": containers[name].status if name in containers else "missing"}
-          for name in config.WORKER_STACK_SERVICES]
-
-
 def container_started_at(received: Received | None, container: str) -> int | None:
   """When the container last started, on the worker's clock (nanoseconds), from a report. None when there is no
   report or it does not list the container."""
@@ -95,7 +90,7 @@ def container_started_at(received: Received | None, container: str) -> int | Non
 
 
 def _fingerprint(container: ContainerReading):
-  return (container.status, container.started_at, container.labels.get(LABEL_DEPLOYMENT))
+  return (container.status, container.started_at, container.labels)
 
 
 def _number(value):
@@ -159,7 +154,7 @@ def _containers(metrics) -> dict[str, ContainerReading]:
         name=name,
         status=str(tags.get("container_status", "")),
         image=str(tags.get("container_image", "")),
-        labels={label: tags[label] for label in LABELS if label in tags},
+        labels={tag: value for tag, value in tags.items() if tag.startswith(LABEL_PREFIX)},
         exit_code=_integer(fields.get("exitcode")),
         oom_killed=fields.get("oomkilled") is True,
         started_at=_integer(fields.get("started_at")),

@@ -9,7 +9,7 @@ import pytest
 
 import config
 from services.applications.deploy_input import capture_deploy_config
-from services.containers.placement import placement_dir, record_path, runtime_labels, runtime_name
+from services.containers.placement import placement_dir, record_path, runtime_name
 from services.containers.record import Applied, Authority, Operation, Settled, TargetRead, TargetRecord, encode_record
 from services.containers.targets import Containers
 from services.db.models import Application, Container, Domain, Instance, Worker
@@ -18,6 +18,7 @@ from services.manager.queue import SCOPES, QueueMixin
 from services.tailscale import Tailscale
 from services.updates import UpdateSource
 from services.worker_reports import ContainerReading, HostReading, Snapshot, WorkerReports
+from tests.services.containers.test_placement import runtime_labels
 from utils.queue import TaskQueue
 
 WORKER_CLOCK = datetime(2026, 1, 1, 9)

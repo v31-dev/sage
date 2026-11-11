@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 import config
-from services.worker_reports import WorkerReports, container_started_at, infra_of, is_current, parse_batch
+from services.worker_reports import WorkerReports, container_started_at, is_current, parse_batch
 
 BATCH = json.loads((Path(__file__).parent.parent / "data" / "telegraf_batch.json").read_text())
 
@@ -297,19 +297,6 @@ class TestContainerStartedAt:
     received = WorkerReports().accept("w1", with_containers(10, reading("web"))).received
     assert container_started_at(None, "telegraf") is None
     assert container_started_at(received, "telegraf") is None
-
-
-class TestInfra:
-  def test_each_container_of_the_stack_has_its_state_and_a_missing_one_says_so(self):
-    received = WorkerReports().accept("w1", with_containers(10, reading("traefik"), reading("vector", status="restarting"),
-                                                            reading("telegraf"), reading("web"))).received
-    assert infra_of(received) == [
-        {"name": "traefik", "status": "running"},
-        {"name": "vector", "status": "restarting"},
-        {"name": "telegraf", "status": "running"},
-        {"name": "cloudflared", "status": "missing"},
-        {"name": "cloudflared-discovery", "status": "missing"},
-    ]
 
 
 class TestStartedAt:

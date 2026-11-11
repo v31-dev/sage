@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from services.backups.commands import add_backup
 from services.backups.keys import BACKUP_TIMESTAMP_FORMAT, PLATFORM_PREFIX, taken_at, timestamp_from_key
 from services.containers.targets import Containers
 from services.db.database import Database
@@ -18,7 +19,7 @@ from services.notification import Notifications
 from services.releases import Releases
 from services.s3 import S3
 from services.settings import Settings
-from services.updates import Fact, Updates, UpdateSource
+from services.updates import Fact, UpdateSource
 from services.workers.state import Workers
 from utils.archive import decrypt_file, encrypt_file
 from utils.common import utcnow
@@ -108,8 +109,7 @@ class PlatformMixin:
     except Exception as error:
       Notifications().notify(f"The platform backup failed: {error}", "error", "/backups")
       raise TaskFailed()
-    Backup.create(s3_path=key, storage_id=session.identity, type="platform")
-    Updates().changed(UpdateSource.BACKUPS)
+    add_backup(key, session.identity)
     logger.info(f"Platform backup written to {key}.")
     Notifications().notify("Platform backup created.", "success", "/backups")
 

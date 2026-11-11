@@ -25,9 +25,8 @@ from .settings import SettingsMixin
 from .summary import SummaryMixin
 from .workers import WorkersMixin
 
-# TODO(36 step 4X): each mixin joins the Manager again when its part reworks it.
+# TODO(36 step 4J): Metrics joins the Manager again when its step reworks it.
 # from services.metrics import Metrics
-# from .application import ApplicationMixin
 
 logger = logging.getLogger(__name__)
 
@@ -85,7 +84,7 @@ class Manager(
       Notifications().install(Settings().snapshot("notifications").values)
       S3().install(Settings().snapshot("s3").values)
       Certs()
-      # TODO(36 step 4X): the services of the parts not reworked yet.
+      # TODO(36 step 4J): the manager's own metrics sampler.
       # Metrics().start_sampler()
       Notifications().notify("Manager started.")
     except Exception as e:

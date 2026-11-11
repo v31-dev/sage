@@ -1,8 +1,19 @@
-"""The Backup table's writes: a backup removed by the user, and a catalog plan applied."""
+"""The Backup table's writes: a backup uploaded, a backup removed by the user, and a catalog plan applied."""
 from services.backups.catalog import CatalogPlan
 from services.db.models import Backup
 from services.db.writes import get, write
 from services.updates import Updates, UpdateSource
+
+
+def add_backup(key: str, storage_id: str, volume_id: str | None = None, volume_name: str | None = None,
+               application_id: int | None = None) -> Backup:
+  """Records the archive uploaded at `key` in the store `storage_id`: a volume's, of its application, or the platform's
+  when no volume is given."""
+  with write():
+    backup = Backup.create(s3_path=key, storage_id=storage_id, type="platform" if volume_id is None else "application",
+                           source_volume_id=volume_id, source_volume_name=volume_name, application=application_id)
+  Updates().changed(UpdateSource.BACKUPS)
+  return backup
 
 
 def remove_backup(backup_id: int) -> Backup:

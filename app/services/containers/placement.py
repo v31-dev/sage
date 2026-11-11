@@ -61,11 +61,6 @@ def runtime_owner(name: str) -> str | None:
   return match[1] if match else None
 
 
-def runtime_labels(authority: Authority, deployment_id: str, application: str) -> dict[str, str]:
-  return {LABEL_INSTANCE: authority.instance_id, LABEL_GENERATION: authority.state_generation,
-          LABEL_CONTAINER: authority.container_id, LABEL_DEPLOYMENT: deployment_id, LABEL_APPLICATION: application}
-
-
 def labels_authority(labels: dict[str, str]) -> Authority | None:
   """The authority a runtime's labels name; None unless all three are there."""
   values = [labels.get(label) for label in (LABEL_INSTANCE, LABEL_GENERATION, LABEL_CONTAINER)]
