@@ -17,7 +17,8 @@ from services.containers.record import Applied, Authority, Operation, Recovery, 
 from services.containers.targets import Containers
 from services.db.models import Application, Container, ContainerEvent, Domain, Instance, Volume
 from services.logs import Logs
-from services.manager.containers import ContainersMixin, mark
+from services.manager.containers import ContainersMixin
+from services.manager.lifecycle import LifecycleMixin, mark
 from services.manager.queue import SCOPES, QueueMixin
 from services.tailscale import Tailscale
 from utils.errors import Conflict
@@ -127,7 +128,7 @@ class Worker:
     Path(dst).chmod(mode)
 
 
-class Lifecycle(ContainersMixin, QueueMixin):
+class Lifecycle(ContainersMixin, LifecycleMixin, QueueMixin):
   def __init__(self):
     self.pool = ThreadPoolExecutor(max_workers=2)
     self.queue_facts = []

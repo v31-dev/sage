@@ -14,6 +14,7 @@ from services.containers.record import Applied, Authority, Operation, Settled, T
 from services.containers.targets import Containers
 from services.db.models import Application, Container, Domain, Instance, Worker
 from services.manager.containers import ContainersMixin
+from services.manager.lifecycle import LifecycleMixin
 from services.manager.queue import SCOPES, QueueMixin
 from services.tailscale import Tailscale
 from services.updates import UpdateSource
@@ -60,7 +61,7 @@ class WorkerHosts:
     path.write_text(content)
 
 
-class Manager(ContainersMixin, QueueMixin):
+class Manager(ContainersMixin, LifecycleMixin, QueueMixin):
   def __init__(self):
     self.pool = ThreadPoolExecutor(max_workers=2)
     self.queue_facts = self.containers_queue_facts()

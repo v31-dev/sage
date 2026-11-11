@@ -25,7 +25,7 @@ from utils.errors import Conflict
 from utils.logging import TaskFailed
 from utils.queue import Outcome
 
-from .containers import REFUSALS, Refused, mark
+from .lifecycle import REFUSALS, Refused, mark
 
 logger = logging.getLogger(__name__)
 
@@ -48,13 +48,13 @@ class BackupsMixin:
         (Volume.application == application_id) & Volume.id.in_(volume_ids)).order_by(Volume.name)]
     if not volume_ids or len(names) != len(set(volume_ids)):
       raise ValueError("Choose volumes of this application to back up.")
-    containers = self._application_containers(application_id)
+    containers = self.application_containers(application_id)
     refusal = self._request_refusal("backup_stopped", containers)
     if refusal is not None:
       raise Conflict(f"A container of this application can't be backed up: {REFUSALS[refusal]}.")
-    added = [self._request_lifecycle(container, "backup_stopped", self.backup_container, {},
-                                     {"volume_ids": sorted(set(volume_ids)), "storage_id": session.identity},
-                                     (f"backup:store:{session.identity}:write:{container.id}",), {"Volumes": ", ".join(names)})
+    added = [self.queue_lifecycle(container, "backup_stopped", self.backup_container, {},
+                                  {"volume_ids": sorted(set(volume_ids)), "storage_id": session.identity},
+                                  (f"backup:store:{session.identity}:write:{container.id}",), {"Volumes": ", ".join(names)})
              for container in containers]
     return [result.task_id for result in added if result.outcome == Outcome.ACCEPTED]
 
@@ -81,14 +81,14 @@ class BackupsMixin:
                             f"backup:store:{session.identity}:write:{container.id}"},
                     executor="app", params={"container_id": container.id, "volume_ids": sorted(due[container.application_id]),
                                             "storage_id": session.identity},
-                    labels={**self._labels(container), "Volumes": ", ".join(sorted(names[container.application_id]))})
+                    labels={**self.container_labels(container), "Volumes": ", ".join(sorted(names[container.application_id]))})
 
   def request_restore(self, container_id: str, backup_id: int, volume_id: str) -> str:
     """Queues the restore of a backup of one of the application's volumes into the container's copy of `volume_id`,
     any volume of that application, in the container's lifecycle slot; refused unless the container is stopped or never
     deployed, and the backup is in the configured store. The task's id."""
     session = S3().session()
-    container = self._lifecycle_container(container_id)
+    container = self.lifecycle_container(container_id)
     backup = Backup.get_or_none(Backup.id == backup_id)
     if backup is None:
       raise LookupError("Backup not found.")
@@ -100,7 +100,7 @@ class BackupsMixin:
     refusal = self._request_refusal("restore_stopped", [container])
     if refusal is not None:
       raise Conflict(f"This container can't receive a restore: {REFUSALS[refusal]}.")
-    return self._admitted(self._request_lifecycle(
+    return self.admitted_task_id(self.queue_lifecycle(
         container, "restore_stopped", self.restore_container, {},
         {"backup_id": backup.id, "volume_id": volume.id, "storage_id": session.identity},
         (f"backup:store:{session.identity}:read:{backup.id}",), {"Volume": volume.name, "Backup of": backup.source_volume_name}))
@@ -109,7 +109,7 @@ class BackupsMixin:
     """Archives the volumes of a stopped container into the store it was requested for, then commits it stopped and
     succeeded. Refused while it runs, or once the configured store is another; an archive that fails fails it."""
     session = configured_session(storage_id)
-    begun = await self._begin(container_id, "backup_stopped", prepare=self._backup_check("backup_stopped", session, volume_ids))
+    begun = await self.begin_lifecycle(container_id, "backup_stopped", prepare=self._backup_check("backup_stopped", session, volume_ids))
     if begun is None:
       return
     container, record = begun
@@ -119,16 +119,16 @@ class BackupsMixin:
       failures = await self._archive(container, session, volume_ids)
       if failures:
         raise Exception("; ".join(failures))
-      verified_at = await self._stop_runtime(container.worker_id, container.id)
+      verified_at = await self.stop_runtime(container.worker_id, container.id)
       now = utcnow()
       await Containers().write(container, replace(
           record, settled=Settled(operation.id, "stopped", "succeeded", now),
           operation=replace(operation, phase="settled", outcome="succeeded", finished_at=now, verified_on_worker_at=verified_at)))
     except Exception as error:
-      await self._fail(container, record, error)
+      await self.fail_lifecycle(container, record, error)
     record_container_event(container, "backup_stopped", "succeeded", operation.id, dedupe_key=f"{operation.id}:succeeded")
     await mark(container, "Backed up")
-    name, page = self._notice(container)
+    name, page = self.container_notice(container)
     volumes = ", ".join(volume.name for volume in Volume.select(Volume.name).where(
         (Volume.application == container.application_id) & Volume.id.in_(volume_ids)).order_by(Volume.name))
     Notifications().notify(f"Backup of {volumes} from {name} created.", "success", page)
@@ -141,7 +141,7 @@ class BackupsMixin:
     Refused, failing the task, when its last action failed, its runtime disagrees with it, or the configured store is
     another."""
     session = configured_session(storage_id)
-    begun = await self._begin(container_id, "backup_preserve", prepare=self._backup_check("backup_preserve", session, volume_ids))
+    begun = await self.begin_lifecycle(container_id, "backup_preserve", prepare=self._backup_check("backup_preserve", session, volume_ids))
     if begun is None:
       return
     container, record = begun
@@ -149,14 +149,14 @@ class BackupsMixin:
     try:
       await Containers().write(container, record)
       if operation.baseline.runtime == "running":
-        await self._quiesce(host, container.id)
+        await self.quiesce_runtime(host, container.id)
       failure = "; ".join(await self._archive(container, session, volume_ids)) or None
     except Exception as error:
       failure = str(error) or type(error).__name__
     try:
-      verified_at = await self._resume(host, container.id, operation.baseline)
+      verified_at = await self.resume_runtime(host, container.id, operation.baseline)
     except Exception as error:
-      await self._fail(container, record, Exception(f"it could not be started again as it was before the backup: {error}"))
+      await self.fail_lifecycle(container, record, Exception(f"it could not be started again as it was before the backup: {error}"))
     try:
       await Containers().write(container, replace(record, operation=replace(
           operation, phase="settled", outcome="failed" if failure else "succeeded", reason=failure, finished_at=utcnow(),
@@ -167,7 +167,7 @@ class BackupsMixin:
       record_container_event(container, "backup_preserve", "failed", operation.id, reason={"error": failure},
                              dedupe_key=f"{operation.id}:failed")
       await mark(container, f"Automatic backup failed: {failure}")
-      name, page = self._notice(container)
+      name, page = self.container_notice(container)
       Notifications().notify(f"Automatic backup of {name} failed: {failure}", "error", page)
       raise TaskFailed()
     record_container_event(container, "backup_preserve", "succeeded", operation.id, dedupe_key=f"{operation.id}:succeeded")
@@ -188,12 +188,12 @@ class BackupsMixin:
         raise Refused("no_backup")
       if not Volume.select().where((Volume.id == volume_id) & (Volume.application == container.application_id)).exists():
         raise Refused("no_volumes")
-      reading, _ = await self._inspect(container.worker_id, container.id)
+      reading, _ = await self.inspect_runtime(container.worker_id, container.id)
       refusal = maintenance_refusal("restore_stopped", kept.settled if kept is not None else None, None, reading)
       if refusal is not None:
         raise Refused(refusal)
 
-    begun = await self._begin(container_id, "restore_stopped", prepare=prepare)
+    begun = await self.begin_lifecycle(container_id, "restore_stopped", prepare=prepare)
     if begun is None:
       return
     container, record = begun
@@ -208,17 +208,17 @@ class BackupsMixin:
           "DOWNLOAD_URL": session.create_presigned_download_url(backup.s3_path, config.WORKER_LINK_SECONDS, raw_path=True),
       }, mode=0o700)
       await Tailscale().exec_command(container.worker_id, script, timeout=config.BACKUP_TIMEOUT_SECONDS)
-      verified_at = await self._stop_runtime(container.worker_id, container.id)
+      verified_at = await self.stop_runtime(container.worker_id, container.id)
       now = utcnow()
       await Containers().write(container, replace(
           record, settled=Settled(operation.id, "stopped", "succeeded", now),
           operation=replace(operation, phase="settled", outcome="succeeded", finished_at=now, verified_on_worker_at=verified_at)))
     except Exception as error:
-      await self._fail(container, record, error)
+      await self.fail_lifecycle(container, record, error)
     record_container_event(container, "restore_stopped", "succeeded", operation.id,
                            reason={"volume": volume.name, "backup_of": backup.source_volume_name}, dedupe_key=f"{operation.id}:succeeded")
     await mark(container, f"Volume {volume.name} restored from a backup of {backup.source_volume_name}")
-    name, page = self._notice(container)
+    name, page = self.container_notice(container)
     Notifications().notify(f"Volume {volume.name} of {name} restored from the backup of {backup.source_volume_name} taken at "
                            f"{taken_at(backup.s3_path)}.", "success", page)
 
@@ -246,7 +246,7 @@ class BackupsMixin:
       if not Volume.select().where((Volume.application == container.application_id) & Volume.id.in_(volume_ids)).exists():
         raise Refused("no_volumes")
       settled, applied = (kept.settled, kept.applied) if kept is not None else (None, None)
-      reading, _ = await self._inspect(container.worker_id, container.id)
+      reading, _ = await self.inspect_runtime(container.worker_id, container.id)
       refusal = maintenance_refusal(contract, settled, applied, reading)
       if refusal is not None:
         raise Refused(refusal)
@@ -255,7 +255,7 @@ class BackupsMixin:
       if settled.runtime_goal == "stopped":
         return Baseline(settled.operation_id, "stopped", None, ())
       return Baseline(settled.operation_id, "running", applied.deployment_id,
-                      await self._runtime_ids(container.worker_id, container.id))
+                      await self.runtime_ids(container.worker_id, container.id))
     return prepare
 
   async def _archive(self, container: Container, session: S3Session, volume_ids: list[str]) -> list[str]:

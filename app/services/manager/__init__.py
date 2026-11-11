@@ -19,6 +19,7 @@ from .certificates import CertificatesMixin
 from .containers import ContainersMixin
 from .discovery import DiscoveryMixin
 from .domains import DomainsMixin
+from .lifecycle import LifecycleMixin
 from .platform import PlatformMixin
 from .queue import SCOPES, QueueMixin
 from .settings import SettingsMixin
@@ -34,6 +35,7 @@ logger = logging.getLogger(__name__)
 class Manager(
     ContainersMixin,
     BackupsMixin,
+    LifecycleMixin,
     BackupCatalogMixin,
     DomainsMixin,
     DiscoveryMixin,

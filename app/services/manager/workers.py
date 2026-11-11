@@ -28,8 +28,8 @@ from utils.errors import Conflict
 from utils.executor import run_in_executor_with_context
 from utils.logging import TaskFailed
 
-from .containers import mark
 from .domains import capture
+from .lifecycle import mark
 
 logger = logging.getLogger(__name__)
 

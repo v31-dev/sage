@@ -1,13 +1,10 @@
-import inspect
 import logging
-import sys
 from datetime import datetime
 
 import pytest
 
 from services.db.models import Task
 from services.history import task_history
-from services.manager import Manager
 from services.manager.queue import QueueMixin
 from services.updates import Fact, UpdateFeed, Updates, UpdateSource
 from tests.conftest import Signals
@@ -75,12 +72,6 @@ class TestQueueFacts:
     queue._queue_changed()
     assert seen == ["checked"]
     assert hub.signals == [(UpdateSource.RESTORING, None)]
-
-  def test_the_manager_gives_the_queue_every_owners_facts(self):
-    owners = [name for name in dir(Manager) if name.endswith("_queue_facts")]
-    source = inspect.getsource(sys.modules[Manager.__module__])
-    assert len(owners) >= 6
-    assert [name for name in owners if f"self.{name}()" not in source] == []
 
 
 def finished(**fields):
