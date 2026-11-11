@@ -1,12 +1,19 @@
+"""The settings sections' checks against their providers, the workflow of a Save, and the status the settings pages
+show."""
 import logging
 
 import httpx
 
+from services.certs import Certs
+from services.cloudflare import Cloudflare
 from services.notification import ChannelCheckFailed, Notifications
+from services.s3 import S3
 from services.settings import SETTING_DEFINITIONS, SettingCheck, Settings, section_status
+from services.tailscale import Tailscale
 from services.updates import Fact, Updates, UpdateSource
 from utils.common import get_env, utcnow
 from utils.executor import run_in_executor_with_context
+from utils.queue import OnConflict
 from utils.retry import is_transient
 
 logger = logging.getLogger(__name__)
@@ -20,11 +27,10 @@ def task(name: str, **params) -> tuple[str, dict]:
   return name, params
 
 
-# While one of these is queued or running, its section shows as applying. The worker sync
-# runs every 30 s, so only a forced or stamp-checking run of it counts.
+# While one of these is queued or running, its section shows as applying. A worker is set up at every return, so only
+# a forced setup (its resync) counts.
 APPLYING_TASKS = {
-    "tailscale": (task("check_tailscale"), task("sync_workers", force=True),
-                  task("sync_workers", check_stamps=True)),
+    "tailscale": (task("check_tailscale"), task("converge_worker", force=True)),
     "cloudflare": (task("check_cloudflare"), task("renew_certificates")),
     "s3": (task("check_s3"),),
     "notifications": (task("check_notifications"),),
@@ -39,8 +45,30 @@ def _is_applying(queued: dict, key: str) -> bool:
 
 
 class SettingsMixin:
-  """Live checks of the settings sections against their providers, and the status the
+  """Live checks of the settings sections against their providers, the workflow of a Save, and the status the
   settings pages show."""
+
+  def settings_saved(self, key: str):
+    """After a Save of the section (the values already validated and saved): its consumer installed from the saved
+    snapshot, the backups of a new store discovered, and the section checked as saved."""
+    saved = Settings().snapshot(key).values
+    if key == "s3":
+      S3().install(saved)
+      self.request_backup_discovery()
+    elif key == "notifications":
+      Notifications().install(saved)
+    if self.section_configured(key):
+      self._request_check(key, quiet=False)
+
+  def request_settings_checks(self):
+    """Queues, quietly, the check of every configured section; scheduled every 5 minutes and at startup."""
+    for key in SETTING_SECTIONS:
+      if self.section_configured(key):
+        self._request_check(key, quiet=True)
+
+  def _request_check(self, key: str, quiet: bool):
+    self.add_task(task=self.check_setting, key=(f"check_{key}",), scopes={f"settings:{key}"}, executor="common",
+                  params={"key": key}, on_conflict=OnConflict.REPLACE, quiet=quiet)
 
   def test_setting(self, key: str, value: dict, side_effects: bool = True) -> str:
     """Check a section's values; returns what was verified, raises with the reason
@@ -58,10 +86,10 @@ class SettingsMixin:
 
   def _test_tailscale(self, value: dict, side_effects: bool) -> str:
     """Env vars, so checked as configured: the node is up and sees the tailnet, and the name it has there."""
-    status = self.tailscale.status()
+    status = Tailscale().status()
     if status.get("BackendState") != "Running":
       raise ValueError(f"The manager's tailnet node is not running ({status.get('BackendState')}).")
-    peers = f"{len(self.tailscale.peers())} other machine(s) on the tailnet"
+    peers = f"{len(Tailscale().peers())} other machine(s) on the tailnet"
     # The machine name, which Tailscale suffixes when another machine has it.
     machine = (status.get("Self", {}).get("DNSName") or "").split(".")[0]
     if machine.lower() != get_env("TS_NAME").lower():
@@ -69,22 +97,19 @@ class SettingsMixin:
     return f"The node is running as {machine}; {peers}."
 
   def _test_cloudflare(self, value: dict, side_effects: bool) -> str:
-    """Env vars, so checked as configured: token, zone and account, and the platform tunnel's health. Each listed
-    worker is given its own tunnel's health, read in the same call."""
-    self.cloudflare.check_config(self.cloudflare.config)
-    tunnels = self.cloudflare.tunnels()
-    if self.cloudflare.tunnel_name not in tunnels:
-      raise ValueError(f"The tunnel {self.cloudflare.tunnel_name} is not in the account.")
-    self.cloudflare.tunnel_status = tunnels[self.cloudflare.tunnel_name]["status"]
-    self.update_workers({
-        entry["hostname"]: {"tunnel": (tunnels.get(self.cloudflare.worker_tunnel_name(entry["hostname"])) or {}).get("status")}
-        for entry in self.worker_list})
-    return f"API token, zone {self.cloudflare.domain} and account verified; tunnel {self.cloudflare.tunnel_status}."
+    """Env vars, so checked as configured: token, zone and account, and the platform tunnel's health; every tunnel's
+    health is read in the same call and kept by Cloudflare, so each worker's state shows its own."""
+    cloudflare = Cloudflare()
+    cloudflare.check_config(cloudflare.config)
+    if cloudflare.tunnel_name not in cloudflare.tunnels():
+      raise ValueError(f"The tunnel {cloudflare.tunnel_name} is not in the account.")
+    self.worker_state.check()
+    return f"API token, zone {cloudflare.domain} and account verified; tunnel {cloudflare.tunnel_status}."
 
   def _test_s3(self, value: dict, side_effects: bool) -> str:
     if not Settings().is_valid("s3", value):
       raise ValueError("Fill in every S3 field first.")
-    self.s3.check_config(value, write=side_effects)
+    S3().check_config(value, write=side_effects)
     return "Bucket reachable and writable." if side_effects else "Bucket reachable."
 
   def _test_notifications(self, value: dict, side_effects: bool) -> str:
@@ -136,19 +161,19 @@ class SettingsMixin:
     return [Fact(self.applying_task_ids, UpdateSource.SETTINGS_APPLYING)]
 
   def settings_status(self) -> dict:
-    """Per section: not_configured, applying (with the task), ok, retrying or error."""
-    applying_tasks = self.applying_tasks()
+    """Per section: not_configured, applying (with the task), ok, retrying or error; Cloudflare's with the details its
+    read-only page shows."""
+    applying_tasks, cloudflare, certificates = self.applying_tasks(), Cloudflare(), Certs().status()
     status = {}
     for key in SETTING_SECTIONS:
       applying = applying_tasks[key]
       status[key] = section_status(self.section_configured(key), applying and applying["task_id"], Settings().check(key),
-                                   self.certs.status() if key == "cloudflare" else None)
-      if key == "cloudflare":
-        status[key]["details"] = {
-            "account_id": self.cloudflare.account_id,
-            "tunnel_id": self.cloudflare.tunnel_id,
-            "tunnel_name": self.cloudflare.tunnel_name,
-            "tunnel_status": self.cloudflare.tunnel_status,
-            "certificates": self.certs.status(),
-        }
+                                   certificates if key == "cloudflare" else None)
+    status["cloudflare"]["details"] = {
+        "account_id": cloudflare.account_id,
+        "tunnel_id": cloudflare.tunnel_id,
+        "tunnel_name": cloudflare.tunnel_name,
+        "tunnel_status": cloudflare.tunnel_status,
+        "certificates": certificates,
+    }
     return status

@@ -2,8 +2,12 @@ import logging
 
 import config
 from services.base import Base
+from services.certs import Certs
 from services.db.database import Database
 from services.logs import Logs
+from services.notification import Notifications
+from services.s3 import S3
+from services.settings import Settings
 from services.tailscale import Tailscale
 from services.worker_reports import WorkerReports
 from utils.executor import LANES
@@ -17,17 +21,13 @@ from .discovery import DiscoveryMixin
 from .domains import DomainsMixin
 from .platform import PlatformMixin
 from .queue import SCOPES, QueueMixin
+from .settings import SettingsMixin
 from .workers import WorkersMixin
 
 # TODO(36 step 4X): each mixin joins the Manager again when its part reworks it.
-# from services.cloudflare import Cloudflare
 # from services.metrics import Metrics
-# from services.notification import Notifications
-# from services.s3 import S3
-# from services.settings import Settings
 # from .application import ApplicationMixin
 # from .core import CoreMixin
-# from .settings import SettingsMixin
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +41,7 @@ class Manager(
     WorkersMixin,
     CertificatesMixin,
     PlatformMixin,
+    SettingsMixin,
     QueueMixin,
     Base,
 ):
@@ -57,9 +58,9 @@ class Manager(
       self.latest_release = None
 
       # What each owner works out from the queue at every change of it.
-      # TODO(36 step 4X): the settings queue facts.
       self.queue_facts = [*self.tasks_queue_facts(), *self.containers_queue_facts(), *self.domains_queue_facts(),
-                          *self.workers_queue_facts(), *self.platform_queue_facts()]
+                          *self.workers_queue_facts(), *self.platform_queue_facts(),
+                          *self.settings_queue_facts()]
       self.container_state = self.containers_state_fact()
       self.worker_state = self.workers_state_fact()
       # When each worker's setup last failed or was refused, and when its stack was last started for being down, on
@@ -81,15 +82,12 @@ class Manager(
       Logs().start_capture()
       WorkerReports()
       self.tailscale = Tailscale()
+      Settings()
+      Notifications().install(Settings().snapshot("notifications").values)
+      S3().install(Settings().snapshot("s3").values)
+      Certs()
       # TODO(36 step 4X): the services of the parts not reworked yet.
-      # Settings()
-      # Notifications().install(Settings().snapshot("notifications").values)
       # Metrics().start_sampler()
-      # self.cloudflare = Cloudflare()
-      # self.certs = Certs()
-      # self.s3 = S3()
-      # self.s3.install(Settings().snapshot("s3").values)
-      # self.load_workers()
       # self.notify("Manager started.")
     except Exception as e:
       raise Exception(f"Manager setup failed : {e}.")

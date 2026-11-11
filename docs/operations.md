@@ -73,7 +73,7 @@ Sources: [scheduler](../app/scheduler.py), [queue engine](../app/utils/queue.py)
 | `discovery` | The discovery DNS publication | Every other root, the workers' discovery files included |
 | `{platform, app, domain}` | All queued platform, application and domain work | Common, metrics and work outside the queue |
 | `certificate` | The certificates' renewal, and every task under it | Worker, domain and application work |
-| `common:<section>` | That section and root `common` work | Other sections at the scope level |
+| `settings:<section>` | That section's check | Other sections' checks |
 | `common` | All common work | The other roots |
 | `metrics:<host>` or `metrics:workers` | The matching child and root `metrics` maintenance | Sibling metrics tasks |
 | `backup:store:<identity>` | The store's discovery and retention, and every archive's write, read or deletion in that store | Other stores' work |
@@ -119,13 +119,13 @@ uses a 30-second misfire grace period.
 | `schedule_application_backups` | Every minute, `* * * * *` | No | One `backup_preserve` per container of an application with due volumes; nothing without a store |
 | `collect_metrics` | Every minute, `* * * * *` | No | `collect_self` and `flush_worker_metrics` |
 | `reconcile_domains` | Every 5 min, `*/5 * * * *` | Yes | `reconcile_domains` |
-| `check_settings` | Every 5 min, `*/5 * * * *` | Yes | `check_<section>` for each configured section |
+| `check_settings` | Every 5 min, `*/5 * * * *` | Yes | `request_settings_checks`: a quiet `check_<section>` for each configured section |
 | `refresh_latest_release` | Every 4 h, `0 */4 * * *` | Yes | `refresh_latest_release` |
 | `backup_database` | 00:00 and 12:00, `0 */12 * * *` | No | `backup_platform`; nothing without a store |
 | `renew_certificates` | Daily 03:00, `0 3 * * *` | Yes | `renew_certificates` |
 | `cleanup` | Daily 04:00, `0 4 * * *` | No | Independent tasks: `metrics_cleanup`, `logs_cleanup`, `prune_backups` (nothing without a store), `cleanup` |
 | `send_summary_notification` | Daily 08:00, `0 8 * * *` | No | `send_summary_notification` |
-| `start_work` | Startup only | Yes | `request_startup`: the workers' observation and paths, the containers' observation, certificate renewal, the Domain pass, backup discovery; also after a platform restore |
+| `start_work` | Startup only | Yes | `request_startup`: the workers' observation and paths, the containers' observation, certificate renewal, the Domain pass, backup discovery, the settings checks; also after a platform restore |
 
 A volume is due when its `Volume.backup_cron` matches the UTC minute and no Backup of it was recorded in that minute;
 each container of its application gets one automatic backup of the application's due volumes.
@@ -209,7 +209,7 @@ Implementation: [platform operations](../app/services/manager/platform.py),
 | `discover_backups` | `backup:store:<identity>` · common | REPLACE on `("discover_backups",)` / H | `request_backup_discovery`: startup; POST `/backups/discover`; PUT `/settings/s3`; successful restore; nothing without a store | Lists the store, then reads the rows, and makes the table mirror the store in one transaction (`reconcile_catalog`, `apply_catalog`): rows of another store or of a gone object dropped, listed backups added, a volume archive only while its volume is configured (by its id). Archives being deleted are left out. Nothing when the store changed since the request. |
 | `delete_archive` | `backup:store:<identity>:delete:<part>` · common | DEDUP on `("delete_archive", <s3 path>)` / H | `request_backup_deletion`, which first deletes the Backup row (`remove_backup`) | Deletes exactly that key from the store the row named; refused when that is no longer the configured store, so another store's object of the same key is never touched. |
 | `prune_backups` | `backup:store:<identity>` · common | REPLACE on `("prune_backups",)` / Q | `request_backup_retention`, daily 04:00 | Deletes the store's platform backups and volume archives older than `config.RETENTION_DAYS` (14), then the rows of those deleted, a prefix that failed failing the task after the other. Nothing when the store changed. |
-| `check_<section>` → `check_setting` | `common:<section>` · common | REPLACE; periodic/startup Q, save H | Every 5 min and startup for configured sections; PUT `/settings/{s3,notifications}` when complete | No main-DB write. Set in-memory check result/time; Cloudflare check also updates cached tunnel health and worker entries. Sections: tailscale, cloudflare, s3, notifications. |
+| `check_<section>` → `check_setting` | `settings:<section>` · common | REPLACE on `("check_<section>",)`; `request_settings_checks` Q, `settings_saved` H | `request_settings_checks`: every 5 min and startup, for configured sections; `settings_saved`: PUT `/settings/{s3,notifications}` when complete | No main-DB write. Records the check for the revision it checked (`Settings.record_check`; dropped when the section was saved meanwhile). The Cloudflare check keeps every tunnel's health (`Cloudflare.tunnel_health`) and checks the worker states again. Sections: tailscale, cloudflare, s3, notifications. |
 | `refresh_latest_release` | `common` · common | REPLACE / H | Every 4 h and startup; POST `/info/release/refresh` | No operation-specific main-DB write. Fetch and replace in-memory release/version cache. |
 | `send_summary_notification` | `common` · common | REPLACE / H | Daily 08:00 | Read model/cached worker counts and dispatch summary directly to notification channels. **No Notification row** for the summary. |
 | `collect_self` → `Metrics.collect_self` | `metrics:<manager>` · metrics | DEDUP / Q | Every minute via `collect_metrics` | No main-DB write. Flush completed manager sample minutes into its metrics shard (`WorkerMeta`, `WorkerMetrics`). |

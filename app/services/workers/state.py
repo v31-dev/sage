@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import config
 from services.base import Base
 from services.certs import TEMPLATE_DIGEST, Certs
+from services.cloudflare import Cloudflare
 from services.tailscale import Tailscale
 from services.worker_reports import WorkerReports
 from services.workers.decisions import WorkerFacts, WorkerReport, WorkerView, decide_worker, report_of
@@ -78,9 +79,10 @@ class Workers(Base):
 
 @dataclass(frozen=True)
 class WorkerState:
-  """The decided view with the facts it was decided from, the worker's address and path in the tailnet, and its two
+  """The decided view with the facts it was decided from, the worker's address and path in the tailnet, its two
   certificates (`worker`, `discovery`): whether each covers the names it needs, whether the worker applied it, and its
-  expiry and error, which stay out of its readiness."""
+  expiry and error; and its tunnel's health as Cloudflare last listed it. Certificates and tunnel stay out of its
+  readiness."""
   view: WorkerView
   ssh: str
   setup: str | None
@@ -89,6 +91,7 @@ class WorkerState:
   address: str | None
   path: str | None
   certificates: dict
+  tunnel: str | None
 
 
 def worker_state(hostname: str, subdomain: str, tasks: frozenset[str]) -> WorkerState:
@@ -99,4 +102,5 @@ def worker_state(hostname: str, subdomain: str, tasks: frozenset[str]) -> Worker
   view = decide_worker(WorkerFacts(ssh, setup, report, tasks, (now - WorkerReports().started).total_seconds()))
   address = Tailscale().address(hostname)
   return WorkerState(view, ssh, setup, report, tasks, address, Tailscale().path(address) if address else None,
-                     Certs().worker_state(hostname, subdomain, Workers().certificates(hostname), TEMPLATE_DIGEST))
+                     Certs().worker_state(hostname, subdomain, Workers().certificates(hostname), TEMPLATE_DIGEST),
+                     Cloudflare().tunnel_health.get(Cloudflare().worker_tunnel_name(hostname)))

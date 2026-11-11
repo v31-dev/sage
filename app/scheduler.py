@@ -126,17 +126,7 @@ async def renew_certificates():
 
 
 async def check_settings():
-  for key in SETTING_SECTIONS:
-    if Manager().section_configured(key):
-      Manager().add_task(
-          task=Manager().check_setting,
-          name=f"check_{key}",
-          params={"key": key},
-          scopes={f"common:{key}"},
-          executor="common",
-          on_conflict=OnConflict.REPLACE,
-          quiet=True,
-      )
+  Manager().request_settings_checks()
 
 
 # Job scheduling

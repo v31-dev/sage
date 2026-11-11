@@ -50,14 +50,15 @@ class PlatformMixin:
   def request_startup(self):
     """Requests what runs when Sage starts, at startup and after a platform restore: the workers' observation, whose
     setups follow, and their paths; the containers' observation; the certificates' renewal; the Domain pass, whose
-    discovery follows; the backup discovery."""
+    discovery follows; the backup discovery; the settings checks."""
     self.request_worker_observation()
     self.request_worker_paths()
     self.request_container_observation()
     self.request_certificate_renewal()
     self.request_domain_reconciliation()
     self.request_backup_discovery()
-    # TODO(36 step 4H): the release check and the settings checks.
+    self.request_settings_checks()
+    # TODO(36 step 4H): the release check.
 
   def request_platform_backup(self) -> str | None:
     """Queues a platform backup into the configured store; None without one. It holds only its part of the store, so

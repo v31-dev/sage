@@ -190,7 +190,8 @@ class TestRestore:
     assert (manager.setup_failures, manager.stack_repairs, manager.recoveries, manager.orphans) == ({}, {}, {}, {})
     assert manager.task_state() == "running" and manager.task_queue.snapshot()["queued"] == []
     assert manager.requested == ["request_worker_observation", "request_worker_paths", "request_container_observation",
-                                 "request_certificate_renewal", "request_domain_reconciliation", "request_backup_discovery"]
+                                 "request_certificate_renewal", "request_domain_reconciliation", "request_backup_discovery",
+                                 "request_settings_checks"]
     assert ran == []
 
   async def test_a_failed_download_changes_nothing_and_the_waiting_tasks_run(self, manager, stores, backup):
@@ -260,4 +261,5 @@ class TestStartup:
   def test_startup_requests_what_runs_when_sage_starts(self, manager):
     manager.request_startup()
     assert manager.requested == ["request_worker_observation", "request_worker_paths", "request_container_observation",
-                                 "request_certificate_renewal", "request_domain_reconciliation", "request_backup_discovery"]
+                                 "request_certificate_renewal", "request_domain_reconciliation", "request_backup_discovery",
+                                 "request_settings_checks"]

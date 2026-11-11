@@ -99,6 +99,7 @@ class Provider:
 
   def __init__(self):
     self.domain, self.tunnel_id, self.records, self.tunnels = "example.test", "tunnel-platform", {}, []
+    self.tunnel_health = {}
 
   def connect(self):
     pass

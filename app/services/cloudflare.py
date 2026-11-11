@@ -59,8 +59,14 @@ class Cloudflare(Base):
     self.account_id = None
     self.tunnel_id = None
     self.tunnel_name = f"sage-{self.domain}"
-    # healthy, degraded, down or inactive; refreshed by the periodic settings check.
-    self.tunnel_status = None
+    # Each tunnel's health (healthy, degraded, down or inactive) by name, the platform's and the workers', as
+    # `tunnels` last listed them.
+    self.tunnel_health: dict[str, str] = {}
+
+  @property
+  def tunnel_status(self) -> str | None:
+    """The platform tunnel's health as last listed."""
+    return self.tunnel_health.get(self.tunnel_name)
 
   def is_manager_hostname(self, hostname: str | None) -> bool:
     return (hostname or "").lower() == self.manager_hostname.lower()
@@ -227,10 +233,12 @@ class Cloudflare(Base):
 
   def tunnels(self) -> dict[str, dict]:
     """The account's tunnels by name, each with its `id` and health (`status`: healthy, degraded, down or inactive), in
-    one call (a page holds up to 1,000)."""
+    one call (a page holds up to 1,000); their health is kept as `tunnel_health`."""
     self.connect()
-    return {tunnel["name"]: tunnel
-            for tunnel in self.list_all(f"/accounts/{self.account_id}/cfd_tunnel", per_page=1000, is_deleted="false")}
+    tunnels = {tunnel["name"]: tunnel
+               for tunnel in self.list_all(f"/accounts/{self.account_id}/cfd_tunnel", per_page=1000, is_deleted="false")}
+    self.tunnel_health = {name: tunnel.get("status") for name, tunnel in tunnels.items()}
+    return tunnels
 
   def create_tunnel(self, name):
     """The id of the tunnel of that name, created when missing, with the static ingress every tunnel carries."""

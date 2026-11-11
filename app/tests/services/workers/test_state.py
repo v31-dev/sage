@@ -1,12 +1,15 @@
 from datetime import datetime, timedelta
 
+import httpx
 import pytest
 
 import config
 from services.certs import TEMPLATE_DIGEST, Certs
+from services.cloudflare import Cloudflare
 from services.tailscale import Tailscale
 from services.worker_reports import ContainerReading, HostReading, Snapshot, WorkerReports
 from services.workers.state import Workers, worker_state
+from tests.services.test_cloudflare import ACCOUNT, TUNNELS, Api, ok
 
 
 class Observed:
@@ -77,6 +80,19 @@ class TestWorkerState:
   def test_its_certificates_are_judged_against_its_subdomain_and_what_it_applied(self, observed):
     Workers().record_certificates("w1", {"worker": "p1"})
     assert worker_state("w1", "red", frozenset()).certificates == {"worker": {"for": ("w1", "red", {"worker": "p1"}, TEMPLATE_DIGEST)}}
+
+  def test_its_tunnel_is_the_health_cloudflare_last_listed_for_its_own_tunnel(self, observed, register):
+    api = Api()
+    api.on("GET", TUNNELS, ok([{"id": "t1", "name": "sage-example.test-w1", "status": "degraded"},
+                               {"id": "t2", "name": "sage-other.test-w2", "status": "down"}]))
+    cloudflare = register(Cloudflare, Cloudflare())
+    cloudflare.http.close()
+    cloudflare.http = httpx.Client(base_url="https://cloudflare.test", transport=httpx.MockTransport(api.handle))
+    cloudflare.zone_id, cloudflare.account_id = "zone1", ACCOUNT
+    assert worker_state("w1", "red", frozenset()).tunnel is None
+    cloudflare.tunnels()
+    cloudflare.http.close()
+    assert (worker_state("w1", "red", frozenset()).tunnel, worker_state("w2", "blue", frozenset()).tunnel) == ("degraded", None)
 
   def test_a_worker_never_observed_is_checking(self, observed):
     assert worker_state("w1", "red", frozenset()).view.status == "checking"
