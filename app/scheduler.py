@@ -1,18 +1,11 @@
-import logging
-
+"""APScheduler as a trigger only: each job asks the Manager for its work through a request function, which queues it."""
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
-from services.db import Application, Project, Worker
 from services.manager import Manager
-from services.manager.settings import SETTING_SECTIONS
-from services.metrics import Metrics
-from utils.common import get_env, utcnow
+from utils.common import utcnow
 
-logger = logging.getLogger(__name__)
-
-# APScheduler is used only for job scheduling
 _scheduler = AsyncIOScheduler(
     job_defaults={"coalesce": True, "max_instances": 1, "misfire_grace_time": 30}
 )
@@ -20,8 +13,6 @@ _scheduler = AsyncIOScheduler(
 
 async def dispatch_tick():
   Manager().dispatch_tick()
-
-# --- Triggers: each only enqueues onto the Manager operation queue -------------
 
 
 async def observe_workers():
@@ -48,23 +39,8 @@ async def reconcile_domains():
   Manager().request_domain_reconciliation()
 
 
-async def collect_metrics():
-  # The manager collects its own container metrics in-process (cgroup/statvfs);
-  Manager().add_task(
-      task=Metrics().collect_self,
-      scopes={f"metrics:{get_env('TS_NAME')}"},
-      executor="metrics",
-      quiet=True,
-  )
-
-  # The workers' metrics arrive in their reports; this writes the minutes that have completed, and gives the
-  # worker list each worker's newest.
-  Manager().add_task(
-      task=Manager().flush_worker_metrics,
-      scopes={"metrics:workers"},
-      executor="metrics",
-      quiet=True,
-  )
+async def flush_metrics():
+  Manager().request_metrics_flush()
 
 
 async def send_summary_notification():
@@ -103,7 +79,7 @@ _JOBS = [
     (observe_containers, CronTrigger.from_crontab("* * * * *")),
     (list_container_records, CronTrigger.from_crontab("*/10 * * * *")),
     (schedule_application_backups, CronTrigger.from_crontab("* * * * *")),
-    (collect_metrics, CronTrigger.from_crontab("* * * * *")),
+    (flush_metrics, CronTrigger.from_crontab("* * * * *")),
     (refresh_latest_release, CronTrigger.from_crontab("0 */4 * * *")),
     (backup_database, CronTrigger.from_crontab("0 */12 * * *")),
     (send_summary_notification, CronTrigger.from_crontab("0 8 * * *")),

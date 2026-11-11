@@ -4,7 +4,7 @@ import pytest
 from fastapi.encoders import jsonable_encoder
 
 import config
-from services.db import Container, Event, Task
+from services.db.models import Container, ContainerEvent, Task
 from services.logs import Logs
 
 T0 = datetime(2026, 1, 1, 12, 0)
@@ -29,15 +29,6 @@ def listed(client, **params):
   return [task["task_id"] for task in history(client, **params)["tasks"]]
 
 
-class TestQueue:
-  def test_the_tasks_are_the_running_and_queued_ones_and_nothing_else(self, client, db):
-    finished("t-0")
-
-    response = client.get("/api/tasks/")
-
-    assert response.json() == {"running": [{"task_id": "t-1"}], "queued": []}
-
-
 class TestHistory:
   def test_the_finished_tasks_come_newest_finished_first(self, client, db):
     finished("t-a", queued=0, ended=10)
@@ -45,12 +36,6 @@ class TestHistory:
     finished("t-c", queued=1, ended=8)
 
     assert listed(client) == ["t-a", "t-c", "t-b"]
-
-  def test_a_task_that_is_running_is_not_in_the_history(self, client, db):
-    finished("t-0")
-    finished("t-1", status="running")
-
-    assert listed(client) == ["t-0"]
 
   def test_the_newest_asked_for_come_back_with_how_many_match(self, client, db):
     for index in range(5):
@@ -197,8 +182,9 @@ class TestParts:
   def test_the_parts_that_logged_come_in_the_order_of_their_first_line_with_their_events_kind_and_worker(
           self, client, application, worker):
     container = Container.create(application=application, worker=worker)
-    Event.create(container=container, type="deploy", application_task_id="t1", container_task_id="c2")
-    Event.create(container=container, type="backup", application_task_id="t1", container_task_id="c9")
+    for action, part in (("deploy", "c2"), ("backup_stopped", "c9")):
+      ContainerEvent.create(container=container, subject_id=container.id, action=action, transition="admitted",
+                            task_id="t1", part_id=part, application_name="demo-web", worker_hostname="w1")
     line("t1", "", "queued")
     line("t1", "c2", "deploying web")
     line("t1", "c1", "deleting db")

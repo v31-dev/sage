@@ -14,9 +14,12 @@ from api import app_asgi, app_redirect
 from api_ingest import app as app_fastapi_ingest
 from scheduler import shutdown as shutdown_scheduler
 from scheduler import start as start_scheduler
+from services.certs import Certs
+from services.cloudflare import Cloudflare
 from services.db.database import SchemaRefused
 from services.db.encryption import initialize_encryption
 from services.manager import Manager
+from services.tailscale import Tailscale
 from utils.logging import setup_logger, unlogged_paths
 
 # The access log leaves out what is asked every few seconds or more: the routes marked so, and Socket.IO's polling.
@@ -60,7 +63,7 @@ try:
   manager.setup_domain()
 except Exception as e:
   logger.critical(
-      f"Could not set up {manager.cloudflare.manager_hostname}: {e}. Check CLOUDFLARE_API_TOKEN "
+      f"Could not set up {Cloudflare().manager_hostname}: {e}. Check CLOUDFLARE_API_TOKEN "
       "and DOMAIN.", exc_info=True)
   sys.exit(1)
 
@@ -90,7 +93,7 @@ class Server(uvicorn.Server):
     while manager.task_snapshot()["running"]:
       await asyncio.sleep(0.5)
     logger.info("Stopping: no tasks running.")
-    await manager.tailscale.close()
+    await Tailscale().close()
     super().handle_exit(sig, None)
 
 
@@ -137,11 +140,11 @@ async def main():
         workers=1,
         loop="asyncio",
         log_config=None,
-        ssl_certfile=str(manager.certs.manager.fullchain_path),
-        ssl_keyfile=str(manager.certs.manager.key_path),
+        ssl_certfile=str(Certs().manager.fullchain_path),
+        ssl_keyfile=str(Certs().manager.key_path),
     )
     api_config.load()
-    manager.certs.tls_context = api_config.ssl
+    Certs().tls_context = api_config.ssl
     servers = [
         Server(api_config),
         BackgroundServer(config=uvicorn.Config(

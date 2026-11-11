@@ -81,7 +81,7 @@ class Manager(
       Database()
       Logs().start_capture()
       WorkerReports()
-      self.tailscale = Tailscale()
+      Tailscale()
       Settings()
       Notifications().install(Settings().snapshot("notifications").values)
       S3().install(Settings().snapshot("s3").values)

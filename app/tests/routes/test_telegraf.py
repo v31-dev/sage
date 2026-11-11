@@ -7,8 +7,6 @@ import pytest
 from fastapi.testclient import TestClient
 
 import config
-from services.db import Worker
-from services.manager import Manager
 from services.metrics import Metrics
 from services.worker_reports import WorkerReports, parse_batch
 
@@ -16,38 +14,22 @@ BATCH = json.loads((Path(__file__).parent.parent / "data" / "telegraf_batch.json
 URL = "/api/telegraf/report"
 
 
-class FakeManager:
-  def __init__(self):
-    self.status_syncs = []
-    self.worker_reports = []
-    self.worker_list = []
-
-  def worker_entry(self, hostname):
-    return Manager.worker_entry(self, hostname)
-
-  def update_worker(self, hostname, **inputs):
-    self.worker_reports.append((hostname, inputs))
-
-  def request_status_sync_for_containers(self, hostname, names):
-    self.status_syncs.append((hostname, set(names)))
-
-
-@pytest.fixture
-def manager(register):
-  return register(Manager, FakeManager())
-
-
-@pytest.fixture
-def worker(manager):
-  """A worker of this manager: its entry in the worker list, which is what the route asks."""
-  manager.worker_list = [{"hostname": "w1", "ip": "100.64.0.2"}]
-  return manager.worker_list[0]
-
-
 @pytest.fixture
 def client(db, thread_connections, manager):
   from api_ingest import app
   return TestClient(app)
+
+
+@pytest.fixture
+def ingested(register):
+  class Metric:
+    def __init__(self):
+      self.ingested = []
+
+    def ingest(self, hostname, snapshots):
+      self.ingested.append((hostname, snapshots))
+
+  return register(Metrics, Metric()).ingested
 
 
 def post(client, body, node="w1", encoding="gzip", chunked=True):
@@ -60,97 +42,91 @@ def post(client, body, node="w1", encoding="gzip", chunked=True):
   return client.post(URL, content=content, headers=headers)
 
 
+def later(batch):
+  later = json.loads(json.dumps(batch))
+  later["metrics"] = [dict(m, timestamp=m["timestamp"] + 10_000) for m in later["metrics"]]
+  return later
+
+
 class TestReport:
-  def test_a_chunked_gzip_report_from_a_worker_is_kept(self, client, worker):
+  def test_a_chunked_gzip_report_from_a_worker_is_kept(self, client, worker, ingested):
     response = post(client, json.dumps(BATCH).encode())
     assert response.status_code == 204
     assert WorkerReports().latest("w1").snapshot.containers["web"].status == "running"
 
-  def test_a_plain_body_with_a_length_is_read_too(self, client, worker):
-    response = post(client, json.dumps(BATCH).encode(), encoding=None, chunked=False)
-    assert response.status_code == 204
+  def test_a_plain_body_with_a_length_is_read_too(self, client, worker, ingested):
+    assert post(client, json.dumps(BATCH).encode(), encoding=None, chunked=False).status_code == 204
     assert WorkerReports().latest("w1") is not None
 
-  def test_a_batch_of_several_gathers_keeps_the_newest(self, client, worker):
+  def test_a_batch_of_several_gathers_keeps_the_newest(self, client, worker, ingested):
     post(client, json.dumps(BATCH).encode())
     assert WorkerReports().latest("w1").snapshot.at == parse_batch(BATCH)[-1].at
 
-  def test_the_snapshots_go_to_the_metrics_under_the_workers_name(self, client, worker, register):
-    class FakeMetrics:
-      def __init__(self):
-        self.ingested = []
-
-      def ingest(self, hostname, snapshots):
-        self.ingested.append((hostname, snapshots))
-
-    metrics = register(Metrics, FakeMetrics())
+  def test_the_snapshots_go_to_the_metrics_under_the_workers_name(self, client, worker, ingested):
     post(client, json.dumps(BATCH).encode())
-    assert metrics.ingested == [("w1", parse_batch(BATCH))]
+    assert ingested == [("w1", parse_batch(BATCH))]
 
-  def test_a_refused_report_reaches_neither_the_store_nor_the_metrics(self, client, worker, register):
-    class FakeMetrics:
-      def ingest(self, hostname, snapshots):
-        raise AssertionError("ingested")
+  @pytest.mark.parametrize("state", ["paused", "stopping"])
+  def test_a_report_is_taken_while_sage_is_paused_or_stopping(self, client, worker, ingested, manager, state):
+    manager.state = state
+    assert post(client, json.dumps(BATCH).encode()).status_code == 204
+    assert ingested and manager.called("worker_reported") == [(("w1",), {})]
 
-    register(Metrics, FakeMetrics())
-    assert post(client, b"not json").status_code == 400
-    assert post(client, json.dumps(BATCH).encode(), node="stranger").status_code == 404
 
-  def test_the_first_report_asks_for_a_status_sync_of_every_container(self, client, worker, manager):
+class TestWhatAReportTells:
+  def test_the_first_report_tells_the_pages_of_every_container_it_lists_and_the_workers_state(
+          self, client, worker, ingested, manager):
     post(client, json.dumps(BATCH).encode())
-    assert manager.status_syncs == [("w1", {"web", "traefik", "old-job"})]
+    [(args, _)] = manager.called("containers_reported")
+    assert (args[0], set(args[1])) == ("w1", {"web", "traefik", "old-job"})
+    assert manager.called("worker_reported") == [(("w1",), {})]
 
-  def test_a_report_that_changes_nothing_asks_for_nothing(self, client, worker, manager):
+  def test_a_report_that_changes_no_container_tells_only_the_workers_state(self, client, worker, ingested, manager):
     post(client, json.dumps(BATCH).encode())
-    post(client, json.dumps(BATCH).encode())
-    assert len(manager.status_syncs) == 1
+    post(client, json.dumps(later(BATCH)).encode())
+    assert len(manager.called("containers_reported")) == 1
+    assert len(manager.called("worker_reported")) == 2
 
-  def test_a_container_that_changed_is_the_only_one_asked_for(self, client, worker, manager):
+  def test_a_container_that_changed_is_the_only_one_told(self, client, worker, ingested, manager):
     post(client, json.dumps(BATCH).encode())
-    later = json.loads(json.dumps(BATCH))
-    later["metrics"] = [dict(m, timestamp=m["timestamp"] + 10_000) for m in later["metrics"]]
-    for metric in later["metrics"]:
+    changed = later(BATCH)
+    for metric in changed["metrics"]:
       if metric["name"] == "docker_container_status" and metric["tags"]["container_name"] == "web":
         metric["tags"]["container_status"] = "restarting"
-    post(client, json.dumps(later).encode())
-    assert manager.status_syncs[-1] == ("w1", {"web"})
+    post(client, json.dumps(changed).encode())
+    args, _ = manager.called("containers_reported")[-1]
+    assert (args[0], set(args[1])) == ("w1", {"web"})
 
-  def test_a_refused_report_asks_for_nothing(self, client, worker, manager):
-    post(client, b"not json")
-    post(client, json.dumps(BATCH).encode(), node="stranger")
-    assert manager.status_syncs == []
-    assert manager.worker_reports == []
-
-  def test_each_report_is_given_to_the_worker_list_as_the_newest_of_the_worker(self, client, worker, manager):
+  def test_a_report_older_than_the_one_held_tells_nothing(self, client, worker, ingested, manager):
+    post(client, json.dumps(later(BATCH)).encode())
     post(client, json.dumps(BATCH).encode())
-    first = WorkerReports().latest("w1")
-    post(client, json.dumps(self.later(BATCH)).encode())
-    assert [(hostname, inputs) for hostname, inputs in manager.worker_reports] == [
-        ("w1", {"report": first}), ("w1", {"report": WorkerReports().latest("w1")})]
-    assert first is not WorkerReports().latest("w1")
+    assert len(manager.called("worker_reported")) == 1
 
-  def test_a_report_older_than_the_one_held_is_not_given(self, client, worker, manager):
-    post(client, json.dumps(self.later(BATCH)).encode())
-    post(client, json.dumps(BATCH).encode())
-    assert len(manager.worker_reports) == 1
-
-  @staticmethod
-  def later(batch):
-    later = json.loads(json.dumps(batch))
-    later["metrics"] = [dict(m, timestamp=m["timestamp"] + 10_000) for m in later["metrics"]]
-    return later
-
-  def test_the_first_report_is_logged_and_the_next_is_not(self, client, worker, caplog):
+  def test_the_first_report_is_logged_and_the_next_is_not(self, client, worker, ingested, caplog):
     with caplog.at_level(logging.INFO, logger="routes.telegraf"):
       post(client, json.dumps(BATCH).encode())
-      post(client, json.dumps(BATCH).encode())
+      post(client, json.dumps(later(BATCH)).encode())
     assert [r.message for r in caplog.records] == ["Receiving reports from w1."]
 
+
+class TestRefused:
+  def test_a_report_while_restoring_is_refused_before_anything_is_read_or_kept(
+          self, client, worker, ingested, manager, monkeypatch):
+    from services.db.models import Worker
+    manager.state = "restoring"
+    monkeypatch.setattr(Worker, "get_or_none", lambda *a, **k: pytest.fail("the worker was looked up while restoring"))
+    response = post(client, json.dumps(BATCH).encode())
+    assert (response.status_code, response.json()) == (503, {"detail": "Sage is restoring a backup."})
+    assert (ingested, manager.calls, WorkerReports().latest("w1")) == ([], [], None)
+
   @pytest.mark.parametrize("node", ["", "stranger", "Not A Name"])
-  def test_a_name_that_is_not_a_worker_is_refused_and_kept_out(self, client, worker, node):
-    response = post(client, json.dumps(BATCH).encode(), node=node)
-    assert response.status_code == 404
-    assert WorkerReports().latest(node) is None
+  def test_a_name_that_is_not_a_worker_is_refused_and_kept_out(self, client, worker, ingested, manager, node):
+    assert post(client, json.dumps(BATCH).encode(), node=node).status_code == 404
+    assert (WorkerReports().latest(node), ingested, manager.calls) == (None, [], [])
+
+  def test_a_worker_that_was_removed_is_refused(self, client, worker, ingested):
+    worker.delete_instance()
+    assert post(client, json.dumps(BATCH).encode()).status_code == 404
 
   def test_an_unknown_name_is_logged_once(self, client, worker, caplog):
     with caplog.at_level(logging.WARNING, logger="routes.telegraf"):
@@ -158,18 +134,10 @@ class TestReport:
       post(client, b"{}", node="stranger")
     assert len(caplog.records) == 1
 
-  def test_a_worker_that_was_removed_is_refused(self, client, worker, manager):
-    manager.worker_list = []
-    assert post(client, json.dumps(BATCH).encode()).status_code == 404
-
-  def test_a_name_with_a_row_but_no_entry_in_the_worker_list_is_refused(self, client, manager):
-    Worker.create(hostname="w1", ip="100.64.0.2")
-    assert post(client, json.dumps(BATCH).encode()).status_code == 404
-
   @pytest.mark.parametrize("body", [b"not json", b"[]", b'{"metrics": 5}', b'{"metrics": [{"name": "cpu"}]}'])
-  def test_a_body_that_is_not_telegrafs_json_is_a_400_and_changes_nothing(self, client, worker, body):
+  def test_a_body_that_is_not_telegrafs_json_is_a_400_and_tells_nothing(self, client, worker, ingested, manager, body):
     assert post(client, body).status_code == 400
-    assert WorkerReports().latest("w1") is None
+    assert (WorkerReports().latest("w1"), ingested, manager.calls) == (None, [], [])
 
   def test_a_gzip_header_over_a_body_that_is_not_gzip_is_a_400(self, client, worker):
     response = client.post(URL, content=b"plainly not gzip", headers={"X-Node-Name": "w1", "Content-Encoding": "gzip"})
@@ -177,8 +145,7 @@ class TestReport:
 
   def test_a_body_over_the_limit_is_refused_before_it_is_decompressed(self, client, worker, monkeypatch):
     monkeypatch.setattr(config, "REPORT_MAX_BYTES", 100)
-    response = client.post(URL, content=b"x" * 101, headers={"X-Node-Name": "w1"})
-    assert response.status_code == 413
+    assert client.post(URL, content=b"x" * 101, headers={"X-Node-Name": "w1"}).status_code == 413
 
   def test_a_small_body_that_inflates_over_the_limit_is_refused(self, client, worker, monkeypatch):
     monkeypatch.setattr(config, "REPORT_MAX_BYTES", 1000)

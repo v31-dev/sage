@@ -22,7 +22,11 @@ async def telegraf_report(request: Request):
   # After the last await: a restore can't start between this check and the database work below.
   if Manager().task_state() == "restoring":
     raise HTTPException(status_code=503, detail="Sage is restoring a backup.")
-  if Worker.get_or_none(Worker.hostname == hostname) is None:
+  try:
+    known = Worker.get_or_none(Worker.hostname == hostname) is not None
+  except ValueError:  # not a name a worker can have
+    known = False
+  if not known:
     if WorkerReports().first_unknown(hostname):
       logger.warning(f"Ignoring reports from unknown worker {hostname!r}.")
     raise HTTPException(status_code=404, detail="Unknown worker.")

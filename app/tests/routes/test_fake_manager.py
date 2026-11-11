@@ -1,42 +1,33 @@
-import inspect
-
 import pytest
 
-from services.manager import Manager
-from services.s3 import S3
-from services.tailscale import Tailscale
-from tests.routes.fakes import FakeManager, FakeS3, FakeTailscale
+from tests.routes.fakes import ManagerStandIn
 
 
-def parameters(function):
-  return list(inspect.signature(function).parameters)
+def test_a_call_is_recorded_and_answered_with_a_task_id():
+  manager = ManagerStandIn()
+  assert manager.request_release_check(quiet=False) == "task-1"
+  assert manager.called("request_release_check") == [((), {"quiet": False})]
 
 
-@pytest.mark.parametrize("name", ["key_exists", "create_presigned_download_url"])
-def test_the_fake_s3_takes_the_same_arguments_as_the_real_one(name):
-  assert parameters(getattr(FakeS3, name)) == parameters(getattr(S3, name))
-
-
-@pytest.mark.parametrize("name", ["find_peer", "path"])
-def test_the_fake_tailscale_takes_the_same_arguments_as_the_real_one(name):
-  assert parameters(getattr(FakeTailscale, name)) == parameters(getattr(Tailscale, name))
-
-
-@pytest.mark.parametrize("name", ["task_state", "is_task_running", "has_task", "worker_status", "get_volume_backup_resource_error"])
-def test_the_fake_manager_takes_the_same_arguments_as_the_real_one(name):
-  assert parameters(getattr(FakeManager, name)) == parameters(getattr(Manager, name))
+def test_an_answer_is_returned_raised_or_called_with_the_arguments():
+  manager = ManagerStandIn()
+  manager.answers = {"info": {"version": "1"}, "request_reboot": LookupError("Worker not found."),
+                     "worker_page": lambda hostname: {"hostname": hostname}}
+  assert manager.info() == {"version": "1"}
+  with pytest.raises(LookupError):
+    manager.request_reboot("w1")
+  assert manager.worker_page("w2") == {"hostname": "w2"}
 
 
 def test_a_method_the_real_manager_lacks_raises():
-  with pytest.raises(AttributeError, match="no_such_task"):
-    FakeManager().no_such_task
+  with pytest.raises(AttributeError, match="no_such_request"):
+    ManagerStandIn().no_such_request
 
 
-def test_a_task_the_route_asks_for_wrongly_is_refused():
-  manager = FakeManager()
-
+def test_a_call_the_real_method_does_not_take_is_refused():
+  manager = ManagerStandIn()
   with pytest.raises(TypeError):
-    manager.add_task(task=manager.backup_database_s3, scopes={"platform"}, executor="platform", not_a_parameter=1)
-
+    manager.request_reboot()
   with pytest.raises(TypeError):
-    manager.add_task(task=manager.delete_backup_s3, scopes={"common"}, executor="common", params={"wrong": 1})
+    manager.request_release_check(wrong=True)
+  assert manager.calls == []

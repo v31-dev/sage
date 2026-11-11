@@ -115,7 +115,7 @@ uses a 30-second misfire grace period.
 | `observe_containers` | Every minute, `* * * * *` | Yes | `observe_containers` |
 | `list_container_records` | Every 10 minutes, `*/10 * * * *` | No | One `list_records` per worker whose report is current |
 | `schedule_application_backups` | Every minute, `* * * * *` | No | One `backup_preserve` per container of an application with due volumes; nothing without a store |
-| `collect_metrics` | Every minute, `* * * * *` | No | `collect_self` and `flush_worker_metrics` |
+| `flush_metrics` | Every minute, `* * * * *` | No | `request_metrics_flush`: `flush_metrics` |
 | `reconcile_domains` | Every 5 min, `*/5 * * * *` | Yes | `reconcile_domains` |
 | `check_settings` | Every 5 min, `*/5 * * * *` | Yes | `request_settings_checks`: a quiet `check_<section>` for each configured section |
 | `refresh_latest_release` | Every 4 h, `0 */4 * * *` | Yes | `request_release_check`: a quiet `refresh_latest_release` |
