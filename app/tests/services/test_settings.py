@@ -2,7 +2,7 @@ import pytest
 
 from services.db.models import Setting
 from services.notification import CHANNELS
-from services.settings import SETTING_DEFINITIONS, SettingCheck, Settings, section_status, validate_section
+from services.settings import SETTING_DEFINITIONS, SettingCheck, Settings, section_status, setting_payload, setting_payloads, validate_section
 
 S3_VALUES = {"access_key": "AK", "secret_key": "SK", "bucket": "bucket", "endpoint": "https://s3.example.test", "path": "backups"}
 S3_UNSET = dict.fromkeys(SETTING_DEFINITIONS["s3"])
@@ -283,3 +283,19 @@ class TestSectionStatus:
     assert status["state"] == "error"
     assert status["message"] == ("Certificates need attention: manager.core.example.test: order rejected; "
                                  "discovery.int.example.test: not valid")
+
+
+class TestPayloads:
+  def test_each_saved_section_is_its_row_by_key_with_its_values_readable(self, settings):
+    settings.set("s3", S3_VALUES)
+    settings.set("notifications", {"discord_webhook": "https://discord.test/hook"})
+    assert [(row["key"], row["value"]) for row in setting_payloads()] == [
+        ("notifications", {"discord_webhook": "https://discord.test/hook"}), ("s3", S3_VALUES)]
+    assert setting_payload("s3")["value"] == S3_VALUES
+
+  def test_a_section_never_saved_has_its_row_with_every_field_unset(self, settings):
+    assert setting_payload("notifications")["value"] == {field: None for field in SETTING_DEFINITIONS["notifications"]}
+
+  def test_an_unknown_section_is_a_lookup_error(self, settings):
+    with pytest.raises(LookupError):
+      setting_payload("nope")

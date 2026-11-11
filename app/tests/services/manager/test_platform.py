@@ -1,28 +1,33 @@
 import asyncio
 import contextlib
+import logging
 import shutil
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from services.backups.keys import taken_at
+from services.certs import Certs
+from services.cloudflare import Cloudflare
 from services.containers.record import TargetRead
 from services.containers.targets import Containers
-from services.db.models import Backup, ContainerEvent, Instance, Notification, Worker
+from services.db.models import Backup, ContainerEvent, Instance, Notification, Worker, db
 from services.domains.decisions import ApplyOutcome
 from services.domains.state import Domains
 from services.logs import Logs
 from services.manager.platform import PlatformMixin
 from services.manager.queue import SCOPES, QueueMixin
+from services.manager.settings import SettingsMixin
 from services.metrics import Metrics
 from services.notification import Notifications
 from services.releases import Releases
 from services.s3 import S3
 from services.settings import Settings
+from services.tailscale import Tailscale
 from services.workers.state import Workers
 from utils.archive import decrypt_file
 from utils.errors import Conflict
@@ -354,3 +359,44 @@ class TestCleanup:
     assert {task["name"] for task in manager.task_queue.snapshot()["running"]} >= {"held", "metrics_cleanup"}
     await manager.run()
     assert cleaned == ["metrics", "logs"] and Notification.select().count() == 0
+
+
+class TestInfo:
+  class Shown(PlatformMixin, SettingsMixin, QueueMixin):
+    """The platform's and the settings' parts of the Manager, with the real settings status."""
+
+    def __init__(self):
+      self.version, self.started_at = "1.0.0", datetime(2026, 1, 1, 9)
+      self.task_queue = TaskQueue(SCOPES, {}, record=lambda task, status: None)
+
+  @pytest.fixture
+  def shown(self, db, register):
+    register(Tailscale, SimpleNamespace(ip=lambda: "100.64.0.1"))
+    register(Releases, SimpleNamespace(latest_version="9.9.9"))
+    register(Certs, SimpleNamespace(status=lambda: []))
+    register(Cloudflare, SimpleNamespace(account_id="a1", tunnel_id="t1", tunnel_name="sage-example.test", tunnel_status="healthy"))
+    Settings()
+    return self.Shown()
+
+  def test_it_is_what_every_page_shows_of_the_manager(self, shown):
+    info = shown.info()
+    assert {key: value for key, value in info.items() if key != "settings"} == {
+        "version": "1.0.0", "latest_version": "9.9.9", "domain": "example.test", "name": "manager", "ip": "100.64.0.1",
+        "start_time": "2026-01-01T09:00:00", "state": "running", "restoring_from": None}
+    assert set(info["settings"]) == {"tailscale", "cloudflare", "s3", "notifications"}
+
+  def test_it_reads_no_database(self, shown, monkeypatch):
+    def refuse(*args, **kwargs):
+      raise AssertionError("The info read the database.")
+
+    monkeypatch.setattr(db, "execute_sql", refuse)
+    assert shown.info()["settings"]["s3"]["state"] == "not_configured"
+
+  def test_a_settings_status_that_cannot_be_built_is_none_and_logged(self, shown, monkeypatch, caplog):
+    def fails():
+      raise RuntimeError("no status")
+
+    monkeypatch.setattr(shown, "settings_status", fails)
+    with caplog.at_level(logging.ERROR):
+      assert shown.info()["settings"] is None
+    assert "Could not build the settings status." in caplog.text

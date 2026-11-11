@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime
 from types import SimpleNamespace
 
 import requests
@@ -92,6 +93,18 @@ TEST_NOTIFICATION = SimpleNamespace(
 CHANNELS = {
     "discord_webhook": {"name": "Discord", "payload": _discord_payload},
 }
+
+
+def list_notifications(limit: int | None = None, from_ts: datetime | None = None, to_ts: datetime | None = None) -> list[dict]:
+  """The notices, newest first: after `from_ts` and up to `to_ts`, the newest `limit` of them."""
+  query = Notification.select().order_by(Notification.created_at.desc())
+  if from_ts:
+    query = query.where(Notification.created_at > from_ts)
+  if to_ts:
+    query = query.where(Notification.created_at <= to_ts)
+  if limit:
+    query = query.limit(limit)
+  return list(query.dicts())
 
 
 class Notifications(Base):

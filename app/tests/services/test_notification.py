@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime
 from types import SimpleNamespace
 
 import pytest
@@ -7,7 +8,7 @@ import requests
 from services import notification
 from services.db.models import Notification
 from services.notification import (CHANNELS, NOTIFICATION_STYLES, TEST_NOTIFICATION, ChannelCheckFailed, Notifications, _request_webhook,
-                                   webhook_failure)
+                                   list_notifications, webhook_failure)
 from services.settings import Settings
 from services.updates import UpdateFeed, Updates
 from tests.conftest import Signals
@@ -308,3 +309,19 @@ class TestNotify:
     with caplog.at_level(logging.INFO, logger="services.notification"):
       notifications.notify("Manager started.", level)
     assert (Notification.get().link, caplog.records[-1].levelname) == (None, logged)
+
+  def test_the_row_a_notice_pushes_is_the_row_the_list_returns(self, notifications, hub, sent):
+    notifications.notify("Demo / Web on w1 deployed.", "success", "/projects/demo/web")
+    [(_, [pushed], _)] = hub.published
+    assert [pushed] == list_notifications()
+
+
+class TestList:
+  def test_the_notices_are_newest_first_within_the_window_and_the_limit(self, db, clock):
+    for minute in range(4):
+      clock.set(datetime(2026, 1, 1, 9, minute))
+      Notification.create(content=f"n{minute}")
+    assert [row["content"] for row in list_notifications()] == ["n3", "n2", "n1", "n0"]
+    assert [row["content"] for row in list_notifications(limit=2)] == ["n3", "n2"]
+    assert [row["content"] for row in list_notifications(from_ts=datetime(2026, 1, 1, 9, 0),
+                                                         to_ts=datetime(2026, 1, 1, 9, 2))] == ["n2", "n1"]

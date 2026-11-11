@@ -12,7 +12,7 @@ from services.applications.deploy_input import capture_deploy_config
 from services.containers.placement import placement_dir, record_path, runtime_name
 from services.containers.record import Applied, Authority, Operation, Settled, TargetRead, TargetRecord, encode_record
 from services.containers.targets import Containers
-from services.db.models import Application, Container, Domain, Instance, Worker
+from services.db.models import Application, Container, Domain, Instance, Project, Worker
 from services.history import record_container_event
 from services.manager.containers import ContainersMixin
 from services.manager.lifecycle import LifecycleMixin
@@ -565,3 +565,15 @@ class TestPayloads:
     assert asked == [("w1", runtime_name(containers[0].id), "24h"), ("w2", runtime_name(containers[1].id), "24h")]
     with pytest.raises(LookupError):
       manager.application_graphs("demo", "nothing", "1h")
+
+  async def test_a_projects_page_has_its_applications_by_name_with_how_many_of_their_containers_are_active(
+          self, manager, containers, application):
+    Application.create(project=application.project, name="api", label="Api")
+    Application.create(project=Project.create(name="other", label="Other"), name="admin", label="Admin")
+    await deployed(containers[0])
+    report(containers[0])
+    page = manager.project_page("demo")
+    assert page["name"] == "demo"
+    assert [(item["name"], item["active_count"]) for item in page["applications"]] == [("api", 0), ("web", 1)]
+    with pytest.raises(LookupError):
+      manager.project_page("nothing")

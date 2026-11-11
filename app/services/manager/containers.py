@@ -4,13 +4,14 @@ the recovery of an operation that never settled; and each container's state, wit
 changed."""
 import logging
 import re
+from collections import Counter
 from dataclasses import replace
 from time import monotonic
 
 import config
 from services.applications.commands import detach_container
 from services.applications.deploy_input import DeployConfig, capture_deploy_config
-from services.applications.payload import application_payload
+from services.applications.payload import application_payload, application_summary, project_payload
 from services.applications.updates import container_changed
 from services.containers.decisions import PROGRESS, Runtime, correction
 from services.containers.placement import (LABEL_APPLICATION, labels_authority, parse_placements, placement_dir, placements_command, records_command,
@@ -80,6 +81,19 @@ class ContainersMixin:
     containers = (Container.select(Container, Application, Project, Worker).join(Application).join(Project)
                   .switch(Container).join(Worker).where(Container.application == application.id).order_by(Container.worker))
     return application_payload(application, list(application.volumes.order_by(Volume.name)), self.container_payloads(containers))
+
+  def project_page(self, project: str) -> dict:
+    """The project's payload with its applications' summaries, by name; a LookupError when there is none."""
+    row = Project.get_or_none(Project.name == project)
+    if row is None:
+      raise LookupError("Project not found.")
+    containers = list(Container.select(Container, Application, Project).join(Application).join(Project)
+                      .where(Application.project == project))
+    states = self.container_states(containers)
+    active = Counter(container.application_id for container in containers if states[container.id].view.headline == "active")
+    return {**project_payload(row), "applications": [
+        application_summary(application, active[application.id])
+        for application in Application.select().where(Application.project == project).order_by(Application.name)]}
 
   def application_graphs(self, project: str, name: str, period: str) -> list[dict]:
     """The series of each of the application's containers over `period`, by worker; a LookupError when there is none."""

@@ -11,6 +11,7 @@ from services.s3 import S3
 from services.settings import Settings
 from services.tailscale import Tailscale
 from services.worker_reports import WorkerReports
+from utils.common import utcnow
 from utils.executor import LANES
 from utils.queue import TaskQueue
 
@@ -54,6 +55,7 @@ class Manager(
       logger.info("Running Manager setup...")
 
       self.version = config.VERSION
+      self.started_at = utcnow()
 
       # What each owner works out from the queue at every change of it.
       self.queue_facts = [*self.tasks_queue_facts(), *self.containers_queue_facts(), *self.domains_queue_facts(),

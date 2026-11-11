@@ -19,10 +19,11 @@ from services.notification import Notifications
 from services.releases import Releases
 from services.s3 import S3
 from services.settings import Settings
+from services.tailscale import Tailscale
 from services.updates import Fact, UpdateSource
 from services.workers.state import Workers
 from utils.archive import decrypt_file, encrypt_file
-from utils.common import utcnow
+from utils.common import get_env, utcnow
 from utils.errors import Conflict
 from utils.executor import run_in_executor_with_context
 from utils.logging import TaskFailed
@@ -41,6 +42,26 @@ class PlatformMixin:
     """Whether a platform backup is running and whether backups are being discovered."""
     return {"platform_backup_in_progress": self.has_task(("backup_platform",), running_only=True),
             "discovery_in_progress": self.has_task(("discover_backups",))}
+
+  def info(self) -> dict:
+    """What every page shows of the manager, from memory only: it is the health check and is served while paused or
+    restoring. A settings status that cannot be built is none, with the error logged."""
+    try:
+      settings = self.settings_status()
+    except Exception:
+      logger.error("Could not build the settings status.", exc_info=True)
+      settings = None
+    return {
+        "version": self.version,
+        "latest_version": Releases().latest_version,
+        "domain": get_env("DOMAIN"),
+        "name": get_env("TS_NAME"),
+        "ip": Tailscale().ip(),
+        "start_time": self.started_at.isoformat(),
+        "state": self.task_state(),
+        "restoring_from": self.restoring_from(),
+        "settings": settings,
+    }
 
   def restoring_from(self) -> str | None:
     """When the backup being restored was taken, while restoring."""

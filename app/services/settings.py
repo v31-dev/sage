@@ -58,6 +58,25 @@ def fields_set(key: str, values: dict) -> bool:
   return all(values.get(field) not in (None, "") for field in SETTING_DEFINITIONS[key])
 
 
+def setting_payloads() -> list[dict]:
+  """The saved row of each settings section, by key."""
+  return [_setting_payload(row) for row in
+          Setting.select().where(Setting.key.in_(list(SETTING_DEFINITIONS))).order_by(Setting.key)]
+
+
+def setting_payload(key: str) -> dict:
+  """The saved row of the section (Settings creates each section's row when it loads); a LookupError for an unknown
+  section."""
+  row = Setting.get_or_none(Setting.key == key) if key in SETTING_DEFINITIONS else None
+  if row is None:
+    raise LookupError("Setting not found.")
+  return _setting_payload(row)
+
+
+def _setting_payload(row: Setting) -> dict:
+  return {"key": row.key, "value": row.value, "created_at": row.created_at, "updated_at": row.updated_at}
+
+
 def section_status(configured: bool, applying_task_id: str | None, check: SettingCheck | None,
                    certificates: list[dict] | None = None) -> dict:
   """What a settings section shows: not_configured, applying (with the task), or the state of its current check, which
