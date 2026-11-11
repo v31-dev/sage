@@ -387,3 +387,17 @@ class TestStates:
     states = manager.domain_states(Domain.select())
     assert {domain_id: (each.facts.eligible, each.facts.worker_ready) for domain_id, each in states.items()} == {
         public.id: (True, False), internal.id: (True, False), moved.id: (None, True)}
+
+
+class TestPayloads:
+  def test_each_domain_is_given_in_the_order_asked_with_its_state_now(self, manager, public, internal):
+    manager.ready["w1"] = False
+    payloads = manager.domain_payloads([Domain.get_by_id(public.id), Domain.get_by_id(internal.id)])
+    assert [(payload["id"], payload["address"]) for payload in payloads] == [
+        (public.id, "https://shop.example.test"), (internal.id, "https://api.red.int.example.test")]
+    assert [payload["view"]["reason"] for payload in payloads] == ["worker_not_ready", "worker_not_ready"]
+
+  def test_a_domain_whose_apply_is_queued_shows_it_syncing(self, manager, public):
+    manager.request_domain_applies([public.id])
+    [payload] = manager.domain_payloads([Domain.get_by_id(public.id)])
+    assert payload["view"]["status"] == "syncing"

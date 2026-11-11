@@ -9,7 +9,7 @@ from services.cloudflare import Cloudflare, dns_record_matches
 from services.db.models import Container, Domain, Worker
 from services.domains.config import DomainConfig, domain_artifact_name, domain_artifact_owner, parse_route_listing, routes_command
 from services.domains.decisions import ApplyOutcome, RouteObservation, route_goal
-from services.domains.state import Domains, DomainState, domain_state
+from services.domains.state import Domains, DomainState, domain_payload, domain_state
 from services.domains.updates import domain_changed
 from services.notification import Notifications
 from services.tailscale import Tailscale
@@ -41,6 +41,12 @@ class DomainsMixin:
     return {domain_id: domain_state(snapshot, containers[snapshot.container_id].routable if snapshot.container_id else None,
                                     workers[snapshot.worker].view.ready if snapshot.worker else None, domain_id in applying)
             for domain_id, snapshot in configs.items()}
+
+  def domain_payloads(self, domains) -> list[dict]:
+    """The payload of each of `domains`, in their order."""
+    domains = list(domains)
+    states = self.domain_states(domains)
+    return [domain_payload(domain, states[domain.id], get_env("DOMAIN")) for domain in domains]
 
   def domains_queue_facts(self) -> list[Fact]:
     """The applies queued or running: a domain whose apply is queued, starts or ends is shown again."""

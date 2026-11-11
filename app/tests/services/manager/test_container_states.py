@@ -13,6 +13,7 @@ from services.containers.placement import placement_dir, record_path, runtime_na
 from services.containers.record import Applied, Authority, Operation, Settled, TargetRead, TargetRecord, encode_record
 from services.containers.targets import Containers
 from services.db.models import Application, Container, Domain, Instance, Worker
+from services.history import record_container_event
 from services.manager.containers import ContainersMixin
 from services.manager.lifecycle import LifecycleMixin
 from services.manager.queue import SCOPES, QueueMixin
@@ -77,6 +78,9 @@ class Manager(ContainersMixin, LifecycleMixin, QueueMixin):
 
   def request_discovery(self):
     self.discovered += 1
+
+  def domain_payloads(self, domains):
+    return [{"id": domain.id, "name": domain.name} for domain in domains]
 
   async def run(self):
     self.task_queue.dispatch_tick()
@@ -508,3 +512,44 @@ class TestOrphans:
     monotonic.now += 905
     await manager.observe_containers()
     assert len(cleanups(manager)) == 1
+
+
+class TestPayloads:
+  async def test_an_applications_page_has_its_containers_by_worker_with_their_domains_events_and_states(
+          self, manager, containers, application):
+    first, second = containers
+    await deployed(first)
+    report(first)
+    Domain.create(name="shop", type="public", port=80, container=second)
+    Domain.create(name="api", type="internal", port=80, container=second, namespace_worker="w2")
+    Domain.create(name="www", type="public", port=80, container=first)
+    for transition in ("admitted", "succeeded"):
+      record_container_event(first, "deploy", transition, "d1")
+
+    page = manager.application_page("demo", "web")
+    assert [container["id"] for container in page["containers"]] == [first.id, second.id]
+    assert [[domain["name"] for domain in container["domains"]] for container in page["containers"]] == [["www"], ["api", "shop"]]
+    assert [event["transition"] for event in page["containers"][0]["events"]] == ["succeeded", "admitted"]
+    assert page["containers"][1]["events"] == []
+    assert [container["view"]["headline"] for container in page["containers"]] == ["active", "checking"]
+    assert page["active_count"] == 1
+
+  def test_an_application_that_is_not_there_is_a_lookup_error(self, manager, containers):
+    with pytest.raises(LookupError):
+      manager.application_page("demo", "nothing")
+    with pytest.raises(LookupError):
+      manager.application_page("nothing", "web")
+
+  async def test_the_operation_running_on_a_container_is_in_its_payload(self, manager, containers):
+    release = asyncio.Event()
+
+    async def holds(container_id):
+      await release.wait()
+
+    manager.stop_container = holds
+    manager.request_stop(containers[0].id)
+    manager.task_queue.dispatch_tick()
+    [payload] = manager.container_payloads([containers[0]])
+    assert (payload["live"], payload["view"]["headline"]) == ("stop", "stopping")
+    release.set()
+    await manager.run()

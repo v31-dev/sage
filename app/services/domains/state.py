@@ -1,10 +1,10 @@
 """Each Domain's state as its pages show it, worked out from the facts its owners hold, and what Sage knows of each
 Domain's artifacts since the Manager started."""
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 
 from services.base import Base
 from services.db.models import Domain
-from services.domains.config import DomainConfig
+from services.domains.config import DomainConfig, address
 from services.domains.decisions import ApplyOutcome, DomainFacts, DomainView, RouteObservation, decide_domain
 from services.domains.updates import domain_changed
 
@@ -86,3 +86,34 @@ def domain_state(config: DomainConfig, eligible: bool | None, worker_ready: bool
                       Domains().route(config.domain_id, config.worker), Domains().dns_conforms(config.domain_id, fingerprint),
                       Domains().outcome(config.domain_id), syncing)
   return DomainState(decide_domain(facts), config, facts)
+
+
+def domain_payload(domain: Domain, state: DomainState, base_domain: str) -> dict:
+  """The domain as its pages show it: its configuration, its full name and how it is reached, the worker its route goes
+  to, the container it is linked to (none once that is deleted) with its application, and its decided state."""
+  container = domain.container
+  application = container.application if container else None
+  return {
+      "id": domain.id,
+      "name": domain.name,
+      "type": domain.type,
+      "port": domain.port,
+      "service": domain.service,
+      "pool": domain.pool,
+      "cors_origins": domain.cors_origins,
+      "host": state.config.host,
+      "address": address(domain, base_domain),
+      "worker": state.config.worker,
+      "container": container and {
+          "id": container.id,
+          "worker": container.worker_id,
+          "application": {
+              "name": application.name,
+              "label": application.label,
+              "project": {"name": application.project.name, "label": application.project.label},
+          },
+      },
+      "view": asdict(state.view),
+      "created_at": domain.created_at,
+      "updated_at": domain.updated_at,
+  }

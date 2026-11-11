@@ -10,15 +10,16 @@ from time import monotonic
 import config
 from services.applications.commands import detach_container
 from services.applications.deploy_input import DeployConfig, capture_deploy_config
+from services.applications.payload import application_payload
 from services.applications.updates import container_changed
 from services.containers.decisions import PROGRESS, Runtime, correction
 from services.containers.placement import (LABEL_APPLICATION, labels_authority, parse_placements, placement_dir, placements_command, records_command,
                                            runtime_owner, volume_dir)
 from services.containers.record import Applied, Authority, Operation, Recovery, Settled, TargetRead, TargetRecord, parse_record_listing
 from services.containers.rendering import render_placement
-from services.containers.state import ContainerState, container_state
+from services.containers.state import ContainerState, container_payload, container_state
 from services.containers.targets import Containers
-from services.db.models import Application, Container, Domain, Instance, Project, Worker
+from services.db.models import Application, Container, ContainerEvent, Domain, Instance, Project, Volume, Worker
 from services.history import record_container_event
 from services.notification import Notifications
 from services.tailscale import Tailscale
@@ -56,6 +57,31 @@ class ContainersMixin:
           hashes[container.application_id] = None
       states[container.id] = container_state(container, instance, live.get(container.id), hashes[container.application_id])
     return states
+
+  def container_payloads(self, containers) -> list[dict]:
+    """The payload of each of `containers`, in their order, with its domains' payloads and its events."""
+    containers = list(containers)
+    states = self.container_states(containers)
+    ids = [container.id for container in containers]
+    domains = list(Domain.select().where(Domain.container.in_(ids)).order_by(Domain.type, Domain.name))
+    linked = {}
+    for domain, payload in zip(domains, self.domain_payloads(domains)):
+      linked.setdefault(domain.container_id, []).append(payload)
+    events = {}
+    for event in ContainerEvent.select().where(ContainerEvent.container.in_(ids)).order_by(ContainerEvent.id.desc()):
+      events.setdefault(event.container_id, []).append(event)
+    return [container_payload(container, states[container.id], linked.get(container.id, []), events.get(container.id, []))
+            for container in containers]
+
+  def application_page(self, project: str, name: str) -> dict:
+    """The application's payload with its containers'; a LookupError when there is none."""
+    application = (Application.select(Application, Project).join(Project)
+                   .where((Project.name == project) & (Application.name == name)).first())
+    if application is None:
+      raise LookupError("Application not found.")
+    containers = (Container.select(Container, Application, Project, Worker).join(Application).join(Project)
+                  .switch(Container).join(Worker).where(Container.application == application.id).order_by(Container.worker))
+    return application_payload(application, list(application.volumes.order_by(Volume.name)), self.container_payloads(containers))
 
   def containers_queue_facts(self) -> list[Fact]:
     """The operations running on containers: a container whose operation starts or ends is shown again."""

@@ -3,7 +3,7 @@ import pytest
 from services.db.models import Container, Domain
 from services.domains.config import DomainConfig
 from services.domains.decisions import ApplyOutcome, RouteObservation
-from services.domains.state import Domains, domain_state
+from services.domains.state import Domains, domain_payload, domain_state
 from services.updates import UpdateSource
 
 
@@ -80,3 +80,23 @@ class TestDomainState:
 
   def test_while_its_container_is_not_known_it_is_pending_for_that(self, snapshot):
     assert domain_state(snapshot, None, True, False).view.reason == "eligibility_unknown"
+
+
+class TestPayload:
+  def test_a_linked_domain_has_its_name_address_container_and_decided_state(self, domain, snapshot):
+    state = domain_state(snapshot, True, True, False)
+    payload = domain_payload(domain, state, "example.test")
+    assert {key: payload[key] for key in ("name", "type", "port", "host", "address", "worker")} == {
+        "name": "shop", "type": "public", "port": 8080, "host": "shop.example.test", "address": "https://shop.example.test",
+        "worker": "w1"}
+    assert payload["container"] == {"id": domain.container_id, "worker": "w1", "application": {
+        "name": "web", "label": "Web", "project": {"name": "demo", "label": "Demo"}}}
+    assert payload["view"] == {"status": state.view.status, "conforms": state.view.conforms, "reason": state.view.reason,
+                               "error": state.view.error}
+
+  @pytest.mark.parametrize("kind, address", [("internal", "https://db.red.int.example.test"),
+                                             ("tcp", "db.red.int.example.test:8443")])
+  def test_an_unlinked_one_is_reached_on_its_namespace_worker(self, worker, kind, address):
+    domain = Domain.create(name="db", type=kind, port=5432, namespace_worker=worker)
+    payload = domain_payload(domain, domain_state(DomainConfig.capture(domain, "example.test"), None, True, False), "example.test")
+    assert (payload["address"], payload["worker"], payload["container"]) == (address, "w1", None)
