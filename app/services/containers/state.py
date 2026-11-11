@@ -32,10 +32,8 @@ def container_state(container: Container, instance: Instance, live: str | None, 
   return ContainerState(decide_container(facts), target, runtime, live, routable(facts))
 
 
-def container_payload(container: Container, state: ContainerState, domains: list[dict], events: list[ContainerEvent]) -> dict:
-  """The container as its pages show it: its worker and application, its decided state with the facts it was decided
-  from (its record as last read, its runtime, the operation running on it, whether it can be routed to), the payloads of
-  its domains, and its events, newest first."""
+def container_reference(container: Container, state: ContainerState) -> dict:
+  """The container as a list of containers shows it: its worker, its application and its decided state."""
   application = container.application
   return {
       "id": container.id,
@@ -46,6 +44,15 @@ def container_payload(container: Container, state: ContainerState, domains: list
           "project": {"name": application.project.name, "label": application.project.label},
       },
       "view": asdict(state.view),
+  }
+
+
+def container_payload(container: Container, state: ContainerState, domains: list[dict], events: list[ContainerEvent]) -> dict:
+  """The container as its pages show it: its reference, the facts its state was decided from (its record as last read,
+  its runtime, the operation running on it, whether it can be routed to), the payloads of its domains, and its events,
+  newest first."""
+  return {
+      **container_reference(container, state),
       "target": asdict(state.target),
       "runtime": asdict(state.runtime),
       "live": state.live,

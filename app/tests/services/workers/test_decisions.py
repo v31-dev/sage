@@ -108,14 +108,25 @@ class TestReportOf:
     assert report_of(None, NOW) == WorkerReport("unobserved")
 
   def test_a_recent_report_with_the_whole_stack_running(self):
-    assert report_of(received(), NOW) == WorkerReport("known", True, ())
+    running = tuple((name, "running") for name in config.WORKER_STACK_SERVICES)
+    assert report_of(received(), NOW) == WorkerReport("known", True, (), running, len(running))
 
   def test_it_names_the_stack_services_missing_or_not_running_in_their_order(self):
     services = tuple(name for name in config.WORKER_STACK_SERVICES if name != "telegraf")
     assert report_of(received(services=services, stopped=("traefik",)), NOW).stack_down == ("traefik", "telegraf")
 
+  def test_it_has_each_stack_services_status_and_counts_every_container_listed(self):
+    services = (*(name for name in config.WORKER_STACK_SERVICES if name != "telegraf"), "sage-0123456789abcdef",
+                "sage-fedcba9876543210")
+    report = report_of(received(services=services, stopped=("traefik",)), NOW)
+    assert dict(report.stack) == {**{name: "running" for name in config.WORKER_STACK_SERVICES}, "traefik": "exited",
+                                  "telegraf": "missing"}
+    assert [name for name, _ in report.stack] == list(config.WORKER_STACK_SERVICES)
+    assert report.containers == len(services)
+
   def test_an_old_report_is_stale_and_keeps_what_it_said(self):
-    assert report_of(received(config.REPORT_STALE_SECONDS + 1, traefik=False), NOW) == WorkerReport("stale", False, ())
+    report = report_of(received(config.REPORT_STALE_SECONDS + 1, traefik=False), NOW)
+    assert (report.knowledge, report.traefik_reachable, report.stack_down) == ("stale", False, ())
 
 
 @pytest.mark.parametrize("boot_id, ready, outcome", [

@@ -7,9 +7,11 @@ import pytest
 
 import config
 from services.certs import Certs
-from services.db.models import Container, Domain, Worker, WorkerEvent
+from services.containers.placement import runtime_name
+from services.db.models import Application, Container, Domain, Project, Worker, WorkerEvent
 from services.manager.queue import SCOPES, QueueMixin
 from services.manager.workers import WorkersMixin
+from services.metrics import Metrics
 from services.tailscale import Tailscale
 from services.updates import UpdateSource
 from services.worker_reports import ContainerReading, HostReading, Snapshot, WorkerReports
@@ -33,6 +35,9 @@ class Tailnet:
   def address(self, hostname):
     return self.addresses.get(hostname)
 
+  def ip(self):
+    return "100.64.0.1"
+
   def path(self, address):
     return None
 
@@ -51,6 +56,9 @@ class Manager(WorkersMixin, QueueMixin):
 
   def request_discovery(self):
     self.discovered += 1
+
+  def container_payloads(self, containers):
+    return [{"id": container.id} for container in containers]
 
 
 @pytest.fixture
@@ -269,3 +277,60 @@ class TestEvents:
     manager.worker_reported("w1")
     assert events() == [("w1", "readiness", "observed", {"status": "not ready", "reason": "owned_elsewhere"})]
     assert notices() == []
+
+
+@pytest.fixture
+def metrics(register):
+  """What Metrics holds: each worker's newest minute, and each host's graphs."""
+  held = SimpleNamespace(newest={}, graphs={})
+  register(Metrics, SimpleNamespace(newest=lambda hostname: held.newest.get(hostname),
+                                    query_period=lambda hostname, period: held.graphs[hostname]))
+  return held
+
+
+def series(name):
+  return [{"ts": "2026-01-01T09:00:00Z", "name": name, "cpu_pct": 1.0}]
+
+
+class TestPayloads:
+  def test_the_list_is_every_configured_worker_by_hostname_with_its_state_tunnel_and_newest_minute(
+          self, manager, tailnet, workers, metrics):
+    Worker.create(hostname="a0", subdomain="green")
+    tailnet.addresses["w2"] = "100.64.0.3"
+    metrics.newest["w2"] = {"cpu_pct": 5.0}
+    payloads = manager.worker_list()
+    assert [(payload["hostname"], payload["address"], payload["metrics"]) for payload in payloads] == [
+        ("a0", None, None), ("w1", None, None), ("w2", "100.64.0.3", {"cpu_pct": 5.0})]
+    assert payloads[1]["tunnel_name"] == "sage-example.test-w1"
+    assert payloads[1]["view"]["status"] == "checking"
+
+  def test_a_workers_page_has_its_containers_by_application(self, manager, workers, metrics, application):
+    other = Application.create(project=Project.create(name="alpha", label="Alpha"), name="api", label="Api")
+    placed = [Container.create(application=application, worker="w1"), Container.create(application=other, worker="w1")]
+    Container.create(application=application, worker="w2")
+    page = manager.worker_page("w1")
+    assert page["hostname"] == "w1"
+    assert page["containers"] == [{"id": placed[1].id}, {"id": placed[0].id}]
+
+  def test_a_worker_that_is_not_configured_has_no_page_or_graphs(self, manager, workers, metrics):
+    with pytest.raises(LookupError):
+      manager.worker_page("nobody")
+    with pytest.raises(LookupError):
+      manager.worker_graphs("nobody", "1h")
+
+  def test_a_placements_series_is_named_by_its_application_and_a_stack_services_by_its_own_name(
+          self, manager, tailnet, workers, metrics, application):
+    container = Container.create(application=application, worker="w1")
+    gone = "sage-0123456789abcdef"
+    tailnet.addresses["w1"] = "100.64.0.2"
+    metrics.graphs["w1"] = {"host": [], "meta": {"cpu_cores": 4},
+                            "containers": [series(runtime_name(container.id)), series("traefik"), series(gone)]}
+    graphs = manager.worker_graphs("w1", "1h")
+    assert [(item["name"], item["label"]) for item in graphs["containers"]] == [
+        (runtime_name(container.id), "Demo / Web"), ("traefik", "traefik"), (gone, gone)]
+    assert graphs["containers"][1]["points"] == series("traefik")
+    assert graphs["meta"] == {"cpu_cores": 4, "ip": "100.64.0.2"}
+
+  def test_the_managers_own_graphs_have_its_own_address(self, manager, metrics):
+    metrics.graphs["manager"] = {"host": [], "meta": {}, "containers": []}
+    assert manager.worker_graphs("manager", "1h")["meta"] == {"ip": "100.64.0.1"}

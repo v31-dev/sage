@@ -1,11 +1,12 @@
 """Each worker's state as its pages show it, worked out from the facts its owners hold; the setup outcomes the
 Manager's convergence leaves, the certificates the worker applied, and the stamps Sage keeps on the worker."""
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 
 import config
 from services.base import Base
 from services.certs import TEMPLATE_DIGEST, Certs
 from services.cloudflare import Cloudflare
+from services.db.models import Worker
 from services.tailscale import Tailscale
 from services.worker_reports import WorkerReports
 from services.workers.decisions import WorkerFacts, WorkerReport, WorkerView, decide_worker, report_of
@@ -104,3 +105,26 @@ def worker_state(hostname: str, subdomain: str, tasks: frozenset[str]) -> Worker
   return WorkerState(view, ssh, setup, report, tasks, address, Tailscale().path(address) if address else None,
                      Certs().worker_state(hostname, subdomain, Workers().certificates(hostname), TEMPLATE_DIGEST),
                      Cloudflare().tunnel_health.get(Cloudflare().worker_tunnel_name(hostname)))
+
+
+def worker_payload(worker: Worker, state: WorkerState, tunnel_name: str, metrics: dict | None) -> dict:
+  """The worker as its pages show it: its configuration, its decided state with the facts it was decided from (its SSH
+  server, its setup, its report, the worker tasks under way), where it is in the tailnet, its certificates, its
+  tunnel's health and name, and its newest minute of metrics."""
+  return {
+      "hostname": worker.hostname,
+      "subdomain": worker.subdomain,
+      "view": {**asdict(state.view), "ready": state.view.ready},
+      "ssh": state.ssh,
+      "setup": state.setup,
+      "report": asdict(state.report),
+      "tasks": sorted(state.tasks),
+      "address": state.address,
+      "path": state.path,
+      "certificates": state.certificates,
+      "tunnel": state.tunnel,
+      "tunnel_name": tunnel_name,
+      "metrics": metrics,
+      "created_at": worker.created_at,
+      "updated_at": worker.updated_at,
+  }

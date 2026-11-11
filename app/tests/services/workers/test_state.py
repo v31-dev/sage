@@ -6,9 +6,11 @@ import pytest
 import config
 from services.certs import TEMPLATE_DIGEST, Certs
 from services.cloudflare import Cloudflare
+from services.db.models import Worker
 from services.tailscale import Tailscale
 from services.worker_reports import ContainerReading, HostReading, Snapshot, WorkerReports
-from services.workers.state import Workers, worker_state
+from services.workers.decisions import WorkerReport, WorkerView
+from services.workers.state import Workers, WorkerState, worker_payload, worker_state
 from tests.services.test_cloudflare import ACCOUNT, TUNNELS, Api, ok
 
 
@@ -123,3 +125,22 @@ class TestWorkerState:
     Workers().record_setup("w1", "succeeded")
     report(traefik=False)
     assert worker_state("w1", "red", frozenset()).view.reason == "traefik_down"
+
+
+def test_a_worker_is_its_configuration_and_its_decided_state_with_what_it_was_decided_from(db):
+  worker = Worker.create(hostname="w1", subdomain="red")
+  report = WorkerReport("known", True, ("vector",), (("traefik", "running"), ("vector", "restarting")), 7)
+  certificates = {"worker": {"covered": True, "synced": True, "expiry": "2027-01-01", "error": None},
+                  "discovery": {"covered": False, "synced": False, "expiry": None, "error": "not issued"}}
+  state = WorkerState(WorkerView("not ready", "stack_down", "vector"), "reachable", "succeeded", report,
+                      frozenset({"reboot_worker", "add_worker", "remove_worker", "converge_worker"}), "100.64.0.2", "direct",
+                      certificates, "healthy")
+  payload = worker_payload(worker, state, "sage-example.test-w1", {"cpu_pct": 12.0})
+  assert (payload["hostname"], payload["subdomain"], payload["address"], payload["path"]) == ("w1", "red", "100.64.0.2", "direct")
+  assert payload["view"] == {"status": "not ready", "reason": "stack_down", "detail": "vector", "ready": False}
+  assert (payload["ssh"], payload["setup"], payload["tasks"]) == (
+      "reachable", "succeeded", ["add_worker", "converge_worker", "reboot_worker", "remove_worker"])
+  assert payload["report"] == {"knowledge": "known", "traefik_reachable": True, "stack_down": ("vector",),
+                               "stack": (("traefik", "running"), ("vector", "restarting")), "containers": 7}
+  assert (payload["certificates"], payload["tunnel"], payload["tunnel_name"], payload["metrics"]) == (
+      certificates, "healthy", "sage-example.test-w1", {"cpu_pct": 12.0})

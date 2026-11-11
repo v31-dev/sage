@@ -14,10 +14,14 @@ TASKS = {"remove_worker": "removing", "add_worker": "adding", "reboot_worker": "
 
 @dataclass(frozen=True)
 class WorkerReport:
-  """How much is known of the worker from its reports, and what the newest says of its stack and of Traefik."""
+  """How much is known of the worker from its reports, and what the newest says of its stack and of Traefik: the
+  services of its stack that do not run, each service's status (`missing` when it is not listed), and how many
+  containers it lists."""
   knowledge: str
   traefik_reachable: bool | None = None
   stack_down: tuple[str, ...] = ()
+  stack: tuple[tuple[str, str], ...] = ()
+  containers: int | None = None
 
 
 @dataclass(frozen=True)
@@ -47,9 +51,10 @@ def report_of(received: Received | None, now: datetime) -> WorkerReport:
   if received is None:
     return WorkerReport("unobserved")
   snapshot = received.snapshot
-  down = tuple(name for name in config.WORKER_STACK_SERVICES
-               if name not in snapshot.containers or snapshot.containers[name].status != "running")
-  return WorkerReport("known" if is_current(received.arrived_at, now) else "stale", snapshot.traefik_reachable, down)
+  stack = tuple((name, snapshot.containers[name].status if name in snapshot.containers else "missing")
+                for name in config.WORKER_STACK_SERVICES)
+  return WorkerReport("known" if is_current(received.arrived_at, now) else "stale", snapshot.traefik_reachable,
+                      tuple(name for name, status in stack if status != "running"), stack, len(snapshot.containers))
 
 
 def decide_worker(facts: WorkerFacts) -> WorkerView:

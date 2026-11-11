@@ -17,6 +17,7 @@ from services.history import record_container_event
 from services.manager.containers import ContainersMixin
 from services.manager.lifecycle import LifecycleMixin
 from services.manager.queue import SCOPES, QueueMixin
+from services.metrics import Metrics
 from services.tailscale import Tailscale
 from services.updates import UpdateSource
 from services.worker_reports import ContainerReading, HostReading, Snapshot, WorkerReports
@@ -553,3 +554,14 @@ class TestPayloads:
     assert (payload["live"], payload["view"]["headline"]) == ("stop", "stopping")
     release.set()
     await manager.run()
+
+  def test_an_applications_graphs_are_each_containers_series_by_worker_asked_by_its_runtime_name(
+          self, manager, containers, register):
+    asked = []
+    register(Metrics, SimpleNamespace(query_container_period=lambda hostname, name, period: asked.append((hostname, name, period))
+                                      or [{"name": name}]))
+    graphs = manager.application_graphs("demo", "web", "24h")
+    assert [(item["container"], item["hostname"]) for item in graphs] == [(containers[0].id, "w1"), (containers[1].id, "w2")]
+    assert asked == [("w1", runtime_name(containers[0].id), "24h"), ("w2", runtime_name(containers[1].id), "24h")]
+    with pytest.raises(LookupError):
+      manager.application_graphs("demo", "nothing", "1h")

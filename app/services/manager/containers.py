@@ -14,13 +14,14 @@ from services.applications.payload import application_payload
 from services.applications.updates import container_changed
 from services.containers.decisions import PROGRESS, Runtime, correction
 from services.containers.placement import (LABEL_APPLICATION, labels_authority, parse_placements, placement_dir, placements_command, records_command,
-                                           runtime_owner, volume_dir)
+                                           runtime_name, runtime_owner, volume_dir)
 from services.containers.record import Applied, Authority, Operation, Recovery, Settled, TargetRead, TargetRecord, parse_record_listing
 from services.containers.rendering import render_placement
 from services.containers.state import ContainerState, container_payload, container_state
 from services.containers.targets import Containers
 from services.db.models import Application, Container, ContainerEvent, Domain, Instance, Project, Volume, Worker
 from services.history import record_container_event
+from services.metrics import Metrics
 from services.notification import Notifications
 from services.tailscale import Tailscale
 from services.updates import Fact
@@ -75,13 +76,25 @@ class ContainersMixin:
 
   def application_page(self, project: str, name: str) -> dict:
     """The application's payload with its containers'; a LookupError when there is none."""
+    application = self._application(project, name)
+    containers = (Container.select(Container, Application, Project, Worker).join(Application).join(Project)
+                  .switch(Container).join(Worker).where(Container.application == application.id).order_by(Container.worker))
+    return application_payload(application, list(application.volumes.order_by(Volume.name)), self.container_payloads(containers))
+
+  def application_graphs(self, project: str, name: str, period: str) -> list[dict]:
+    """The series of each of the application's containers over `period`, by worker; a LookupError when there is none."""
+    application = self._application(project, name)
+    return [{"container": container.id, "hostname": container.worker_id,
+             "metrics": Metrics().query_container_period(container.worker_id, runtime_name(container.id), period)}
+            for container in Container.select().where(Container.application == application.id).order_by(Container.worker)]
+
+  @staticmethod
+  def _application(project: str, name: str) -> Application:
     application = (Application.select(Application, Project).join(Project)
                    .where((Project.name == project) & (Application.name == name)).first())
     if application is None:
       raise LookupError("Application not found.")
-    containers = (Container.select(Container, Application, Project, Worker).join(Application).join(Project)
-                  .switch(Container).join(Worker).where(Container.application == application.id).order_by(Container.worker))
-    return application_payload(application, list(application.volumes.order_by(Volume.name)), self.container_payloads(containers))
+    return application
 
   def containers_queue_facts(self) -> list[Fact]:
     """The operations running on containers: a container whose operation starts or ends is shown again."""

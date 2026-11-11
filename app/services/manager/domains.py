@@ -6,7 +6,8 @@ import logging
 
 import config
 from services.cloudflare import Cloudflare, dns_record_matches
-from services.db.models import Container, Domain, Worker
+from services.containers.state import container_reference
+from services.db.models import Application, Container, Domain, Project, Worker
 from services.domains.config import DomainConfig, domain_artifact_name, domain_artifact_owner, parse_route_listing, routes_command
 from services.domains.decisions import ApplyOutcome, RouteObservation, route_goal
 from services.domains.state import Domains, DomainState, domain_payload, domain_state
@@ -47,6 +48,15 @@ class DomainsMixin:
     domains = list(domains)
     states = self.domain_states(domains)
     return [domain_payload(domain, states[domain.id], get_env("DOMAIN")) for domain in domains]
+
+  def domains_page(self) -> dict:
+    """Every domain's payload, by type and name, and every container one can be linked to, by application and worker,
+    with its state."""
+    containers = list(Container.select(Container, Application, Project, Worker).join(Application).join(Project)
+                      .switch(Container).join(Worker).order_by(Project.name, Application.name, Container.worker))
+    states = self.container_states(containers)
+    return {"domains": self.domain_payloads(Domain.select().order_by(Domain.type, Domain.name)),
+            "containers": [container_reference(container, states[container.id]) for container in containers]}
 
   def domains_queue_facts(self) -> list[Fact]:
     """The applies queued or running: a domain whose apply is queued, starts or ends is shown again."""

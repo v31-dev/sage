@@ -6,6 +6,7 @@ import pytest
 
 import config
 from services.cloudflare import Cloudflare
+from services.containers.decisions import ContainerView
 from services.db.models import Container, Domain, Worker
 from services.domains.config import DomainConfig, parse_route_listing
 from services.domains.decisions import ApplyOutcome, RouteObservation
@@ -98,7 +99,8 @@ class Manager(DomainsMixin, QueueMixin):
     self.discovered += 1
 
   def container_states(self, containers):
-    return {container.id: SimpleNamespace(routable=self.routable.get(container.id)) for container in containers}
+    return {container.id: SimpleNamespace(routable=self.routable.get(container.id), view=ContainerView(
+        "active" if self.routable.get(container.id) else "inactive", "current")) for container in containers}
 
   def worker_states(self, hostnames=None):
     return {hostname: SimpleNamespace(view=SimpleNamespace(ready=self.ready.get(hostname))) for hostname in hostnames}
@@ -401,3 +403,12 @@ class TestPayloads:
     manager.request_domain_applies([public.id])
     [payload] = manager.domain_payloads([Domain.get_by_id(public.id)])
     assert payload["view"]["status"] == "syncing"
+
+  def test_the_domains_page_has_every_domain_and_every_container_one_can_link_to_with_its_state(
+          self, manager, public, internal, application):
+    other = Container.create(application=application, worker="w2")
+    page = manager.domains_page()
+    assert [domain["name"] for domain in page["domains"]] == ["api", "shop"]
+    assert [(item["id"], item["worker"], item["view"]["headline"]) for item in page["containers"]] == [
+        (public.container_id, {"hostname": "w1", "subdomain": "red"}, "active"),
+        (other.id, {"hostname": "w2", "subdomain": "blue"}, "inactive")]

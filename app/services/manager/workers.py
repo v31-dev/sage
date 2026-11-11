@@ -10,7 +10,8 @@ from peewee import JOIN
 import config
 from services.certs import TEMPLATE_DIGEST, Certs
 from services.cloudflare import Cloudflare
-from services.db.models import Container, Domain, Instance, Worker
+from services.containers.placement import runtime_owner
+from services.db.models import Application, Container, Domain, Instance, Project, Worker
 from services.domains.config import parse_route_listing, routes_command
 from services.domains.updates import domain_changed
 from services.history import record_worker_event
@@ -22,8 +23,8 @@ from services.worker_reports import WorkerReports
 from services.workers import commands
 from services.workers.decisions import TASKS, reboot_outcome, worker_claim_refusal, worker_owner
 from services.workers.rendering import InfraInputs, infra_fingerprint, render_infrastructure
-from services.workers.state import Workers, WorkerState, worker_state
-from utils.common import utcnow
+from services.workers.state import Workers, WorkerState, worker_payload, worker_state
+from utils.common import get_env, utcnow
 from utils.errors import Conflict
 from utils.executor import run_in_executor_with_context
 from utils.logging import TaskFailed
@@ -53,6 +54,43 @@ class WorkersMixin:
       workers = workers.where(Worker.hostname.in_(hostnames))
     return {worker.hostname: worker_state(worker.hostname, worker.subdomain, frozenset(tasks.get(worker.hostname, ())))
             for worker in workers}
+
+  def worker_list(self) -> list[dict]:
+    """Every configured worker's payload, by hostname."""
+    workers = list(Worker.select().order_by(Worker.hostname))
+    states = self.worker_states([worker.hostname for worker in workers])
+    return [worker_payload(worker, states[worker.hostname], Cloudflare().worker_tunnel_name(worker.hostname),
+                           Metrics().newest(worker.hostname)) for worker in workers]
+
+  def worker_page(self, hostname: str) -> dict:
+    """The worker's payload with its containers' payloads, by application; a LookupError when it is not configured."""
+    worker = Worker.get_or_none(Worker.hostname == hostname)
+    if worker is None:
+      raise LookupError("Worker not found.")
+    containers = (Container.select(Container, Application, Project, Worker).join(Application).join(Project)
+                  .switch(Container).join(Worker).where(Container.worker == hostname).order_by(Project.name, Application.name))
+    return {**worker_payload(worker, self.worker_states([hostname])[hostname], Cloudflare().worker_tunnel_name(hostname),
+                             Metrics().newest(hostname)),
+            "containers": self.container_payloads(containers)}
+
+  def worker_graphs(self, hostname: str, period: str) -> dict:
+    """The graphs of a worker, or of the manager itself, over `period`: the host's series, each container's series with
+    the name people know it by (a placement's application, a stack service's own name), and the host's size and
+    address. A LookupError for any other host."""
+    if hostname == get_env("TS_NAME"):
+      ip = Tailscale().ip()
+    elif Worker.get_or_none(Worker.hostname == hostname) is not None:
+      ip = Tailscale().address(hostname)
+    else:
+      raise LookupError("Worker not found.")
+    graphs = Metrics().query_period(hostname, period)
+    names = [points[0]["name"] for points in graphs["containers"]]
+    labels = {container.id: f"{container.application.project.label} / {container.application.label}"
+              for container in Container.select(Container, Application, Project).join(Application).join(Project)
+              .where(Container.id.in_({runtime_owner(name) for name in names} - {None}))}
+    return {"host": graphs["host"], "meta": {**graphs["meta"], "ip": ip},
+            "containers": [{"name": name, "label": labels.get(runtime_owner(name), name), "points": points}
+                           for name, points in zip(names, graphs["containers"])]}
 
   def workers_queue_facts(self) -> list[Fact]:
     """The worker tasks queued or running: a worker whose task is queued, starts or ends is shown again."""
