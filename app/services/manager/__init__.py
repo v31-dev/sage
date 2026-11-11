@@ -22,6 +22,7 @@ from .domains import DomainsMixin
 from .platform import PlatformMixin
 from .queue import SCOPES, QueueMixin
 from .settings import SettingsMixin
+from .summary import SummaryMixin
 from .workers import WorkersMixin
 
 # TODO(36 step 4X): each mixin joins the Manager again when its part reworks it.
@@ -42,6 +43,7 @@ class Manager(
     CertificatesMixin,
     PlatformMixin,
     SettingsMixin,
+    SummaryMixin,
     QueueMixin,
     Base,
 ):
@@ -54,8 +56,6 @@ class Manager(
       logger.info("Running Manager setup...")
 
       self.version = config.VERSION
-      self.latest_version = self.version
-      self.latest_release = None
 
       # What each owner works out from the queue at every change of it.
       self.queue_facts = [*self.tasks_queue_facts(), *self.containers_queue_facts(), *self.domains_queue_facts(),

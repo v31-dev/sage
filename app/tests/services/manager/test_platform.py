@@ -3,6 +3,7 @@ import contextlib
 import shutil
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
+from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -13,9 +14,12 @@ from services.containers.targets import Containers
 from services.db.models import Backup, ContainerEvent, Instance, Notification, Worker
 from services.domains.decisions import ApplyOutcome
 from services.domains.state import Domains
+from services.logs import Logs
 from services.manager.platform import PlatformMixin
 from services.manager.queue import SCOPES, QueueMixin
+from services.metrics import Metrics
 from services.notification import Notifications
+from services.releases import Releases
 from services.s3 import S3
 from services.settings import Settings
 from services.workers.state import Workers
@@ -60,11 +64,11 @@ class Manager(PlatformMixin, QueueMixin):
     self.queue_facts = []
     self.requested = []
     self.setup_failures, self.stack_repairs, self.recoveries, self.orphans = {"w1": 1.0}, {"w1": 1.0}, {"c": 1}, {"o": 1}
-    self.task_queue = TaskQueue(SCOPES, {"platform": self.pool, "app": self.pool}, record=lambda task, status: None,
-                                notify=self._queue_changed)
+    self.task_queue = TaskQueue(SCOPES, {lane: self.pool for lane in ("platform", "app", "common", "metrics")},
+                                record=lambda task, status: None, notify=self._queue_changed)
 
   def __getattr__(self, name):
-    if name.startswith("request_") and name not in ("request_platform_backup", "request_platform_restore", "request_startup"):
+    if name.startswith("request_"):
       return lambda: self.requested.append(name)
     raise AttributeError(name)
 
@@ -95,6 +99,8 @@ def stores(tmp_path, register):
 def manager(db, stores, register):
   register(Notifications, SimpleNamespace(install=lambda values: None))
   manager = Manager()
+  manager.fetched = []
+  register(Releases, SimpleNamespace(refresh=lambda: manager.fetched.append(True)))
   token = active_executor.set(manager.pool)
   yield manager
   active_executor.reset(token)
@@ -189,9 +195,7 @@ class TestRestore:
     assert (Containers().target("c"), Workers().setup("w1"), Domains().outcome("d1")) == (TargetRead("unobserved"), None, None)
     assert (manager.setup_failures, manager.stack_repairs, manager.recoveries, manager.orphans) == ({}, {}, {}, {})
     assert manager.task_state() == "running" and manager.task_queue.snapshot()["queued"] == []
-    assert manager.requested == ["request_worker_observation", "request_worker_paths", "request_container_observation",
-                                 "request_certificate_renewal", "request_domain_reconciliation", "request_backup_discovery",
-                                 "request_settings_checks"]
+    assert manager.requested == STARTUP and manager.fetched == [True]
     assert ran == []
 
   async def test_a_failed_download_changes_nothing_and_the_waiting_tasks_run(self, manager, stores, backup):
@@ -257,9 +261,53 @@ class TestFacts:
     assert [fact._compute() for fact in facts] == [None, manager.backup_status()]
 
 
+STARTUP = ["request_worker_observation", "request_worker_paths", "request_container_observation",
+           "request_certificate_renewal", "request_domain_reconciliation", "request_backup_discovery",
+           "request_settings_checks"]
+
+
+def queued(manager):
+  return [(tuple(task["key"]), task["scopes"], task["executor"], task["quiet"]) for task in manager.task_queue.snapshot()["queued"]]
+
+
 class TestStartup:
-  def test_startup_requests_what_runs_when_sage_starts(self, manager):
+  def test_startup_requests_what_runs_when_sage_starts_and_checks_for_a_release_quietly(self, manager):
     manager.request_startup()
-    assert manager.requested == ["request_worker_observation", "request_worker_paths", "request_container_observation",
-                                 "request_certificate_renewal", "request_domain_reconciliation", "request_backup_discovery",
-                                 "request_settings_checks"]
+    assert manager.requested == STARTUP
+    assert queued(manager) == [(("refresh_latest_release",), ["release"], "common", True)]
+
+  def test_a_release_check_asked_for_is_visible_and_one_still_queued_is_replaced(self, manager):
+    manager.request_release_check()
+    manager.request_release_check(quiet=False)
+    assert queued(manager) == [(("refresh_latest_release",), ["release"], "common", False)]
+
+
+class TestCleanup:
+  @pytest.fixture
+  def cleaned(self, register):
+    cleaned = []
+    register(Metrics, SimpleNamespace(cleanup=lambda: cleaned.append("metrics")))
+    register(Logs, SimpleNamespace(cleanup=lambda: cleaned.append("logs")))
+    return cleaned
+
+  def test_each_part_is_a_quiet_task_of_its_own_and_the_store_is_asked_to_prune(self, manager, cleaned):
+    manager.request_cleanup()
+    manager.request_cleanup()
+    assert queued(manager) == [(("metrics_cleanup",), ["metrics"], "metrics", True), (("logs_cleanup",), [], "common", True),
+                               (("purge_history",), [], "common", True)]
+    assert manager.requested == ["request_backup_retention"] * 2
+
+  async def test_the_tasks_run_while_other_work_holds_its_scopes(self, manager, cleaned, clock):
+    Notification.create(content="Deployed.")
+    clock.advance(timedelta(days=15))
+
+    async def holding():
+      await asyncio.sleep(0.05)
+
+    manager.add_task(task=holding, key=("held",), scopes={"worker", "domain", "backup", "settings", "release"}, executor="app")
+    manager.task_queue.dispatch_tick()
+    manager.request_cleanup()
+    manager.task_queue.dispatch_tick()
+    assert {task["name"] for task in manager.task_queue.snapshot()["running"]} >= {"held", "metrics_cleanup"}
+    await manager.run()
+    assert cleaned == ["metrics", "logs"] and Notification.select().count() == 0

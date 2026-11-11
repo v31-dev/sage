@@ -57,13 +57,11 @@ Sources: [scheduler](../app/scheduler.py), [queue engine](../app/utils/queue.py)
 
 ## Scopes and admission
 
-`<qn>` means `Application.qualified_name` (`project-application`); `<id>` is a Domain ID;
+`<id>` is a Domain ID;
 `<manager>` is `TS_NAME`. Braces mean **all** listed scopes are held together.
 
 | Scope | Excludes | Does not exclude by itself |
 | --- | --- | --- |
-| `platform` | Other `platform` work | Application, domain, common and metrics work |
-| `app:<qn>` | Work for that application, and tasks holding root `app` | Other applications and the domain parent pass |
 | `domain:<id>` | Work for that record, and tasks holding root `domain` | Other records |
 | `domain:host:<fqdn>` | The apply of any record with that full name, so a name swapped between two records is applied by one at a time | Other names |
 | `domain` | Every Domain apply, and every other task holding it: the Domain pass, maintenance | Worker and application tasks |
@@ -71,10 +69,9 @@ Sources: [scheduler](../app/scheduler.py), [queue engine](../app/utils/queue.py)
 | `worker:<host>:container:<id>`, `worker:<host>:stack`, `worker:<host>:routing:<id>`, `worker:<host>:discovery`, `worker:<host>:tls` | That one and `worker:<host>` | Their siblings: a container's operations, the stack's repair, a Domain's route, the discovery files and the certificate files on the same worker |
 | `certificate:worker:<host>` | That worker's certificate copy, and `certificate` | Other workers' copies |
 | `discovery` | The discovery DNS publication | Every other root, the workers' discovery files included |
-| `{platform, app, domain}` | All queued platform, application and domain work | Common, metrics and work outside the queue |
 | `certificate` | The certificates' renewal, and every task under it | Worker, domain and application work |
 | `settings:<section>` | That section's check | Other sections' checks |
-| `common` | All common work | The other roots |
+| `release` | The release check | The other roots |
 | `metrics:<host>` or `metrics:workers` | The matching child and root `metrics` maintenance | Sibling metrics tasks |
 | `backup:store:<identity>` | The store's discovery and retention, and every archive's write, read or deletion in that store | Other stores' work |
 | `backup:store:<identity>:{write,read,delete}:<part>` | That one and the store's root | Other archives' work in the store |
@@ -120,12 +117,12 @@ uses a 30-second misfire grace period.
 | `collect_metrics` | Every minute, `* * * * *` | No | `collect_self` and `flush_worker_metrics` |
 | `reconcile_domains` | Every 5 min, `*/5 * * * *` | Yes | `reconcile_domains` |
 | `check_settings` | Every 5 min, `*/5 * * * *` | Yes | `request_settings_checks`: a quiet `check_<section>` for each configured section |
-| `refresh_latest_release` | Every 4 h, `0 */4 * * *` | Yes | `refresh_latest_release` |
+| `refresh_latest_release` | Every 4 h, `0 */4 * * *` | Yes | `request_release_check`: a quiet `refresh_latest_release` |
 | `backup_database` | 00:00 and 12:00, `0 */12 * * *` | No | `backup_platform`; nothing without a store |
 | `renew_certificates` | Daily 03:00, `0 3 * * *` | Yes | `renew_certificates` |
-| `cleanup` | Daily 04:00, `0 4 * * *` | No | Independent tasks: `metrics_cleanup`, `logs_cleanup`, `prune_backups` (nothing without a store), `cleanup` |
-| `send_summary_notification` | Daily 08:00, `0 8 * * *` | No | `send_summary_notification` |
-| `start_work` | Startup only | Yes | `request_startup`: the workers' observation and paths, the containers' observation, certificate renewal, the Domain pass, backup discovery, the settings checks; also after a platform restore |
+| `cleanup` | Daily 04:00, `0 4 * * *` | No | `request_cleanup`: independent quiet tasks, `metrics_cleanup`, `logs_cleanup`, `purge_history` and `prune_backups` (nothing without a store) |
+| `send_summary_notification` | Daily 08:00, `0 8 * * *` | No | `request_summary`: `send_summary_notification`; nothing without a notification channel |
+| `start_work` | Startup only | Yes | `request_startup`: the workers' observation and paths, the containers' observation, certificate renewal, the Domain pass, backup discovery, the settings checks, the release check; also after a platform restore |
 
 A volume is due when its `Volume.backup_cron` matches the UTC minute and no Backup of it was recorded in that minute;
 each container of its application gets one automatic backup of the application's due volumes.
@@ -199,8 +196,9 @@ Implementation: [worker operations](../app/services/manager/workers.py),
 ### Platform, settings and maintenance
 
 Implementation: [platform operations](../app/services/manager/platform.py),
-[settings checks](../app/services/manager/settings.py), [release/summary](../app/services/manager/core.py),
-[metrics](../app/services/metrics.py), [log maintenance](../app/services/logs/store.py).
+[settings checks](../app/services/manager/settings.py), [release](../app/services/releases.py),
+[summary](../app/services/manager/summary.py), [history](../app/services/history.py), [metrics](../app/services/metrics.py),
+[log maintenance](../app/services/logs/store.py).
 
 | Operation | Scopes · executor | Admission / history | Every initiating source | Model writes and other effects |
 | --- | --- | --- | --- | --- |
@@ -210,13 +208,13 @@ Implementation: [platform operations](../app/services/manager/platform.py),
 | `delete_archive` | `backup:store:<identity>:delete:<part>` · common | DEDUP on `("delete_archive", <s3 path>)` / H | `request_backup_deletion`, which first deletes the Backup row (`remove_backup`) | Deletes exactly that key from the store the row named; refused when that is no longer the configured store, so another store's object of the same key is never touched. |
 | `prune_backups` | `backup:store:<identity>` · common | REPLACE on `("prune_backups",)` / Q | `request_backup_retention`, daily 04:00 | Deletes the store's platform backups and volume archives older than `config.RETENTION_DAYS` (14), then the rows of those deleted, a prefix that failed failing the task after the other. Nothing when the store changed. |
 | `check_<section>` → `check_setting` | `settings:<section>` · common | REPLACE on `("check_<section>",)`; `request_settings_checks` Q, `settings_saved` H | `request_settings_checks`: every 5 min and startup, for configured sections; `settings_saved`: PUT `/settings/{s3,notifications}` when complete | No main-DB write. Records the check for the revision it checked (`Settings.record_check`; dropped when the section was saved meanwhile). The Cloudflare check keeps every tunnel's health (`Cloudflare.tunnel_health`) and checks the worker states again. Sections: tailscale, cloudflare, s3, notifications. |
-| `refresh_latest_release` | `common` · common | REPLACE / H | Every 4 h and startup; POST `/info/release/refresh` | No operation-specific main-DB write. Fetch and replace in-memory release/version cache. |
-| `send_summary_notification` | `common` · common | REPLACE / H | Daily 08:00 | Read model/cached worker counts and dispatch summary directly to notification channels. **No Notification row** for the summary. |
+| `refresh_latest_release` → `Releases.refresh` | `release` · common | REPLACE on `("refresh_latest_release",)`; schedule and startup Q, POST H | `request_release_check`: every 4 h and startup; POST `/info/release/refresh` | No main-DB write. Fetches GitHub's latest release and keeps it and its version in memory (`Releases`), pushing `release`, and `latest_version` when the version is new; a failed fetch keeps the last. |
+| `send_summary_notification` | none · common | REPLACE on `("send_summary_notification",)` / H | `request_summary`: daily 08:00; nothing without a notification channel | No main-DB write. `get_system_summary` (the workers, containers and Domains by their states now, the last 24 hours' deploys, backups and error and warning notices) dispatched to the channels; an error when a notice was, or a container or Domain is in error or a worker offline, a warning when a notice was or a worker is otherwise not online. **No Notification row** for the summary. |
 | `collect_self` → `Metrics.collect_self` | `metrics:<manager>` · metrics | DEDUP / Q | Every minute via `collect_metrics` | No main-DB write. Flush completed manager sample minutes into its metrics shard (`WorkerMeta`, `WorkerMetrics`). |
 | `flush_worker_metrics` | `metrics:workers` · metrics | DEDUP / Q | Every minute via `collect_metrics` | No main-DB write. Flush completed report minutes into worker metric shards (`WorkerMeta`, `WorkerMetrics`, `ContainerMetrics`); push newest host metrics into worker memory. |
-| `metrics_cleanup` → `Metrics.cleanup` | `metrics` · metrics | REPLACE / Q | Daily 04:00 | No main-DB write. Delete old metric rows and orphan host shards; read Worker rows to identify live hosts. |
-| `logs_cleanup` → `Logs.cleanup` | `common` · common | REPLACE / Q | Daily 04:00 | No main-DB write. Delete old log/request/task-log lines and orphan application shards; trim size limits and optimize indexes. |
-| `cleanup` | `platform` · platform | REPLACE / H | Daily 04:00 | Delete old Event, Notification and Task rows; remove old DB safety copies (backups have their own retention, `prune_backups`). Default retention: `config.RETENTION_DAYS` = 14. Does not hold `app`, `domain`, `common` or `metrics`. |
+| `metrics_cleanup` → `Metrics.cleanup` | `metrics` · metrics | REPLACE on `("metrics_cleanup",)` / Q | `request_cleanup`: daily 04:00 | No main-DB write. Delete old metric rows and orphan host shards; read Worker rows to identify live hosts. |
+| `logs_cleanup` → `Logs.cleanup` | none · common | REPLACE on `("logs_cleanup",)` / Q | `request_cleanup`: daily 04:00 | No main-DB write. Delete old log/request/task-log lines and orphan application shards; trim size limits and optimize indexes. |
+| `purge_history` | none · common | REPLACE on `("purge_history",)` / Q | `request_cleanup`: daily 04:00 | Deletes the history (ContainerEvent, WorkerEvent, Notification and Task rows) older than `config.RETENTION_DAYS` (14). Holds no scope, so only the platform restore holds it back. |
 
 ## Follow-up flows
 
@@ -400,9 +398,10 @@ writes above apply in addition to the listed fields.
 | `Domain` | Domain CRUD through its commands, which derive the namespace worker and CORS policy | None: an apply's outcome and what it saw are memory (`Domains`) | Container deletion (`detach_container`) clears `container` by FK |
 | `Volume` | Volume CRUD: mounts and backup cron | None directly | Application FK deletion cascades row deletion |
 | `Backup` | Backup DELETE (`remove_backup`) | Volume/platform backup inserts; discovery inserts/deletes and retention deletes (`apply_catalog`) | Application FK deletion cascades app Backup deletion |
-| `Event` | None | `container_part` inserts deploy/stop/delete/backup/restore parts; retention deletes | Container FK deletion cascades Events |
-| `Notification` | None | `Manager.notify` inserts; retention deletes | Startup calls `notify`; summary/test dispatch creates no row |
-| `Task` | None | Queue terminal hook inserts; retention deletes | Pending-task cancellations can invoke hook on producer/shutdown thread |
+| `ContainerEvent` | None | Container operations append (`record_container_event`); `purge_history` deletes past retention | Container deletion clears its link; platform backup and restore empty it |
+| `WorkerEvent` | None | Worker operations and observed status changes append (`record_worker_event`); `purge_history` deletes past retention | Worker deletion clears its link; platform backup and restore empty it |
+| `Notification` | None | `Manager.notify` inserts; `purge_history` deletes past retention | Startup calls `notify`; summary/test dispatch creates no row |
+| `Task` | None | Queue terminal hook inserts; `purge_history` deletes past retention | Pending-task cancellations can invoke hook on producer/shutdown thread |
 
 ## Consistency boundaries
 

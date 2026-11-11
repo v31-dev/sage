@@ -2,8 +2,8 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from services.db.models import Container, ContainerEvent, Task, WorkerEvent
-from services.history import purge_events, record_container_event, record_task, record_worker_event, task_history, task_history_filters, task_parts
+from services.db.models import Container, ContainerEvent, Notification, Task, WorkerEvent
+from services.history import purge_history, record_container_event, record_task, record_worker_event, task_history, task_history_filters, task_parts
 from services.logs import Logs
 from utils.logging import sub_task_id, task_id
 from utils.queue import QueuedTask
@@ -89,17 +89,24 @@ class TestTaskParts:
     assert task_parts("t1")[1] == {"id": "p1", "type": "delete", "worker": "w1"}
 
 
-def test_purging_deletes_the_events_of_both_kinds_recorded_before_the_cutoff(container, worker, clock):
+def test_purging_deletes_the_history_older_than_its_days_and_keeps_the_rest(container, worker, clock):
   record_container_event(container, "deploy", "succeeded")
   record_worker_event("w1", "reboot", "succeeded")
-  clock.advance(timedelta(days=2))
+  Notification.create(content="Deployed.")
+  record_task(finished("t-old"), "completed")
+  clock.advance(timedelta(days=14))
   record_container_event(container, "stop", "succeeded")
   record_worker_event("w1", "repair", "succeeded")
+  Notification.create(content="Stopped.")
+  record_task(finished("t-new"), "completed")
+  clock.advance(timedelta(seconds=1))
 
-  assert purge_events(clock.current - timedelta(days=1)) == 2
+  assert purge_history(14) == 4
 
   assert [event.action for event in ContainerEvent.select()] == ["stop"]
   assert [event.action for event in WorkerEvent.select()] == ["repair"]
+  assert [notification.content for notification in Notification.select()] == ["Stopped."]
+  assert [task.task_id for task in Task.select()] == ["t-new"]
 
 
 def finished(task_id_="t1", key=("lifecycle", "c1"), labels=None, scopes=("worker:w1:container:c1",), name="deploy",

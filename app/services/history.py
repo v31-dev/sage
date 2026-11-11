@@ -1,9 +1,11 @@
-from datetime import datetime, timezone
+import logging
+from datetime import datetime, timedelta, timezone
 
 from peewee import SQL, NodeList
 from playhouse.shortcuts import model_to_dict
 
 import config
+from services.db.database import HISTORY
 from services.db.models import Container, ContainerEvent, Task, Worker, WorkerEvent
 from services.logs import Logs
 from utils.common import utcnow
@@ -11,6 +13,8 @@ from utils.db import like_literal
 from utils.logging import sub_task_id, task_id
 from utils.queue import QueuedTask
 from values.names import qualified_name
+
+logger = logging.getLogger(__name__)
 
 
 def record_container_event(container: Container, action: str, transition: str, operation_id: str | None = None,
@@ -47,9 +51,13 @@ def task_parts(task_id: str) -> list[dict]:
   return [{"id": part, **events.get(part, {"type": None, "worker": None})} for part in Logs().query_task_parts(task_id)]
 
 
-def purge_events(before: datetime) -> int:
-  """Deletes the container and worker events recorded before `before`, and returns how many."""
-  return sum(model.delete().where(model.created_at < before).execute() for model in (ContainerEvent, WorkerEvent))
+def purge_history(days: int = config.RETENTION_DAYS) -> int:
+  """Deletes the history (container and worker events, notifications, tasks) older than `days`, and returns how many
+  rows."""
+  before = utcnow() - timedelta(days=days)
+  removed = sum(model.delete().where(model.created_at < before).execute() for model in HISTORY)
+  logger.info(f"Removed {removed} history rows older than {days} days.")
+  return removed
 
 
 def record_task(task: QueuedTask, status: str) -> dict:

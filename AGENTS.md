@@ -55,7 +55,7 @@ After compaction, reread the relevant `docs/` page before continuing.
 | `app/services/applications/` | Project, Application, Volume and container-placement commands, their value rules, deploy input capture and update publication |
 | `app/services/domains/` | Domain commands, routing config, artifact names and route listing, host and origin derivation, the pure apply-status decision, discovery's services, files and fingerprint, and update publication |
 | `app/services/workers/` | Worker row commands (add with a subdomain, subdomain change, removal) and the pure worker status and reboot decisions |
-| `app/services/history.py` | Container and worker event append, task parts and event retention |
+| `app/services/history.py` | Container and worker event append, task parts and history retention |
 | `app/services/backups/` | Backup key policy (archives by volume and placement id) and the catalog's reconciliation with the configured store |
 | `app/services/containers/` | Container target record (types, codec, listing), placement names and labels, deployment rendering, the `Containers` owner of each placement's last record read, and the pure status decision |
 | `app/values/` | Pure name, origin and multiline key/value rules |

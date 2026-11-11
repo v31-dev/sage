@@ -5,12 +5,10 @@ from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
 from services.db import Application, Project, Worker
-from services.logs import Logs
 from services.manager import Manager
 from services.manager.settings import SETTING_SECTIONS
 from services.metrics import Metrics
 from utils.common import get_env, utcnow
-from utils.queue import OnConflict
 
 logger = logging.getLogger(__name__)
 
@@ -70,21 +68,11 @@ async def collect_metrics():
 
 
 async def send_summary_notification():
-  Manager().add_task(
-      task=Manager().send_summary_notification,
-      scopes={"common"},
-      executor="common",
-      on_conflict=OnConflict.REPLACE,
-  )
+  Manager().request_summary()
 
 
 async def refresh_latest_release():
-  Manager().add_task(
-      task=Manager().refresh_latest_release,
-      scopes={"common"},
-      executor="common",
-      on_conflict=OnConflict.REPLACE,
-  )
+  Manager().request_release_check()
 
 
 async def backup_database():
@@ -96,29 +84,7 @@ async def start_work():
 
 
 async def cleanup():
-  Manager().add_task(
-      task=Metrics().cleanup,
-      name="metrics_cleanup",
-      scopes={"metrics"},
-      executor="metrics",
-      quiet=True,
-      on_conflict=OnConflict.REPLACE,
-  )
-  Manager().add_task(
-      task=Logs().cleanup,
-      name="logs_cleanup",
-      scopes={"common"},
-      executor="common",
-      quiet=True,
-      on_conflict=OnConflict.REPLACE,
-  )
-  Manager().request_backup_retention()
-  Manager().add_task(
-      task=Manager().cleanup,
-      scopes={"platform"},
-      executor="platform",
-      on_conflict=OnConflict.REPLACE,
-  )
+  Manager().request_cleanup()
 
 
 async def renew_certificates():

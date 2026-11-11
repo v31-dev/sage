@@ -1,6 +1,6 @@
 """The platform's backup, which keeps its configuration in the store, and its restore, which installs one as a restart
-of the Manager would find it; what runs when Sage starts, at startup and after a restore; and the restore and backup
-facts the pages show."""
+of the Manager would find it; what runs when Sage starts, at startup and after a restore; its daily cleanup; the check
+for a newer release; and the restore and backup facts the pages show."""
 import logging
 from datetime import datetime
 from pathlib import Path
@@ -11,7 +11,11 @@ from services.containers.targets import Containers
 from services.db.database import Database
 from services.db.models import Backup
 from services.domains.state import Domains
+from services.history import purge_history
+from services.logs import Logs
+from services.metrics import Metrics
 from services.notification import Notifications
+from services.releases import Releases
 from services.s3 import S3
 from services.settings import Settings
 from services.updates import Fact, Updates, UpdateSource
@@ -50,7 +54,7 @@ class PlatformMixin:
   def request_startup(self):
     """Requests what runs when Sage starts, at startup and after a platform restore: the workers' observation, whose
     setups follow, and their paths; the containers' observation; the certificates' renewal; the Domain pass, whose
-    discovery follows; the backup discovery; the settings checks."""
+    discovery follows; the backup discovery; the settings checks; the release check."""
     self.request_worker_observation()
     self.request_worker_paths()
     self.request_container_observation()
@@ -58,7 +62,24 @@ class PlatformMixin:
     self.request_domain_reconciliation()
     self.request_backup_discovery()
     self.request_settings_checks()
-    # TODO(36 step 4H): the release check.
+    self.request_release_check()
+
+  def request_cleanup(self):
+    """Requests the daily cleanup, each part a task of its own: the metrics, logs and history past their retention,
+    and the store's old backups."""
+    self.add_task(task=Metrics().cleanup, key=("metrics_cleanup",), scopes={"metrics"}, executor="metrics", quiet=True,
+                  on_conflict=OnConflict.REPLACE)
+    self.add_task(task=Logs().cleanup, key=("logs_cleanup",), scopes=set(), executor="common", quiet=True,
+                  on_conflict=OnConflict.REPLACE)
+    self.add_task(task=purge_history, key=("purge_history",), scopes=set(), executor="common", quiet=True,
+                  on_conflict=OnConflict.REPLACE)
+    self.request_backup_retention()
+
+  def request_release_check(self, quiet: bool = True) -> str:
+    """Queues fetching the newest release: quietly from the schedule and at startup, visibly when asked for. The
+    task's id."""
+    return self.add_task(task=Releases().refresh, key=("refresh_latest_release",), scopes={"release"}, executor="common",
+                         on_conflict=OnConflict.REPLACE, quiet=quiet).task_id
 
   def request_platform_backup(self) -> str | None:
     """Queues a platform backup into the configured store; None without one. It holds only its part of the store, so
