@@ -133,7 +133,7 @@ class TestDeletion:
     manager.request_backup_deletion(backup.id)
     assert catalog() == [] and (UpdateSource.BACKUPS, None) in signals
     part = hashlib.sha256(backup.s3_path.encode()).hexdigest()[:16]
-    assert queued(manager) == [(("delete_archive", backup.s3_path), [f"backup:store:sa:delete:{part}"],
+    assert queued(manager) == [(("delete_archive", backup.s3_path), [f"backup:store:sa:archive:{part}"],
                                 {"s3_path": backup.s3_path, "storage_id": "sa"}, {"Backup of": "data"}, False)]
 
   def test_a_platform_backup_is_named_so(self, manager, stores, db):

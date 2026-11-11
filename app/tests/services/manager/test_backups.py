@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import io
 import os
 import stat
@@ -15,7 +16,9 @@ from services.backups.keys import parse_volume_archive, taken_at
 from services.containers.placement import runtime_name, volume_dir
 from services.containers.record import Applied, Baseline, Operation, Settled, TargetRecord
 from services.db.models import Backup, Container, Volume
+from services.manager.backup_catalog import BackupCatalogMixin
 from services.manager.backups import BackupsMixin
+from services.manager.queue import SCOPES
 from services.s3 import S3
 from services.tailscale import Tailscale
 from tests.services.manager.test_containers import PAGE, VERIFIED, Lifecycle, Worker, authority, deployed, events, place, worker_record
@@ -23,6 +26,7 @@ from utils.archive import decrypt_file
 from utils.common import get_env
 from utils.errors import Conflict
 from utils.logging import TaskFailed, task_id
+from utils.queue import QueuedTask, QueueState, TaskQueue, next_to_start
 
 CURL = """#!/bin/sh
 # A presigned link is a local path: an upload copies the file there and answers 200, or 403 with `upload-fails` naming a
@@ -101,8 +105,11 @@ class Store:
       return {member.name: archive.extractfile(member).read() for member in archive.getmembers() if member.isfile()}
 
 
-class Manager(BackupsMixin, Lifecycle):
-  pass
+class Manager(BackupsMixin, BackupCatalogMixin, Lifecycle):
+  def __init__(self):
+    super().__init__()
+    self.task_queue = TaskQueue(SCOPES, {"app": self.pool, "common": self.pool}, record=lambda task, status: None,
+                                notify=self._queue_changed)
 
 
 @pytest.fixture
@@ -583,8 +590,26 @@ class TestRestoreRequests:
     assert (tuple(task["key"]), task["name"], task["params"]) == (
         ("lifecycle", container.id), "restore_stopped", {"container_id": container.id, "backup_id": backup.id, "volume_id": volumes[1].id,
                                                          "storage_id": "s1"})
-    assert task["scopes"] == sorted({f"worker:{container.worker_id}:container:{container.id}", f"backup:store:s1:read:{backup.id}"})
+    part = hashlib.sha256(backup.s3_path.encode()).hexdigest()[:16]
+    assert task["scopes"] == sorted({f"worker:{container.worker_id}:container:{container.id}", f"backup:store:s1:archive:{part}"})
     assert (task["labels"]["Volume"], task["labels"]["Backup of"]) == ("logs", "data")
+
+  async def test_a_restore_and_the_deletion_of_its_archive_take_turns_and_other_archives_do_not_wait(
+          self, manager, worker_host, container, volumes, backup):
+    from services.containers.targets import Containers
+    place(container, stopped(container))
+    await Containers().read(container)
+    other = Backup.create(s3_path="base/backups/applications/y", storage_id="s1", type="application",
+                          source_volume_id=volumes[0].id, source_volume_name="data", application=container.application_id)
+    manager.request_restore(container.id, backup.id, volumes[0].id)
+    manager.request_backup_deletion(backup.id)
+    manager.request_backup_deletion(other.id)
+    restore, own, elsewhere = [QueuedTask(name=task["name"], key=tuple(task["key"]), scopes=frozenset(task["scopes"]),
+                                          task=None, executor=task["executor"]) for task in manager.task_queue.snapshot()["queued"]]
+    assert (restore.name, own.key, elsewhere.key) == (
+        "restore_stopped", ("delete_archive", backup.s3_path), ("delete_archive", other.s3_path))
+    assert next_to_start(QueueState.RUNNING, [own, elsewhere], [restore]) == [elsewhere]
+    assert next_to_start(QueueState.RUNNING, [restore], [own]) == []
 
   async def test_it_is_refused_while_the_container_runs(self, manager, worker_host, container, volumes, backup):
     from services.containers.targets import Containers

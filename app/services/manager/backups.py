@@ -2,6 +2,7 @@
 container's runtime, and the restore of a backup into a stopped container's volume, with the requests that queue them.
 Tasks name volumes by their names in their labels: their ids mean nothing to people, and a backup can be restored into
 another volume, on another container and worker."""
+import hashlib
 import logging
 from dataclasses import replace
 from datetime import datetime
@@ -37,6 +38,11 @@ def configured_session(storage_id: str | None = None) -> S3Session | None:
   except Exception:
     return None
   return session if storage_id in (None, session.identity) else None
+
+
+def archive_scope(storage_id: str, s3_path: str) -> str:
+  """The scope of one archive in its store, which a restore from it and its deletion share."""
+  return f"backup:store:{storage_id}:archive:{hashlib.sha256(s3_path.encode()).hexdigest()[:16]}"
 
 
 class BackupsMixin:
@@ -103,7 +109,7 @@ class BackupsMixin:
     return self.admitted_task_id(self.queue_lifecycle(
         container, "restore_stopped", self.restore_container, {},
         {"backup_id": backup.id, "volume_id": volume.id, "storage_id": session.identity},
-        (f"backup:store:{session.identity}:read:{backup.id}",), {"Volume": volume.name, "Backup of": backup.source_volume_name}))
+        (archive_scope(session.identity, backup.s3_path),), {"Volume": volume.name, "Backup of": backup.source_volume_name}))
 
   async def backup_container(self, container_id: str, volume_ids: list[str], storage_id: str):
     """Archives the volumes of a stopped container into the store it was requested for, then commits it stopped and

@@ -1,7 +1,6 @@
 """The configured store's backup catalog: a backup's archive deleted after its row, the Backup table made to mirror the
 store, and the backups past the retention period removed, with the requests that queue them. Each holds the store's
 scope, or a part of it, by its identity, and does nothing to another store: one configured since is never touched."""
-import hashlib
 import logging
 from datetime import timedelta
 from functools import partial
@@ -16,7 +15,7 @@ from utils.common import utcnow
 from utils.logging import TaskFailed
 from utils.queue import OnConflict
 
-from .backups import configured_session
+from .backups import archive_scope, configured_session
 
 logger = logging.getLogger(__name__)
 
@@ -25,9 +24,8 @@ class BackupCatalogMixin:
   def request_backup_deletion(self, backup_id: int) -> str:
     """Deletes the backup's row now and queues the deletion of its archive from the store it is in. The task's id."""
     backup = remove_backup(backup_id)
-    part = hashlib.sha256(backup.s3_path.encode()).hexdigest()[:16]
     return self.add_task(task=self.delete_archive, key=("delete_archive", backup.s3_path),
-                         scopes={f"backup:store:{backup.storage_id}:delete:{part}"}, executor="common",
+                         scopes={archive_scope(backup.storage_id, backup.s3_path)}, executor="common",
                          params={"s3_path": backup.s3_path, "storage_id": backup.storage_id},
                          labels={"Backup of": backup.source_volume_name if backup.type == "application" else "the platform"}).task_id
 
