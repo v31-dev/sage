@@ -5,9 +5,12 @@ import pytest
 import requests
 
 from services import notification
+from services.db.models import Notification
 from services.notification import (CHANNELS, NOTIFICATION_STYLES, TEST_NOTIFICATION, ChannelCheckFailed, Notifications, _request_webhook,
                                    webhook_failure)
 from services.settings import Settings
+from services.updates import UpdateFeed, Updates
+from tests.conftest import Signals
 
 URL = "https://discord.test/api/webhooks/1/SECRET-TOKEN"
 
@@ -273,3 +276,35 @@ class TestDispatch:
       configured_notifications.dispatch({"content": "hello"})
 
     assert "Failed to send notification to Discord: boom" in caplog.text
+
+
+class TestNotify:
+  @pytest.fixture
+  def sent(self, monkeypatch):
+    """What was handed to the channels' pool."""
+    sent = []
+    monkeypatch.setattr(notification, "submit_with_context", lambda executor, func, *args: sent.append((executor, func, args)))
+    return sent
+
+  @pytest.fixture
+  def hub(self, register):
+    return register(Updates, Signals())
+
+  def test_a_notice_is_recorded_pushed_and_sent_with_its_page_as_the_managers_address(
+          self, configured_notifications, hub, sent, caplog):
+    with caplog.at_level(logging.INFO, logger="services.notification"):
+      configured_notifications.notify("Demo / Web on w1 deployed.", "success", "/projects/demo/web")
+    [row] = Notification.select()
+    assert (row.type, row.content, row.link) == ("success", "Demo / Web on w1 deployed.",
+                                                 "https://manager.core.example.test/projects/demo/web")
+    [(feed, [pushed], _)] = hub.published
+    assert (feed, pushed["id"], pushed["link"]) == (UpdateFeed.NOTIFICATIONS, row.id, row.link)
+    [(executor, func, (instance,))] = sent
+    assert (executor, func, instance.id) == (notification.NOTIFICATIONS_EXECUTOR, configured_notifications.dispatch, row.id)
+    assert [(record.levelname, record.message) for record in caplog.records] == [("INFO", "Demo / Web on w1 deployed.")]
+
+  @pytest.mark.parametrize("level, logged", [("info", "INFO"), ("warning", "WARNING"), ("error", "ERROR")])
+  def test_a_notice_without_a_page_has_no_link_and_is_logged_at_its_level(self, notifications, hub, sent, caplog, level, logged):
+    with caplog.at_level(logging.INFO, logger="services.notification"):
+      notifications.notify("Manager started.", level)
+    assert (Notification.get().link, caplog.records[-1].levelname) == (None, logged)

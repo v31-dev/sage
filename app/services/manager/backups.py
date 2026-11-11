@@ -9,13 +9,14 @@ from datetime import datetime
 from croniter import croniter
 
 import config
-from services.backups.keys import BACKUP_TIMESTAMP_FORMAT, volume_archive_key
+from services.backups.keys import BACKUP_TIMESTAMP_FORMAT, taken_at, volume_archive_key
 from services.containers.decisions import maintenance_refusal
 from services.containers.placement import placement_dir
 from services.containers.record import Authority, Baseline, Settled
 from services.containers.targets import Containers
 from services.db.models import Application, Backup, Container, Instance, Project, Volume
 from services.history import record_container_event
+from services.notification import Notifications
 from services.s3 import S3, S3Session
 from services.tailscale import Tailscale
 from services.updates import Updates, UpdateSource
@@ -127,7 +128,10 @@ class BackupsMixin:
       await self._fail(container, record, error)
     record_container_event(container, "backup_stopped", "succeeded", operation.id, dedupe_key=f"{operation.id}:succeeded")
     await mark(container, "Backed up")
-    # TODO(36 step 4H): self.notify(f"Backup created for container {container.id} on worker {container.worker_id}.", "success")
+    name, page = self._notice(container)
+    volumes = ", ".join(volume.name for volume in Volume.select(Volume.name).where(
+        (Volume.application == container.application_id) & Volume.id.in_(volume_ids)).order_by(Volume.name))
+    Notifications().notify(f"Backup of {volumes} from {name} created.", "success", page)
 
   async def backup_container_preserving(self, container_id: str, volume_ids: list[str], storage_id: str):
     """Archives the container's volumes into the store it was requested for and keeps its runtime: whether it ran,
@@ -163,8 +167,8 @@ class BackupsMixin:
       record_container_event(container, "backup_preserve", "failed", operation.id, reason={"error": failure},
                              dedupe_key=f"{operation.id}:failed")
       await mark(container, f"Automatic backup failed: {failure}")
-      logger.error(f"Automatic backup failed: {failure}")
-      # TODO(36 step 4H): self.notify(f"Automatic backup of container {container.id} failed: {failure}", "error")
+      name, page = self._notice(container)
+      Notifications().notify(f"Automatic backup of {name} failed: {failure}", "error", page)
       raise TaskFailed()
     record_container_event(container, "backup_preserve", "succeeded", operation.id, dedupe_key=f"{operation.id}:succeeded")
     await mark(container, "Backed up")
@@ -214,7 +218,9 @@ class BackupsMixin:
     record_container_event(container, "restore_stopped", "succeeded", operation.id,
                            reason={"volume": volume.name, "backup_of": backup.source_volume_name}, dedupe_key=f"{operation.id}:succeeded")
     await mark(container, f"Volume {volume.name} restored from a backup of {backup.source_volume_name}")
-    # TODO(36 step 4H): self.notify(f"Volume {volume.name} restored on container {container.id}.", "success")
+    name, page = self._notice(container)
+    Notifications().notify(f"Volume {volume.name} of {name} restored from the backup of {backup.source_volume_name} taken at "
+                           f"{taken_at(backup.s3_path)}.", "success", page)
 
   def _request_refusal(self, contract: str, containers: list[Container]) -> str | None:
     """The first refusal `maintenance_refusal` gives one of the containers, from its record and its runtime as held."""

@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from services.backups.keys import taken_at
 from services.containers.record import TargetRead
 from services.containers.targets import Containers
 from services.db.models import Backup, ContainerEvent, Instance, Notification, Worker
@@ -97,8 +98,10 @@ def stores(tmp_path, register):
 
 @pytest.fixture
 def manager(db, stores, register):
-  register(Notifications, SimpleNamespace(install=lambda values: None))
+  notices = []
+  register(Notifications, SimpleNamespace(install=lambda values: None, notify=lambda *notice: notices.append(notice)))
   manager = Manager()
+  manager.notices = notices
   manager.fetched = []
   register(Releases, SimpleNamespace(refresh=lambda: manager.fetched.append(True)))
   token = active_executor.set(manager.pool)
@@ -134,6 +137,7 @@ class TestBackup:
     decrypt_file(stores.a.root / row.s3_path, tmp_path / "plain.db")
     held = tables(tmp_path / "plain.db")
     assert (held["worker"], held["notification"], held["backup"]) == (1, 0, 0)
+    assert manager.notices == [("Platform backup created.", "success", "/backups")]
 
   async def test_it_is_refused_once_the_store_changed_and_a_failed_upload_fails_it(self, manager, stores):
     stores.configured = stores.b
@@ -143,6 +147,7 @@ class TestBackup:
     with pytest.raises(TaskFailed):
       await manager.backup_platform("sa")
     assert Backup.select().count() == 0
+    assert manager.notices == [("The platform backup failed: AccessDenied", "error", "/backups")]
 
 
 class TestRestoreRequest:
@@ -197,6 +202,7 @@ class TestRestore:
     assert manager.task_state() == "running" and manager.task_queue.snapshot()["queued"] == []
     assert manager.requested == STARTUP and manager.fetched == [True]
     assert ran == []
+    assert manager.notices[-1] == (f"Platform restored from the backup taken at {taken_at(backup.s3_path)}.", "success", "/backups")
 
   async def test_a_failed_download_changes_nothing_and_the_waiting_tasks_run(self, manager, stores, backup):
     ran = []
@@ -211,6 +217,8 @@ class TestRestore:
     assert sorted(worker.hostname for worker in Worker.select()) == ["w1", "w2"] and Settings().get("s3") == STORE_B
     assert Workers().setup("w1") == "succeeded" and manager.requested == [] and ran == [True]
     assert manager.task_state() == "running"
+    assert manager.notices[-1] == (f"The platform restore from the backup taken at {taken_at(backup.s3_path)} failed; nothing changed: "
+                                   "AccessDenied", "error", "/backups")
 
   async def test_a_restore_refused_once_the_store_changed_changes_nothing(self, manager, stores, backup):
     (stores.b.root / backup.s3_path).parent.mkdir(parents=True)

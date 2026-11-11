@@ -22,6 +22,8 @@ from utils.executor import active_executor
 from utils.logging import TaskFailed
 from utils.queue import TaskQueue
 
+MANAGER = "https://manager.core.example.test"
+
 
 class TestSetupDomain:
   """Cloudflare is connected before Sage serves, retrying a cold start for failures that clear by themselves; a
@@ -103,7 +105,7 @@ class Manager(CertificatesMixin, QueueMixin):
 @pytest.fixture
 def certs(data_dir, clock, register):
   clock.set(datetime.now(timezone.utc).replace(tzinfo=None))
-  register(Updates, SimpleNamespace(changed=lambda source, key=None: None))
+  register(Updates, SimpleNamespace(changed=lambda source, key=None: None, publish=lambda feed, rows, key=None: None))
   return Certs()
 
 
@@ -195,8 +197,14 @@ class TestRequest:
 
 
 class TestRenewal:
-  async def test_missing_certificates_are_issued_one_at_a_time_for_the_names_the_rows_give(self, manager, certs, ca, workers):
+  async def test_missing_certificates_are_issued_one_at_a_time_for_the_names_the_rows_give(
+          self, manager, certs, ca, workers, notices):
     await manager.renew_certificates()
+    assert notices()[0] == ("success", f"Issued the certificate for manager.core.example.test; it expires on "
+                            f"{certs.manager.expiry():%Y-%m-%d}.", f"{MANAGER}/cloudflare")
+    assert [content.split(";")[0] for _, content, _ in notices()] == [
+        f"Issued the certificate for {name}" for name in ("manager.core.example.test", "discovery.int.example.test",
+                                                          "*.red.int.example.test", "*.blue.int.example.test")]
     assert ca.events == [("issued", ("manager.core.example.test",)), ("issued", ("discovery.int.example.test",)),
                          ("issued", ("*.red.int.example.test",)), ("issued", ("*.blue.int.example.test",))]
     assert ca.most == 1
@@ -239,7 +247,7 @@ class TestRenewal:
     assert ca.revocations == 1
 
   async def test_a_failed_issue_keeps_the_current_certificate_lets_the_others_go_on_and_fails_the_task(
-          self, manager, certs, ca, workers):
+          self, manager, certs, ca, workers, notices):
     issued(certs)
     certificate = certs.workers["w1"]
     write_certificate(certificate.fullchain_path.parent, certificate.names, timedelta(days=3))
@@ -251,6 +259,7 @@ class TestRenewal:
     with pytest.raises(TaskFailed):
       await manager.renew_certificates()
     assert certificate.is_valid() and certificate.key_path.read_bytes() == key
+    assert notices()[-1] == ("error", "Certificates could not all be renewed: *.red.int.example.test: order rejected", f"{MANAGER}/cloudflare")
     assert certificate.error == "order rejected"
     assert ca.events == [("issued", ("*.blue.int.example.test",))]
 

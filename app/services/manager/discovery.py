@@ -6,6 +6,7 @@ import config
 from services.cloudflare import Cloudflare
 from services.db.models import Domain, Worker
 from services.domains.discovery import PREFIX, SUFFIX, discovery_files, discovery_fingerprint, discovery_services, files_command
+from services.notification import Notifications
 from services.tailscale import Tailscale
 from services.workers.state import Workers
 from utils.common import get_env
@@ -59,8 +60,7 @@ class DiscoveryMixin:
         await Tailscale().exec_command(hostname, "rm -f " + " ".join(f"{dynamic}/{name}" for name in stale), timeout=30)
       await Workers().write_revision(hostname, "discovery", stamp)
     except Exception as error:
-      logger.error(f"Discovery could not be published on {hostname}: {error}")
-      # TODO(36 step 4H): self.notify(f"Discovery could not be published on worker {hostname}: {error}", "error")
+      Notifications().notify(f"Discovery could not be published on worker {hostname}: {error}", "error", f"/workers/{hostname}")
       raise TaskFailed()
     logger.info(f"Discovery published on {hostname}: {len(services)} service(s).")
 
@@ -83,6 +83,5 @@ class DiscoveryMixin:
           cloudflare.sync_dns_records, {"sage-tunnel": {f"discovery.{cloudflare.domain}": f"{cloudflare.tunnel_id}.cfargotunnel.com"}},
           zone=zone, type="CNAME", proxied=True)
     except Exception as error:
-      logger.error(f"The discovery DNS records could not be published: {error}")
-      # TODO(36 step 4H): self.notify(f"The discovery DNS records could not be published: {error}", "error")
+      Notifications().notify(f"The discovery DNS records could not be published: {error}", "error", "/domains")
       raise TaskFailed()

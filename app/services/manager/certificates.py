@@ -9,6 +9,7 @@ import config
 from services.certs import TEMPLATE_DIGEST, Certs
 from services.cloudflare import Cloudflare
 from services.db.models import Worker
+from services.notification import Notifications
 from services.tailscale import Tailscale
 from services.workers.state import Workers
 from utils.common import fill
@@ -58,19 +59,19 @@ class CertificatesMixin:
       try:
         issued = await run_in_executor_with_context(certs.ensure if certificate.names else certs.retire, certificate)
       except Exception as error:
-        failures.append(f"{identity}: {error}")
+        failures.append(f"{', '.join(certificate.names) or identity}: {error}")
         continue
       if issued:
         if identity == "manager":
           certs.reload_local_tls()
-        # TODO(36 step 4H): self.notify(f"Issued certificate for {', '.join(certificate.names)}; expires {certificate.expiry()}.", "success")
+        Notifications().notify(f"Issued the certificate for {', '.join(certificate.names)}; it expires on "
+                               f"{certificate.expiry():%Y-%m-%d}.", "success", "/cloudflare")
     for worker in Worker.select(Worker.hostname):
       if Tailscale().ssh(worker.hostname) == "reachable" and Workers().setup(worker.hostname) == "succeeded":
         self.request_certificate_distribution(worker.hostname)
     self.worker_state.check()
     if failures:
-      logger.error("Certificate maintenance failed: " + "; ".join(failures))
-      # TODO(36 step 4H): self.notify("Certificate maintenance failed: " + "; ".join(failures), "error")
+      Notifications().notify("Certificates could not all be renewed: " + "; ".join(failures), "error", "/cloudflare")
       raise TaskFailed()
 
   def request_certificate_distribution(self, hostname: str, force: bool = False):
@@ -121,8 +122,7 @@ class CertificatesMixin:
       await Workers().write_revision(hostname, "certs", json.dumps(proofs, sort_keys=True))
       Workers().record_certificates(hostname, proofs)
     except Exception as error:
-      logger.error(f"The certificates could not be copied to {hostname}: {error}")
-      # TODO(36 step 4H): self.notify(f"The certificates could not be copied to worker {hostname}: {error}", "error")
+      Notifications().notify(f"The certificates could not be copied to worker {hostname}: {error}", "error", f"/workers/{hostname}")
       raise TaskFailed()
     finally:
       self.worker_state.check()

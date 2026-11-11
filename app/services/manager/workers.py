@@ -15,6 +15,7 @@ from services.domains.config import parse_route_listing, routes_command
 from services.domains.updates import domain_changed
 from services.history import record_worker_event
 from services.metrics import Metrics
+from services.notification import Notifications
 from services.tailscale import Tailscale
 from services.updates import Fact, Updates, UpdateSource
 from services.worker_reports import WorkerReports
@@ -38,6 +39,9 @@ OBSERVED = ("offline", "not ready", "online")
 # Why a worker set up but not ready gets its stack started: part of it is down, Traefik does not answer, or it is
 # silent (for longer than WORKER_STACK_SILENCE_SECONDS).
 REPAIRED = ("stack_down", "traefik_down", "not_reporting")
+# Why a reboot was not confirmed in time, by how far it got.
+REBOOT_FAILURES = {"old_boot": "it did not restart", "not_ready": "it restarted but is not ready",
+                   "unknown": "it did not answer"}
 
 
 class WorkersMixin:
@@ -65,8 +69,9 @@ class WorkersMixin:
 
   def workers_state_fact(self) -> Fact:
     """Every worker's state, checked at each observation and report: a worker whose state changed is shown again, with
-    the domains routed to it when its readiness changed, a change of its observed status is recorded in its history,
-    and discovery is published again when the ready workers, or those reachable and set up, changed."""
+    the domains routed to it when its readiness changed, a change of its observed status is recorded in its history (with
+    a notice when it went offline), a notice is sent when one that was offline answers again, and discovery is published
+    again when the ready workers, or those reachable and set up, changed."""
     previous = {}
 
     def changed(current):
@@ -78,6 +83,10 @@ class WorkersMixin:
                 and {before.view.status, after.view.status} <= set(OBSERVED)):
           record_worker_event(hostname, "connectivity" if "offline" in (before.view.status, after.view.status) else "readiness",
                               "observed", reason={"status": after.view.status, "reason": after.view.reason})
+          if after.view.status == "offline":
+            Notifications().notify(f"Worker {hostname} is offline.", "error", f"/workers/{hostname}")
+        if before is not None and after is not None and before.view.status == "offline" and after.ssh == "reachable":
+          Notifications().notify(f"Worker {hostname} is reachable again.", "success", f"/workers/{hostname}")
       readiness = {hostname for hostname in affected if hostname in previous and hostname in current
                    and previous[hostname].view.ready != current[hostname].view.ready}
       published = [({hostname for hostname, state in states.items() if state.view.ready},
@@ -209,8 +218,7 @@ class WorkersMixin:
       Workers().record_setup(hostname, "failed", address)
       self.setup_failures[hostname] = monotonic()
       record_worker_event(hostname, "infrastructure", "failed", reason={"error": str(error)})
-      logger.error(f"Worker {hostname} could not be set up: {error}")
-      # TODO(36 step 4H): self.notify(f"Failed to set up worker {hostname}: {error}", "error")
+      Notifications().notify(f"Worker {hostname} could not be set up: {error}", "error", f"/workers/{hostname}")
       raise TaskFailed()
     finally:
       self.worker_state.check()
@@ -226,7 +234,8 @@ class WorkersMixin:
       return
     if await self._start_stack(hostname):
       record_worker_event(hostname, "repair", "succeeded", reason={"started": "stack"})
-      # TODO(36 step 4H): self.notify(f"Worker {hostname}: started its stack.", "warning")
+      Notifications().notify(f"Worker {hostname}: started the parts of its stack that were stopped.", "warning",
+                             f"/workers/{hostname}")
     else:
       logger.warning(f"Worker {hostname}'s stack was not ready, but starting it changed nothing.")
 
@@ -251,9 +260,12 @@ class WorkersMixin:
       raise
     if Workers().setup(hostname) != "succeeded":
       record_worker_event(hostname, "add", "failed", reason={"setup": Workers().setup(hostname) or "not reached"})
-      logger.error(f"Worker {hostname} is added but not set up: {Workers().setup(hostname) or 'its SSH server does not answer'}.")
+      Notifications().notify(f"Worker {hostname} is added but not set up: "
+                             f"{'it is managed by another Sage' if Workers().setup(hostname) == 'refused' else 'its SSH server does not answer'}.",
+                             "error", f"/workers/{hostname}")
       raise TaskFailed()
     record_worker_event(hostname, "add", "succeeded")
+    Notifications().notify(f"Worker {hostname} added.", "success", f"/workers/{hostname}")
 
   def request_remove_worker(self, hostname: str) -> str:
     """Queues the worker's removal; refused while it has containers or internal domains. The task's id."""
@@ -277,10 +289,10 @@ class WorkersMixin:
       commands.remove_worker(hostname)
     except Conflict as refusal:
       record_worker_event(hostname, "remove", "rejected", reason={"refusal": str(refusal)})
-      logger.error(f"Worker {hostname} is not removed: {refusal}")
+      Notifications().notify(f"Worker {hostname} was not removed: {refusal}", "error", f"/workers/{hostname}")
       raise TaskFailed()
     record_worker_event(hostname, "remove", "admitted")
-    home, cleaned = config.WORKER_HOME_DIR, False
+    home, cleaned, left = config.WORKER_HOME_DIR, False, []
     if await Tailscale().reachable(hostname):
       try:
         owner = worker_owner(await Workers().read_revisions(hostname))
@@ -289,18 +301,16 @@ class WorkersMixin:
               hostname, f"docker compose -f {home}/docker-compose.yml down --remove-orphans && rm -rf {home}", timeout=120)
           cleaned = True
       except Exception as error:
-        logger.warning(f"Worker {hostname} is removed from Sage, but its stack could not be stopped: {error}. "
-                       "Stop it and remove its files by hand.")
+        left.append(f"its stack could not be stopped ({error}): stop it and remove its files by hand")
     else:
-      logger.warning(f"Worker {hostname} does not answer, so it is removed from Sage only; anything on the VM, including the "
-                     "VM itself, has to be removed by hand.")
+      left.append("it does not answer: anything on the VM, including the VM itself, has to be removed by hand")
     cloudflare = Cloudflare()
     await run_in_executor_with_context(cloudflare.connect)
     await run_in_executor_with_context(cloudflare.sync_worker_records, hostname)
     try:
       await run_in_executor_with_context(cloudflare.delete_tunnel, cloudflare.worker_tunnel_name(hostname))
     except Exception as error:
-      logger.warning(f"Worker {hostname} is removed, but its Cloudflare tunnel could not be deleted: {error}. Delete it by hand.")
+      left.append(f"its Cloudflare tunnel could not be deleted ({error}): delete it by hand")
     Workers().forget(hostname)
     WorkerReports().forget(hostname)
     Metrics().forget(hostname)
@@ -309,7 +319,10 @@ class WorkersMixin:
     self.stack_repairs.pop(hostname, None)
     record_worker_event(hostname, "remove", "succeeded", reason={"cleaned": cleaned})
     self.request_certificate_renewal()
-    # TODO(36 step 4H): notify the warnings above.
+    if left:
+      Notifications().notify(f"Worker {hostname} is removed from Sage, but " + "; ".join(left) + ".", "warning", "/workers")
+    else:
+      Notifications().notify(f"Worker {hostname} removed.", "success", "/workers")
     self.worker_state.check()
 
   def request_reboot(self, hostname: str) -> str:
@@ -328,7 +341,8 @@ class WorkersMixin:
       return
     if Tailscale().ssh(hostname) != "reachable" or Workers().setup(hostname) != "succeeded":
       record_worker_event(hostname, "reboot", "rejected", reason={"ssh": Tailscale().ssh(hostname), "setup": Workers().setup(hostname)})
-      logger.error(f"Worker {hostname} is not rebooted: it is not reachable and set up.")
+      Notifications().notify(f"Worker {hostname} was not rebooted: it is not reachable and set up.", "error",
+                             f"/workers/{hostname}")
       raise TaskFailed()
     baseline = await self._boot_id(hostname)
     record_worker_event(hostname, "reboot", "admitted", reason={"boot_id": baseline})
@@ -358,9 +372,11 @@ class WorkersMixin:
         break
     if outcome != "verified":
       record_worker_event(hostname, "reboot", "failed", reason={"outcome": outcome})
-      logger.error(f"Worker {hostname}'s reboot was not verified in time: {outcome}.")
+      Notifications().notify(f"Worker {hostname}'s reboot could not be confirmed in time: {REBOOT_FAILURES[outcome]}.", "error",
+                             f"/workers/{hostname}")
       raise TaskFailed()
     record_worker_event(hostname, "reboot", "verified")
+    Notifications().notify(f"Worker {hostname} rebooted.", "success", f"/workers/{hostname}")
 
   def worker_subdomain_changed(self, hostname: str):
     """After the worker's subdomain changed (its command): its `*.<subdomain>.int` record moves with its convergence,

@@ -108,10 +108,13 @@ def register():
 
 class Signals:
   def __init__(self):
-    self.signals = []
+    self.signals, self.published = [], []
 
   def changed(self, source, key=None):
     self.signals.append((source, key))
+
+  def publish(self, feed, rows, key=None):
+    self.published.append((feed, rows, key))
 
 
 @pytest.fixture
@@ -119,6 +122,13 @@ def signals(register):
   """What was published to the update hub, as (source, key) pairs in order."""
   from services.updates import Updates
   return register(Updates, Signals()).signals
+
+
+@pytest.fixture
+def notices(db):
+  """The notices recorded so far, oldest first, as (type, content, link)."""
+  from services.db.models import Notification
+  return lambda: [(row.type, row.content, row.link) for row in Notification.select().order_by(Notification.id)]
 
 
 @pytest.fixture

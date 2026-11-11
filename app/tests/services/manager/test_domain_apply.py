@@ -21,6 +21,8 @@ from utils.queue import TaskQueue
 HOME = "/opt/sage"
 DYNAMIC = f"{HOME}/traefik/dynamic"
 
+MANAGER = "https://manager.core.example.test"
+
 
 class Hosts:
   """The workers as an apply sees them: each one's SSH fact, its files by path, the commands run on it, and a command
@@ -62,6 +64,7 @@ class Provider:
 
   def __init__(self):
     self.domain, self.zone, self.tunnels, self.fails, self.calls = "example.test", {}, {}, None, []
+    self.manager_hostname = "manager.core.example.test"
 
   def connect(self):
     pass
@@ -280,9 +283,12 @@ class TestApply:
     assert provider.zone == {f"sage-domain-{public.id}": {}}
     assert view.status == "synced"
 
-  async def test_a_failed_route_write_is_the_routes_error_and_dns_is_not_touched(self, manager, public, hosts, provider):
+  async def test_a_failed_route_write_is_the_routes_error_and_dns_is_not_touched(self, manager, public, hosts, provider, notices):
     hosts.fails = f"domain-{public.id}.yml"
     view = (await applied(manager, public)).view
+    [(level, content, link)] = notices()
+    assert (level, content.startswith("Domain shop.example.test: its route could not be applied: Error writing"), link) == (
+        "error", True, f"{MANAGER}/domains")
     assert provider.calls == []
     assert (view.status, view.reason) == ("error", "route")
     assert "Error writing" in view.error
@@ -294,9 +300,10 @@ class TestApply:
     view = (await applied(manager, public)).view
     assert (view.status, view.reason) == ("error", "route")
 
-  async def test_a_dns_failure_after_the_route_keeps_what_the_route_did(self, manager, public, hosts, provider):
+  async def test_a_dns_failure_after_the_route_keeps_what_the_route_did(self, manager, public, hosts, provider, notices):
     provider.fails = "rate limited"
     view = (await applied(manager, public)).view
+    assert notices() == [("error", "Domain shop.example.test: its DNS records could not be applied: rate limited", f"{MANAGER}/domains")]
     assert hosts.route("w1", public) == fingerprint(public)
     assert Domains().route(public.id, "w1") == RouteObservation("present", fingerprint(public))
     assert (view.status, view.reason, view.error) == ("error", "dns", "rate limited")

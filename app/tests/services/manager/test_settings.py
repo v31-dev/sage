@@ -239,7 +239,6 @@ class TestScheduledChecks:
     assert [(key, quiet) for key, _, _, _, quiet in settled.queued() if key == ("check_s3",)] == [(("check_s3",), False)]
     assert settled.applying_tasks()["s3"] is not None
 
-
   def test_its_fact_is_the_task_that_makes_each_section_apply(self, settled):
     Settings().set("s3", STORE)
     settled.settings_saved("s3")

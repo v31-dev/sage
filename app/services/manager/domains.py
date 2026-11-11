@@ -11,6 +11,7 @@ from services.domains.config import DomainConfig, domain_artifact_name, domain_a
 from services.domains.decisions import ApplyOutcome, RouteObservation, route_goal
 from services.domains.state import Domains, DomainState, domain_state
 from services.domains.updates import domain_changed
+from services.notification import Notifications
 from services.tailscale import Tailscale
 from services.updates import Fact
 from services.workers.state import Workers
@@ -20,6 +21,9 @@ from utils.logging import TaskFailed
 from utils.queue import OnConflict
 
 logger = logging.getLogger(__name__)
+
+# What a notice calls each part of a Domain's apply.
+APPLY_PARTS = {"route": "its route", "dns": "its DNS records"}
 
 
 def capture(domain: Domain) -> DomainConfig:
@@ -120,8 +124,8 @@ class DomainsMixin:
       self.request_domain_applies([domain_id])
     self.request_discovery()
     if failure is not None:
-      logger.error(f"Domain {snapshot.host or domain.name}: the {phase} apply failed: {failure}")
-      # TODO(36 step 4H): self.notify(f"Domain {snapshot.host or domain.name} sync failed at {phase}: {failure}", "error", "/domains")
+      Notifications().notify(f"Domain {snapshot.host or domain.name}: {APPLY_PARTS[phase]} could not be applied: {failure}", "error",
+                             "/domains")
       raise TaskFailed()
     if not routed:
       logger.info(f"Domain {snapshot.host or domain.name}: DNS applied; its route waits for "
@@ -193,8 +197,7 @@ class DomainsMixin:
                                 if state.view.status == "error" or state.view.reason in ("drifted", "not_applied"))
     self.request_discovery()
     if failures:
-      logger.error("The domain pass is incomplete: " + "; ".join(failures))
-      # TODO(36 step 4H): self.notify("Domain reconciliation failed: " + "; ".join(failures), "error", "/domains")
+      Notifications().notify("The domains could not all be checked: " + "; ".join(failures), "error", "/domains")
       raise TaskFailed()
     logger.info(f"Domains reconciled on {len(routes)} worker(s).")
 

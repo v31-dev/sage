@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from services.backups.keys import BACKUP_TIMESTAMP_FORMAT, PLATFORM_PREFIX, timestamp_from_key
+from services.backups.keys import BACKUP_TIMESTAMP_FORMAT, PLATFORM_PREFIX, taken_at, timestamp_from_key
 from services.containers.targets import Containers
 from services.db.database import Database
 from services.db.models import Backup
@@ -106,13 +106,12 @@ class PlatformMixin:
         await run_in_executor_with_context(encrypt_file, plain, encrypted)
         key = await session.upload_to_key(encrypted, PLATFORM_PREFIX)
     except Exception as error:
-      logger.error(f"The platform backup failed: {error}")
-      # TODO(36 step 4H): self.notify(f"The platform backup failed: {error}", "error")
+      Notifications().notify(f"The platform backup failed: {error}", "error", "/backups")
       raise TaskFailed()
     Backup.create(s3_path=key, storage_id=session.identity, type="platform")
     Updates().changed(UpdateSource.BACKUPS)
     logger.info(f"Platform backup written to {key}.")
-    # TODO(36 step 4H): self.notify(f"Platform backup created at {timestamp}.", "success")
+    Notifications().notify("Platform backup created.", "success", "/backups")
 
   def request_platform_restore(self, backup_id: int) -> str:
     """Queues the restore of a platform backup in the configured store, which starts once what runs has finished.
@@ -159,12 +158,11 @@ class PlatformMixin:
       for held in (self.setup_failures, self.stack_repairs, self.recoveries, self.orphans):
         held.clear()
     except Exception as error:
-      logger.error(f"The platform restore from {s3_path} failed{'' if restored else '; nothing changed'}: {error}")
-      # TODO(36 step 4H): self.notify(f"The platform restore from {s3_path} failed: {error}", "error")
+      Notifications().notify(f"The platform restore from the backup taken at {taken_at(s3_path)} failed"
+                             f"{'' if restored else '; nothing changed'}: {error}", "error", "/backups")
       raise TaskFailed()
     finally:
       self.end_restore(restored)
       if restored:
         self.request_startup()
-    logger.info(f"The platform was restored from {s3_path}.")
-    # TODO(36 step 4H): self.notify(f"Platform restored from backup {s3_path}.", "success")
+    Notifications().notify(f"Platform restored from the backup taken at {taken_at(s3_path)}.", "success", "/backups")

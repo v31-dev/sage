@@ -17,6 +17,8 @@ from tests.services.manager.test_domain_apply import fingerprint, queued
 from utils.executor import active_executor
 from utils.logging import TaskFailed
 
+MANAGER = "https://manager.core.example.test"
+
 
 class DiscoveryHosts(Hosts):
   """The workers as discovery sees them: their stamps read back, their discovery files listed, several files removed
@@ -64,6 +66,7 @@ class Zone:
 
   def __init__(self):
     self.domain, self.tunnel_id, self.records, self.listings, self.fails = "example.test", "tunnel-platform", [], 0, None
+    self.manager_hostname = "manager.core.example.test"
 
   def connect(self):
     pass
@@ -267,11 +270,14 @@ class TestPublication:
     await manager.publish_discovery("w3")
     assert hosts.commands == []
 
-  async def test_a_failed_write_fails_the_task_and_writes_no_stamp(self, manager, hosts, shop):
+  async def test_a_failed_write_fails_the_task_and_writes_no_stamp(self, manager, hosts, shop, notices):
     hosts.fails = "_discovery-public-shop.yml"
     with pytest.raises(TaskFailed):
       await manager.publish_discovery("w1")
     assert hosts.stamp("w1") is None
+    [(level, content, link)] = notices()
+    assert (level, content.startswith("Discovery could not be published on worker w1: Error writing"), link) == (
+        "error", True, f"{MANAGER}/workers/w1")
 
 
 class TestDns:
@@ -298,7 +304,8 @@ class TestDns:
     await manager.publish_discovery_dns()
     assert [name for comment, name, *_ in zone.held() if comment == "sage-discovery-w2"] == []
 
-  async def test_a_failure_fails_the_task(self, manager, zone, workers):
+  async def test_a_failure_fails_the_task(self, manager, zone, workers, notices):
     zone.fails = "rate limited"
     with pytest.raises(TaskFailed):
       await manager.publish_discovery_dns()
+    assert notices() == [("error", "The discovery DNS records could not be published: rate limited", f"{MANAGER}/domains")]

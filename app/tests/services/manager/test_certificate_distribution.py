@@ -25,6 +25,8 @@ from utils.queue import TaskQueue
 
 HOME = "/opt/sage"
 
+MANAGER = "https://manager.core.example.test"
+
 
 class LocalWorkers:
   """Workers whose Sage home is a folder each under `root`; their commands run in a local shell, and every file
@@ -78,7 +80,7 @@ class Manager(CertificatesMixin, QueueMixin):
 @pytest.fixture
 def certs(data_dir, clock, register):
   clock.set(datetime.now(timezone.utc).replace(tzinfo=None))
-  register(Updates, SimpleNamespace(changed=lambda source, key=None: None))
+  register(Updates, SimpleNamespace(changed=lambda source, key=None: None, publish=lambda feed, rows, key=None: None))
   certs = Certs()
   certs.set_workers({"w1": "red", "w2": "blue"})
   for certificate in certs.inventory().values():
@@ -251,9 +253,12 @@ class TestDistribution:
     await manager.distribute_certificates("w1")
     assert [entry for entry in hosts.log if entry[0] == "w1"] == []
 
-  async def test_a_failed_copy_fails_the_task_and_writes_no_stamp(self, manager, hosts, workers):
+  async def test_a_failed_copy_fails_the_task_and_writes_no_stamp(self, manager, hosts, workers, notices):
     hosts.fails = "certs.yml"
     with pytest.raises(TaskFailed):
       await manager.distribute_certificates("w1")
+    [(level, content, link)] = notices()
+    assert (level, content.startswith("The certificates could not be copied to worker w1: Error writing"), link) == (
+        "error", True, f"{MANAGER}/workers/w1")
     assert not (hosts.home("w1") / "revisions/certs").exists()
     assert Workers().certificates("w1") is None and manager.checks == 1

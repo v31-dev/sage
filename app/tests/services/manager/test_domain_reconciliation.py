@@ -14,6 +14,8 @@ from utils.logging import TaskFailed
 
 GONE = "0123456789abcdef"
 
+MANAGER = "https://manager.core.example.test"
+
 
 class ListedHosts(Hosts):
   """The workers as the pass sees them too: their routing files listed by first line, several removed in one command,
@@ -278,7 +280,7 @@ class TestObservation:
     assert hosts.routes("w1") == sorted([f"domain-{public.id}.yml", f"domain-{GONE}.yml"])
     assert Domains().route(public.id, "w1") == RouteObservation("unreachable")
 
-  async def test_a_failed_listing_fails_the_pass_after_the_rest_of_it(self, manager, public, hosts, provider, application):
+  async def test_a_failed_listing_fails_the_pass_after_the_rest_of_it(self, manager, public, hosts, provider, application, notices):
     moved = Domain.create(name="moved", type="public", port=80,
                           container=Container.create(application=application, worker="w2"))
     hosts.put("w2", GONE, "0" * 64)
@@ -286,6 +288,9 @@ class TestObservation:
     with pytest.raises(TaskFailed):
       await manager.reconcile_domains()
     assert Domains().route(public.id, "w1") == RouteObservation("unreachable")
+    [(level, content, link)] = notices()
+    assert (level, content.startswith("The domains could not all be checked: the routing files on w1 could not be listed"), link) == (
+        "error", True, f"{MANAGER}/domains")
     assert (hosts.routes("w2"), Domains().route(moved.id, "w2")) == ([], RouteObservation("absent"))
     assert applies(manager) == sorted([public.id, moved.id])
 

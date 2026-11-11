@@ -2,7 +2,7 @@ from datetime import datetime
 
 import pytest
 
-from services.backups.keys import is_expired_backup_key, is_expired_timestamp, parse_volume_archive, timestamp_from_key, volume_archive_key
+from services.backups.keys import is_expired_backup_key, is_expired_timestamp, parse_volume_archive, taken_at, timestamp_from_key, volume_archive_key
 from utils.common import new_id
 
 VOLUME, CONTAINER = "1111111111111111", "2222222222222222"
@@ -29,6 +29,12 @@ class TestTimestampFromKey:
 
   def test_only_the_last_path_component_counts(self):
     assert timestamp_from_key("backups/20260102_030405/readme.txt") is None
+
+
+class TestTakenAt:
+  def test_it_is_the_time_in_the_key_as_people_read_it_and_unknown_without_one(self):
+    assert (taken_at("base/backups/platform/20260102_030405.db.enc"), taken_at("base/backups/platform/latest.db.enc")) == (
+        "2026-01-02 03:04 UTC", "an unknown time")
 
 
 class TestIsExpired:

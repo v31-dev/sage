@@ -94,12 +94,15 @@ class Hosts:
     return file[0] if file else None
 
 
+WORKER_PAGE, WORKERS_PAGE = "https://manager.core.example.test/workers/w1", "https://manager.core.example.test/workers"
+
+
 class Provider:
   """Cloudflare as convergence uses it: the tunnels made and the worker records synced."""
 
   def __init__(self):
     self.domain, self.tunnel_id, self.records, self.tunnels = "example.test", "tunnel-platform", {}, []
-    self.tunnel_health = {}
+    self.tunnel_health, self.manager_hostname = {}, "manager.core.example.test"
 
   def connect(self):
     pass
@@ -120,7 +123,8 @@ class Provider:
   def delete_tunnel(self, name):
     if getattr(self, "keeps_tunnels", False):
       raise Exception("the tunnel has connections")
-    self.tunnels.remove(name)
+    if name in self.tunnels:
+      self.tunnels.remove(name)
 
 
 class Catalog:
@@ -301,10 +305,11 @@ class TestConvergence:
     assert Workers().setup("w1") == "refused" and "w1" in manager.setup_failures
     assert events() == [("ownership", "rejected")]
 
-  async def test_a_setup_that_fails_records_it_and_writes_no_stamp(self, manager, hosts, worker):
+  async def test_a_setup_that_fails_records_it_and_writes_no_stamp(self, manager, hosts, worker, notices):
     hosts.fails = "up -d --wait"
     with pytest.raises(TaskFailed):
       await manager.converge_worker("w1")
+    assert notices() == [("error", "Worker w1 could not be set up: Error executing command on w1: exit code 1", WORKER_PAGE)]
     assert (Workers().setup("w1"), hosts.stamp("w1", "infra")) == ("failed", None)
     assert "w1" in manager.setup_failures
     assert events() == [("infrastructure", "admitted"), ("infrastructure", "failed")]
@@ -403,10 +408,11 @@ class TestRoutesLeftBehind:
 
 class TestStackRepair:
   @pytest.mark.parametrize("starts, recorded", [(True, [("repair", "succeeded")]), (False, [])])
-  async def test_a_repair_is_recorded_when_it_started_something(self, manager, hosts, worker, starts, recorded):
+  async def test_a_repair_is_recorded_and_noticed_when_it_started_something(self, manager, hosts, worker, starts, recorded, notices):
     hosts.starts = starts
     await manager.repair_worker_stack("w1")
     assert events() == recorded
+    assert notices() == [("warning", "Worker w1: started the parts of its stack that were stopped.", WORKER_PAGE)] * starts
 
 
 class TestRequests:
@@ -475,15 +481,19 @@ class TestAdd:
     with pytest.raises(Conflict):
       manager.request_add_worker("w1", "green")
 
-  async def test_the_add_looks_at_the_worker_it_has_not_observed_yet_and_is_its_first_setup(self, manager, hosts, worker):
+  async def test_the_add_looks_at_the_worker_it_has_not_observed_yet_and_is_its_first_setup(self, manager, hosts, worker, notices):
     hosts.found["w1"] = "unobserved"
     hosts.answering.add("w1")
     await manager.add_worker("w1")
+    assert notices() == [("success", "Worker w1 added.", WORKER_PAGE)]
     assert Workers().setup("w1") == "succeeded"
     assert events() == [("add", "admitted"), ("infrastructure", "admitted"), ("infrastructure", "succeeded"), ("add", "succeeded")]
 
-  @pytest.mark.parametrize("trouble", ["setup fails", "does not answer"])
-  async def test_a_worker_whose_first_setup_did_not_happen_is_kept(self, manager, hosts, worker, trouble):
+  @pytest.mark.parametrize("trouble, notice", [
+      ("setup fails", "Worker w1 could not be set up: Error executing command on w1: exit code 1"),
+      ("does not answer", "Worker w1 is added but not set up: its SSH server does not answer.")])
+  async def test_a_worker_whose_first_setup_did_not_happen_is_kept_and_says_why_once(
+          self, manager, hosts, worker, trouble, notice, notices):
     if trouble == "setup fails":
       hosts.answering.add("w1")
       hosts.fails = "up -d --wait"
@@ -493,10 +503,11 @@ class TestAdd:
       await manager.add_worker("w1")
     assert Worker.get_or_none(Worker.hostname == "w1") is not None
     assert events()[0] == ("add", "admitted") and events()[-1] == ("add", "failed")
+    assert notices() == [("error", notice, WORKER_PAGE)]
 
 
 class TestRemove:
-  async def test_a_worker_that_answers_and_is_this_sages_is_cleaned_and_forgotten(self, manager, hosts, provider, worker):
+  async def test_a_worker_that_answers_and_is_this_sages_is_cleaned_and_forgotten(self, manager, hosts, provider, worker, notices):
     await manager.converge_worker("w1")
     hosts.answering.add("w1")
     manager.setup_failures["w1"] = 1.0
@@ -507,6 +518,7 @@ class TestRemove:
     assert (provider.records["w1"], provider.tunnels, hosts.forgotten) == ((None, None), [], ["w1"])
     assert (Workers().setup("w1"), WorkerReports().latest("w1"), manager.setup_failures) == (None, None, {})
     assert events()[-2:] == [("remove", "admitted"), ("remove", "succeeded")]
+    assert notices() == [("success", "Worker w1 removed.", WORKERS_PAGE)]
 
   async def test_a_removal_renews_the_certificates_so_its_leaf_is_retired_and_forgets_what_it_applied(
           self, manager, hosts, provider, worker):
@@ -521,22 +533,29 @@ class TestRemove:
     await manager.remove_worker("w1")
     assert manager.discovered == before + 1
 
-  @pytest.mark.parametrize("trouble", ["another Sage's", "does not answer"])
-  async def test_a_worker_it_cannot_clean_is_removed_from_sage_only(self, manager, hosts, provider, worker, trouble):
+  @pytest.mark.parametrize("trouble, notice", [
+      ("another Sage's", ("success", "Worker w1 removed.")),
+      ("does not answer", ("warning", "Worker w1 is removed from Sage, but it does not answer: anything on the VM, including the "
+                                      "VM itself, has to be removed by hand."))])
+  async def test_a_worker_it_cannot_clean_is_removed_from_sage_only(self, manager, hosts, provider, worker, trouble, notice, notices):
     if trouble == "another Sage's":
       hosts.answering.add("w1")
       hosts.files[f"w1:{HOME}/revisions/owner"] = ("ffffffffffffffff other.test", 0o644)
     await manager.remove_worker("w1")
     assert Worker.get_or_none(Worker.hostname == "w1") is None
     assert not any("rm -rf" in command for command in hosts.commands)
+    assert notices() == [(*notice, WORKERS_PAGE)]
 
-  async def test_a_tunnel_cloudflare_will_not_delete_does_not_stop_the_removal(self, manager, hosts, provider, worker):
+  async def test_a_tunnel_cloudflare_will_not_delete_does_not_stop_the_removal(self, manager, hosts, provider, worker, notices):
     await manager.converge_worker("w1")
     provider.keeps_tunnels = True
     await manager.remove_worker("w1")
     assert Worker.get_or_none(Worker.hostname == "w1") is None and events()[-1] == ("remove", "succeeded")
+    [(level, content, _)] = notices()
+    assert (level, content.endswith("; its Cloudflare tunnel could not be deleted (the tunnel has connections): delete it by hand.")) == (
+        "warning", True)
 
-  async def test_a_worker_with_a_container_is_refused_and_untouched(self, manager, hosts, worker, application):
+  async def test_a_worker_with_a_container_is_refused_and_untouched(self, manager, hosts, worker, application, notices):
     from services.db.models import Container
     Container.create(application=application, worker=worker)
     from utils.errors import Conflict
@@ -545,6 +564,7 @@ class TestRemove:
     with pytest.raises(TaskFailed):
       await manager.remove_worker("w1")
     assert Worker.get_or_none(Worker.hostname == "w1") is not None and events() == [("remove", "rejected")]
+    assert notices() == [("error", "Worker w1 was not removed: A worker with containers can't be removed.", WORKER_PAGE)]
 
 
 @pytest.fixture
@@ -572,7 +592,7 @@ class TestReboot:
         report(at=datetime(2026, 1, 1, 10))
     return look
 
-  async def test_a_new_boot_set_up_again_and_reporting_after_it_is_verified(self, manager, hosts, worker, ticking, clock):
+  async def test_a_new_boot_set_up_again_and_reporting_after_it_is_verified(self, manager, hosts, worker, ticking, clock, notices):
     await manager.converge_worker("w1")
     hosts.answering.add("w1")
     report()
@@ -582,11 +602,13 @@ class TestReboot:
     assert "(sleep 2 && reboot) </dev/null >/dev/null 2>&1 &" in hosts.commands
     assert Workers().setup("w1") == "succeeded"
     assert [event for event in events() if event[0] == "reboot"] == [("reboot", "admitted"), ("reboot", "verified")]
+    assert notices()[-1] == ("success", "Worker w1 rebooted.", WORKER_PAGE)
 
-  @pytest.mark.parametrize("boots, outcome", [(["b1"], "old_boot"), (["b1", "b2"], "not_ready")],
+  @pytest.mark.parametrize("boots, outcome, why", [(["b1"], "old_boot", "it did not restart"),
+                                                   (["b1", "b2"], "not_ready", "it restarted but is not ready")],
                            ids=["it never rebooted", "no report after the new boot"])
   async def test_a_reboot_not_verified_in_time_fails_with_how_far_it_got(self, manager, hosts, worker, ticking, clock, boots,
-                                                                         outcome):
+                                                                         outcome, why, notices):
     await manager.converge_worker("w1")
     hosts.answering.add("w1")
     report()
@@ -595,12 +617,14 @@ class TestReboot:
       await manager.reboot_worker("w1")
     reboot = WorkerEvent.select().where(WorkerEvent.action == "reboot").order_by(WorkerEvent.id.desc()).first()
     assert (reboot.transition, reboot.reason) == ("failed", {"outcome": outcome})
+    assert notices()[-1] == ("error", f"Worker w1's reboot could not be confirmed in time: {why}.", WORKER_PAGE)
 
-  async def test_a_worker_not_set_up_is_not_rebooted(self, manager, hosts, worker):
+  async def test_a_worker_not_set_up_is_not_rebooted(self, manager, hosts, worker, notices):
     with pytest.raises(TaskFailed):
       await manager.reboot_worker("w1")
     assert "(sleep 2 && reboot) </dev/null >/dev/null 2>&1 &" not in hosts.commands
     assert events() == [("reboot", "rejected")]
+    assert notices() == [("error", "Worker w1 was not rebooted: it is not reachable and set up.", WORKER_PAGE)]
 
 
 class TestSubdomain:

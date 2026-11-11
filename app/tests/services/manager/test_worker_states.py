@@ -216,7 +216,8 @@ class TestDiscoveryRequests:
 
 
 class TestEvents:
-  async def test_observed_changes_between_offline_not_ready_and_online_are_recorded_once_each(self, manager, tailnet, workers):
+  async def test_observed_changes_between_offline_not_ready_and_online_are_recorded_once_each(
+          self, manager, tailnet, workers, notices):
     tailnet.answers = {"w1": "reachable"}
     ready("w1")
     await manager.observe_workers()
@@ -230,18 +231,41 @@ class TestEvents:
         ("w1", "connectivity", {"status": "offline", "reason": "ssh_unreachable"}),
         ("w1", "connectivity", {"status": "not ready", "reason": "setup_failed"})]
     assert {transition for _, _, transition, _ in events()} == {"observed"}
+    assert notices() == [("error", "Worker w1 is offline.", "https://manager.core.example.test/workers/w1"),
+                         ("success", "Worker w1 is reachable again.", "https://manager.core.example.test/workers/w1")]
 
-  async def test_a_worker_first_seen_or_only_checked_records_nothing(self, manager, tailnet, workers):
+  async def test_a_worker_that_answers_again_says_so_once_while_it_is_set_up_again(self, manager, tailnet, workers, notices):
+    tailnet.answers = {"w1": "reachable"}
+    ready("w1")
+    await manager.observe_workers()
+    tailnet.answers = {"w1": "unreachable"}
+    await manager.observe_workers()
+    tailnet.answers = {"w1": "reachable"}
+    await manager.observe_workers()
+    ready("w1")
+    manager.worker_reported("w1")
+    assert manager.worker_state.last["w1"].view.status == "online"
+    assert [content for _, content, _ in notices()] == ["Worker w1 is offline.", "Worker w1 is reachable again."]
+
+  async def test_a_worker_offline_when_first_observed_or_unknown_to_the_manager_sends_nothing(self, manager, tailnet, workers, notices):
+    tailnet.answers = {"w1": "unreachable"}
+    await manager.observe_workers()
+    tailnet.answers = {"w1": "unknown"}
+    await manager.observe_workers()
+    assert notices() == []
+
+  async def test_a_worker_first_seen_or_only_checked_records_nothing(self, manager, tailnet, workers, notices):
     tailnet.answers = {"w1": "reachable"}
     await manager.observe_workers()
     ready("w1")
     await manager.observe_workers()
-    assert events() == []
+    assert events() == [] and notices() == []
 
-  async def test_a_change_without_going_offline_is_recorded_as_readiness(self, manager, tailnet, workers):
+  async def test_a_change_without_going_offline_is_recorded_as_readiness(self, manager, tailnet, workers, notices):
     tailnet.answers = {"w1": "reachable"}
     ready("w1")
     await manager.observe_workers()
     Workers().record_setup("w1", "refused")
     manager.worker_reported("w1")
     assert events() == [("w1", "readiness", "observed", {"status": "not ready", "reason": "owned_elsewhere"})]
+    assert notices() == []

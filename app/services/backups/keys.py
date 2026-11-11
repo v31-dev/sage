@@ -16,6 +16,12 @@ def timestamp_from_key(key: str) -> str | None:
   return match.group(0) if match else None
 
 
+def taken_at(key: str) -> str:
+  """When the backup at `key` was taken, from its key, as people read it."""
+  timestamp = timestamp_from_key(key)
+  return f"{datetime.strptime(timestamp, BACKUP_TIMESTAMP_FORMAT):%Y-%m-%d %H:%M} UTC" if timestamp else "an unknown time"
+
+
 def is_expired_timestamp(timestamp_str: str, cutoff: datetime) -> bool:
   try:
     return datetime.strptime(timestamp_str, BACKUP_TIMESTAMP_FORMAT) < cutoff

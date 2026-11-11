@@ -47,12 +47,12 @@ Telegraf requests application status work, which writes rows only when its queue
 have additional write paths, including Vector's direct writes to log shards.
 
 Task completion, failure and pending-task cancellation can create a `Task` row. **Quiet tasks record only
-failure** and retain task-log lines only on failure. `Manager.notify` writes a `Notification` immediately in
+failure** and retain task-log lines only on failure. `Notifications.notify` writes a `Notification` immediately in
 its caller, then hands webhook delivery to a separate pool. Those shared effects are additional to the
 operation-specific writes below; ordinary log statements do not create notifications.
 
 Sources: [scheduler](../app/scheduler.py), [queue engine](../app/utils/queue.py),
-[history writer](../app/services/history.py), [notification writer](../app/services/manager/core.py),
+[history writer](../app/services/history.py), [notification writer](../app/services/notification.py),
 [pools](../app/utils/executor.py).
 
 ## Scopes and admission
@@ -339,7 +339,7 @@ flowchart TB
     database["Manager constructs Database<br/>reconcile schema<br/>create Instance if absent"]
     settings["Settings.load_all<br/>create/normalize defined Setting rows<br/>delete undefined rows"]
     services["Initialize services<br/>start metrics sampler and log capture<br/>load workers into memory"]
-    notice["Manager.notify<br/>insert startup Notification"]
+    notice["Notifications.notify<br/>insert startup Notification"]
     bootstrap["setup_domain before serving<br/>Cloudflare connect + manager certificate<br/>external files/DNS; no model write"]
     serve["Start scheduler and API servers"]
     enqueue["Startup triggers enqueue release/checks,<br/>renewal, backup discovery, worker stamp check,<br/>paths and the Domain pass"]
@@ -373,7 +373,7 @@ Sources: [entrypoint](../app/entrypoint.sh), [process startup](../app/main.py),
 | Manager metric sampler | Service-owned daemon, every 5 s (`METRICS_SAMPLE_INTERVAL`) | None | In-memory minute peaks only; queued `collect_self` persists them |
 | Task-log capture | Service-owned drain thread, on captured task log lines | None | `logs/tasks.db`; quiet-task lines released on failure; post-write size trimming |
 | `mark` / `Logs.write_marker` | Deploy, stop, delete, stale-version stop, backup stop/start, volume restore, reboot | Caller retains scopes while awaiting `LOGS_EXECUTOR` | Application log shard; best-effort marker |
-| `Manager.notify` | Explicit call from an operation or startup | Caller scopes; none at boot | Notification row immediately, notification feed, then webhook dispatch on `NOTIFICATIONS_EXECUTOR` |
+| `Notifications.notify` | Explicit call from an operation or startup | Caller scopes; none at boot | Notification row immediately, its page's path recorded as the manager's full address, notification feed, then webhook dispatch on `NOTIFICATIONS_EXECUTOR` |
 | Queue terminal hook | Completion, failure, supersession, restore cancellation or shutdown drain | No new scope; hook can run during enqueue/cancellation as well as task execution | Task history row/feed; quiet completion/cancellation omitted. Running/queued states are memory only |
 | Lazy shard open | First metric/log access, including reads | Caller scopes or none | Create shard file, tables and indexes when absent; no main-DB rows |
 
@@ -400,7 +400,7 @@ writes above apply in addition to the listed fields.
 | `Backup` | Backup DELETE (`remove_backup`) | Volume/platform backup inserts; discovery inserts/deletes and retention deletes (`apply_catalog`) | Application FK deletion cascades app Backup deletion |
 | `ContainerEvent` | None | Container operations append (`record_container_event`); `purge_history` deletes past retention | Container deletion clears its link; platform backup and restore empty it |
 | `WorkerEvent` | None | Worker operations and observed status changes append (`record_worker_event`); `purge_history` deletes past retention | Worker deletion clears its link; platform backup and restore empty it |
-| `Notification` | None | `Manager.notify` inserts; `purge_history` deletes past retention | Startup calls `notify`; summary/test dispatch creates no row |
+| `Notification` | None | `Notifications.notify` inserts; `purge_history` deletes past retention | Startup calls `notify`; summary/test dispatch creates no row |
 | `Task` | None | Queue terminal hook inserts; `purge_history` deletes past retention | Pending-task cancellations can invoke hook on producer/shutdown thread |
 
 ## Consistency boundaries

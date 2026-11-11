@@ -20,6 +20,8 @@ from utils.queue import TaskQueue
 
 NOW = datetime(2026, 1, 20, 12)
 
+MANAGER = "https://manager.core.example.test"
+
 
 class Store:
   """A store as a folder: its objects are files under it, at their full keys; `fails` names a prefix whose listing or
@@ -157,11 +159,13 @@ class TestDeletion:
     await manager.run()
     assert stores.a.keys() == {backup.s3_path} and stores.b.keys() == {backup.s3_path}
 
-  async def test_a_deletion_that_fails_fails_the_task(self, manager, stores, volume):
+  async def test_a_deletion_that_fails_fails_the_task_and_says_which_backup(self, manager, stores, volume, notices):
     key = stores.a.put(archive_key(volume))
     stores.a.fails = "backups"
     with pytest.raises(TaskFailed):
       await manager.delete_archive(key, "sa")
+    assert notices() == [("error", "The backup taken at 2026-01-20 12:00 UTC could not be deleted from S3: AccessDenied",
+                          f"{MANAGER}/backups")]
 
 
 class TestDiscovery:
@@ -250,7 +254,7 @@ class TestRetention:
     assert catalog() == sorted([("sa", recent.s3_path, "application", "data"), ("sb", elsewhere.s3_path, "application", "data")])
 
   @pytest.mark.parametrize("failing", ["backups/platform", "backups/applications"])
-  async def test_a_prefix_that_fails_still_lets_the_other_go_and_fails_the_task(self, manager, stores, volume, failing):
+  async def test_a_prefix_that_fails_still_lets_the_other_go_and_fails_the_task(self, manager, stores, volume, failing, notices):
     platform = row(stores.a, f"backups/platform/{stamp(config.RETENTION_DAYS + 1)}.db.enc")
     archive = row(stores.a, archive_key(volume, config.RETENTION_DAYS + 1), volume)
     for backup in (platform, archive):
@@ -258,6 +262,8 @@ class TestRetention:
     stores.a.fails = failing
     with pytest.raises(TaskFailed):
       await manager.prune_backups("sa")
+    assert notices() == [("error", f"Old backups could not all be removed from S3: {failing}: AccessDenied",
+                          f"{MANAGER}/backups")]
     assert catalog() == [next(entry for entry in [("sa", platform.s3_path, "platform", None), ("sa", archive.s3_path, "application", "data")]
                               if failing.split("/")[1] in entry[1])]
 

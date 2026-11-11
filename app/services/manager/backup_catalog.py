@@ -9,8 +9,9 @@ from functools import partial
 import config
 from services.backups.catalog import CatalogPlan, CatalogRow, reconcile_catalog
 from services.backups.commands import apply_catalog, remove_backup
-from services.backups.keys import APPLICATIONS_PREFIX, PLATFORM_PREFIX, is_expired_backup_key
+from services.backups.keys import APPLICATIONS_PREFIX, PLATFORM_PREFIX, is_expired_backup_key, taken_at
 from services.db.models import Backup, Volume
+from services.notification import Notifications
 from utils.common import utcnow
 from utils.logging import TaskFailed
 from utils.queue import OnConflict
@@ -40,8 +41,7 @@ class BackupCatalogMixin:
     try:
       await session.delete_key(s3_path, filter=lambda key: key == s3_path, raw_path=True)
     except Exception as error:
-      logger.error(f"The archive {s3_path} could not be deleted: {error}")
-      # TODO(36 step 4H): self.notify(f"A backup's archive could not be deleted from S3: {error}", "error")
+      Notifications().notify(f"The backup taken at {taken_at(s3_path)} could not be deleted from S3: {error}", "error", "/backups")
       raise TaskFailed()
     logger.info(f"Deleted the archive {s3_path}.")
 
@@ -103,7 +103,6 @@ class BackupCatalogMixin:
     apply_catalog(CatalogPlan(deletes=[row.id for row in Backup.select(Backup.id).where(
         (Backup.storage_id == session.identity) & Backup.s3_path.in_(deleted))]))
     if failure is not None:
-      logger.error(f"Old backups could not all be removed: {failure}")
-      # TODO(36 step 4H): self.notify(f"Old backups could not all be removed from S3: {failure}", "error")
+      Notifications().notify(f"Old backups could not all be removed from S3: {failure}", "error", "/backups")
       raise TaskFailed()
     logger.info(f"Removed {len(deleted)} backup(s) older than {config.RETENTION_DAYS} days from the store.")

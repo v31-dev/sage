@@ -28,7 +28,6 @@ from .workers import WorkersMixin
 # TODO(36 step 4X): each mixin joins the Manager again when its part reworks it.
 # from services.metrics import Metrics
 # from .application import ApplicationMixin
-# from .core import CoreMixin
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +87,7 @@ class Manager(
       Certs()
       # TODO(36 step 4X): the services of the parts not reworked yet.
       # Metrics().start_sampler()
-      # self.notify("Manager started.")
+      Notifications().notify("Manager started.")
     except Exception as e:
       raise Exception(f"Manager setup failed : {e}.")
 

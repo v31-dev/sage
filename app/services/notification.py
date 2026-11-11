@@ -2,9 +2,14 @@ import logging
 from types import SimpleNamespace
 
 import requests
+from playhouse.shortcuts import model_to_dict
 
 from services.base import Base
+from services.cloudflare import Cloudflare
+from services.db.models import Notification
+from services.updates import UpdateFeed, Updates
 from utils.common import get_env
+from utils.executor import NOTIFICATIONS_EXECUTOR, submit_with_context
 from utils.retry import is_transient
 
 logger = logging.getLogger(__name__)
@@ -98,6 +103,16 @@ class Notifications(Base):
     """Deliver to the channels of `values`, a saved notifications section."""
     with self.lock:
       self.notifications_config = dict(values)
+
+  def notify(self, message: str, type: str = "info", link: str | None = None):
+    """A notice: logged at its level, recorded as a Notification row, pushed on the `notifications` feed and sent to the
+    channels on their pool. `link` is the path of a page of the UI, recorded as the manager's full address of it, so a
+    channel's message links to it too."""
+    (logger.info if type in ("info", "success") else getattr(logger, type))(message)
+    notification = Notification.create(content=message, type=type,
+                                       link=link and f"https://{Cloudflare().manager_hostname}{link}")
+    Updates().publish(UpdateFeed.NOTIFICATIONS, [model_to_dict(notification, recurse=False)])
+    submit_with_context(NOTIFICATIONS_EXECUTOR, self.dispatch, notification)
 
   def get_notification_value(self, key: str, default=None):
     with self.lock:

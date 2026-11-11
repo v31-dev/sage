@@ -215,10 +215,14 @@ async def deploy(manager, container):
 
 pytestmark = pytest.mark.usefixtures("thread_connections", "in_task")
 
+MANAGER = "https://manager.core.example.test"
+PAGE = f"{MANAGER}/projects/demo/web"
+
 
 class TestDeploy:
-  async def test_a_deploy_commits_what_it_verified_runs(self, manager, worker_host, container):
+  async def test_a_deploy_commits_what_it_verified_runs(self, manager, worker_host, container, notices):
     await deploy(manager, container)
+    assert notices() == [("success", "Demo / Web on w1 deployed.", PAGE)]
 
     record = worker_record(container)
     operation = record.operation
@@ -265,12 +269,15 @@ class TestDeploy:
     assert (secret.read_text(), stat.S_IMODE(secret.stat().st_mode)) == ("abc", 0o600)
     assert not placement_file(container, "secrets/OLD").exists()
 
-  async def test_a_deploy_whose_start_fails_leaves_it_stopped_with_the_failure(self, manager, worker_host, container):
+  async def test_a_deploy_whose_start_fails_leaves_it_stopped_with_the_failure(self, manager, worker_host, container, notices):
     place(container, deployed(container))
     worker_host.run(container, "running d0")
     worker_host.flag("up-fails")
     with pytest.raises(TaskFailed):
       await deploy(manager, container)
+    [(level, content, link)] = notices()
+    assert (level, content.startswith("Deploy of Demo / Web on w1 failed: "), "pull access denied" in content, link) == (
+        "error", True, True, PAGE)
 
     record = worker_record(container)
     assert worker_host.runtime(container) is None
@@ -336,10 +343,11 @@ class TestDeploy:
 
 
 class TestStop:
-  async def test_a_stop_commits_stopped_and_keeps_the_applied_deployment(self, manager, worker_host, container):
+  async def test_a_stop_commits_stopped_and_keeps_the_applied_deployment(self, manager, worker_host, container, notices):
     place(container, deployed(container))
     worker_host.run(container, "running d0")
     await manager.stop_container(container.id)
+    assert notices() == [("success", "Demo / Web on w1 stopped.", PAGE)]
 
     record = worker_record(container)
     assert worker_host.runtime(container) is None
@@ -417,11 +425,12 @@ def unsettled(container):
 
 class TestDelete:
   async def test_a_delete_removes_the_placement_then_the_row_and_unlinks_its_domains(
-          self, manager, worker_host, container, application):
+          self, manager, worker_host, container, application, notices):
     place(container, deployed(container))
     worker_host.run(container, "running d0")
     domain = Domain.create(name="shop", type="public", port=80, container=container)
     await manager.delete_container(container.id)
+    assert notices() == [("success", "Demo / Web on w1 deleted.", PAGE)]
 
     assert not Path(placement_dir(config.WORKER_HOME_DIR, container.id)).exists()
     assert worker_host.runtime(container) is None
@@ -459,11 +468,13 @@ class TestDelete:
     assert Container.get_or_none(Container.id == container.id) is not None
     assert events(container) == [("delete", "rejected", {"refusal": "unreachable"})]
 
-  async def test_a_forced_delete_of_a_worker_that_is_gone_removes_only_the_row(self, manager, worker_host, container):
+  async def test_a_forced_delete_of_a_worker_that_is_gone_removes_only_the_row(self, manager, worker_host, container, notices):
     place(container, deployed(container))
     worker_host.run(container, "running d0")
     worker_host.reachable = False
     await manager.delete_container(container.id, force=True)
+    assert notices() == [("warning", "Demo / Web on w1 deleted from Sage; the worker could not be reached, so its files stay there.",
+                          PAGE)]
     assert Container.get_or_none(Container.id == container.id) is None
     assert (worker_record(container), worker_host.runtime(container)) == (deployed(container), "running d0")
     assert events(container) == [("delete", "admitted", {"worker": "unreachable"}),
@@ -611,11 +622,13 @@ class TestRecovery:
     assert events(container) == [("deploy", "interrupted", None)]
 
   async def test_settling_after_the_allowance_records_the_interruption_and_lets_a_deploy_run(
-          self, manager, worker_host, container):
+          self, manager, worker_host, container, notices):
     place(container, replace(unsettled(container), applied=Applied("d0", "a" * 64, VERIFIED)))
     await manager.recover_container(container.id, "d9", final=False)
+    assert notices() == []
     worker_host.run(container, "running d9")
     await manager.recover_container(container.id, "d9", final=True)
+    assert notices() == [("warning", "Demo / Web on w1 was stopped after an interrupted deploy.", PAGE)]
     record = worker_record(container)
     assert worker_host.runtime(container) is None
     assert (record.settled.operation_id, record.settled.runtime_goal, record.settled.result, record.settled.reason) == (
@@ -670,11 +683,12 @@ class TestRecovery:
 
 
 class TestReset:
-  async def test_a_runtime_running_after_a_stop_is_stopped_and_the_cause_recorded(self, manager, worker_host, container):
+  async def test_a_runtime_running_after_a_stop_is_stopped_and_the_cause_recorded(self, manager, worker_host, container, notices):
     stopped = replace(deployed(container), settled=Settled("s1", "stopped", "succeeded", VERIFIED))
     place(container, stopped)
     worker_host.run(container, "running d0")
     await manager.reset_container(container.id, "unexpected_running")
+    assert notices() == [("warning", "Demo / Web on w1 was stopped: it ran after it was stopped.", PAGE)]
     record = worker_record(container)
     assert worker_host.runtime(container) is None
     assert (record.applied, record.settled.result, record.settled.reason) == (stopped.applied, "failed", "unexpected_running")
@@ -742,11 +756,12 @@ def orphan_placement(worker_host, record=None, running=True, labelled=None):
 
 
 class TestOrphanCleanup:
-  async def test_an_orphans_runtime_and_placement_are_removed(self, manager, worker_host, container):
+  async def test_an_orphans_runtime_and_placement_are_removed(self, manager, worker_host, container, notices):
     directory = orphan_placement(worker_host, TargetRecord(authority(SimpleNamespace(id=ORPHAN)),
                                                            settled=Settled("d1", "running", "succeeded", VERIFIED)))
     await manager.cleanup_orphan("w1", ORPHAN)
     assert not directory.exists() and worker_host.runtime(SimpleNamespace(id=ORPHAN)) is None
+    assert notices() == [("warning", "Removed a container Sage no longer has from worker w1.", f"{MANAGER}/workers/w1")]
 
   async def test_a_bare_directory_is_removed(self, manager, worker_host, container):
     directory = orphan_placement(worker_host, running=False)

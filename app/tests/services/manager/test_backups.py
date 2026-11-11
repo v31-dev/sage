@@ -11,14 +11,14 @@ import pytest
 
 import config
 from services.applications.deploy_input import capture_deploy_config
-from services.backups.keys import parse_volume_archive
+from services.backups.keys import parse_volume_archive, taken_at
 from services.containers.placement import runtime_name, volume_dir
 from services.containers.record import Applied, Baseline, Operation, Settled, TargetRecord
 from services.db.models import Backup, Container, Volume
 from services.manager.backups import BackupsMixin
 from services.s3 import S3
 from services.tailscale import Tailscale
-from tests.services.manager.test_containers import VERIFIED, Lifecycle, Worker, authority, deployed, events, place, worker_record
+from tests.services.manager.test_containers import PAGE, VERIFIED, Lifecycle, Worker, authority, deployed, events, place, worker_record
 from utils.archive import decrypt_file
 from utils.common import get_env
 from utils.errors import Conflict
@@ -172,10 +172,11 @@ pytestmark = pytest.mark.usefixtures("thread_connections", "in_task")
 
 class TestManualBackup:
   async def test_a_stopped_containers_volumes_are_archived_by_id_and_it_is_committed_stopped(
-          self, manager, worker_host, store, container, volumes):
+          self, manager, worker_host, store, container, volumes, notices):
     place(container, stopped(container))
     await manager.backup_container(container.id, ids(volumes), "s1")
     assert rows() == sorted(((volume.id, container.id), "s1", volume.name, "application") for volume in volumes)
+    assert notices() == [("success", "Backup of data, logs from Demo / Web on w1 created.", PAGE)]
     for row in Backup.select():
       assert store.archive(row) == {f"{row.source_volume_id}/{row.source_volume_name}.txt":
                                     f"{row.source_volume_name} of {container.id}".encode()}
@@ -185,6 +186,11 @@ class TestManualBackup:
     assert [(action, transition) for action, transition, _ in events(container)] == [("backup_stopped", "admitted"),
                                                                                      ("backup_stopped", "succeeded")]
     assert [mode for _, mode in worker_host.scripts] == [0o700, 0o700] and list(worker_host.tmp.iterdir()) == []
+
+  async def test_the_notice_names_only_the_volumes_backed_up(self, manager, worker_host, container, volumes, notices):
+    place(container, stopped(container))
+    await manager.backup_container(container.id, [volumes[1].id], "s1")
+    assert notices() == [("success", "Backup of logs from Demo / Web on w1 created.", PAGE)]
 
   async def test_a_failure_after_a_stop_is_cleared_by_a_backup(self, manager, worker_host, container, volumes):
     failed = stopped(container)
@@ -292,11 +298,14 @@ class TestAutomaticBackup:
     assert record.operation.baseline == Baseline("s0", "stopped", None, ()) and record.operation.outcome == "succeeded"
     assert worker_host.runtime(container) is None and record.settled == stopped(container).settled
 
-  async def test_a_failed_archive_is_the_tasks_failure_and_the_runtime_comes_back(self, manager, worker_host, container, volumes):
+  async def test_a_failed_archive_is_the_tasks_failure_and_the_runtime_comes_back(
+          self, manager, worker_host, container, volumes, notices):
     running(container, worker_host)
     worker_host.fail_upload(volumes[1].id)
     with pytest.raises(TaskFailed):
       await manager.backup_container_preserving(container.id, ids(volumes), "s1")
+    [(level, content, link)] = notices()
+    assert (level, content.startswith("Automatic backup of Demo / Web on w1 failed: volume logs"), link) == ("error", True, PAGE)
     record = worker_record(container)
     assert (record.operation.phase, record.operation.outcome) == ("settled", "failed") and "volume logs" in record.operation.reason
     assert record.settled == deployed(container).settled and worker_host.runtime(container) == "running d0"
@@ -498,18 +507,21 @@ class TestRestore:
     return {path.name: path.read_text() for path in directory.iterdir()} if directory.exists() else None
 
   async def test_a_backup_is_restored_into_a_container_on_another_worker_never_deployed(
-          self, manager, worker_host, container, other, volumes, archived):
+          self, manager, worker_host, container, other, volumes, archived, notices):
     await manager.restore_container(other.id, archived["data"].id, volumes[0].id, "s1")
     assert self.files(other, volumes[0]) == {"data.txt": f"data of {container.id}"}
+    assert notices()[-1] == ("success", f"Volume data of Demo / Web on w2 restored from the backup of data taken at "
+                             f"{taken_at(archived['data'].s3_path)}.", PAGE)
     record = worker_record(other)
     assert (record.applied, record.settled.runtime_goal, record.settled.result) == (None, "stopped", "succeeded")
     assert events(other)[-1] == ("restore_stopped", "succeeded", {"volume": "data", "backup_of": "data"})
 
   async def test_it_is_restored_into_another_volume_of_the_application_whose_files_it_replaces(
-          self, manager, worker_host, container, volumes, archived):
+          self, manager, worker_host, container, volumes, archived, notices):
     await manager.restore_container(container.id, archived["data"].id, volumes[1].id, "s1")
     assert self.files(container, volumes[1]) == {"data.txt": f"data of {container.id}"}
     assert self.files(container, volumes[0]) == {"data.txt": f"data of {container.id}"}
+    assert notices()[-1][1].startswith("Volume logs of Demo / Web on w1 restored from the backup of data taken at ")
 
   async def test_a_deploy_after_it_keeps_the_restored_data(self, manager, worker_host, container, other, volumes, archived):
     await manager.restore_container(other.id, archived["logs"].id, volumes[1].id, "s1")

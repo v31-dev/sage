@@ -23,6 +23,7 @@ from services.containers.targets import Containers
 from services.db.models import Application, Container, Domain, Instance, Project, Worker
 from services.history import record_container_event
 from services.logs import Logs
+from services.notification import Notifications
 from services.tailscale import Tailscale
 from services.updates import Fact
 from services.worker_reports import WorkerReports
@@ -284,7 +285,8 @@ class ContainersMixin:
                 verified_on_worker_at=verified_at, recovery=Recovery("verified"))))
     record_container_event(container, contract, "recovered", operation.id, dedupe_key=f"{operation.id}:recovered")
     await mark(container, "Stopped and settled after an interrupted operation")
-    # TODO(36 step 4H): self.notify(f"Container {container.id} recovered after an interrupted {contract}.", "warning")
+    name, page = self._notice(container)
+    Notifications().notify(f"{name} was stopped after an interrupted {NAMES[contract].lower()}.", "warning", page)
 
   async def reset_container(self, container_id: str, cause: str):
     """Stops a container whose runtime contradicts its record, once its record and its runtime, read again now, still
@@ -320,7 +322,8 @@ class ContainersMixin:
     record_container_event(container, "reset", "succeeded", operation.id, reason={"cause": found.cause},
                            dedupe_key=f"{operation.id}:succeeded")
     await mark(container, f"Stopped: {RESETS[found.cause]}")
-    # TODO(36 step 4H): self.notify(f"Container {container.id} stopped: {RESETS[found.cause]}.", "warning")
+    name, page = self._notice(container)
+    Notifications().notify(f"{name} was stopped: {RESETS[found.cause]}.", "warning", page)
 
   def request_record_read(self, container: Container):
     """Queues a read of the container's record from its worker, under its scope so it never crosses a write."""
@@ -412,8 +415,7 @@ class ContainersMixin:
       logger.error(f"The orphan {container_id} on {hostname} could not be removed: {error}")
       raise TaskFailed()
     self.orphans.pop((hostname, container_id), None)
-    logger.info(f"Removed the orphan {container_id} from {hostname}.")
-    # TODO(36 step 4H): self.notify(f"Removed an orphaned container from worker {hostname}.", "warning")
+    Notifications().notify(f"Removed a container Sage no longer has from worker {hostname}.", "warning", f"/workers/{hostname}")
 
   def _live_operations(self) -> dict[str, str]:
     """The operation running on each container that shows its progress, by container id."""
@@ -502,6 +504,13 @@ class ContainersMixin:
     application = container.application
     return {"Application": f"{application.project.label} / {application.label}", "Worker": container.worker_id}
 
+  @classmethod
+  def _notice(cls, container: Container) -> tuple[str, str]:
+    """What a notice calls the container, "<project> / <application> on <worker>", and the path of its application's
+    page."""
+    labels, application = cls._labels(container), container.application
+    return f"{labels['Application']} on {labels['Worker']}", f"/projects/{application.project_id}/{application.name}"
+
   @staticmethod
   def _admitted(added: Added) -> str:
     if added.outcome == Outcome.BUSY:
@@ -557,7 +566,8 @@ class ContainersMixin:
     record_container_event(container, "deploy", "succeeded", operation.id, dedupe_key=f"{operation.id}:succeeded")
     await mark(container, "Deployed")
     self.request_domain_applies(domain.id for domain in container.domains)
-    # TODO(36 step 4H): self.notify(f"Application {deploy.qualified_name} container deployed to worker {host}.")
+    name, page = self._notice(container)
+    Notifications().notify(f"{name} deployed.", "success", page)
 
   async def stop_container(self, container_id: str):
     """Stops the container and verifies nothing of it runs."""
@@ -579,7 +589,8 @@ class ContainersMixin:
     record_container_event(container, "stop", "succeeded", operation.id, dedupe_key=f"{operation.id}:succeeded")
     await mark(container, "Stopped")
     self.request_domain_applies(domain.id for domain in container.domains)
-    # TODO(36 step 4H): self.notify(f"Container {container.id} stopped on worker {container.worker_id}.")
+    name, page = self._notice(container)
+    Notifications().notify(f"{name} stopped.", "success", page)
 
   async def delete_container(self, container_id: str, force: bool = False):
     """Stops the container and removes its placement from the worker, then its row. With `force`, a worker that can't
@@ -588,6 +599,7 @@ class ContainersMixin:
     if begun is None:
       return
     container, record = begun
+    name, page = self._notice(container)
     if record is None:
       record_container_event(container, "delete", "succeeded", reason={"worker": "not cleaned up"})
       await mark(container, "Removed from Sage; the worker was not cleaned up")
@@ -607,7 +619,11 @@ class ContainersMixin:
     self.request_domain_applies(domains)
     if domains:
       self.request_domain_reconciliation()
-    # TODO(36 step 4H): self.notify(f"Container {container.id} deleted from worker {container.worker_id}.")
+    if record is None:
+      Notifications().notify(f"{name} deleted from Sage; the worker could not be reached, so its files stay there.",
+                             "warning", page)
+    else:
+      Notifications().notify(f"{name} deleted.", "success", page)
     logger.info(f"Container {container.id} deleted; {len(domains)} domains unlinked.")
 
   async def _begin(self, container_id: str, contract: str, input_hash: str | None = None, force: bool = False,
@@ -659,7 +675,8 @@ class ContainersMixin:
     """After a failure of a begun operation: stops the container, settles the record stopped with the failure, or
     leaves it recovering when the stop is not verified, then fails the task."""
     operation, reason = record.operation, str(error) or type(error).__name__
-    logger.error(f"{NAMES[operation.contract]} failed: {reason}")
+    name, page = self._notice(container)
+    Notifications().notify(f"{NAMES[operation.contract]} of {name} failed: {reason}", "error", page)
     try:
       verified_at = await self._stop_runtime(container.worker_id, container.id)
       now = utcnow()
@@ -676,7 +693,6 @@ class ContainersMixin:
                            dedupe_key=f"{operation.id}:failed")
     await mark(container, f"{NAMES[operation.contract]} failed: {reason}")
     self.request_domain_applies(domain.id for domain in container.domains)
-    # TODO(36 step 4H): self.notify(f"... {operation.contract} failed on worker {container.worker_id}: {reason}", "error")
     raise TaskFailed()
 
   async def _stop_runtime(self, hostname: str, container_id: str, options: str = "") -> datetime:
