@@ -145,8 +145,8 @@ class Database(Base):
     """Replaces the live database with the platform backup at `path`: a safety copy of the live database first, then
     the backup copied in page by page, its schema brought up to the models as at boot, a fresh state generation, and
     the history and the Backup rows emptied (discovery rebuilds those). A failure copies the safety copy back and
-    raises; the safety copy is removed either way. Blocking: offload it, with nothing else writing meanwhile (the
-    queue's restoring state)."""
+    raises; the safety copy is removed either way. Blocking: offload it, with nothing else writing meanwhile: the
+    platform restore runs it alone, in the queue's restoring state, with changes and the workers' reports refused."""
     with closing(sqlite3.connect(path)) as backup:
       if (result := backup.execute("PRAGMA integrity_check").fetchone()[0]) != "ok":
         raise ValueError(f"The backup is not a sound database: {result}.")

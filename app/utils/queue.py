@@ -15,13 +15,10 @@ from utils.logging import TaskFailed, TaskLines, new_task_id, task_id, task_line
 
 logger = logging.getLogger(__name__)
 
-# The scope that conflicts with every task, one holding no scope included.
-EVERYTHING = "*"
-
 
 def _is_ancestor_or_equal(a: str, b: str) -> bool:
-  # True when scope `a` covers `b`: `*`, the same scope, or an ancestor of it in the ":"-delimited hierarchy.
-  return a == EVERYTHING or b == a or b.startswith(a + ":")
+  # True when scope `a` covers `b`: the same scope, or an ancestor of it in the ":"-delimited hierarchy.
+  return b == a or b.startswith(a + ":")
 
 
 def _scope_conflict(a: str, b: str) -> bool:
@@ -32,14 +29,14 @@ def _scope_conflict(a: str, b: str) -> bool:
 
 
 def _scopes_conflict(a: frozenset[str], b: frozenset[str]) -> bool:
-  return EVERYTHING in a or EVERYTHING in b or any(_scope_conflict(sa, sb) for sa in a for sb in b)
+  return any(_scope_conflict(sa, sb) for sa in a for sb in b)
 
 
 def _dominates(a: frozenset[str], b: frozenset[str]) -> bool:
   # True when `a` is at the same level or higher than `b`. Used for priority
   # insertion: a priority task is placed behind tasks that dominate it (other
   # platform tasks) and ahead of everything else (app tasks).
-  return EVERYTHING in a or any(_is_ancestor_or_equal(sa, sb) for sa in a for sb in b)
+  return any(_is_ancestor_or_equal(sa, sb) for sa in a for sb in b)
 
 
 class OnConflict(Enum):
@@ -58,10 +55,10 @@ class OnConflict(Enum):
 class QueueState(Enum):
   """Whether the dispatcher starts tasks. Paused is like one long task holding every
   scope: tasks still queue (admission is unchanged, so DEDUP/REPLACE keep recurring work
-  to one pending copy) and start on resume. Restoring is paused except for the restore
-  itself, which starts once the running tasks have finished (see `end_restore`). Stopping
-  is final: nothing new starts or queues. In memory only, so a restart comes back
-  running."""
+  to one pending copy) and start on resume. Restoring refuses every request: the tasks
+  queued before the restore start as usual, and the restore once nothing runs or waits
+  (see `request_restore`). Stopping is final: nothing new starts or queues. In memory
+  only, so a restart comes back running."""
   RUNNING = "running"
   PAUSED = "paused"
   RESTORING = "restoring"
@@ -80,7 +77,6 @@ class QueuedTask:
   labels: dict = field(default_factory=dict)  # what people call its subjects, as they were named when it was queued
   task_id: str | None = None
   quiet: bool = False           # recorded and its lines kept only on failure (housekeeping)
-  restore: bool = False         # the platform restore: the one task that starts while restoring
   queued_at: datetime = field(default_factory=utcnow)
   started_at: datetime | None = None
   lines: TaskLines | None = None  # from its start: where its lines go, and what tells this run apart
@@ -90,7 +86,7 @@ class Outcome(Enum):
   ACCEPTED = "accepted"   # queued as a new task
   EXISTING = "existing"   # a pending or running task with its key does it
   BUSY = "busy"           # not queued (REVISE): a task with its key is running
-  REFUSED = "refused"     # not queued: the queue is stopping, or a restore while it is not running
+  REFUSED = "refused"     # not queued: the queue is stopping or restoring, or a restore while it is not running
 
 
 @dataclass(frozen=True)
@@ -118,7 +114,7 @@ def admit(state: QueueState, running: list[QueuedTask], queue: list[QueuedTask],
           on_conflict: OnConflict, priority: bool) -> Admission:
   """Whether `new` is queued, done by a task with its key, or refused, and where it goes. A task with another key on a
   conflicting scope never stops it: it is queued and waits. A visible request makes the task that does it visible."""
-  if new.restore and state != QueueState.RUNNING:
+  if state == QueueState.RESTORING:
     return Admission(Outcome.REFUSED)
   if state == QueueState.STOPPING:
     return Admission(Outcome.REFUSED, cancelled=True)
@@ -152,16 +148,17 @@ def admit(state: QueueState, running: list[QueuedTask], queue: list[QueuedTask],
   return Admission(Outcome.ACCEPTED, new, superseded, position)
 
 
-def next_to_start(state: QueueState, queue: list[QueuedTask], running: list[QueuedTask]) -> list[QueuedTask]:
-  """The pending tasks to start now, in order: none unless running or restoring, only the restore while
-  restoring, and none whose scopes conflict with a running task or with one started earlier in this scan."""
+def next_to_start(state: QueueState, queue: list[QueuedTask], running: list[QueuedTask],
+                  restore: QueuedTask | None = None) -> list[QueuedTask]:
+  """The tasks to start now, in order: none unless running or restoring; the pending tasks whose scopes conflict with
+  no running task and with none started earlier in this scan; and the waiting `restore` once nothing runs or waits."""
   if state not in (QueueState.RUNNING, QueueState.RESTORING):
     return []
+  if restore is not None and not queue and not running:
+    return [restore]
   held = [task.scopes for task in running]
   starting = []
   for task in queue:
-    if state == QueueState.RESTORING and not task.restore:
-      continue
     if any(_scopes_conflict(task.scopes, scopes) for scopes in held):
       continue
     starting.append(task)
@@ -175,7 +172,11 @@ class TaskQueue:
   Scopes form a ":"-delimited hierarchy. A task holding a parent scope ("app")
   conflicts with every child ("app:app1", "app:app2"); siblings never conflict,
   so operations on different applications run in parallel while a platform-wide
-  task (holding the parent) excludes them all. `*` conflicts with every task.
+  task (holding the parent) excludes them all.
+
+  The platform restore is an operation of its own (`request_restore`), outside
+  admission and scopes: once requested, every other request is refused, and it
+  starts alone once nothing runs or waits.
 
   The dispatcher is the only place that starts tasks, so the single FIFO scan
   per tick is race-free. A threading.Lock guards the queue because producers may
@@ -200,16 +201,16 @@ class TaskQueue:
     self._state = QueueState.RUNNING
     self._queue: list[QueuedTask] = []
     self._running: list[QueuedTask] = []
+    self._restore: QueuedTask | None = None  # the restore until it starts
     self._tasks: set[asyncio.Task] = set()
 
   def add_task(self, task: Callable, key: tuple[str, ...], scopes: frozenset[str], executor: str,
                name: str | None = None, params: dict | None = None, inputs: dict | None = None,
                labels: dict[str, str] | None = None, task_id: str | None = None,
-               on_conflict: OnConflict = OnConflict.DEDUP, priority: bool = False, quiet: bool = False,
-               restore: bool = False) -> Added:
+               on_conflict: OnConflict = OnConflict.DEDUP, priority: bool = False, quiet: bool = False) -> Added:
     """Request a task: accepted (queued), existing (a pending or running task with the same key does it), busy (REVISE:
-    a task with the same key is running) or refused (the queue is stopping, recorded as cancelled; or a restore while
-    the queue isn't running).
+    a task with the same key is running) or refused (the queue is stopping, recorded as cancelled; or restoring, with
+    no record).
 
     ### Parameters
     - task: the callable to run (sync or async).
@@ -218,9 +219,8 @@ class TaskQueue:
       one, e.g. a container's lifecycle requests `("lifecycle", container_id)`.
     - name: what the task does, shown and recorded; the key's first part when omitted.
     - scopes: scopes this task needs exclusive access to. A parent scope ("app")
-      conflicts with all children ("app:app1"); siblings never conflict; `*`
-      conflicts with every task. Each scope's root must be one of the roots passed
-      to the constructor.
+      conflicts with all children ("app:app1"); siblings never conflict. Each
+      scope's root must be one of the roots passed to the constructor.
     - executor: name of the executor (key in the constructor's executors dict).
     - params: JSON-safe keyword arguments of `task` (ids and flags), recorded and shown.
     - inputs: keyword arguments of `task` that are never recorded or shown (a frozen
@@ -235,15 +235,11 @@ class TaskQueue:
     - quiet: record this task and keep its lines only when it fails, so
       high-frequency housekeeping (e.g. metrics) does not flood the record. A
       visible request with the same key makes it visible.
-    - restore: this is the platform restore, which holds `*`. Adding it puts the
-      queue in the restoring state, where only it starts (once the running tasks
-      have finished); the task ends that state with `end_restore`.
     """
-    scopes = frozenset({EVERYTHING}) if EVERYTHING in scopes else frozenset(scopes)
     key = tuple(key)
-    new_task = QueuedTask(name=name or (key[0] if key else ""), key=key, scopes=scopes, task=task, executor=executor,
-                          params=params or {}, inputs=inputs or {}, labels=labels or {},
-                          task_id=task_id or new_task_id(), quiet=quiet, restore=restore)
+    new_task = QueuedTask(name=name or (key[0] if key else ""), key=key, scopes=frozenset(scopes), task=task,
+                          executor=executor, params=params or {}, inputs=inputs or {}, labels=labels or {},
+                          task_id=task_id or new_task_id(), quiet=quiet)
     self._validate(new_task)
     with self._lock:
       admission = admit(self._state, self._running, self._queue, new_task, on_conflict, priority)
@@ -251,9 +247,6 @@ class TaskQueue:
         for superseded in admission.superseded:
           self._queue.remove(superseded)
         self._queue.insert(admission.position, admission.task)
-        if restore:
-          self._state = QueueState.RESTORING
-          logger.info("Restoring: nothing else starts until the restore has finished.")
       elif admission.reveal:
         for tasks in (self._queue, self._running):
           tasks[:] = [replace(entry, quiet=False) if entry is admission.task else entry for entry in tasks]
@@ -270,10 +263,28 @@ class TaskQueue:
       return Added(Outcome.REFUSED, new_task.task_id if admission.cancelled else None)
     return Added(admission.outcome, admission.task.task_id)
 
+  def request_restore(self, task: Callable, name: str, executor: str, params: dict | None = None,
+                      labels: dict[str, str] | None = None, task_id: str | None = None) -> Added:
+    """Request the platform restore: accepted only while running, else refused with no record. From then on the queue
+    is restoring and refuses every other request; the tasks already queued start as usual, and the restore starts once
+    nothing runs or waits. It runs as a task, with its id, lines and record, and ends the restoring state with
+    `end_restore`, whatever its outcome."""
+    restore = QueuedTask(name=name, key=(name,), scopes=frozenset(), task=task, executor=executor, params=params or {},
+                         labels=labels or {}, task_id=task_id or new_task_id())
+    self._validate(restore)
+    with self._lock:
+      if self._state != QueueState.RUNNING:
+        return Added(Outcome.REFUSED)
+      self._state, self._restore = QueueState.RESTORING, restore
+    logger.info("Restoring: every other request is refused, and the restore starts once the tasks queued before it "
+                "have finished.")
+    self._emit()
+    return Added(Outcome.ACCEPTED, restore.task_id)
+
   def cancel(self, key: tuple[str, ...] | None = None, name: str | None = None, scope: str | None = None) -> list[str]:
     """Cancel the pending tasks with `key`, named `name` and holding `scope` or a scope below it (each when given),
-    recorded as cancelled; a running one is left to finish, and the restore is never cancelled (only it ends the
-    restoring state). The ids of the tasks cancelled."""
+    recorded as cancelled; a running one is left to finish, and the restore is never cancelled. The ids of the tasks
+    cancelled."""
     if key is None and scope is None:
       raise ValueError("A cancel names a key or a scope.")
     key = tuple(key) if key is not None else None
@@ -282,7 +293,7 @@ class TaskQueue:
       for task in self._queue:
         matched = ((key is None or task.key == key) and (name is None or task.name == name)
                    and (scope is None or any(_is_ancestor_or_equal(scope, held) for held in task.scopes)))
-        (cancelled if matched and not task.restore else kept).append(task)
+        (cancelled if matched else kept).append(task)
       self._queue[:] = kept
     self._record_cancelled(cancelled)
     if cancelled:
@@ -300,7 +311,7 @@ class TaskQueue:
     domain_id)` for that domain's sync, `("backup_database",)` for any platform backup."""
     prefix = tuple(prefix)
     with self._lock:
-      tasks = self._running if running_only else (*self._running, *self._queue)
+      tasks = self._running if running_only else (*self._running, *self._pending())
       return any(task.key[:len(prefix)] == prefix for task in tasks)
 
   @property
@@ -324,48 +335,38 @@ class TaskQueue:
     logger.info("Resumed.")
     self._emit()
 
-  def end_restore(self, restored: bool, follow_ups: list[dict] = ()):
-    """Leave the restoring state, called by the restore task when it ends.
-
-    After a restore that took effect, the tasks still waiting were queued against the
-    previous data, so they are cancelled, and `follow_ups` (add_task arguments) are
-    queued ahead of anything added since. After a restore that failed or was rolled
-    back nothing changed, and the waiting tasks run as usual."""
+  def end_restore(self):
+    """Leave the restoring state, called by the restore when it ends, whatever its outcome. Nothing waits behind it:
+    every other request was refused while it waited and ran."""
     with self._lock:
-      cancelled = []
-      if restored and self._state == QueueState.RESTORING:
-        cancelled = list(self._queue)
-        self._queue.clear()
-    self._record_cancelled(cancelled)
-
-    # Still restoring here, so nothing starts before the follow-ups are queued.
-    if restored:
-      for follow_up in follow_ups:
-        self.add_task(**follow_up, priority=True)
-
-    with self._lock:
-      if self._state == QueueState.RESTORING:
-        self._state = QueueState.RUNNING
+      if self._state != QueueState.RESTORING:
+        return
+      self._state = QueueState.RUNNING
     logger.info("Restore finished.")
     self._emit()
 
   def stop(self):
-    """Stop for good when Sage exits: pending tasks, and any added later, are recorded
+    """Stop for good when Sage exits: pending tasks (a waiting restore included), and any added later, are recorded
     as cancelled instead of silently lost. Running tasks are left to finish."""
     with self._lock:
       self._state = QueueState.STOPPING
-      cancelled = list(self._queue)
+      cancelled = self._pending()
       self._queue.clear()
+      self._restore = None
     self._record_cancelled(cancelled)
     self._emit()
 
   def snapshot(self) -> dict:
-    """Point-in-time view of running and queued tasks."""
+    """Point-in-time view of running and queued tasks, a waiting restore last among them."""
     with self._lock:
       return {
           "running": [self._task_dict(t, "running") for t in self._running],
-          "queued": [self._task_dict(t, "queued") for t in self._queue],
+          "queued": [self._task_dict(t, "queued") for t in self._pending()],
       }
+
+  def _pending(self) -> list[QueuedTask]:
+    """The tasks waiting to start, the restore last; call under the lock."""
+    return [*self._queue, self._restore] if self._restore is not None else list(self._queue)
 
   @staticmethod
   def _task_dict(task: "QueuedTask", status: str) -> dict:
@@ -390,12 +391,10 @@ class TaskQueue:
       raise ValueError(f"A task key is a tuple of names, not {task.key!r}")
     for scope in task.scopes:
       root = scope.split(":", 1)[0]
-      if scope != EVERYTHING and root not in self._scopes:
+      if root not in self._scopes:
         raise ValueError(f"Unknown scope root '{root}' (allowed: {sorted(self._scopes)})")
     if task.executor not in self._executors:
       raise ValueError(f"Unknown executor '{task.executor}' (allowed: {sorted(self._executors)})")
-    if task.restore and task.scopes != {EVERYTHING}:
-      raise ValueError("The restore holds '*'")
     if task.params.keys() & task.inputs.keys():
       raise ValueError(f"An argument is both a param and an input: {sorted(task.params.keys() & task.inputs.keys())}")
     try:
@@ -406,11 +405,15 @@ class TaskQueue:
       raise ValueError(f"Task labels name each subject in text, not {task.labels!r}")
 
   def dispatch_tick(self):
-    """Start every pending task whose scopes do not conflict with running work."""
+    """Start every pending task whose scopes do not conflict with running work, and the restore once nothing runs or
+    waits."""
     with self._lock:
-      starting = next_to_start(self._state, self._queue, self._running)
+      starting = next_to_start(self._state, self._queue, self._running, self._restore)
       for task in starting:
-        self._queue.remove(task)
+        if task is self._restore:
+          self._restore = None
+        else:
+          self._queue.remove(task)
         task = replace(task, started_at=utcnow(), lines=TaskLines(quiet=task.quiet))
         self._running.append(task)
         handle = asyncio.create_task(self.run_task(task))
@@ -428,7 +431,7 @@ class TaskQueue:
   def _record_cancelled(self, tasks: list[QueuedTask]):
     """Log and persist already-removed pending tasks as cancelled. Call this
     OUTSIDE the lock -- `_record` writes to the DB, which must not run inside the
-    critical section. Callers (admission, cancel, end_restore, stop()) remove
+    critical section. Callers (admission, cancel, stop()) remove
     the tasks from the queue under the lock, then hand them here."""
     for task in tasks:
       logger.info(f"{task.name}: cancelled")

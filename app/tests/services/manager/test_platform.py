@@ -33,7 +33,7 @@ from utils.archive import decrypt_file
 from utils.errors import Conflict
 from utils.executor import active_executor
 from utils.logging import TaskFailed
-from utils.queue import TaskQueue
+from utils.queue import Outcome, TaskQueue
 
 STORE_A = {"access_key": "a", "secret_key": "a", "bucket": "a", "endpoint": "https://a.example.test", "path": "base"}
 STORE_B = {**STORE_A, "bucket": "b"}
@@ -166,12 +166,21 @@ class TestRestoreRequest:
     with pytest.raises(Conflict):
       manager.request_platform_restore(elsewhere.id)
 
-  def test_it_holds_everything_as_the_restore_and_names_its_backup_while_restoring(self, manager, stores):
+  def test_it_waits_as_the_restore_and_names_its_backup_while_restoring(self, manager, stores):
     backup = Backup.create(s3_path="base/backups/platform/20260101_030000.db.enc", storage_id="sa", type="platform")
     manager.request_platform_restore(backup.id)
     [task] = manager.task_queue.snapshot()["queued"]
-    assert (task["scopes"], task["params"]) == (["*"], {"s3_path": backup.s3_path, "storage_id": "sa"})
+    assert (task["name"], task["scopes"], task["executor"], task["params"]) == (
+        "restore_platform", [], "platform", {"s3_path": backup.s3_path, "storage_id": "sa"})
     assert (manager.task_state(), manager.restoring_from()) == ("restoring", "2026-01-01T03:00:00")
+
+  def test_every_other_request_is_refused_while_it_waits(self, manager, stores):
+    backup = Backup.create(s3_path="base/backups/platform/20260101_030000.db.enc", storage_id="sa", type="platform")
+    manager.request_platform_restore(backup.id)
+    assert manager.add_task(task=asyncio.sleep, key=("later",), scopes=set(), executor="app").outcome == Outcome.REFUSED
+    with pytest.raises(Conflict, match="not running"):
+      manager.request_platform_restore(backup.id)
+    assert [task["name"] for task in manager.task_queue.snapshot()["queued"]] == ["restore_platform"]
 
 
 class TestRestore:
@@ -194,7 +203,7 @@ class TestRestore:
     generation, ran = Instance.get().state_generation, []
 
     async def waiting():
-      ran.append(True)
+      ran.append(Worker.select().count())
 
     manager.add_task(task=waiting, key=("old",), scopes=set(), executor="app")
     manager.request_platform_restore(backup.id)
@@ -206,21 +215,15 @@ class TestRestore:
     assert (manager.setup_failures, manager.stack_repairs, manager.recoveries, manager.orphans) == ({}, {}, {}, {})
     assert manager.task_state() == "running" and manager.task_queue.snapshot()["queued"] == []
     assert manager.requested == STARTUP and manager.fetched == [True]
-    assert ran == []
+    assert ran == [2], "the task queued before the restore ran first, on the configuration it was queued against"
     assert manager.notices[-1] == (f"Platform restored from the backup taken at {taken_at(backup.s3_path)}.", "success", "/backups")
 
-  async def test_a_failed_download_changes_nothing_and_the_waiting_tasks_run(self, manager, stores, backup):
-    ran = []
-
-    async def waiting():
-      ran.append(True)
-
-    manager.add_task(task=waiting, key=("old",), scopes=set(), executor="app")
+  async def test_a_failed_download_changes_nothing(self, manager, stores, backup):
     manager.request_platform_restore(backup.id)
     stores.a.fails = "AccessDenied"
     await manager.run()
     assert sorted(worker.hostname for worker in Worker.select()) == ["w1", "w2"] and Settings().get("s3") == STORE_B
-    assert Workers().setup("w1") == "succeeded" and manager.requested == [] and ran == [True]
+    assert Workers().setup("w1") == "succeeded" and manager.requested == []
     assert manager.task_state() == "running"
     assert manager.notices[-1] == (f"The platform restore from the backup taken at {taken_at(backup.s3_path)} failed; nothing changed: "
                                    "AccessDenied", "error", "/backups")

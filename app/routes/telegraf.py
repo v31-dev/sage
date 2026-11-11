@@ -18,12 +18,15 @@ router = APIRouter()
 @router.post("/report", openapi_extra=NO_ACCESS_LOG)  # a report every few seconds from each worker
 async def telegraf_report(request: Request):
   hostname = request.headers.get("x-node-name", "")
+  body = await read_body(request, config.REPORT_MAX_BYTES, "Report too large.")
+  # After the last await: a restore can't start between this check and the database work below.
+  if Manager().task_state() == "restoring":
+    raise HTTPException(status_code=503, detail="Sage is restoring a backup.")
   if Worker.get_or_none(Worker.hostname == hostname) is None:
     if WorkerReports().first_unknown(hostname):
       logger.warning(f"Ignoring reports from unknown worker {hostname!r}.")
     raise HTTPException(status_code=404, detail="Unknown worker.")
 
-  body = await read_body(request, config.REPORT_MAX_BYTES, "Report too large.")
   try:
     snapshots = parse_batch(json.loads(body))
   except ValueError as e:

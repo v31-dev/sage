@@ -11,9 +11,12 @@ from utils.logging import TaskFailed, task_id
 from utils.queue import Added, OnConflict, Outcome, QueuedTask, QueueState, TaskQueue, admit, next_to_start
 
 
-def queued(name, *scopes, key=None, quiet=False, restore=False):
+def queued(name, *scopes, key=None, quiet=False):
   return QueuedTask(name=name, key=key or (name,), scopes=frozenset(scopes), task=lambda: None, executor="app",
-                    task_id=f"{name}-{'-'.join(sorted(scopes))}", quiet=quiet, restore=restore)
+                    task_id=f"{name}-{'-'.join(sorted(scopes))}", quiet=quiet)
+
+
+RESTORE = queued("restore")
 
 
 def admission(new, *, state=QueueState.RUNNING, running=(), queue=(), on_conflict=OnConflict.DEDUP, priority=False):
@@ -121,22 +124,13 @@ class TestAdmit:
   def test_a_priority_task_that_nothing_covers_goes_first(self):
     assert admission(queued("a", "worker:w1:container:c1"), queue=[queued("p", "certificate")], priority=True).position == 0
 
-  def test_a_priority_task_goes_behind_a_pending_task_holding_everything(self):
-    queue = [queued("restore", "*"), queued("a", "worker:w1:container:c1")]
-    assert admission(queued("b", "certificate"), queue=queue, priority=True).position == 1
-
-  def test_a_priority_task_holding_everything_goes_behind_only_others_that_do(self):
-    queue = [queued("restore", "*"), queued("p", "certificate"), queued("a", "worker:w1")]
-    assert admission(queued("fence", "*"), queue=queue, priority=True).position == 1
-
   def test_a_priority_task_is_placed_after_the_tasks_it_supersedes_are_removed(self):
     queue = [queued("p1", "certificate"), queued("renew", "certificate"), queued("a", "worker:w1:container:c1")]
     result = admission(queued("renew", "certificate"), queue=queue, on_conflict=OnConflict.REPLACE, priority=True)
     assert (len(result.superseded), result.position) == (1, 1)
 
-  @pytest.mark.parametrize("state", [QueueState.PAUSED, QueueState.RESTORING])
-  def test_a_task_is_accepted_while_paused_or_restoring(self, state):
-    assert admission(queued("a", "worker:w1"), state=state).outcome == Outcome.ACCEPTED
+  def test_a_task_is_accepted_while_paused(self):
+    assert admission(queued("a", "worker:w1"), state=QueueState.PAUSED).outcome == Outcome.ACCEPTED
 
   def test_dedup_still_keeps_one_pending_copy_while_paused(self):
     result = admission(queued("sync", "worker:observations"), state=QueueState.PAUSED,
@@ -147,18 +141,18 @@ class TestAdmit:
     result = admission(queued("a", "worker:w1"), state=QueueState.STOPPING)
     assert (result.outcome, result.cancelled) == (Outcome.REFUSED, True)
 
-  def test_a_restore_is_accepted_only_while_running(self):
-    assert admission(queued("restore", "*", restore=True)).outcome == Outcome.ACCEPTED
-
-  @pytest.mark.parametrize("state", [QueueState.PAUSED, QueueState.RESTORING, QueueState.STOPPING])
-  def test_a_restore_is_refused_without_a_record_in_any_other_state(self, state):
-    result = admission(queued("restore", "*", restore=True), state=state)
-    assert (result.outcome, result.cancelled) == (Outcome.REFUSED, False)
+  @pytest.mark.parametrize("on_conflict", list(OnConflict))
+  def test_a_restoring_queue_refuses_every_request_without_a_record(self, on_conflict):
+    pending = queued("sync", "domain:id:d1", key=("sync", "d1"), quiet=True)
+    result = admission(queued("sync", "domain:id:d1", key=("sync", "d1")), state=QueueState.RESTORING, queue=[pending],
+                       on_conflict=on_conflict, priority=True)
+    assert (result.outcome, result.task, result.superseded, result.reveal, result.cancelled) == (
+        Outcome.REFUSED, None, (), False, False)
 
 
 class TestNextToStart:
-  def names(self, state, queue, running=()):
-    return [task.name for task in next_to_start(state, list(queue), list(running))]
+  def names(self, state, queue, running=(), restore=None):
+    return [task.name for task in next_to_start(state, list(queue), list(running), restore)]
 
   def test_tasks_on_sibling_scopes_start_together(self):
     queue = [queued("a", "worker:w1:container:c1"), queued("b", "worker:w1:container:c2"), queued("c", "settings:s3")]
@@ -193,30 +187,21 @@ class TestNextToStart:
     assert self.names(QueueState.RUNNING, queue, running=[queued("host", "worker:w1")]) == []
     assert self.names(QueueState.RUNNING, queue, running=[queued("c", "worker:w1:container:c1")]) == ["both"]
 
-  @pytest.mark.parametrize("running", [queued("a", "settings:s3"), queued("b", "metrics:w1"), queued("none")])
-  def test_everything_waits_for_any_running_task_even_one_without_scopes(self, running):
-    assert self.names(QueueState.RUNNING, [queued("fence", "*")], running=[running]) == []
-
-  @pytest.mark.parametrize("waiting", [queued("a", "settings:s3"), queued("none")])
-  def test_a_running_task_holding_everything_holds_back_every_other(self, waiting):
-    assert self.names(QueueState.RUNNING, [waiting], running=[queued("fence", "*")]) == []
-
-  def test_a_pending_task_holding_everything_reserves_nothing(self):
-    queue = [queued("fence", "*"), queued("b", "settings:s3")]
-    assert self.names(QueueState.RUNNING, queue, running=[queued("a", "worker:w1")]) == ["b"]
-
   def test_tasks_without_scopes_start_together(self):
     assert self.names(QueueState.RUNNING, [queued("a"), queued("b")]) == ["a", "b"]
 
-  def test_while_restoring_only_the_restore_starts(self):
-    queue = [queued("a", "worker:w1"), queued("restore", "*", restore=True), queued("b", "settings:s3")]
-    assert self.names(QueueState.RESTORING, queue) == ["restore"]
+  def test_while_restoring_the_tasks_queued_before_the_restore_start_as_usual(self):
+    queue = [queued("a", "worker:w1"), queued("b", "worker:w1:container:c1"), queued("c", "settings:s3")]
+    assert self.names(QueueState.RESTORING, queue, running=[queued("p", "certificate")], restore=RESTORE) == ["a", "c"]
 
-  @pytest.mark.parametrize("running", [queued("p", "certificate"), queued("a", "metrics:w1"), queued("b", "settings:s3")])
-  def test_while_restoring_the_restore_waits_for_every_running_task(self, running):
-    queue = [queued("restore", "*", restore=True)]
-    assert self.names(QueueState.RESTORING, queue, running=[running]) == []
-    assert self.names(QueueState.RESTORING, queue) == ["restore"]
+  @pytest.mark.parametrize("queue, running, expected", [
+      ([queued("a", "settings:s3")], [], ["a"]), ([queued("b", "worker:w1")], [queued("c", "worker:w1:container:c1")], []),
+      ([], [queued("p", "certificate")], []), ([], [queued("none")], [])])
+  def test_the_restore_waits_while_any_task_runs_or_waits(self, queue, running, expected):
+    assert self.names(QueueState.RESTORING, queue, running, restore=RESTORE) == expected
+
+  def test_the_restore_starts_alone_once_nothing_runs_or_waits(self):
+    assert self.names(QueueState.RESTORING, [], restore=RESTORE) == ["restore"]
 
   @pytest.mark.parametrize("state", [QueueState.PAUSED, QueueState.STOPPING])
   def test_nothing_starts_while_paused_or_stopping(self, state):
@@ -251,12 +236,15 @@ class Lane:
     kwargs.setdefault("scopes", {scope})
     return self.queue.add_task(task=task, key=key or (task.__name__,), **kwargs)
 
-  async def run(self):
-    """Start what can start and wait until nothing is running."""
+  async def run(self, ticks=1000):
+    """Start what can start and wait until nothing is running, failing after `ticks` ticks."""
     self.queue.dispatch_tick()
-    while self.queue.snapshot()["running"]:
+    for _ in range(ticks):
+      if not self.queue.snapshot()["running"]:
+        return
       await asyncio.sleep(0)
       self.queue.dispatch_tick()
+    raise AssertionError(f"still running after {ticks} ticks: {self.queue.snapshot()['running']}")
 
 
 @pytest.fixture
@@ -449,6 +437,8 @@ class TestAddTask:
       lane.add(done, scope="nowhere:a")
     with pytest.raises(ValueError, match="Unknown scope root '\\*'"):
       lane.add(done, scope="*:a")
+    with pytest.raises(ValueError, match="Unknown scope root '\\*'"):
+      lane.add(done, scope="*")
     with pytest.raises(ValueError, match="Unknown executor"):
       lane.add(done, executor="nowhere")
 
@@ -456,10 +446,6 @@ class TestAddTask:
   def test_a_key_is_a_tuple_of_names(self, lane, key):
     with pytest.raises(ValueError, match="A task key is a tuple of names"):
       lane.queue.add_task(task=done, key=key, scopes={"worker:w1"}, executor="app")
-
-  def test_the_restore_holds_everything(self, lane):
-    with pytest.raises(ValueError, match="The restore holds"):
-      lane.add(done, scope="certificate", restore=True)
 
   def test_params_are_json(self, lane):
     with pytest.raises(ValueError, match="must be JSON"):
@@ -474,20 +460,16 @@ class TestAddTask:
     with pytest.raises(ValueError, match="labels name each subject in text"):
       lane.add(done, labels=labels)
 
-  def test_everything_needs_no_root_and_stands_alone_in_its_scopes(self, lane):
-    lane.add(done, scopes={"*", "worker:w1"})
-    [task] = lane.queue.snapshot()["queued"]
-    assert task["scopes"] == ["*"]
-
   def test_it_says_what_it_did_with_each_request(self, lane):
     accepted = lane.add(done, key=("a",), task_id="t1")
     assert accepted == Added(Outcome.ACCEPTED, "t1")
     assert lane.add(done, key=("a",), task_id="t2") == Added(Outcome.EXISTING, "t1")
     assert lane.add(done, key=("a",), task_id="t3", on_conflict=OnConflict.QUEUE) == Added(Outcome.ACCEPTED, "t3")
-    lane.add(done, scope="*", key=("restore",), task_id="t4", restore=True)
-    assert lane.add(done, scope="*", key=("restore",), task_id="t5", restore=True) == Added(Outcome.REFUSED)
+    assert lane.queue.request_restore(done, "restore", "platform", task_id="t4") == Added(Outcome.ACCEPTED, "t4")
+    assert lane.queue.request_restore(done, "restore", "platform", task_id="t5") == Added(Outcome.REFUSED)
+    assert lane.add(done, key=("b",), task_id="t6") == Added(Outcome.REFUSED)
     lane.queue.stop()
-    assert lane.add(done, key=("b",), task_id="t6") == Added(Outcome.REFUSED, "t6")
+    assert lane.add(done, key=("c",), task_id="t7") == Added(Outcome.REFUSED, "t7")
 
   async def test_a_request_while_a_task_with_its_key_runs_is_busy_with_its_id_and_leaves_no_trace(self, lane):
     work, release = holding()
@@ -525,10 +507,6 @@ class TestAddTask:
     lane.add(done, key=("urgent",), scope="worker:w2", priority=True)
     assert [task["name"] for task in lane.queue.snapshot()["queued"]] == ["urgent", "first"]
 
-  def test_a_restore_puts_the_queue_in_the_restoring_state(self, lane):
-    assert lane.add(done, key=("restore",), scope="*", executor="platform", restore=True).outcome == Outcome.ACCEPTED
-    assert lane.queue.state == QueueState.RESTORING
-
 
 class TestCancel:
   def test_it_cancels_the_pending_tasks_with_the_key_and_records_them(self, lane):
@@ -557,8 +535,8 @@ class TestCancel:
     assert (lane.queue.snapshot()["queued"], lane.recorded) == ([], [])
 
   def test_the_restore_is_never_cancelled(self, lane):
-    lane.add(done, key=("restore",), scope="*", executor="platform", restore=True)
-    assert lane.queue.cancel(("restore",)) == []
+    lane.queue.request_restore(done, "restore", "platform")
+    assert lane.queue.cancel(("restore",)) == [] and lane.queue.cancel(("restore",), name="restore") == []
     assert lane.queue.state == QueueState.RESTORING and len(lane.queue.snapshot()["queued"]) == 1
 
   def test_it_cancels_the_pending_tasks_at_or_below_a_scope_whatever_their_key(self, lane):
@@ -573,10 +551,6 @@ class TestCancel:
     lane.add(done, key=("lifecycle", "c1"), name="stop", task_id="stop")
     assert lane.queue.cancel(("lifecycle", "c1"), name="deploy") == []
     assert lane.queue.cancel(("lifecycle", "c1"), name="stop") == ["stop"]
-
-  def test_the_restore_is_not_cancelled_by_a_scope_either(self, lane):
-    lane.add(done, key=("restore",), scope="*", executor="platform", restore=True)
-    assert lane.queue.cancel(scope="*") == []
 
   def test_a_cancel_names_a_key_or_a_scope(self, lane):
     with pytest.raises(ValueError):
@@ -607,51 +581,6 @@ class TestStates:
     lane.queue.resume()
     assert lane.queue.state == QueueState.RUNNING
 
-  async def test_while_restoring_only_the_restore_runs(self, lane):
-    order = []
-
-    async def restore():
-      order.append("restore")
-
-    async def other():
-      order.append("other")
-
-    lane.add(other, scope="worker:w1")
-    lane.add(restore, scope="*", executor="platform", restore=True)
-    lane.queue.dispatch_tick()
-    while lane.queue.snapshot()["running"]:
-      await asyncio.sleep(0)
-    assert order == ["restore"]
-
-  def test_a_restore_that_took_effect_cancels_the_waiting_tasks_and_queues_the_follow_ups_first(self, lane):
-    lane.add(done, key=("restore",), scope="*", executor="platform", restore=True)
-    lane.add(done, key=("waiting",), scope="worker:w1")
-    lane.queue.end_restore(True, [dict(task=done, key=("after",), scopes={"worker:w2"}, executor="app")])
-    assert lane.queue.state == QueueState.RUNNING
-    assert lane.recorded == [("restore", "cancelled"), ("waiting", "cancelled")]
-    assert [task["name"] for task in lane.queue.snapshot()["queued"]] == ["after"]
-
-  def test_a_restore_that_failed_leaves_the_waiting_tasks(self, lane):
-    lane.add(done, key=("waiting",), scope="worker:w1")
-    lane.add(done, key=("restore",), scope="*", executor="platform", restore=True)
-    lane.queue.end_restore(False, [dict(task=done, key=("after",), scopes={"worker:w2"}, executor="app")])
-    assert lane.queue.state == QueueState.RUNNING
-    assert lane.recorded == []
-    assert sorted(task["name"] for task in lane.queue.snapshot()["queued"]) == ["restore", "waiting"]
-
-  def test_a_restore_that_ends_after_the_queue_stopped_leaves_it_stopped(self, lane):
-    lane.add(done, key=("restore",), scope="*", executor="platform", restore=True)
-    lane.queue.stop()
-    lane.queue.end_restore(True)
-    assert lane.queue.state == QueueState.STOPPING
-
-  def test_ending_a_restore_that_is_not_under_way_cancels_nothing(self, lane):
-    lane.add(done, key=("waiting",))
-    lane.queue.end_restore(True)
-    assert lane.queue.state == QueueState.RUNNING
-    assert lane.recorded == []
-    assert [task["name"] for task in lane.queue.snapshot()["queued"]] == ["waiting"]
-
   def test_stopping_records_the_waiting_tasks_as_cancelled_and_refuses_new_ones(self, lane):
     lane.add(done, key=("waiting",))
     lane.queue.stop()
@@ -671,6 +600,108 @@ class TestStates:
     while lane.queue.snapshot()["running"]:
       await asyncio.sleep(0)
     assert lane.recorded == [("running", "completed")]
+
+
+class TestRestore:
+  def restore(self, lane, task=done, **kwargs):
+    return lane.queue.request_restore(task, "restore_platform", "platform", **kwargs)
+
+  @pytest.mark.parametrize("state", [QueueState.PAUSED, QueueState.RESTORING, QueueState.STOPPING])
+  def test_it_is_refused_without_a_record_unless_the_queue_is_running(self, lane, state):
+    {QueueState.PAUSED: lane.queue.pause, QueueState.RESTORING: lambda: self.restore(lane, task_id="first"),
+     QueueState.STOPPING: lane.queue.stop}[state]()
+    queued, changes = lane.queue.snapshot()["queued"], lane.changes
+    assert self.restore(lane, task_id="second") == Added(Outcome.REFUSED)
+    assert (lane.queue.state, lane.queue.snapshot()["queued"], lane.recorded, lane.changes) == (state, queued, [], changes)
+
+  def test_it_waits_last_as_a_task_without_scopes_and_the_queue_is_restoring(self, lane):
+    lane.add(done, key=("waiting",))
+    added = self.restore(lane, params={"s3_path": "base/backups/platform/x.db.enc"}, labels={"Backup": "x"},
+                         task_id="r1")
+    assert added == Added(Outcome.ACCEPTED, "r1") and lane.queue.state == QueueState.RESTORING
+    waiting, restore = lane.queue.snapshot()["queued"]
+    assert waiting["name"] == "waiting"
+    assert {name: restore[name] for name in ("task_id", "name", "key", "scopes", "params", "labels", "executor", "quiet")} == {
+        "task_id": "r1", "name": "restore_platform", "key": ["restore_platform"], "scopes": [],
+        "params": {"s3_path": "base/backups/platform/x.db.enc"}, "labels": {"Backup": "x"}, "executor": "platform",
+        "quiet": False}
+    assert lane.queue.has_task(("restore_platform",)) and not lane.queue.has_task(("restore_platform",), running_only=True)
+    assert lane.changes == 2
+
+  @pytest.mark.parametrize("on_conflict", list(OnConflict))
+  def test_while_restoring_every_request_is_refused_without_a_record_or_a_change(self, lane, on_conflict):
+    lane.add(done, key=("sync", "d1"), quiet=True)
+    self.restore(lane)
+    queued, changes = lane.queue.snapshot()["queued"], lane.changes
+    for quiet in (True, False):
+      assert lane.add(done, key=("sync", "d1"), on_conflict=on_conflict, quiet=quiet, priority=True) == Added(Outcome.REFUSED)
+      assert lane.add(done, key=("other",), scope="worker:w2", on_conflict=on_conflict, quiet=quiet) == Added(Outcome.REFUSED)
+    assert (lane.queue.snapshot()["queued"], lane.recorded, lane.changes) == (queued, [], changes)
+
+  async def test_the_tasks_queued_before_it_finish_first_and_it_runs_alone_as_a_task(self, lane):
+    order, seen = [], {}
+    work, release = holding()
+
+    async def first():
+      order.append("first")
+      await work()
+
+    async def behind():
+      order.append("behind")
+
+    async def beside():
+      order.append("beside")
+
+    async def restore():
+      snapshot = lane.queue.snapshot()
+      seen.update(id=task_id.get(), pool=active_executor.get(), state=lane.queue.state,
+                  running=[task["name"] for task in snapshot["running"]], queued=snapshot["queued"])
+      order.append("restore")
+      lane.queue.end_restore()
+
+    lane.add(first, scope="worker:w1")
+    lane.queue.dispatch_tick()
+    lane.add(behind, scope="worker:w1:container:c1")
+    lane.add(beside, scope="worker:w2")
+    self.restore(lane, task=restore, task_id="r1")
+    lane.queue.dispatch_tick()
+    await asyncio.sleep(0)
+    assert order == ["first", "beside"] and [task["name"] for task in lane.queue.snapshot()["queued"]] == [
+        "behind", "restore_platform"]
+    release.set()
+    await lane.run()
+    assert order == ["first", "beside", "behind", "restore"]
+    assert seen == {"id": "r1", "pool": lane.pool, "state": QueueState.RESTORING, "running": ["restore_platform"],
+                    "queued": []}
+    assert lane.recorded[-1] == ("restore_platform", "completed") and lane.queue.state == QueueState.RUNNING
+
+  async def test_a_failed_restore_is_recorded_failed_and_its_end_leaves_the_queue_running(self, lane):
+    async def restore():
+      try:
+        raise TaskFailed()
+      finally:
+        lane.queue.end_restore()
+
+    self.restore(lane, task=restore)
+    await lane.run()
+    assert lane.recorded == [("restore_platform", "failed")] and lane.queue.state == QueueState.RUNNING
+    assert lane.add(done, key=("after",)).outcome == Outcome.ACCEPTED
+
+  @pytest.mark.parametrize("state", [QueueState.RUNNING, QueueState.PAUSED, QueueState.STOPPING])
+  def test_ending_it_outside_a_restore_changes_nothing(self, lane, state):
+    {QueueState.RUNNING: lambda: None, QueueState.PAUSED: lane.queue.pause, QueueState.STOPPING: lane.queue.stop}[state]()
+    changes = lane.changes
+    lane.queue.end_restore()
+    assert (lane.queue.state, lane.changes) == (state, changes)
+
+  def test_stopping_cancels_a_waiting_restore_with_the_tasks_before_it(self, lane):
+    lane.add(done, key=("waiting",))
+    self.restore(lane)
+    lane.queue.stop()
+    assert lane.recorded == [("waiting", "cancelled"), ("restore_platform", "cancelled")]
+    assert lane.queue.snapshot()["queued"] == [] and lane.queue.state == QueueState.STOPPING
+    lane.queue.dispatch_tick()
+    assert lane.queue.snapshot()["running"] == []
 
 
 class TestQueries:
@@ -695,15 +726,6 @@ class TestQueries:
     assert lane.queue.is_busy(frozenset({"worker:w1:container:c1"})) is True
     assert lane.queue.is_busy(frozenset({"worker:w1"})) is True
     assert lane.queue.is_busy(frozenset({"worker:w1:container:c2"})) is False
-
-  def test_everything_is_busy_whenever_any_task_is_there(self, lane):
-    assert lane.queue.is_busy(frozenset({"*"})) is False
-    lane.add(done, scopes=set())
-    assert lane.queue.is_busy(frozenset({"*"})) is True
-
-  def test_a_task_holding_everything_makes_every_scope_busy(self, lane):
-    lane.add(done, scope="*")
-    assert lane.queue.is_busy(frozenset({"settings:s3"})) is True
 
   async def test_is_busy_covers_a_running_task_until_it_finishes(self, lane):
     work, release = holding()
@@ -775,9 +797,9 @@ class TestChangeHook:
     assert lane.changes == 2
 
   def test_a_restore_is_a_change_when_it_begins_and_when_it_ends(self, lane):
-    lane.add(done, key=("restore",), scope="*", executor="platform", restore=True)
+    lane.queue.request_restore(done, "restore", "platform")
     assert lane.changes == 1
-    lane.queue.end_restore(False)
+    lane.queue.end_restore()
     assert lane.changes == 2
 
   def test_stopping_is_a_change_and_so_is_what_it_cancels(self, lane):

@@ -30,8 +30,11 @@ class QueueMixin:
   def resume_tasks(self):
     self.task_queue.resume()
 
-  def end_restore(self, restored: bool, follow_ups: list[dict] = ()):
-    self.task_queue.end_restore(restored, follow_ups)
+  def add_restore(self, **params) -> Added:
+    return self.task_queue.request_restore(**params)
+
+  def end_restore(self):
+    self.task_queue.end_restore()
 
   def stop_tasks(self):
     self.task_queue.stop()

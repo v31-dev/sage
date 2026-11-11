@@ -13,26 +13,24 @@ import pytest
 
 from utils.executor import active_executor, run_in_executor_with_context
 from utils.logging import TaskFailed, task_id
-from utils.queue import Added, OnConflict, Outcome, QueueState, TaskQueue
+from utils.queue import OnConflict, Outcome, QueueState, TaskQueue
 
 # Worker counts of the lanes in utils.executor.LANES.
 POOLS = {"platform": 1, "common": 1, "app": 6, "metrics": 2}
 ROOTS = frozenset({"worker", "domain", "certificate", "backup", "discovery", "settings", "release", "metrics"})
-LANE_OF_ROOT = {"*": "platform", "certificate": "platform", "backup": "platform", "settings": "common",
+LANE_OF_ROOT = {"certificate": "platform", "backup": "platform", "settings": "common",
                 "release": "common", "metrics": "metrics"}
 GATE = object()    # a blocking call that ends when the test opens the thread gate
 
 
 def conflict(first, second):
-  """Two sets of scopes conflict when one holds `*`, or a scope of one equals, or is the parent of, a scope of the
-  other."""
-  return "*" in first or "*" in second or any(
-      a == b or a.startswith(b + ":") or b.startswith(a + ":") for a in first for b in second)
+  """Two sets of scopes conflict when a scope of one equals, or is the parent of, a scope of the other."""
+  return any(a == b or a.startswith(b + ":") or b.startswith(a + ":") for a in first for b in second)
 
 
 def covers(held, wanted):
-  """`held` holds `*`, or some scope in it equals, or is the parent of, one in `wanted`."""
-  return "*" in held or any(w == h or w.startswith(h + ":") for h in held for w in wanted)
+  """Some scope in `held` equals, or is the parent of, one in `wanted`."""
+  return any(w == h or w.startswith(h + ":") for h in held for w in wanted)
 
 
 def lane_of(scopes):
@@ -52,7 +50,7 @@ def lifecycle(sim, label, index, name, **options):
 
 class Job:
   """One request of the simulation. `hold` waits for `release()`, `delay` sleeps, `block` blocks in a thread of the
-  lane (for a sync job the job itself runs there), `fail` raises, `during` runs just before the end."""
+  lane (for a sync job the job itself runs there), `fail` raises, `during` runs just before the end. A `restore` is the platform restore, on the platform lane."""
 
   def __init__(self, sim, label, key, scopes, *, on_conflict, quiet, name=None, restore=False, hold=False, delay=0.0,
                block=None, fail=None, sync=False, during=None):
@@ -69,7 +67,7 @@ class Job:
     self.block = block
     self.fail = fail
     self.during = during
-    self.lane = lane_of(self.scopes)
+    self.lane = "platform" if restore else lane_of(self.scopes)
     self.gate = asyncio.Event()
     self.runs = 0
     self.added = None
@@ -142,7 +140,7 @@ class Sim:
   def begin(self, job):
     with self.lock:
       for other, scopes in self.active.items():
-        if conflict(job.scopes, scopes):
+        if conflict(job.scopes, scopes) or job.restore or self.jobs[other].restore:
           self.violations.append(f"{job.label} started while {other} was running")
       self.active[job.label] = job.scopes
       self.concurrent_max = max(self.concurrent_max, len(self.active))
@@ -180,7 +178,7 @@ class Sim:
           restore=False, **options):
     key = key or (label,)
     if restore and "during" not in options:
-      options["during"] = lambda job: self.queue.end_restore(False)
+      options["during"] = lambda job: self.queue.end_restore()
     job = Job(self, label, key, scopes, on_conflict=on_conflict, quiet=quiet, name=name, restore=restore, **options)
     before = None
     if self.verify_admission:
@@ -188,10 +186,13 @@ class Sim:
       before = (snapshot["running"], snapshot["queued"], self.queue.state)
     with self.lock:
       self.jobs[label] = job
-    job.added = self.queue.add_task(
-        task=job.task, key=key, name=name, scopes=set(scopes), executor=job.lane, params={"label": label},
-        labels={"Job": label}, task_id=label, on_conflict=on_conflict, quiet=quiet, priority=priority,
-        restore=restore)
+    if restore:
+      job.added = self.queue.request_restore(task=job.task, name=job.name, executor=job.lane, params={"label": label},
+                                             labels={"Job": label}, task_id=label)
+    else:
+      job.added = self.queue.add_task(
+          task=job.task, key=key, name=name, scopes=set(scopes), executor=job.lane, params={"label": label},
+          labels={"Job": label}, task_id=label, on_conflict=on_conflict, quiet=quiet, priority=priority)
     if before:
       self.check_admission(job, before, priority)
     return job
@@ -207,7 +208,7 @@ class Sim:
     if before:
       expected = [entry["task_id"] for entry in before["queued"]
                   if (key is None or tuple(entry["key"]) == tuple(key)) and (name is None or entry["name"] == name)
-                  and (scope is None or any(scope in ("*", held) or held.startswith(scope + ":") for held in entry["scopes"]))
+                  and (scope is None or any(scope == held or held.startswith(scope + ":") for held in entry["scopes"]))
                   and not self.jobs[entry["task_id"]].restore]
       assert cancelled == expected, f"cancelling {key} {name} {scope} cancelled {cancelled}, the model says {expected}"
       after = self.queue.snapshot()
@@ -237,7 +238,12 @@ class Sim:
       return entry_key == tuple(job.key)
 
     outcome, task_id_ = Outcome.ACCEPTED, job.label
-    if job.restore and state != QueueState.RUNNING:
+    if job.restore:
+      if state == QueueState.RUNNING:
+        queue.append((job.label, tuple(job.key), set(), False))
+      else:
+        outcome, task_id_ = Outcome.REFUSED, None
+    elif state == QueueState.RESTORING:
       outcome, task_id_ = Outcome.REFUSED, None
     elif state == QueueState.STOPPING:
       outcome = Outcome.REFUSED
@@ -286,11 +292,13 @@ class Sim:
     state = self.queue.state
     if state not in (QueueState.RUNNING, QueueState.RESTORING):
       return []
+    pending = [entry for entry in snapshot["queued"] if not self.jobs[entry["task_id"]].restore]
+    restores = [entry["task_id"] for entry in snapshot["queued"] if self.jobs[entry["task_id"]].restore]
+    if restores and not pending and not snapshot["running"]:
+      return restores
     held = [set(entry["scopes"]) for entry in snapshot["running"]]
     starts = []
-    for entry in snapshot["queued"]:
-      if state == QueueState.RESTORING and not self.jobs[entry["task_id"]].restore:
-        continue
+    for entry in pending:
       scopes = set(entry["scopes"])
       if any(conflict(scopes, other) for other in held):
         continue
@@ -352,7 +360,8 @@ class Sim:
     running = snapshot["running"]
     for index, first in enumerate(running):
       for second in running[index + 1:]:
-        if conflict(first["scopes"], second["scopes"]):
+        if (conflict(first["scopes"], second["scopes"]) or self.jobs[first["task_id"]].restore
+                or self.jobs[second["task_id"]].restore):
           self.violations.append(f"{first['task_id']} and {second['task_id']} are both running")
     labels = [entry["task_id"] for entry in running + snapshot["queued"]]
     if len(labels) != len(set(labels)):
@@ -362,7 +371,7 @@ class Sim:
       if (entry["name"], tuple(entry["key"]), entry["labels"]) != (job.name, tuple(job.key), {"Job": job.label}):
         self.violations.append(f"{job.label} is listed as {entry['name']} {entry['key']} {entry['labels']}")
 
-  def verify(self, *, cancelled_by_restore=False):
+  def verify(self):
     """Every promise at once, once the queue is idle."""
     assert self.violations == []
     assert self.queue.snapshot() == {"running": [], "queued": []}
@@ -389,7 +398,7 @@ class Sim:
       if job.runs == 1:
         ending = "failed" if job.fail else "completed"
       else:
-        assert self.superseded_later(job) or job.cancelled or cancelled_by_restore, f"{label} was accepted and never ran"
+        assert self.superseded_later(job) or job.cancelled, f"{label} was accepted and never ran"
         ending = "cancelled"
       if ending == "failed":
         expected = [["failed"]]
@@ -782,61 +791,50 @@ class TestBroadWork:
 # --- restore
 
 class TestRestore:
-  async def run_restore(self, sim, restored):
-    follow = Job(sim, "follow-up", ("follow-up",), {"worker:observations"}, on_conflict=OnConflict.DEDUP, quiet=False)
-    sim.jobs["follow-up"] = follow
-
-    def end(job):
-      follow.added = Added(Outcome.ACCEPTED, "follow-up") if restored else Added(Outcome.REFUSED)
-      sim.queue.end_restore(restored, follow_ups=[dict(
-          task=follow.task, key=("follow-up",), scopes={"worker:observations"}, executor="app",
-          params={"label": "follow-up"}, labels={"Job": "follow-up"}, task_id="follow-up")])
-
+  async def test_the_tasks_queued_before_a_restore_finish_first_and_every_later_request_is_refused(self, sim):
     deploy = sim.add("deploy-a", container(1), hold=True)
     check = sim.add("check", "settings:s3", hold=True)
     collect = sim.add("collect", "metrics:w1", hold=True)
     await sim.settle()
     sim.add("reconcile-a", container(1), on_conflict=OnConflict.REPLACE, quiet=True)
-    sim.add("backup", "backup:store:s1:object:k1")
-    restore = sim.add("restore", "*", restore=True, hold=True, during=end)
+    backup = sim.add("backup", "backup:store:s1:object:k1", hold=True)
+    restore = sim.add("restore", restore=True, hold=True)
     assert sim.queue.state == QueueState.RESTORING
-    late = sim.add("deploy-b", container(2))
-    assert sim.add("restore#2", "*", key=("restore",), restore=True).outcome == Outcome.REFUSED
+    refused = [sim.add("deploy-b", container(2)), sim.add("restore#2", key=("restore",), restore=True),
+               sim.add("reconcile-a#2", container(1), key=("reconcile-a",), on_conflict=OnConflict.REPLACE, quiet=True)]
+    assert [job.outcome for job in refused] == [Outcome.REFUSED] * 3
     await sim.settle()
-    assert sorted(sim.running()) == ["check", "collect", "deploy-a"], "nothing else may start while restoring"
-    for job in (deploy, check):
+    assert sorted(sim.running()) == ["backup", "check", "collect", "deploy-a"], "a task queued before it starts as usual"
+    for job in (deploy, check, backup):
       job.release()
     await sim.settle()
-    assert sim.running() == ["collect"], "the restore waits for every running task"
+    assert (sim.running(), sim.queued()) == (["collect"], ["restore"]), "the restore waits for every earlier task"
     collect.release()
     await sim.settle()
-    assert sim.running() == ["restore"]
-    assert sorted(sim.queued()) == ["backup", "deploy-b", "reconcile-a"]
+    assert (sim.running(), sim.queued()) == (["restore"], [])
+    assert sim.add("deploy-c", container(3)).outcome == Outcome.REFUSED
     restore.release()
     await sim.drain()
-    return late
-
-  async def test_a_restore_that_took_effect_cancels_what_was_waiting_and_runs_the_follow_up(self, sim):
-    late = await self.run_restore(sim, restored=True)
-    sim.verify(cancelled_by_restore=True)
-    assert sim.starts() == ["deploy-a", "check", "collect", "restore", "follow-up"]
-    assert late.runs == 0
-    assert sorted(sim.recorded) == [("backup", "cancelled"), ("check", "completed"), ("collect", "completed"),
-                                    ("deploy-a", "completed"), ("deploy-b", "cancelled"),
-                                    ("follow-up", "completed"), ("restore", "completed")]
-
-  async def test_a_restore_that_failed_lets_what_was_waiting_run(self, sim):
-    late = await self.run_restore(sim, restored=False)
     sim.verify()
-    assert late.runs == 1
-    starts = sim.starts()
-    assert starts[:4] == ["deploy-a", "check", "collect", "restore"]
-    assert "follow-up" not in starts
+    assert sim.starts() == ["deploy-a", "check", "collect", "backup", "reconcile-a", "restore"]
+    assert sorted(sim.recorded) == [("backup", "completed"), ("check", "completed"), ("collect", "completed"),
+                                    ("deploy-a", "completed"), ("restore", "completed")]
+
+  async def test_what_a_running_task_requests_while_restoring_is_refused(self, sim):
+    parent = sim.add("parent", container(1), hold=True,
+                     during=lambda job: sim.add("child", container(1), on_conflict=OnConflict.QUEUE))
+    await sim.settle()
+    sim.add("restore", restore=True)
+    parent.release()
+    await sim.drain()
+    sim.verify()
+    assert sim.jobs["child"].outcome == Outcome.REFUSED
+    assert sim.starts() == ["parent", "restore"]
 
   async def test_a_restore_waits_for_a_running_task_that_holds_no_scope(self, sim):
     unscoped = sim.add("unscoped", hold=True)
     await sim.settle()
-    restore = sim.add("restore", "*", restore=True)
+    restore = sim.add("restore", restore=True)
     await sim.settle()
     assert sim.running() == ["unscoped"] and restore.runs == 0
     unscoped.release()
@@ -844,11 +842,15 @@ class TestRestore:
     sim.verify()
     assert sim.starts() == ["unscoped", "restore"]
 
-  async def test_the_queue_is_usable_again_after_a_restore(self, sim):
-    await self.run_restore(sim, restored=True)
+  @pytest.mark.parametrize("fail", [None, "task", "error"])
+  async def test_the_queue_runs_as_usual_after_a_restore_that_succeeded_or_failed(self, sim, fail):
+    sim.add("restore", restore=True, fail=fail)
+    await sim.drain()
+    assert sim.queue.state == QueueState.RUNNING
     assert sim.add("deploy-c", container(3)).outcome == Outcome.ACCEPTED
     await sim.drain()
-    sim.verify(cancelled_by_restore=True)
+    sim.verify()
+    assert sim.recorded == [("restore", "failed" if fail else "completed"), ("deploy-c", "completed")]
 
 
 # --- pause and stop
@@ -1017,8 +1019,6 @@ SCOPE_CHOICES = ["worker", "worker:w1", "worker:w1:container:c1", "worker:w1:con
 
 def random_scopes(rng):
   if rng.random() < 0.03:
-    return ["*"]
-  if rng.random() < 0.03:
     return []
   return rng.sample(SCOPE_CHOICES, rng.choice([1, 1, 1, 2]))
 
@@ -1032,11 +1032,11 @@ class TestAdmission:
     sim.queue.pause()
     for index in range(600):
       if rng.random() < 0.05:
-        sim.cancel(**rng.choice([dict(key=rng.choice([*KEYS, ("restore",)])), dict(scope=rng.choice([*SCOPE_CHOICES, "*"])),
+        sim.cancel(**rng.choice([dict(key=rng.choice([*KEYS, ("restore",)])), dict(scope=rng.choice(SCOPE_CHOICES)),
                                  dict(key=rng.choice(KEYS), name=rng.choice(["deploy", "reconcile", "check"]))]))
         continue
       restore = rng.random() < 0.03
-      scopes = ["*"] if restore else random_scopes(rng)
+      scopes = [] if restore else random_scopes(rng)
       sim.add(f"op#{index}", *scopes, key=("restore",) if restore else rng.choice(KEYS),
               on_conflict=rng.choice(list(OnConflict)), quiet=rng.random() < 0.4, priority=rng.random() < 0.2,
               restore=restore)
@@ -1229,9 +1229,8 @@ class TestBruteForce:
     for labels in added.values():
       assert [label for label in starts if label in set(labels)] == labels
 
-  @pytest.mark.parametrize("restored", [True, False])
   @pytest.mark.parametrize("seed", range(6))
-  async def test_a_restore_in_the_middle_of_the_storm(self, sim, seed, restored):
+  async def test_a_restore_in_the_middle_of_the_storm(self, sim, seed):
     rng = random.Random(seed)
     stop = asyncio.Event()
     ticker = asyncio.create_task(sim.run_ticker(stop))
@@ -1240,23 +1239,28 @@ class TestBruteForce:
     def end(job):
       during = [label for kind, label in sim.trace[sim.trace.index(("start", "restore")) + 1:] if kind == "start"]
       others_started_during.extend(during)
-      sim.queue.end_restore(restored)
+      sim.queue.end_restore()
 
     restore_at = rng.randrange(40, 100)
     for index in range(140):
       label, scopes, options = random_operation(rng, index)
       sim.perform(label, scopes, options)
       if index == restore_at:
-        sim.add("restore", "*", restore=True, delay=0.02, during=end)
+        sim.add("restore", restore=True, delay=0.02, during=end, fail=rng.choice([None, "task"]))
         sim.cancel(key=("restore",))
-        sim.cancel(scope="*")
       await asyncio.sleep(rng.uniform(0, 0.003))
     await sim.drain()
     stop.set()
     await ticker
-    sim.verify(cancelled_by_restore=restored)
+    sim.verify()
     assert sim.jobs["restore"].runs == 1
     assert others_started_during == [], "something started while the restore ran"
+    labels = list(sim.jobs)
+    before = set(labels[:labels.index("restore")])
+    started_after = {label for kind, label in sim.trace[sim.trace.index(("start", "restore")):] if kind == "start"}
+    assert not before & started_after, "a task queued before the restore started after it"
+    assert any(sim.jobs[label].outcome == Outcome.REFUSED for label in labels[labels.index("restore") + 1:]), (
+        "no request came while restoring")
 
   @pytest.mark.parametrize("seed", range(6))
   async def test_pausing_and_resuming_at_random(self, sim, seed):

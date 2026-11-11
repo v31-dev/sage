@@ -139,8 +139,8 @@ class PlatformMixin:
     Notifications().notify("Platform backup created.", "success", "/backups")
 
   def request_platform_restore(self, backup_id: int) -> str:
-    """Queues the restore of a platform backup in the configured store, which starts once what runs has finished.
-    The task's id."""
+    """Requests the restore of a platform backup in the configured store: from now on every other request is refused,
+    and the restore starts once the tasks queued before it have finished. The task's id."""
     session = S3().session()
     backup = Backup.get_or_none(Backup.id == backup_id)
     if backup is None:
@@ -149,19 +149,20 @@ class PlatformMixin:
       raise ValueError("Only a platform backup restores the platform.")
     if backup.storage_id != session.identity:
       raise Conflict("This backup is not in the configured store.")
-    added = self.add_task(task=self.restore_platform, key=("restore_platform",), scopes={"*"}, executor="platform",
-                          params={"s3_path": backup.s3_path, "storage_id": backup.storage_id}, restore=True)
+    added = self.add_restore(task=self.restore_platform, name="restore_platform", executor="platform",
+                             params={"s3_path": backup.s3_path, "storage_id": backup.storage_id})
     if added.outcome == Outcome.REFUSED:
       raise Conflict("Sage is not running, so it can't restore now.")
     return added.task_id
 
   async def restore_platform(self, s3_path: str, storage_id: str):
-    """Restores a platform backup as a restart of the Manager would find it. It runs in the queue's restoring state:
-    nothing else starts, what ran has finished and the API refuses changes. It downloads the backup from the store it
-    was requested for and installs it (`Database.install`: the configuration replaced, the history and the Backup rows
-    started empty), keeps the configured S3 settings, installs the other settings' consumers, and clears what is held in memory of the old
-    configuration; then the tasks queued against it are cancelled and what runs at startup is requested. A failure
-    before the install leaves everything as it was."""
+    """Restores a platform backup as a restart of the Manager would find it. It runs alone in the queue's restoring
+    state: every other request is refused, the tasks queued before it have finished, and the API refuses changes and
+    the ingest API the workers' reports. It downloads the backup from the store it was requested for and installs it
+    (`Database.install`: the configuration replaced, the history and the Backup rows started empty), keeps the
+    configured S3 settings, installs the other settings' consumers, and clears what is held in memory of the old
+    configuration; then the restoring state ends and what runs at startup is requested. A failure before the install
+    leaves everything as it was."""
     restored = False
     try:
       session = configured_session(storage_id)
@@ -187,7 +188,7 @@ class PlatformMixin:
                              f"{'' if restored else '; nothing changed'}: {error}", "error", "/backups")
       raise TaskFailed()
     finally:
-      self.end_restore(restored)
+      self.end_restore()
       if restored:
         self.request_startup()
     Notifications().notify(f"Platform restored from the backup taken at {taken_at(s3_path)}.", "success", "/backups")
