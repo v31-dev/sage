@@ -44,6 +44,11 @@ class Containers(Base):
     with self.lock:
       self._reads.pop(container_id, None)
 
+  def clear(self):
+    """Drops every read, as when the Manager starts: after a platform restore."""
+    with self.lock:
+      self._reads.clear()
+
   def _hold(self, container: Container, read: TargetRead):
     with self.lock:
       changed = self._reads.get(container.id) != read

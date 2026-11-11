@@ -69,6 +69,12 @@ class Workers(Base):
       self._setups.pop(hostname, None)
       self._certificates.pop(hostname, None)
 
+  def clear(self):
+    """Drops what is held of every worker, as when the Manager starts: after a platform restore."""
+    with self.lock:
+      self._setups.clear()
+      self._certificates.clear()
+
 
 @dataclass(frozen=True)
 class WorkerState:

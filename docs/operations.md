@@ -112,20 +112,20 @@ uses a 30-second misfire grace period.
 | Trigger | Cadence | Also once at scheduler startup? | Work selected |
 | --- | --- | --- | --- |
 | `dispatch_tick` | Interval 1 s | No | Start eligible queued operations; no task of its own |
-| `observe_workers` | Interval 30 s | No | `observe_workers` |
+| `observe_workers` | Interval 30 s | Yes | `observe_workers` |
 | `refresh_worker_paths` | Interval 60 s | Yes | `refresh_worker_paths` |
-| `observe_containers` | Every minute, `* * * * *` | No | `observe_containers` |
+| `observe_containers` | Every minute, `* * * * *` | Yes | `observe_containers` |
 | `list_container_records` | Every 10 minutes, `*/10 * * * *` | No | One `list_records` per worker whose report is current |
 | `schedule_application_backups` | Every minute, `* * * * *` | No | One `backup_preserve` per container of an application with due volumes; nothing without a store |
 | `collect_metrics` | Every minute, `* * * * *` | No | `collect_self` and `flush_worker_metrics` |
 | `reconcile_domains` | Every 5 min, `*/5 * * * *` | Yes | `reconcile_domains` |
 | `check_settings` | Every 5 min, `*/5 * * * *` | Yes | `check_<section>` for each configured section |
 | `refresh_latest_release` | Every 4 h, `0 */4 * * *` | Yes | `refresh_latest_release` |
-| `backup_database` | 00:00 and 12:00, `0 */12 * * *` | No | `backup_database_s3`; S3 required |
+| `backup_database` | 00:00 and 12:00, `0 */12 * * *` | No | `backup_platform`; nothing without a store |
 | `renew_certificates` | Daily 03:00, `0 3 * * *` | Yes | `renew_certificates` |
 | `cleanup` | Daily 04:00, `0 4 * * *` | No | Independent tasks: `metrics_cleanup`, `logs_cleanup`, `prune_backups` (nothing without a store), `cleanup` |
 | `send_summary_notification` | Daily 08:00, `0 8 * * *` | No | `send_summary_notification` |
-| `discover_backups` | Startup only | Yes | `discover_backups`; nothing without a store |
+| `start_work` | Startup only | Yes | `request_startup`: the workers' observation and paths, the containers' observation, certificate renewal, the Domain pass, backup discovery; also after a platform restore |
 
 A volume is due when its `Volume.backup_cron` matches the UTC minute and no Backup of it was recorded in that minute;
 each container of its application gets one automatic backup of the application's due volumes.
@@ -204,8 +204,8 @@ Implementation: [platform operations](../app/services/manager/platform.py),
 
 | Operation | Scopes · executor | Admission / history | Every initiating source | Model writes and other effects |
 | --- | --- | --- | --- | --- |
-| `backup_database_s3` | `{platform, app, domain}` · platform | REPLACE / H | 00:00/12:00; POST `/backups`; S3 required | SQLite snapshot, encrypt and upload, then insert platform Backup. Snapshot precedes its own Backup/history rows. |
-| `restore_database_from_s3` | `{platform, app, domain}` · platform | DEDUP / H; `restore=True` | POST `/backups/{backup}/restore` | Replace **all main-DB tables** using SQLite backup API, with safety-copy rollback. Reconcile schema/Instance and normalize Settings; write back pre-restore S3 settings. Reload settings consumers and workers. Successful restore cancels waiting old-data work and enqueues renewal, force worker sync, full discovery and S3 discovery with priority. |
+| `backup_platform` | `backup:store:<identity>:write:platform` · platform | REPLACE on `("backup_platform",)` / H | `request_platform_backup`: 00:00/12:00; POST `/backups`; nothing without a store | `Database.snapshot` (configuration only: history and Backup rows emptied, compacted), encrypted and uploaded; a platform Backup row with the key uploaded. Runs alongside other work. Refused when the store changed. |
+| `restore_platform` | `*` · platform | DEDUP on `("restore_platform",)` / H; `restore=True` | `request_platform_restore`: POST `/backups/{backup}/restore` (a platform backup of the configured store) | A pseudo restart: `Database.install` (safety copy, the backup copied in, schema reconciled, fresh `state_generation`, history and Backup rows emptied; rollback on failure), the configured S3 settings kept, the other consumers installed, the memory of the old configuration cleared; then the waiting tasks cancelled and `request_startup`. |
 | `discover_backups` | `backup:store:<identity>` · common | REPLACE on `("discover_backups",)` / H | `request_backup_discovery`: startup; POST `/backups/discover`; PUT `/settings/s3`; successful restore; nothing without a store | Lists the store, then reads the rows, and makes the table mirror the store in one transaction (`reconcile_catalog`, `apply_catalog`): rows of another store or of a gone object dropped, listed backups added, a volume archive only while its volume is configured (by its id). Archives being deleted are left out. Nothing when the store changed since the request. |
 | `delete_archive` | `backup:store:<identity>:delete:<part>` · common | DEDUP on `("delete_archive", <s3 path>)` / H | `request_backup_deletion`, which first deletes the Backup row (`remove_backup`) | Deletes exactly that key from the store the row named; refused when that is no longer the configured store, so another store's object of the same key is never touched. |
 | `prune_backups` | `backup:store:<identity>` · common | REPLACE on `("prune_backups",)` / Q | `request_backup_retention`, daily 04:00 | Deletes the store's platform backups and volume archives older than `config.RETENTION_DAYS` (14), then the rows of those deleted, a prefix that failed failing the task after the other. Nothing when the store changed. |

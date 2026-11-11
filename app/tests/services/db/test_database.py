@@ -439,3 +439,105 @@ def test_it_refuses_to_run_inside_a_transaction_where_foreign_keys_cannot_be_tur
 
   assert "description" not in columns(db, "project")
   assert db.execute_sql("PRAGMA foreign_keys").fetchone()[0] == 1
+
+
+class TestPlatformCopies:
+  @pytest.fixture
+  def live(self, db, application, worker):
+    """A configuration with its history: a container with an event, a worker event, a notification, a task, a
+    backup row."""
+    from services.db.models import Notification, Task
+    container = Container.create(application=application, worker=worker)
+    ContainerEvent.create(container=container, subject_id=container.id, action="deploy", transition="admitted",
+                          application_name="demo-web", worker_hostname=worker.hostname)
+    WorkerEvent.create(worker=worker, subject_id=worker.hostname, action="add", transition="admitted")
+    Notification.create(content="Deployed.")
+    Task.create(task_id="t1", name="deploy", executor="app", status="completed")
+    Backup.create(s3_path="base/backups/platform/x.db.enc", storage_id="s1", type="platform")
+    return container
+
+  def tables(self, path):
+    import sqlite3
+    with contextlib.closing(sqlite3.connect(path)) as copy:
+      return {table: copy.execute(f'SELECT count(*) FROM "{table}"').fetchone()[0]
+              for (table,) in copy.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+
+  def test_a_snapshot_holds_the_configuration_without_its_history_or_its_backup_rows(self, live, tmp_path):
+    Database().snapshot(tmp_path / "snapshot.db")
+    held = self.tables(tmp_path / "snapshot.db")
+    assert {table: held[table] for table in ("container", "worker", "application", "project", "instance")} == {
+        "container": 1, "worker": 1, "application": 1, "project": 1, "instance": 1}
+    assert {table: held[table] for table in ("container_event", "worker_event", "notification", "task", "backup")} == dict.fromkeys(
+        ("container_event", "worker_event", "notification", "task", "backup"), 0)
+    assert ContainerEvent.select().count() == 1 and Backup.select().count() == 1
+
+  def test_a_snapshot_is_compacted_with_no_room_left_by_what_it_left_out(self, live, tmp_path):
+    import sqlite3
+
+    from services.db.models import Notification
+    Notification.insert_many([{"content": "x" * 500}] * 500).execute()
+    Database().snapshot(tmp_path / "snapshot.db")
+    with contextlib.closing(sqlite3.connect(tmp_path / "snapshot.db")) as copy:
+      assert copy.execute("PRAGMA freelist_count").fetchone()[0] == 0
+
+  def test_an_install_replaces_the_configuration_and_starts_the_history_and_the_backup_rows_empty(self, live, tmp_path, application):
+    from services.db.models import Notification, Task
+    Database().snapshot(tmp_path / "snapshot.db")
+    generation = Instance.get().state_generation
+    other = Worker.create(hostname="w2", subdomain="blue")
+    Container.create(application=application, worker=other)
+    Notification.create(content="Added w2.")
+    Database().install(tmp_path / "snapshot.db")
+    assert [worker.hostname for worker in Worker.select()] == ["w1"] and [c.id for c in Container.select()] == [live.id]
+    assert [model.select().count() for model in (ContainerEvent, WorkerEvent, Notification, Task, Backup)] == [0] * 5
+    assert Instance.get().state_generation != generation
+    assert [path for path in config.DB_PATH.parent.iterdir() if ".restore-" in path.name] == []
+
+  def test_a_backup_that_holds_history_is_installed_without_it(self, live, tmp_path):
+    import sqlite3
+
+    from services.db.models import Notification
+    with contextlib.closing(sqlite3.connect(tmp_path / "old.db")) as copy:
+      database.connection().backup(copy)
+    Database().install(tmp_path / "old.db")
+    assert (ContainerEvent.select().count(), Notification.select().count(), Backup.select().count()) == (0, 0, 0)
+
+  def test_an_older_backup_gets_this_versions_schema(self, live, tmp_path):
+    import sqlite3
+    Database().snapshot(tmp_path / "snapshot.db")
+    with contextlib.closing(sqlite3.connect(tmp_path / "snapshot.db")) as copy:
+      copy.execute("ALTER TABLE domain DROP COLUMN pool")
+      copy.commit()
+    Database().install(tmp_path / "snapshot.db")
+    assert "pool" in columns(database, "domain")
+
+  @pytest.mark.parametrize("damage", ["not a database", "a damaged page"])
+  def test_a_backup_that_is_not_a_sound_database_is_refused_and_nothing_changes(self, live, tmp_path, damage):
+    path = tmp_path / "broken.db"
+    if damage == "not a database":
+      path.write_bytes(b"not a database at all" * 100)
+    else:
+      Database().snapshot(path)
+      data = bytearray(path.read_bytes())
+      page = next(offset for offset in range(4096, len(data), 4096) if data[offset] == 0x0D)
+      data[page + 8:page + 64] = bytes(range(56))
+      path.write_bytes(bytes(data))
+    before = counts(database)
+    with pytest.raises(Exception):
+      Database().install(path)
+    assert counts(database) == before
+
+  def test_an_install_that_fails_part_way_puts_the_live_database_back(self, live, tmp_path, monkeypatch):
+    Database().snapshot(tmp_path / "snapshot.db")
+    Worker.create(hostname="w2", subdomain="blue")
+    generation = Instance.get().state_generation
+
+    def refuse():
+      raise SchemaRefused("its tables differ")
+
+    monkeypatch.setattr(Database(), "reconcile_schema", refuse)
+    with pytest.raises(SchemaRefused):
+      Database().install(tmp_path / "snapshot.db")
+    assert sorted(worker.hostname for worker in Worker.select()) == ["w1", "w2"]
+    assert (Instance.get().state_generation, ContainerEvent.select().count()) == (generation, 1)
+    assert [path for path in config.DB_PATH.parent.iterdir() if ".restore-" in path.name] == []

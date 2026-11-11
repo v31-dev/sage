@@ -50,6 +50,10 @@ class Domains(Base):
       for held in (self._outcomes, self._routes, self._dns):
         held.pop(domain_id, None)
 
+  def clear(self):
+    """Drops what is held of every domain, as when the Manager starts: after a platform restore."""
+    self.retain(())
+
   def retain(self, domain_ids):
     """Drops what is held of every domain but `domain_ids`, the rows there are."""
     kept = set(domain_ids)

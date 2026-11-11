@@ -88,14 +88,11 @@ async def refresh_latest_release():
 
 
 async def backup_database():
-  if not Manager().s3.s3_config:
-    return
-  Manager().add_task(
-      task=Manager().backup_database_s3,
-      scopes={"platform", "app", "domain"},
-      executor="platform",
-      on_conflict=OnConflict.REPLACE,
-  )
+  Manager().request_platform_backup()
+
+
+async def start_work():
+  Manager().request_startup()
 
 
 async def cleanup():
@@ -126,10 +123,6 @@ async def cleanup():
 
 async def renew_certificates():
   Manager().request_certificate_renewal()
-
-
-async def discover_backups():
-  Manager().request_backup_discovery()
 
 
 async def check_settings():
@@ -164,9 +157,9 @@ _JOBS = [
     (reconcile_domains, CronTrigger.from_crontab("*/5 * * * *")),
 ]
 
-# Run once right after startup (as queued tasks, so the servers are already up), then on
-# their cron schedule where they have one.
-_AT_STARTUP = [refresh_latest_release, renew_certificates, discover_backups, check_settings, refresh_worker_paths, reconcile_domains]
+# Run once right after startup, as queued tasks, so the servers are already up: what runs when Sage starts
+# (`Manager().request_startup()`).
+_AT_STARTUP = [start_work]
 
 
 def start():

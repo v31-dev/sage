@@ -2,12 +2,14 @@ import logging
 import re
 import sqlite3
 from contextlib import closing
+from pathlib import Path
 
 from peewee import IntegrityError, sort_models
 from playhouse.migrate import SqliteMigrator, migrate
 
 import config
 from services.base import Base
+from utils.common import new_id, utcnow
 
 from .models import (Application, Backup, Container, ContainerEvent, Domain, Instance, Notification, Project, Setting, Task, Volume, Worker,
                      WorkerEvent, db)
@@ -16,6 +18,8 @@ logger = logging.getLogger(__name__)
 
 MODELS = [Setting, Instance, Project, Application, Volume, Domain, Worker, Container, ContainerEvent, WorkerEvent, Notification,
           Backup, Task]
+# What happened rather than what is configured: never in a platform backup, and emptied by a restore.
+HISTORY = (ContainerEvent, WorkerEvent, Notification, Task)
 
 
 class SchemaRefused(Exception):
@@ -126,6 +130,43 @@ class Database(Base):
       db.execute_sql("PRAGMA foreign_keys=ON")
     if not Instance.select().exists():
       Instance.create()
+
+  def snapshot(self, path: Path):
+    """Copies the live database to `path` as a platform backup holds it: its configuration, without the history or
+    the Backup rows (they mirror the store, whose discovery rebuilds them), compacted. Blocking: offload it."""
+    with closing(sqlite3.connect(path)) as copy:
+      db.connection().backup(copy)
+      for model in (*HISTORY, Backup):
+        copy.execute(f'DELETE FROM "{model._meta.table_name}"')
+      copy.commit()
+      copy.execute("VACUUM")
+
+  def install(self, path: Path):
+    """Replaces the live database with the platform backup at `path`: a safety copy of the live database first, then
+    the backup copied in page by page, its schema brought up to the models as at boot, a fresh state generation, and
+    the history and the Backup rows emptied (discovery rebuilds those). A failure copies the safety copy back and
+    raises; the safety copy is removed either way. Blocking: offload it, with nothing else writing meanwhile (the
+    queue's restoring state)."""
+    with closing(sqlite3.connect(path)) as backup:
+      if (result := backup.execute("PRAGMA integrity_check").fetchone()[0]) != "ok":
+        raise ValueError(f"The backup is not a sound database: {result}.")
+    safety = config.DB_PATH.with_name(f"{config.DB_PATH.name}.restore-{utcnow():%Y%m%d_%H%M%S}")
+    with closing(sqlite3.connect(safety)) as copy:
+      db.connection().backup(copy)
+    try:
+      with closing(sqlite3.connect(path)) as backup:
+        backup.backup(db.connection())
+      self.reconcile_schema()
+      with db.atomic():
+        Instance.update(state_generation=new_id()).execute()
+        for model in (*HISTORY, Backup):
+          model.delete().execute()
+    except Exception:
+      with closing(sqlite3.connect(safety)) as copy:
+        copy.backup(db.connection())
+      raise
+    finally:
+      safety.unlink(missing_ok=True)
 
   def _sync_columns(self):
     """
