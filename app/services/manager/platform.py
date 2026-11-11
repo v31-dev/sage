@@ -1,6 +1,6 @@
 """The platform's backup, which keeps its configuration in the store, and its restore, which installs one as a restart
-of the Manager would find it; what runs when Sage starts, at startup and after a restore; its daily cleanup; the check
-for a newer release; and the restore and backup facts the pages show."""
+of the Manager would find it; what runs when Sage starts, at startup and after a restore; its daily cleanup and the
+minutely write of the metrics; the check for a newer release; and the restore and backup facts the pages show."""
 import logging
 from datetime import datetime
 from pathlib import Path
@@ -75,6 +75,10 @@ class PlatformMixin:
     self.add_task(task=purge_history, key=("purge_history",), scopes=set(), executor="common", quiet=True,
                   on_conflict=OnConflict.REPLACE)
     self.request_backup_retention()
+
+  def request_metrics_flush(self):
+    """Queues the write of the metrics' completed minutes, the manager's and each worker's."""
+    self.add_task(task=Metrics().flush, key=("flush_metrics",), scopes={"metrics:flush"}, executor="metrics", quiet=True)
 
   def request_release_check(self, quiet: bool = True) -> str:
     """Queues fetching the newest release: quietly from the schedule and at startup, visibly when asked for. The

@@ -290,6 +290,41 @@ class TestStartup:
     assert queued(manager) == [(("refresh_latest_release",), ["release"], "common", False)]
 
 
+class TestMetricsFlush:
+  @pytest.fixture
+  def flushed(self, register):
+    flushed = []
+    register(Metrics, SimpleNamespace(flush=lambda: flushed.append(True)))
+    return flushed
+
+  @staticmethod
+  async def holding():
+    await asyncio.sleep(0.05)
+
+  def test_it_is_one_quiet_task_on_the_metrics_lane(self, manager, flushed):
+    manager.request_metrics_flush()
+    manager.request_metrics_flush()
+    assert queued(manager) == [(("flush_metrics",), ["metrics:flush"], "metrics", True)]
+
+  async def test_it_waits_while_the_daily_metrics_cleanup_runs(self, manager, flushed):
+    manager.add_task(task=self.holding, key=("metrics_cleanup",), scopes={"metrics"}, executor="metrics")
+    manager.task_queue.dispatch_tick()
+    manager.request_metrics_flush()
+    manager.task_queue.dispatch_tick()
+    assert [name for (name,), *_ in queued(manager)] == ["flush_metrics"]
+    await manager.run()
+    assert flushed == [True]
+
+  async def test_it_runs_while_other_work_holds_its_scopes(self, manager, flushed):
+    manager.add_task(task=self.holding, key=("held",), scopes={"worker", "domain", "backup", "settings", "release"}, executor="app")
+    manager.task_queue.dispatch_tick()
+    manager.request_metrics_flush()
+    manager.task_queue.dispatch_tick()
+    assert queued(manager) == []
+    await manager.run()
+    assert flushed == [True]
+
+
 class TestCleanup:
   @pytest.fixture
   def cleaned(self, register):

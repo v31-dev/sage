@@ -5,6 +5,7 @@ from services.base import Base
 from services.certs import Certs
 from services.db.database import Database
 from services.logs import Logs
+from services.metrics import Metrics
 from services.notification import Notifications
 from services.s3 import S3
 from services.settings import Settings
@@ -25,9 +26,6 @@ from .queue import SCOPES, QueueMixin
 from .settings import SettingsMixin
 from .summary import SummaryMixin
 from .workers import WorkersMixin
-
-# TODO(36 step 4J): Metrics joins the Manager again when its step reworks it.
-# from services.metrics import Metrics
 
 logger = logging.getLogger(__name__)
 
@@ -86,8 +84,7 @@ class Manager(
       Notifications().install(Settings().snapshot("notifications").values)
       S3().install(Settings().snapshot("s3").values)
       Certs()
-      # TODO(36 step 4J): the manager's own metrics sampler.
-      # Metrics().start_sampler()
+      Metrics().start_sampler()
       Notifications().notify("Manager started.")
     except Exception as e:
       raise Exception(f"Manager setup failed : {e}.")

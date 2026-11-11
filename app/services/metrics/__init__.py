@@ -7,6 +7,7 @@ from pathlib import Path
 import config
 from services.base import Base
 from services.db.models import Worker
+from services.updates import Updates, UpdateSource
 from services.worker_reports import Snapshot
 from utils.common import get_env, utcnow
 
@@ -40,8 +41,10 @@ class Metrics(Base):
     self._sampler_thread = threading.Thread(
         target=self._sample_loop, name="metrics-sampler", daemon=True)
 
-    # The same for each worker, filled from its reports (`ingest`), drained by `flush_workers`.
+    # The same for each worker, filled from its reports (`ingest`), drained by `flush`; and each worker's newest
+    # written minute, which the worker list shows.
     self._workers: dict[str, WorkerPeaks] = {}
+    self._newest: dict[str, dict] = {}
 
   def start_sampler(self):
     self._sampler_thread.start()
@@ -64,16 +67,33 @@ class Metrics(Base):
       for snapshot in snapshots:
         self._workers[hostname].fold(snapshot)
 
-  def flush_workers(self) -> dict[str, dict]:
-    """Write the completed minutes of every worker that has reported. Returns the newest minute written of each
-    worker that had one (`flush_worker`), by hostname."""
+  def flush(self):
+    """Writes the completed minutes of the manager's own metrics and of each worker's. Each worker's newest written
+    minute is kept (`newest`) and dropped by a flush that writes none for it, so a worker gone quiet shows none; the
+    worker list's sources fire for each worker whose newest minute changed."""
+    self.collect_self()
     with self.lock:
-      hostnames = list(self._workers)
-    newest = {}
+      hostnames = sorted(self._workers.keys() | self._newest.keys())
+    changed = []
     for hostname in hostnames:
-      if (minute := self.flush_worker(hostname)) is not None:
-        newest[hostname] = minute
-    return newest
+      minute = self.flush_worker(hostname)
+      with self.lock:
+        if minute != self._newest.get(hostname):
+          changed.append(hostname)
+          if minute is None:
+            del self._newest[hostname]
+          else:
+            self._newest[hostname] = minute
+    if changed:
+      Updates().changed(UpdateSource.WORKER_LIST)
+    for hostname in changed:
+      Updates().changed(UpdateSource.WORKER_ENTRY, hostname)
+
+  def newest(self, hostname: str) -> dict | None:
+    """The worker's newest written minute with the machine's size (`flush_worker`); None while it has none."""
+    with self.lock:
+      minute = self._newest.get(hostname)
+      return dict(minute) if minute is not None else None
 
   def flush_worker(self, hostname: str) -> dict | None:
     """Write a worker's completed minutes to its shard. The minute in progress keeps
@@ -129,9 +149,10 @@ class Metrics(Base):
       return workers.pending() if workers else ({}, {})
 
   def forget(self, hostname: str):
-    """Drop what a removed worker has not yet flushed."""
+    """Drop what a removed worker has not yet flushed, and its newest minute."""
     with self.lock:
       self._workers.pop(hostname, None)
+      self._newest.pop(hostname, None)
 
   def _sample_loop(self):
     """Background thread: read the manager container's own usage every few seconds (`sampler`) and fold it into the

@@ -7,6 +7,7 @@ import pytest
 
 from services.metrics import Metrics
 from services.metrics.peaks import MinutePeaks
+from services.updates import UpdateSource
 from services.worker_reports import parse_batch
 from tests.services.metrics.test_peaks import MINUTE, container, host, snapshot
 
@@ -19,6 +20,7 @@ def store(data_dir):
   metrics.lock = threading.RLock()
   metrics._dbs = {"metrics": {}}
   metrics._workers = {}
+  metrics._newest = {}
   metrics._peaks = MinutePeaks()
   metrics.db_path = data_dir
   yield metrics
@@ -160,22 +162,6 @@ class TestFlushWorker:
     clock.set(snapshots[0].at.replace(second=0) + timedelta(seconds=30))
     assert store.flush_worker("w1") is None
 
-  def test_flush_workers_returns_the_newest_minute_of_each_worker_that_had_one(self, store, clock):
-    store.ingest("w1", [snapshot(0, host(idle=80))])
-    store.ingest("w2", [snapshot(0, host(idle=None))])
-    clock.set(MINUTE + timedelta(minutes=1))
-    newest = store.flush_workers()
-    assert list(newest) == ["w1"] and newest["w1"]["cpu_pct"] == 20.0
-
-  def test_flush_workers_writes_every_worker_that_reported(self, store, clock):
-    store.ingest("w1", [snapshot(0, host(idle=80))])
-    store.ingest("w2", [snapshot(0, host(idle=60))])
-    clock.set(MINUTE + timedelta(minutes=1))
-    store.flush_workers()
-    cpu = {name: [row["cpu_pct"] for row in store.get_metrics_db(name)["models"]["WorkerMetrics"].select().dicts()]
-           for name in ("w1", "w2")}
-    assert cpu == {"w1": [20.0], "w2": [40.0]}
-
   def test_a_worker_that_went_quiet_is_dropped_once_written(self, store, clock):
     store.ingest("w1", [snapshot(0, host(), container())])
     clock.set(MINUTE + timedelta(minutes=1))
@@ -202,6 +188,66 @@ class TestFlushWorker:
     result = store.query_period("w1", "1h")
     assert [row["cpu_pct"] for row in result["host"] if row["cpu_pct"] is not None] != []
     assert {c[0]["name"] for c in result["containers"]} == {"traefik", "web"}
+
+
+SIZE = {"cpu_cores": 4, "mem_total_mb": 8192, "disk_total_gb": 100.0}
+
+
+class TestFlush:
+  def host_cpu(self, store, hostname):
+    return [row["cpu_pct"] for row in store.get_metrics_db(hostname)["models"]["WorkerMetrics"].select().dicts()]
+
+  def test_the_managers_and_every_workers_completed_minutes_are_written(self, store, clock, signals):
+    store._peaks.fold(MINUTE, {"cpu_pct": 12.0, "mem_used_mb": 100, "mem_cached_mb": 10, "disk_used_gb": 1.0}, SIZE)
+    store.ingest("w1", [snapshot(0, host(idle=80))])
+    store.ingest("w2", [snapshot(0, host(idle=60))])
+    clock.set(MINUTE + timedelta(minutes=1))
+    store.flush()
+    assert {name: self.host_cpu(store, name) for name in ("manager", "w1", "w2")} == {
+        "manager": [12.0], "w1": [20.0], "w2": [40.0]}
+
+  def test_each_workers_newest_minute_is_kept_with_its_size_and_the_worker_list_is_told(self, store, clock, signals):
+    store.ingest("w1", [snapshot(0, host(idle=80))])
+    store.ingest("w2", [snapshot(0, host(idle=None))])
+    clock.set(MINUTE + timedelta(minutes=1))
+    store.flush()
+    newest = store.newest("w1")
+    assert (newest["ts"], newest["cpu_pct"], {key: newest[key] for key in SIZE}) == (MINUTE, 20.0, SIZE)
+    assert store.newest("w2") is None
+    assert signals == [(UpdateSource.WORKER_LIST, None), (UpdateSource.WORKER_ENTRY, "w1")]
+
+  def test_a_flush_that_writes_none_for_a_worker_drops_its_newest_minute_and_says_so(self, store, clock, signals):
+    store.ingest("w1", [snapshot(0, host(idle=80))])
+    clock.set(MINUTE + timedelta(minutes=1))
+    store.flush()
+    signals.clear()
+    clock.advance(timedelta(minutes=1))
+    store.flush()
+    assert store.newest("w1") is None
+    assert signals == [(UpdateSource.WORKER_LIST, None), (UpdateSource.WORKER_ENTRY, "w1")]
+
+  def test_a_flush_that_changes_no_newest_minute_says_nothing(self, store, clock, signals):
+    clock.set(MINUTE + timedelta(minutes=1))
+    store.flush()
+    store.ingest("w1", [snapshot(70, host(idle=80))])
+    store.flush()
+    assert (store.newest("w1"), signals) == (None, [])
+
+  def test_a_new_minute_is_a_change(self, store, clock, signals):
+    store.ingest("w1", [snapshot(0, host(idle=80)), snapshot(60, host(idle=80))])
+    clock.set(MINUTE + timedelta(minutes=1))
+    store.flush()
+    clock.advance(timedelta(minutes=1))
+    store.flush()
+    assert store.newest("w1")["ts"] == MINUTE + timedelta(minutes=1)
+    assert signals.count((UpdateSource.WORKER_ENTRY, "w1")) == 2
+
+  def test_a_removed_worker_has_no_newest_minute(self, store, clock, signals):
+    store.ingest("w1", [snapshot(0, host(idle=80))])
+    clock.set(MINUTE + timedelta(minutes=1))
+    store.flush()
+    store.forget("w1")
+    assert store.newest("w1") is None
 
 
 class TestQueriesSeeTheMinutesNotYetWritten:
