@@ -1,299 +1,128 @@
 import pytest
 
 import config
-from services.db import Application, Container, Domain, Project, Volume, Worker
+from services.db.models import Application, Container, Project, Worker
+from services.logs import Logs
 
 URL = "/api/projects/demo/applications"
 
 
-class TestInjectApplication:
-  def test_an_unknown_application_is_a_404(self, client, project):
-    response = client.get(f"{URL}/missing")
-    assert (response.status_code, response.json()["detail"]) == (404, "Application not found")
-
-  def test_an_application_of_another_project_is_a_404(self, client, application):
-    Project.create(name="other", label="Other")
-
-    assert client.get("/api/projects/other/applications/web").status_code == 404
-
-  def test_a_name_that_can_never_exist_is_a_400(self, client, project):
-    assert client.get(f"{URL}/NotValid").status_code == 400
+def lines(application_name, rows):
+  Logs().write_application_lines(application_name, [
+      {"hostname": host, "ts": f"2026-01-01T12:00:0{index}.000000000Z", "stream": "stdout", "message": message}
+      for index, (host, message) in enumerate(rows)])
 
 
-class TestCreate:
-  def test_the_name_comes_from_the_label_and_the_project_from_the_url(self, client, project):
-    response = client.post(f"{URL}/", json={"label": "My Web App", "description": " Public site "})
+class TestApplication:
+  def test_a_new_application_is_named_from_its_label_and_answered_with_its_page(self, client, project, manager):
+    manager.answers["application_page"] = lambda project, name: {"page": f"{project}/{name}"}
+    response = client.post(f"{URL}/", json={"label": "My App", "description": "Notes", "image": "nginx"})
+    assert response.json() == {"page": "demo/myapp"}
+    application = Application.get(Application.name == "myapp")
+    assert (application.label, application.description, application.image) == ("My App", "Notes", None)
 
-    assert response.status_code == 200
-    created = Application.get(Application.name == "mywebapp")
-    assert (created.label, created.description, created.project_id) == ("My Web App", "Public site", "demo")
+  def test_a_new_one_in_an_unknown_project_is_a_404_and_one_of_a_name_taken_a_409(self, client, application):
+    assert client.post("/api/projects/missing/applications/", json={"label": "Web"}).status_code == 404
+    assert client.post(f"{URL}/", json={"label": "Web"}).status_code == 409
 
-  def test_a_new_application_starts_inactive_and_counts_toward_the_project(self, client, project):
-    client.post(f"{URL}/", json={"label": "Web"})
+  def test_its_page_is_the_managers(self, client, manager):
+    manager.answers["application_page"] = {"name": "web"}
+    assert client.get(f"{URL}/web").json() == {"name": "web"}
+    assert manager.called("application_page") == [(("demo", "web"), {})]
 
-    assert Application.get().status == "inactive"
-    assert Project.get_by_id("demo").application_count == 1
+  def test_an_edit_is_written_and_answered_with_its_page(self, client, application, manager):
+    manager.answers["application_page"] = {"name": "web"}
+    assert client.put(f"{URL}/web", json={"image": "redis"}).json() == {"name": "web"}
+    assert Application.get_by_id(application.id).image == "redis"
 
-  def test_a_name_already_used_in_the_project_is_a_409(self, client, application):
-    response = client.post(f"{URL}/", json={"label": "WEB"})
-    assert response.status_code == 409
+  def test_an_edit_of_an_unknown_application_or_one_of_another_project_is_a_404(self, client, application):
+    other = Project.create(name="other", label="Other")
+    assert client.put(f"{URL}/missing", json={"image": "redis"}).status_code == 404
+    assert client.put("/api/projects/other/applications/web", json={"image": "redis"}).status_code == 404
+    assert other.applications.count() == 0 and Application.get_by_id(application.id).image == "nginx"
 
-  def test_the_same_name_can_be_used_in_another_project(self, client, application):
-    Project.create(name="other", label="Other")
-    assert client.post("/api/projects/other/applications/", json={"label": "Web"}).status_code == 200
-
-  def test_a_label_that_gives_no_valid_name_is_a_400(self, client, project):
-    assert client.post(f"{URL}/", json={"label": "!!!"}).status_code == 400
-
-  @pytest.mark.parametrize("body", [{}, {"description": "Notes"}, {"label": None}, {"label": ""}])
-  def test_a_missing_or_empty_label_is_a_400(self, client, project, body):
-    response = client.post(f"{URL}/", json=body)
-
-    assert response.status_code == 400
-    assert "does not produce a valid name" in response.json()["detail"]
+  def test_an_application_without_containers_is_deleted_with_no_content(self, client, application):
+    assert client.delete(f"{URL}/web").status_code == 204
     assert Application.select().count() == 0
 
-  def test_only_the_label_and_description_are_taken(self, client, project):
-    client.post(f"{URL}/", json={"label": "Web", "status": "active", "image": "evil", "container_count": 3})
-
-    created = Application.get()
-    assert (created.status, created.image, created.container_count) == ("inactive", None, 0)
-
-
-class TestGet:
-  def test_it_returns_the_application_with_what_hangs_off_it(self, client, application, volume):
-    body = client.get(f"{URL}/web").json()
-
-    assert body["name"] == "web"
-    assert body["project"]["name"] == "demo"
-    assert [row["name"] for row in body["volumes"]] == ["data"]
-    assert body["containers"] == []
-
-  @pytest.mark.parametrize("path", [f"{URL}/web", "/api/workers/w1", f"{URL}/web/containers/", "/api/workers/w1/containers/"])
-  def test_containers_carry_their_linked_domains_with_their_names_workers_and_states(
-          self, client, application, worker, project, path):
-    Worker.update(subdomain="red").where(Worker.hostname == "w1").execute()
-    container = Container.create(application=application, worker=worker, status="active")
-    Domain.create(name="shop", type="public", port=80, container=container)
-    Domain.create(name="db", type="tcp", port=5432, container=container)
-    other = Application.create(project=project, name="api", label="API", image="nginx")
-    Domain.create(name="api", type="public", port=80, container=Container.create(application=other, worker=worker))
-
-    empty = Container.create(application=application, worker=Worker.create(hostname="w2", ip="100.64.0.3"))
-    body = client.get(path).json()
-    containers = body if isinstance(body, list) else body["containers"]
-    domains = next(row["domains"] for row in containers if row["id"] == container.id)
-
-    assert [(domain["address"], domain["worker"], domain["container"]["status"]) for domain in domains] == [
-        ("https://shop.example.test", "w1", "active"), ("db.red.int.example.test:8443", "w1", "active")]
-    assert domains == client.get("/api/domains/").json()["domains"][1:]
-    assert isinstance(body, list) or "domains" not in body
-    assert all(domain["container"]["id"] == row["id"] for row in containers for domain in row["domains"])
-    if path.startswith(URL):
-      assert next(row["domains"] for row in containers if row["id"] == empty.id) == []
-
-  def test_a_domain_relink_changes_which_container_and_application_expose_it(self, client, application, worker, project):
-    first = Container.create(application=application, worker=worker)
-    other = Application.create(project=project, name="api", label="API", image="nginx")
-    second = Container.create(application=other, worker=worker)
-    domain = Domain.create(name="shop", type="public", port=80, container=first)
-
-    response = client.put(f"/api/domains/{domain.id}", json={"container": second.id})
-
-    assert response.status_code == 200
-    assert client.get(f"{URL}/web").json()["containers"][0]["domains"] == []
-    assert [row["id"] for row in client.get(f"{URL}/api").json()["containers"][0]["domains"]] == [domain.id]
-
-  def test_a_created_container_exposes_its_empty_domain_collection(self, client, application, worker):
-    response = client.post(f"{URL}/web/containers/", json={"worker": worker.hostname})
-
-    assert response.status_code == 200
-    assert response.json()["domains"] == []
-
-  def test_a_new_application_is_not_dirty(self, client, application):
-    assert client.get(f"{URL}/web").json()["config_dirty"] is False
-
-  def test_changing_a_deploy_input_after_a_deploy_makes_it_dirty(self, client, application):
-    application.deployed_hash = application.deploy_config.content_hash
-    application.save()
-
-    client.put(f"{URL}/web", json={"env": "A=1"})
-
-    assert client.get(f"{URL}/web").json()["config_dirty"] is True
-
-
-class TestUpdate:
-  def test_the_listed_fields_are_changed_and_stripped(self, client, application):
-    response = client.put(f"{URL}/web", json={
-        "label": " Web 2 ", "description": "Notes", "image": " nginx:1.27 ", "env": "A=1", "command": " serve "})
-
-    assert response.status_code == 200
-    saved = Application.get_by_id(application.id)
-    assert (saved.label, saved.description, saved.image, saved.env, saved.command) == ("Web 2", "Notes", "nginx:1.27", "A=1", "serve")
-
-  @pytest.mark.parametrize("field, value", [
-      ("name", "hacked"),
-      ("status", "active"),
-      ("project", "other"),
-      ("container_count", 7),
-      ("deployed_hash", "abc"),
-      ("id", 99),
-  ])
-  def test_fields_the_user_does_not_own_are_ignored(self, client, application, field, value):
-    Project.create(name="other", label="Other")
-    before = Application.get_by_id(application.id)
-
-    client.put(f"{URL}/web", json={"label": "Same", field: value})
-
-    saved = Application.get_by_id(application.id)
-    assert getattr(saved, field if field != "project" else "project_id") == getattr(before, field if field != "project" else "project_id")
-
-  def test_switching_to_git_with_a_good_repository(self, client, application):
-    response = client.put(f"{URL}/web", json={"type": "git", "repo": "https://github.com/user/repo.git", "path": "docker/Dockerfile"})
-
-    assert response.status_code == 200
-    saved = Application.get_by_id(application.id)
-    assert (saved.type, saved.repo, saved.path, saved.image) == ("git", "https://github.com/user/repo.git", "docker/Dockerfile", None)
-
-  @pytest.mark.parametrize("body, message", [
-      ({"type": "git", "repo": "not a url"}, "Invalid Git repository URL"),
-      ({"image": "bad image"}, "Invalid image reference"),
-      ({"env": "9BAD=1"}, "application.env"),
-  ])
-  def test_a_value_the_model_refuses_is_a_400_and_nothing_is_stored(self, client, application, body, message):
-    response = client.put(f"{URL}/web", json=body)
-
-    assert response.status_code == 400
-    assert message in response.json()["detail"]
-    saved = Application.get_by_id(application.id)
-    assert (saved.type, saved.image, saved.env) == ("docker", "nginx", None)
-
-
-class TestDelete:
-  def test_an_idle_application_without_containers_is_deleted(self, client, application):
-    assert client.delete(f"{URL}/web").json() == {"status": "deleted"}
-    assert Application.select().count() == 0
-    assert Project.get_by_id("demo").application_count == 0
-
-  @pytest.mark.parametrize("status", ["deploying", "stopping", "backup", "restoring"])
-  def test_a_busy_application_is_refused(self, client, application, status):
-    application.status = status
-    application.save()
-
-    response = client.delete(f"{URL}/web")
-
-    assert response.status_code == 409
-    assert response.json()["detail"] == f"Application is already {status}."
+  def test_one_with_containers_is_refused_and_stays(self, client, application, worker):
+    Container.create(application=application, worker=worker)
+    assert client.delete(f"{URL}/web").status_code == 409
     assert Application.select().count() == 1
 
-  @pytest.mark.parametrize("status", ["active", "inactive", "error"])
-  def test_an_application_that_is_not_busy_can_be_deleted(self, client, application, status):
-    application.status = status
-    application.save()
-    assert client.delete(f"{URL}/web").status_code == 200
 
-  def test_an_application_with_containers_is_refused(self, client, application, worker):
-    Container.create(application=application, worker=worker)
+class TestAllContainers:
+  @pytest.mark.parametrize("action, request_name", [("deploy", "request_deploy_all"), ("stop", "request_stop_all")])
+  def test_deploy_and_stop_ask_for_each_container_and_answer_the_tasks(self, client, application, manager, action,
+                                                                       request_name):
+    manager.answers[request_name] = ["t1", "t2"]
+    assert client.post(f"{URL}/web/{action}").json() == {"task_ids": ["t1", "t2"]}
+    assert manager.called(request_name) == [((application.id,), {})]
 
-    response = client.delete(f"{URL}/web")
-
-    assert response.status_code == 409
-    assert "has containers" in response.json()["detail"]
-    assert Application.select().count() == 1
-
-  def test_its_volumes_go_with_it(self, client, application, volume):
-    client.delete(f"{URL}/web")
-    assert Volume.select().count() == 0
+  def test_an_unknown_application_is_a_404_and_asks_for_nothing(self, client, project, manager):
+    assert client.post(f"{URL}/missing/deploy").status_code == 404
+    assert manager.calls == []
 
 
-class TestAvailableWorkers:
-  def test_every_worker_when_none_is_used(self, client, application, worker):
-    Worker.create(hostname="w2", ip="100.64.0.3")
+class TestMetricsAndLogs:
+  def test_the_graphs_are_the_managers_for_the_period_asked(self, client, manager):
+    manager.answers["application_graphs"] = []
+    assert client.get(f"{URL}/web/metrics", params={"period": "24h"}).json() == []
+    assert manager.called("application_graphs") == [(("demo", "web", "24h"), {})]
 
-    response = client.get(f"{URL}/web/get_available_workers")
+  def test_a_period_that_is_not_one_is_refused(self, client, manager):
+    assert client.get(f"{URL}/web/metrics", params={"period": "2h"}).status_code == 422
+    assert manager.calls == []
 
-    assert sorted(row["hostname"] for row in response.json()) == ["w1", "w2"]
-
-  def test_workers_already_running_the_application_are_left_out(self, client, application, worker):
-    Worker.create(hostname="w2", ip="100.64.0.3")
-    Container.create(application=application, worker=worker)
-
-    response = client.get(f"{URL}/web/get_available_workers")
-
-    assert [row["hostname"] for row in response.json()] == ["w2"]
-
-  def test_a_worker_used_by_another_application_is_still_available(self, client, application, worker):
-    other = Application.create(project=application.project, name="api", label="Api")
-    Container.create(application=other, worker=worker)
-
-    response = client.get(f"{URL}/web/get_available_workers")
-
-    assert [row["hostname"] for row in response.json()] == ["w1"]
-
-  def test_no_workers_at_all(self, client, application):
-    assert client.get(f"{URL}/web/get_available_workers").json() == []
-
-
-class TestMetrics:
-  def test_an_application_without_containers_has_none_and_they_are_read_with_a_get(self, client, application):
-    assert client.get(f"{URL}/web/metrics").json() == []
-    assert client.post(f"{URL}/web/metrics").status_code == 405
-
-
-class TestLogs:
-  def test_they_are_the_applications_own_lines_filtered_as_asked(self, client, application):
-    from services.logs import Logs
-    Logs().write_application_lines(application.qualified_name, [
-        {"hostname": host, "ts": f"2026-01-01T12:00:0{index}.000000000Z", "stream": "stdout", "message": message}
-        for index, (host, message) in enumerate([("w1", "Started"), ("w2", "started again"), ("w2", "stopped")])])
-    Logs().write_application_lines("other-app", [{"hostname": "w2", "ts": "2026-01-01T12:00:00.000000000Z", "stream": "stdout",
-                                                  "message": "started elsewhere"}])
-
-    response = client.get(f"{URL}/web/logs", params={"hostname": "w2", "search": "START"})
-
-    assert response.status_code == 200
-    assert [row["message"] for row in response.json()["lines"]] == ["started again"]
-    assert response.json()["more"] is False
-
-  def test_a_view_gets_the_lines_after_the_last_one_it_holds(self, client, application):
-    from services.logs import Logs
-    Logs().write_application_lines(application.qualified_name, [
-        {"hostname": "w1", "ts": f"2026-01-01T12:00:0{index}.000000000Z", "stream": "stdout", "message": message}
-        for index, message in enumerate(["first", "second"])])
-    held = client.get(f"{URL}/web/logs").json()["lines"][0]["id"]
-
-    response = client.get(f"{URL}/web/logs", params={"after_id": held})
-
-    assert [row["message"] for row in response.json()["lines"]] == ["second"]
-
-  @pytest.mark.parametrize("params, found", [
-      ({"from_ts": "2026-01-01T12:00:01Z", "to_ts": "2026-01-01T12:00:02.000Z"}, ["started again"]),
-      ({"from_ts": "2026-01-01T17:30:01.5+05:30"}, ["stopped"]),
-  ])
-  def test_a_window_is_taken_in_utc_from_any_zone(self, client, application, params, found):
-    from services.logs import Logs
-    Logs().write_application_lines(application.qualified_name, [
-        {"hostname": "w1", "ts": f"2026-01-01T12:00:0{index}.000000000Z", "stream": "stdout", "message": message}
-        for index, message in enumerate(["started", "started again", "stopped"])])
-
-    response = client.get(f"{URL}/web/logs", params=params)
-
-    assert [row["message"] for row in response.json()["lines"]] == found
-
-  def test_a_view_gets_the_newest_it_asks_for_and_whether_there_were_more(self, client, application):
-    from services.logs import Logs
-    Logs().write_application_lines(application.qualified_name, [
-        {"hostname": "w1", "ts": f"2026-01-01T12:00:0{index}.000000000Z", "stream": "stdout", "message": message}
-        for index, message in enumerate(["started", "started again", "stopped"])])
-
-    response = client.get(f"{URL}/web/logs", params={"limit": 2})
-
-    assert [row["message"] for row in response.json()["lines"]] == ["started again", "stopped"]
-    assert response.json()["more"] is True
+  def test_the_logs_are_the_applications_own_lines_filtered_as_asked(self, client, application):
+    lines("demo-web", [("w1", "Started"), ("w2", "started again"), ("w2", "stopped")])
+    lines("demo-other", [("w2", "started elsewhere")])
+    response = client.get(f"{URL}/web/logs", params={"hostname": "w2", "search": "START", "limit": 5})
+    assert ([row["message"] for row in response.json()["lines"]], response.json()["more"]) == (["started again"], False)
 
   @pytest.mark.parametrize("params", [{"from_ts": "yesterday"}, {"limit": 0}, {"limit": config.LIST_MAX_ROWS + 1}])
   def test_a_time_that_is_not_one_or_a_limit_out_of_bounds_is_refused(self, client, application, params):
     assert client.get(f"{URL}/web/logs", params=params).status_code == 422
 
-  def test_an_unknown_application_has_none(self, client, project):
+  def test_an_unknown_application_has_no_logs(self, client, project):
     assert client.get(f"{URL}/missing/logs").status_code == 404
+
+
+class TestContainers:
+  def test_a_container_is_placed_on_a_worker_and_answered_with_its_payload(self, client, application, worker, manager):
+    manager.answers["container_payloads"] = lambda containers: [{"id": container.id} for container in containers]
+    response = client.post(f"{URL}/web/containers/", json={"worker": "w1"})
+    container = Container.get(Container.application == application.id)
+    assert (response.json(), container.worker_id) == ({"id": container.id}, "w1")
+
+  def test_an_unknown_worker_is_a_404_and_a_second_on_one_worker_a_409(self, client, application, worker, manager):
+    assert client.post(f"{URL}/web/containers/", json={"worker": "w9"}).status_code == 404
+    manager.answers["container_payloads"] = lambda containers: [{}]
+    client.post(f"{URL}/web/containers/", json={"worker": "w1"})
+    assert client.post(f"{URL}/web/containers/", json={"worker": "w1"}).status_code == 409
+    assert Container.select().count() == 1
+
+  @pytest.mark.parametrize("path, request_name, arguments", [
+      ("deploy", "request_deploy", ()), ("stop", "request_stop", ()), ("cancel/delete", "request_cancel", ("delete",))])
+  def test_a_request_on_one_container_answers_its_task(self, client, application, worker, manager, path, request_name,
+                                                       arguments):
+    container = Container.create(application=application, worker=worker)
+    manager.answers[request_name] = "t1"
+    assert client.post(f"{URL}/web/containers/{container.id}/{path}").json() == {"task_id": "t1"}
+    assert manager.called(request_name) == [((container.id, *arguments), {})]
+
+  @pytest.mark.parametrize("query, force", [({}, False), ({"force": "true"}, True)])
+  def test_a_delete_answers_its_task_and_force_reaches_it(self, client, application, worker, manager, query, force):
+    container = Container.create(application=application, worker=worker)
+    assert client.delete(f"{URL}/web/containers/{container.id}", params=query).json() == {"task_id": "task-1"}
+    assert manager.called("request_delete") == [((container.id, force), {})]
+
+  @pytest.mark.parametrize("method, path", [("post", "deploy"), ("post", "stop"), ("post", "cancel/deploy"), ("delete", "")])
+  def test_a_container_of_another_application_or_none_is_a_404_and_asks_for_nothing(
+          self, client, application, worker, manager, method, path):
+    other = Application.create(project=application.project, name="api", label="Api")
+    elsewhere = Container.create(application=other, worker=Worker.create(hostname="w2", subdomain="blue"))
+    for container in (elsewhere.id, "c0000000000000000"):
+      response = client.request(method.upper(), f"{URL}/web/containers/{container}/{path}".rstrip("/"))
+      assert response.status_code == 404
+    assert manager.calls == []

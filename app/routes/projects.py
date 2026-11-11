@@ -1,67 +1,36 @@
-from fastapi import APIRouter, Body, Depends, HTTPException, Request
-from playhouse.shortcuts import model_to_dict
+from fastapi import APIRouter, Body
 
-from routes.applications import router as app_router
-from services.applications.updates import hosts_changed
-from services.db import Project
-from utils.api import generic_create, generic_delete, generic_get, generic_list, generic_update, get_request_models, parse_api_data
-from values.names import derive_name
-
-
-def inject_project(request: Request):
-  models = get_request_models(request)
-
-  project_name = request.path_params.get("project")
-  models["project"] = generic_get(
-      Project, Project.name == project_name, return_model=True
-  )
-
-  return None
-
+from routes.applications import router as applications_router
+from services.applications import commands
+from services.applications.payload import project_list, project_payload
+from services.manager import Manager
 
 router = APIRouter()
 
 
 @router.get("/")
 def list_projects():
-  return generic_list(Project)
+  return project_list()
 
 
 @router.post("/")
-def create_project(project_data: dict = Body(...)):
-  data = parse_api_data(project_data, ["label", "description"])
-  data["name"] = derive_name(data.get("label"))
-  return generic_create(Project, data)
+def create_project(data: dict = Body(...)):
+  return project_payload(commands.create_project(data.get("label"), data.get("description")))
 
 
-@router.get("/{project}", dependencies=[Depends(inject_project)])
-def get_project(request: Request):
-  return model_to_dict(request.state.models["project"], backrefs=True, max_depth=1)
+@router.get("/{project}")
+def get_project(project: str):
+  return Manager().project_page(project)
 
 
-@router.put("/{project}", dependencies=[Depends(inject_project)])
-def update_project(request: Request, project_data: dict = Body(...)):
-  data = parse_api_data(project_data, ["label", "description", "env"])
-  project = request.state.models["project"]
-  result = generic_update(Project, project, data)
-  for application in project.applications:
-    hosts_changed(application)
-  return result
+@router.put("/{project}")
+def update_project(project: str, data: dict = Body(...)):
+  return project_payload(commands.patch_project(project, data))
 
 
-@router.delete("/{project}", dependencies=[Depends(inject_project)])
-def delete_project(request: Request):
-  project = request.state.models["project"]
-
-  if project.application_count > 0:
-    raise HTTPException(
-        status_code=409,
-        detail="Project has applications and cannot be deleted. Delete its applications first.",
-    )
-  return generic_delete(Project, project)
+@router.delete("/{project}", status_code=204)
+def delete_project(project: str):
+  commands.delete_project(project)
 
 
-# Application routes
-router.include_router(
-    app_router, prefix="/{project}/applications", dependencies=[Depends(inject_project)]
-)
+router.include_router(applications_router, prefix="/{project}/applications")

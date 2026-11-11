@@ -11,6 +11,7 @@ from time import monotonic
 import config
 from services.applications.commands import detach_container
 from services.applications.deploy_input import DeployConfig, capture_deploy_config
+from services.applications.lookup import find_application
 from services.applications.payload import application_payload, application_summary, project_payload
 from services.applications.updates import container_changed
 from services.containers.decisions import PROGRESS, Runtime, correction
@@ -77,7 +78,7 @@ class ContainersMixin:
 
   def application_page(self, project: str, name: str) -> dict:
     """The application's payload with its containers'; a LookupError when there is none."""
-    application = self._application(project, name)
+    application = find_application(project, name)
     containers = (Container.select(Container, Application, Project, Worker).join(Application).join(Project)
                   .switch(Container).join(Worker).where(Container.application == application.id).order_by(Container.worker))
     return application_payload(application, list(application.volumes.order_by(Volume.name)), self.container_payloads(containers))
@@ -97,18 +98,10 @@ class ContainersMixin:
 
   def application_graphs(self, project: str, name: str, period: str) -> list[dict]:
     """The series of each of the application's containers over `period`, by worker; a LookupError when there is none."""
-    application = self._application(project, name)
+    application = find_application(project, name)
     return [{"container": container.id, "hostname": container.worker_id,
              "metrics": Metrics().query_container_period(container.worker_id, runtime_name(container.id), period)}
             for container in Container.select().where(Container.application == application.id).order_by(Container.worker)]
-
-  @staticmethod
-  def _application(project: str, name: str) -> Application:
-    application = (Application.select(Application, Project).join(Project)
-                   .where((Project.name == project) & (Application.name == name)).first())
-    if application is None:
-      raise LookupError("Application not found.")
-    return application
 
   def containers_queue_facts(self) -> list[Fact]:
     """The operations running on containers: a container whose operation starts or ends is shown again."""

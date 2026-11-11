@@ -13,6 +13,7 @@ from starlette.staticfiles import StaticFiles
 import config
 from routes.info import router as info_router
 from routes.notifications import router as notifications_router
+from routes.projects import router as projects_router
 from routes.requests import router as requests_router
 from routes.tasks import router as tasks_router
 from routes.updates import TOPICS, sio
@@ -21,7 +22,6 @@ from services.manager import Manager
 from services.updates import Updates
 from utils.errors import Conflict
 
-# TODO(36 step 5B): from routes.projects import router as projects_router
 # TODO(36 step 5C): from routes.backups import router as backup_router
 # TODO(36 step 5C): from routes.domains import router as domains_router
 # TODO(36 step 5C): from routes.settings import router as settings_router
@@ -87,7 +87,7 @@ app.include_router(info_router, prefix="/api")
 # TODO(36 step 5C): app.include_router(settings_router, prefix="/api/settings")
 # TODO(36 step 5C): app.include_router(workers_router, prefix="/api/workers")
 # TODO(36 step 5C): app.include_router(domains_router, prefix="/api/domains")
-# TODO(36 step 5B): app.include_router(projects_router, prefix="/api/projects")
+app.include_router(projects_router, prefix="/api/projects")
 app.include_router(notifications_router, prefix="/api/notifications")
 app.include_router(tasks_router, prefix="/api/tasks")
 app.include_router(requests_router, prefix="/api/requests")
