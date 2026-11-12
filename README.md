@@ -231,7 +231,12 @@ The [client guide](docs/discovery.md) shows how to discover a backend service, p
 Sage lists the backups already in the S3 bucket and path when you save the S3 settings,
 at startup and from Discover backups on the Backups page. To recover onto a new volume,
 start with the original `ENCRYPTION_KEY`, set S3, then restore a platform backup; volume
-backups are listed once their application is back. Each backup can also be downloaded
+backups are listed once their application is back. A platform restore replaces the configuration
+with the backup's, keeps the S3 settings in use and starts the history empty. Containers are then
+stopped and show an error until they are deployed again, also when the workers kept serving while
+the manager was being recovered, and a container that isn't in the backup is removed from its worker
+with its volumes' data; see [Platform Backup And Restore](docs/architecture.md#platform-backup-and-restore).
+Each backup can also be downloaded
 from the Backups page (platform) or a volume's Restore dialog (volume): a link that works
 for a minute, straight from S3. The files are encrypted; Settings → S3 shows how to open one.
 

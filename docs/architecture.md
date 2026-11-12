@@ -271,6 +271,27 @@ Relationships are centered on:
 The [model writer index](operations.md#model-writer-index) lists every model's direct, queued and implicit
 writers. The [flow diagrams](operations.md) show how scheduler, route and startup work reach them.
 
+## Platform Backup And Restore
+
+A platform backup is the configuration: the database without its history (container and worker events,
+notifications, tasks) and without the Backup rows, which mirror the store and are rebuilt from its listing. It is
+taken twice a day and from the Backups page, while other work goes on, and is encrypted into the configured S3 store.
+
+A restore puts a backup's configuration in place of the current one:
+
+- From the request on, Sage refuses every other change and the workers' reports, and the UI shows an overlay. The
+  tasks queued before it finish first; then the restore runs alone.
+- It installs the backup with a fresh state generation, keeps the S3 settings in use (every other setting comes from
+  the backup) and starts the history and the backup list empty. Sage then starts its work as it does at startup, which
+  lists the store's backups again. A backup that can't be installed leaves the database as it was.
+- Each container with a record on its worker from before the restore, running or not, is stopped once its worker
+  reports, and shows an error until it is deployed again. This includes recovering onto a new volume while the workers
+  kept serving: the applications are down until they are deployed.
+- A container that isn't in the restored configuration is removed from its worker with its volumes' data, once an
+  operation it was in the middle of has had its time to end. A Domain that isn't in it has its route and DNS records
+  removed.
+- Workers in the restored configuration keep their stack; each is set up again only where its stamps differ.
+
 ## Metrics And Logs Storage
 
 Metrics and logs are intentionally sharded:
