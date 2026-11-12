@@ -88,6 +88,17 @@ def decide_worker(facts: WorkerFacts) -> WorkerView:
   return WorkerView("online")
 
 
+def discovery_member(ssh: str, setup: str | None, address: str | None) -> bool | None:
+  """Whether `discovery.int.<domain>` points at the worker: yes while it is reachable, set up since the Manager started
+  and has an address; no once its SSH server is unreachable or its setup failed or was refused; None while that is not
+  known yet (not observed, the Manager cut off from the tailnet, or not set up since the start)."""
+  if ssh == "unreachable" or setup in ("failed", "refused"):
+    return False
+  if ssh == "reachable" and setup == "succeeded" and address:
+    return True
+  return None
+
+
 def reboot_outcome(baseline_boot_id: str, boot_id: str | None, ready: bool | None) -> str:
   """What a requested reboot has achieved: verified once the worker runs a new boot and is ready; old_boot while it
   still runs the one from before the request; not_ready on a new boot that is not ready; unknown while the boot

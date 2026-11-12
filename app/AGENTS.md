@@ -149,9 +149,10 @@ Each resource's own rules, on top of the root's working rules 9–13. The workfl
 - `cors_origins`: blank derives the record's own current origin, explicit entries are maintained by hand, and the
   effective list is part of `DomainConfig` and its proof. Only a dirty origins field is normalized, so unrelated writes
   keep a concurrent edit. Application CORS stays apart from the shared discovery and probe policy.
-- Discovery lists every name with a service, offline when unusable, deciding availability from the Domain's state,
-  its container's `routable` and its worker's readiness when a worker's files are written. It never reconciles
-  status, probes or requests an apply, and is requested only through `request_discovery`.
+- Discovery stays in sync with the Domain table: at every publication it lists every name with a service, with its
+  pool, whatever is known of it. Only a name's `online` flag is liveness and can flap: decided from the Domain's
+  state, its container's `routable` and its worker's readiness when a worker's files are written. It never
+  reconciles status, probes or requests an apply, and is requested only through `request_discovery`.
 - Scopes, the pass's order, what requests discovery, and the file formats: [Domain Apply And
   Discovery](../docs/backend.md#domain-apply-and-discovery).
 
@@ -173,8 +174,8 @@ Each resource's own rules, on top of the root's working rules 9–13. The workfl
 - A platform backup is a coherent SQLite configuration snapshot, without history or Backup rows, taken while
   operations continue.
 - A platform restore is a pseudo restart: install, clear the memory of the old configuration, `request_startup`; the
-  history starts empty. It keeps the current S3 settings as an explicit input, prepared before the database is
-  installed; the other settings come from the backup. What it does to workers: [Platform Backup And
+  history starts empty. It keeps the current S3 settings as an explicit input, read before the download and written
+  before the owners load; the other settings come from the backup. What it does to workers: [Platform Backup And
   Restore](../docs/architecture.md#platform-backup-and-restore).
 
 ### Settings

@@ -1,6 +1,7 @@
 import itertools
 import re
 import subprocess
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -9,14 +10,15 @@ from services.domains.config import ROUTING_TEMPLATES, domain_artifact_name, par
 from services.domains.decisions import ROUTES, STATUSES, ApplyOutcome, DomainFacts, RouteObservation, decide_domain, route_goal
 
 NOW_HASH, OLD_HASH = "a" * 64, "b" * 64
+QUEUED = datetime(2026, 1, 1, 12)
 ID = "0123456789abcdef"
 TEMPLATES = Path(__file__).parent.parent.parent.parent / "templates" / "worker" / "traefik"
 REASONS = {None, "drifted", "worker_not_ready", "eligibility_unknown", "not_applied", "Traefik", "DNS"}
 
 
 def facts(linked=True, eligible=True, worker_ready=True, route=RouteObservation("present", NOW_HASH), dns=True, outcome=None,
-          syncing=False):
-  return DomainFacts(NOW_HASH, linked, eligible, worker_ready, route, dns, outcome, syncing)
+          syncing_since=None):
+  return DomainFacts(NOW_HASH, linked, eligible, worker_ready, route, dns, outcome, syncing_since)
 
 
 APPLIED = RouteObservation("present", NOW_HASH)
@@ -43,7 +45,7 @@ SCENARIOS = {
     "applied, then the file disappeared": (facts(route=ABSENT, outcome=ApplyOutcome(NOW_HASH, True)), "pending", False, "drifted"),
     "its worker offline": (facts(worker_ready=False, route=RouteObservation("unreachable"), dns=True), "pending", None,
                            "worker_not_ready"),
-    "a sync under way": (facts(route=ABSENT, outcome=FAILED_DNS, syncing=True), "syncing", False, None),
+    "a sync under way": (facts(route=ABSENT, outcome=FAILED_DNS, syncing_since=QUEUED), "syncing", False, None),
     "DNS that does not match": (facts(dns=False), "pending", False, "drifted"),
     "a failed apply since put right": (facts(outcome=FAILED_DNS), "synced", True, None),
 }
@@ -92,7 +94,7 @@ def test_every_combination_of_facts_keeps_the_invariants():
           OLD_HASH, True)]
   seen_statuses, seen_reasons = set(), set()
   for linked, eligible, ready, route, dns, outcome, syncing in itertools.product(
-          (True, False), (True, False, None), (True, False, None), every_route(), (True, False, None), outcomes, (False, True)):
+          (True, False), (True, False, None), (True, False, None), every_route(), (True, False, None), outcomes, (None, QUEUED)):
     given = DomainFacts(NOW_HASH, linked, eligible, ready, route, dns, outcome, syncing)
     view = decide_domain(given)
     seen_statuses.add(view.status)
@@ -101,7 +103,7 @@ def test_every_combination_of_facts_keeps_the_invariants():
 
     assert view.status in STATUSES and view.reason in REASONS, given
     assert view.conforms == expected_conformance(given), given
-    assert (view.status == "syncing") == syncing, given
+    assert (view.status == "syncing") == (syncing is not None), given
     if view.status == "synced":
       assert view.conforms is True or (current is not None and current.succeeded and view.conforms is None), given
     if view.status == "error":

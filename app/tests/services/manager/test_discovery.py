@@ -1,4 +1,5 @@
 import asyncio
+from datetime import timedelta
 
 import pytest
 import yaml
@@ -21,8 +22,8 @@ MANAGER = "https://manager.core.example.test"
 
 
 class DiscoveryHosts(Hosts):
-  """The workers as discovery sees them: their stamps read back, their discovery files listed, several files removed
-  in one command, and each one's address."""
+  """The workers as discovery sees them: the first line and the `Sage-Endpoints` line of each of their discovery files
+  listed, several files removed in one command, and each one's address."""
 
   def __init__(self):
     super().__init__()
@@ -32,14 +33,12 @@ class DiscoveryHosts(Hosts):
     return self.addresses.get(hostname)
 
   async def exec_command(self, hostname, command, timeout=300):
-    if command.startswith("grep -H . "):
-      self.commands.append((hostname, "revisions"))
-      return 0, [f"{path}:{content}" for (host, path), content in self.files.items()
-                 if host == hostname and path.startswith(f"{HOME}/revisions/")]
-    if command.startswith("find "):
-      self.commands.append((hostname, "find"))
-      return 0, sorted(path.rsplit("/", 1)[1] for host, path in self.files
-                       if host == hostname and path.startswith(f"{DYNAMIC}/_discovery-"))
+    if command.startswith("grep -H -m1 ") and "/_discovery-" in command:
+      self.commands.append((hostname, "list"))
+      files = sorted((path, content) for (host, path), content in self.files.items()
+                     if host == hostname and path.startswith(f"{DYNAMIC}/_discovery-"))
+      return 0, [f"{path}:{content.splitlines()[0] if content else ''}" for path, content in files] + [
+          f"{path}:{line}" for path, content in files for line in content.splitlines() if "Sage-Endpoints: " in line]
     if command.startswith("rm -f ") and " " in command[len("rm -f "):]:
       self.commands.append((hostname, command))
       for path in command[len("rm -f "):].split():
@@ -57,8 +56,9 @@ class DiscoveryHosts(Hosts):
     [middleware] = http["middlewares"].values()
     return middleware["headers"]["customResponseHeaders"]["Sage-Endpoints"]
 
-  def stamp(self, hostname):
-    return self.files.get((hostname, f"{HOME}/revisions/discovery"))
+  def proof(self, hostname, name):
+    """What the first line of the worker's discovery file `name` names."""
+    return self.files[(hostname, f"{DYNAMIC}/{name}")].splitlines()[0]
 
 
 class Zone:
@@ -138,7 +138,7 @@ def applied(domain):
 
 
 def writes(hosts, hostname):
-  return [command for host, command in hosts.commands if host == hostname and command not in ("revisions", "find")]
+  return [command for host, command in hosts.commands if host == hostname and command != "list"]
 
 
 class TestRequests:
@@ -179,7 +179,7 @@ class TestRequests:
     manager.request_discovery()
     await manager.run()
     assert len(seen) == 1 and ("publish_discovery", "w1") in seen[0]
-    assert [command for command in hosts.commands if command == ("w1", "revisions")] == [("w1", "revisions")] * 2
+    assert [command for command in hosts.commands if command == ("w1", "list")] == [("w1", "list")] * 2
 
   async def test_a_worker_held_by_its_setup_waits_and_the_others_do_not(self, manager, hosts, shop):
     release = asyncio.Event()
@@ -192,7 +192,7 @@ class TestRequests:
     manager.task_queue.dispatch_tick()
     manager.request_discovery()
     manager.task_queue.dispatch_tick()
-    while ("w2", "revisions") not in hosts.commands:
+    while ("w2", "list") not in hosts.commands:
       await asyncio.sleep(0)
     assert [tuple(task["key"]) for task in manager.task_queue.snapshot()["queued"]] == [("publish_discovery", "w1")]
     release.set()
@@ -201,10 +201,11 @@ class TestRequests:
 
 
 class TestPublication:
-  async def test_every_service_is_written_with_its_names_and_the_stamp_last(self, manager, hosts, shop):
+  async def test_every_service_is_written_with_its_names_and_its_proof_in_its_first_line(self, manager, hosts, shop):
     await manager.publish_discovery("w1")
     assert hosts.endpoints("w1", "_discovery-public-shop.yml") == '"a.example.test";online, "b.example.test";online'
-    assert writes(hosts, "w1")[-1] == f"write {HOME}/revisions/discovery" and hosts.stamp("w1") is not None
+    assert hosts.proof("w1", "_discovery-public-shop.yml").startswith("# sage-discovery ")
+    assert writes(hosts, "w1") == [f"write {DYNAMIC}/_discovery-public-shop.yml"]
 
   async def test_a_name_that_can_not_be_used_is_listed_offline(self, manager, hosts, shop):
     manager.ready["w2"] = False
@@ -220,7 +221,7 @@ class TestPublication:
     assert hosts.endpoints("w1", "_discovery-public-shop.yml") == (
         '"a.example.test";online, "b.example.test";online, "c.example.test";pool="eu";online=?0')
 
-  async def test_nothing_is_written_while_the_stamp_and_the_files_are_current(self, manager, hosts, shop):
+  async def test_nothing_is_written_while_every_files_proof_is_current(self, manager, hosts, shop):
     await manager.publish_discovery("w1")
     hosts.commands.clear()
     await manager.publish_discovery("w1")
@@ -230,21 +231,25 @@ class TestPublication:
     await manager.publish_discovery("w1")
     hosts.commands.clear()
     await manager.publish_discovery("w1", force=True)
-    assert writes(hosts, "w1") == [f"write {DYNAMIC}/_discovery-public-shop.yml", f"write {HOME}/revisions/discovery"]
+    assert writes(hosts, "w1") == [f"write {DYNAMIC}/_discovery-public-shop.yml"]
 
-  async def test_a_change_of_availability_rewrites_the_files_and_the_stamp(self, manager, hosts, shop):
+  async def test_a_change_of_availability_rewrites_the_file_with_its_new_proof(self, manager, hosts, shop):
     await manager.publish_discovery("w1")
-    before = hosts.stamp("w1")
+    before = hosts.proof("w1", "_discovery-public-shop.yml")
     manager.routable[shop[1].container_id] = False
     await manager.publish_discovery("w1")
     assert hosts.endpoints("w1", "_discovery-public-shop.yml") == '"a.example.test";online, "b.example.test";online=?0'
-    assert hosts.stamp("w1") != before
+    assert hosts.proof("w1", "_discovery-public-shop.yml") != before
 
-  async def test_a_file_gone_is_written_again_though_the_stamp_matches(self, manager, hosts, shop):
+  async def test_a_file_gone_or_without_its_proof_is_written_again(self, manager, hosts, shop):
     await manager.publish_discovery("w1")
     hosts.files.pop(("w1", f"{DYNAMIC}/_discovery-public-shop.yml"))
     await manager.publish_discovery("w1")
     assert set(hosts.discovery("w1")) == {"_discovery-public-shop.yml"}
+    hosts.files[("w1", f"{DYNAMIC}/_discovery-public-shop.yml")] = "http: {}\n"
+    hosts.commands.clear()
+    await manager.publish_discovery("w1")
+    assert writes(hosts, "w1") == [f"write {DYNAMIC}/_discovery-public-shop.yml"]
 
   async def test_a_stale_service_is_removed_after_the_new_ones_are_written(self, manager, hosts, shop):
     for name in ("_discovery-public-old.yml", "_discovery-internal-gone.yml"):
@@ -255,8 +260,7 @@ class TestPublication:
     assert ("w1", f"{DYNAMIC}/domain-0123456789abcdef.yml") in hosts.files
     assert writes(hosts, "w1") == [
         f"write {DYNAMIC}/_discovery-public-shop.yml",
-        f"rm -f {DYNAMIC}/_discovery-internal-gone.yml {DYNAMIC}/_discovery-public-old.yml",
-        f"write {HOME}/revisions/discovery"]
+        f"rm -f {DYNAMIC}/_discovery-internal-gone.yml {DYNAMIC}/_discovery-public-old.yml"]
 
   @pytest.mark.parametrize("found, setup", [("unreachable", "succeeded"), ("reachable", "failed"), ("reachable", None)])
   async def test_a_worker_not_reachable_and_set_up_by_the_time_it_runs_is_left_alone(self, manager, hosts, shop, found, setup):
@@ -270,14 +274,94 @@ class TestPublication:
     await manager.publish_discovery("w3")
     assert hosts.commands == []
 
-  async def test_a_failed_write_fails_the_task_and_writes_no_stamp(self, manager, hosts, shop, notices):
+  async def test_a_failed_write_fails_the_task(self, manager, hosts, shop, notices):
     hosts.fails = "_discovery-public-shop.yml"
     with pytest.raises(TaskFailed):
       await manager.publish_discovery("w1")
-    assert hosts.stamp("w1") is None
+    assert hosts.discovery("w1") == {}
     [(level, content, link)] = notices()
     assert (level, content.startswith("Discovery could not be published on worker w1: Error writing"), link) == (
         "error", True, f"{MANAGER}/workers/w1")
+
+
+class TestNotKnownYet:
+  @pytest.fixture
+  def db_name(self, shop):
+    """A `db` service with one name, on w1, applied; `shop` has a name on each worker."""
+    domain = Domain.create(name="db", type="public", port=5432, container=shop[0].container, service="db")
+    applied(domain)
+    return domain
+
+  async def test_a_name_not_known_yet_keeps_its_published_availability_while_a_known_one_changes(self, manager, hosts, shop):
+    await manager.publish_discovery("w1")
+    manager.routable[shop[1].container_id] = None
+    manager.routable[shop[0].container_id] = False
+    await manager.publish_discovery("w1")
+    assert hosts.endpoints("w1", "_discovery-public-shop.yml") == '"a.example.test";online=?0, "b.example.test";online'
+
+  async def test_a_domain_added_to_a_service_with_a_name_not_known_yet_is_listed_at_once(self, manager, hosts, shop):
+    await manager.publish_discovery("w1")
+    manager.ready["w2"] = None
+    applied(Domain.create(name="c", type="public", port=80, container=shop[0].container, service="shop"))
+    await manager.publish_discovery("w1")
+    assert hosts.endpoints("w1", "_discovery-public-shop.yml") == (
+        '"a.example.test";online, "b.example.test";online, "c.example.test";online')
+
+  async def test_a_name_not_known_yet_that_the_worker_does_not_publish_is_offline(self, manager, hosts, shop):
+    manager.ready["w2"] = None
+    await manager.publish_discovery("w1")
+    assert hosts.endpoints("w1", "_discovery-public-shop.yml") == '"a.example.test";online, "b.example.test";online=?0'
+
+  async def test_a_forced_publication_keeps_a_published_availability_too(self, manager, hosts, shop, db_name):
+    await manager.publish_discovery("w1")
+    manager.ready["w2"] = None
+    manager.routable[shop[0].container_id] = False
+    await manager.publish_discovery("w1", force=True)
+    assert hosts.endpoints("w1", "_discovery-public-shop.yml") == '"a.example.test";online=?0, "b.example.test";online'
+    assert hosts.endpoints("w1", "_discovery-public-db.yml") == '"db.example.test";online=?0'
+
+  async def test_an_apply_under_way_keeps_its_names_published_availability(self, manager, hosts, shop):
+    await manager.publish_discovery("w1")
+    manager.request_domain_applies([shop[1].id])
+    manager.routable[shop[0].container_id] = False
+    await manager.publish_discovery("w1")
+    assert hosts.endpoints("w1", "_discovery-public-shop.yml") == '"a.example.test";online=?0, "b.example.test";online'
+
+  async def test_a_name_not_known_is_offline_once_the_manager_has_run_for_the_hold(self, clock, manager, hosts, shop):
+    await manager.publish_discovery("w1")
+    manager.ready["w2"] = None
+    clock.advance(timedelta(seconds=config.UNKNOWN_HOLD_SECONDS - 1))
+    await manager.publish_discovery("w1")
+    assert hosts.endpoints("w1", "_discovery-public-shop.yml") == '"a.example.test";online, "b.example.test";online'
+    clock.advance(timedelta(seconds=1))
+    await manager.publish_discovery("w1")
+    assert hosts.endpoints("w1", "_discovery-public-shop.yml") == '"a.example.test";online, "b.example.test";online=?0'
+
+  async def test_an_apply_under_way_is_held_from_when_it_was_queued_and_offline_after_the_hold(self, clock, manager, hosts, shop):
+    await manager.publish_discovery("w1")
+    clock.advance(timedelta(minutes=30))
+    manager.request_domain_applies([shop[1].id])
+    clock.advance(timedelta(seconds=config.UNKNOWN_HOLD_SECONDS - 1))
+    await manager.publish_discovery("w1")
+    assert hosts.endpoints("w1", "_discovery-public-shop.yml") == '"a.example.test";online, "b.example.test";online'
+    clock.advance(timedelta(seconds=1))
+    await manager.publish_discovery("w1")
+    assert hosts.endpoints("w1", "_discovery-public-shop.yml") == '"a.example.test";online, "b.example.test";online=?0'
+
+  async def test_after_a_restart_nothing_is_rewritten_while_not_known_nor_once_known_again(self, manager, hosts, shop):
+    for hostname in ("w1", "w2"):
+      await manager.publish_discovery(hostname)
+    published = {key: content for key, content in hosts.files.items() if "/_discovery-" in key[1]}
+    Domains().clear()
+    hosts.commands.clear()
+    manager.request_discovery()
+    await manager.run()
+    for domain in shop:
+      applied(domain)
+    manager.request_discovery()
+    await manager.run()
+    assert {key: content for key, content in hosts.files.items() if "/_discovery-" in key[1]} == published
+    assert writes(hosts, "w1") == writes(hosts, "w2") == []
 
 
 class TestDns:
@@ -303,6 +387,34 @@ class TestDns:
     hosts.addresses.pop("w2")
     await manager.publish_discovery_dns()
     assert [name for comment, name, *_ in zone.held() if comment == "sage-discovery-w2"] == []
+
+  @pytest.mark.parametrize("found, setup, kept", [
+      ("unobserved", None, True), ("unknown", "succeeded", True), ("reachable", None, True),
+      ("unreachable", None, False), ("reachable", "failed", False), ("reachable", "refused", False)])
+  async def test_a_worker_known_to_be_out_loses_its_record_and_one_not_known_yet_keeps_it_as_it_is(
+          self, manager, hosts, zone, workers, found, setup, kept):
+    zone.records = [{"comment": "sage-discovery-w2", "name": "discovery.int.example.test", "content": "100.64.0.9",
+                     "type": "A", "proxied": False}]
+    hosts.found["w2"] = found
+    Workers().record_setup("w2", setup)
+    await manager.publish_discovery_dns()
+    assert [content for comment, _, content, *_ in zone.held() if comment == "sage-discovery-w2"] == (
+        ["100.64.0.9"] if kept else [])
+
+  async def test_after_a_restart_no_record_goes_until_its_worker_is_known(self, manager, hosts, zone, workers):
+    zone.records = [{"comment": f"sage-discovery-{hostname}", "name": "discovery.int.example.test", "content": address,
+                     "type": "A", "proxied": False} for hostname, address in (("w1", "100.64.0.2"), ("w2", "100.64.0.3"))]
+    Workers().clear()
+    hosts.found.clear()
+    manager.request_discovery()
+    await manager.run()
+    assert sorted(comment for comment, *_ in zone.held() if comment.startswith("sage-discovery-")) == [
+        "sage-discovery-w1", "sage-discovery-w2"]
+    hosts.found.update(w1="reachable", w2="unreachable")
+    Workers().record_setup("w1", "succeeded", "100.64.0.2")
+    manager.request_discovery()
+    await manager.run()
+    assert sorted(comment for comment, *_ in zone.held() if comment.startswith("sage-discovery-")) == ["sage-discovery-w1"]
 
   async def test_a_failure_fails_the_task(self, manager, zone, workers, notices):
     zone.fails = "rate limited"

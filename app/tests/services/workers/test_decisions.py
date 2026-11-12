@@ -5,7 +5,7 @@ import pytest
 
 import config
 from services.worker_reports import ContainerReading, Received, Snapshot
-from services.workers.decisions import (SETUPS, SSH, STATUSES, WorkerFacts, WorkerReport, decide_worker, reboot_outcome, report_of,
+from services.workers.decisions import (SETUPS, SSH, STATUSES, WorkerFacts, WorkerReport, decide_worker, discovery_member, reboot_outcome, report_of,
                                         worker_claim_refusal, worker_owner)
 
 GOOD = WorkerReport("known", True)
@@ -138,6 +138,22 @@ class TestReportOf:
 ])
 def test_a_reboot_is_verified_only_by_a_new_boot_and_a_ready_worker(boot_id, ready, outcome):
   assert reboot_outcome("old", boot_id, ready) == outcome
+
+
+@pytest.mark.parametrize("ssh, setup, address, member", [
+    ("reachable", "succeeded", "100.64.0.2", True),
+    ("reachable", "succeeded", None, None),
+    ("reachable", None, "100.64.0.2", None),
+    ("unobserved", None, None, None),
+    ("unknown", "succeeded", "100.64.0.2", None),
+    ("unreachable", "succeeded", "100.64.0.2", False),
+    ("unreachable", None, None, False),
+    ("reachable", "failed", "100.64.0.2", False),
+    ("reachable", "refused", "100.64.0.2", False),
+    ("unknown", "failed", "100.64.0.2", False),
+])
+def test_discovery_points_at_a_worker_reachable_and_set_up_and_leaves_one_not_known_yet_undecided(ssh, setup, address, member):
+  assert discovery_member(ssh, setup, address) is member
 
 
 class TestWorkerOwner:

@@ -5,11 +5,12 @@ import logging
 import config
 from services.cloudflare import Cloudflare
 from services.db.models import Domain, Worker
-from services.domains.discovery import PREFIX, SUFFIX, discovery_files, discovery_fingerprint, discovery_services, files_command
+from services.domains.discovery import discovery_files, discovery_services, files_command, parse_file_listing
 from services.notification import Notifications
 from services.tailscale import Tailscale
+from services.workers.decisions import discovery_member
 from services.workers.state import Workers
-from utils.common import get_env
+from utils.common import get_env, utcnow
 from utils.executor import run_in_executor_with_context
 from utils.logging import TaskFailed
 from utils.queue import OnConflict
@@ -36,8 +37,9 @@ class DiscoveryMixin:
                   on_conflict=OnConflict.REPLACE, quiet=True)
 
   async def publish_discovery(self, hostname: str, force: bool = False):
-    """Writes the worker's discovery files when its stamp or its set of files is not what the services give now, or
-    forced: each service's file, then the stale ones removed, then the stamp. Nothing on a worker not reachable and set
+    """Writes each of the worker's discovery files whose first line does not name the fingerprint its service gives
+    now (every one, forced), then removes those of services no Domain has. A name whose availability is not known yet
+    keeps what the worker's file publishes for it (`discovery_services`). Nothing on a worker not reachable and set
     up."""
     if (Worker.get_or_none(Worker.hostname == hostname) is None or Tailscale().ssh(hostname) != "reachable"
             or Workers().setup(hostname) != "succeeded"):
@@ -45,39 +47,41 @@ class DiscoveryMixin:
       return
     domains = list(Domain.select().where(Domain.service.is_null(False)))
     states = self.domain_states(domains)
-    services = discovery_services((domain, states[domain.id]) for domain in domains)
-    base_domain, dynamic = get_env("DOMAIN"), f"{config.WORKER_HOME_DIR}/traefik/dynamic"
-    files, stamp = discovery_files(services, base_domain), discovery_fingerprint(services, base_domain)
+    dynamic = f"{config.WORKER_HOME_DIR}/traefik/dynamic"
     try:
-      revisions = await Workers().read_revisions(hostname)
       _, lines = await Tailscale().exec_command(hostname, files_command(dynamic), timeout=30)
-      present = {line for line in lines if line.startswith(PREFIX) and line.endswith(SUFFIX)}
-      if not force and present == files.keys() and revisions.get("discovery") == stamp:
-        return
-      for name, content in files.items():
-        await Tailscale().sync_file(hostname, config.TEMPLATES_DIR / "worker/file", f"{dynamic}/{name}", {"CONTENT": content})
-      if stale := sorted(present - files.keys()):
+      present = parse_file_listing(lines)
+      files = discovery_files(discovery_services(
+          ((domain, states[domain.id]) for domain in domains),
+          {host: online for file in present.values() for host, online in file.online.items()}, utcnow(), self.started_at),
+          get_env("DOMAIN"))
+      written = [name for name, (fingerprint, _) in files.items()
+                 if force or name not in present or present[name].proof != fingerprint]
+      for name in written:
+        await Tailscale().sync_file(hostname, config.TEMPLATES_DIR / "worker/file", f"{dynamic}/{name}", {"CONTENT": files[name][1]})
+      if stale := sorted(present.keys() - files.keys()):
         await Tailscale().exec_command(hostname, "rm -f " + " ".join(f"{dynamic}/{name}" for name in stale), timeout=30)
-      await Workers().write_revision(hostname, "discovery", stamp)
     except Exception as error:
       Notifications().notify(f"Discovery could not be published on worker {hostname}: {error}", "error", f"/workers/{hostname}")
       raise TaskFailed()
-    logger.info(f"Discovery published on {hostname}: {len(services)} service(s).")
+    logger.info(f"Discovery on {hostname}: {len(written)} file(s) written, {len(stale)} removed.")
 
   async def publish_discovery_dns(self):
     """Points `discovery.int.<domain>` at every worker reachable and set up, one record each under
-    `sage-discovery-<hostname>`, the records of any other worker deleted, and `discovery.<domain>` at the platform's
-    tunnel, from one list of the zone."""
-    hostnames = [worker.hostname for worker in Worker.select(Worker.hostname)
-                 if Tailscale().ssh(worker.hostname) == "reachable" and Workers().setup(worker.hostname) == "succeeded"
-                 and Tailscale().address(worker.hostname)]
+    `sage-discovery-<hostname>`, and `discovery.<domain>` at the platform's tunnel, from one list of the zone. The
+    record of a worker known to be out (`discovery_member`), or removed, is deleted; that of one not known yet is left
+    as it is."""
+    members = {worker.hostname: discovery_member(Tailscale().ssh(worker.hostname), Workers().setup(worker.hostname),
+                                                 Tailscale().address(worker.hostname))
+               for worker in Worker.select(Worker.hostname)}
     cloudflare = Cloudflare()
     try:
       await run_in_executor_with_context(cloudflare.connect)
       zone = await run_in_executor_with_context(cloudflare.get_dns_records)
-      internal = {record["comment"]: {} for record in zone if (record.get("comment") or "").startswith("sage-discovery-")}
+      internal = {comment: {} for record in zone if (comment := record.get("comment") or "").startswith("sage-discovery-")
+                  and members.get(comment.removeprefix("sage-discovery-"), False) is False}
       internal.update({f"sage-discovery-{hostname}": {f"discovery.int.{cloudflare.domain}": Tailscale().address(hostname)}
-                       for hostname in hostnames})
+                       for hostname, member in members.items() if member})
       await run_in_executor_with_context(cloudflare.sync_dns_records, internal, zone=zone, type="A", proxied=False)
       await run_in_executor_with_context(
           cloudflare.sync_dns_records, {"sage-tunnel": {f"discovery.{cloudflare.domain}": f"{cloudflare.tunnel_id}.cfargotunnel.com"}},

@@ -97,13 +97,15 @@ Current traffic and naming patterns are driven by Cloudflare, Traefik, and Tails
   per worker pointing at its tailnet IP. No record names an application, so application names stay out of public DNS.
 - **Discovery** lists a service's names for clients that choose one: `discovery.<domain>?service=<service>` for public
   names (through the platform's tunnel, so any worker answers while the manager is down) and
-  `discovery.int.<domain>?service=<service>` for internal and TCP ones (tailnet only, an A record per online worker).
+  `discovery.int.<domain>?service=<service>` for internal and TCP ones (tailnet only, an A record per worker reachable and set up).
   The answer is an RFC 9651 list in `Sage-Endpoints`, for example
   `"a.example.test";pool="eu";online, "b.example.test";pool="eu";online=?0`, to HEAD, GET or OPTIONS.
   `;online` means available; `;online=?0` means offline. Every service-assigned name stays listed, including unlinked
   names and pending or failed syncs. An available name needs an active container, its worker's cached ready status,
   and a successful Domain sync for its current configuration. This is last-known state, derived when discovery
-  config is generated; discovery performs no live health checks. Responses have `Cache-Control: private, max-age=30`
+  config is generated; discovery performs no live health checks. The names follow the Domains at once; a name whose
+  state is not known yet (after the manager starts, or while its Domain is being applied) keeps the availability it was
+  published with, for two minutes at most. Responses have `Cache-Control: private, max-age=30`
   and CORS for any origin; another method or an unknown service gets a 404. A client can time `HEAD /ping` on the
   available names to choose, which Traefik answers while the container is active (GET still reaches the application).
 
@@ -126,7 +128,7 @@ characters on Cloudflare's Free plan, which has no record tags.
 | `discovery.<domain>`, a proxied CNAME to the platform's tunnel, its one record (any other with its comment is deleted), written by `publish_discovery_dns` | `sage-tunnel` |
 | `<TS_NAME>.core.<domain>`, an A record to the manager's tailnet IP | `sage-manager` |
 | `*.<subdomain>.int.<domain>`, an A record to the worker's tailnet IP: kept while the worker is offline, so its names work again as soon as it is back, and deleted when it is removed | `sage-worker-<hostname>` |
-| `discovery.int.<domain>`, an A record to the tailnet IP of each worker reachable and set up, written by `publish_discovery_dns` | `sage-discovery-<hostname>` |
+| `discovery.int.<domain>`, an A record to the tailnet IP of each worker reachable and set up, written by `publish_discovery_dns`: kept while that is not known yet (after the manager starts, or while it is cut off from the tailnet) | `sage-discovery-<hostname>` |
 | Each public name linked to a container, a proxied CNAME to its worker's tunnel, written by its Domain's `apply_domain` | `sage-domain-<id>` |
 | `_acme-challenge.<name>`, a TXT record while a certificate is issued | `sage-acme-challenge` |
 
@@ -137,7 +139,7 @@ they are deleted by hand.
 
 Each linked public Domain uses one CNAME, including a stopped container's name. Internal and TCP names share one
 wildcard record per worker. Steady Sage records total **P + W + O + 2**: P linked public Domains, W workers,
-O online workers' internal discovery records, plus the manager and public discovery records. For example, 40 public
+O internal discovery records (one per worker reachable and set up), plus the manager and public discovery records. For example, 40 public
 Domains and four online workers use 50 records. Allow space for unrelated zone records and temporary ACME TXT records.
 
 Cloudflare's Free quota is 200 records per zone; some Free zones have a 1,000-record quota. Pro and Business allow

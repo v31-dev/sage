@@ -1,6 +1,7 @@
 """Each Domain's state as its pages show it, worked out from the facts its owners hold, and what Sage knows of each
 Domain's artifacts since the Manager started."""
 from dataclasses import asdict, dataclass
+from datetime import datetime
 
 from services.base import Base
 from services.db.models import Domain
@@ -78,13 +79,14 @@ class DomainState:
   facts: DomainFacts
 
 
-def domain_state(config: DomainConfig, eligible: bool | None, worker_ready: bool | None, syncing: bool) -> DomainState:
+def domain_state(config: DomainConfig, eligible: bool | None, worker_ready: bool | None,
+                 syncing_since: datetime | None) -> DomainState:
   """The domain's state now, given its configuration, whether its container can be routed to, whether its worker is
-  ready and whether an apply of it is queued or running."""
+  ready and when an apply of it queued or running was queued."""
   fingerprint = config.content_hash
   facts = DomainFacts(fingerprint, config.container_id is not None, eligible, worker_ready,
                       Domains().route(config.domain_id, config.worker), Domains().dns_conforms(config.domain_id, fingerprint),
-                      Domains().outcome(config.domain_id), syncing)
+                      Domains().outcome(config.domain_id), syncing_since)
   return DomainState(decide_domain(facts), config, facts)
 
 

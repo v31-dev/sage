@@ -77,6 +77,8 @@ REPORT_STALE_SECONDS = 30
 REPORT_HISTORY_SIZE = 5
 # After the manager starts, a worker that has not reported yet is not called not ready for this long.
 REPORT_STARTUP_GRACE_SECONDS = 60
+# A fact not known yet holds back the others for this long at most: a discovery name still not known is offline after it.
+UNKNOWN_HOLD_SECONDS = 120
 # The names of unknown senders remembered so that each is logged once.
 REPORT_UNKNOWN_LIMIT = 100
 # A worker's newest minute of metrics is shown in the worker list while it began less than this long ago: a minute is

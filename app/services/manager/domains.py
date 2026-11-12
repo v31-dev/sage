@@ -3,6 +3,7 @@ over every Domain's artifacts, which sees what they are, removes those left behi
 for; the requests that queue them, and each Domain's state, with what tells its pages that it changed."""
 import asyncio
 import logging
+from datetime import datetime
 
 import config
 from services.cloudflare import Cloudflare, dns_record_matches
@@ -40,7 +41,7 @@ class DomainsMixin:
     workers = self.worker_states(list({snapshot.worker for snapshot in configs.values()} - {None}))
     applying = self._applying_domains()
     return {domain_id: domain_state(snapshot, containers[snapshot.container_id].routable if snapshot.container_id else None,
-                                    workers[snapshot.worker].view.ready if snapshot.worker else None, domain_id in applying)
+                                    workers[snapshot.worker].view.ready if snapshot.worker else None, applying.get(domain_id))
             for domain_id, snapshot in configs.items()}
 
   def domain_payloads(self, domains) -> list[dict]:
@@ -69,7 +70,7 @@ class DomainsMixin:
       for domain in Domain.select().where(Domain.id.in_(affected)):
         domain_changed(domain)
 
-    return [Fact(self._applying_domains, on_change=changed)]
+    return [Fact(lambda: frozenset(self._applying_domains()), on_change=changed)]
 
   def request_domain_applies(self, domain_ids):
     """Queues the apply of each of the domains as it is configured now, holding the domain, its full name, and its
@@ -232,8 +233,12 @@ class DomainsMixin:
           f"{config.WORKER_HOME_DIR}/traefik/dynamic/{domain_artifact_name('file', domain_id)}" for domain_id in obsolete), timeout=30)
       logger.info(f"Removed the routing files of {len(obsolete)} domain(s) gone or moved from {hostname}.")
 
-  def _applying_domains(self) -> frozenset[str]:
-    """The domains with an apply queued or running."""
+  def _applying_domains(self) -> dict[str, datetime]:
+    """The domains with an apply queued or running, each with when the oldest of them was queued."""
     snapshot = self.task_snapshot()
-    return frozenset(task["params"]["domain_id"] for task in (*snapshot["running"], *snapshot["queued"])
-                     if task["name"] == "apply_domain")
+    applying = {}
+    for task in (*snapshot["running"], *snapshot["queued"]):
+      if task["name"] == "apply_domain":
+        domain_id = task["params"]["domain_id"]
+        applying[domain_id] = min(applying.get(domain_id, task["queued_at"]), task["queued_at"])
+    return applying

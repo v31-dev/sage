@@ -16,6 +16,7 @@ from services.manager.queue import SCOPES, QueueMixin
 from services.tailscale import Tailscale
 from services.updates import UpdateSource
 from services.workers.state import Workers
+from utils.common import utcnow
 from utils.executor import active_executor
 from utils.queue import TaskQueue
 
@@ -91,6 +92,7 @@ class Manager(DomainsMixin, QueueMixin):
   def __init__(self):
     self.pool = ThreadPoolExecutor(max_workers=2)
     self.routable, self.ready, self.finished, self.discovered = {}, {}, [], 0
+    self.started_at = utcnow()
     self.queue_facts = self.domains_queue_facts()
     self.task_queue = TaskQueue(SCOPES, {"app": self.pool}, record=lambda task, status: self.finished.append((task.name, status)),
                                 notify=self._queue_changed)

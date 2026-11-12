@@ -440,18 +440,26 @@ Discovery lists every Domain with a service and a full name, its pool with it, w
 container, unlinked ones included: each name has a Boolean availability parameter, `;online` for true and
 `;online=?0` for false (`discovery_services` in `services/domains/discovery.py`). A name is online only while its
 Domain is synced for its current configuration, its container can be routed to and its worker is ready, as the
-Domain's state decides them when a worker's files are written; discovery neither probes targets nor runs container
-reconciliation, and an apply not yet made for the current configuration keeps a running container's name offline.
+Domain's state decides them when a worker's files are written, and offline once one of those is known not to hold:
+unlinked, its container not routable, its worker not ready, its Domain in error or drifted. Otherwise it is not known
+yet: an apply of its Domain is queued or running, or what its Domain, container or worker is has not been observed
+since the Manager started. The names follow the Domain table at every publication, whatever is known of them; only
+the availability of a name not known yet waits: it keeps what the worker's file publishes for it (offline where it
+publishes none) for `UNKNOWN_HOLD_SECONDS` (two minutes) at most, from when its Domain's apply was queued while one is
+under way, else from the Manager's start, and is offline after that. So a restart rewrites nothing, and an edited
+name keeps its availability until its apply ends. Discovery neither probes targets nor runs container reconciliation.
 All-offline services still have a discovery router.
 
 `publish_discovery(<hostname>)` writes one worker's files. `request_discovery` queues it for every worker reachable
 and set up, each quiet with `REPLACE` on `("publish_discovery", <hostname>)` under `worker:<hostname>:discovery`, so
 the worker's setup, reboot or removal, holding `worker:<hostname>`, excludes it while the other workers' go on; the
-task checks again that the worker is there, reachable and set up. It reads the worker's `discovery` stamp and lists
-its `_discovery-*.yml` files; when the stamp is not the current services' fingerprint (`discovery_fingerprint`: the
-templates, the domain, the services with their availability, and the response cache time) or the files are not
-exactly the current services', it writes every service's file, then removes the stale ones in one command, then writes
-the stamp, so a failure part-way leaves a stamp that does not match and is repaired by the next publication.
+task checks again that the worker is there, reachable and set up. Each file's first line is its proof,
+`# sage-discovery <fingerprint>`: the fingerprint of its service's names with their availability, the domain, the
+templates and the response cache time. The task lists the first line and the `Sage-Endpoints` line of every
+`_discovery-*.yml` on the worker (`files_command`, `parse_file_listing`): each file's proof and the availability it
+publishes for each name. It writes each service's file whose proof is not the one its service gives now (every one
+when forced), then removes in one command the files of services no Domain has.
+A failure part-way leaves the files not written with their old proof, and the next publication writes them.
 
 Every worker reachable and set up receives `_discovery-<namespace>-<service>.yml`, a router on `discovery.<domain>`
 (public, `web`) or `discovery.int.<domain>` (internal and TCP, `websecure`, tailnet only), matching
@@ -461,9 +469,12 @@ CORS preflight max-age is 300 seconds.
 
 `publish_discovery_dns` (quiet, `REPLACE` on `("publish_discovery_dns",)`, under `discovery`), queued with every
 request, makes the shared records from one list of the zone: `discovery.int.<domain>` an A record (DNS-only) to each
-worker reachable and set up, ready or not, under `sage-discovery-<hostname>`, with the records of any other worker,
-a removed one included, deleted; and `discovery.<domain>` a proxied CNAME to the platform's tunnel under
-`sage-tunnel`, which every worker's platform connector serves.
+worker reachable and set up, ready or not, under `sage-discovery-<hostname>`; and `discovery.<domain>` a proxied CNAME
+to the platform's tunnel under `sage-tunnel`, which every worker's platform connector serves. Whether a worker has its
+record is `discovery_member` (`services/workers/decisions.py`): the record of a worker known to be out (its SSH server
+unreachable, its setup failed or refused) or removed is deleted, and that of one not known yet (not observed, the
+Manager cut off from the tailnet, or not set up since the Manager started) is left as it is, so a restart deletes
+none.
 
 Discovery is requested at the end of every Domain apply, failed ones included, and of every Domain pass, which every
 five minutes also repairs it; when whether a container with a service's Domain can be routed to changes, its becoming
@@ -483,9 +494,9 @@ setup leaves the old stamp and gets retried); `certs` — a JSON map of independ
 `distribute_certificates` and read into `Workers` at each setup. Each worker's state carries both certificates
 (`certificates`, by role) from `Certs`, judged against its current subdomain and the proofs it applied; each holds
 `covered`, `synced`, `expiry` (only for a valid matching applied proof) and `error`, and stays out of readiness;
-`discovery` — the fingerprint of the services the discovery files list (`discovery_fingerprint`), written last by `publish_discovery`;
 `owner` — `<instance id> <domain>` of the Sage that manages the worker, written first by `converge_worker`, which
-another Sage refuses to set up. Each Domain's applied proof is its routing file's first line, `# sage-domain <id> <fingerprint>`.
+another Sage refuses to set up. Each Domain's applied proof is its routing file's first line, `# sage-domain <id> <fingerprint>`,
+and each discovery file's is its own first line, `# sage-discovery <fingerprint>`.
 
 ACME orders require the advertised `config.ACME_PROFILE` (`tlsserver`), which issues 45-day certificates. An
 unavailable profile fails issuance rather than falling back. Renewal uses the actual signed expiry and

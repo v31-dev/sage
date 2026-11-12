@@ -1,6 +1,7 @@
 """A Domain's apply status, decided from what its owners hold: its desired fingerprint, whether its container can be
 routed, what the scan found on its worker and in DNS, the outcome of its last apply and whether a sync is under way."""
 from dataclasses import dataclass
+from datetime import datetime
 
 STATUSES = ("syncing", "pending", "synced", "error")
 ROUTES = ("unobserved", "present", "absent", "unreachable")
@@ -26,7 +27,7 @@ class ApplyOutcome:
 @dataclass(frozen=True)
 class DomainFacts:
   """`eligible` is its container's `routable`, None while that is not known; `dns_conforms` is None when the zone was
-  not compared."""
+  not compared; `syncing_since` is when the oldest of its applies queued or running was queued, None without one."""
   fingerprint: str
   linked: bool
   eligible: bool | None
@@ -34,7 +35,7 @@ class DomainFacts:
   route: RouteObservation
   dns_conforms: bool | None
   outcome: ApplyOutcome | None = None
-  syncing: bool = False
+  syncing_since: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -68,7 +69,7 @@ def decide_domain(facts: DomainFacts) -> DomainView:
   conforms = False if False in parts else None if None in parts else True
 
   outcome = facts.outcome if facts.outcome is not None and facts.outcome.fingerprint == facts.fingerprint else None
-  if facts.syncing:
+  if facts.syncing_since is not None:
     return DomainView("syncing", conforms)
   if conforms is True or (outcome is not None and outcome.succeeded and conforms is None):
     return DomainView("synced", conforms)

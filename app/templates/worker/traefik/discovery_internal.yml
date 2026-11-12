@@ -1,3 +1,4 @@
+# sage-discovery ${FINGERPRINT}
 http:
   routers:
     discovery_internal_${SERVICE}:
