@@ -53,7 +53,7 @@ const domain = (
   address: 'https://shop.example.test',
   worker: 'w1',
   container: { id: '1', worker: 'w1', application },
-  view: { status, conforms: status === 'synced', reason: null, error },
+  view: { status, conforms: status === 'synced', reason: status === 'error' ? 'dns' : null, error },
   created_at: new Date('2026-01-01T00:00:00Z'),
   updated_at: new Date('2026-01-01T00:00:00Z'),
   ...overrides,
@@ -95,7 +95,40 @@ describe('the Domains page', () => {
     await flushPromises()
     expect(wrapper.get('[data-domain]').text()).toContain('sync failed')
     expect(wrapper.get('[data-domain]').text()).toContain('active')
-    expect(wrapper.get('[title]').attributes('title')).toBe('Traefik: unavailable')
+    expect(wrapper.get('[data-reason]').text()).toBe(
+      'Its DNS records could not be applied: Traefik: unavailable'
+    )
+  })
+
+  it.each([
+    ['worker_not_ready', 'Its worker is not ready.'],
+    ['not_applied', 'It has not been applied yet.'],
+  ])('says why a pending domain is pending: %s', async (reason, text) => {
+    const pending = domain(1, { status: 'pending' })
+    const wrapper = shown({
+      domains: [{ ...pending, view: { ...pending.view, reason } }],
+      containers: [linkable(1, 'w1', 'red')],
+    })
+    await flushPromises()
+
+    expect(wrapper.get('[data-reason]').text()).toBe(text)
+  })
+
+  it('shows the linked container’s state from the containers it holds', async () => {
+    const stopped = {
+      ...linkable(1, 'w1', 'red'),
+      view: {
+        headline: 'inactive' as const,
+        config: 'current' as const,
+        reason: null,
+        detail: null,
+      },
+    }
+    const wrapper = shown({ domains: [domain(1, {})], containers: [stopped] })
+    await flushPromises()
+
+    expect(wrapper.get('[data-domain]').text()).toContain('inactive')
+    expect(wrapper.find('[data-reason]').exists()).toBe(false)
   })
 
   it('follows the domains topic and groups the domains by namespace, then service, then pool', async () => {

@@ -27,7 +27,12 @@ const domain = ({
     address: 'https://shop.example.test',
     worker: 'w1',
     container: { id: 'c1', worker: 'w1', application: {} },
-    view: { status, conforms: status === 'synced', reason: null, error },
+    view: {
+      status,
+      conforms: status === 'synced',
+      reason: status === 'error' ? 'dns' : null,
+      error,
+    },
     ...overrides,
   }) as Domain
 
@@ -167,7 +172,9 @@ describe('the domains linked to the container', () => {
       expect(wrapper.text()).toContain('active')
       expect(wrapper.get('[data-domain]').text()).toContain(label)
       if (status === 'error')
-        expect(wrapper.get('[data-domain] [title]').attributes('title')).toBe('DNS: unavailable')
+        expect(wrapper.get('[data-domain] [data-reason]').text()).toBe(
+          'Its DNS records could not be applied: DNS: unavailable'
+        )
     }
   )
 

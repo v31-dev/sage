@@ -184,7 +184,6 @@ onUnmounted(() => stop?.())
                   <StateIndicator v-else state="warning" label="not linked" show-label />
                   <StateIndicator
                     v-bind="appStore.domainIndicator(domain.view.status)"
-                    :title="domain.view.error ?? undefined"
                     show-label
                   />
                   <DomainDialog
@@ -202,6 +201,13 @@ onUnmounted(() => stop?.())
                     destructive
                     :onConfirm="() => onConfirmDelete(domain)"
                   />
+                  <p
+                    v-if="appStore.domainReason(domain.view)"
+                    class="w-full text-sm text-muted-foreground"
+                    data-reason
+                  >
+                    {{ appStore.domainReason(domain.view) }}
+                  </p>
                 </div>
               </div>
             </section>

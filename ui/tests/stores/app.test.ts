@@ -12,6 +12,7 @@ import {
   type WorkerListItem,
   type WorkerStatus,
   type WorkerView,
+  type DomainView,
 } from '@/services/api'
 import { watchState } from '@/lib/updates'
 import { useAppStore } from '@/stores/app'
@@ -245,6 +246,18 @@ describe('the indicators by status', () => {
       })
     }
   )
+
+  it.each([
+    [{ reason: null, error: null }, ''],
+    [{ reason: 'route', error: 'exit code 1' }, 'Its route could not be applied: exit code 1'],
+    [{ reason: 'dns', error: null }, 'Its DNS records could not be applied.'],
+    [{ reason: 'drifted', error: null }, 'Its route or DNS records differ from its configuration.'],
+    [{ reason: 'eligibility_unknown', error: null }, "Its container's state is not known yet."],
+    [{ reason: 'something_new', error: null }, 'something_new'],
+  ])('domainReason: %o reads %s', (fields, text) => {
+    const view = { status: 'pending', conforms: null, ...fields } as DomainView
+    expect(useAppStore().domainReason(view)).toBe(text)
+  })
 
   it.each([
     [{ reason: null, detail: null }, ''],

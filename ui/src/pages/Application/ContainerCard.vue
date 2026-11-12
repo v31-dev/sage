@@ -122,11 +122,7 @@ const workerIndicator = computed(() => {
             v-bind="pendingCertificate"
             show-label
           />
-          <StateIndicator
-            v-bind="appStore.domainIndicator(domain.view.status)"
-            :title="domain.view.error ?? undefined"
-            show-label
-          />
+          <StateIndicator v-bind="appStore.domainIndicator(domain.view.status)" show-label />
           <Badge variant="outline">{{ TYPES[domain.type] }}</Badge>
           <Badge v-if="domain.service" variant="outline" class="font-mono">
             Service {{ domain.service }}
@@ -135,6 +131,13 @@ const workerIndicator = computed(() => {
             Pool {{ domain.pool }}
           </Badge>
         </div>
+        <p
+          v-if="appStore.domainReason(domain.view)"
+          class="text-sm text-muted-foreground"
+          data-reason
+        >
+          {{ appStore.domainReason(domain.view) }}
+        </p>
       </div>
     </CardContent>
   </Card>

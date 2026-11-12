@@ -8,6 +8,7 @@ import {
   type ApplicationSummary,
   type ContainerHeadline,
   type DomainStatus,
+  type DomainView,
   type Indicator,
   type IndicatorState,
   type InfraContainer,
@@ -61,6 +62,16 @@ const WORKER_REASONS: Record<string, { text: string; detail?: boolean }> = {
   stack_down: { text: 'Part of its stack is down', detail: true },
   traefik_down: { text: 'Traefik does not answer on it' },
   traefik_unchecked: { text: 'Traefik has not been checked yet' },
+}
+
+// What each reason of a Domain's state means; `detail` when its error reads as part of it.
+const DOMAIN_REASONS: Record<string, { text: string; detail?: boolean }> = {
+  route: { text: 'Its route could not be applied', detail: true },
+  dns: { text: 'Its DNS records could not be applied', detail: true },
+  drifted: { text: 'Its route or DNS records differ from its configuration' },
+  worker_not_ready: { text: 'Its worker is not ready' },
+  eligibility_unknown: { text: "Its container's state is not known yet" },
+  not_applied: { text: 'It has not been applied yet' },
 }
 
 const DOMAIN_INDICATORS: Record<DomainStatus, Indicator> = {
@@ -169,6 +180,14 @@ export const useAppStore = defineStore('app', () => {
     return DOMAIN_INDICATORS[status]
   }
 
+  // Why the Domain is in its state, for people; empty when it is synced or syncing.
+  function domainReason({ reason, error }: DomainView): string {
+    if (!reason) return ''
+    const meaning = DOMAIN_REASONS[reason]
+    if (!meaning) return reason
+    return meaning.detail && error ? `${meaning.text}: ${error}` : `${meaning.text}.`
+  }
+
   function taskIndicator(status: string): Indicator {
     const state: IndicatorState =
       status === 'completed'
@@ -243,6 +262,7 @@ export const useAppStore = defineStore('app', () => {
     pathIndicator,
     infraIndicator,
     domainIndicator,
+    domainReason,
     taskIndicator,
     // Actions
     init,
