@@ -62,7 +62,9 @@ Say the mode, the subject and the baseline (commit or branch) at the start.
   Accepted lag and opportunistic dispatch are not bugs.
 - Use focused existing tests or scratch reproductions, in the session's scratch space, when they settle a doubt: real
   local state and Sage's own decisions, with provider effects replaced. Never contact a live provider or write to the
-  live database. A reproduction that fails stays failing.
+  live database. A reproduction that fails stays failing. Run the suites without writing into the tree:
+  `PYTHONDONTWRITEBYTECODE=1 pytest --no-cov -p no:cacheprovider` from `app/` and
+  `npx vitest run --coverage.enabled=false` from `ui/`.
 - Grade each finding: source-proven, reproduced or live-verified.
 
 ## Drift check
