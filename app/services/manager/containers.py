@@ -281,7 +281,7 @@ class ContainersMixin:
       record_container_event(container, contract, "interrupted", operation.id, dedupe_key=f"{operation.id}:interrupted")
       await mark(container, "Stopped: an earlier operation on it was interrupted")
       return
-    reason = resume_failure or operation.reason or "interrupted"
+    reason = resume_failure or operation.reason or f"its {NAMES[contract].lower()} was interrupted"
     kept = record if record is not None and record.authority == authority else None
     await Containers().write(container, TargetRecord(
         authority, kept.applied if kept else None, Settled(operation.id, "stopped", "failed", now, reason),
@@ -318,7 +318,7 @@ class ContainersMixin:
       verified_at = await self.stop_runtime(container.worker_id, container.id)
       now = utcnow()
       await Containers().write(container, replace(
-          record, settled=Settled(operation.id, "stopped", "failed", now, found.cause),
+          record, settled=Settled(operation.id, "stopped", "failed", now, RESETS[found.cause]),
           operation=replace(operation, phase="settled", outcome="succeeded", reason=found.cause, finished_at=now,
                             verified_on_worker_at=verified_at)))
     except Exception as error:

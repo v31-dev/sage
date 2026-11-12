@@ -633,7 +633,7 @@ class TestRecovery:
     record = worker_record(container)
     assert worker_host.runtime(container) is None
     assert (record.settled.operation_id, record.settled.runtime_goal, record.settled.result, record.settled.reason) == (
-        "d9", "stopped", "failed", "interrupted")
+        "d9", "stopped", "failed", "its deploy was interrupted")
     assert (record.operation.phase, record.operation.recovery, record.operation.verified_on_worker_at) == (
         "settled", Recovery("verified"), VERIFIED)
     assert record.applied == Applied("d0", "a" * 64, VERIFIED)
@@ -692,7 +692,7 @@ class TestReset:
     assert notices() == [("warning", "Demo / Web on w1 was stopped: it ran after it was stopped.", PAGE)]
     record = worker_record(container)
     assert worker_host.runtime(container) is None
-    assert (record.applied, record.settled.result, record.settled.reason) == (stopped.applied, "failed", "unexpected_running")
+    assert (record.applied, record.settled.result, record.settled.reason) == (stopped.applied, "failed", "it ran after it was stopped")
     assert (record.operation.contract, record.operation.phase, record.operation.outcome) == ("reset", "settled", "succeeded")
     assert events(container) == [("reset", "admitted", {"cause": "unexpected_running"}),
                                  ("reset", "succeeded", {"cause": "unexpected_running"})]
@@ -704,13 +704,14 @@ class TestReset:
     worker_host.run(container, "running d0", labelled=authority(container, generation="9999999999999999"))
     await manager.reset_container(container.id, "restored")
     record = worker_record(container)
-    assert (record.authority, record.applied, record.settled.reason) == (authority(container), None, "restored")
+    assert (record.authority, record.applied, record.settled.reason) == (
+        authority(container), None, "its record is from before a platform restore")
     assert worker_host.runtime(container) is None
 
   async def test_a_runtime_without_a_record_is_stopped(self, manager, worker_host, container):
     worker_host.run(container, "running d5")
     await manager.reset_container(container.id, "no_record")
-    assert worker_host.runtime(container) is None and worker_record(container).settled.reason == "no_record"
+    assert worker_host.runtime(container) is None and worker_record(container).settled.reason == "it ran without a record"
 
   async def test_a_runtime_checked_again_that_agrees_with_its_record_is_left_running(self, manager, worker_host, container):
     place(container, deployed(container))
