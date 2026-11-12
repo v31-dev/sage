@@ -414,10 +414,19 @@ class TestRoutesLeftBehind:
 class TestStackRepair:
   @pytest.mark.parametrize("starts, recorded", [(True, [("repair", "succeeded")]), (False, [])])
   async def test_a_repair_is_recorded_and_noticed_when_it_started_something(self, manager, hosts, worker, starts, recorded, notices):
+    Workers().record_setup("w1", "succeeded", "100.64.0.2")
     hosts.starts = starts
     await manager.repair_worker_stack("w1")
     assert events() == recorded
     assert notices() == [("warning", "Worker w1: started the parts of its stack that were stopped.", WORKER_PAGE)] * starts
+
+  @pytest.mark.parametrize("found, setup", [("unreachable", "succeeded"), ("reachable", None), ("reachable", "failed")])
+  async def test_a_worker_no_longer_reachable_and_set_up_by_the_time_it_runs_is_left_alone(
+          self, manager, hosts, worker, found, setup, notices):
+    hosts.found["w1"] = found
+    Workers().record_setup("w1", setup)
+    await manager.repair_worker_stack("w1")
+    assert (hosts.commands, events(), notices()) == ([], [], [])
 
 
 class TestRequests:

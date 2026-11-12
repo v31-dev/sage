@@ -268,7 +268,9 @@ class WorkersMixin:
                   executor="app", params={"hostname": hostname}, labels={"Worker": hostname}, quiet=True)
 
   async def repair_worker_stack(self, hostname: str):
-    if Worker.get_or_none(Worker.hostname == hostname) is None:
+    if (Worker.get_or_none(Worker.hostname == hostname) is None or Tailscale().ssh(hostname) != "reachable"
+            or Workers().setup(hostname) != "succeeded"):
+      logger.info(f"Worker {hostname} is not there to repair; nothing to do.")
       return
     if await self._start_stack(hostname):
       record_worker_event(hostname, "repair", "succeeded", reason={"started": "stack"})

@@ -213,7 +213,8 @@ Stop](../docs/backend.md#pause-and-stop).
   (`{"Application": "shop / web"}`), taken when queued. `quiet=True` is for scheduled housekeeping only.
 - A task body takes ids and immutable request values, never ORM objects. It re-fetches identity and membership at
   execution without replacing a frozen snapshot with newer config. A row deleted before the task runs is a legitimate
-  interleaving: `get_or_none`, then log and return quietly.
+  interleaving: `get_or_none`, then log and return quietly; so is an observation the request relied on that no longer
+  holds (a report, a listing, a worker's reachability): check it again at the start and return quietly.
 - An operation's variants (backup, offline, startup) are part of its declared contract, not exception branches or a
   second mutable registry; a refused pre-check is recorded as rejected, never as a failed lifecycle transition.
 - Task shape: one async task that `asyncio.gather`s its offloaded leaves, one `add_task` per entity, or sequential
