@@ -164,7 +164,8 @@ class TestPublication:
     await manager.observe_workers()
     assert signals[:2] == pages("w2")
     assert sorted(signals[2:]) == sorted([(UpdateSource.DOMAINS, None), (UpdateSource.APPLICATION, "demo/web"),
-                                          (UpdateSource.WORKER_CONTAINERS, "w2"), (UpdateSource.DOMAINS, None)])
+                                          (UpdateSource.WORKER_CONTAINERS, "w2"), (UpdateSource.DOMAINS, None),
+                                          (UpdateSource.WORKER_CONTAINERS, "w2")])
 
   async def test_a_change_of_its_certificates_shows_its_worker_again(self, manager, tailnet, workers, signals, certificates):
     await manager.observe_workers()
@@ -311,6 +312,14 @@ class TestPayloads:
     page = manager.worker_page("w1")
     assert page["hostname"] == "w1"
     assert page["containers"] == [{"id": placed[1].id}, {"id": placed[0].id}]
+
+  def test_a_workers_page_says_why_it_cant_be_removed_now(self, manager, workers, metrics, application):
+    assert manager.worker_page("w1")["removal_refusal"] is None
+    domain = Domain.create(name="db", type="internal", port=5432, namespace_worker="w1")
+    assert manager.worker_page("w1")["removal_refusal"] == "A worker with internal domains can't be removed."
+    domain.delete_instance()
+    Container.create(application=application, worker="w1")
+    assert manager.worker_page("w1")["removal_refusal"] == "A worker with containers can't be removed."
 
   def test_a_worker_that_is_not_configured_has_no_page_or_graphs(self, manager, workers, metrics):
     with pytest.raises(LookupError):

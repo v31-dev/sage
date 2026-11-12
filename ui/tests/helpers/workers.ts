@@ -34,8 +34,8 @@ export function worker(
     tunnel: 'healthy',
     tunnel_name: `sage-example.test-${hostname}`,
     metrics: null,
-    created_at: new Date('2026-01-01T00:00:00Z'),
-    updated_at: new Date('2026-01-01T00:00:00Z'),
+    created_at: '2026-01-01T00:00:00',
+    updated_at: '2026-01-01T00:00:00',
     ...overrides,
   }
 }

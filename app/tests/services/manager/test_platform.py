@@ -196,7 +196,7 @@ class TestRestore:
     Notification.create(content="Added w2.")
     Containers()._reads["c"] = TargetRead("absent")
     Workers().record_setup("w1", "succeeded")
-    Domains().record_outcome(SimpleNamespace(id="d1", container=None, namespace_worker=None), ApplyOutcome("f", True))
+    Domains().record_outcome(SimpleNamespace(id="d1", container=None, namespace_worker_id=None), ApplyOutcome("f", True))
     return row
 
   async def test_it_restores_the_configuration_as_a_restart_would_find_it(self, manager, stores, backup, signals):

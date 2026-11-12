@@ -75,6 +75,7 @@ async function onConfirmRestoreBackup(backupId: number) {
         body="The configuration is replaced by this backup's and the history (events, notifications, tasks) starts empty; the S3 settings stay as they are. Containers are stopped and show an error until they are deployed again, and containers that aren't in the backup are removed from their workers with their volumes' data. This can't be undone."
         description="Restore Platform Backup"
         :icon="ArchiveRestore"
+        destructive
         :onConfirm="() => onConfirmRestoreBackup(backup.id)"
       />
       <ConfirmationButton

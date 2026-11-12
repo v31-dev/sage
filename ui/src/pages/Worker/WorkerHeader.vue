@@ -50,8 +50,8 @@ const status = computed(() => props.worker.view.status)
 const restartable = computed(() => status.value === 'online' || status.value === 'not ready')
 const deleteBody = computed(() =>
   status.value === 'offline'
-    ? 'This worker is offline, so Sage cannot clean it up. It is removed from Sage together with its containers; delete the VM yourself if it is not deleted already.'
-    : 'Are you sure you want to delete this worker? Sage stops its services and removes its files from the VM; the VM itself is not deleted. Delete its containers first.'
+    ? 'This worker is offline, so Sage cannot clean it up: it is removed from Sage only, and its VM has to be cleaned up by hand.'
+    : 'Are you sure you want to delete this worker? Sage stops its services and removes its files from the VM; the VM itself is not deleted.'
 )
 
 const STACK_DESCRIPTIONS: Record<string, string> = {
@@ -168,7 +168,9 @@ async function onConfirmResync() {
             :description="props.worker.hostname"
             :icon="Trash"
             destructive
-            :disabled="status === 'removing' || status === 'adding'"
+            :disabled="
+              status === 'removing' || status === 'adding' || props.worker.removal_refusal !== null
+            "
             :onConfirm="onConfirmDelete"
           />
         </ButtonGroup>
@@ -176,6 +178,13 @@ async function onConfirmResync() {
     </CardHeader>
 
     <CardContent class="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-7">
+      <p
+        v-if="props.worker.removal_refusal"
+        class="text-sm text-muted-foreground md:col-span-2 lg:col-span-7"
+        data-removal-refusal
+      >
+        {{ props.worker.removal_refusal }}
+      </p>
       <p
         v-if="appStore.workerReason(props.worker.view)"
         class="text-sm text-muted-foreground md:col-span-2 lg:col-span-7"

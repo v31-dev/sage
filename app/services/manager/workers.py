@@ -63,7 +63,8 @@ class WorkersMixin:
                            Metrics().newest(worker.hostname)) for worker in workers]
 
   def worker_page(self, hostname: str) -> dict:
-    """The worker's payload with its containers' payloads, by application; a LookupError when it is not configured."""
+    """The worker's payload with its containers' payloads, by application, and why it can't be removed now (None when
+    it can); a LookupError when it is not configured."""
     worker = Worker.get_or_none(Worker.hostname == hostname)
     if worker is None:
       raise LookupError("Worker not found.")
@@ -71,7 +72,7 @@ class WorkersMixin:
                   .switch(Container).join(Worker).where(Container.worker == hostname).order_by(Project.name, Application.name))
     return {**worker_payload(worker, self.worker_states([hostname])[hostname], Cloudflare().worker_tunnel_name(hostname),
                              Metrics().newest(hostname)),
-            "containers": self.container_payloads(containers)}
+            "containers": self.container_payloads(containers), "removal_refusal": commands.removal_refusal(worker)}
 
   def worker_graphs(self, hostname: str, period: str) -> dict:
     """The graphs of a worker, or of the manager itself, over `period`: the host's series, each container's series with

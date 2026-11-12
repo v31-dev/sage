@@ -13,8 +13,8 @@ export interface ApplicationSummary {
   repo: string | null
   container_count: number
   active_count: number
-  created_at: Date
-  updated_at: Date
+  created_at: string
+  updated_at: string
 }
 
 export interface Application extends ApplicationSummary {
@@ -131,8 +131,8 @@ export interface Container extends ContainerReference {
   queued: QueuedRequest[]
   domains: Domain[]
   events: ContainerEvent[]
-  created_at: Date
-  updated_at: Date
+  created_at: string
+  updated_at: string
 }
 
 // Whether the container refuses a Deploy, Stop, backup or restore now: one of its own operations runs, or a Delete runs
@@ -149,8 +149,8 @@ export interface Volume {
   name: string
   path: string
   backup_cron: string | null
-  created_at: Date
-  updated_at: Date
+  created_at: string
+  updated_at: string
 }
 
 export const fetchApplication = (project: string, name: string) =>

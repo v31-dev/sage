@@ -8,8 +8,8 @@ export interface Project {
   description: string | null
   env: string | null
   application_count: number
-  created_at: Date
-  updated_at: Date
+  created_at: string
+  updated_at: string
 }
 
 // A project with its applications' summaries, by name.

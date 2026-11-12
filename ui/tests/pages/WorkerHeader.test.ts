@@ -25,6 +25,7 @@ vi.mock('@/services/api', async importOriginal => ({
 const worker = (subdomain: string | null, overrides: Partial<Worker> = {}): Worker => ({
   ...listed('w1', 'online', { subdomain }),
   containers: [],
+  removal_refusal: null,
   ...overrides,
 })
 
@@ -210,8 +211,9 @@ describe('certificates', () => {
 
 describe('the worker', () => {
   const confirmation = {
-    props: ['triggerText', 'onConfirm'],
-    template: '<button :data-action="triggerText" @click="onConfirm()">{{ triggerText }}</button>',
+    props: ['triggerText', 'onConfirm', 'disabled', 'body'],
+    template:
+      '<button :data-action="triggerText" :disabled="disabled" :data-body="body" @click="onConfirm()">{{ triggerText }}</button>',
   }
 
   function mountHeader(current: Worker) {
@@ -222,6 +224,36 @@ describe('the worker', () => {
     })
     return { wrapper, loadWorkerStatus }
   }
+
+  it('disables Delete while the manager would refuse it, and says why', () => {
+    const { wrapper } = mountHeader(
+      worker('eu1', { removal_refusal: "A worker with containers can't be removed." })
+    )
+
+    expect(wrapper.get('[data-action="Delete"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('[data-removal-refusal]').text()).toBe(
+      "A worker with containers can't be removed."
+    )
+  })
+
+  it('leaves Delete enabled, with no refusal shown, for a worker the manager would remove', () => {
+    const { wrapper } = mountHeader(worker('eu1'))
+
+    expect(wrapper.get('[data-action="Delete"]').attributes('disabled')).toBeUndefined()
+    expect(wrapper.find('[data-removal-refusal]').exists()).toBe(false)
+  })
+
+  it('says that an offline worker is removed from Sage only', () => {
+    const { wrapper } = mountHeader(
+      worker('eu1', {
+        view: { status: 'offline', reason: 'ssh_unreachable', detail: null, ready: false },
+      })
+    )
+
+    expect(wrapper.get('[data-action="Delete"]').attributes('data-body')).toContain(
+      'it is removed from Sage only, and its VM has to be cleaned up by hand'
+    )
+  })
 
   it('says why it is not online', () => {
     const { wrapper } = mountHeader(

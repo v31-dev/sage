@@ -57,7 +57,7 @@ def patch_domain(domain_id: str, fields: dict) -> Domain:
   container_id = trim(fields.pop("container", None))
   with write():
     domain = get(Domain, Domain.id == domain_id)
-    previous = domain.container
+    previous, previous_namespace = domain.container, domain.namespace_worker_id
     container = get(Container, Container.id == container_id) if relink else previous
     config = {**merged(domain, fields, DOMAIN_FIELDS), "container_id": container.id if container else None,
               "namespace_worker_id": domain.namespace_worker_id}
@@ -65,7 +65,7 @@ def patch_domain(domain_id: str, fields: dict) -> Domain:
             container.worker_id if container else None)
     changed = save_changes(domain, config)
   if changed:
-    domain_changed(domain, previous)
+    domain_changed(domain, previous, previous_namespace)
   return domain
 
 

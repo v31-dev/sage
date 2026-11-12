@@ -19,3 +19,10 @@ def test_a_relinked_domain_tells_both_applications_and_both_workers(signals, app
 def test_an_unlinked_domain_tells_only_the_domains_page(signals, db):
   domain_changed(Domain.create(name="shop", type="public", port=80))
   assert signals == [(UpdateSource.DOMAINS, None)]
+
+
+def test_an_internal_domain_tells_its_namespace_workers_page_now_and_before(signals, worker):
+  other = Worker.create(hostname="w2", subdomain="blue")
+  domain_changed(Domain.create(name="db", type="internal", port=5432, namespace_worker=other), previous_namespace=worker.hostname)
+  assert set(signals) == {(UpdateSource.DOMAINS, None), (UpdateSource.WORKER_CONTAINERS, "w1"),
+                          (UpdateSource.WORKER_CONTAINERS, "w2")}

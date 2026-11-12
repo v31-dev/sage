@@ -210,6 +210,20 @@ class TestPatch:
       patch_domain("0123456789abcdef", {"port": 81})
 
 
+def test_deleting_an_unlinked_internal_domain_tells_its_namespace_workers_page(red, signals):
+  domain = Domain.create(name="db", type="internal", port=5432, namespace_worker=red.worker)
+  delete_domain(domain.id)
+  assert set(signals) == {(UpdateSource.DOMAINS, None), (UpdateSource.WORKER_CONTAINERS, "w1")}
+
+
+def test_relinking_an_unlinked_internal_domain_tells_the_worker_it_leaves(red, blue, signals):
+  domain = Domain.create(name="db", type="internal", port=5432, namespace_worker=red.worker)
+  patch_domain(domain.id, {"container": blue.id})
+  assert stored(domain).namespace_worker_id == "w2"
+  assert set(signals) == {(UpdateSource.DOMAINS, None), (UpdateSource.APPLICATION, "demo/api"),
+                          (UpdateSource.WORKER_CONTAINERS, "w1"), (UpdateSource.WORKER_CONTAINERS, "w2")}
+
+
 def test_deleting_a_domain_tells_the_pages_it_was_on(red, signals):
   domain = shop(red)
   signals.clear()

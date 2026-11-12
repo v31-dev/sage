@@ -64,12 +64,14 @@ export interface WorkerListItem {
   tunnel: TunnelStatus | null
   tunnel_name: string
   metrics: WorkerMinute | null
-  created_at: Date
-  updated_at: Date
+  created_at: string
+  updated_at: string
 }
 
 export interface Worker extends WorkerListItem {
   containers: Container[]
+  // Why the manager would refuse its removal now (containers or internal domains on it); null when it would not.
+  removal_refusal: string | null
 }
 
 // A worker's newest minute of metrics, as the worker list holds it while it is recent: the minute's peaks and the

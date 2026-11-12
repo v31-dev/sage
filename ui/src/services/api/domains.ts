@@ -30,8 +30,8 @@ export interface Domain {
   worker: string | null
   container: { id: string; worker: string; application: ContainerApplication } | null
   view: DomainView
-  created_at: Date
-  updated_at: Date
+  created_at: string
+  updated_at: string
 }
 
 // The Domains page: every domain, and every container one can be linked to.
