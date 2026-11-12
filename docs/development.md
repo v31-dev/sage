@@ -134,6 +134,9 @@ backend module is measured, including the ones no test imports; only `main.py` (
 Manager when imported) and the tests are left out. CI reports it in the job summary and uploads
 `coverage.xml` as an artifact; it doesn't fail a build on a coverage level.
 
+Every warning is an error (`filterwarnings` in `app/pyproject.toml`): a deprecation, a library's included, fails the
+test it is raised in.
+
 `-q` (quiet) only shortens pytest's own output to the dots and the summary line; `-v` lists each
 test by name.
 
