@@ -63,7 +63,7 @@ describe('loading', () => {
     const { wrapper, backups } = await mountPage()
     expect(wrapper.text()).toContain('Loading backups...')
 
-    backups.push([backup(1), backup(2)])
+    backups.push([backup(2), backup(1)])
     backups.loaded()
     await flushPromises()
 
@@ -89,7 +89,7 @@ describe('what the manager pushes', () => {
     backups.loaded()
     await flushPromises()
 
-    backups.push([backup(1), backup(2), backup(3)])
+    backups.push([backup(3), backup(2), backup(1)])
     await flushPromises()
 
     expect(listed(wrapper)).toEqual(['b3', 'b2', 'b1'])
@@ -98,7 +98,7 @@ describe('what the manager pushes', () => {
 
   it('loads the list again at once after a backup is deleted here, without waiting for the push', async () => {
     const { wrapper, backups } = await mountPage()
-    backups.push([backup(1), backup(2)])
+    backups.push([backup(2), backup(1)])
     backups.loaded()
     await flushPromises()
     vi.mocked(fetchBackups).mockResolvedValue([backup(1)])

@@ -45,6 +45,7 @@ const task: QueueTask = {
   name: 'deploy_application',
   scopes: ['app:demo-web'],
   params: { application_id: 3 },
+  labels: {},
   executor: 'app',
   status: 'running',
   started_at: '2026-01-01T12:00:00',

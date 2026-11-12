@@ -18,7 +18,7 @@ let stop: (() => void) | undefined
 
 // Newest first.
 function showBackups(next: Backup[]) {
-  backups.value = [...next].reverse()
+  backups.value = next
 }
 
 function showLoadError(err: unknown) {

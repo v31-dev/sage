@@ -1,6 +1,9 @@
 import { request } from '@/lib/api'
 import type { Notification } from './notifications'
 import type { SettingsStatus } from './settings'
+import type { WorkerStatus } from './workers'
+import type { ContainerHeadline } from './applications'
+import type { DomainStatus } from './domains'
 
 export interface AppInfo {
   version: string
@@ -25,38 +28,14 @@ export interface Release {
 
 export interface HomeSummary {
   generated_at: string
-  workers_total: number
-  workers_online: number
-  workers_offline: number
-  projects_total: number
-  applications_total: number
-  applications_active: number
-  applications_inactive: number
-  applications_error: number
-  applications_deploying: number
-  applications_stopping: number
-  applications_backup: number
-  applications_restoring: number
-  deployments_last_24h: number
-  containers_total: number
-  containers_active: number
-  containers_inactive: number
-  containers_error: number
-  containers_deploying: number
-  containers_stopping: number
-  containers_backup: number
-  containers_restoring: number
-  domains_total: number
-  domains_active: number
-  domains_inactive: number
-  backups_total: number
-  backups_system: number
-  backups_application: number
-  backups_last_24h: number
-  latest_backup_at: string | null
-  critical_error_count_last_24h: number
-  critical_warning_count_last_24h: number
-  critical_events_last_24h: Notification[]
+  projects: number
+  applications: number
+  workers: Record<WorkerStatus | 'total', number>
+  containers: Record<ContainerHeadline | 'total', number>
+  domains: Record<DomainStatus | 'total', number>
+  deploys: { succeeded: number; failed: number }
+  backups: { platform: number; application: number; since: number; latest_at: string | null }
+  notices: { error: number; warning: number; events: Notification[] }
 }
 
 export const fetchAppInfo = () => request<AppInfo>('GET', '')

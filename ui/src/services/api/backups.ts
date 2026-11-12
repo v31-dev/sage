@@ -20,20 +20,21 @@ export interface BackupStatus {
   discovery_in_progress: boolean
 }
 
-// The platform backups.
+// The platform backups, newest first.
 export const fetchBackups = () => request<Backup[]>('GET', '/backups/')
 
 export const fetchBackupStatus = () =>
   request<BackupStatus>('GET', '/backups/platform_backup_status')
 
-export const createBackup = () => request<unknown>('POST', '/backups/')
+export const createBackup = () => request<{ task_id: string }>('POST', '/backups/')
 
 // Lists the backups in S3 that are not listed yet.
-export const discoverBackups = () => request<unknown>('POST', '/backups/discover')
+export const discoverBackups = () => request<{ task_id: string }>('POST', '/backups/discover')
 
-export const deleteBackup = (id: number) => request<unknown>('DELETE', `/backups/${id}`)
+export const deleteBackup = (id: number) => request<{ task_id: string }>('DELETE', `/backups/${id}`)
 
-export const restoreBackup = (id: number) => request<unknown>('POST', `/backups/${id}/restore`)
+export const restoreBackup = (id: number) =>
+  request<{ task_id: string }>('POST', `/backups/${id}/restore`)
 
 export const downloadBackup = (id: number) => download(`/backups/${id}/download`)
 

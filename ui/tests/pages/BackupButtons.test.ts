@@ -91,7 +91,7 @@ describe.each([
 describe('the Create Backup button', () => {
   it('shows the work at once when clicked, and says it started', async () => {
     const { wrapper } = setup(CreateBackupButton)
-    vi.mocked(createBackup).mockResolvedValue(undefined)
+    vi.mocked(createBackup).mockResolvedValue({ task_id: 't1' })
 
     await wrapper.get('button').trigger('click')
     await flushPromises()
@@ -127,7 +127,7 @@ describe('the Create Backup button', () => {
 describe('the Discover Backups button', () => {
   it('shows the work at once when clicked, and says it started', async () => {
     const { wrapper } = setup(DiscoverBackupsButton)
-    vi.mocked(discoverBackups).mockResolvedValue({})
+    vi.mocked(discoverBackups).mockResolvedValue({ task_id: 't1' })
 
     await wrapper.get('button').trigger('click')
     await flushPromises()
@@ -150,7 +150,7 @@ describe('the Discover Backups button', () => {
 
   it('goes on when a status without the search arrives before the search is queued', async () => {
     const { wrapper, backups } = setup(DiscoverBackupsButton)
-    vi.mocked(discoverBackups).mockResolvedValue({})
+    vi.mocked(discoverBackups).mockResolvedValue({ task_id: 't1' })
     await wrapper.get('button').trigger('click')
     await flushPromises()
 

@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import AddContainerButton from '@/pages/Application/AddContainerButton.vue'
 import { createContainer, type Application, type WorkerListItem } from '@/services/api'
 import { useAppStore } from '@/stores/app'
+import { worker } from '../helpers/workers'
 
 vi.mock('vue-sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
 vi.mock('@/services/api', async importOriginal => ({
@@ -31,8 +32,6 @@ const stubs = {
   SelectItem: { props: ['value'], template: '<div data-option>{{ value }}</div>' },
   SelectValue: { props: ['placeholder'], template: '<span>{{ placeholder }}</span>' },
 }
-
-const worker = (hostname: string) => ({ hostname, status: 'online' }) as WorkerListItem
 
 const application = (hostnames: string[]) =>
   ({

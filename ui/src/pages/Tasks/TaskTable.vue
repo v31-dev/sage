@@ -32,6 +32,7 @@ const finished = computed(() => props.section === 'finished')
       <TableRow>
         <TableHead>Task ID</TableHead>
         <TableHead>Name</TableHead>
+        <TableHead>Labels</TableHead>
         <TableHead>Scopes</TableHead>
         <TableHead>Executor</TableHead>
         <TableHead v-if="finished">Status</TableHead>
@@ -40,12 +41,17 @@ const finished = computed(() => props.section === 'finished')
       </TableRow>
     </TableHeader>
     <TableBody>
-      <TableEmpty v-if="!props.rows.length" :colspan="5 + labels.length + (finished ? 1 : 0)">
+      <TableEmpty v-if="!props.rows.length" :colspan="6 + labels.length + (finished ? 1 : 0)">
         No {{ props.section }} tasks
       </TableEmpty>
       <TableRow v-for="t in props.rows" :key="t.task_id" class="align-top">
         <TableCell><TaskLogsButton :task="t" /></TableCell>
         <TableCell class="text-xs">{{ t.name }}</TableCell>
+        <TableCell class="max-w-xs text-xs whitespace-normal break-words">
+          <div v-for="(value, name) in t.labels" :key="name">
+            <span class="text-muted-foreground">{{ name }}:</span> {{ value }}
+          </div>
+        </TableCell>
         <TableCell class="max-w-[12rem] font-mono text-xs break-all whitespace-pre-wrap">{{
           t.scopes.join(', ')
         }}</TableCell>

@@ -2,6 +2,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { toast } from 'vue-sonner'
+import type { Component } from 'vue'
 import DeleteContainerButton from '@/pages/Application/DeleteContainerButton.vue'
 import DeployApplicationButton from '@/pages/Application/DeployApplicationButton.vue'
 import StopApplicationButton from '@/pages/Application/StopApplicationButton.vue'
@@ -48,7 +49,7 @@ const application = (containers: Container[]) =>
 
 function mountButton(component: unknown, props: Record<string, unknown>) {
   const loadApplication = vi.fn(async () => {})
-  const wrapper = mount(component as never, {
+  const wrapper = mount(component as Component, {
     props: { loadApplication, ...props },
     global: { stubs: { ConfirmationButton: confirmation } },
   })

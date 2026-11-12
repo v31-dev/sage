@@ -51,9 +51,8 @@ async function onConfirmResync() {
           <Field>
             <FieldLabel>Resync Workers</FieldLabel>
             <FieldDescription>
-              ⚠ Re-applies the platform setup on every online worker and restarts its Traefik and
-              Vector. Use when workers have drifted from it. Certificates are not renewed; use
-              Resync Traefik for that.
+              Reapply every worker's setup, then refresh its certificates, routes and service
+              discovery. Worker services restart during setup.
             </FieldDescription>
           </Field>
         </FieldGroup>
@@ -80,17 +79,17 @@ async function onConfirmResync() {
               Resync Workers
             </DialogTitle>
             <DialogDescription>
-              This queues a re-sync of every online worker. Use when workers have drifted from the
-              platform setup. It doesn't renew certificates; use Resync Traefik for that.
+              Reapply every worker's setup and refresh the configuration it needs to serve
+              applications.
             </DialogDescription>
           </DialogHeader>
 
           <div class="space-y-3 py-2 text-sm text-muted-foreground">
-            <p>The following will happen for each online worker:</p>
+            <p>The following will happen for each worker:</p>
             <ul class="ml-4 list-disc space-y-1 text-xs">
               <li>The worker's setup files are re-sent and its services updated.</li>
-              <li>Traefik and Vector are restarted.</li>
-              <li>Every application's routing on the worker is resynced.</li>
+              <li>Worker services are restarted.</li>
+              <li>Certificates, domain routes and service discovery are refreshed.</li>
             </ul>
             <p
               class="rounded border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs text-destructive"

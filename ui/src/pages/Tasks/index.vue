@@ -28,7 +28,7 @@ const CEILING = 1000
 const queue = ref<QueueResponse>({ running: [], queued: [] })
 const choices = ref<TaskHistoryFilters>({ names: [], executors: [], statuses: [] })
 // From and To are local times, as their fields hold them.
-const filters = ref({ name: '', executor: '', status: '', scope: '', from: '', to: '' })
+const filters = ref({ name: '', executor: '', status: '', scope: '', label: '', from: '', to: '' })
 const queueLoaded = ref(false)
 const failed = ref(false)
 let stopQueue: (() => void) | undefined
@@ -45,14 +45,23 @@ const dropdowns = computed<FilterDropdown[]>(() => [
 ])
 
 const fields: FilterField[] = [
-  { key: 'scope', label: 'Scope', type: 'text', placeholder: 'e.g. app:demo-web or app:demo*' },
+  { key: 'scope', label: 'Scope', type: 'text', placeholder: 'e.g. worker:w1 or worker:w*' },
+  { key: 'label', label: 'Label', type: 'text', placeholder: 'e.g. shop / web' },
   { key: 'from', label: 'From', type: 'datetime-local' },
   { key: 'to', label: 'To', type: 'datetime-local' },
 ]
 
 const query = computed<TaskHistoryQuery>(() => {
-  const { name, executor, status, scope, from, to } = filters.value
-  return { name, executor, status, scope, from_ts: localTimeToUTC(from), to_ts: localTimeToUTC(to) }
+  const { name, executor, status, scope, label, from, to } = filters.value
+  return {
+    name,
+    executor,
+    status,
+    scope,
+    label,
+    from_ts: localTimeToUTC(from),
+    to_ts: localTimeToUTC(to),
+  }
 })
 
 function newestFinishedFirst(a: FinishedTask, b: FinishedTask) {

@@ -40,6 +40,7 @@ function running(id: string, name = 'deploy'): QueueTask {
     name,
     scopes: [],
     params: {},
+    labels: {},
     executor: 'app',
     status: 'running',
     queued_at: '2026-01-01T12:00:00',
@@ -253,6 +254,12 @@ describe('checking for updates', () => {
 })
 
 describe('preparing to stop', () => {
+  it('does not say it is safe until the queue is known', async () => {
+    const { wrapper } = await mountPage('paused', { pending: true })
+    expect(wrapper.text()).not.toContain('Safe to stop.')
+    expect(wrapper.text()).toContain('Loading tasks')
+  })
+
   it('waits for the running tasks, naming them', async () => {
     const { wrapper, topics } = await mountPage('paused')
 

@@ -57,8 +57,9 @@ it('shows independent certificate names, expiries and maintenance errors', () =>
       },
     },
   } as AppInfo
-  const wrapper = mount(CloudflareSettings, { global: { stubs: { TraefikResyncSubCard: true } } })
+  const wrapper = mount(CloudflareSettings, {})
   const text = wrapper.text()
+  expect(text).not.toContain('Resync Traefik')
   expect(text).toContain('Manager certificate')
   expect(text).toContain('Discovery certificate')
   expect(text).toContain('Worker w1')

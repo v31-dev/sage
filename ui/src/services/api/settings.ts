@@ -4,8 +4,8 @@ import type { AppInfo } from './info'
 export interface Setting {
   key: string
   value: Record<string, unknown> | null
-  created_at: Date
-  updated_at: Date
+  created_at: string
+  updated_at: string
 }
 
 export type SettingSection = 'tailscale' | 'cloudflare' | 's3' | 'notifications'
@@ -62,6 +62,5 @@ export const pauseSage = () => request<{ state: AppInfo['state'] }>('POST', '/se
 
 export const resumeSage = () => request<{ state: AppInfo['state'] }>('POST', '/settings/resume')
 
-export const resyncTraefik = () => request<unknown>('POST', '/settings/resync_traefik')
-
-export const resyncWorkers = () => request<unknown>('POST', '/settings/resync_workers')
+export const resyncWorkers = () =>
+  request<{ task_ids: string[] }>('POST', '/settings/resync_workers')

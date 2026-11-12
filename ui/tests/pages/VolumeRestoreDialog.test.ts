@@ -86,7 +86,7 @@ const restoreButton = (wrapper: Awaited<ReturnType<typeof mountDialog>>['wrapper
   wrapper
     .findAll('button')
     .filter(button => button.text() === 'Restore')
-    .at(-1)!
+    .reverse()[0]!
 
 beforeEach(() => {
   setActivePinia(createPinia())

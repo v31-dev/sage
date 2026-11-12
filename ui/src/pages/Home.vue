@@ -29,48 +29,60 @@ import { Progress } from '@/components/ui/progress'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Spinner } from '@/components/ui/spinner'
 import MetricChart from '@/components/MetricChart.vue'
-import { fetchHomeSummary, type HomeSummary, type Notification } from '@/services/api'
+import {
+  fetchHomeSummary,
+  type HomeSummary,
+  type Notification,
+  type WorkerStatus,
+  type ContainerHeadline,
+  type DomainStatus,
+} from '@/services/api'
+import StateIndicator from '@/components/StateIndicator.vue'
 import { formatDateStringAgo, parseDate } from '@/lib/utils'
 import { useAppStore } from '@/stores/app'
 
 const HOUR_MS = 3_600_000
 const ERROR_COLOR = '#ef4444'
 const WARNING_COLOR = '#f59e0b'
-const OK_CHIP = TONES.success.chip
-const BUSY_CHIP = TONES.info.chip
 const WARNING_CHIP = TONES.warning.chip
 
 const appStore = useAppStore()
 const summary = ref<HomeSummary | null>(null)
 const isLoading = ref(true)
 const loadError = ref('')
-let pollInterval: ReturnType<typeof setInterval> | null = null
+let pollTimer: ReturnType<typeof setTimeout> | undefined
+let disposed = false
 
 const timelineSeries = [
   { key: 'errors', tooltip_label: 'errors_label', name: 'Errors', color: ERROR_COLOR },
   { key: 'warnings', tooltip_label: 'warnings_label', name: 'Warnings', color: WARNING_COLOR },
 ]
 
-const events = computed(() => summary.value?.critical_events_last_24h ?? [])
+const events = computed(() => summary.value?.notices.events ?? [])
 
-const appsInTransition = computed(() => {
-  const s = summary.value
-  if (!s) return 0
-  return (
-    s.applications_deploying +
-    s.applications_stopping +
-    s.applications_backup +
-    s.applications_restoring
-  )
-})
+function stateCounts<State extends string>(counts: Record<State | 'total', number>) {
+  return Object.entries(counts).filter(
+    ([state, count]) => state !== 'total' && Number(count) > 0
+  ) as [State, number][]
+}
 
-const containersInTransition = computed(() => {
-  const s = summary.value
-  if (!s) return 0
-  return (
-    s.containers_deploying + s.containers_stopping + s.containers_backup + s.containers_restoring
+const workerCounts = computed(() =>
+  summary.value ? stateCounts<WorkerStatus>(summary.value.workers) : []
+)
+const containerCounts = computed(() =>
+  summary.value ? stateCounts<ContainerHeadline>(summary.value.containers) : []
+)
+const domainCounts = computed(() =>
+  summary.value ? stateCounts<DomainStatus>(summary.value.domains) : []
+)
+
+const containersInTransition = computed(() =>
+  containerCounts.value.reduce(
+    (total, [status, count]) =>
+      total + (appStore.containerIndicator(status).state === 'busy' ? count : 0),
+    0
   )
-})
+)
 
 // Clock-aligned local hour buckets, oldest first, empty hours included
 const timelineData = computed(() => {
@@ -118,6 +130,7 @@ async function loadSummary() {
     loadError.value = err instanceof Error ? err.message : 'Failed to load home summary'
   } finally {
     isLoading.value = false
+    if (!disposed) pollTimer = setTimeout(loadSummary, 60_000)
   }
 }
 
@@ -125,9 +138,10 @@ function ratio(part: number, total: number) {
   return total > 0 ? (part / total) * 100 : 0
 }
 
-function healthBarClass(errorCount: number, transitionCount: number) {
+function healthBarClass(errorCount: number, transitionCount: number, warningCount = 0) {
   if (errorCount > 0) return TONES.error.bar
   if (transitionCount > 0) return TONES.info.bar
+  if (warningCount > 0) return TONES.warning.bar
   return TONES.success.bar
 }
 
@@ -135,13 +149,11 @@ function eventIconClass(notificationType: Notification['type']) {
   return notificationType === 'error' ? TONES.error.soft : TONES.warning.soft
 }
 
-onMounted(async () => {
-  await loadSummary()
-  pollInterval = setInterval(loadSummary, 60_000)
-})
+onMounted(loadSummary)
 
 onUnmounted(() => {
-  if (pollInterval) clearInterval(pollInterval)
+  disposed = true
+  clearTimeout(pollTimer)
 })
 </script>
 
@@ -196,22 +208,35 @@ onUnmounted(() => {
                 <CardContent class="space-y-3">
                   <div class="flex items-baseline gap-2">
                     <span class="text-3xl font-semibold tabular-nums">
-                      {{ summary.workers_online }}
+                      {{ summary.workers.online }}
                     </span>
                     <span class="text-sm text-muted-foreground">
-                      of {{ summary.workers_total }} online
+                      of {{ summary.workers.total }} online
                     </span>
                   </div>
                   <Progress
                     class="h-1.5 bg-muted"
-                    :class="healthBarClass(summary.workers_offline, 0)"
-                    :model-value="ratio(summary.workers_online, summary.workers_total)"
+                    :class="
+                      healthBarClass(
+                        summary.workers.offline,
+                        summary.workers.total -
+                          summary.workers.online -
+                          summary.workers.offline -
+                          summary.workers['not ready'],
+                        summary.workers['not ready']
+                      )
+                    "
+                    :model-value="ratio(summary.workers.online, summary.workers.total)"
                   />
                   <div class="flex flex-wrap gap-1.5">
-                    <Badge v-if="summary.workers_offline" variant="destructive">
-                      {{ summary.workers_offline }} offline
-                    </Badge>
-                    <Badge v-else variant="outline" :class="OK_CHIP">All online</Badge>
+                    <StateIndicator
+                      v-for="[status, count] in workerCounts"
+                      :key="status"
+                      v-bind="appStore.workerIndicator(status)"
+                      :label="`${count} ${status}`"
+                      show-label
+                    />
+                    <Badge v-if="!summary.workers.total" variant="secondary">No workers</Badge>
                   </div>
                 </CardContent>
               </Card>
@@ -229,34 +254,23 @@ onUnmounted(() => {
                 <CardContent class="space-y-3">
                   <div class="flex items-baseline gap-2">
                     <span class="text-3xl font-semibold tabular-nums">
-                      {{ summary.applications_total }}
+                      {{ summary.applications }}
                     </span>
                     <span class="text-sm text-muted-foreground">
-                      apps in {{ summary.projects_total }} projects
+                      apps in {{ summary.projects }} projects
                     </span>
-                  </div>
-                  <Progress
-                    class="h-1.5 bg-muted"
-                    :class="healthBarClass(summary.applications_error, appsInTransition)"
-                    :model-value="ratio(summary.applications_active, summary.applications_total)"
-                  />
-                  <div class="flex flex-wrap gap-1.5">
-                    <Badge variant="outline" :class="OK_CHIP">
-                      {{ summary.applications_active }} active
-                    </Badge>
-                    <Badge v-if="summary.applications_inactive" variant="secondary">
-                      {{ summary.applications_inactive }} inactive
-                    </Badge>
-                    <Badge v-if="summary.applications_error" variant="destructive">
-                      {{ summary.applications_error }} error
-                    </Badge>
-                    <Badge v-if="appsInTransition" variant="outline" :class="BUSY_CHIP">
-                      {{ appsInTransition }} in transition
-                    </Badge>
                   </div>
                   <div class="flex items-center gap-1.5 text-xs text-muted-foreground">
                     <Rocket class="size-3.5" />
-                    <span>{{ summary.deployments_last_24h }} deployments in last 24h</span>
+                    <span>Deployments in last 24h</span>
+                  </div>
+                  <div class="flex flex-wrap gap-1.5">
+                    <Badge variant="outline" :class="TONES.success.chip"
+                      >{{ summary.deploys.succeeded }} succeeded</Badge
+                    >
+                    <Badge variant="outline" :class="summary.deploys.failed ? TONES.error.chip : ''"
+                      >{{ summary.deploys.failed }} failed</Badge
+                    >
                   </div>
                 </CardContent>
               </Card>
@@ -271,38 +285,26 @@ onUnmounted(() => {
               <CardContent class="space-y-3">
                 <div class="flex items-baseline gap-2">
                   <span class="text-3xl font-semibold tabular-nums">
-                    {{ summary.containers_active }}
+                    {{ summary.containers.active }}
                   </span>
                   <span class="text-sm text-muted-foreground">
-                    of {{ summary.containers_total }} running
+                    of {{ summary.containers.total }} active
                   </span>
                 </div>
                 <Progress
                   class="h-1.5 bg-muted"
-                  :class="healthBarClass(summary.containers_error, containersInTransition)"
-                  :model-value="ratio(summary.containers_active, summary.containers_total)"
+                  :class="healthBarClass(summary.containers.error, containersInTransition)"
+                  :model-value="ratio(summary.containers.active, summary.containers.total)"
                 />
                 <div class="flex flex-wrap gap-1.5">
-                  <Badge v-if="summary.containers_inactive" variant="secondary">
-                    {{ summary.containers_inactive }} inactive
-                  </Badge>
-                  <Badge v-if="summary.containers_error" variant="destructive">
-                    {{ summary.containers_error }} error
-                  </Badge>
-                  <Badge v-if="containersInTransition" variant="outline" :class="BUSY_CHIP">
-                    {{ containersInTransition }} in transition
-                  </Badge>
-                  <Badge
-                    v-if="
-                      !summary.containers_inactive &&
-                      !summary.containers_error &&
-                      !containersInTransition
-                    "
-                    variant="outline"
-                    :class="OK_CHIP"
-                  >
-                    All running
-                  </Badge>
+                  <StateIndicator
+                    v-for="[status, count] in containerCounts"
+                    :key="status"
+                    v-bind="appStore.containerIndicator(status)"
+                    :label="`${count} ${status}`"
+                    show-label
+                  />
+                  <Badge v-if="!summary.containers.total" variant="secondary">No containers</Badge>
                 </div>
               </CardContent>
             </Card>
@@ -316,22 +318,32 @@ onUnmounted(() => {
               <CardContent class="space-y-3">
                 <div class="flex items-baseline gap-2">
                   <span class="text-3xl font-semibold tabular-nums">
-                    {{ summary.domains_active }}
+                    {{ summary.domains.synced }}
                   </span>
                   <span class="text-sm text-muted-foreground">
-                    of {{ summary.domains_total }} synced
+                    of {{ summary.domains.total }} synced
                   </span>
                 </div>
                 <Progress
                   class="h-1.5 bg-muted"
-                  :class="healthBarClass(summary.domains_inactive, 0)"
-                  :model-value="ratio(summary.domains_active, summary.domains_total)"
+                  :class="
+                    healthBarClass(
+                      summary.domains.error,
+                      summary.domains.syncing,
+                      summary.domains.pending
+                    )
+                  "
+                  :model-value="ratio(summary.domains.synced, summary.domains.total)"
                 />
                 <div class="flex flex-wrap gap-1.5">
-                  <Badge v-if="summary.domains_inactive" variant="destructive">
-                    {{ summary.domains_inactive }} unsynced
-                  </Badge>
-                  <Badge v-else variant="outline" :class="OK_CHIP">All synced</Badge>
+                  <StateIndicator
+                    v-for="[status, count] in domainCounts"
+                    :key="status"
+                    v-bind="appStore.domainIndicator(status)"
+                    :label="`${count} ${status === 'error' ? 'sync failed' : status}`"
+                    show-label
+                  />
+                  <Badge v-if="!summary.domains.total" variant="secondary">No domains</Badge>
                 </div>
               </CardContent>
             </Card>
@@ -346,21 +358,21 @@ onUnmounted(() => {
                 <CardContent class="space-y-3">
                   <div class="flex items-baseline gap-2">
                     <span class="text-3xl font-semibold tabular-nums">
-                      {{ summary.backups_total }}
+                      {{ summary.backups.platform + summary.backups.application }}
                     </span>
                     <span class="text-sm text-muted-foreground">
-                      stored • {{ summary.backups_last_24h }} in last 24h
+                      stored • {{ summary.backups.since }} in last 24h
                     </span>
                   </div>
                   <div class="flex flex-wrap gap-1.5">
-                    <Badge variant="secondary">{{ summary.backups_system }} system</Badge>
+                    <Badge variant="secondary">{{ summary.backups.platform }} platform</Badge>
                     <Badge variant="secondary">
-                      {{ summary.backups_application }} application
+                      {{ summary.backups.application }} volume archives
                     </Badge>
                   </div>
                   <div class="text-xs text-muted-foreground">
-                    <span v-if="summary.latest_backup_at">
-                      Last backup {{ formatDateStringAgo(summary.latest_backup_at) }}
+                    <span v-if="summary.backups.latest_at">
+                      Last backup {{ formatDateStringAgo(summary.backups.latest_at) }}
                     </span>
                     <span v-else>No backups yet</span>
                   </div>
@@ -391,11 +403,9 @@ onUnmounted(() => {
                   >
                 </div>
                 <div class="flex flex-wrap gap-1.5">
-                  <Badge variant="destructive">
-                    {{ summary.critical_error_count_last_24h }} errors
-                  </Badge>
+                  <Badge variant="destructive"> {{ summary.notices.error }} errors </Badge>
                   <Badge variant="outline" :class="WARNING_CHIP">
-                    {{ summary.critical_warning_count_last_24h }} warnings
+                    {{ summary.notices.warning }} warnings
                   </Badge>
                 </div>
               </div>

@@ -49,6 +49,10 @@ const props = defineProps<{
           <p class="font-mono text-sm">{{ time.value }}</p>
         </div>
 
+        <div v-for="(value, name) in props.task.labels" :key="name" class="col-span-2 space-y-1">
+          <Label class="text-muted-foreground text-xs">{{ name }}</Label>
+          <p class="text-sm break-words">{{ value }}</p>
+        </div>
         <div class="col-span-2 space-y-1">
           <Label class="text-muted-foreground text-xs">Scopes</Label>
           <p class="font-mono text-xs break-all">{{ props.task.scopes.join(', ') }}</p>
