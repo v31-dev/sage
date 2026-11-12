@@ -764,10 +764,24 @@ class TestOrphanCleanup:
     assert not directory.exists() and worker_host.runtime(SimpleNamespace(id=ORPHAN)) is None
     assert notices() == [("warning", "Removed a container Sage no longer has from worker w1.", f"{MANAGER}/workers/w1")]
 
-  async def test_a_bare_directory_is_removed(self, manager, worker_host, container):
+  async def test_a_bare_directory_is_removed(self, manager, worker_host, container, notices):
     directory = orphan_placement(worker_host, running=False)
     await manager.cleanup_orphan("w1", ORPHAN)
     assert not directory.exists()
+    assert notices() == [("warning", "Removed a container Sage no longer has from worker w1.", f"{MANAGER}/workers/w1")]
+
+  async def test_a_cleanup_with_nothing_left_stops_nothing_and_sends_no_notice(self, manager, worker_host, container, notices):
+    worker_host.flag("down-fails")
+    await manager.cleanup_orphan("w1", ORPHAN)
+    assert notices() == [] and manager.orphans == {}
+
+  async def test_a_cleanup_asked_for_on_a_report_from_before_a_delete_finds_nothing_and_says_nothing(
+          self, manager, worker_host, container, notices):
+    place(container, deployed(container))
+    worker_host.run(container, "running d0")
+    await manager.delete_container(container.id)
+    await manager.cleanup_orphan("w1", container.id)
+    assert notices() == [("success", "Demo / Web on w1 deleted.", PAGE)]
 
   async def test_a_container_that_has_its_row_is_not_an_orphan(self, manager, worker_host, container):
     place(container, deployed(container))

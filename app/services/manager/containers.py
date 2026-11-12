@@ -387,8 +387,9 @@ class ContainersMixin:
 
   async def cleanup_orphan(self, hostname: str, container_id: str):
     """Removes what this Sage left on the worker for a container it has no row for: its runtime and its placement,
-    volume data included. Nothing is done while the row is there, or when its record or runtime is another Sage's; an
-    operation its record shows unsettled (any, when the record is unreadable) is first waited out from when Sage saw it."""
+    volume data included. Nothing is done while the row is there, when its record or runtime is another Sage's, or
+    when nothing of it is left (what asked for it saw the worker before the container's Delete ended); an operation its
+    record shows unsettled (any, when the record is unreadable) is first waited out from when Sage saw it."""
     if Container.select().where((Container.id == container_id) & (Container.worker == hostname)).exists():
       logger.info(f"Container {container_id} is on {hostname} again; nothing to clean up.")
       return
@@ -412,13 +413,20 @@ class ContainersMixin:
         return
       if monotonic() - seen[1] < seen[2]:
         return
+    left = target.kind != "absent" or reading.state != "absent"
+    directory = placement_dir(config.WORKER_HOME_DIR, container_id)
     try:
-      await self.stop_runtime(hostname, container_id, "--volumes --rmi local --remove-orphans")
-      await Tailscale().exec_command(hostname, f"rm -rf {placement_dir(config.WORKER_HOME_DIR, container_id)}", timeout=30)
+      if left:
+        await self.stop_runtime(hostname, container_id, "--volumes --rmi local --remove-orphans")
+      _, removed = await Tailscale().exec_command(
+          hostname, f"if [ -d {directory} ]; then rm -rf {directory}; echo removed; fi", timeout=30)
     except Exception as error:
       logger.error(f"The orphan {container_id} on {hostname} could not be removed: {error}")
       raise TaskFailed()
     self.orphans.pop((hostname, container_id), None)
+    if not left and not removed:
+      logger.info(f"Nothing of container {container_id} is left on {hostname}; nothing to clean up.")
+      return
     Notifications().notify(f"Removed a container Sage no longer has from worker {hostname}.", "warning", f"/workers/{hostname}")
 
   def _container_tasks(self) -> tuple[dict[str, str], dict[str, tuple[QueuedRequest, ...]]]:
