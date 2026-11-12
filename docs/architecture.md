@@ -20,7 +20,7 @@ are checked at startup and daily; valid certificates outside that window stay in
 The container entrypoint (`app/entrypoint.sh`) first brings up the manager's own tailnet
 node — `tailscaled` in userspace networking mode, state under `/app/data/tailscale` — and
 then starts the manager process. Tailnet connections to the node's IP are delivered to
-the same port on `127.0.0.1` inside the container, so `:80` and `:9001` need no published
+the same port on `127.0.0.1` inside the container, so `:443`, `:80` and `:9001` need no published
 ports — and anything listening there is reachable from the tailnet wherever the tailnet
 policy allows.
 
@@ -31,8 +31,8 @@ through `tailscaled`: SSH to workers uses asyncssh's `proxy_command` with
 
 The manager process starts these concurrent services from `app/main.py`:
 
-1. Main FastAPI API and UI on port `80`, plain HTTP — it is reached over the tailnet,
-   which WireGuard already encrypts
+1. Main FastAPI API and UI on port `443`, serving TLS with the manager's own certificate; port `80` only
+   redirects there (in development, plain HTTP on `9000` behind the dev Traefik)
 2. Ingestion FastAPI API on port `9001` (receives workers' Telegraf reports and Vector log shipments)
 3. APScheduler (cron/interval) scheduler
 
@@ -71,7 +71,8 @@ before issuance of the replacement; other workers' leaves and the shared discove
 Deleting a worker also retires its leaf. Revocation can run while a worker is offline; its next setup repairs the
 remote certificate inventory. An offline removed VM still needs manual decommissioning.
 
-Maintenance runs sequentially under the platform/app/domain scopes, leaving common and metrics independent.
+Renewal takes one certificate at a time under `certificate`, on the platform lane. Each worker's copy holds that
+worker's `certificate:worker:<host>` and `worker:<host>:tls`, so the workers' copies go on in parallel.
 An individual failure is reported while other certificate owners continue. A valid leaf stays in use if ordinary
 renewal fails. Retired public leaves survive restart until revocation succeeds or they expire; their private keys
 are removed. [Certificate state and worker application](backend.md)
@@ -111,8 +112,8 @@ Current traffic and naming patterns are driven by Cloudflare, Traefik, and Tails
 
 Each Domain record owns its DNS and Traefik synchronization result. A record is synced once both effects have
 completed for its desired configuration. A parent pass on demand and every five minutes cleans orphan/old-placement
-artifacts, queues record repairs and generates discovery. Container availability and worker readiness changes also
-request this pass. Domain sync status remains separate from the derived discovery availability flag.
+artifacts, queues record repairs and generates discovery. A container's availability changing requests its Domains'
+applies and discovery's publication; a worker's readiness changing requests discovery's publication. Domain sync status remains separate from the derived discovery availability flag.
 
 ### Cloudflare Resources
 
@@ -147,10 +148,10 @@ Cloudflare's Free quota is 200 records per zone; some Free zones have a 1,000-re
 not by itself increase the API allowance. See [Cloudflare's DNS quotas](https://developers.cloudflare.com/dns/manage-dns-records/#dns-records-quota).
 
 The API allows 1,200 requests per five minutes per user, shared across tokens and dashboard activity. Exceeding it
-can block calls for five minutes with HTTP 429. Sage inventories DNS once per discovery pass and account tunnels
-only for full repair scans, reuses those lists for cleanup and writes only drift. With one page per inventory,
-a clean full scan needs two API calls and a clean cleanup-only pass needs one; record repairs, worker setup,
-certificates and other operations add calls. Sage applies no proactive rate limiter.
+can block calls for five minutes with HTTP 429. The Domain pass lists the zone and the account's tunnels once each
+and reuses them for its cleanup and its comparison: two calls with one page per list, every five minutes. Discovery's
+DNS publication lists the zone once; a Domain's apply lists the zone and looks up its worker's tunnel. Writes happen
+only on drift; record repairs, worker setup, certificates and other operations add calls. Sage applies no proactive rate limiter.
 See [Cloudflare's API limits](https://developers.cloudflare.com/fundamentals/api/reference/limits/).
 
 Retryable requests use bounded retries and honor a valid `Retry-After` minimum wait when supplied. Long provider
@@ -294,6 +295,8 @@ A restore puts a backup's configuration in place of the current one:
   operation it was in the middle of has had its time to end. A Domain that isn't in it has its route and DNS records
   removed.
 - Workers in the restored configuration keep their stack; each is set up again only where its stamps differ.
+- A worker that isn't in the restored configuration is left as it is: unmanaged, with its stack and containers still
+  running, until it is cleaned up by hand.
 
 ## Metrics And Logs Storage
 

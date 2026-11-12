@@ -478,7 +478,8 @@ class ContainersMixin:
         self.lifecycle_container(container_id), "delete", self.delete_container, {}, {"force": force}))
 
   def request_cancel(self, container_id: str, operation: str) -> str:
-    """Cancels the container's queued `operation` (deploy, stop or delete); the cancelled task's id."""
+    """Cancels the container's queued `operation` (one of `REQUESTS`: deploy, stop, a manual backup, a volume restore or
+    delete); the cancelled task's id."""
     if operation not in REQUESTS:
       raise ValueError(f"Unknown operation {operation!r}.")
     key = (REQUESTS[operation][0], container_id)

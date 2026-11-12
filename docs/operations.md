@@ -92,11 +92,11 @@ The platform restore holds no scope: it is the queue's own entry and starts once
 | `REVISE` | `busy` (with the running task's id) while a task with the key runs; otherwise supersede the pending ones and enqueue. |
 | `QUEUE` | Keep every request. |
 
-Pending tasks can be cancelled by key, name, or a scope and the scopes below it (`cancel_tasks`); the Manager cancels a container's queued Deploy, Stop or Delete on request, and every queued task of a container when it is deleted.
+Pending tasks can be cancelled by key, name, or a scope and the scopes below it (`cancel_tasks`); the Manager cancels a container's queued Deploy, Stop, manual backup, volume restore or Delete on request, and every queued task of a container when it is deleted.
 
 A visible request joining a quiet task with its key makes that task visible. Conflicting scopes defer admitted work; they do not reject it. Pending tasks reserve no scopes, so a broad
-task can wait while later work starts. Paused queues admit work but start nothing; restoring starts only the
-restore; stopping cancels pending/new work and drains running tasks. The main API refuses mutations while
+task can wait while later work starts. Paused queues admit work but start nothing; restoring starts the tasks queued
+before the restore, then the restore once nothing runs or waits; stopping cancels pending/new work and drains running tasks. The main API refuses mutations while
 the queue is not running, except pause/resume. The separate ingestion API keeps accepting pushes.
 See [queue semantics](backend.md#operation-queue) and [pause/restore/stop](backend.md#pause-and-stop).
 

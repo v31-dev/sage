@@ -22,9 +22,9 @@ def _is_ancestor_or_equal(a: str, b: str) -> bool:
 
 
 def _scope_conflict(a: str, b: str) -> bool:
-  # Two scopes conflict when one covers the other: "app" conflicts with
-  # "app:app1"; "app:app1" conflicts with itself; "app:app1" and "app:app2"
-  # are siblings and do not conflict.
+  # Two scopes conflict when one covers the other: "worker:w1" conflicts with
+  # "worker:w1:stack" and with itself; "worker:w1:stack" and
+  # "worker:w1:discovery" are siblings and do not conflict.
   return _is_ancestor_or_equal(a, b) or _is_ancestor_or_equal(b, a)
 
 
@@ -34,8 +34,8 @@ def _scopes_conflict(a: frozenset[str], b: frozenset[str]) -> bool:
 
 def _dominates(a: frozenset[str], b: frozenset[str]) -> bool:
   # True when `a` is at the same level or higher than `b`. Used for priority
-  # insertion: a priority task is placed behind tasks that dominate it (other
-  # platform tasks) and ahead of everything else (app tasks).
+  # insertion: a priority task is placed behind the tasks that dominate it and
+  # ahead of everything else.
   return any(_is_ancestor_or_equal(sa, sb) for sa in a for sb in b)
 
 
@@ -169,10 +169,10 @@ def next_to_start(state: QueueState, queue: list[QueuedTask], running: list[Queu
 class TaskQueue:
   """In-memory, single-dispatcher operation queue with hierarchical scope locking.
 
-  Scopes form a ":"-delimited hierarchy. A task holding a parent scope ("app")
-  conflicts with every child ("app:app1", "app:app2"); siblings never conflict,
-  so operations on different applications run in parallel while a platform-wide
-  task (holding the parent) excludes them all.
+  Scopes form a ":"-delimited hierarchy. A task holding a parent scope ("worker:w1")
+  conflicts with every child ("worker:w1:container:c1", "worker:w1:stack"); siblings
+  never conflict, so the containers of one worker are worked on in parallel while
+  that worker's setup (holding the parent) excludes them all.
 
   The platform restore is an operation of its own (`request_restore`), outside
   admission and scopes: once requested, every other request is refused, and it
@@ -215,11 +215,11 @@ class TaskQueue:
     ### Parameters
     - task: the callable to run (sync or async).
     - key: what the request competes for, which DEDUP, REPLACE and REVISE compare: the operation's name, then its
-      subject's ids and its intent, e.g. `("sync_domain", domain_id)`; requests that take turns on one subject share
+      subject's ids and its intent, e.g. `("apply_domain", domain_id)`; requests that take turns on one subject share
       one, e.g. a container's lifecycle requests `("lifecycle", container_id)`.
     - name: what the task does, shown and recorded; the key's first part when omitted.
-    - scopes: scopes this task needs exclusive access to. A parent scope ("app")
-      conflicts with all children ("app:app1"); siblings never conflict. Each
+    - scopes: scopes this task needs exclusive access to. A parent scope ("worker:w1")
+      conflicts with all children ("worker:w1:stack"); siblings never conflict. Each
       scope's root must be one of the roots passed to the constructor.
     - executor: name of the executor (key in the constructor's executors dict).
     - params: JSON-safe keyword arguments of `task` (ids and flags), recorded and shown.
@@ -230,8 +230,8 @@ class TaskQueue:
     - task_id: log-correlation id; generated here when omitted (scheduled work).
     - on_conflict: admission policy (see OnConflict).
     - priority: insert ahead of lower/unrelated tasks but behind tasks that
-      dominate it (same level or higher) -- a platform task jumps over app
-      tasks but not over other platform tasks.
+      dominate it (same level or higher): a worker-wide task jumps over that
+      worker's container tasks but not over other worker-wide tasks.
     - quiet: record this task and keep its lines only when it fails, so
       high-frequency housekeeping (e.g. metrics) does not flood the record. A
       visible request with the same key makes it visible.
@@ -307,8 +307,8 @@ class TaskQueue:
       return any(_scopes_conflict(scopes, task.scopes) for task in (*self._running, *self._queue))
 
   def has_task(self, prefix: tuple[str, ...], running_only: bool = False) -> bool:
-    """True if a task whose key starts with `prefix` is running, or pending unless `running_only`: `("sync_domain",
-    domain_id)` for that domain's sync, `("backup_database",)` for any platform backup."""
+    """True if a task whose key starts with `prefix` is running, or pending unless `running_only`: `("apply_domain",
+    domain_id)` for that domain's apply, `("backup_platform",)` for any platform backup."""
     prefix = tuple(prefix)
     with self._lock:
       tasks = self._running if running_only else (*self._running, *self._pending())
@@ -386,7 +386,7 @@ class TaskQueue:
 
   def _validate(self, task: QueuedTask):
     # Fail fast on wiring mistakes. Scope roots are dynamic below the root
-    # (e.g. "app:app1"), so only the root segment is checked.
+    # (e.g. "worker:w1"), so only the root segment is checked.
     if not task.key or not all(isinstance(part, str) and part for part in task.key):
       raise ValueError(f"A task key is a tuple of names, not {task.key!r}")
     for scope in task.scopes:
@@ -471,7 +471,7 @@ class TaskQueue:
         # A visible request may have replaced this run's entry; its lines are what this run alone has.
         current = next(entry for entry in self._running if entry.lines is task.lines)
         self._running.remove(current)
-      # Quiet reconcilers (metrics, per-app syncs) skip routine completion so
+      # Quiet housekeeping (metrics, observations) skips routine completion so
       # they don't flood the store; failures and cancellations always record.
       if status == "failed" or not current.quiet:
         self._record(current, status)
