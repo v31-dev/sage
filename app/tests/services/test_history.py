@@ -3,9 +3,9 @@ from datetime import datetime, timedelta
 import pytest
 
 from services.db.models import Container, ContainerEvent, Notification, Task, WorkerEvent
-from services.history import purge_history, record_container_event, record_task, record_worker_event, task_history, task_history_filters, task_parts
+from services.history import purge_history, record_container_event, record_task, record_worker_event, task_history, task_history_filters
 from services.logs import Logs
-from utils.logging import sub_task_id, task_id
+from utils.logging import task_id
 from utils.queue import QueuedTask
 
 
@@ -15,27 +15,25 @@ def container(application, worker):
 
 
 @pytest.fixture
-def in_part():
-  """Runs the test as part `p1` of task `t1`."""
-  tokens = task_id.set("t1"), sub_task_id.set("p1")
+def in_task():
+  """Runs the test as task `t1`."""
+  token = task_id.set("t1")
   yield
-  task_id.reset(tokens[0])
-  sub_task_id.reset(tokens[1])
+  task_id.reset(token)
 
 
 class TestContainerEvents:
-  def test_an_event_records_the_running_task_and_part_and_what_the_container_was(self, container, in_part):
+  def test_an_event_records_the_running_task_and_what_the_container_was(self, container, in_task):
     assert record_container_event(container, "deploy", "admitted", operation_id="op1") is True
 
     event = ContainerEvent.get()
     assert (event.container_id, event.subject_id, event.application_name, event.worker_hostname) == (
         container.id, container.id, "demo-web", "w1")
-    assert (event.action, event.transition, event.operation_id, event.task_id, event.part_id) == (
-        "deploy", "admitted", "op1", "t1", "p1")
+    assert (event.action, event.transition, event.operation_id, event.task_id) == ("deploy", "admitted", "op1", "t1")
 
   def test_outside_a_task_it_has_none(self, container):
     record_container_event(container, "stop", "succeeded")
-    assert (ContainerEvent.get().task_id, ContainerEvent.get().part_id) == (None, None)
+    assert ContainerEvent.get().task_id is None
 
   def test_a_repeated_dedupe_key_is_recorded_once(self, container):
     assert record_container_event(container, "deploy", "succeeded", dedupe_key="op1:succeeded") is True
@@ -61,32 +59,6 @@ class TestWorkerEvents:
     record_worker_event("w1", "connectivity", "observed", dedupe_key="w1:offline:1")
     assert record_worker_event("w1", "connectivity", "observed", dedupe_key="w1:offline:1") is False
     assert WorkerEvent.select().count() == 1
-
-
-class TestTaskParts:
-  @pytest.fixture
-  def logged(self, register):
-    class Parts:
-      def query_task_parts(self, task):
-        return {"t1": ["p2", "p1", "p3"]}.get(task, [])
-    return register(Logs, Parts())
-
-  def test_each_logged_part_has_the_action_and_worker_of_its_first_event_in_the_order_it_logged(
-          self, container, logged, in_part):
-    record_container_event(container, "deploy", "admitted")
-    record_container_event(container, "reset", "succeeded")
-    token = sub_task_id.set("p2")
-    record_container_event(container, "delete", "admitted")
-    sub_task_id.reset(token)
-
-    assert task_parts("t1") == [{"id": "p2", "type": "delete", "worker": "w1"}, {"id": "p1", "type": "deploy", "worker": "w1"},
-                                {"id": "p3", "type": None, "worker": None}]
-
-  def test_a_part_keeps_its_worker_after_its_container_is_deleted(self, container, logged, in_part):
-    record_container_event(container, "delete", "admitted")
-    container.delete_instance()
-
-    assert task_parts("t1")[1] == {"id": "p1", "type": "delete", "worker": "w1"}
 
 
 def test_purging_deletes_the_history_older_than_its_days_and_keeps_the_rest(container, worker, clock):

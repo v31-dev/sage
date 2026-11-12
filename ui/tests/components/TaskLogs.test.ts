@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { nextTick } from 'vue'
 import TaskLogs from '@/components/TaskLogs.vue'
 import { formatDate } from '@/lib/utils'
-import { fetchTaskLogs, type TaskLogLine, type TaskLogPage, type TaskPart } from '@/services/api'
+import { fetchTaskLogs, type TaskLogLine, type TaskLogPage } from '@/services/api'
 import { followTopics, type Followed } from '../helpers/topics'
 
 vi.mock('@/lib/updates', () => ({ watchState: vi.fn(), watchFeed: vi.fn() }))
@@ -17,7 +17,6 @@ const TS = '2026-01-01T12:00:00.000000Z'
 const line = (id: number, message = `line ${id}`, level = 'INFO'): TaskLogLine => ({
   id,
   task_id: 't1',
-  sub_task_id: '',
   ts: TS,
   level,
   logger: 'services.manager',
@@ -37,10 +36,7 @@ async function connect(feed: Followed) {
   await flushPromises()
 }
 
-async function open(
-  props: { taskId: string; subTaskId?: string; parts?: TaskPart[] } = { taskId: 't1' },
-  errorHandler?: () => void
-) {
+async function open(props: { taskId: string } = { taskId: 't1' }, errorHandler?: () => void) {
   const topics = followTopics()
   const wrapper = mount(TaskLogs, { props, global: { config: { errorHandler } } })
   await flushPromises()
@@ -53,13 +49,10 @@ beforeEach(() => {
 })
 
 describe('the feed it follows', () => {
-  it.each([
-    ['a task', { taskId: 't1' }, 'task-logs:t1'],
-    ['a part of it', { taskId: 't1', subTaskId: 'c1' }, 'task-logs:t1/c1'],
-  ])("is %s's", async (_case, props, topic) => {
-    const { topics } = await open(props)
+  it("is the task's", async () => {
+    const { topics } = await open({ taskId: 't1' })
 
-    expect(topics.followed.map(followed => followed.topic)).toEqual([topic])
+    expect(topics.followed.map(followed => followed.topic)).toEqual(['task-logs:t1'])
   })
 
   it('stops when it goes away', async () => {
@@ -73,14 +66,14 @@ describe('the feed it follows', () => {
 
 describe('the lines', () => {
   it('are the newest at first, with their time, level and logger, and the message as written', async () => {
-    const { wrapper, topics } = await open({ taskId: 't1', subTaskId: 'c1' })
+    const { wrapper, topics } = await open({ taskId: 't1' })
     vi.mocked(fetchTaskLogs).mockResolvedValue(
       logs([line(1, 'deploying'), line(2, 'Traceback:\n  boom', 'ERROR')])
     )
 
-    await connect(topics.topic('task-logs:t1/c1'))
+    await connect(topics.topic('task-logs:t1'))
 
-    expect(fetchTaskLogs).toHaveBeenCalledWith('t1', 'c1', 0)
+    expect(fetchTaskLogs).toHaveBeenCalledWith('t1', 0)
     expect(rows(wrapper)).toEqual([
       [formatDate(TS), 'INFO', 'services.manager', 'deploying'],
       [formatDate(TS), 'ERROR', 'services.manager', 'Traceback:\n  boom'],
@@ -125,7 +118,7 @@ describe('the lines', () => {
     vi.mocked(fetchTaskLogs).mockResolvedValue(logs([line(3)]))
     await connect(feed)
 
-    expect(fetchTaskLogs).toHaveBeenLastCalledWith('t1', '', 2)
+    expect(fetchTaskLogs).toHaveBeenLastCalledWith('t1', 2)
     expect(messages(wrapper)).toEqual(['line 1', 'line 2', 'line 3'])
   })
 
@@ -155,36 +148,5 @@ describe('the lines', () => {
 
     expect(wrapper.text()).toContain('down')
     expect(wrapper.text()).toContain('No logs found')
-  })
-})
-
-describe('the parts', () => {
-  const parts: TaskPart[] = [
-    { id: 'c1', type: 'deploy', worker: 'w1' },
-    { id: 'c2', type: null, worker: null },
-  ]
-  const partLines = [line(1), { ...line(2), sub_task_id: 'c1' }, { ...line(3), sub_task_id: 'c2' }]
-
-  it("show which part each of the task's lines is from: its worker, or its id when its event is gone", async () => {
-    const { wrapper, topics } = await open({ taskId: 't1', parts })
-    vi.mocked(fetchTaskLogs).mockResolvedValue(logs(partLines))
-
-    await connect(topics.topic('task-logs:t1'))
-
-    expect(wrapper.findAll('thead th').map(cell => cell.text())).toContain('Part')
-    expect(rows(wrapper).map(row => row[3])).toEqual(['', 'w1', 'c2'])
-  })
-
-  it.each([
-    ["one part's lines", { taskId: 't1', subTaskId: 'c1', parts }, 'task-logs:t1/c1'],
-    ['a task without parts', { taskId: 't1' }, 'task-logs:t1'],
-  ])('are not shown for %s', async (_case, props, topic) => {
-    const { wrapper, topics } = await open(props)
-    vi.mocked(fetchTaskLogs).mockResolvedValue(logs(partLines))
-
-    await connect(topics.topic(topic))
-
-    expect(wrapper.findAll('thead th').map(cell => cell.text())).not.toContain('Part')
-    expect(rows(wrapper)[0]).toHaveLength(4)
   })
 })

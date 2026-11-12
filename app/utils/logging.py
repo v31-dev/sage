@@ -11,8 +11,6 @@ from starlette.routing import compile_path
 
 LOG_FORMAT = "[%(asctime)s] [%(levelname)-8s] [%(name)-19s] [%(task_id)s] %(message)s"
 task_id = ContextVar("task_id", default="")
-# One container's part of a task (its deploy, stop or backup), logged inside the task.
-sub_task_id = ContextVar("sub_task_id", default="")
 
 
 class TaskLines:
@@ -49,12 +47,10 @@ def new_task_id():
 
 
 class TaskIdFilter(logging.Filter):
-  """Gives each record the id of the task it is logged in, `task/part` inside a container's part, for the stdout
-  format."""
+  """Gives each record the id of the task it is logged in, for the stdout format."""
 
   def filter(self, record):
-    sub = sub_task_id.get()
-    record.task_id = f"{task_id.get()}/{sub}" if sub else task_id.get()
+    record.task_id = task_id.get()
     return True
 
 

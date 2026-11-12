@@ -4,7 +4,7 @@ import pytest
 from fastapi.encoders import jsonable_encoder
 
 import config
-from services.db.models import Container, ContainerEvent, Task
+from services.db.models import Task
 from services.logs import Logs
 
 T0 = datetime(2026, 1, 1, 12, 0)
@@ -138,36 +138,28 @@ class TestHistoryFilters:
         "statuses": ["completed", "failed", "cancelled"]}
 
 
-def line(task_id, sub_task_id, message):
-  Logs().write_task_line({"task_id": task_id, "sub_task_id": sub_task_id, "ts": "2026-01-01T12:00:00.000000Z",
-                          "level": "INFO", "logger": "services.manager", "message": message})
+def line(task_id, message):
+  Logs().write_task_line({"task_id": task_id, "ts": "2026-01-01T12:00:00.000000Z", "level": "INFO",
+                          "logger": "services.manager", "message": message})
 
 
 class TestLogs:
-  def test_a_task_has_its_lines_and_its_parts_in_the_order_they_were_written(self, client, db):
-    line("t1", "", "queued")
-    line("t1", "c1", "deploying web")
-    line("t2", "", "another task")
-    line("t1", "c2", "deploying db")
+  def test_a_task_has_its_lines_in_the_order_they_were_written(self, client, db):
+    line("t1", "queued")
+    line("t1", "deploying web")
+    line("t2", "another task")
+    line("t1", "deploying db")
 
     response = client.get("/api/tasks/t1/logs")
 
     assert [row["message"] for row in response.json()["lines"]] == ["queued", "deploying web", "deploying db"]
-
-  def test_a_part_has_its_own_lines(self, client, db):
-    line("t1", "c1", "deploying web")
-    line("t1", "c2", "deploying db")
-
-    response = client.get("/api/tasks/t1/logs", params={"sub_task_id": "c2"})
-
-    [row] = response.json()["lines"]
-    assert {key: row[key] for key in ("task_id", "sub_task_id", "ts", "level", "logger", "message")} == {
-        "task_id": "t1", "sub_task_id": "c2", "ts": "2026-01-01T12:00:00.000000Z", "level": "INFO",
-        "logger": "services.manager", "message": "deploying db"}
+    assert {key: response.json()["lines"][0][key] for key in ("task_id", "ts", "level", "logger", "message")} == {
+        "task_id": "t1", "ts": "2026-01-01T12:00:00.000000Z", "level": "INFO", "logger": "services.manager",
+        "message": "queued"}
 
   def test_a_view_gets_the_lines_after_the_last_one_it_holds(self, client, db):
-    line("t1", "", "first")
-    line("t1", "", "second")
+    line("t1", "first")
+    line("t1", "second")
     held = client.get("/api/tasks/t1/logs").json()["lines"][0]["id"]
 
     response = client.get("/api/tasks/t1/logs", params={"after_id": held})
@@ -176,25 +168,3 @@ class TestLogs:
 
   def test_a_task_that_logged_nothing_has_no_lines(self, client, db):
     assert client.get("/api/tasks/t1/logs").json() == {"lines": []}
-
-
-class TestParts:
-  def test_the_parts_that_logged_come_in_the_order_of_their_first_line_with_their_events_kind_and_worker(
-          self, client, application, worker):
-    container = Container.create(application=application, worker=worker)
-    for action, part in (("deploy", "c2"), ("backup_stopped", "c9")):
-      ContainerEvent.create(container=container, subject_id=container.id, action=action, transition="admitted",
-                            task_id="t1", part_id=part, application_name="demo-web", worker_hostname="w1")
-    line("t1", "", "queued")
-    line("t1", "c2", "deploying web")
-    line("t1", "c1", "deleting db")
-    line("t1", "c2", "deployed web")
-    line("t2", "c3", "another task")
-
-    assert client.get("/api/tasks/t1/parts").json() == [
-        {"id": "c2", "type": "deploy", "worker": "w1"}, {"id": "c1", "type": None, "worker": None}]
-
-  def test_a_task_without_parts_has_none(self, client, db):
-    line("t1", "", "queued")
-
-    assert client.get("/api/tasks/t1/parts").json() == []

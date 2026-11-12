@@ -89,7 +89,7 @@ export interface QueuedRequest {
   cancellable: boolean
 }
 
-// A step of an operation on the container; its lines are the task's `task_id`, part `part_id`.
+// A step of an operation on the container; its lines are those of the task `task_id`.
 export interface ContainerEvent {
   id: number
   action: string
@@ -97,7 +97,6 @@ export interface ContainerEvent {
   operation_id: string | null
   reason: Record<string, unknown> | null
   task_id: string | null
-  part_id: string | null
   created_at: string
 }
 

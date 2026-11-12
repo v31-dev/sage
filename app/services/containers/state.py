@@ -70,7 +70,7 @@ def container_payload(container: Container, state: ContainerState, domains: list
       "queued": [asdict(request) for request in state.queued],
       "domains": domains,
       "events": [{"id": event.id, "action": event.action, "transition": event.transition, "operation_id": event.operation_id,
-                  "reason": event.reason, "task_id": event.task_id, "part_id": event.part_id, "created_at": event.created_at}
+                  "reason": event.reason, "task_id": event.task_id, "created_at": event.created_at}
                  for event in events],
       "created_at": container.created_at,
       "updated_at": container.updated_at,

@@ -54,7 +54,7 @@ class UpdateFeed(StrEnum):
   """The names of the feeds a connection can follow. A feed's owner sends each new row to it."""
   NOTIFICATIONS = "notifications"
   TASK_HISTORY = "task-history"
-  TASK_LOGS = "task-logs"                # a task's lines: `task-logs:<task>`, or a container's part `<task>/<part>`
+  TASK_LOGS = "task-logs"                # a task's lines: `task-logs:<task>`
   APPLICATION_LOGS = "application-logs"  # an application's lines: `application-logs:<project>-<app>`
   REQUESTS = "requests"                  # Traefik's requests on every worker
 

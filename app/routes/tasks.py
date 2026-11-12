@@ -4,7 +4,7 @@ from typing import Annotated
 from fastapi import APIRouter, Query
 
 import config
-from services.history import task_history, task_history_filters, task_parts
+from services.history import task_history, task_history_filters
 from services.logs import Logs
 from services.manager import Manager
 from utils.logging import NO_ACCESS_LOG
@@ -31,14 +31,7 @@ def list_task_history_filters():
   return task_history_filters()
 
 
-@router.get("/{task_id}/parts")
-def get_task_parts(task_id: str):
-  """The parts of a task that logged lines (one container's deploy, stop, delete, backup or restore each), in the
-  order of their first line, with their kind and worker."""
-  return task_parts(task_id)
-
-
 @router.get("/{task_id}/logs", openapi_extra=NO_ACCESS_LOG)  # what a task log dialog loads
-def get_task_logs(task_id: str, sub_task_id: str = "", after_id: int = 0):
-  """Every line a task logged, or one container's part of it (`sub_task_id`); after the line `after_id`, if given."""
-  return Logs().query_task_logs(task_id, sub_task_id, after_id)
+def get_task_logs(task_id: str, after_id: int = 0):
+  """Every line a task logged; after the line `after_id`, if given."""
+  return Logs().query_task_logs(task_id, after_id)

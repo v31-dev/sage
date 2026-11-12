@@ -25,7 +25,7 @@ TOPICS = {
                                    frozenset({UpdateSource.APPLICATION}), parameterised=True),
     UpdateFeed.NOTIFICATIONS: Feed(),
     UpdateFeed.TASK_HISTORY: Feed(),
-    # A task's lines and an application's, followed by the task (or `<task>/<part>`) and by `<project>-<app>`.
+    # A task's lines and an application's, followed by the task and by `<project>-<app>`.
     UpdateFeed.TASK_LOGS: Feed(parameterised=True),
     UpdateFeed.APPLICATION_LOGS: Feed(parameterised=True),
     UpdateFeed.REQUESTS: Feed(),

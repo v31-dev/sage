@@ -11,7 +11,7 @@ import config
 from services.logs.tasks import _CaptureHandler
 from services.updates import UpdateFeed
 from utils.executor import run_in_executor_with_context
-from utils.logging import TaskFailed, sub_task_id, task_id
+from utils.logging import TaskFailed, task_id
 from utils.queue import TaskQueue
 
 from .builders import stamp, task_entries
@@ -41,8 +41,8 @@ class Tasks:
       entry = self.captured.get()
       self.logs.write_task_line(entry)
 
-  def messages(self, task_id, sub_task_id=""):
-    return [line["message"] for line in self.logs.query_task_logs(task_id, sub_task_id)["lines"]]
+  def messages(self, task_id):
+    return [line["message"] for line in self.logs.query_task_logs(task_id)["lines"]]
 
 
 @pytest.fixture
@@ -109,22 +109,6 @@ class TestTaskLines:
     await tasks.run()
     for word in ("a", "b"):
       assert tasks.messages(f"t{word}") == ["chatty: started", *(f"{word} {index}" for index in range(5)), "chatty: completed"]
-
-  async def test_a_container_part_is_read_with_its_task_or_on_its_own(self, tasks):
-    async def deploy():
-      log.info("deploying two containers")
-      for part in ("p1", "p2"):
-        token = sub_task_id.set(part)
-        try:
-          log.info(f"container {part}")
-        finally:
-          sub_task_id.reset(token)
-
-    tasks.add(deploy, task_id="t1")
-    await tasks.run()
-    whole = ["deploy: started", "deploying two containers", "container p1", "container p2", "deploy: completed"]
-    assert tasks.messages("t1") == whole
-    assert tasks.messages("t1", "p2") == ["container p2"]
 
   async def test_a_quiet_task_that_succeeds_leaves_no_lines(self, tasks):
     async def sync():
@@ -231,13 +215,12 @@ class TestTaskLines:
 
 
 class TestFeeds:
-  def test_a_task_line_goes_to_its_tasks_feed_and_a_parts_line_to_its_parts_too(self, logs, published):
+  def test_a_task_line_goes_to_its_tasks_feed(self, logs, published):
     logs.write_task_line(task_entries(0, 1, task="t1")[0])
-    logs.write_task_line(task_entries(1, 1, task="t1", sub="c1")[0])
+    logs.write_task_line(task_entries(1, 1, task="t2")[0])
 
     assert [(feed, key, [row["ts"] for row in rows]) for feed, rows, key in published] == [
-        (UpdateFeed.TASK_LOGS, "t1", [stamp(0)]), (UpdateFeed.TASK_LOGS, "t1", [stamp(1)]),
-        (UpdateFeed.TASK_LOGS, "t1/c1", [stamp(1)])]
+        (UpdateFeed.TASK_LOGS, "t1", [stamp(0)]), (UpdateFeed.TASK_LOGS, "t2", [stamp(1)])]
 
   def test_a_published_task_line_is_the_line_its_route_returns(self, logs, published):
     logs.write_task_line(task_entries(0, 1)[0])

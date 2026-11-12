@@ -123,7 +123,6 @@ class BaseEvent(BaseModel):
   transition = ChoiceField(EVENT_TRANSITIONS)
   reason = JSONField(null=True)
   task_id = CharField(null=True)
-  part_id = CharField(null=True)
   dedupe_key = CharField(null=True, unique=True)
 
   class Meta:

@@ -1,15 +1,15 @@
-"""The task lines: what the manager logs inside its queued tasks, in `logs/tasks.db`, read by task and by a
-container's part of it. A handler on the root logger hands them to a drain thread, which writes them."""
+"""The task lines: what the manager logs inside its queued tasks, in `logs/tasks.db`, read by task. A handler on the
+root logger hands them to a drain thread, which writes them."""
 import logging
 import queue
 import threading
 from datetime import datetime, timezone
 from functools import partial
 
-from peewee import CharField, Model, SqliteDatabase, TextField, fn
+from peewee import CharField, Model, SqliteDatabase, TextField
 
 from services.updates import UpdateFeed, Updates
-from utils.logging import sub_task_id, task_id, task_lines
+from utils.logging import task_id, task_lines
 
 from .store import Store, stored_time
 
@@ -21,7 +21,6 @@ TASKS = "tasks"
 def task_lines_schema(db: SqliteDatabase) -> Store:
   class TaskLogs(Model):
     task_id = CharField()
-    sub_task_id = CharField()
     ts = CharField()
     level = CharField()
     logger = CharField()
@@ -29,7 +28,7 @@ def task_lines_schema(db: SqliteDatabase) -> Store:
 
     class Meta:
       database = db
-      indexes = ((("task_id", "sub_task_id"), False), (("ts",), False))
+      indexes = ((("task_id",), False), (("ts",), False))
 
   db.create_tables([TaskLogs], safe=True)
   return Store(db, TaskLogs)
@@ -56,32 +55,18 @@ class TasksMixin:
         logger.warning(f"Could not write a line of task {entry['task_id']}.", exc_info=True)
 
   def write_task_line(self, entry: dict):
-    """A task's line, to the task logs and to the feeds of the task and of its part."""
+    """A task's line, to the task logs and to the task's feed."""
     row = {"id": self._store(TASKS).lines.insert(**entry).execute(), **entry}
     self._check_sizes(TASKS)
-    task, part = entry["task_id"], entry["sub_task_id"]
-    Updates().publish(UpdateFeed.TASK_LOGS, [row], key=task)
-    if part:
-      Updates().publish(UpdateFeed.TASK_LOGS, [row], key=f"{task}/{part}")
+    Updates().publish(UpdateFeed.TASK_LOGS, [row], key=entry["task_id"])
 
-  def query_task_logs(self, task_id: str, sub_task_id: str = "", after_id: int = 0) -> dict:
-    """All of a task's lines, or of one container's part of it, in the order they were written (after the line
-    `after_id`, if given)."""
+  def query_task_logs(self, task_id: str, after_id: int = 0) -> dict:
+    """All of a task's lines, in the order they were written (after the line `after_id`, if given)."""
     lines = self._store(TASKS).lines
     query = lines.select().where(lines.task_id == task_id)
-    if sub_task_id:
-      query = query.where(lines.sub_task_id == sub_task_id)
     if after_id:
       query = query.where(lines.id > after_id)
     return {"lines": list(query.order_by(lines.id).dicts())}
-
-  def query_task_parts(self, task_id: str) -> list[str]:
-    """The ids of the parts of a task that logged lines, in the order of their first line."""
-    lines = self._store(TASKS).lines
-    query = (lines.select(lines.sub_task_id)
-             .where((lines.task_id == task_id) & (lines.sub_task_id != ""))
-             .group_by(lines.sub_task_id).order_by(fn.MIN(lines.id)))
-    return [part for (part,) in query.tuples()]
 
 
 class _CaptureHandler(logging.Handler):
@@ -98,7 +83,6 @@ class _CaptureHandler(logging.Handler):
       if lines is not None:
         lines.write(partial(self._captured.put, {
             "task_id": task_id.get(),
-            "sub_task_id": sub_task_id.get(),
             "ts": stored_time(datetime.fromtimestamp(record.created, timezone.utc)),
             "level": record.levelname,
             "logger": record.name,

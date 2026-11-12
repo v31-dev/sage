@@ -345,7 +345,7 @@ class TestUnderLoad:
       try:
         for _ in range(25):
           for entry in next_lines(rng, "tasks"):
-            logs.write_task_line({"task_id": "t1", "sub_task_id": "", "ts": entry["ts"], "level": "INFO",
+            logs.write_task_line({"task_id": "t1", "ts": entry["ts"], "level": "INFO",
                                   "logger": "tests.task", "message": entry["message"]})
       except Exception:
         errors.append(traceback.format_exc())

@@ -45,8 +45,7 @@ container counts, and each container owns its headline, runtime details and queu
 - `backup-status`: the Create Backup and Discover Backups buttons, each mirroring its own flag (loading `GET /backups/platform_backup_status`).
 - `backups`: the Backups page (loading `GET /backups`), newest first; each pushed list replaces the shown one. A delete on the page loads the list again at once.
 - `release`: the Upgrade page (loading `GET /release`). A check for updates is over when a release with a new `fetched_at` is pushed, or after 60 s with an error.
-- `task-logs:<task>` and `task-logs:<task>/<part>`, feeds: the task log dialogs (`components/TaskLogs.vue`), a task's on the Tasks page and a container's part from its Event Logs; a list (below), of every line, oldest first, with no ceiling (a dialog has no filters).
-  - The Tasks page's dialog reads the task's parts (`GET /tasks/{task_id}/parts`) when it opens: a select shows all the lines or one part's, and all the lines carry a Part column (the worker, or the part's id when its event is gone).
+- `task-logs:<task>`, a feed: the task log dialogs (`components/TaskLogs.vue`), a task's on the Tasks page and an operation's from a container's Event Logs; a list (below), of every line, oldest first, with no ceiling (a dialog has no filters).
 - `application-logs:<project>-<app>`, a feed: the application logs page (`pages/ApplicationLogs.vue`); a list (below), of the newest 1000 lines that match, oldest first, up to 1000, in one scroll container that follows new lines while it is at the bottom.
   - Filtered by the worker (a dropdown, or a click on a line's worker), the search and the From/To window (From starts five minutes back).
   - A marker of what Sage did (`MARKER_STREAM`, `sage`: deployed, stopped, stopped for a backup, …, with its task's id) is drawn apart from the container's lines, with a flag.

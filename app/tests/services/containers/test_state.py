@@ -32,8 +32,8 @@ def test_a_container_is_its_placement_and_its_decided_state_with_what_it_was_dec
 def test_its_events_are_given_in_the_order_they_come_with_what_tells_them_apart(application, worker):
   container = Container.create(application=application, worker=worker)
   events = [ContainerEvent.create(container=container, subject_id=container.id, action=action, transition=transition,
-                                  operation_id="o1", task_id="t1", part_id="p1", application_name="demo-web",
+                                  operation_id="o1", task_id="t1", application_name="demo-web",
                                   worker_hostname="w1") for action, transition in (("deploy", "admitted"), ("deploy", "succeeded"))]
   payload = container_payload(container, state(container), [], events[::-1])
-  assert [(event["action"], event["transition"], event["operation_id"], event["task_id"], event["part_id"])
-          for event in payload["events"]] == [("deploy", "succeeded", "o1", "t1", "p1"), ("deploy", "admitted", "o1", "t1", "p1")]
+  assert [(event["action"], event["transition"], event["operation_id"], event["task_id"])
+          for event in payload["events"]] == [("deploy", "succeeded", "o1", "t1"), ("deploy", "admitted", "o1", "t1")]

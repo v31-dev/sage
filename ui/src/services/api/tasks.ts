@@ -1,6 +1,5 @@
 import { request } from '@/lib/api'
 import { parseDate } from '@/lib/utils'
-import type { ContainerEvent } from './applications'
 
 interface TaskFields {
   task_id: string
@@ -89,11 +88,10 @@ export interface TaskHistoryFilters {
 export const fetchTaskHistoryFilters = () =>
   request<TaskHistoryFilters>('GET', '/tasks/history/filters')
 
-// A line a queued task logged; `sub_task_id` is the container's part it belongs to, if any.
+// A line a queued task logged.
 export interface TaskLogLine {
   id: number
   task_id: string
-  sub_task_id: string
   ts: string
   level: string
   logger: string
@@ -105,19 +103,6 @@ export interface TaskLogPage {
   lines: TaskLogLine[]
 }
 
-// A container's part of a task; its kind and worker are null when its event went with its container.
-export interface TaskPart {
-  id: string
-  type: ContainerEvent['action'] | null
-  worker: string | null
-}
-
-// The parts of a task that logged lines, in the order of their first line.
-export const fetchTaskParts = (taskId: string) =>
-  request<TaskPart[]>('GET', `/tasks/${taskId}/parts`)
-
-// A task's lines, or only those of one container's part of it; after the line `afterId`, if given.
-export const fetchTaskLogs = (taskId: string, subTaskId = '', afterId = 0) =>
-  request<TaskLogPage>('GET', `/tasks/${taskId}/logs`, {
-    query: { sub_task_id: subTaskId, after_id: afterId || null },
-  })
+// A task's lines; after the line `afterId`, if given.
+export const fetchTaskLogs = (taskId: string, afterId = 0) =>
+  request<TaskLogPage>('GET', `/tasks/${taskId}/logs`, { query: { after_id: afterId || null } })

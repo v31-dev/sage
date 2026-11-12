@@ -20,8 +20,8 @@ def lines(first, count, host="w1", word="line"):
           for index in range(first, first + count)]
 
 
-def task_entries(first, count, task="t1", sub=""):
-  return [{"task_id": task, "sub_task_id": sub, "ts": stamp(index), "level": "INFO", "logger": "tests.task",
+def task_entries(first, count, task="t1"):
+  return [{"task_id": task, "ts": stamp(index), "level": "INFO", "logger": "tests.task",
            "message": f"step {index} of the task, pulling and starting the containers"}
           for index in range(first, first + count)]
 

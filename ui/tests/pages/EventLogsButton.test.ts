@@ -22,8 +22,8 @@ const stubs = {
     template: '<div data-select><slot /></div>',
   },
   TaskLogs: {
-    props: ['taskId', 'subTaskId'],
-    template: '<div data-logs>{{ taskId }}/{{ subTaskId }}</div>',
+    props: ['taskId'],
+    template: '<div data-logs>{{ taskId }}</div>',
   },
 }
 
@@ -32,7 +32,6 @@ let ids = 0
 // The newest come first, as the manager sends them.
 const event = (
   task: string | null,
-  part: string | null,
   action = 'deploy',
   transition = 'succeeded'
 ): ContainerEvent => ({
@@ -42,7 +41,6 @@ const event = (
   operation_id: 'o1',
   reason: null,
   task_id: task,
-  part_id: part,
   created_at: '2026-01-01T12:00:00',
 })
 
@@ -60,20 +58,20 @@ async function open(wrapper: ReturnType<typeof setup>) {
 }
 
 describe('the event logs', () => {
-  it('show the newest run at first: its part of its task', async () => {
-    const wrapper = setup([event('t2', 'p2', 'stop'), event('t1', 'p1')])
+  it('show the newest operation at first: its task', async () => {
+    const wrapper = setup([event('t2', 'stop'), event('t1')])
 
     await open(wrapper)
 
-    expect(wrapper.get('[data-logs]').text()).toBe('t2/p2')
+    expect(wrapper.get('[data-logs]').text()).toBe('t2')
   })
 
-  it('list each run once, by its newest event, and name its operation', async () => {
+  it('list each operation once, by its newest event, and name it', async () => {
     const wrapper = setup([
-      event('t1', 'p1', 'deploy', 'succeeded'),
-      event('t1', 'p1', 'deploy', 'admitted'),
-      event('t0', null, 'backup_preserve', 'failed'),
-      event(null, null, 'deploy', 'interrupted'),
+      event('t1', 'deploy', 'succeeded'),
+      event('t1', 'deploy', 'admitted'),
+      event('t0', 'backup_preserve', 'failed'),
+      event(null, 'deploy', 'interrupted'),
     ])
 
     await open(wrapper)
@@ -84,14 +82,14 @@ describe('the event logs', () => {
     ])
   })
 
-  it('show the run chosen, a whole task when its event names no part', async () => {
-    const wrapper = setup([event('t2', 'p2', 'stop'), event('t1', null)])
+  it('show the operation chosen', async () => {
+    const wrapper = setup([event('t2', 'stop'), event('t1')])
     await open(wrapper)
 
-    wrapper.findComponent(stubs.Select).vm.$emit('update:modelValue', 't1/')
+    wrapper.findComponent(stubs.Select).vm.$emit('update:modelValue', 't1')
     await flushPromises()
 
-    expect(wrapper.get('[data-logs]').text()).toBe('t1/')
+    expect(wrapper.get('[data-logs]').text()).toBe('t1')
   })
 
   it('show nothing for a container without events', async () => {
