@@ -32,13 +32,6 @@ def _scopes_conflict(a: frozenset[str], b: frozenset[str]) -> bool:
   return any(_scope_conflict(sa, sb) for sa in a for sb in b)
 
 
-def _dominates(a: frozenset[str], b: frozenset[str]) -> bool:
-  # True when `a` is at the same level or higher than `b`. Used for priority
-  # insertion: a priority task is placed behind the tasks that dominate it and
-  # ahead of everything else.
-  return any(_is_ancestor_or_equal(sa, sb) for sa in a for sb in b)
-
-
 class OnConflict(Enum):
   """How add_task admits a task when a task with the same key is pending or running.
 
@@ -91,13 +84,12 @@ class Outcome(Enum):
 
 @dataclass(frozen=True)
 class Admission:
-  """What `admit` decides for a new task. Accepted: `task` is what to queue, at `position` once the `superseded` are
+  """What `admit` decides for a new task. Accepted: `task` is what to queue at the end, once the `superseded` are
   removed. Existing: `task` is the pending or running one with its key, made visible when `reveal`. Busy: `task` is the
   running one with its key. Refused: recorded as cancelled when `cancelled`."""
   outcome: Outcome
   task: QueuedTask | None = None
   superseded: tuple[QueuedTask, ...] = ()
-  position: int = 0
   reveal: bool = False
   cancelled: bool = False
 
@@ -111,9 +103,9 @@ class Added:
 
 
 def admit(state: QueueState, running: list[QueuedTask], queue: list[QueuedTask], new: QueuedTask,
-          on_conflict: OnConflict, priority: bool) -> Admission:
-  """Whether `new` is queued, done by a task with its key, or refused, and where it goes. A task with another key on a
-  conflicting scope never stops it: it is queued and waits. A visible request makes the task that does it visible."""
+          on_conflict: OnConflict) -> Admission:
+  """Whether `new` is queued, done by a task with its key, or refused. A task with another key on a conflicting scope
+  never stops it: it is queued and waits. A visible request makes the task that does it visible."""
   if state == QueueState.RESTORING:
     return Admission(Outcome.REFUSED)
   if state == QueueState.STOPPING:
@@ -133,19 +125,9 @@ def admit(state: QueueState, running: list[QueuedTask], queue: list[QueuedTask],
   superseded = ()
   if on_conflict in (OnConflict.REPLACE, OnConflict.REVISE):
     superseded = tuple(task for task in queue if task.key == new.key)
-    queue = [task for task in queue if task.key != new.key]
     if not all(task.quiet for task in superseded):
       new = replace(new, quiet=False)
-
-  position = len(queue)
-  if priority:
-    # Behind the tasks that dominate it (same level or higher), ahead of the rest.
-    position = 0
-    for queued in queue:
-      if not _dominates(queued.scopes, new.scopes):
-        break
-      position += 1
-  return Admission(Outcome.ACCEPTED, new, superseded, position)
+  return Admission(Outcome.ACCEPTED, new, superseded)
 
 
 def next_to_start(state: QueueState, queue: list[QueuedTask], running: list[QueuedTask],
@@ -207,7 +189,7 @@ class TaskQueue:
   def add_task(self, task: Callable, key: tuple[str, ...], scopes: frozenset[str], executor: str,
                name: str | None = None, params: dict | None = None, inputs: dict | None = None,
                labels: dict[str, str] | None = None, task_id: str | None = None,
-               on_conflict: OnConflict = OnConflict.DEDUP, priority: bool = False, quiet: bool = False) -> Added:
+               on_conflict: OnConflict = OnConflict.DEDUP, quiet: bool = False) -> Added:
     """Request a task: accepted (queued), existing (a pending or running task with the same key does it), busy (REVISE:
     a task with the same key is running) or refused (the queue is stopping, recorded as cancelled; or restoring, with
     no record).
@@ -229,9 +211,6 @@ class TaskQueue:
       recorded and shown.
     - task_id: log-correlation id; generated here when omitted (scheduled work).
     - on_conflict: admission policy (see OnConflict).
-    - priority: insert ahead of lower/unrelated tasks but behind tasks that
-      dominate it (same level or higher): a worker-wide task jumps over that
-      worker's container tasks but not over other worker-wide tasks.
     - quiet: record this task and keep its lines only when it fails, so
       high-frequency housekeeping (e.g. metrics) does not flood the record. A
       visible request with the same key makes it visible.
@@ -242,11 +221,11 @@ class TaskQueue:
                           task_id=task_id or new_task_id(), quiet=quiet)
     self._validate(new_task)
     with self._lock:
-      admission = admit(self._state, self._running, self._queue, new_task, on_conflict, priority)
+      admission = admit(self._state, self._running, self._queue, new_task, on_conflict)
       if admission.outcome == Outcome.ACCEPTED:
         for superseded in admission.superseded:
           self._queue.remove(superseded)
-        self._queue.insert(admission.position, admission.task)
+        self._queue.append(admission.task)
       elif admission.reveal:
         for tasks in (self._queue, self._running):
           tasks[:] = [replace(entry, quiet=False) if entry is admission.task else entry for entry in tasks]

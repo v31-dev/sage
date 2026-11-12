@@ -19,20 +19,15 @@ def queued(name, *scopes, key=None, quiet=False):
 RESTORE = queued("restore")
 
 
-def admission(new, *, state=QueueState.RUNNING, running=(), queue=(), on_conflict=OnConflict.DEDUP, priority=False):
-  return admit(state, list(running), list(queue), new, on_conflict, priority)
+def admission(new, *, state=QueueState.RUNNING, running=(), queue=(), on_conflict=OnConflict.DEDUP):
+  return admit(state, list(running), list(queue), new, on_conflict)
 
 
 class TestAdmit:
-  def test_a_task_on_an_empty_queue_is_accepted_first(self):
+  def test_a_task_on_an_empty_queue_is_accepted(self):
     new = queued("deploy", "worker:w1:container:c1")
     result = admission(new)
-    assert (result.outcome, result.task, result.superseded, result.position) == (Outcome.ACCEPTED, new, (), 0)
-
-  def test_it_goes_to_the_end_of_the_queue(self):
-    result = admission(queued("deploy", "worker:w1:container:c1"),
-                       queue=[queued("x", "worker:w1:container:c2"), queued("y", "worker:w2")])
-    assert result.position == 2
+    assert (result.outcome, result.task, result.superseded) == (Outcome.ACCEPTED, new, ())
 
   @pytest.mark.parametrize("where", ["running", "queue"])
   def test_dedup_returns_the_pending_or_running_task_with_the_same_key(self, where):
@@ -61,11 +56,11 @@ class TestAdmit:
                        **{where: [queued("delete", "backup:store:s1")]})
     assert (result.outcome, result.superseded) == (Outcome.ACCEPTED, ())
 
-  def test_replace_supersedes_the_pending_task_with_the_key_even_on_other_scopes_and_takes_the_end(self):
+  def test_replace_supersedes_the_pending_task_with_the_key_even_on_other_scopes(self):
     old = queued("sync", "domain:id:d1", "worker:w1:routing:api", key=("sync", "d1"))
     new = queued("sync", "domain:id:d1", "worker:w2:routing:api", key=("sync", "d1"))
     result = admission(new, on_conflict=OnConflict.REPLACE, queue=[old, queued("x", "worker:w3")])
-    assert (result.outcome, result.task, result.superseded, result.position) == (Outcome.ACCEPTED, new, (old,), 1)
+    assert (result.outcome, result.task, result.superseded) == (Outcome.ACCEPTED, new, (old,))
 
   def test_replace_leaves_a_running_task_with_the_key_alone(self):
     result = admission(queued("sync", "domain:id:d1"), on_conflict=OnConflict.REPLACE,
@@ -83,11 +78,11 @@ class TestAdmit:
                        running=[current])
     assert (result.outcome, result.task, result.superseded) == (Outcome.BUSY, current, ())
 
-  def test_revise_supersedes_the_pending_task_with_the_key_whatever_its_name_and_takes_the_end(self):
+  def test_revise_supersedes_the_pending_task_with_the_key_whatever_its_name(self):
     old = queued("deploy", "worker:w1:container:c1", key=("lifecycle", "c1"))
     new = queued("stop", "worker:w1:container:c1", key=("lifecycle", "c1"))
     result = admission(new, on_conflict=OnConflict.REVISE, queue=[old, queued("x", "worker:w3")])
-    assert (result.outcome, result.task, result.superseded, result.position) == (Outcome.ACCEPTED, new, (old,), 1)
+    assert (result.outcome, result.task, result.superseded) == (Outcome.ACCEPTED, new, (old,))
 
   def test_revise_is_accepted_beside_a_running_task_with_another_key_on_its_scope(self):
     result = admission(queued("deploy", "worker:w1:container:c1", key=("lifecycle", "c1")),
@@ -113,22 +108,6 @@ class TestAdmit:
                        on_conflict=on_conflict)
     assert result.task.quiet is expected
 
-  def test_a_priority_task_goes_behind_the_tasks_that_cover_it_and_ahead_of_the_rest(self):
-    queue = [queued("p1", "certificate"), queued("p2", "certificate"), queued("a", "worker:w1:container:c1")]
-    assert admission(queued("p3", "certificate"), queue=queue, priority=True).position == 2
-
-  def test_a_priority_child_goes_behind_its_parent_only(self):
-    queue = [queued("host", "worker:w1"), queued("a", "worker:w1:container:c1")]
-    assert admission(queued("b", "worker:w1:container:c2"), queue=queue, priority=True).position == 1
-
-  def test_a_priority_task_that_nothing_covers_goes_first(self):
-    assert admission(queued("a", "worker:w1:container:c1"), queue=[queued("p", "certificate")], priority=True).position == 0
-
-  def test_a_priority_task_is_placed_after_the_tasks_it_supersedes_are_removed(self):
-    queue = [queued("p1", "certificate"), queued("renew", "certificate"), queued("a", "worker:w1:container:c1")]
-    result = admission(queued("renew", "certificate"), queue=queue, on_conflict=OnConflict.REPLACE, priority=True)
-    assert (len(result.superseded), result.position) == (1, 1)
-
   def test_a_task_is_accepted_while_paused(self):
     assert admission(queued("a", "worker:w1"), state=QueueState.PAUSED).outcome == Outcome.ACCEPTED
 
@@ -145,7 +124,7 @@ class TestAdmit:
   def test_a_restoring_queue_refuses_every_request_without_a_record(self, on_conflict):
     pending = queued("sync", "domain:id:d1", key=("sync", "d1"), quiet=True)
     result = admission(queued("sync", "domain:id:d1", key=("sync", "d1")), state=QueueState.RESTORING, queue=[pending],
-                       on_conflict=on_conflict, priority=True)
+                       on_conflict=on_conflict)
     assert (result.outcome, result.task, result.superseded, result.reveal, result.cancelled) == (
         Outcome.REFUSED, None, (), False, False)
 
@@ -502,10 +481,17 @@ class TestAddTask:
     lane.add(done, key=("sync",), on_conflict=OnConflict.REPLACE, quiet=True)
     assert lane.recorded == []
 
-  def test_a_priority_task_is_queued_ahead_of_the_others(self, lane):
+  def test_a_task_is_queued_behind_the_others(self, lane):
     lane.add(done, key=("first",), scope="worker:w1")
-    lane.add(done, key=("urgent",), scope="worker:w2", priority=True)
-    assert [task["name"] for task in lane.queue.snapshot()["queued"]] == ["urgent", "first"]
+    lane.add(done, key=("second",), scope="worker:w2")
+    assert [task["name"] for task in lane.queue.snapshot()["queued"]] == ["first", "second"]
+
+  @pytest.mark.parametrize("on_conflict", [OnConflict.REPLACE, OnConflict.REVISE])
+  def test_a_replacement_is_queued_behind_the_others_not_in_the_place_of_the_task_it_supersedes(self, lane, on_conflict):
+    lane.add(done, key=("sync",), on_conflict=on_conflict)
+    lane.add(done, key=("other",), scope="worker:w2")
+    lane.add(done, key=("sync",), on_conflict=on_conflict)
+    assert [task["name"] for task in lane.queue.snapshot()["queued"]] == ["other", "sync"]
 
 
 class TestCancel:
@@ -634,7 +620,7 @@ class TestRestore:
     self.restore(lane)
     queued, changes = lane.queue.snapshot()["queued"], lane.changes
     for quiet in (True, False):
-      assert lane.add(done, key=("sync", "d1"), on_conflict=on_conflict, quiet=quiet, priority=True) == Added(Outcome.REFUSED)
+      assert lane.add(done, key=("sync", "d1"), on_conflict=on_conflict, quiet=quiet) == Added(Outcome.REFUSED)
       assert lane.add(done, key=("other",), scope="worker:w2", on_conflict=on_conflict, quiet=quiet) == Added(Outcome.REFUSED)
     assert (lane.queue.snapshot()["queued"], lane.recorded, lane.changes) == (queued, [], changes)
 
