@@ -71,8 +71,9 @@ class DiscoveryMixin:
     `sage-discovery-<hostname>`, and `discovery.<domain>` at the platform's tunnel, from one list of the zone. The
     record of a worker known to be out (`discovery_member`), or removed, is deleted; that of one not known yet is left
     as it is."""
+    since_start = (utcnow() - self.started_at).total_seconds()
     members = {worker.hostname: discovery_member(Tailscale().ssh(worker.hostname), Workers().setup(worker.hostname),
-                                                 Tailscale().address(worker.hostname))
+                                                 Tailscale().address(worker.hostname), since_start)
                for worker in Worker.select(Worker.hostname)}
     cloudflare = Cloudflare()
     try:

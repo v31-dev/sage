@@ -472,9 +472,9 @@ request, makes the shared records from one list of the zone: `discovery.int.<dom
 worker reachable and set up, ready or not, under `sage-discovery-<hostname>`; and `discovery.<domain>` a proxied CNAME
 to the platform's tunnel under `sage-tunnel`, which every worker's platform connector serves. Whether a worker has its
 record is `discovery_member` (`services/workers/decisions.py`): the record of a worker known to be out (its SSH server
-unreachable, its setup failed or refused) or removed is deleted, and that of one not known yet (not observed, the
-Manager cut off from the tailnet, or not set up since the Manager started) is left as it is, so a restart deletes
-none.
+unreachable, its setup failed or refused) or removed is deleted. That of one not known yet is left as it is: while the
+Manager is cut off from the tailnet, and otherwise (not observed, or not set up since the Manager started) for
+`UNKNOWN_HOLD_SECONDS` after the Manager started, after which it is out. So a restart deletes none.
 
 Discovery is requested at the end of every Domain apply, failed ones included, and of every Domain pass, which every
 five minutes also repairs it; when whether a container with a service's Domain can be routed to changes, its becoming

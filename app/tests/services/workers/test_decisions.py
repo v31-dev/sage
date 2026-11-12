@@ -140,20 +140,23 @@ def test_a_reboot_is_verified_only_by_a_new_boot_and_a_ready_worker(boot_id, rea
   assert reboot_outcome("old", boot_id, ready) == outcome
 
 
-@pytest.mark.parametrize("ssh, setup, address, member", [
-    ("reachable", "succeeded", "100.64.0.2", True),
-    ("reachable", "succeeded", None, None),
-    ("reachable", None, "100.64.0.2", None),
-    ("unobserved", None, None, None),
-    ("unknown", "succeeded", "100.64.0.2", None),
-    ("unreachable", "succeeded", "100.64.0.2", False),
-    ("unreachable", None, None, False),
-    ("reachable", "failed", "100.64.0.2", False),
-    ("reachable", "refused", "100.64.0.2", False),
-    ("unknown", "failed", "100.64.0.2", False),
+@pytest.mark.parametrize("ssh, setup, address, held, after", [
+    ("reachable", "succeeded", "100.64.0.2", True, True),
+    ("reachable", "succeeded", None, None, False),
+    ("reachable", None, "100.64.0.2", None, False),
+    ("unobserved", None, None, None, False),
+    ("unknown", "succeeded", "100.64.0.2", None, None),
+    ("unknown", None, None, None, None),
+    ("unreachable", "succeeded", "100.64.0.2", False, False),
+    ("unreachable", None, None, False, False),
+    ("reachable", "failed", "100.64.0.2", False, False),
+    ("reachable", "refused", "100.64.0.2", False, False),
+    ("unknown", "failed", "100.64.0.2", False, False),
 ])
-def test_discovery_points_at_a_worker_reachable_and_set_up_and_leaves_one_not_known_yet_undecided(ssh, setup, address, member):
-  assert discovery_member(ssh, setup, address) is member
+def test_discovery_points_at_a_worker_reachable_and_set_up_and_holds_one_not_known_yet_for_the_hold_unless_cut_off(
+        ssh, setup, address, held, after):
+  hold = config.UNKNOWN_HOLD_SECONDS
+  assert (discovery_member(ssh, setup, address, hold - 1), discovery_member(ssh, setup, address, hold)) == (held, after)
 
 
 class TestWorkerOwner:

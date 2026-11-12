@@ -401,6 +401,19 @@ class TestDns:
     assert [content for comment, _, content, *_ in zone.held() if comment == "sage-discovery-w2"] == (
         ["100.64.0.9"] if kept else [])
 
+  @pytest.mark.parametrize("found, setup, kept", [("unobserved", None, False), ("reachable", None, False),
+                                                  ("unknown", "succeeded", True)])
+  async def test_two_minutes_after_the_start_a_worker_still_not_known_is_out_unless_the_manager_is_cut_off(
+          self, clock, manager, hosts, zone, workers, found, setup, kept):
+    zone.records = [{"comment": "sage-discovery-w2", "name": "discovery.int.example.test", "content": "100.64.0.9",
+                     "type": "A", "proxied": False}]
+    hosts.found["w2"] = found
+    Workers().record_setup("w2", setup)
+    clock.advance(timedelta(seconds=config.UNKNOWN_HOLD_SECONDS))
+    await manager.publish_discovery_dns()
+    assert [content for comment, _, content, *_ in zone.held() if comment == "sage-discovery-w2"] == (
+        ["100.64.0.9"] if kept else [])
+
   async def test_after_a_restart_no_record_goes_until_its_worker_is_known(self, manager, hosts, zone, workers):
     zone.records = [{"comment": f"sage-discovery-{hostname}", "name": "discovery.int.example.test", "content": address,
                      "type": "A", "proxied": False} for hostname, address in (("w1", "100.64.0.2"), ("w2", "100.64.0.3"))]
