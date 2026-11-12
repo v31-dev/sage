@@ -1,4 +1,5 @@
 import asyncio
+import time
 from inspect import iscoroutinefunction
 
 import pytest
@@ -62,7 +63,9 @@ class TestRunning:
       scheduled = {fn.__name__ for fn, _ in scheduler._JOBS}
       assert {job.id for job in fresh.get_jobs()} == scheduled | {f"{fn.__name__}_at_startup" for fn in scheduler._AT_STARTUP}
       assert fresh.running
-      await asyncio.sleep(0.1)
+      deadline = time.monotonic() + 5
+      while not manager.called("request_startup") and time.monotonic() < deadline:
+        await asyncio.sleep(0.01)
       assert [name for name, _, _ in manager.calls if name != "dispatch_tick"] == ["request_startup"]
     finally:
       scheduler.shutdown()
