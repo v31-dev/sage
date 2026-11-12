@@ -39,7 +39,7 @@ The manager process starts these concurrent services from `app/main.py`:
 Startup is service-driven:
 
 - `Manager()` initializes the platform services.
-- Before serving, startup sets up the domain (`Manager.setup_domain`): connect to Cloudflare (zone, tunnel, the manager's record) and get the manager's certificate, retrying a failure that clears by itself (a network error, HTTP 5xx or 429) after 1, 4 and 16 minutes and then exiting; any other failure, such as a rejected token, and a rate limit exit at once, and a still-valid certificate lets startup continue. Other startup work that touches the network (release check, worker and discovery certificates, S3 backup discovery, settings checks, re-checking online workers against their stamps) runs as queued tasks once the servers are up. S3 and notifications are optional.
+- Before serving, startup sets up the domain (`Manager.setup_domain`): connect to Cloudflare (zone, tunnel, the manager's record) and get the manager's certificate, retrying a failure that clears by itself (a network error, HTTP 5xx or 429) after 1, 4 and 16 minutes and then exiting; any other failure, such as a rejected token, and a rate limit exit at once, and a still-valid certificate lets startup continue. Other startup work that touches the network (release check, worker and discovery certificates, S3 backup discovery, settings checks, each reachable worker's setup, by its stamps) runs as queued tasks once the servers are up. S3 and notifications are optional.
 - If service initialization fails, the process exits.
 
 ## Worker Runtime
@@ -246,7 +246,8 @@ Core entities:
 - `Container`
 - `Domain`
 - `Volume`
-- `Event`
+- `ContainerEvent`
+- `WorkerEvent`
 - `Notification`
 - `Backup`
 - `Task` (log of finished queue operations)
@@ -266,7 +267,7 @@ Relationships are centered on:
 - project -> applications
 - application -> containers, volumes, backups
 - container -> domains, events
-- worker -> containers and internal/TCP domains
+- worker -> containers, internal/TCP domains, events
 
 The [model writer index](operations.md#model-writer-index) lists every model's direct, queued and implicit
 writers. The [flow diagrams](operations.md) show how scheduler, route and startup work reach them.
@@ -320,23 +321,23 @@ The task logs have the same limit as a container's shard and count towards the t
 The UI keeps one Socket.IO connection to the manager (`/api/socket.io`) and follows topics over it instead of polling: the manager's status (`info`), the workers (`workers`, and one worker as `worker:<hostname>`), an application (`application:<project>/<name>`), the domains (`domains`), the tasks (`tasks`, and the finished ones as `task-history`), the backup and discovery status, the platform backups (`backups`), the release, the notifications and the logs (a task's, an application's and the requests). A page loads a topic from its REST route, and the manager pushes the whole state of a state topic each time it changes and each new row of a feed (a notification, a finished task) as it is stored; the page loads again each time the socket connects, so it makes up for what it missed. Socket.IO reconnects and falls back from WebSocket to long-polling by itself, a heartbeat every 10 s shows in an indicator at the top left of the UI, and a connection from another origin is refused. See [backend.md](backend.md) and [frontend.md](frontend.md).
 
 What is pushed, and what the API keeps:
-- **A topic is for changes a page did not make:** a background task, the manager's own checks, or another tab. Examples: an application's status while a deploy runs and when a container goes to error (`application:<project>/<name>`); a worker going offline or coming back (`workers`, `worker:<hostname>`); a settings check ending (`info`); a worker removed by its background task while its page is open (the topic answers 404 and the page shows not found).
+- **A topic is for changes a page did not make:** a background task, the manager's own checks, or another tab. Examples: a container's status while a deploy runs and when it goes to error (`application:<project>/<name>`); a worker going offline or coming back (`workers`, `worker:<hostname>`); a settings check ending (`info`); a worker removed by its background task while its page is open (the topic answers 404 and the page shows not found).
 - **A page's own synchronous action is shown by the page,** from the response or by loading again, and needs no topic. Examples: creating or deleting an application (the page that did it reloads or leaves, so a project's application list has no topic); emptying a settings section, which no check follows (the saving page reads `info` back, and another tab sees it at its next `info` push).
 - **Where both fit** (a page's own action that another tab or another part of the page also shows), it is decided case by case, in the tracker item that meets it.
-- **The API stays complete.** A route returns its whole resource whether or not a topic carries it, and a field is not dropped because the UI gets it from a push: `GET /workers/{hostname}` keeps `online`, though the UI reads `status`. What belongs to another resource is not copied in: `GET /api` has no worker count (the workers are `GET /workers`), and an application's containers name their worker without its state (`GET /workers/{hostname}`).
+- **The API stays complete.** A route returns its whole resource whether or not a topic carries it, and a field is not dropped because the UI gets it from a push: `GET /workers/{hostname}` keeps `ssh` and `setup`, the facts its status was decided from, though the UI reads `view`. What belongs to another resource is not copied in: `GET /api` has no worker count (the workers are `GET /workers`), and an application's containers name their worker without its state (`GET /workers/{hostname}`).
 
 ## Scheduler And Operation Queue
 
-APScheduler is a pure cron/interval trigger: each scheduled coroutine only calls `Manager().add_task(...)` to enqueue work and owns no execution or concurrency logic. Recurring triggers cover:
+APScheduler is a pure cron/interval trigger: each scheduled coroutine only calls one of the Manager's request functions (`request_*`), which enqueues the work, and owns no execution or concurrency logic. Recurring triggers cover:
 
-- worker sync
-- the look at every container's status
+- the workers' observation, which requests their setups and stack repairs, and their paths
+- the look at every container's state, and the listing of each worker's container records
 - scheduled volume backup dispatch
-- Domain artifact cleanup, repair scanning and discovery synchronization
-- metrics collection
+- the Domain pass, which removes what Domains left behind, applies those that drifted and publishes discovery
+- the metrics flush
+- the settings checks and the release check
 - platform backup scheduling
-- cleanup
-- certificate renewal
+- the daily summary, cleanup and certificate renewal
 
 All execution and mutual exclusion live in an in-memory operation queue on the `Manager` singleton (`app/utils/queue.py`). Routes (deploy, stop, delete, backup, restore, worker removal and reboot) and the cron triggers above enqueue through the same `add_task` path; a single one-second dispatcher starts each pending task whose scope is free. See [backend.md](backend.md) for the queue model and execution semantics.
 

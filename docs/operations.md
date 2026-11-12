@@ -82,7 +82,7 @@ A Domain's apply holds its route's scope under its worker, not its container's: 
 operations, and the worker's convergence and reboot exclude it. The `common` pool has one thread;
 async task bodies can still overlap while their offloads wait for it. Pool size is not a lock.
 
-`*` conflicts with every queued task, one holding no scope included; the platform restore holds it.
+The platform restore holds no scope: it is the queue's own entry and starts once nothing runs or waits.
 
 | Admission | Effect on an operation with the same **key** (by default its name, subject ids and intent; a container's lifecycle requests share `("lifecycle", <container id>)`), whatever its scopes |
 | --- | --- |

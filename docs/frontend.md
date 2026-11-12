@@ -33,7 +33,7 @@ container counts, and each container owns its headline, runtime details and queu
 
 `ui/src/lib/updates.ts` holds the one Socket.IO connection (`/api/socket.io`) and the topics followed over it. A page or store follows a state topic with `watchState(topic, load, onState, onNotFound?)` or a feed with `watchFeed(topic, load, onRows)`, where `load` is the page's own REST call, and calls the returned `stop()` when it goes away; `first` settles with the first load, or rejects if it fails, so a page has its data without the socket. `onNotFound` is called when the manager answers 404 instead of a state, pushed or to a load after the first: the resource is gone. The manager sends nothing when a topic is followed, only each change after that, so the library loads again every time the socket connects (the first time and after every reconnect), once the manager has acknowledged the subscription: what changed before that is in the load. A state loaded before a newer one was pushed is dropped; a feed's rows are not, since they are merged. Reconnecting, and the fall back from WebSocket to long-polling, are Socket.IO's, and the UI has no polling of its own. The connection opens with the first watcher and closes when the last one stops. Topics so far, with what follows them:
 - `info`: the app store (loading `GET /api`).
-- `workers`: the app store (loading `GET /workers`): for each worker its status, ip, path, container count and newest minute of metrics. The Workers page, the sidebar, the container cards and the Add Container dialog read the store; each card on the Workers page shows the worker's minute from it, so the page asks for no metrics of its own. The graph pages (a worker's and an application's metrics, the Home page) still poll every 60 s.
+- `workers`: the app store (loading `GET /workers`): for each worker its status, address, path, certificates, newest report and newest minute of metrics. The Workers page, the sidebar, the container cards and the Add Container dialog read the store; each card on the Workers page shows the worker's minute from it, so the page asks for no metrics of its own. The graph pages (a worker's and an application's metrics, the Home page) still poll every 60 s.
 - `worker:<hostname>`: the Worker page (loading `GET /workers/{hostname}`): the worker with its containers, its stack and its status. The page has no timer; an action on a container reloads it at once through `loadWorkerStatus`. A worker removed while the page is open shows as not found.
 - `domains`: the Domains page (loading `GET /domains/`): every domain with its container, and every container a domain can be linked to. The manager pushes it when a domain, a container (its state too) or a worker's subdomain is written, and when per-record sync results or their queued/running tasks change. Each name shows sync state separately from its container's health. Each service heading links to that service's public or internal discovery URL in a new tab.
 - `application:<project>/<name>`: the Application page (loading the application route). Each push replaces the whole application, including its counts, containers, volumes and variables; an edit dialog keeps the values it copied when it opened. An action on the page reloads it at once through `loadApplication`. An application deleted while the page is open shows as not found.
@@ -89,7 +89,7 @@ Routes in `ui/src/router/index.ts` currently cover:
 - Application containers, domains, and volumes
 - Application logs and metrics
 - Worker inventory and worker metrics
-- Global logs view
+- Requests view (Traefik's access lines on every worker)
 - Backups and restore flows
 - Settings: one page per section, listed under a "Settings" group in the sidebar
 
@@ -124,7 +124,7 @@ next to the shadcn tokens, and available as `text-success`, `bg-warning/10`,
 `neutral`) to the class sets the UI needs: `text`, `chip`, `soft`, `dot` and `bar`. A place that
 shows a state maps its own value to a tone: log levels
 (`levelClass`), notification types, and health bars and chips on the home page. In progress is
-`info` (blue) everywhere, including applications in transition; `warning` (amber) is for
+`info` (blue) everywhere, including containers in transition; `warning` (amber) is for
 warnings. A solid green or red button is a button variant (`success`, `destructive`), not a
 class of its own. New states and new places use a tone; no `text-green-600`, `bg-red-500`,
 `text-gray-500` and the like.
@@ -137,7 +137,8 @@ that is also its accessible name. It is an icon, an icon with the label in a bad
 (`show-label`), or a small dot (`dot`, sized and placed by the caller). A place that has its
 own states maps them to one of these in the app store (`sectionIndicator` for a settings
 section, `workersIndicator` for the Workers menu item, `applicationIndicator` for an
-application or container, `workerIndicator`, `domainIndicator`, `taskIndicator`). Used by the
+application's counts, `containerIndicator`, `workerIndicator`, `certificateIndicator`, `tunnelIndicator`,
+`pathIndicator`, `infraIndicator`, `domainIndicator`, `taskIndicator`). Used by the
 settings badge and sidebar, the Workers menu item, the application, container, worker and
 task statuses, a domain's sync state and the worker dot in a container card. A title with a
 state beside it is a `SectionTitle` with the indicator in its slot. Both Domain views read the same record status:
@@ -153,7 +154,7 @@ raw. Both parse with `parseDate`: backend timestamps without a timezone are UTC;
 ## Certificate Status
 
 The Worker page shows its wildcard and the shared internal discovery certificate separately, even without a
-current worker report. Both come from the worker topic's `certificate` and `discovery_certificate` fields. A
+current worker report. Both come from the worker topic's `certificates.worker` and `certificates.discovery`. A
 certificate is ready only when valid and applied; its expiry is shown only with that matching applied proof.
 Missing status stays unknown, and pending or stale material has no displayed expiry. Settings inventory expiry
 is not used for a worker's applied certificate.
