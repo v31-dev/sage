@@ -37,18 +37,23 @@ Say the mode, the subject and the baseline (commit or branch) at the start.
   pre-checks, recorded intent, effects, verified outcome, publication, and its failure and restart recovery.
 - Each resource or model in scope, the other way: every writer (commands, task bodies, startup and restore, ingestion,
   callbacks, FK actions, threads) and every reader (payload readers, topics, pages). Queue scopes do not protect a
-  write outside the queue.
+  write outside the queue. A model or field with writers and no reader, or a reader and no writer, is a finding.
+- The process's start, a restore's end and a resource's deletion, as sequences across owners: each owner's memory
+  empty or one observation old, and what each publication and cleanup does with a fact not observed yet.
 - The [Task Catalog](../../../docs/operations.md#task-catalog) and the model writer index against what the code
   enqueues and writes; investigate a disagreement in either direction.
-- The read model through to the UI: the REST payload, the topic and its sources, the page's state and the order of
-  its loads and pushes, each control and the admission of its request. Two layers each tested green can still promise
-  different things: check the contract across them.
+- The read model through to the UI: the REST payload, what it carries and what makes it grow, the topic and its
+  sources, the page's state and the order of its loads and pushes, each control and the admission of its request.
+  Follow a value shown to people (a reason, a detail, a label) from where it is written to the text that shows it.
+  Two layers each tested green can still promise different things: check the contract across them.
 
 ## Judge with evidence
 
 - Name the rule each finding breaks, by its owner: the root's working rules, app/AGENTS (Code Layout, Database And
   Commands, the resource contracts, Operation Queue And Scheduler, Async And `task_id`, Testing) or ui/AGENTS. Do not
   restate a rule here, and do not hold the code to one the AGENTS files lack; a gap in the rules is itself a finding.
+- Walk the rules the other way too: for each contract bullet of a resource in scope, point to the code that meets it;
+  one that nothing meets is a finding.
 - A race needs the reachable interleaving and why the actual protection (scope, transaction, lock, fingerprint,
   generation) does not stop it. A deadlock needs the whole wait cycle (scopes, locks, Fact callbacks, executor slots,
   the event loop). Check progress as well as exclusion; a lane's size is not a lock.
