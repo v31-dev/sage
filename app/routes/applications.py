@@ -5,6 +5,7 @@ from fastapi import APIRouter, Body, Query
 
 import config
 from routes.containers import router as containers_router
+from routes.volumes import router as volumes_router
 from services.applications import commands
 from services.applications.lookup import find_application
 from services.logs import Logs
@@ -65,4 +66,4 @@ def get_metrics(project: str, application: str, period: Literal[tuple(PERIODS)] 
 
 
 router.include_router(containers_router, prefix="/{application}/containers")
-# TODO(36 step 5B-2): router.include_router(volumes_router, prefix="/{application}/volumes")
+router.include_router(volumes_router, prefix="/{application}/volumes")

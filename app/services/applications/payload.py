@@ -38,6 +38,11 @@ def application_summary(application: Application, active_count: int) -> dict:
   }
 
 
+def volume_payload(volume: Volume) -> dict:
+  return {"id": volume.id, "name": volume.name, "path": volume.path, "backup_cron": volume.backup_cron,
+          "created_at": volume.created_at, "updated_at": volume.updated_at}
+
+
 def application_payload(application: Application, volumes: list[Volume], containers: list[dict]) -> dict:
   """Its summary with the rest of its configuration, its project and volumes, and the payloads of its containers."""
   return {
@@ -48,7 +53,6 @@ def application_payload(application: Application, volumes: list[Volume], contain
       "build_secrets": application.build_secrets,
       "command": application.command,
       "project": {"name": application.project.name, "label": application.project.label},
-      "volumes": [{"id": volume.id, "name": volume.name, "path": volume.path, "backup_cron": volume.backup_cron,
-                   "created_at": volume.created_at, "updated_at": volume.updated_at} for volume in volumes],
+      "volumes": [volume_payload(volume) for volume in volumes],
       "containers": containers,
   }

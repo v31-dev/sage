@@ -93,7 +93,7 @@ def stores(tmp_path, register):
 
   def session():
     if stores.configured is None:
-      raise Exception("S3 configuration is not set. Please set it in settings.")
+      raise Conflict("S3 is not configured.")
     return stores.configured
 
   register(S3, SimpleNamespace(session=session, install=lambda values: stores.installed.append(values)))

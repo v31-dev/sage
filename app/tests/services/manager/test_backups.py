@@ -271,9 +271,9 @@ class TestManualRequests:
 
   def test_it_is_refused_without_a_store(self, manager, container, volumes, register):
     def unset():
-      raise Exception("S3 configuration is not set. Please set it in settings.")
+      raise Conflict("S3 is not configured.")
     register(S3, SimpleNamespace(session=unset))
-    with pytest.raises(Exception, match="S3 configuration is not set"):
+    with pytest.raises(Conflict, match="S3 is not configured"):
       manager.request_backup(container.application_id, ids(volumes))
 
 
@@ -419,7 +419,7 @@ class TestAutomaticRequests:
 
   def test_nothing_is_queued_without_a_store(self, manager, container, volumes, at, register):
     def unset():
-      raise Exception("S3 configuration is not set.")
+      raise Conflict("S3 is not configured.")
     register(S3, SimpleNamespace(session=unset))
     Volume.update(backup_cron="0 3 * * *").execute()
     manager.request_automatic_backups(at)

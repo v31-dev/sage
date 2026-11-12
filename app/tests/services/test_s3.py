@@ -11,6 +11,7 @@ import config
 from services import s3 as s3_module
 from services.s3 import S3, StorageTarget, client_kwargs, region_of
 from services.settings import Settings
+from utils.errors import Conflict
 from utils.executor import active_executor
 
 VALUES = {"access_key": "AK", "secret_key": "SK", "bucket": "bucket", "endpoint": "https://s3.example.test", "path": "backups"}
@@ -38,14 +39,14 @@ def parse(url):
 
 class TestInstall:
   def test_until_a_section_is_installed_it_is_off(self, unconfigured):
-    with pytest.raises(Exception, match="S3 configuration is not set"):
+    with pytest.raises(Conflict, match="S3 is not configured"):
       unconfigured.session()
 
   def test_incomplete_settings_leave_it_off_and_say_so(self, unconfigured, caplog):
     with caplog.at_level(logging.WARNING, logger="services.s3"):
       unconfigured.install({**VALUES, "bucket": ""})
 
-    with pytest.raises(Exception, match="S3 configuration is not set"):
+    with pytest.raises(Conflict, match="S3 is not configured"):
       unconfigured.session()
     assert "S3 functionality will be disabled" in caplog.text
 
@@ -63,7 +64,7 @@ class TestInstall:
     assert s3.session().target.bucket == "other"
 
     s3.install({**VALUES, "bucket": ""})
-    with pytest.raises(Exception, match="S3 configuration is not set"):
+    with pytest.raises(Conflict, match="S3 is not configured"):
       s3.session()
 
 
@@ -183,7 +184,7 @@ class TestPresignedUrls:
     assert "/us-west-004/s3/" in query["X-Amz-Credential"]
 
   def test_both_need_a_configuration(self, unconfigured):
-    with pytest.raises(Exception, match="S3 configuration is not set"):
+    with pytest.raises(Conflict, match="S3 is not configured"):
       unconfigured.session()
 
 

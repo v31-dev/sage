@@ -14,6 +14,7 @@ from services.manager.backup_catalog import BackupCatalogMixin
 from services.manager.queue import SCOPES, QueueMixin
 from services.s3 import S3
 from services.updates import UpdateSource
+from utils.errors import Conflict
 from utils.executor import active_executor
 from utils.logging import TaskFailed
 from utils.queue import TaskQueue
@@ -81,7 +82,7 @@ def stores(tmp_path, register):
 
   def session():
     if stores.configured is None:
-      raise Exception("S3 configuration is not set. Please set it in settings.")
+      raise Conflict("S3 is not configured.")
     return stores.configured
 
   register(S3, SimpleNamespace(session=session))

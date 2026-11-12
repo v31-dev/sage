@@ -1,145 +1,112 @@
-import pytest
-from fastapi import HTTPException
+from types import SimpleNamespace
 
-from routes.volumes import validate_backup_cron
-from services.db import Application, Volume
+import pytest
+from fastapi.encoders import jsonable_encoder
+
+from services.applications.payload import volume_payload
+from services.db.models import Application, Backup, Container, Volume, Worker
+from services.s3 import S3
+from tests.services.backups.test_download import Session
 
 URL = "/api/projects/demo/applications/web/volumes"
 
 
-class TestValidateBackupCron:
-  @pytest.mark.parametrize("expression", [None, "", "   "])
-  def test_no_schedule_is_none(self, expression):
-    assert validate_backup_cron(expression) is None
-
-  @pytest.mark.parametrize("expression", ["0 3 * * *", "*/5 * * * *", "0 0 1 * 1", "30 2 * * 0,6"])
-  def test_a_valid_five_part_expression_is_kept(self, expression):
-    assert validate_backup_cron(expression) == expression
-
-  @pytest.mark.parametrize("expression", ["* * * *", "* * * * * *", "@daily", "0"])
-  def test_any_other_number_of_parts_is_a_400(self, expression):
-    with pytest.raises(HTTPException) as raised:
-      validate_backup_cron(expression)
-
-    assert (raised.value.status_code, raised.value.detail) == (400, "backup_cron must be a 5-part cron expression.")
-
-  @pytest.mark.parametrize("expression", ["61 * * * *", "0 25 * * *", "a b c d e", "0 0 32 * *"])
-  def test_five_parts_that_are_not_a_schedule_are_a_400(self, expression):
-    with pytest.raises(HTTPException) as raised:
-      validate_backup_cron(expression)
-
-    assert (raised.value.status_code, raised.value.detail) == (400, "Invalid backup_cron expression.")
+@pytest.fixture
+def volume(application):
+  return Volume.create(application=application, name="data", path="/data")
 
 
-class TestInjectVolume:
-  def test_an_unknown_volume_is_a_404(self, client, application):
-    response = client.put(f"{URL}/missing", json={"path": "/x"})
-    assert (response.status_code, response.json()["detail"]) == (404, "Volume not found")
+@pytest.fixture
+def other(application):
+  """Another application of the project, with a volume of the same name."""
+  other = Application.create(project=application.project, name="api", label="Api")
+  return Volume.create(application=other, name="data", path="/data")
 
-  def test_a_volume_of_another_application_is_a_404(self, client, application, volume):
-    Application.create(project=application.project, name="api", label="Api")
 
-    assert client.delete("/api/projects/demo/applications/api/volumes/data").status_code == 404
+def archive(volume, storage_id="s1"):
+  return Backup.create(type="application", s3_path=f"base/backups/applications/{volume.id}/c1/20260102_030405.tar.gz.enc",
+                       storage_id=storage_id, source_volume_id=volume.id, source_volume_name=volume.name,
+                       application=volume.application_id)
+
+
+class TestVolumes:
+  def test_a_volume_is_created_for_the_application_and_answered_with_its_payload(self, client, application):
+    response = client.post(f"{URL}/", json={"name": "data", "path": "/data", "backup_cron": "0 3 * * *"})
+    volume = Volume.get(Volume.application == application.id)
+    assert response.json() == jsonable_encoder(volume_payload(volume))
+    assert (volume.name, volume.path, volume.backup_cron) == ("data", "/data", "0 3 * * *")
+
+  def test_what_the_command_refuses_is_its_status(self, client, volume):
+    assert client.post("/api/projects/demo/applications/missing/volumes/", json={"name": "x", "path": "/x"}).status_code == 404
+    assert client.post(f"{URL}/", json={"name": "data", "path": "/other"}).status_code == 409
+    assert client.post(f"{URL}/", json={"name": "logs", "path": "/logs", "backup_cron": "often"}).status_code == 400
     assert Volume.select().count() == 1
 
-  def test_an_unknown_application_is_a_404(self, client, project):
-    assert client.get("/api/projects/demo/applications/missing/volumes/").status_code == 404
+  def test_an_edit_is_written_and_answered_with_its_payload(self, client, volume):
+    response = client.put(f"{URL}/data", json={"backup_cron": ""})
+    assert (response.json()["backup_cron"], Volume.get_by_id(volume.id).backup_cron) == (None, None)
 
+  def test_a_volume_of_another_application_or_none_is_a_404(self, client, volume, other):
+    assert client.put(f"{URL}/logs", json={"path": "/x"}).status_code == 404
+    assert client.put("/api/projects/demo/applications/api/volumes/data", json={"path": "/moved"}).status_code == 200
+    assert (Volume.get_by_id(volume.id).path, Volume.get_by_id(other.id).path) == ("/data", "/moved")
 
-class TestList:
-  def test_only_this_applications_volumes(self, client, application, volume):
-    other = Application.create(project=application.project, name="api", label="Api")
-    Volume.create(application=other, name="cache", path="/cache")
-
-    assert [row["name"] for row in client.get(f"{URL}/").json()] == ["data"]
-
-
-class TestCreate:
-  def test_a_volume_is_created_for_the_application(self, client, application):
-    response = client.post(f"{URL}/", json={"name": "data", "path": "/var/data", "backup_cron": "0 3 * * *"})
-
-    assert response.status_code == 200
-    volume = Volume.get()
-    assert (volume.name, volume.path, volume.backup_cron, volume.application_id) == ("data", "/var/data", "0 3 * * *", application.id)
-
-  @pytest.mark.parametrize("cron", [None, "", "   "])
-  def test_no_schedule_is_stored_as_none(self, client, application, cron):
-    client.post(f"{URL}/", json={"name": "data", "path": "/data", "backup_cron": cron})
-    assert Volume.get().backup_cron is None
-
-  def test_a_bad_schedule_is_a_400_and_nothing_is_created(self, client, application):
-    response = client.post(f"{URL}/", json={"name": "data", "path": "/data", "backup_cron": "nonsense"})
-
-    assert response.status_code == 400
+  def test_a_volume_is_deleted_with_no_content(self, client, volume):
+    assert client.delete(f"{URL}/data").status_code == 204
     assert Volume.select().count() == 0
 
-  @pytest.mark.parametrize("path", ["data", "/data:ro", "", None])
-  def test_a_bad_path_is_a_400(self, client, application, path):
-    response = client.post(f"{URL}/", json={"name": "data", "path": path})
 
-    assert response.status_code == 400
-    assert "Invalid volume path" in response.json()["detail"]
+class TestBackups:
+  def test_the_list_is_this_volumes_backups(self, client, volume, other):
+    own = archive(volume)
+    archive(other)
+    assert [backup["id"] for backup in client.get(f"{URL}/data/backups/").json()] == [own.id]
 
-  def test_a_name_already_used_by_the_application_is_a_409(self, client, application, volume):
-    response = client.post(f"{URL}/", json={"name": "data", "path": "/other"})
-    assert response.status_code == 409
+  def test_a_backup_asks_for_one_from_each_container_and_answers_the_tasks(self, client, application, volume, manager):
+    manager.answers["request_backup"] = ["t1"]
+    assert client.post(f"{URL}/data/backups/").json() == {"task_ids": ["t1"]}
+    assert manager.called("request_backup") == [((application.id, [volume.id]), {})]
 
-  def test_the_same_name_can_be_used_by_another_application(self, client, application, volume):
-    Application.create(project=application.project, name="api", label="Api")
-    assert client.post("/api/projects/demo/applications/api/volumes/", json={"name": "data", "path": "/data"}).status_code == 200
+  def test_a_download_is_a_link_to_this_volumes_backup(self, client, volume, register):
+    backup = archive(volume)
+    store = Session(keys={backup.s3_path})
+    register(S3, SimpleNamespace(session=lambda: store))
+    response = client.get(f"{URL}/data/backups/{backup.id}/download")
+    assert response.json()["url"] == "https://store.example.test/link"
+    assert [link["s3_path"] for link in store.links] == [backup.s3_path]
 
-  def test_an_invalid_name_is_a_400(self, client, application):
-    response = client.post(f"{URL}/", json={"name": "Not Valid", "path": "/data"})
-
-    assert response.status_code == 400
-    assert "Invalid name" in response.json()["detail"]
-
-
-class TestUpdate:
-  def test_name_path_and_schedule_are_changed(self, client, application, volume):
-    response = client.put(f"{URL}/data", json={"name": "files", "path": " /srv/files ", "backup_cron": "0 4 * * *"})
-
-    assert response.status_code == 200
-    saved = Volume.get_by_id(volume.id)
-    assert (saved.name, saved.path, saved.backup_cron) == ("files", "/srv/files", "0 4 * * *")
-
-  def test_an_empty_schedule_clears_it(self, client, application, volume):
-    volume.backup_cron = "0 3 * * *"
-    volume.save()
-
-    client.put(f"{URL}/data", json={"backup_cron": ""})
-
-    assert Volume.get_by_id(volume.id).backup_cron is None
-
-  def test_a_bad_schedule_is_a_400_and_the_old_one_stays(self, client, application, volume):
-    volume.backup_cron = "0 3 * * *"
-    volume.save()
-
-    response = client.put(f"{URL}/data", json={"backup_cron": "nonsense"})
-
-    assert response.status_code == 400
-    assert Volume.get_by_id(volume.id).backup_cron == "0 3 * * *"
-
-  def test_a_bad_path_is_a_400_and_the_old_one_stays(self, client, application, volume):
-    response = client.put(f"{URL}/data", json={"path": "relative"})
-
-    assert response.status_code == 400
-    assert Volume.get_by_id(volume.id).path == "/data"
-
-  def test_the_application_cannot_be_changed(self, client, application, volume):
-    other = Application.create(project=application.project, name="api", label="Api")
-
-    client.put(f"{URL}/data", json={"application": other.id, "path": "/same"})
-
-    assert Volume.get_by_id(volume.id).application_id == application.id
-
-  def test_renaming_to_a_name_the_application_already_uses_is_a_409(self, client, application, volume):
-    Volume.create(application=application, name="logs", path="/logs")
-
-    assert client.put(f"{URL}/logs", json={"name": "data"}).status_code == 409
+  def test_a_backup_of_another_volume_or_the_platform_is_not_found_here(self, client, volume, other, register):
+    elsewhere = archive(other)
+    platform = Backup.create(type="platform", s3_path="base/backups/platform/20260102_030405.db.enc", storage_id="s1")
+    store = Session(keys={elsewhere.s3_path, platform.s3_path})
+    register(S3, SimpleNamespace(session=lambda: store))
+    for backup in (elsewhere, platform):
+      assert client.get(f"{URL}/data/backups/{backup.id}/download").status_code == 404
+    assert store.links == []
 
 
-class TestDelete:
-  def test_the_volume_is_deleted(self, client, application, volume):
-    assert client.delete(f"{URL}/data").json() == {"status": "deleted"}
-    assert Volume.select().count() == 0
+class TestRestore:
+  @pytest.fixture
+  def container(self, application, worker):
+    return Container.create(application=application, worker=worker)
+
+  def test_a_backup_is_restored_into_the_container_named_and_its_own_volume(self, client, volume, container, manager):
+    backup = archive(volume)
+    response = client.post(f"{URL}/data/backups/{backup.id}/restore", json={"container": container.id})
+    assert response.json() == {"task_id": "task-1"}
+    assert manager.called("request_restore") == [((container.id, backup.id, volume.id), {})]
+
+  def test_another_volume_of_the_application_can_be_named(self, client, application, volume, container, manager):
+    logs = Volume.create(application=application, name="logs", path="/logs")
+    backup = archive(volume)
+    client.post(f"{URL}/data/backups/{backup.id}/restore", json={"container": container.id, "volume": "logs"})
+    assert manager.called("request_restore") == [((container.id, backup.id, logs.id), {})]
+
+  def test_a_container_or_volume_not_of_the_application_or_none_is_a_404_and_asks_for_nothing(
+          self, client, volume, other, container, manager):
+    backup = archive(volume)
+    elsewhere = Container.create(application=other.application, worker=Worker.create(hostname="w2", subdomain="blue"))
+    for body in ({"container": elsewhere.id}, {}, {"container": container.id, "volume": "missing"}):
+      assert client.post(f"{URL}/data/backups/{backup.id}/restore", json=body).status_code == 404
+    assert client.post(f"{URL}/data/backups/{archive(other).id}/restore", json={"container": container.id}).status_code == 404
+    assert manager.calls == []

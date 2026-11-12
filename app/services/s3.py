@@ -12,6 +12,7 @@ from botocore.exceptions import ClientError, NoCredentialsError
 import config
 from services.base import Base
 from services.settings import SETTING_DEFINITIONS, fields_set, validate_section
+from utils.errors import Conflict
 from utils.executor import run_in_executor_with_context
 from utils.retry import retry_async
 
@@ -74,11 +75,11 @@ class S3(Base):
       self._session = session
 
   def session(self) -> "S3Session":
-    """The configured store's session, for an operation to hold from start to end; raises when S3 is not set."""
+    """The configured store's session, for an operation to hold from start to end; a Conflict when S3 is not set."""
     with self.lock:
       session = self._session
     if session is None:
-      raise Exception("S3 configuration is not set. Please set it in settings.")
+      raise Conflict("S3 is not configured.")
     return session
 
   def check_config(self, config: dict, write: bool = False):
