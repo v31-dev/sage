@@ -20,7 +20,7 @@ interface Props {
 
 const props = withDefaults(defineProps<Props>(), {})
 
-const showForceDelete = computed(() => props.worker.status === 'offline')
+const showForceDelete = computed(() => props.worker.view.status === 'offline')
 
 async function onConfirmForceDelete() {
   await deleteContainer(

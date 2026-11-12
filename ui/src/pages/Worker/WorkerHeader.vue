@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { toast } from 'vue-sonner'
-import { Activity, RotateCw, Trash } from 'lucide-vue-next'
+import { Activity, RefreshCw, RotateCw, Trash } from 'lucide-vue-next'
 import { Button } from '@/components/ui/button'
 import { ButtonGroup } from '@/components/ui/button-group'
 import {
@@ -24,11 +24,11 @@ import { formatDate } from '@/lib/utils'
 import {
   deleteWorker,
   rebootWorker,
+  resyncWorker,
   type Indicator,
   type TunnelStatus,
   type Worker,
   type WorkerMetricsResponse,
-  type WorkerStatus,
 } from '@/services/api'
 import SectionTitle from '@/components/SectionTitle.vue'
 import StateIndicator from '@/components/StateIndicator.vue'
@@ -46,14 +46,7 @@ const appStore = useAppStore()
 
 const props = withDefaults(defineProps<Props>(), {})
 
-// Shown from the moment Restart is confirmed (undone if the manager refuses) until the next push replaces `worker`
-// with the manager's answer.
-const requested = ref<WorkerStatus | null>(null)
-watch(
-  () => props.worker,
-  () => (requested.value = null)
-)
-const status = computed(() => requested.value ?? props.worker.status)
+const status = computed(() => props.worker.view.status)
 const restartable = computed(() => status.value === 'online' || status.value === 'not ready')
 const deleteBody = computed(() =>
   status.value === 'offline'
@@ -80,13 +73,13 @@ const certificates = computed(() => [
     id: 'worker',
     label: 'Worker certificate',
     description: "For this worker's internal and TCP names.",
-    state: props.worker.certificate,
+    state: props.worker.certificates.worker,
   },
   {
     id: 'discovery',
     label: 'Discovery certificate',
     description: 'For internal discovery, shared by all workers.',
-    state: props.worker.discovery_certificate,
+    state: props.worker.certificates.discovery,
   },
 ])
 
@@ -103,9 +96,10 @@ const stack = computed(() => {
       ? tunnel(details.tunnel_name, details.tunnel_status)
       : undefined,
   }
-  return (props.worker.infra ?? []).map(container => ({
-    container,
-    detail: carried[container.name],
+  if (props.worker.report.knowledge !== 'known') return null
+  return props.worker.report.stack.map(([name, status]) => ({
+    container: { name, status },
+    detail: carried[name],
   }))
 })
 
@@ -120,14 +114,15 @@ async function onConfirmDelete() {
 }
 
 async function onConfirmRestart() {
-  requested.value = 'rebooting'
-  try {
-    await rebootWorker(props.worker.hostname)
-  } catch (err) {
-    requested.value = null
-    throw err
-  }
-  toast.success(`Worker ${props.worker.hostname} reboot triggered`)
+  await rebootWorker(props.worker.hostname)
+  toast.success(`Worker ${props.worker.hostname} reboot queued`)
+  await props.loadWorkerStatus()
+}
+
+async function onConfirmResync() {
+  await resyncWorker(props.worker.hostname)
+  toast.success(`Worker ${props.worker.hostname} resync queued`)
+  await props.loadWorkerStatus()
 }
 </script>
 
@@ -148,6 +143,15 @@ async function onConfirmRestart() {
       <CardAction>
         <ButtonGroup class="space-x-1">
           <EditWorkerButton :worker="props.worker" :loadWorkerStatus="props.loadWorkerStatus" />
+          <ConfirmationButton
+            triggerText="Resync"
+            title="Resync Worker"
+            body="Sage writes again everything it keeps on this worker, its certificates, routes and discovery included, and restarts its stack."
+            :description="props.worker.hostname"
+            :icon="RefreshCw"
+            :disabled="status === 'removing' || status === 'adding'"
+            :onConfirm="onConfirmResync"
+          />
           <ConfirmationButton
             triggerText="Restart"
             title="Restart Worker"
@@ -172,10 +176,18 @@ async function onConfirmRestart() {
     </CardHeader>
 
     <CardContent class="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-7">
+      <p
+        v-if="appStore.workerReason(props.worker.view)"
+        class="text-sm text-muted-foreground md:col-span-2 lg:col-span-7"
+        data-reason
+      >
+        {{ appStore.workerReason(props.worker.view) }}
+      </p>
+
       <div>
         <Label>IP</Label>
         <p class="text-sm text-muted-foreground font-mono break-all">
-          {{ props.workerMetrics.meta.ip || props.worker.ip }}
+          {{ props.workerMetrics.meta.ip || props.worker.address || '-' }}
         </p>
       </div>
 
@@ -217,27 +229,22 @@ async function onConfirmRestart() {
             :id="`certificate-${certificate.id}`"
             :label="certificate.label"
             :description="certificate.description"
-            :error="certificate.state?.error ?? undefined"
+            :error="certificate.state.error ?? undefined"
             :data-certificate="certificate.id"
           >
             <div class="flex flex-col items-start gap-2">
-              <template v-if="certificate.state">
-                <StateIndicator
-                  v-bind="appStore.certificateIndicator(certificate.state)"
-                  show-label
-                />
-                <p
-                  v-if="
-                    certificate.state.covered &&
-                    certificate.state.synced &&
-                    certificate.state.expiry
-                  "
-                  class="text-sm text-muted-foreground"
-                >
-                  Valid until {{ formatDate(certificate.state.expiry) }}
-                </p>
-              </template>
-              <p v-else class="text-sm text-muted-foreground">No certificate status yet.</p>
+              <StateIndicator
+                v-bind="appStore.certificateIndicator(certificate.state)"
+                show-label
+              />
+              <p
+                v-if="
+                  certificate.state.covered && certificate.state.synced && certificate.state.expiry
+                "
+                class="text-sm text-muted-foreground"
+              >
+                Valid until {{ formatDate(certificate.state.expiry) }}
+              </p>
             </div>
           </SettingField>
         </FieldGroup>
@@ -245,7 +252,7 @@ async function onConfirmRestart() {
 
       <div class="md:col-span-2 lg:col-span-7">
         <Label>Stack</Label>
-        <FieldGroup v-if="props.worker.infra" class="mt-3 gap-5">
+        <FieldGroup v-if="stack" class="mt-3 gap-5">
           <SettingField
             v-for="{ container, detail } in stack"
             :key="container.name"

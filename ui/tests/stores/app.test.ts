@@ -11,9 +11,11 @@ import {
   type SettingState,
   type WorkerListItem,
   type WorkerStatus,
+  type WorkerView,
 } from '@/services/api'
 import { watchState } from '@/lib/updates'
 import { useAppStore } from '@/stores/app'
+import { worker } from '../helpers/workers'
 
 vi.mock('@/services/api', async importOriginal => ({
   ...(await importOriginal<typeof import('@/services/api')>()),
@@ -39,23 +41,6 @@ function onWorkers() {
   return watch.mock.calls.find(call => call[0] === 'workers')![2] as unknown as (
     workers: WorkerListItem[]
   ) => void
-}
-
-function worker(hostname: string, status: WorkerStatus = 'online'): WorkerListItem {
-  return {
-    hostname,
-    ip: '100.64.0.2',
-    subdomain: null,
-    online: status !== 'offline',
-    status,
-    path: null,
-    container_count: null,
-    infra: null,
-    metrics: null,
-    certificate: { covered: true, synced: true, expiry: null, error: null },
-    discovery_certificate: { covered: true, synced: true, expiry: null, error: null },
-    tunnel: 'healthy',
-  }
 }
 
 function settings(state: SettingState = 'ok'): SettingsStatus {
@@ -260,6 +245,20 @@ describe('the indicators by status', () => {
       })
     }
   )
+
+  it.each([
+    [{ reason: null, detail: null }, ''],
+    [{ reason: 'ssh_unreachable', detail: null }, 'Its SSH server does not answer.'],
+    [
+      { reason: 'stack_down', detail: 'vector, telegraf' },
+      'Part of its stack is down: vector, telegraf',
+    ],
+    [{ reason: 'traefik_down', detail: 'ignored' }, 'Traefik does not answer on it.'],
+    [{ reason: 'something_new', detail: null }, 'something_new'],
+  ])('workerReason: %o reads %s', (fields, text) => {
+    const view = { status: 'not ready', ready: false, ...fields } as WorkerView
+    expect(useAppStore().workerReason(view)).toBe(text)
+  })
 
   it.each([
     ['active', 'ok'],

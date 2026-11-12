@@ -74,6 +74,7 @@ const CALLS: Array<[string, () => Promise<unknown>, string, string, object, unkn
     { tag: 'eu1', pool: 'eu' },
   ],
   ['rebootWorker', () => api.rebootWorker('w1'), 'POST', '/api/workers/w1/reboot', {}, undefined],
+  ['resyncWorker', () => api.resyncWorker('w1'), 'POST', '/api/workers/w1/resync', {}, undefined],
   ['deleteWorker', () => api.deleteWorker('w1'), 'DELETE', '/api/workers/w1', {}, undefined],
   ['fetchProjects', () => api.fetchProjects(), 'GET', '/api/projects/', {}, undefined],
   ['fetchProject', () => api.fetchProject('demo'), 'GET', '/api/projects/demo', {}, undefined],

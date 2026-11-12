@@ -5,6 +5,7 @@ import Workers from '@/pages/Workers/index.vue'
 import WorkerCard from '@/pages/Workers/WorkerCard.vue'
 import { fetchWorkerMetrics, type WorkerListItem, type WorkerMinute } from '@/services/api'
 import { useAppStore } from '@/stores/app'
+import { worker as listed } from '../helpers/workers'
 
 vi.mock('vue-router', () => ({ useRouter: () => ({ push: vi.fn() }) }))
 vi.mock('@/services/api', async importOriginal => ({
@@ -14,26 +15,18 @@ vi.mock('@/services/api', async importOriginal => ({
 
 const card = {
   props: ['worker'],
-  template: '<div data-card>{{ worker.hostname }}:{{ worker.status }}</div>',
+  template: '<div data-card>{{ worker.hostname }}:{{ worker.view.status }}</div>',
 }
 
-function worker(hostname: string, overrides: Partial<WorkerListItem> = {}): WorkerListItem {
-  return {
-    hostname,
-    ip: '100.64.0.2',
-    subdomain: null,
-    online: true,
-    status: 'online',
-    path: 'direct',
-    container_count: 3,
-    infra: null,
-    metrics: null,
-    certificate: { covered: true, synced: true, expiry: null, error: null },
-    discovery_certificate: { covered: true, synced: true, expiry: null, error: null },
-    tunnel: 'healthy',
-    ...overrides,
-  }
-}
+const worker = (hostname: string, overrides: Partial<WorkerListItem> = {}) =>
+  listed(hostname, 'online', { path: 'direct', ...overrides })
+
+const report = (
+  containers: number | null,
+  knowledge: WorkerListItem['report']['knowledge'] = 'known'
+) => ({
+  report: { knowledge, traefik_reachable: true, stack_down: [], stack: [], containers },
+})
 
 // The page shows what the app store holds of the workers, which the store follows for the whole app.
 async function mountPage(workers: WorkerListItem[] | null = null) {
@@ -116,7 +109,7 @@ describe('what the store holds', () => {
     const { wrapper, store } = await mountPage([worker('w1'), worker('w2')])
     expect(cards(wrapper)).toEqual(['w1:online', 'w2:online'])
 
-    store.workers = [worker('w1', { status: 'offline' })]
+    store.workers = [listed('w1', 'offline')]
     await flushPromises()
 
     expect(cards(wrapper)).toEqual(['w1:offline'])
@@ -150,17 +143,32 @@ describe('a worker card', () => {
   })
 
   it('shows the container count of the worker', () => {
-    expect(mountCard(worker('w1', { container_count: 4 })).text()).toContain('4')
+    expect(mountCard(worker('w1', report(4))).text()).toMatch(/Containers\s*4/)
   })
 
-  it('shows a dash for a worker that has no current report', () => {
-    const text = mountCard(worker('w1', { container_count: null })).text()
-    expect(text).toMatch(/Containers\s*-/)
-  })
+  it.each(['stale', 'unobserved'] as const)(
+    'shows a dash for a worker whose report is %s',
+    knowledge => {
+      const text = mountCard(worker('w1', report(4, knowledge))).text()
+      expect(text).toMatch(/Containers\s*-/)
+    }
+  )
 
   it('shows a worker without containers as none and not as unknown', () => {
-    const text = mountCard(worker('w1', { container_count: 0 })).text()
+    const text = mountCard(worker('w1', report(0))).text()
     expect(text).toMatch(/Containers\s*0/)
+  })
+
+  it('shows its address in the tailnet, and why it is not online', () => {
+    const text = mountCard(
+      worker('w1', {
+        address: '100.64.0.9',
+        view: { status: 'not ready', reason: 'stack_down', detail: 'vector', ready: false },
+      })
+    ).text()
+
+    expect(text).toContain('100.64.0.9')
+    expect(text).toContain('Part of its stack is down: vector')
   })
 
   // The newest minute of a worker with 4 cores, 8000 MB of memory and 100 GB of disk.

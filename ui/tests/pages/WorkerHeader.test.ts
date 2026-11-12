@@ -1,25 +1,32 @@
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { formatDate } from '@/lib/utils'
 import WorkerHeader from '@/pages/Worker/WorkerHeader.vue'
-import type { AppInfo, Worker, WorkerCertificate, WorkerMetricsResponse } from '@/services/api'
+import {
+  rebootWorker,
+  resyncWorker,
+  type AppInfo,
+  type Worker,
+  type WorkerCertificate,
+  type WorkerMetricsResponse,
+} from '@/services/api'
 import { useAppStore } from '@/stores/app'
+import { readyCertificate, worker as listed } from '../helpers/workers'
 
 vi.mock('vue-router', () => ({ useRouter: () => ({ push: vi.fn() }) }))
+vi.mock('vue-sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
+vi.mock('@/services/api', async importOriginal => ({
+  ...(await importOriginal<typeof import('@/services/api')>()),
+  rebootWorker: vi.fn(async () => ({ task_id: 't1' })),
+  resyncWorker: vi.fn(async () => ({ task_id: 't1' })),
+}))
 
-const worker = (subdomain: string | null) =>
-  ({
-    hostname: 'w1',
-    ip: '100.64.0.2',
-    subdomain,
-    status: 'online',
-    path: null,
-    infra: null,
-    containers: [],
-    certificate: null,
-    discovery_certificate: null,
-  }) as unknown as Worker
+const worker = (subdomain: string | null, overrides: Partial<Worker> = {}): Worker => ({
+  ...listed('w1', 'online', { subdomain }),
+  containers: [],
+  ...overrides,
+})
 
 const workerMetrics = { meta: { ip: '100.64.0.2' } } as unknown as WorkerMetricsResponse
 
@@ -54,17 +61,22 @@ describe('the stack', () => {
         cloudflare: { details: { tunnel_name: 'sage-example.test', tunnel_status: tunnelStatus } },
       },
     } as unknown as AppInfo
-    const current = {
-      ...worker('eu1'),
+    const current = worker('eu1', {
       tunnel,
       tunnel_name: 'sage-example.test-w1',
-      infra: [
-        { name: 'traefik', status: 'running' },
-        { name: 'vector', status: 'running' },
-        { name: 'cloudflared', status: 'running' },
-        { name: 'cloudflared-discovery', status: 'restarting' },
-      ],
-    } as Worker
+      report: {
+        knowledge: 'known',
+        traefik_reachable: true,
+        stack_down: ['cloudflared-discovery'],
+        stack: [
+          ['traefik', 'running'],
+          ['vector', 'running'],
+          ['cloudflared', 'running'],
+          ['cloudflared-discovery', 'restarting'],
+        ],
+        containers: 0,
+      },
+    })
     const wrapper = mount(WorkerHeader, {
       props: { worker: current, workerMetrics, loadWorkerStatus: async () => {} },
       global: { stubs: { EditWorkerButton: true, ConfirmationButton: true, CopyButton: true } },
@@ -107,8 +119,12 @@ const ready = (expiry: string): WorkerCertificate => ({
   error: null,
 })
 
-function certificates(own: WorkerCertificate | null, discovery: WorkerCertificate | null) {
-  const current = { ...worker('eu1'), certificate: own, discovery_certificate: discovery }
+function certificates(
+  own: WorkerCertificate,
+  discovery: WorkerCertificate,
+  report: Worker['report'] = worker('eu1').report
+) {
+  const current = worker('eu1', { certificates: { worker: own, discovery }, report })
   const wrapper = mount(WorkerHeader, {
     props: { worker: current, workerMetrics, loadWorkerStatus: async () => {} },
     global: { stubs: { EditWorkerButton: true, ConfirmationButton: true } },
@@ -130,7 +146,10 @@ describe('certificates', () => {
         },
       },
     } as unknown as AppInfo
-    const { wrapper, field } = certificates(ready(ownExpiry), ready(discoveryExpiry))
+    const { wrapper, field } = certificates(ready(ownExpiry), ready(discoveryExpiry), {
+      ...worker('eu1').report,
+      knowledge: 'stale',
+    })
     expect(wrapper.text()).toContain('No current report from the worker.')
     expect(field('worker').text()).toContain(`Valid until ${formatDate(ownExpiry)}`)
     expect(field('worker').text()).not.toContain(formatDate(discoveryExpiry))
@@ -162,8 +181,8 @@ describe('certificates', () => {
     role => {
       const failed = { ...ready(ownExpiry), error: 'renewal rejected' }
       const { field } = certificates(
-        role === 'worker' ? failed : null,
-        role === 'discovery' ? failed : null
+        role === 'worker' ? failed : readyCertificate,
+        role === 'discovery' ? failed : readyCertificate
       )
       expect(field(role).text()).toContain('certificate ready')
       expect(field(role).text()).toContain('renewal rejected')
@@ -180,19 +199,64 @@ describe('certificates', () => {
     expect(field('discovery').text()).toContain('waiting for the certificate')
     expect(wrapper.text()).not.toContain('Valid until')
     await wrapper.setProps({
-      worker: {
-        ...worker('eu1'),
-        certificate: ready(ownExpiry),
-        discovery_certificate: ready(discoveryExpiry),
-      },
+      worker: worker('eu1', {
+        certificates: { worker: ready(ownExpiry), discovery: ready(discoveryExpiry) },
+      }),
     })
     expect(field('worker').text()).toContain(`Valid until ${formatDate(ownExpiry)}`)
     expect(field('discovery').text()).toContain(`Valid until ${formatDate(discoveryExpiry)}`)
   })
+})
 
-  it('leaves unknown certificate state explicit', () => {
-    const { field } = certificates(null, null)
-    expect(field('worker').text()).toContain('No certificate status yet.')
-    expect(field('discovery').text()).toContain('No certificate status yet.')
+describe('the worker', () => {
+  const confirmation = {
+    props: ['triggerText', 'onConfirm'],
+    template: '<button :data-action="triggerText" @click="onConfirm()">{{ triggerText }}</button>',
+  }
+
+  function mountHeader(current: Worker) {
+    const loadWorkerStatus = vi.fn(async () => {})
+    const wrapper = mount(WorkerHeader, {
+      props: { worker: current, workerMetrics, loadWorkerStatus },
+      global: { stubs: { EditWorkerButton: true, ConfirmationButton: confirmation } },
+    })
+    return { wrapper, loadWorkerStatus }
+  }
+
+  it('says why it is not online', () => {
+    const { wrapper } = mountHeader(
+      worker('eu1', {
+        view: { status: 'offline', reason: 'ssh_unreachable', detail: null, ready: false },
+      })
+    )
+
+    expect(wrapper.get('[data-reason]').text()).toBe('Its SSH server does not answer.')
+  })
+
+  it('shows its address in the tailnet when the graphs have none', () => {
+    const wrapper = mount(WorkerHeader, {
+      props: {
+        worker: worker('eu1', { address: '100.64.0.9' }),
+        workerMetrics: { meta: {} } as WorkerMetricsResponse,
+        loadWorkerStatus: async () => {},
+      },
+      global: { stubs: { EditWorkerButton: true, ConfirmationButton: true } },
+    })
+    const field = wrapper.findAll('label').find(found => found.text() === 'IP')!
+
+    expect(field.element.nextElementSibling!.textContent!.trim()).toBe('100.64.0.9')
+  })
+
+  it.each([
+    ['Resync', resyncWorker],
+    ['Restart', rebootWorker],
+  ] as const)('%s asks for it, then loads the worker again', async (action, call) => {
+    const { wrapper, loadWorkerStatus } = mountHeader(worker('eu1'))
+
+    await wrapper.get(`[data-action="${action}"]`).trigger('click')
+    await flushPromises()
+
+    expect(call).toHaveBeenCalledWith('w1')
+    expect(loadWorkerStatus).toHaveBeenCalledOnce()
   })
 })

@@ -2,32 +2,12 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it } from 'vitest'
 import ContainerCard from '@/pages/Application/ContainerCard.vue'
-import type {
-  Application,
-  Domain,
-  DomainStatus,
-  WorkerListItem,
-  WorkerStatus,
-} from '@/services/api'
+import type { Application, Domain, DomainStatus, WorkerStatus } from '@/services/api'
 import { container } from '../helpers/containers'
+import { worker } from '../helpers/workers'
 import { useAppStore } from '@/stores/app'
 
-function listed(hostname: string, status: WorkerStatus): WorkerListItem {
-  return {
-    hostname,
-    ip: '100.64.0.2',
-    subdomain: null,
-    online: status !== 'offline',
-    status,
-    path: null,
-    container_count: null,
-    infra: null,
-    metrics: null,
-    certificate: { covered: true, synced: true, expiry: null, error: null },
-    discovery_certificate: { covered: true, synced: true, expiry: null, error: null },
-    tunnel: 'healthy',
-  }
-}
+const listed = (hostname: string, status: WorkerStatus) => worker(hostname, status)
 
 // A domain, with its state's `status` and `error` given apart.
 const domain = ({
@@ -195,7 +175,9 @@ describe('the domains linked to the container', () => {
     [{ covered: false, synced: false, expiry: null, error: null }, 'waiting for the certificate'],
     [{ covered: true, synced: false, expiry: null, error: null }, 'syncing the certificate'],
   ])('shows an internal name’s worker certificate until it is ready', (certificate, shown) => {
-    useAppStore().workers = [{ ...listed('w1', 'online'), certificate }]
+    useAppStore().workers = [
+      worker('w1', 'online', { certificates: { worker: certificate, discovery: certificate } }),
+    ]
     const internal = domain({ type: 'internal', address: 'https://shop.red.int.example.test' })
 
     expect(mountCard('w1', [internal]).text()).toContain(shown)

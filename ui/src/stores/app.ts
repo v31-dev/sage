@@ -17,6 +17,7 @@ import {
   type WorkerCertificate,
   type WorkerListItem,
   type WorkerStatus,
+  type WorkerView,
 } from '@/services/api'
 import { watchState } from '@/lib/updates'
 
@@ -49,6 +50,19 @@ const CONTAINER_INDICATORS: Record<ContainerHeadline, Indicator> = {
   checking: { state: 'busy', label: 'checking' },
 }
 
+// What each reason of a worker's state means; `detail` when the manager's detail reads as part of it.
+const WORKER_REASONS: Record<string, { text: string; detail?: boolean }> = {
+  ssh_unreachable: { text: 'Its SSH server does not answer' },
+  manager_offline: { text: 'The manager is not connected to the tailnet' },
+  unobserved: { text: 'It has not been looked at yet' },
+  owned_elsewhere: { text: 'Another Sage manages it' },
+  setup_failed: { text: 'Its setup failed' },
+  not_reporting: { text: 'It sends no reports' },
+  stack_down: { text: 'Part of its stack is down', detail: true },
+  traefik_down: { text: 'Traefik does not answer on it' },
+  traefik_unchecked: { text: 'Traefik has not been checked yet' },
+}
+
 const DOMAIN_INDICATORS: Record<DomainStatus, Indicator> = {
   pending: { state: 'idle', label: 'pending' },
   syncing: { state: 'busy', label: 'syncing' },
@@ -69,19 +83,19 @@ export const useAppStore = defineStore('app', () => {
   const workersIndicator = computed<Indicator | undefined>(() => {
     if (!workers.value) return undefined
     const total = workers.value.length
-    const online = workers.value.filter(worker => worker.status === 'online').length
+    const online = workers.value.filter(worker => worker.view.status === 'online').length
     if (total === 0) return { state: 'idle', label: 'No workers' }
     return { state: online === total ? 'ok' : 'error', label: `${online} of ${total} online` }
   })
 
   // The status of the worker in the list, undefined before the list has loaded or for a name that is not in it.
   function workerStatus(hostname: string): WorkerStatus | undefined {
-    return workers.value?.find(worker => worker.hostname === hostname)?.status
+    return workers.value?.find(worker => worker.hostname === hostname)?.view.status
   }
 
   // The worker's own certificate in the list, as `workerStatus`.
   function workerCertificate(hostname: string): WorkerCertificate | undefined {
-    return workers.value?.find(worker => worker.hostname === hostname)?.certificate
+    return workers.value?.find(worker => worker.hostname === hostname)?.certificates.worker
   }
 
   // Whether the worker's internal names have their certificate: issued for them, then synced to the worker.
@@ -126,6 +140,14 @@ export const useAppStore = defineStore('app', () => {
 
   function workerIndicator(status: WorkerStatus): Indicator {
     return WORKER_INDICATORS[status]
+  }
+
+  // Why the worker is in its state, for people; empty when it is online or busy with a task of its own.
+  function workerReason({ reason, detail }: WorkerView): string {
+    if (!reason) return ''
+    const meaning = WORKER_REASONS[reason]
+    if (!meaning) return reason
+    return meaning.detail && detail ? `${meaning.text}: ${detail}` : `${meaning.text}.`
   }
 
   function pathIndicator(path: string): Indicator {
@@ -217,6 +239,7 @@ export const useAppStore = defineStore('app', () => {
     applicationIndicator,
     containerIndicator,
     workerIndicator,
+    workerReason,
     pathIndicator,
     infraIndicator,
     domainIndicator,

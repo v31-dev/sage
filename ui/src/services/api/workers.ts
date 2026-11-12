@@ -26,42 +26,50 @@ export type WorkerStatus =
   | 'rebooting'
   | 'removing'
 
-export interface Worker {
+// A worker's state as the manager decides it, with why it is not online; `ready` while its containers can be reached.
+export interface WorkerView {
+  status: WorkerStatus
+  reason: string | null
+  detail: string | null
+  ready: boolean | null
+}
+
+// What the worker's reports say: how current the newest is, whether Traefik answered on it, each service of its stack
+// with its status (`missing` when it is not listed), those that do not run, and how many containers it lists.
+export interface WorkerReport {
+  knowledge: 'unobserved' | 'known' | 'stale'
+  traefik_reachable: boolean | null
+  stack_down: string[]
+  stack: [string, string][]
+  containers: number | null
+}
+
+export interface WorkerListItem {
   hostname: string
-  ip: string
   // Its internal names are under `<subdomain>.int.<domain>`.
   subdomain: string | null
-  online: boolean | null
-  status: WorkerStatus
-  // How the manager's last ping reached the worker: "direct", or "relay" with its region.
+  view: WorkerView
+  // What the manager last found of its SSH server.
+  ssh: 'unobserved' | 'reachable' | 'unreachable' | 'unknown'
+  // How its last setup since the manager started went; none before one ran.
+  setup: string | null
+  report: WorkerReport
+  // The worker tasks queued or running on it (adding, removing, rebooting).
+  tasks: string[]
+  // Its address in the tailnet, and how the manager's last ping reached it: "direct", or "relay" with its region.
+  address: string | null
   path: string | null
-  infra?: InfraContainer[] | null
-  metrics: WorkerMinute | null
-  certificate: WorkerCertificate | null
-  discovery_certificate: WorkerCertificate | null
+  certificates: { worker: WorkerCertificate; discovery: WorkerCertificate }
   // The health of its own tunnel at the last Cloudflare check, and that tunnel's name.
   tunnel: TunnelStatus | null
   tunnel_name: string
+  metrics: WorkerMinute | null
   created_at: Date
   updated_at: Date
-  containers: Container[]
 }
 
-// What the Workers page shows of a worker; `container_count` is the containers in its current report.
-export interface WorkerListItem {
-  hostname: string
-  ip: string
-  subdomain: string | null
-  online: boolean | null
-  status: WorkerStatus
-  path: string | null
-  container_count: number | null
-  // The state of the containers of its stack in its current report.
-  infra: InfraContainer[] | null
-  metrics: WorkerMinute | null
-  certificate: WorkerCertificate
-  discovery_certificate: WorkerCertificate
-  tunnel: TunnelStatus | null
+export interface Worker extends WorkerListItem {
+  containers: Container[]
 }
 
 // A worker's newest minute of metrics, as the worker list holds it while it is recent: the minute's peaks and the
@@ -76,15 +84,20 @@ export const fetchWorkers = () => request<WorkerListItem[]>('GET', '/workers/')
 
 export const fetchWorker = (hostname: string) => request<Worker>('GET', `/workers/${hostname}`)
 
-// Adds a machine of the tailnet, by `host` (its hostname or Tailscale IP), as a worker, with its `subdomain` (random
-// when none is given). It is set up in the background and shows in the list once the manager has reached it.
+// Adds a machine of the tailnet, by `host` (its hostname or Tailscale IP), as a worker, with its `subdomain`. It is set
+// up in the background; the answer names the worker under its hostname, in lowercase.
 export const addWorker = (data: Fields) =>
-  request<{ hostname: string }>('POST', '/workers/', { body: data })
+  request<{ task_id: string; hostname: string }>('POST', '/workers/', { body: data })
 
 export const updateWorker = (hostname: string, data: Fields) =>
   request<Worker>('PUT', `/workers/${hostname}`, { body: data })
 
 export const rebootWorker = (hostname: string) =>
-  request<unknown>('POST', `/workers/${hostname}/reboot`)
+  request<{ task_id: string }>('POST', `/workers/${hostname}/reboot`)
 
-export const deleteWorker = (hostname: string) => request<unknown>('DELETE', `/workers/${hostname}`)
+// The worker's forced setup, which writes again everything Sage keeps on it.
+export const resyncWorker = (hostname: string) =>
+  request<{ task_id: string }>('POST', `/workers/${hostname}/resync`)
+
+export const deleteWorker = (hostname: string) =>
+  request<{ task_id: string }>('DELETE', `/workers/${hostname}`)

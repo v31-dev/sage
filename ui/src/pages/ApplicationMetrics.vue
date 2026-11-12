@@ -15,7 +15,8 @@ const appName = route.params.appId as string
 
 const period = ref<MetricsPeriod>('1h')
 const periods: MetricsPeriod[] = ['1h', '24h', '1w']
-const data = ref<Array<Array<ContainerMetricsPoint>>>([])
+// Each container's series, by its worker.
+const data = ref<Array<{ label: string; points: ContainerMetricsPoint[] }>>([])
 const isLoading = ref(true)
 const loadError = ref('')
 let pollInterval: ReturnType<typeof setInterval> | null = null
@@ -23,15 +24,9 @@ let pollInterval: ReturnType<typeof setInterval> | null = null
 async function load() {
   try {
     loadError.value = ''
-    const nextData: Array<Array<ContainerMetricsPoint>> = []
-    const containersData = await fetchApplicationMetrics(projectName, appName, period.value)
-    for (const containerData of containersData) {
-      for (const point of containerData.metrics) {
-        point.name = `${point.name} ${containerData.hostname}`
-      }
-      nextData.push(containerData.metrics)
-    }
-    data.value = nextData
+    data.value = (await fetchApplicationMetrics(projectName, appName, period.value)).map(
+      container => ({ label: container.hostname, points: container.metrics })
+    )
   } catch (err) {
     loadError.value = err instanceof Error ? err.message : 'Failed to load metrics'
   } finally {
@@ -52,9 +47,7 @@ onUnmounted(() => {
   if (pollInterval) clearInterval(pollInterval)
 })
 
-const containerChartData = computed(() =>
-  processContainerData((data.value ?? []) as Array<Array<ContainerMetricsPoint>>)
-)
+const containerChartData = computed(() => processContainerData(data.value))
 </script>
 
 <template>
