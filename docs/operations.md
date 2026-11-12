@@ -42,9 +42,10 @@ flowchart TB
     linkStyle default stroke:#ef4444,stroke-width:3px
 ```
 
-The scheduler's application and backup triggers read rows to select work; the dispatcher itself enqueues nothing.
-Telegraf requests application status work, which writes rows only when its queued task runs. [Startup, ingestion and service threads](#startup-and-other-writers)
-have additional write paths, including Vector's direct writes to log shards.
+The scheduler's container and backup triggers read rows to select work; the dispatcher itself enqueues nothing.
+A worker's report tells the pages of what it changed, and a change of the ready workers requests discovery.
+[Startup, ingestion and service threads](#startup-and-other-writers) have additional write paths, including Vector's
+direct writes to log shards.
 
 Task completion, failure and pending-task cancellation can create a `Task` row. **Quiet tasks record only
 failure** and retain task-log lines only on failure. `Notifications.notify` writes a `Notification` immediately in
@@ -72,7 +73,7 @@ Sources: [scheduler](../app/scheduler.py), [queue engine](../app/utils/queue.py)
 | `certificate` | The certificates' renewal, and every task under it | Worker, domain and application work |
 | `settings:<section>` | That section's check | Other sections' checks |
 | `release` | The release check | The other roots |
-| `metrics:<host>` or `metrics:workers` | The matching child and root `metrics` maintenance | Sibling metrics tasks |
+| `metrics:flush` | The metrics flush, and root `metrics` maintenance | The other roots |
 | `backup:store:<identity>` | The store's discovery and retention, and every archive's write, read or deletion in that store | Other stores' work |
 | `backup:store:<identity>:write:<part>` | That archive write and the store's root | Other archives' work in the store |
 | `backup:store:<identity>:archive:<part>` | A restore from that archive, its deletion, and the store's root | Other archives' work in the store |
@@ -140,7 +141,7 @@ effects described [above](#execution-flow).
 ### Applications and volumes
 
 Implementation: [container lifecycle](../app/services/manager/containers.py),
-[application operations](../app/services/manager/application.py),
+[container requests and their steps](../app/services/manager/lifecycle.py),
 [backup/restore operations](../app/services/manager/backups.py).
 Route paths use `<app>` for `/projects/{project}/applications/{application}`; all paths are under `/api`.
 
@@ -159,7 +160,7 @@ Route paths use `<app>` for `/projects/{project}/applications/{application}`; al
 | `backup_preserve` (`backup_container_preserving`) | `worker:<host>:container:<id>`, `backup:store:<identity>:write:<id>` · app | DEDUP on `("backup_preserve", <id>)` / H | `request_automatic_backups`, each minute, for the containers of an application with due volumes | ContainerEvents; the record's operation with its baseline; `compose stop`, the archives, `compose start` and the check of the same Docker containers; one Backup per archive uploaded. Settled outcome kept unless the runtime does not come back (then stopped/failed). Refused when its last action failed, its runtime disagrees, or the store changed. |
 | `restore_stopped` (`restore_container`) | `worker:<host>:container:<id>`, `backup:store:<identity>:archive:<part>` · app | REVISE on `("lifecycle", <id>)` / H | `request_restore`: a backup of one of the application's volumes into any volume of a container of that application, on any worker | ContainerEvents; the worker's `record.json` (stopped/succeeded, or stopped/failed with Deploy allowed); `restore.sh` replaces the container's copy of the volume. No Backup row. Refused when the store changed, it runs, or the backup or volume is gone; a container never deployed can receive it. |
 
-A change of whether a container with a service's Domain can be routed to publishes discovery again. Application/Container write helpers emit the affected UI sources; container log markers go
+A change of whether a container with a service's Domain can be routed to publishes discovery again. The resource commands tell the affected pages after their commit; container log markers go
 to the application's log shard on `LOGS_EXECUTOR`. No deployment follows an ordinary configuration edit.
 
 ### Domains and discovery
@@ -192,7 +193,8 @@ Implementation: [worker operations](../app/services/manager/workers.py),
 | `renew_certificates` | `certificate` · platform | REPLACE on `("renew_certificates",)` / H | `request_certificate_renewal`: daily 03:00 and startup; a worker's removal or subdomain change; a worker's setup when its own or the discovery certificate does not cover its names; successful restore; a worker's resync when its certificates do not cover its names | No main-DB write. The worker names from the Worker rows; then one certificate at a time: retire what no longer covers its names (a removed worker's found on disk included), revoking its public leaf, and issue what is missing or due; the manager's TLS reloaded in place when it was issued; then `distribute_certificates` requested for each worker reachable and set up. A failed retirement holds back that certificate's issue only; any failure fails the task after the rest ran. |
 | `distribute_certificates` | `certificate:worker:<host>`, `worker:<host>:tls` · app | REPLACE on `("distribute_certificates", <host>)` / Q; forced on its own key with `"force"` / H | `request_certificate_distribution`: the end of `renew_certificates`, for each worker reachable and set up; `converge_worker` when the worker did not apply the current certificates; forced: the worker's resync | No main-DB write. Re-checks the worker; reads its `certs` stamp, its managed files and its `certs.yml` digest; when any differs (or forced), copies each valid pair, writes the list, removes unwanted files, then the stamp; `Workers` holds the proofs applied. |
 
-`save_worker_subdomain` also runs directly in the [worker update route](#synchronous-routes).
+A worker's subdomain change (`set_worker_subdomain`, then `worker_subdomain_changed`) runs in the
+[worker update route](#synchronous-routes).
 
 ### Platform, settings and maintenance
 
@@ -264,18 +266,18 @@ separate facts.
 | --- | --- | --- |
 | Deploy or Stop end, or the failure of either | The worker's `record.json` | Apply the container's Domains |
 | `observe_containers`: a container becomes routable or stops being | None | Apply its Domains (a change between known values); publish discovery (any change, its becoming known included, of a container with a service's Domain) |
-| Successful container delete | Delete row; FK unlinks Domains; signals update count/status | Apply the unlinked Domains; the Domain pass when there were any |
+| Successful container delete | `detach_container` deletes the row, which unlinks its Domains, and recounts the application's containers | Apply the unlinked Domains; the Domain pass when there were any |
 | A worker's readiness changes | None | Publish discovery; the Domains routed to it are shown again |
-| Worker setup or offline transition | Worker row/IP or cached online state; remote convergence, which removes the routing files of Domains gone or bound elsewhere | After a setup, the Domain pass; publish discovery when the workers reachable and set up, or their addresses, change, its DNS membership with them |
+| Worker setup or offline transition | The setup outcome and applied address in `Workers`, no row write; remote convergence, which removes the routing files of Domains gone or bound elsewhere | After a setup, the Domain pass; publish discovery when the workers reachable and set up, or their addresses, change, its DNS membership with them |
 | Worker subdomain edit | Worker row | Convergence; apply its internal and TCP Domains, whose ends publish discovery; renewal |
 | Worker setup whose own or discovery certificate does not cover its names | None | Certificate renewal |
 | Worker removal | Deletes the Worker row | Certificate renewal, which retires its leaf |
 | Domain apply ends | `Domains` holds its outcome for the fingerprint applied | Apply again when the Domain was edited during it; publish discovery |
 | Domain pass ends | `Domains` holds what it saw of each Domain's route and DNS | Apply each Domain in error, drifted or not applied; publish discovery |
 
-Queue-derived worker intent does not enqueue discovery inside its Fact callback. The next ordinary report or
-worker refresh checks readiness. [Worker ownership](../app/services/manager/workers.py) and
-[application writers](../app/services/manager/application.py) own these triggers.
+A queue Fact's callback enqueues nothing; the worker state Fact, checked at each observation and report, requests
+discovery. [Worker workflows](../app/services/manager/workers.py) and
+[container workflows](../app/services/manager/containers.py) own these triggers.
 
 ## Synchronous routes
 
@@ -285,48 +287,51 @@ ordinary CRUD writer beyond the action routes already listed.
 
 | Route | Rows/fields written before the response | Immediate or queued consequence |
 | --- | --- | --- |
-| POST `/projects` | Project: derived immutable `name`, `label`, `description`, defaults | No queued operation |
-| PUT `/projects/{project}` | Project `label`, `description`, `env` | Notify app/worker views; deploy inputs apply on next deploy |
-| DELETE `/projects/{project}` | Delete Project; refused while it has applications | No queued operation |
-| POST `<app collection>` | Application: parent project, derived immutable `name`, `label`, `description`, defaults | Signal recomputes Project `application_count`; publish application change |
-| PUT `<app>` | Application `label`, `description`, deploy configuration (`type`, `image`, `repo`, `path`, `env`, `args`, `build_secrets`, `command`) | Model normalizes type-dependent fields; notify app/worker views; no deploy enqueued |
-| DELETE `<app>` | Delete Application; refused while busy or with containers | Cascade Volumes and app Backups; signal recomputes project count; S3 archives remain |
-| POST `<app>/containers` | Container `application`, `worker`, default inactive status | Signal recomputes Application `container_count`; publish container change; no deploy/domain work |
-| POST/PUT/DELETE `<app>/volumes[/{volume}]` | Volume create/update/delete: `name`, `path`, `backup_cron`, parent app on create | Publish application change; no remote volume operation. Deploy uses current mounts; due-backup scan reads current cron |
-| POST `/domains` | Domain `name`, `type`, `port`, `container`, `service`, `pool`, `cors_origins`; defaults pending with null proof | Derive internal worker / clear public worker; request full discovery and record sync |
-| PUT `/domains/{id}` | Sent config/link fields; `status=pending`, `sync_error=null`; retain successful proof | Validate/derive namespace and CORS; notify old/new linked apps; request full discovery and record sync |
-| DELETE `/domains/{id}` | Delete Domain | Request parent cleanup/discovery; ID-owned artifacts allow cleanup after row removal |
-| PUT `/workers/{host}` | Worker `subdomain` via `save_worker_subdomain`; affected Domain pending/error-clear writes via request helper | Update worker cache; enqueue record syncs, discovery, renewal and stamp-check worker sync |
-| PUT `/settings/{s3,notifications}` | Setting `value` (merged known fields) through `Settings.set` | Validate first, reload consuming service immediately, enqueue check when complete; S3 save also requests backup discovery |
-| DELETE `/backups/{id}` or nested volume backup | Delete Backup immediately (`request_backup_deletion`) | Emit backups change; queue `delete_archive` with its S3 path and store |
+| POST `/projects` | Project (`create_project`): `name` derived from `label`, `label`, `description` | None |
+| PUT `/projects/{project}` | Project `label`, `description`, `env` (`patch_project`) | Tells the pages of its applications and their workers; deploy inputs apply at the next deploy |
+| DELETE `/projects/{project}` | Delete Project; refused while it has applications | None |
+| POST `<app collection>` | Application (`create_application`): `name` derived from `label`, `label`, `description`; the project's `application_count` | Tells the application's page |
+| PUT `<app>` | Application `label`, `description` and deploy configuration (`type`, `image`, `repo`, `path`, `env`, `args`, `build_secrets`, `command`) through `patch_application`: type-dependent fields derived, image and repo checked | Tells the pages of the application and its workers; no deploy queued, so its containers show their configuration changed |
+| DELETE `<app>` | Delete Application; refused while it has containers; the project's `application_count` | Cascades its Volumes and Backup rows; S3 archives stay until retention |
+| POST `<app>/containers` | Container (`attach_container`): its application and worker, one per worker; the application's `container_count` | Tells the pages of the application and its worker and the Domains page; no deploy or Domain work |
+| POST/PUT/DELETE `<app>/volumes[/{volume}]` | Volume (`create_volume`, `patch_volume`, `delete_volume`): `name`, `path`, `backup_cron` | Tells the application's page; no remote volume operation. A deploy uses the current mounts; the due-backup scan reads the current cron |
+| POST `/domains` | Domain (`create_domain`): `name`, `type`, `port`, `service`, `pool`, `cors_origins` and its container; the namespace worker derived | Requests its apply |
+| PUT `/domains/{id}` | The fields sent (`patch_domain`); `container` relinks it, moving an internal or TCP name to that container's worker | `domain_edited`: its apply and the Domain pass; tells the pages of the old and new links |
+| DELETE `/domains/{id}` | Delete Domain (`delete_domain`) | The Domain pass removes its route and records, which carry its id |
+| POST `/workers` | Worker (`add_worker` command): hostname and subdomain | Queues `add_worker`, which sets it up |
+| PUT `/workers/{host}` | Worker `subdomain` (`set_worker_subdomain`) | `worker_subdomain_changed`: convergence, the applies of its internal and TCP Domains, certificate renewal |
+| PUT `/settings/{s3,notifications}` | Setting `value`, the fields sent over the saved ones, after local validation (`Settings.set`) | `settings_saved`: the consumer installed from the saved snapshot, a visible check when configured, backup discovery for S3 |
+| DELETE `/backups/{id}` | Delete Backup (`remove_backup`, through `request_backup_deletion`) | Fires `backups`; queues `delete_archive` with its key and store |
 
-`<app collection>` is `/projects/{project}/applications`. Route action endpoints such as deploy, stop,
-add/remove worker and backup/restore enqueue without changing their target rows in the route.
+`<app collection>` is `/projects/{project}/applications`. The action routes (deploy, stop, delete, cancel, backup,
+restore, worker removal, reboot and resync) enqueue without writing their target rows in the route.
 Pause/resume change only queue memory. `POST /settings/{section}/test` validates/tests provided values against
 the provider without persisting them; its test message bypasses the Notification table.
 
 ### Implicit model writes
 
-These run as part of the initiating write, with that writer's scopes (or none). Sources:
-[models and foreign keys](../app/services/db/models.py), [Peewee signals](../app/services/db/signals.py),
-[generic route helpers](../app/utils/api.py).
+These run as part of the initiating write, under that writer's scopes (or none). Sources:
+[models and foreign keys](../app/services/db/models.py), [resource commands](../app/services/applications/commands.py),
+[the commands' transaction](../app/services/db/writes.py).
 
 ```mermaid
 %%{init: {"themeVariables": {"lineColor": "#ef4444"}, "themeCSS": ".marker { overflow: visible; } .arrowMarkerPath { stroke-width: 2px !important; } .edge-pattern-dotted { stroke-dasharray: 8 6 !important; }"}}%%
 flowchart LR
-    app["Application instance<br/>create / delete"] -->|"Peewee signal"| project["Recompute Project<br/>application_count"]
-    container["Container instance<br/>create / delete"] -->|"Peewee signal"| count["Recompute Application<br/>container_count"]
-    count -->|"delete leaves zero"| inactive["Set Application<br/>status = inactive"]
-    delcontainer["Delete Container"] -->|"SQLite SET NULL"| unlink["Domain.container = null<br/>retain internal worker and proof"]
-    delcontainer -->|"SQLite CASCADE"| events["Delete its Events"]
-    delapp["Delete Application"] -->|"SQLite CASCADE"| owned["Delete its Volumes<br/>and app Backups"]
+    app["create_application /<br/>delete_application"] -->|"same transaction"| project["Recount Project<br/>application_count"]
+    container["attach_container /<br/>detach_container"] -->|"same transaction"| count["Recount Application<br/>container_count"]
+    delcontainer["Delete Container"] -->|"SQLite SET NULL"| unlink["Domain.container = null<br/>ContainerEvent.container = null"]
+    delworker["Delete Worker"] -->|"SQLite SET NULL"| wevents["WorkerEvent.worker = null"]
+    delapp["Delete Application"] -->|"SQLite CASCADE"| owned["Delete its Volumes<br/>and Backup rows"]
     linkStyle default stroke:#ef4444,stroke-width:3px
 ```
 
-`BaseModel.save` advances `updated_at`; dirty-field saving preserves unrelated columns. Query-level updates,
-bulk inserts/deletes and SQLite FK actions do not invoke instance `save` or the instance signals. In particular,
-counter signals use direct SQL updates, and Domain unlinking does not run `Domain.save`, mark pending or emit
-its own UI source. `detach_container` publishes the container's pages after deletion.
+`BaseModel.save` advances `updated_at`, and `only_save_dirty` writes only the fields a command changed
+(`save_changes`). A command that changes membership recounts its counter from the rows in its own transaction; no
+save hook or signal writes another row. Deleting a Project with applications, an Application with containers or a
+Worker with containers or internal Domains is refused by its command first (and by `RESTRICT` keys). Query-level
+updates, bulk inserts and deletes and SQLite FK actions run no `save`; Domain unlinking runs no `Domain.save` and
+tells no page of its own: `detach_container` tells the container's pages, and the deletion requests the applies and
+the Domain pass.
 
 ## Startup and other writers
 
@@ -336,29 +341,29 @@ its own UI source. `detach_container` publishes the container's pages after dele
 %%{init: {"themeVariables": {"lineColor": "#ef4444"}, "themeCSS": ".marker { overflow: visible; } .arrowMarkerPath { stroke-width: 2px !important; } .edge-pattern-dotted { stroke-dasharray: 8 6 !important; }"}}%%
 flowchart TB
     entry["Entrypoint<br/>start userspace tailscaled"]
-    database["Manager constructs Database<br/>reconcile schema<br/>create Instance if absent"]
-    settings["Settings.load_all<br/>create/normalize defined Setting rows<br/>delete undefined rows"]
-    services["Initialize services<br/>start metrics sampler and log capture<br/>load workers into memory"]
-    notice["Notifications.notify<br/>insert startup Notification"]
+    key["Validate ENCRYPTION_KEY<br/>initialize the cipher"]
+    database["Database opens data.db<br/>reconcile schema<br/>create Instance if absent"]
+    services["Initialize services<br/>task-log capture, reports, Tailscale,<br/>Settings.load_all, S3 and notifications installed,<br/>Certs, metrics sampler"]
+    notice["Notifications.notify<br/>startup Notification"]
     bootstrap["setup_domain before serving<br/>Cloudflare connect + manager certificate<br/>external files/DNS; no model write"]
-    serve["Start scheduler and API servers"]
-    enqueue["Startup triggers enqueue release/checks,<br/>renewal, backup discovery, worker stamp check,<br/>paths and the Domain pass"]
-    run["Dispatcher executes tasks<br/>with normal scopes"]
+    serve["Start the API servers and the scheduler"]
+    enqueue["start_work: request_startup<br/>workers' observation and paths, containers' observation,<br/>renewal, the Domain pass, backup discovery, checks, release"]
+    run["Dispatcher runs the tasks<br/>with their scopes"]
 
-    entry --> database --> settings --> services --> notice --> bootstrap --> serve --> enqueue --> run
+    entry --> key --> database --> services --> notice --> bootstrap --> serve --> enqueue --> run
     linkStyle default stroke:#ef4444,stroke-width:3px
 ```
 
-Schema reconciliation creates missing tables/columns/indexes and drops undeclared columns/indexes in a
-transaction; it also creates the persistent Instance identity when absent. Settings loading creates missing
-defined rows/fields and removes undefined rows/fields. This is synchronous boot work with no queue scope.
-Loading worker memory can already enqueue discovery; nothing dispatches until the scheduler starts.
-The startup trigger list is not a promise that those operations finish in list order.
+Schema reconciliation creates missing tables, columns and indexes and drops undeclared ones in one transaction, and
+creates the persistent Instance identity when absent. Settings loading creates missing defined rows and fields and
+removes undefined ones. This is synchronous boot work with no queue scope. Nothing dispatches until the scheduler
+starts, and the startup requests are not a promise that those operations finish in that order.
 
-Startup does **not** bulk-reset Application/Container statuses. The regular app-scoped status reconciler owns
-interrupted-operation recovery. Platform restore runs schema/settings loading again under its broad scopes,
-replaces all model rows, and reloads the dependent in-memory owners. Certificates, metric shards and log shards
-are outside the platform DB snapshot.
+Startup resets no container state, since none is stored in the database: the containers' observation reads each
+record from its worker, and reconciliation recovers interrupted operations from those records. A platform restore
+runs schema reconciliation and settings loading again (it runs alone), replaces every configuration row, clears the
+in-memory owners of the old configuration and requests the same startup work. Certificates, metric shards and log
+shards are outside the platform backup.
 
 Sources: [entrypoint](../app/entrypoint.sh), [process startup](../app/main.py),
 [Manager initialization](../app/services/manager/__init__.py), [schema](../app/services/db/database.py),
@@ -370,15 +375,15 @@ Sources: [entrypoint](../app/entrypoint.sh), [process startup](../app/main.py),
 | --- | --- | --- | --- |
 | Telegraf report intake | Worker report interval, 10 s (`REPORT_INTERVAL_SECONDS`) | None | WorkerReports snapshots and metric peaks in memory; worker cached report/readiness. The pages of the containers a report changed are told; readiness changes can enqueue discovery. No direct main-DB rows. |
 | Vector log intake | Worker batch, up to 10 s batching delay; pushes can also flush when full | None; `LOGS_EXECUTOR` | Request/application log shards, with FTS triggers for application lines; post-write size trimming can delete old lines. No main-DB rows. |
-| Manager metric sampler | Service-owned daemon, every 5 s (`METRICS_SAMPLE_INTERVAL`) | None | In-memory minute peaks only; queued `collect_self` persists them |
+| Manager metric sampler | Service-owned daemon, every 5 s (`METRICS_SAMPLE_INTERVAL`) | None | In-memory minute peaks only; `flush_metrics` writes them |
 | Task-log capture | Service-owned drain thread, on captured task log lines | None | `logs/tasks.db`; quiet-task lines released on failure; post-write size trimming |
-| `mark` / `Logs.write_marker` | Deploy, stop, delete, stale-version stop, backup stop/start, volume restore, reboot | Caller retains scopes while awaiting `LOGS_EXECUTOR` | Application log shard; best-effort marker |
+| `mark` / `Logs.write_marker` | Deploy, stop, delete, a failed action, a reset, a recovery, a backup, a volume restore, a reboot | Caller retains scopes while awaiting `LOGS_EXECUTOR` | Application log shard; best-effort marker |
 | `Notifications.notify` | Explicit call from an operation or startup | Caller scopes; none at boot | Notification row immediately, its page's path recorded as the manager's full address, notification feed, then webhook dispatch on `NOTIFICATIONS_EXECUTOR` |
-| Queue terminal hook | Completion, failure, supersession, restore cancellation or shutdown drain | No new scope; hook can run during enqueue/cancellation as well as task execution | Task history row/feed; quiet completion/cancellation omitted. Running/queued states are memory only |
+| Queue terminal hook | Completion, failure, supersession, cancellation or shutdown drain | No new scope; hook can run during enqueue/cancellation as well as task execution | Task history row/feed; quiet completion/cancellation omitted. Running/queued states are memory only |
 | Lazy shard open | First metric/log access, including reads | Caller scopes or none | Create shard file, tables and indexes when absent; no main-DB rows |
 
 Sources: [Telegraf route](../app/routes/telegraf.py), [Vector route](../app/routes/vector.py),
-[metrics](../app/services/metrics.py), [task capture](../app/services/logs/tasks.py),
+[metrics](../app/services/metrics/__init__.py), [task capture](../app/services/logs/tasks.py),
 [log storage](../app/services/logs/store.py). Socket.IO loaders read state and emit it; they are not model writers.
 
 ## Model writer index
@@ -389,15 +394,15 @@ writes above apply in addition to the listed fields.
 
 | Model | Direct route writer | Queued / shared writer | Other writer |
 | --- | --- | --- | --- |
-| `Setting` | Settings PUT: merged `value` | Platform restore preserves pre-restore S3 value | `Settings.load_all/load` at boot/restore: row/field normalization |
-| `Instance` | None | Restore may supply identity | Schema reconciliation creates identity if absent |
-| `Worker` | Worker PUT: `subdomain` | Add/convergence: insert or IP update; sync: fill null subdomain; remove/failed-new-setup rollback: delete | Worker health/status is memory, not a Worker column |
-| `Project` | Project CRUD: configuration | None directly | Application instance create/delete signal recomputes `application_count` |
-| `Application` | Application CRUD: configuration/defaults | Backup/volume restore: `status` | Container instance create/delete signals recompute `container_count`; last delete sets inactive |
-| `Container` | Create placement | Delete: delete row (`detach_container`); backup/restore: `status`; remove-worker: delete row | No direct report-to-row write |
+| `Setting` | Settings PUT: merged `value` | Platform restore keeps the S3 value in use | `Settings.load_all` at boot and restore: row and field normalization |
+| `Instance` | None | Platform restore installs the backup's, with a fresh `state_generation` | Schema reconciliation creates it if absent |
+| `Worker` | Workers POST: the row; PUT: `subdomain` | `remove_worker`: deletes the row through its command | Reachability, setup and readiness are memory, not columns |
+| `Project` | Project CRUD: configuration | None | `create_application` and `delete_application` recount `application_count` |
+| `Application` | Application CRUD: configuration | None | `attach_container` and `detach_container` recount `container_count`; no status column |
+| `Container` | Create placement (`attach_container`) | `delete_container`: deletes the row (`detach_container`) | Its lifecycle evidence is its record on the worker, held by `Containers`; no status column |
 | `Domain` | Domain CRUD through its commands, which derive the namespace worker and CORS policy | None: an apply's outcome and what it saw are memory (`Domains`) | Container deletion (`detach_container`) clears `container` by FK |
-| `Volume` | Volume CRUD: mounts and backup cron | None directly | Application FK deletion cascades row deletion |
-| `Backup` | Backup DELETE (`remove_backup`) | Volume/platform backup inserts; discovery inserts/deletes and retention deletes (`apply_catalog`) | Application FK deletion cascades app Backup deletion |
+| `Volume` | Volume CRUD: name, mount path and backup cron | None | Application deletion cascades |
+| `Backup` | Backup DELETE (`remove_backup`) | Volume and platform backups insert (`add_backup`); discovery and retention insert and delete (`apply_catalog`) | Application deletion cascades its Backup rows |
 | `ContainerEvent` | None | Container operations append (`record_container_event`); `purge_history` deletes past retention | Container deletion clears its link; platform backup and restore empty it |
 | `WorkerEvent` | None | Worker operations and observed status changes append (`record_worker_event`); `purge_history` deletes past retention | Worker deletion clears its link; platform backup and restore empty it |
 | `Notification` | None | `Notifications.notify` inserts; `purge_history` deletes past retention | Startup calls `notify`; summary/test dispatch creates no row |
@@ -407,30 +412,34 @@ writes above apply in addition to the listed fields.
 
 These are useful places to check when changing a flow:
 
-- **A scope is not a database lock.** Direct config writes, pending-state helpers, signal updates and FK actions
-  can overlap queued work. Deploy captures a transaction snapshot; Domain apply re-checks its worker and name
-  and holds its outcome for the fingerprint it applied, so an edit during it is never certified by it. CRUD does not implicitly join these scopes.
-- **A broad barrier covers three roots.** Common work, metric flushes and ingestion remain independent of
-  `{platform, app, domain}`. The restore queue state stops new ordinary tasks, but already running unrelated
-  tasks and ingestion are separate writers. The main API gate does not drain a route already in progress.
-- **Inline work keeps its caller's scope.** Normal worker removal holds the broad barrier; failed-new-worker
-  setup rollback calls that same method while holding only `platform`. Its preconditions and reachable writes
-  must be assessed in that context.
+- **A scope is not a database lock.** Direct configuration writes and FK actions can overlap queued work. A deploy
+  captures its input snapshot when it is requested; a Domain apply re-checks its worker and name and holds its
+  outcome for the fingerprint it applied, so an edit during it is never certified by it. CRUD does not join these
+  scopes.
+- **Scopes are per resource.** A container's operations hold its own scope under its worker's; a worker's setup,
+  reboot and removal hold the whole worker, excluding its containers', routes', discovery and certificate work there,
+  while other workers go on. The restore holds no scope: the queue's restoring state refuses new requests and starts
+  it alone once nothing runs or waits. Ingestion and the main API's routes are separate writers; the API gate does not
+  drain a route already in progress.
+- **Inline work keeps its caller's scope.** `add_worker` and `reboot_worker` run `converge_worker` inline under
+  `worker:<host>`; its preconditions and writes are assessed in that context.
 - **Missing-target behavior varies.** A container's operations (Deploy, Stop, Delete, backups, volume restore) and a
   Domain's apply use `get_or_none` and return for a missing target; a restore whose backup or target volume is gone
   is refused with a `rejected` event. A uniform quiet-no-op policy is not implemented across all entity operations.
 - **Row deletion does not imply artifact deletion.** Backup DELETE removes its row before its queued archive
   deletion, and discovery leaves out an archive while its deletion is queued or running; Application deletion
-  cascades Backup rows without deleting S3 objects, which retention removes once past the retention period. Container and Domain deletion use separate follow-ups to remove routing artifacts.
-- **Writes have different publication owners.** Model signals/FK actions do not emit UI changes; the operation
-  that initiated them supplies those events. Manager row writers, route CRUD and bulk restore/discovery paths
-  each publish explicitly. See [pushed updates](backend.md#pushed-updates).
-- **Operation state has several stores.** Pending/running tasks, worker readiness and Domain results are memory;
-  app/container busy statuses are persistent; `syncing` is projected from queued Domain work. A synced Domain can be
-  unavailable. Quiet task absence from history is not evidence that no work ran.
-- **Intervals and retries are separate.** The catalog's admission is explicit for each source: report-driven
-  status uses REPLACE even at minutely cadence; discovery's publication uses REPLACE on its own keys and requests no apply. A future
-  change must preserve a follow-up for edits during I/O without creating a parent/child retry loop.
+  cascades Backup rows without deleting S3 objects, which retention removes once past the retention period. Container
+  and Domain deletion use separate follow-ups to remove routing artifacts.
+- **Writes have different publication owners.** FK actions tell no page; the command that caused them does. Resource
+  commands tell after their commit, the owners of memory (`Containers`, `Domains`, the worker list) when what they
+  hold changes, and the queue's facts for running and queued work. See [pushed updates](backend.md#pushed-updates).
+- **Operation state has several stores.** Pending and running tasks, worker readiness, Domain results and each
+  container's last record read are memory; a container's lifecycle evidence is its record on its worker; `syncing`
+  and a container's running and queued operations come from the queue. A synced Domain can be unavailable. A quiet
+  task's absence from history is not evidence that no work ran.
+- **Intervals and retries are separate.** The catalog's admission is explicit for each source: the minutely
+  observations use DEDUP; Domain applies and discovery's publication use REPLACE on their own keys, and discovery
+  requests no apply. A change must keep a follow-up for edits during I/O without creating a parent/child retry loop.
 
 The diagrams describe the source's current behavior. For a change, follow both directions: trigger → scopes →
 writer → follow-up, and model → every writer → publication. The linked source files make each edge inspectable.
