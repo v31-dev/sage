@@ -2,13 +2,12 @@ import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 
 import {
-  APPLICATION_BUSY_STATUSES,
   fetchAppInfo,
   fetchWorkers,
   type AppInfo,
-  type Application,
-  type Container,
-  type Domain,
+  type ApplicationSummary,
+  type ContainerHeadline,
+  type DomainStatus,
   type Indicator,
   type IndicatorState,
   type InfraContainer,
@@ -39,7 +38,18 @@ const WORKER_INDICATORS: Record<WorkerStatus, Indicator> = {
   removing: { state: 'busy', label: 'removing' },
 }
 
-const DOMAIN_INDICATORS: Record<Domain['status'], Indicator> = {
+const CONTAINER_INDICATORS: Record<ContainerHeadline, Indicator> = {
+  active: { state: 'ok', label: 'active' },
+  inactive: { state: 'idle', label: 'inactive' },
+  deploying: { state: 'busy', label: 'deploying' },
+  stopping: { state: 'busy', label: 'stopping' },
+  backup: { state: 'busy', label: 'backup' },
+  restoring: { state: 'busy', label: 'restoring' },
+  error: { state: 'error', label: 'error' },
+  checking: { state: 'busy', label: 'checking' },
+}
+
+const DOMAIN_INDICATORS: Record<DomainStatus, Indicator> = {
   pending: { state: 'idle', label: 'pending' },
   syncing: { state: 'busy', label: 'syncing' },
   synced: { state: 'ok', label: 'synced' },
@@ -55,11 +65,6 @@ export const useAppStore = defineStore('app', () => {
   // Null until the first load; the error is the first load failing, until a state arrives.
   const workers = ref<WorkerListItem[] | null>(null)
   const workersError = ref('')
-
-  // Immediate updates to block UI button till the next push gives the real update
-  const applicationDeployStatus = ref('inactive' as Application['status'])
-  // The open application's containers by worker hostname, as the last action set them.
-  const containerStatuses = ref<Record<string, Application['status']>>({})
 
   const workersIndicator = computed<Indicator | undefined>(() => {
     if (!workers.value) return undefined
@@ -106,17 +111,17 @@ export const useAppStore = defineStore('app', () => {
     return state ? SETTING_INDICATORS[state] : undefined
   }
 
-  // Applications and containers share one set of statuses.
-  function applicationIndicator(status: Application['status']): Indicator {
-    const state: IndicatorState =
-      status === 'active'
-        ? 'ok'
-        : status === 'error'
-          ? 'error'
-          : APPLICATION_BUSY_STATUSES.includes(status)
-            ? 'busy'
-            : 'idle'
-    return { state, label: status }
+  // How many of its containers are active: an application has no state of its own.
+  function applicationIndicator({ active_count, container_count }: ApplicationSummary): Indicator {
+    if (container_count === 0) return { state: 'idle', label: 'No containers' }
+    return {
+      state: active_count === container_count ? 'ok' : active_count === 0 ? 'idle' : 'warning',
+      label: `${active_count} of ${container_count} active`,
+    }
+  }
+
+  function containerIndicator(headline: ContainerHeadline): Indicator {
+    return CONTAINER_INDICATORS[headline]
   }
 
   function workerIndicator(status: WorkerStatus): Indicator {
@@ -138,7 +143,7 @@ export const useAppStore = defineStore('app', () => {
     return { state, label: `${name}: ${status}` }
   }
 
-  function domainIndicator(status: Domain['status']): Indicator {
+  function domainIndicator(status: DomainStatus): Indicator {
     return DOMAIN_INDICATORS[status]
   }
 
@@ -197,26 +202,11 @@ export const useAppStore = defineStore('app', () => {
     if (entry) entry.state = 'applying'
   }
 
-  // The containers named are shown with the status too; the others keep the pushed one.
-  function updateApplicationDeployStatus(status: Application['status'], hostnames: string[] = []) {
-    applicationDeployStatus.value = status
-    containerStatuses.value = Object.fromEntries(hostnames.map(hostname => [hostname, status]))
-  }
-
-  function updateContainerStatus(hostname: string, status: Application['status']) {
-    containerStatuses.value = { ...containerStatuses.value, [hostname]: status }
-  }
-
-  function containerStatus(container: Container): Application['status'] {
-    return containerStatuses.value[container.worker.hostname] ?? container.status
-  }
-
   return {
     // State
     info,
     workers,
     workersError,
-    applicationDeployStatus,
     // Getters
     workersIndicator,
     workerStatus,
@@ -225,18 +215,16 @@ export const useAppStore = defineStore('app', () => {
     tunnelIndicator,
     sectionIndicator,
     applicationIndicator,
+    containerIndicator,
     workerIndicator,
     pathIndicator,
     infraIndicator,
     domainIndicator,
     taskIndicator,
-    containerStatus,
     // Actions
     init,
     refresh,
     setState,
     setSettingApplying,
-    updateApplicationDeployStatus,
-    updateContainerStatus,
   }
 })

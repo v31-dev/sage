@@ -4,7 +4,6 @@ import { Trash } from 'lucide-vue-next'
 
 import ConfirmationButton from '@/components/ConfirmationButton.vue'
 import { type Application, type Container, deleteContainer } from '@/services/api'
-import { useAppStore } from '@/stores/app'
 
 interface Props {
   application: Application
@@ -13,31 +12,17 @@ interface Props {
 }
 
 const props = withDefaults(defineProps<Props>(), {})
-const appStore = useAppStore()
 
-const deleteButtonDisabled = computed(() => {
-  return [
-    ['stopping', 'deploying'].includes(appStore.applicationDeployStatus),
-    ['stopping', 'deploying'].includes(appStore.containerStatus(props.container)),
-  ].includes(true)
-})
-
-const deleteButtonSpinner = computed(() => {
-  return [
-    ['stopping'].includes(appStore.applicationDeployStatus),
-    ['stopping'].includes(appStore.containerStatus(props.container)),
-  ].includes(true)
-})
+// A Delete already running or waiting takes the container away; another would only replace it.
+const deleting = computed(
+  () =>
+    props.container.live === 'delete' ||
+    props.container.queued.some(request => request.operation === 'delete')
+)
 
 async function onConfirmDeleteContainer() {
-  const hostname = props.container.worker.hostname
-  appStore.updateContainerStatus(hostname, 'stopping')
-  try {
-    await deleteContainer(props.application.project.name, props.application.name, hostname)
-  } catch (err) {
-    appStore.updateContainerStatus(hostname, props.container.status)
-    throw err
-  }
+  await deleteContainer(props.application.project.name, props.application.name, props.container.id)
+  await props.loadApplication()
 }
 </script>
 
@@ -49,8 +34,7 @@ async function onConfirmDeleteContainer() {
     :description="`Worker: ${props.container.worker.hostname}`"
     :icon="Trash"
     destructive
-    :disabled="deleteButtonDisabled"
-    :loading="deleteButtonSpinner"
+    :disabled="deleting"
     :onConfirm="onConfirmDeleteContainer"
   />
 </template>

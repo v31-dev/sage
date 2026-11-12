@@ -27,13 +27,23 @@ beforeEach(() => {
   vi.stubGlobal('fetch', fetchMock)
 })
 
-describe('the status lists', () => {
-  it('names the statuses in which an application is busy', () => {
-    expect(api.APPLICATION_BUSY_STATUSES).toEqual(['deploying', 'stopping', 'backup', 'restoring'])
-  })
+describe('the requests a container refuses', () => {
+  const container = (live: api.ContainerOperation | null, queued: api.ContainerOperation[] = []) =>
+    ({
+      live,
+      queued: queued.map(operation => ({ operation, task_id: 't1', cancellable: true })),
+    }) as api.Container
 
-  it('lets an application be stopped when it is active or in error', () => {
-    expect(api.APPLICATION_STOP_ELIGIBLE_STATUSES).toEqual(['active', 'error'])
+  it.each([
+    ['nothing runs or waits', container(null), false],
+    ['a request waits its turn', container(null, ['deploy']), false],
+    ['an automatic backup runs', container('backup_preserve'), false],
+    ['one of its own operations runs', container('deploy'), true],
+    ['a restore runs', container('restore_stopped'), true],
+    ['a Delete runs', container('delete'), true],
+    ['a Delete waits', container(null, ['delete']), true],
+  ])('when %s: %s', (_name, value, refused) => {
+    expect(api.refusesRequests(value)).toBe(refused)
   })
 })
 
@@ -135,18 +145,42 @@ const CALLS: Array<[string, () => Promise<unknown>, string, string, object, unkn
     { worker: 'w1' },
   ],
   [
+    'deployContainer',
+    () => api.deployContainer('demo', 'web', 'c1'),
+    'POST',
+    `${APP}/containers/c1/deploy`,
+    {},
+    undefined,
+  ],
+  [
+    'stopContainer',
+    () => api.stopContainer('demo', 'web', 'c1'),
+    'POST',
+    `${APP}/containers/c1/stop`,
+    {},
+    undefined,
+  ],
+  [
+    'cancelContainerRequest',
+    () => api.cancelContainerRequest('demo', 'web', 'c1', 'delete'),
+    'POST',
+    `${APP}/containers/c1/cancel/delete`,
+    {},
+    undefined,
+  ],
+  [
     'deleteContainer',
-    () => api.deleteContainer('demo', 'web', 'w1'),
+    () => api.deleteContainer('demo', 'web', 'c1'),
     'DELETE',
-    `${APP}/containers/w1`,
+    `${APP}/containers/c1`,
     {},
     undefined,
   ],
   [
     'deleteContainer, forced',
-    () => api.deleteContainer('demo', 'web', 'w1', true),
+    () => api.deleteContainer('demo', 'web', 'c1', true),
     'DELETE',
-    `${APP}/containers/w1`,
+    `${APP}/containers/c1`,
     { force: 'true' },
     undefined,
   ],
@@ -398,11 +432,11 @@ const CALLS: Array<[string, () => Promise<unknown>, string, string, object, unkn
   ],
   [
     'restoreVolumeBackup',
-    () => api.restoreVolumeBackup('demo', 'web', 'data', 7, 'w2'),
+    () => api.restoreVolumeBackup('demo', 'web', 'data', 7, 'c1', 'logs'),
     'POST',
     `${APP}/volumes/data/backups/7/restore`,
     {},
-    { target_worker: 'w2' },
+    { container: 'c1', volume: 'logs' },
   ],
 ]
 
@@ -418,8 +452,9 @@ describe('every call', () => {
     const calls = Object.entries(api)
       .filter(([, value]) => typeof value === 'function')
       .map(([name]) => name)
-      // The downloads are tested below, and a `matches` function calls nothing (tests/services/api/).
-      .filter(name => !['downloadBackup', 'downloadVolumeBackup'].includes(name))
+      // The downloads are tested below; `refusesRequests` above and a `matches` function (tests/services/api/) call
+      // nothing.
+      .filter(name => !['downloadBackup', 'downloadVolumeBackup', 'refusesRequests'].includes(name))
       .filter(name => !name.startsWith('matches'))
     expect(calls.filter(name => !named.has(name))).toEqual([])
   })

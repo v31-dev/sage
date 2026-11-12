@@ -116,7 +116,7 @@ function goBack() {
           <div v-else class="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
             <WorkerContainerCard
               v-for="container in worker.containers"
-              :key="`${container.application.project.name}-${container.application.name}`"
+              :key="container.id"
               :container="container"
               :worker="worker"
               :loadWorkerStatus="loadWorkerStatus"

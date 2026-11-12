@@ -5,8 +5,7 @@ import {
   fetchAppInfo,
   fetchWorkers,
   type AppInfo,
-  type Application,
-  type Container,
+  type ApplicationSummary,
   type SettingSection,
   type SettingsStatus,
   type SettingState,
@@ -82,10 +81,6 @@ function appInfo(overrides: Partial<AppInfo> = {}): AppInfo {
     settings: settings(),
     ...overrides,
   }
-}
-
-function container(hostname: string, status: Application['status'] = 'active'): Container {
-  return { worker: { hostname }, status } as Container
 }
 
 beforeEach(() => {
@@ -273,10 +268,24 @@ describe('the indicators by status', () => {
     ['stopping', 'busy'],
     ['backup', 'busy'],
     ['restoring', 'busy'],
+    ['checking', 'busy'],
     ['inactive', 'idle'],
-  ] as const)('applicationIndicator: %s is %s', (status, state) => {
-    expect(useAppStore().applicationIndicator(status)).toEqual({ state, label: status })
+  ] as const)('containerIndicator: %s is %s', (headline, state) => {
+    expect(useAppStore().containerIndicator(headline)).toEqual({ state, label: headline })
   })
+
+  it.each([
+    [0, 0, 'idle', 'No containers'],
+    [2, 2, 'ok', '2 of 2 active'],
+    [1, 2, 'warning', '1 of 2 active'],
+    [0, 2, 'idle', '0 of 2 active'],
+  ] as const)(
+    'applicationIndicator: %s of %s containers active is %s',
+    (active_count, container_count, state, label) => {
+      const application = { active_count, container_count } as ApplicationSummary
+      expect(useAppStore().applicationIndicator(application)).toEqual({ state, label })
+    }
+  )
 
   it.each([
     ['online', 'ok'],
@@ -445,36 +454,5 @@ describe('the changes an action makes at once', () => {
     const store = useAppStore()
     store.setSettingApplying('s3')
     expect(store.info).toBeNull()
-  })
-
-  it('updateApplicationDeployStatus sets the status and the containers it names', () => {
-    const store = useAppStore()
-    expect(store.applicationDeployStatus).toBe('inactive')
-
-    store.updateApplicationDeployStatus('deploying', ['w1', 'w2'])
-
-    expect(store.applicationDeployStatus).toBe('deploying')
-    expect(store.containerStatus(container('w1', 'active'))).toBe('deploying')
-    expect(store.containerStatus(container('w2', 'inactive'))).toBe('deploying')
-    expect(store.containerStatus(container('w3', 'active'))).toBe('active')
-  })
-
-  it('updateApplicationDeployStatus forgets the containers of the earlier action', () => {
-    const store = useAppStore()
-    store.updateApplicationDeployStatus('deploying', ['w1'])
-
-    store.updateApplicationDeployStatus('stopping')
-
-    expect(store.containerStatus(container('w1', 'active'))).toBe('active')
-  })
-
-  it('updateContainerStatus changes one container and keeps the others', () => {
-    const store = useAppStore()
-    store.updateApplicationDeployStatus('deploying', ['w1', 'w2'])
-
-    store.updateContainerStatus('w1', 'error')
-
-    expect(store.containerStatus(container('w1', 'active'))).toBe('error')
-    expect(store.containerStatus(container('w2', 'active'))).toBe('deploying')
   })
 })

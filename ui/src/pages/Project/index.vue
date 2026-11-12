@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/ui/spinner'
 import type { APIError } from '@/lib/api'
 
-import { fetchProject, type Project } from '@/services/api'
+import { fetchProject, type ProjectPage } from '@/services/api'
 import ApplicationCard from './ApplicationCard.vue'
 import ProjectHeader from './ProjectHeader.vue'
 import AddApplicationButton from './AddApplicationButton.vue'
@@ -15,7 +15,7 @@ import SectionTitle from '@/components/SectionTitle.vue'
 const route = useRoute()
 const router = useRouter()
 const projectName = route.params.projectId as string
-const project = ref<Project | null>(null)
+const project = ref<ProjectPage | null>(null)
 const isLoading = ref(true)
 const loadError = ref('')
 const isNotFound = ref(false)

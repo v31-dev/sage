@@ -1,59 +1,104 @@
 import { request } from '@/lib/api'
 import { applicationPath, type Fields } from './_common'
 import type { Domain } from './domains'
-import type { Project } from './projects'
-import type { Worker } from './workers'
 
-export interface Application {
+// What an application runs, and how many of its containers are active; an application has no state of its own.
+export interface ApplicationSummary {
+  id: number
   name: string
   label: string
-  project: Project
   description: string | null
   type: 'docker' | 'git'
-  repo: string | null
-  path: string | null
   image: string | null
+  repo: string | null
+  container_count: number
+  active_count: number
+  created_at: Date
+  updated_at: Date
+}
+
+export interface Application extends ApplicationSummary {
+  path: string | null
   env: string | null
   args: string | null
   build_secrets: string | null
   command: string | null
-  containers: Container[]
+  project: { name: string; label: string }
   volumes: Volume[]
-  container_count: number
-  status: 'active' | 'inactive' | 'deploying' | 'stopping' | 'backup' | 'restoring' | 'error'
-  deployed_at: Date | null
-  deployed_hash: string | null
-  config_dirty?: boolean
-  created_at: Date
-  updated_at: Date
+  containers: Container[]
 }
 
-export const APPLICATION_BUSY_STATUSES: Application['status'][] = [
-  'deploying',
-  'stopping',
-  'backup',
-  'restoring',
-]
+export type ContainerHeadline =
+  | 'active'
+  | 'inactive'
+  | 'deploying'
+  | 'stopping'
+  | 'backup'
+  | 'restoring'
+  | 'error'
+  | 'checking'
 
-export const APPLICATION_STOP_ELIGIBLE_STATUSES: Application['status'][] = ['active', 'error']
-
-// A container's part of a task: its lines are the task's `application_task_id` and part `container_task_id`.
-export interface Event {
-  application_task_id: string
-  container_task_id: string
-  type: 'deploy' | 'stop' | 'delete' | 'backup' | 'restore'
-  created_at: Date
+// What a container's state is, as the manager decides it: the headline, how its configuration compares with what it
+// was deployed with, and for an error (or a check under way) why.
+export interface ContainerView {
+  headline: ContainerHeadline
+  config: 'current' | 'dirty' | 'not_deployed' | 'unknown'
+  reason: string | null
+  detail: string | null
 }
 
-export interface Container {
+// Docker's state of the container as last read (`absent` when the worker has none), its health and how it last exited.
+export interface RuntimeReading {
+  state: string
+  deployment_id: string | null
+  health: string | null
+  exit_code: number | null
+  oom_killed: boolean
+}
+
+// How much is known of the runtime now; the reading is current only while `knowledge` is `known`.
+export interface Runtime {
+  knowledge: 'unobserved' | 'known' | 'stale' | 'unreachable'
+  reading: RuntimeReading | null
+}
+
+// The operations that show on a container while they run or wait.
+export type ContainerOperation =
+  | 'deploy'
+  | 'stop'
+  | 'delete'
+  | 'backup_stopped'
+  | 'backup_preserve'
+  | 'restore_stopped'
+
+// What people call each operation on a container, and the reset of one Sage stopped.
+export const OPERATION_LABELS: Record<ContainerOperation | 'reset', string> = {
+  deploy: 'Deploy',
+  stop: 'Stop',
+  delete: 'Delete',
+  backup_stopped: 'Backup',
+  backup_preserve: 'Automatic backup',
+  restore_stopped: 'Restore',
+  reset: 'Reset',
+}
+
+// A request waiting its turn on the container; `cancellable` when Cancel takes it.
+export interface QueuedRequest {
+  operation: ContainerOperation
+  task_id: string
+  cancellable: boolean
+}
+
+// A step of an operation on the container; its lines are the task's `task_id`, part `part_id`.
+export interface ContainerEvent {
   id: number
-  domains: Domain[]
-  worker: Worker
-  status: 'active' | 'inactive' | 'deploying' | 'stopping' | 'backup' | 'restoring' | 'error'
-  events: Event[]
-  created_at: Date
-  updated_at: Date
-  application: ContainerApplication
+  action: string
+  transition: string
+  operation_id: string | null
+  reason: Record<string, unknown> | null
+  task_id: string | null
+  part_id: string | null
+  created_at: string
 }
 
 export interface ContainerApplication {
@@ -62,11 +107,48 @@ export interface ContainerApplication {
   project: { name: string; label: string }
 }
 
+// A container as a list of containers shows it.
+export interface ContainerReference {
+  id: string
+  worker: { hostname: string; subdomain: string | null }
+  application: ContainerApplication
+  view: ContainerView
+}
+
+// The record of the container's last successful deployment, as last read from its worker.
+export interface ContainerTarget {
+  kind: string
+  record: {
+    applied: { deployment_id: string; config_hash: string; committed_at: string } | null
+  } | null
+}
+
+export interface Container extends ContainerReference {
+  target: ContainerTarget
+  runtime: Runtime
+  live: ContainerOperation | null
+  routable: boolean | null
+  queued: QueuedRequest[]
+  domains: Domain[]
+  events: ContainerEvent[]
+  created_at: Date
+  updated_at: Date
+}
+
+// Whether the container refuses a Deploy, Stop, backup or restore now: one of its own operations runs, or a Delete runs
+// or waits. An automatic backup running leaves a request to wait its turn behind it.
+export function refusesRequests(container: Container): boolean {
+  return (
+    (container.live !== null && container.live !== 'backup_preserve') ||
+    container.queued.some(request => request.operation === 'delete')
+  )
+}
+
 export interface Volume {
+  id: string
   name: string
   path: string
   backup_cron: string | null
-  application: Application
   created_at: Date
   updated_at: Date
 }
@@ -83,25 +165,42 @@ export const updateApplication = (project: string, name: string, data: Fields) =
 export const deleteApplication = (project: string, name: string) =>
   request<unknown>('DELETE', applicationPath(project, name))
 
+// Deploy all and Stop all: one task per container.
 export const deployApplication = (project: string, name: string) =>
-  request<unknown>('POST', `${applicationPath(project, name)}/deploy`)
+  request<{ task_ids: string[] }>('POST', `${applicationPath(project, name)}/deploy`)
 
 export const stopApplication = (project: string, name: string) =>
-  request<unknown>('POST', `${applicationPath(project, name)}/stop`)
+  request<{ task_ids: string[] }>('POST', `${applicationPath(project, name)}/stop`)
 
 export const createContainer = (project: string, application: string, data: Fields) =>
   request<Container>('POST', `${applicationPath(project, application)}/containers/`, {
     body: data,
   })
 
-// `force` removes the container from Sage without cleaning up after it on an offline worker.
-export const deleteContainer = (
+const containerPath = (project: string, application: string, id: string) =>
+  `${applicationPath(project, application)}/containers/${id}`
+
+export const deployContainer = (project: string, application: string, id: string) =>
+  request<{ task_id: string }>('POST', `${containerPath(project, application, id)}/deploy`)
+
+export const stopContainer = (project: string, application: string, id: string) =>
+  request<{ task_id: string }>('POST', `${containerPath(project, application, id)}/stop`)
+
+// Takes the container's queued `operation` out of the queue.
+export const cancelContainerRequest = (
   project: string,
   application: string,
-  hostname: string,
-  force = false
+  id: string,
+  operation: ContainerOperation
 ) =>
-  request<unknown>('DELETE', `${applicationPath(project, application)}/containers/${hostname}`, {
+  request<{ task_id: string }>(
+    'POST',
+    `${containerPath(project, application, id)}/cancel/${operation}`
+  )
+
+// `force` removes the container from Sage without cleaning up after it on a worker that can't be reached.
+export const deleteContainer = (project: string, application: string, id: string, force = false) =>
+  request<{ task_id: string }>('DELETE', containerPath(project, application, id), {
     query: { force: force || null },
   })
 

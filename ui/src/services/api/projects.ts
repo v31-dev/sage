@@ -1,21 +1,25 @@
 import { request } from '@/lib/api'
 import type { Fields } from './_common'
-import type { Application } from './applications'
+import type { ApplicationSummary } from './applications'
 
 export interface Project {
   name: string
   label: string
   description: string | null
   env: string | null
-  applications: Application[]
   application_count: number
   created_at: Date
   updated_at: Date
 }
 
+// A project with its applications' summaries, by name.
+export interface ProjectPage extends Project {
+  applications: ApplicationSummary[]
+}
+
 export const fetchProjects = () => request<Project[]>('GET', '/projects/')
 
-export const fetchProject = (name: string) => request<Project>('GET', `/projects/${name}`)
+export const fetchProject = (name: string) => request<ProjectPage>('GET', `/projects/${name}`)
 
 export const createProject = (data: Fields) =>
   request<Project>('POST', '/projects/', { body: data })

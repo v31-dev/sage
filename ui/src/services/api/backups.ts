@@ -1,12 +1,18 @@
 import { request } from '@/lib/api'
 import { applicationPath, download } from './_common'
 
+// A backup in the configured store (`storage_id`): the platform's, or a volume's (`application`), with the volume's id
+// and the name it had when it was taken.
 export interface Backup {
   id: number
+  type: 'platform' | 'application'
   s3_path: string
+  storage_id: string
+  source_volume_id: string | null
   source_volume_name: string | null
-  type: string
+  application: number | null
   created_at: string
+  updated_at: string
 }
 
 export interface BackupStatus {
@@ -38,19 +44,25 @@ const volumeBackupsPath = (project: string, application: string, volume: string)
 export const fetchVolumeBackups = (project: string, application: string, volume: string) =>
   request<Backup[]>('GET', `${volumeBackupsPath(project, application, volume)}/`)
 
+// A backup of the volume from each of the application's containers, all of them stopped: one task per container.
 export const createVolumeBackup = (project: string, application: string, volume: string) =>
-  request<unknown>('POST', `${volumeBackupsPath(project, application, volume)}/`)
+  request<{ task_ids: string[] }>('POST', `${volumeBackupsPath(project, application, volume)}/`)
 
+// Restores the backup into a stopped container of the application (`container`, by id), into the volume it was taken
+// of or another of the application's (`target`, by name).
 export const restoreVolumeBackup = (
   project: string,
   application: string,
   volume: string,
   id: number,
-  targetWorker: string
+  container: string,
+  target: string
 ) =>
-  request<unknown>('POST', `${volumeBackupsPath(project, application, volume)}/${id}/restore`, {
-    body: { target_worker: targetWorker },
-  })
+  request<{ task_id: string }>(
+    'POST',
+    `${volumeBackupsPath(project, application, volume)}/${id}/restore`,
+    { body: { container, volume: target } }
+  )
 
 export const downloadVolumeBackup = (
   project: string,

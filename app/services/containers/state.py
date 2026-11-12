@@ -12,24 +12,34 @@ from utils.common import utcnow
 
 
 @dataclass(frozen=True)
+class QueuedRequest:
+  """A request waiting its turn on the container: its operation, its task, and whether Cancel takes it."""
+  operation: str
+  task_id: str
+  cancellable: bool
+
+
+@dataclass(frozen=True)
 class ContainerState:
   """The decided view with the facts it was decided from: the record as last read, the runtime and the live
-  operation's name; and whether it can be routed to."""
+  operation's name; whether it can be routed to; and the requests queued on it, which leave the view as it is."""
   view: ContainerView
   target: TargetRead
   runtime: Runtime
   live: str | None
   routable: bool | None
+  queued: tuple[QueuedRequest, ...] = ()
 
 
-def container_state(container: Container, instance: Instance, live: str | None, desired_hash: str | None) -> ContainerState:
-  """The container's state now, given the operation running on it and the fingerprint of its application's current
-  inputs."""
+def container_state(container: Container, instance: Instance, live: str | None, queued: tuple[QueuedRequest, ...],
+                    desired_hash: str | None) -> ContainerState:
+  """The container's state now, given the operation running on it, the requests queued on it and the fingerprint of
+  its application's current inputs."""
   target = Containers().target(container.id)
   reachable = {"reachable": True, "unreachable": False}.get(Tailscale().ssh(container.worker_id))
   runtime = runtime_of(WorkerReports().latest(container.worker_id), container.id, target.record, utcnow(), reachable)
   facts = ContainerFacts(Authority(instance.id, instance.state_generation, container.id), target, runtime, live, desired_hash)
-  return ContainerState(decide_container(facts), target, runtime, live, routable(facts))
+  return ContainerState(decide_container(facts), target, runtime, live, routable(facts), queued)
 
 
 def container_reference(container: Container, state: ContainerState) -> dict:
@@ -49,14 +59,15 @@ def container_reference(container: Container, state: ContainerState) -> dict:
 
 def container_payload(container: Container, state: ContainerState, domains: list[dict], events: list[ContainerEvent]) -> dict:
   """The container as its pages show it: its reference, the facts its state was decided from (its record as last read,
-  its runtime, the operation running on it, whether it can be routed to), the payloads of its domains, and its events,
-  newest first."""
+  its runtime, the operation running on it, whether it can be routed to), the requests queued on it in their turn, the
+  payloads of its domains, and its events, newest first."""
   return {
       **container_reference(container, state),
       "target": asdict(state.target),
       "runtime": asdict(state.runtime),
       "live": state.live,
       "routable": state.routable,
+      "queued": [asdict(request) for request in state.queued],
       "domains": domains,
       "events": [{"id": event.id, "action": event.action, "transition": event.transition, "operation_id": event.operation_id,
                   "reason": event.reason, "task_id": event.task_id, "part_id": event.part_id, "created_at": event.created_at}

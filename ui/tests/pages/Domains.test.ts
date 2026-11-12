@@ -9,7 +9,8 @@ import {
   type AppInfo,
   type Domain,
   type DomainsResponse,
-  type LinkableContainer,
+  type ContainerReference,
+  type DomainStatus,
 } from '@/services/api'
 import { useAppStore } from '@/stores/app'
 import { followTopics } from '../helpers/topics'
@@ -25,29 +26,36 @@ vi.mock('@/services/api', async importOriginal => ({
 
 const application = { name: 'web', label: 'Web', project: { name: 'demo', label: 'Demo' } }
 
-const linkable = (id: number, hostname: string, subdomain: string): LinkableContainer => ({
-  id,
-  status: 'active',
+const linkable = (id: number, hostname: string, subdomain: string): ContainerReference => ({
+  id: String(id),
   worker: { hostname, subdomain },
   application,
+  view: { headline: 'active', config: 'current', reason: null, detail: null },
 })
 
-const domain = (id: number, overrides: Partial<Domain>): Domain => ({
-  id,
+// A domain, with its state's `status` and `error` given apart.
+const domain = (
+  id: number,
+  {
+    status = 'synced',
+    error = null,
+    ...overrides
+  }: Partial<Domain> & { status?: DomainStatus; error?: string | null }
+): Domain => ({
+  id: String(id),
   name: 'shop',
   type: 'public',
   port: 80,
   service: null,
   pool: null,
   cors_origins: null,
-  status: 'synced',
-  sync_error: null,
-  synced_hash: null,
-  synced_at: null,
   host: 'shop.example.test',
   address: 'https://shop.example.test',
   worker: 'w1',
-  container: { id: 1, status: 'active', worker: 'w1', application },
+  container: { id: '1', worker: 'w1', application },
+  view: { status, conforms: status === 'synced', reason: null, error },
+  created_at: new Date('2026-01-01T00:00:00Z'),
+  updated_at: new Date('2026-01-01T00:00:00Z'),
   ...overrides,
 })
 
@@ -73,13 +81,16 @@ describe('the Domains page', () => {
     const wrapper = mount(Domains, {
       global: { stubs: { DomainDialog: true, ConfirmationButton: true, CopyButton: true } },
     })
-    topics.topic('domains').push({ domains: [domain(1, { status: 'syncing' })], containers: [] })
+    topics.topic('domains').push({
+      domains: [domain(1, { status: 'syncing' })],
+      containers: [linkable(1, 'w1', 'red')],
+    })
     await flushPromises()
     expect(wrapper.get('[data-domain]').text()).toContain('syncing')
 
     topics.topic('domains').push({
-      domains: [domain(1, { status: 'error', sync_error: 'Traefik: unavailable' })],
-      containers: [],
+      domains: [domain(1, { status: 'error', error: 'Traefik: unavailable' })],
+      containers: [linkable(1, 'w1', 'red')],
     })
     await flushPromises()
     expect(wrapper.get('[data-domain]').text()).toContain('sync failed')
@@ -244,7 +255,7 @@ describe('the domain dialog', () => {
       service: 'shop',
       pool: '',
       cors_origins: null,
-      container: 2,
+      container: '2',
     })
   })
 
@@ -257,7 +268,7 @@ describe('the domain dialog', () => {
       .trigger('click')
     await flushPromises()
 
-    expect(updateDomain).toHaveBeenCalledWith(7, {
+    expect(updateDomain).toHaveBeenCalledWith('7', {
       name: 'shop',
       type: 'public',
       port: 9090,
@@ -309,7 +320,7 @@ describe('the domain dialog', () => {
     await flushPromises()
 
     expect(updateDomain).toHaveBeenCalledWith(
-      7,
+      '7',
       expect.objectContaining({
         cors_origins: ['https://app.example.test', 'http://localhost:5173'],
       })
@@ -327,7 +338,7 @@ describe('the domain dialog', () => {
       .trigger('click')
     await flushPromises()
 
-    expect(updateDomain).toHaveBeenCalledWith(7, expect.objectContaining({ cors_origins: null }))
+    expect(updateDomain).toHaveBeenCalledWith('7', expect.objectContaining({ cors_origins: null }))
   })
 
   it('hides the HTTP policy for TCP and clears it on a protocol change', async () => {
@@ -344,7 +355,7 @@ describe('the domain dialog', () => {
     await flushPromises()
 
     expect(updateDomain).toHaveBeenCalledWith(
-      7,
+      '7',
       expect.objectContaining({ type: 'tcp', cors_origins: null })
     )
   })

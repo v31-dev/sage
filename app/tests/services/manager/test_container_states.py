@@ -202,7 +202,7 @@ class TestPublication:
                                        "sage-ffffffffffffffff"})
     assert signals == pages(containers[0])
 
-  async def test_an_operation_starting_and_ending_shows_its_container_again(self, manager, containers, signals):
+  async def test_a_request_queued_starting_and_ending_shows_its_container_again_each_time(self, manager, containers, signals):
     release = asyncio.Event()
 
     async def holds(container_id):
@@ -210,12 +210,18 @@ class TestPublication:
 
     manager.stop_container = holds
     manager.request_stop(containers[0].id)
-    assert signals == []
-    manager.task_queue.dispatch_tick()
     assert signals == pages(containers[0])
+    manager.task_queue.dispatch_tick()
+    assert signals == pages(containers[0]) * 2
     release.set()
     await manager.run()
-    assert signals == pages(containers[0]) * 2
+    assert signals == pages(containers[0]) * 3
+
+  def test_a_cancelled_request_shows_its_container_again(self, manager, containers, signals):
+    manager.request_stop(containers[0].id)
+    signals.clear()
+    manager.request_cancel(containers[0].id, "stop")
+    assert signals == pages(containers[0])
 
   async def test_the_minutely_look_shows_again_only_the_containers_whose_state_changed(self, manager, containers, signals,
                                                                                        clock):
@@ -513,6 +519,47 @@ class TestOrphans:
     monotonic.now += 905
     await manager.observe_containers()
     assert len(cleanups(manager)) == 1
+
+
+class TestQueuedRequests:
+  @pytest.mark.parametrize("operation", ["deploy", "stop", "delete"])
+  def test_a_request_waiting_its_turn_is_in_the_payload_and_leaves_the_view_as_it_is(self, manager, containers, operation):
+    before = view(manager, containers[0])
+    task_id = getattr(manager, f"request_{operation}")(containers[0].id)
+    [payload, other] = manager.container_payloads(containers)
+    assert payload["queued"] == [{"operation": operation, "task_id": task_id, "cancellable": True}]
+    assert (view(manager, containers[0]), payload["live"], other["queued"]) == (before, None, [])
+
+  def test_requests_are_in_their_turn_and_cancellable_exactly_when_cancel_takes_them(self, manager, containers):
+    async def automatic(container_id):
+      pass
+
+    container = containers[0]
+    manager.request_deploy(container.id)
+    manager.add_task(task=automatic, key=("backup_preserve", container.id), scopes={f"worker:w1:container:{container.id}"},
+                     executor="app", params={"container_id": container.id})
+    manager.add_task(task=automatic, key=("record_read", container.id), scopes=set(), executor="app",
+                     params={"container_id": container.id})
+    queued = manager.container_states([container])[container.id].queued
+    assert [(request.operation, request.cancellable) for request in queued] == [("deploy", True), ("backup_preserve", False)]
+    with pytest.raises(ValueError):
+      manager.request_cancel(container.id, "backup_preserve")
+    assert manager.request_cancel(container.id, "deploy") == queued[0].task_id
+    assert [request.operation for request in manager.container_states([container])[container.id].queued] == ["backup_preserve"]
+
+  async def test_a_request_that_starts_leaves_the_queued_ones_and_is_the_live_operation(self, manager, containers):
+    release = asyncio.Event()
+
+    async def holds(container_id):
+      await release.wait()
+
+    manager.stop_container = holds
+    manager.request_stop(containers[0].id)
+    manager.task_queue.dispatch_tick()
+    state = manager.container_states([containers[0]])[containers[0].id]
+    assert (state.live, state.queued) == ("stop", ())
+    release.set()
+    await manager.run()
 
 
 class TestPayloads:

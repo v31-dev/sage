@@ -1,6 +1,6 @@
 import { request } from '@/lib/api'
 import { parseDate } from '@/lib/utils'
-import type { Event } from './applications'
+import type { ContainerEvent } from './applications'
 
 interface TaskFields {
   task_id: string
@@ -104,7 +104,7 @@ export interface TaskLogPage {
 // A container's part of a task; its kind and worker are null when its event went with its container.
 export interface TaskPart {
   id: string
-  type: Event['type'] | null
+  type: ContainerEvent['action'] | null
   worker: string | null
 }
 

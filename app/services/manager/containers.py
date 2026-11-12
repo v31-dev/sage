@@ -19,7 +19,7 @@ from services.containers.placement import (LABEL_APPLICATION, labels_authority, 
                                            runtime_name, runtime_owner, volume_dir)
 from services.containers.record import Applied, Authority, Operation, Recovery, Settled, TargetRead, TargetRecord, parse_record_listing
 from services.containers.rendering import render_placement
-from services.containers.state import ContainerState, container_payload, container_state
+from services.containers.state import ContainerState, QueuedRequest, container_payload, container_state
 from services.containers.targets import Containers
 from services.db.models import Application, Container, ContainerEvent, Domain, Instance, Project, Volume, Worker
 from services.history import record_container_event
@@ -49,7 +49,7 @@ RESETS = {
 class ContainersMixin:
   def container_states(self, containers) -> dict[str, ContainerState]:
     """The state of each of `containers` now, by id, each application's inputs read once."""
-    live = self._live_operations()
+    live, queued = self._container_tasks()
     instance = Instance.get()
     hashes, states = {}, {}
     for container in containers:
@@ -58,7 +58,8 @@ class ContainersMixin:
           hashes[container.application_id] = capture_deploy_config(container.application_id).content_hash
         except LookupError:
           hashes[container.application_id] = None
-      states[container.id] = container_state(container, instance, live.get(container.id), hashes[container.application_id])
+      states[container.id] = container_state(container, instance, live.get(container.id), queued.get(container.id, ()),
+                                             hashes[container.application_id])
     return states
 
   def container_payloads(self, containers) -> list[dict]:
@@ -104,17 +105,23 @@ class ContainersMixin:
             for container in Container.select().where(Container.application == application.id).order_by(Container.worker)]
 
   def containers_queue_facts(self) -> list[Fact]:
-    """The operations running on containers: a container whose operation starts or ends is shown again."""
+    """The operations running on containers and the requests queued on them: a container whose operation starts or
+    ends, or whose requests are queued, start or are cancelled, is shown again."""
     previous = frozenset()
 
     def changed(current):
       nonlocal previous
-      affected = {container_id for container_id, _ in current ^ previous}
+      affected = {container_id for container_id, *_ in current ^ previous}
       previous = current
       for container in Container.select().where(Container.id.in_(affected)):
         container_changed(container)
 
-    return [Fact(lambda: frozenset(self._live_operations().items()), on_change=changed)]
+    def tasks():
+      live, queued = self._container_tasks()
+      return frozenset((container_id, live.get(container_id), queued.get(container_id, ()))
+                       for container_id in live.keys() | queued.keys())
+
+    return [Fact(tasks, on_change=changed)]
 
   def containers_state_fact(self) -> Fact:
     """Every container's state, checked once a minute: a container whose state changed with time alone (its report
@@ -414,10 +421,20 @@ class ContainersMixin:
     self.orphans.pop((hostname, container_id), None)
     Notifications().notify(f"Removed a container Sage no longer has from worker {hostname}.", "warning", f"/workers/{hostname}")
 
-  def _live_operations(self) -> dict[str, str]:
-    """The operation running on each container that shows its progress, by container id."""
-    return {task["params"]["container_id"]: task["name"] for task in self.task_snapshot()["running"]
+  def _container_tasks(self) -> tuple[dict[str, str], dict[str, tuple[QueuedRequest, ...]]]:
+    """By container id, from one look at the queue: the operation running on each container that shows its progress,
+    and the requests of that kind queued on it in their turn, each cancellable when it is the user's request that
+    `request_cancel` takes."""
+    snapshot = self.task_snapshot()
+    live = {task["params"]["container_id"]: task["name"] for task in snapshot["running"]
             if task["name"] in PROGRESS and "container_id" in task["params"]}
+    queued = {}
+    for task in snapshot["queued"]:
+      if task["name"] in PROGRESS and "container_id" in task["params"]:
+        container_id = task["params"]["container_id"]
+        cancellable = task["name"] in REQUESTS and task["key"] == [REQUESTS[task["name"]][0], container_id]
+        queued[container_id] = (*queued.get(container_id, ()), QueuedRequest(task["name"], task["task_id"], cancellable))
+    return live, queued
 
   def request_deploy(self, container_id: str) -> str:
     """Queues a Deploy of the container with its application's inputs as they are now; the task's id."""

@@ -13,10 +13,15 @@ import { RouterLink } from 'vue-router'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 
+import { ButtonGroup } from '@/components/ui/button-group'
+
 import { useAppStore } from '@/stores/app'
 import EventLogsButton from './EventLogsButton.vue'
 import DeleteContainerButton from './DeleteContainerButton.vue'
+import DeployApplicationButton from './DeployApplicationButton.vue'
+import StopApplicationButton from './StopApplicationButton.vue'
 import { type Application, type Container, type Domain } from '@/services/api'
+import ContainerStatus from '@/components/ContainerStatus.vue'
 import CopyButton from '@/components/CopyButton.vue'
 import StateIndicator from '@/components/StateIndicator.vue'
 
@@ -48,14 +53,9 @@ const workerIndicator = computed(() => {
 
 <template>
   <Card data-container>
-    <CardHeader class="flex items-center justify-between border-b">
-      <CardTitle>
-        <div class="flex w-full flex-wrap gap-2">
-          <StateIndicator
-            v-bind="appStore.applicationIndicator(appStore.containerStatus(props.container))"
-            show-label
-          />
-        </div>
+    <CardHeader class="flex items-start justify-between border-b">
+      <CardTitle class="min-w-0">
+        <ContainerStatus :container="props.container" :reload="props.loadApplication" />
       </CardTitle>
       <CardAction>
         <DeleteContainerButton
@@ -66,6 +66,18 @@ const workerIndicator = computed(() => {
       </CardAction>
     </CardHeader>
     <CardFooter class="flex-col space-y-4">
+      <ButtonGroup class="w-full space-x-1 flex">
+        <DeployApplicationButton
+          :application="props.application"
+          :container="props.container"
+          :loadApplication="props.loadApplication"
+        />
+        <StopApplicationButton
+          :application="props.application"
+          :container="props.container"
+          :loadApplication="props.loadApplication"
+        />
+      </ButtonGroup>
       <EventLogsButton :container="props.container" class="w-full min-w-0" />
       <Button as-child variant="outline" size="sm" class="w-full min-w-0">
         <RouterLink
@@ -111,8 +123,8 @@ const workerIndicator = computed(() => {
             show-label
           />
           <StateIndicator
-            v-bind="appStore.domainIndicator(domain.status)"
-            :title="domain.sync_error ?? undefined"
+            v-bind="appStore.domainIndicator(domain.view.status)"
+            :title="domain.view.error ?? undefined"
             show-label
           />
           <Badge variant="outline">{{ TYPES[domain.type] }}</Badge>
