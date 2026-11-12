@@ -1,193 +1,59 @@
 from typing import Literal
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Request
-from playhouse.shortcuts import model_to_dict
+from fastapi import APIRouter, Body
 
-from routes.containers import container_payload
-from routes.containers import router as container_router
-from services.db import Worker
+from services.db.models import Worker
 from services.manager import Manager
-from services.metrics import Metrics
-from services.tailscale import Tailscale
-from services.worker_reports import WorkerReports
-from utils.api import generic_get, get_request_models, parse_api_data
-from utils.common import get_env
+from services.metrics.series import PERIODS
+from services.workers import commands
 from utils.logging import NO_ACCESS_LOG
-from utils.queue import OnConflict
 
 router = APIRouter()
 
 
-def inject_worker(request: Request):
-  models = get_request_models(request)
-
-  hostname = request.path_params.get("hostname")
-
-  if hostname == get_env("TS_NAME"):
-    models["worker"] = None
-  else:
-    # Fetch and store worker
-    models["worker"] = generic_get(
-        Worker,
-        Worker.hostname == hostname,
-        return_model=True,
-    )
-
-  return None
-
-
 @router.get("/")
-def get():
-  """Each worker's status, path and container count: the manager's worker list."""
-  return Manager().worker_list
-
-
-def subdomain_of(worker_data: dict, hostname: str) -> str | None:
-  """The subdomain asked for, checked; one another worker has is refused."""
-  subdomain = Worker.subdomain.validate(str(worker_data.get("subdomain") or "").strip() or None)
-  if subdomain and Worker.select().where((Worker.subdomain == subdomain) & (Worker.hostname != hostname)).exists():
-    raise HTTPException(status_code=409, detail=f"A worker with subdomain {subdomain} already exists.")
-  return subdomain
+def list_workers():
+  return Manager().worker_list()
 
 
 @router.post("/")
-def add_worker(worker_data: dict = Body(...)):
-  """Add a machine of the tailnet, given by hostname or Tailscale IP, as a worker, with its subdomain (random when
-  none is given)."""
-  host = str(worker_data.get("host") or "").strip()
-  peer = Tailscale().find_peer(host) if host else None
-  if peer is None:
-    raise HTTPException(status_code=404, detail=f"No machine with hostname or IP '{host}' in the tailnet.")
-
-  if peer.hostname.lower() == get_env("TS_NAME").lower():
-    raise HTTPException(status_code=409, detail="A worker with the manager's name (TS_NAME) is not allowed.")
-  if Worker.get_or_none(Worker.hostname == peer.hostname):
-    raise HTTPException(status_code=409, detail=f"Worker {peer.hostname} is already added.")
-  if Manager().has_task(Manager().add_worker, {"worker_hostname": peer.hostname}):
-    raise HTTPException(status_code=409, detail=f"Worker {peer.hostname} is already being added.")
-  subdomain = subdomain_of(worker_data, peer.hostname)
-
-  Manager().add_task(
-      task=Manager().add_worker,
-      scopes={"platform"},
-      params={"worker_hostname": peer.hostname, "subdomain": subdomain},
-      executor="platform",
-      on_conflict=OnConflict.QUEUE,
-  )
-
-  return {"status": "OK", "hostname": peer.hostname}
+def add_worker(data: dict = Body(...)):
+  """Adds the machine of the tailnet given by its hostname or Tailscale IP (`host`) as a worker with its `subdomain`."""
+  hostname, task_id = Manager().request_add_worker(data.get("host"), data.get("subdomain"))
+  return {"task_id": task_id, "hostname": hostname}
 
 
-@router.put("/{hostname}", dependencies=[Depends(inject_worker)])
-def update_worker(request: Request, hostname: str, worker_data: dict = Body(...)):
-  """Change a worker's subdomain; what is not sent stays."""
-  worker = request.state.models["worker"]
-  if not worker:
-    raise HTTPException(status_code=404, detail="Worker not found")
-  subdomain = subdomain_of({"subdomain": worker.subdomain, **parse_api_data(worker_data, ["subdomain"])}, hostname)
-  if not subdomain:
-    raise HTTPException(status_code=400, detail="A worker without a subdomain is not allowed.")
-
-  Manager().save_worker_subdomain(hostname, subdomain)
-  return worker_payload(Worker.get_by_id(hostname))
+@router.get("/{hostname}")
+def get_worker(hostname: str):
+  return Manager().worker_page(hostname)
 
 
-def worker_payload(worker: Worker) -> dict:
-  """The worker with its containers and their applications, and what the worker list holds of it: `infra` (the state
-  of the containers of its stack), `online`, `status`, `path`, `metrics` (its newest minute), both certificate states and
-  `tunnel` (its own tunnel's health), with that tunnel's name."""
-  data = model_to_dict(worker)
-  data["containers"] = [container_payload(container) for container in worker.containers]
-  entry = Manager().worker_entry(worker.hostname) or {}
-  data["infra"] = entry.get("infra")
-  data["online"] = entry.get("online", False)
-  data["status"] = entry.get("status", "offline")
-  data["path"] = entry.get("path")
-  data["metrics"] = entry.get("metrics")
-  data["certificate"] = entry.get("certificate")
-  data["discovery_certificate"] = entry.get("discovery_certificate")
-  data["tunnel"] = entry.get("tunnel")
-  data["tunnel_name"] = Manager().cloudflare.worker_tunnel_name(worker.hostname)
-  return data
+@router.put("/{hostname}")
+def update_worker(hostname: str, data: dict = Body(...)):
+  if commands.set_worker_subdomain(hostname, data.get("subdomain")):
+    Manager().worker_subdomain_changed(hostname)
+  return Manager().worker_page(hostname)
 
 
-def load_worker(hostname: str) -> dict:
-  """The `worker` topic of a hostname: what `GET /workers/{hostname}` returns."""
-  return worker_payload(generic_get(Worker, Worker.hostname == hostname, return_model=True))
+@router.delete("/{hostname}")
+def remove_worker(hostname: str):
+  return {"task_id": Manager().request_remove_worker(hostname)}
 
 
-@router.get("/{hostname}", dependencies=[Depends(inject_worker)])
-def get_worker(request: Request, hostname: str):
-  return worker_payload(request.state.models["worker"])
+@router.post("/{hostname}/reboot")
+def reboot_worker(hostname: str):
+  return {"task_id": Manager().request_reboot(hostname)}
 
 
-@router.get("/{hostname}/metrics", dependencies=[Depends(inject_worker)], openapi_extra=NO_ACCESS_LOG)  # the graphs poll it every minute
-def get_metrics(request: Request, hostname: str, period: Literal["1h", "24h", "1w", "1m"] = "1h"):
-  worker = get_request_models(request, ["worker"], none_allowed=True)["worker"]
-
-  data = Metrics().query_period(hostname, period)
-
-  if worker:
-    data["meta"]["ip"] = worker.ip
-  elif hostname == get_env("TS_NAME"):
-    data["meta"]["ip"] = Tailscale().ip()
-
-  return data
+@router.post("/{hostname}/resync")
+def resync_worker(hostname: str):
+  """The worker's forced setup, which writes again everything Sage keeps on it."""
+  if Worker.get_or_none(Worker.hostname == hostname) is None:
+    raise LookupError("Worker not found.")
+  return {"task_id": Manager().request_convergence(hostname, force=True)}
 
 
-@router.post("/{hostname}/reboot", dependencies=[Depends(inject_worker)])
-def reboot_worker(request: Request, hostname: str):
-  worker = request.state.models["worker"]
-
-  if not worker:
-    raise HTTPException(status_code=400, detail="Only a worker can be rebooted.")
-  status = Manager().worker_status(hostname)
-  if status not in ("online", "not ready"):
-    raise HTTPException(status_code=409, detail=f"Worker is {status}.")
-
-  Manager().add_task(
-      task=Manager().reboot_worker,
-      scopes={"platform", "app", "domain"},
-      params={"worker_hostname": worker.hostname},
-      executor="platform",
-      on_conflict=OnConflict.QUEUE,
-  )
-
-  return {"status": "OK"}
-
-
-@router.delete("/{hostname}", dependencies=[Depends(inject_worker)])
-def delete_worker(request: Request, hostname: str):
-  worker = request.state.models["worker"]
-
-  if not worker:
-    raise HTTPException(status_code=404, detail="Worker not found")
-
-  # An online worker is cleaned up when it goes, so its containers are deleted first; an offline one is
-  # force-deleted with them.
-  if Manager().worker_online(hostname) is not False and worker.containers.count() > 0:
-    raise HTTPException(status_code=400, detail="Worker is online and has containers; delete them first.")
-  if worker.domains.count() > 0:
-    raise HTTPException(status_code=409, detail="Removing a worker with internal domains is not allowed.")
-  if Manager().worker_status(hostname) == "removing":
-    raise HTTPException(status_code=409, detail="Worker is already being removed.")
-
-  # The broad scopes serialize worker, app and domain work; QUEUE so a
-  # deliberate removal waits behind an in-flight op instead of being dropped.
-  Manager().add_task(
-      task=Manager().remove_worker,
-      scopes={"platform", "app", "domain"},
-      params={"worker_hostname": worker.hostname},
-      executor="platform",
-      on_conflict=OnConflict.QUEUE,
-  )
-
-  return {"status": "OK"}
-
-
-# Container routes
-router.include_router(
-    container_router,
-    prefix="/{hostname}/containers",
-    dependencies=[Depends(inject_worker)],
-)
+@router.get("/{hostname}/metrics", openapi_extra=NO_ACCESS_LOG)  # the graphs poll it every minute
+def get_metrics(hostname: str, period: Literal[tuple(PERIODS)] = "1h"):
+  """The graphs of a worker, or of the manager under its own name."""
+  return Manager().worker_graphs(hostname, period)

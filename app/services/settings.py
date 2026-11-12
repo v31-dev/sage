@@ -39,10 +39,12 @@ class SettingCheck:
 
 
 def validate_section(key: str, values: dict):
-  """The local rules of a section's values, which a save applies before storing them: text or nothing in each field,
-  and in a section whose fields belong together, all of them or none."""
+  """The local rules of a section's values, which a save applies before storing them: only the section's fields, text
+  or nothing in each, and in a section whose fields belong together, all of them or none."""
   if key not in SETTING_DEFINITIONS:
     raise KeyError(f"Unknown setting key: {key}")
+  if unknown := set(values) - set(SETTING_DEFINITIONS[key]):
+    raise ValueError(f"Unknown fields: {', '.join(sorted(unknown))}.")
   for field in SETTING_DEFINITIONS[key]:
     if values.get(field) is not None and not isinstance(values[field], str):
       raise ValueError(f"{field} must be text.")
@@ -58,22 +60,12 @@ def fields_set(key: str, values: dict) -> bool:
   return all(values.get(field) not in (None, "") for field in SETTING_DEFINITIONS[key])
 
 
-def setting_payloads() -> list[dict]:
-  """The saved row of each settings section, by key."""
-  return [_setting_payload(row) for row in
-          Setting.select().where(Setting.key.in_(list(SETTING_DEFINITIONS))).order_by(Setting.key)]
-
-
 def setting_payload(key: str) -> dict:
   """The saved row of the section (Settings creates each section's row when it loads); a LookupError for an unknown
   section."""
   row = Setting.get_or_none(Setting.key == key) if key in SETTING_DEFINITIONS else None
   if row is None:
     raise LookupError("Setting not found.")
-  return _setting_payload(row)
-
-
-def _setting_payload(row: Setting) -> dict:
   return {"key": row.key, "value": row.value, "created_at": row.created_at, "updated_at": row.updated_at}
 
 

@@ -21,8 +21,10 @@ class ManagerStandIn:
     if not callable(real):
       raise AttributeError(f"Manager has no method {name}")
 
+    bound = () if isinstance(inspect.getattr_static(Manager, name), staticmethod) else (None,)
+
     def call(*args, **kwargs):
-      inspect.signature(real).bind(None, *args, **kwargs)
+      inspect.signature(real).bind(*bound, *args, **kwargs)
       self.calls.append((name, args, kwargs))
       answer = self.answers.get(name, f"task-{len(self.calls)}")
       if isinstance(answer, Exception):

@@ -176,13 +176,13 @@ class WorkersMixin:
     for hostname in self.setup_failures.keys() - set(hostnames):
       self.setup_failures.pop(hostname, None)
 
-  def request_convergence(self, hostname: str, force: bool = False):
+  def request_convergence(self, hostname: str, force: bool = False) -> str:
     """Queues the convergence of the worker's stack with Sage; with `force` (the worker's resync), as a visible task
     of its own, its files are written and its stack restarted whatever its infra stamp says, and everything else Sage
-    keeps on it is written again: its certificates, its Domains' routes and its discovery files."""
-    self.add_task(task=self.converge_worker, key=("converge_worker", hostname, *(("force",) if force else ())),
-                  scopes={f"worker:{hostname}"}, executor="app", params={"hostname": hostname, "force": force},
-                  labels={"Worker": hostname}, quiet=not force)
+    keeps on it is written again: its certificates, its Domains' routes and its discovery files. The task's id."""
+    return self.add_task(task=self.converge_worker, key=("converge_worker", hostname, *(("force",) if force else ())),
+                         scopes={f"worker:{hostname}"}, executor="app", params={"hostname": hostname, "force": force},
+                         labels={"Worker": hostname}, quiet=not force).task_id
 
   async def converge_worker(self, hostname: str, force: bool = False):
     """Brings the worker's stack in line with Sage: claims it, removes the routing files there of Domains gone or bound
@@ -277,11 +277,19 @@ class WorkersMixin:
     else:
       logger.warning(f"Worker {hostname}'s stack was not ready, but starting it changed nothing.")
 
-  def request_add_worker(self, hostname: str, subdomain: str) -> str:
-    """Adds the machine as a worker with its subdomain: its row now, then a queued add that sets it up. The task's id."""
-    commands.add_worker(hostname, subdomain)
-    return self.add_task(task=self.add_worker, key=("add_worker", hostname), scopes={f"worker:{hostname}"}, executor="app",
-                         params={"hostname": hostname}, labels={"Worker": hostname}).task_id
+  def request_add_worker(self, host: str | None, subdomain: str | None) -> tuple[str, str]:
+    """Adds the machine of the tailnet with that hostname (any case) or Tailscale IP as a worker, named by its hostname
+    in lowercase, with its subdomain: its row now, then a queued add that sets it up. Its hostname and the task's id."""
+    host = str(host or "").strip()
+    peer = Tailscale().find_peer(host) if host else None
+    if peer is None:
+      raise LookupError(f"No machine with hostname or IP '{host}' in the tailnet.")
+    if peer.hostname == get_env("TS_NAME").lower():
+      raise Conflict("A worker with the manager's name is not allowed.")
+    commands.add_worker(peer.hostname, subdomain)
+    return peer.hostname, self.add_task(task=self.add_worker, key=("add_worker", peer.hostname),
+                                        scopes={f"worker:{peer.hostname}"}, executor="app",
+                                        params={"hostname": peer.hostname}, labels={"Worker": peer.hostname}).task_id
 
   async def add_worker(self, hostname: str):
     """Sets a worker just added up: its first convergence is part of the add. A worker whose first setup fails stays,

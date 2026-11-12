@@ -1,104 +1,16 @@
-from fastapi import APIRouter, Body, Depends, HTTPException, Request
-from playhouse.shortcuts import model_to_dict
+from fastapi import APIRouter, Body, HTTPException
 
-from services.db import Setting
+from services.db.models import Worker
 from services.manager import Manager
-from services.notification import Notifications
-from services.s3 import S3
-from services.settings import SETTING_DEFINITIONS, Settings, validate_section
-from utils.api import generic_get, generic_list, get_request_models, parse_api_data
-from utils.queue import OnConflict
+from services.settings import Settings, setting_payload, validate_section
 
 router = APIRouter()
 
 
-def inject_setting(request: Request):
-  models = get_request_models(request)
-
-  # Fetch and store the setting; only the defined keys exist.
-  setting_name = request.path_params.get("setting")
-  if setting_name not in SETTING_DEFINITIONS:
-    raise HTTPException(status_code=404, detail=f"Unknown setting: {setting_name}")
-  models["setting"] = generic_get(
-      Setting,
-      (Setting.key == setting_name),
-      return_model=True,
-  )
-
-  return None
-
-
-@router.get("/")
-def get():
-  return generic_list(Setting, Setting.key.in_(list(SETTING_DEFINITIONS)))
-
-
-@router.get("/{setting}", dependencies=[Depends(inject_setting)])
-def get_setting(request: Request):
-  return model_to_dict(request.state.models["setting"])
-
-
-@router.put("/{setting}", dependencies=[Depends(inject_setting)])
-def update_setting(request: Request, setting_data: dict = Body(...)):
-  data = parse_api_data(setting_data, ["value"])
-
-  if "value" not in data:
-    raise HTTPException(status_code=400, detail="Missing 'value' field in request body.")
-
-  setting_model = request.state.models["setting"]
-  setting_key = setting_model.key
-  old_setting_value = setting_model.value
-  new_setting_value = data["value"]
-  merged_setting_value = dict(old_setting_value)
-  merged_setting_value.update(new_setting_value)
-
-  try:
-    validate_section(setting_key, merged_setting_value)
-  except ValueError as e:
-    raise HTTPException(status_code=400, detail=str(e))
-  Settings().set(setting_key, merged_setting_value)
-  saved = Settings().snapshot(setting_key).values
-  if setting_key == "s3":
-    S3().install(saved)
-    # The bucket or path may hold backups this manager hasn't listed yet.
-    Manager().add_task(
-        task=Manager().discover_s3_backups,
-        scopes={"platform", "app", "domain"},
-        executor="platform",
-    )
-  elif setting_key == "notifications":
-    Notifications().install(saved)
-
-  if Settings().is_configured(setting_key):
-    Manager().add_task(
-        task=Manager().check_setting,
-        name=f"check_{setting_key}",
-        params={"key": setting_key},
-        scopes={f"common:{setting_key}"},
-        executor="common",
-        on_conflict=OnConflict.REPLACE,
-    )
-
-  return generic_get(Setting, (Setting.key == setting_key))
-
-
-@router.post("/{setting}/test", dependencies=[Depends(inject_setting)])
-def test_setting(request: Request, setting_data: dict = Body(...)):
-  """Check the given values (saved or not) against the provider, without saving them."""
-  setting_model = request.state.models["setting"]
-  value = dict(setting_model.value)
-  value.update(parse_api_data(setting_data, ["value"]).get("value") or {})
-
-  try:
-    return {"message": Manager().test_setting(setting_model.key, value)}
-  except Exception as e:
-    raise HTTPException(status_code=400, detail=Manager().describe_check_error(e)[0])
-
-
 @router.post("/pause")
 def pause():
-  """Pause Sage before stopping it: queued tasks wait, running ones finish, and user
-  changes are refused until resume. Not remembered across restarts."""
+  """Pauses Sage before a stop or an upgrade: queued tasks wait, running ones finish, and changes are refused until
+  resume. Not remembered across restarts."""
   Manager().pause_tasks()
   return {"state": Manager().task_state()}
 
@@ -109,38 +21,42 @@ def resume():
   return {"state": Manager().task_state()}
 
 
-@router.post("/resync_traefik")
-async def resync_traefik():
-  """
-  Force a full Traefik state resync to manager and workers via the
-  refresh_traefik task (re-pushes the current cert + configs; re-issues only if
-  the cert is missing or expiring).
-  """
-  if not Manager().add_task(
-      task=Manager().refresh_traefik,
-      scopes={"platform", "app", "domain"},
-      executor="platform",
-  ):
-    raise HTTPException(
-        status_code=409,
-        detail="A platform operation is already in progress. Wait for it to finish before resyncing.",
-    )
-
-  return {"message": "Traefik resync initiated."}
-
-
 @router.post("/resync_workers")
-async def resync_workers():
-  """
-  Queue a force re-sync of all online workers. REPLACE supersedes any pending
-  sync so the latest request wins, and waits behind a running sync rather than
-  being dropped.
-  """
-  Manager().add_task(
-      task=Manager().sync_workers,
-      scopes={"platform"},
-      params={"force": True},
-      executor="platform",
-      on_conflict=OnConflict.REPLACE,
-  )
-  return {"message": "Worker resync queued."}
+def resync_workers():
+  """Each worker's resync, its forced setup."""
+  return {"task_ids": [Manager().request_convergence(worker.hostname, force=True)
+                       for worker in Worker.select(Worker.hostname).order_by(Worker.hostname)]}
+
+
+def candidate(section: str, data: dict) -> dict:
+  """The section's saved values with the fields sent (`value`) over them."""
+  sent = data.get("value")
+  if not isinstance(sent, dict):
+    raise ValueError("value must hold the section's fields.")
+  return {**setting_payload(section)["value"], **sent}
+
+
+@router.get("/{section}")
+def get_setting(section: str):
+  return setting_payload(section)
+
+
+@router.put("/{section}")
+def save_setting(section: str, data: dict = Body(...)):
+  """Saves the fields sent once the values pass the section's local rules; its provider is checked after, by a task."""
+  values = candidate(section, data)
+  validate_section(section, values)
+  Settings().set(section, values)
+  Manager().settings_saved(section)
+  return setting_payload(section)
+
+
+@router.post("/{section}/test")
+def test_setting(section: str, data: dict = Body(...)):
+  """Checks the values against the provider with the test's effects (S3 writes and deletes a marker object,
+  notifications send a message), saving nothing."""
+  values = candidate(section, data)
+  try:
+    return {"message": Manager().test_setting(section, values)}
+  except Exception as error:
+    raise HTTPException(status_code=400, detail=Manager().describe_check_error(error)[0])

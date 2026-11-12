@@ -11,21 +11,20 @@ from starlette.routing import Route
 from starlette.staticfiles import StaticFiles
 
 import config
+from routes.backups import router as backups_router
+from routes.domains import router as domains_router
 from routes.info import router as info_router
 from routes.notifications import router as notifications_router
 from routes.projects import router as projects_router
 from routes.requests import router as requests_router
+from routes.settings import router as settings_router
 from routes.tasks import router as tasks_router
 from routes.updates import TOPICS, sio
+from routes.workers import router as workers_router
 from services.cloudflare import Cloudflare
 from services.manager import Manager
 from services.updates import Updates
 from utils.errors import Conflict
-
-# TODO(36 step 5C): from routes.backups import router as backup_router
-# TODO(36 step 5C): from routes.domains import router as domains_router
-# TODO(36 step 5C): from routes.settings import router as settings_router
-# TODO(36 step 5C): from routes.workers import router as workers_router
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, redirect_slashes=False)
 
@@ -83,10 +82,10 @@ class SpaStaticFiles(StaticFiles):
 
 # Mount routes
 app.include_router(info_router, prefix="/api")
-# TODO(36 step 5C): app.include_router(backup_router, prefix="/api/backups")
-# TODO(36 step 5C): app.include_router(settings_router, prefix="/api/settings")
-# TODO(36 step 5C): app.include_router(workers_router, prefix="/api/workers")
-# TODO(36 step 5C): app.include_router(domains_router, prefix="/api/domains")
+app.include_router(backups_router, prefix="/api/backups")
+app.include_router(settings_router, prefix="/api/settings")
+app.include_router(workers_router, prefix="/api/workers")
+app.include_router(domains_router, prefix="/api/domains")
 app.include_router(projects_router, prefix="/api/projects")
 app.include_router(notifications_router, prefix="/api/notifications")
 app.include_router(tasks_router, prefix="/api/tasks")

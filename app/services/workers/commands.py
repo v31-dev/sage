@@ -1,6 +1,7 @@
 from services.db.models import Worker
 from services.db.writes import get, trim, write
 from services.domains.updates import domain_changed, domains_changed
+from services.updates import Updates, UpdateSource
 from utils.errors import Conflict
 
 
@@ -19,7 +20,8 @@ def add_worker(hostname: str, subdomain: str | None) -> Worker:
 
 
 def set_worker_subdomain(hostname: str, subdomain: str | None) -> bool:
-  """Whether the subdomain changed. Its internal and TCP names are under it, so their pages are told."""
+  """Whether the subdomain changed. The worker's pages are told, and those of its internal and TCP names, which are
+  under it."""
   subdomain = trim(subdomain) or None
   if subdomain is None:
     raise ValueError("A worker without a subdomain is not allowed.")
@@ -32,6 +34,8 @@ def set_worker_subdomain(hostname: str, subdomain: str | None) -> bool:
     worker.subdomain = subdomain
     worker.save()
     domains = list(worker.domains)
+  Updates().changed(UpdateSource.WORKER_LIST)
+  Updates().changed(UpdateSource.WORKER_ENTRY, hostname)
   for domain in domains:
     domain_changed(domain)
   domains_changed()

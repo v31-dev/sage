@@ -718,8 +718,8 @@ class TestPeers:
     monkeypatch.setattr(tailscale, "status", lambda: status)
     return tailscale
 
-  def test_every_machine_with_an_address_is_listed_with_its_first_address(self, peers):
-    assert [(peer.hostname, peer.ip) for peer in peers.peers()] == [("worker-1", "100.64.0.2"), ("Worker-2", "100.64.0.3")]
+  def test_every_machine_with_an_address_is_listed_with_its_first_address_and_its_hostname_in_lowercase(self, peers):
+    assert [(peer.hostname, peer.ip) for peer in peers.peers()] == [("worker-1", "100.64.0.2"), ("worker-2", "100.64.0.3")]
 
   def test_a_tailnet_without_peers_lists_none(self, tailscale, monkeypatch):
     monkeypatch.setattr(tailscale, "status", lambda: {})
@@ -727,7 +727,7 @@ class TestPeers:
 
   @pytest.mark.parametrize("query", ["worker-2", "WORKER-2", " Worker-2 ", "100.64.0.3"])
   def test_a_machine_is_found_by_hostname_in_any_case_or_by_address(self, peers, query):
-    assert peers.find_peer(query).hostname == "Worker-2"
+    assert peers.find_peer(query).hostname == "worker-2"
 
   @pytest.mark.parametrize("query", ["worker-3", "100.64.0.9", "", "pending", "fd7a::2"])
   def test_a_machine_that_is_not_listed_is_not_found(self, peers, query):

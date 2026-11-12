@@ -46,11 +46,16 @@ class TestSubdomain:
     container = Container.create(application=application, worker=worker)
     return Domain.create(name="shop", type="internal", port=80, container=container, namespace_worker=worker.hostname)
 
-  def test_a_new_subdomain_is_stored_and_tells_the_pages_of_its_internal_names(self, internal, signals):
+  def test_a_new_subdomain_is_stored_and_tells_the_workers_pages_and_those_of_its_internal_names(self, internal, signals):
     assert set_worker_subdomain("w1", " blue ") is True
     assert stored("w1").subdomain == "blue"
-    assert set(signals) == {(UpdateSource.DOMAINS, None), (UpdateSource.APPLICATION, "demo/web"),
-                            (UpdateSource.WORKER_CONTAINERS, "w1")}
+    assert set(signals) == {(UpdateSource.WORKER_LIST, None), (UpdateSource.WORKER_ENTRY, "w1"), (UpdateSource.DOMAINS, None),
+                            (UpdateSource.APPLICATION, "demo/web"), (UpdateSource.WORKER_CONTAINERS, "w1")}
+
+  def test_a_worker_without_domains_tells_its_own_pages(self, db, signals):
+    add_worker("w1", "eu1")
+    set_worker_subdomain("w1", "eu2")
+    assert {(UpdateSource.WORKER_LIST, None), (UpdateSource.WORKER_ENTRY, "w1")} <= set(signals)
 
   def test_the_same_subdomain_changes_nothing_and_says_nothing(self, db, signals):
     add_worker("w1", "eu1")

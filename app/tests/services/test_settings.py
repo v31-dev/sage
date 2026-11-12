@@ -2,7 +2,7 @@ import pytest
 
 from services.db.models import Setting
 from services.notification import CHANNELS
-from services.settings import SETTING_DEFINITIONS, SettingCheck, Settings, section_status, setting_payload, setting_payloads, validate_section
+from services.settings import SETTING_DEFINITIONS, SettingCheck, Settings, section_status, setting_payload, validate_section
 
 S3_VALUES = {"access_key": "AK", "secret_key": "SK", "bucket": "bucket", "endpoint": "https://s3.example.test", "path": "backups"}
 S3_UNSET = dict.fromkeys(SETTING_DEFINITIONS["s3"])
@@ -237,6 +237,10 @@ class TestValidateSection:
     validate_section("notifications", {"discord_webhook": "https://discord.test/x"})
     validate_section("notifications", {"discord_webhook": None})
 
+  def test_a_field_the_section_does_not_have_is_refused(self):
+    with pytest.raises(ValueError, match="Unknown fields: region, zone."):
+      validate_section("s3", {**S3_VALUES, "zone": "z", "region": "eu"})
+
   def test_a_field_that_is_not_text_is_refused(self):
     with pytest.raises(ValueError, match="bucket must be text."):
       validate_section("s3", {**S3_VALUES, "bucket": 5})
@@ -286,12 +290,9 @@ class TestSectionStatus:
 
 
 class TestPayloads:
-  def test_each_saved_section_is_its_row_by_key_with_its_values_readable(self, settings):
+  def test_a_saved_section_is_its_row_with_its_values_readable(self, settings):
     settings.set("s3", S3_VALUES)
-    settings.set("notifications", {"discord_webhook": "https://discord.test/hook"})
-    assert [(row["key"], row["value"]) for row in setting_payloads()] == [
-        ("notifications", {"discord_webhook": "https://discord.test/hook"}), ("s3", S3_VALUES)]
-    assert setting_payload("s3")["value"] == S3_VALUES
+    assert (setting_payload("s3")["key"], setting_payload("s3")["value"]) == ("s3", S3_VALUES)
 
   def test_a_section_never_saved_has_its_row_with_every_field_unset(self, settings):
     assert setting_payload("notifications")["value"] == {field: None for field in SETTING_DEFINITIONS["notifications"]}

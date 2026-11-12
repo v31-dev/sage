@@ -19,6 +19,14 @@ def test_an_answer_is_returned_raised_or_called_with_the_arguments():
   assert manager.worker_page("w2") == {"hostname": "w2"}
 
 
+def test_a_static_method_is_called_as_the_real_one_takes_it():
+  manager = ManagerStandIn()
+  manager.describe_check_error(TimeoutError())
+  with pytest.raises(TypeError):
+    manager.describe_check_error()
+  assert [name for name, *_ in manager.calls] == ["describe_check_error"]
+
+
 def test_a_method_the_real_manager_lacks_raises():
   with pytest.raises(AttributeError, match="no_such_request"):
     ManagerStandIn().no_such_request

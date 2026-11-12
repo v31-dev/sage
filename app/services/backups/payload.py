@@ -29,6 +29,14 @@ def volume_backups(volume_id: str) -> list[dict]:
           .order_by(Backup.created_at.desc(), Backup.id.desc())]
 
 
+def platform_backup(backup_id: int) -> Backup:
+  """The platform backup with that id; a LookupError when there is none."""
+  backup = Backup.get_or_none((Backup.id == backup_id) & (Backup.type == "platform"))
+  if backup is None:
+    raise LookupError("Backup not found.")
+  return backup
+
+
 def volume_backup(volume_id: str, backup_id: int) -> Backup:
   """The volume's backup with that id; a LookupError when there is none."""
   backup = Backup.get_or_none((Backup.id == backup_id) & (Backup.type == "application") & (Backup.source_volume_id == volume_id))

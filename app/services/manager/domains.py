@@ -147,6 +147,12 @@ class DomainsMixin:
       logger.info(f"Domain {snapshot.host or domain.name}: DNS applied; its route waits for "
                   + ("its container's state to be known." if goal is None else f"worker {worker}."))
 
+  def domain_edited(self, domain_id: str):
+    """After the domain's edit (its command): it is applied as it is configured now, and the pass withdraws what the edit
+    left behind, such as its route on the worker it was on."""
+    self.request_domain_applies([domain_id])
+    self.request_domain_reconciliation()
+
   def request_domain_reconciliation(self):
     """Queues the pass over every Domain's artifacts. A request while one runs gets a pass of its own after it, so a
     change that pass did not see is not missed."""

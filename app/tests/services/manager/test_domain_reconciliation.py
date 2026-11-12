@@ -3,6 +3,7 @@ import pytest
 import config
 from services.cloudflare import Cloudflare
 from services.db.models import Container, Domain, Worker
+from services.domains import commands
 from services.domains.config import DomainConfig
 from services.domains.decisions import ApplyOutcome, RouteObservation
 from services.domains.state import Domains
@@ -174,6 +175,27 @@ class TestRequest:
     await manager.run()
     assert seen == [["reconcile_domains"]]
     assert hosts.route("w1", public) == fingerprint(public)
+
+
+class TestEdit:
+  async def test_a_domain_moved_to_another_worker_is_routed_there_and_its_old_route_withdrawn(
+          self, manager, public, hosts, provider, application):
+    conforming(hosts, provider, public)
+    elsewhere = Container.create(application=application, worker="w2")
+    manager.routable[elsewhere.id], manager.ready["w2"] = True, True
+    commands.patch_domain(public.id, {"container": elsewhere.id})
+    manager.domain_edited(public.id)
+    await manager.run()
+    assert (hosts.routes("w1"), hosts.routes("w2")) == ([], [f"domain-{public.id}.yml"])
+    assert state(manager, public).view.status == "synced"
+
+  async def test_an_edit_in_place_rewrites_its_route_and_removes_nothing(self, manager, public, hosts, provider):
+    conforming(hosts, provider, public)
+    commands.patch_domain(public.id, {"port": 9090})
+    manager.domain_edited(public.id)
+    await manager.run()
+    assert hosts.route("w1", public) == fingerprint(public)
+    assert [command for command in writes(hosts) if "rm -f" in command[1]] == []
 
 
 class TestObservation:

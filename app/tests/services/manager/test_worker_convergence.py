@@ -25,11 +25,16 @@ HOME = "/opt/sage"
 
 class Hosts:
   """The tailnet and the workers on it as convergence sees them: each worker's SSH fact and address, its files by path,
-  the commands run on it, and a command that fails (`fails`, a part of it)."""
+  the commands run on it, a command that fails (`fails`, a part of it), and the machine's hostname by what names it
+  (`machines`)."""
 
   def __init__(self):
     self.found, self.addresses, self.files, self.fails, self.starts = {}, {}, {}, None, False
     self.answering, self.boots, self.commands, self.forgotten, self.on_boot = set(), [], [], [], None
+    self.machines = {}
+
+  def find_peer(self, query):
+    return SimpleNamespace(hostname=self.machines[query]) if query in self.machines else None
 
   async def observe_workers(self, hostnames):
     pass
@@ -463,23 +468,43 @@ class TestRequests:
     await manager.observe_workers()
     assert [name for name, *_ in requested(manager)] == ["repair_worker_stack"]
 
-  def test_a_forced_convergence_is_a_visible_task_of_its_own(self, manager, worker):
+  def test_a_forced_convergence_is_a_visible_task_of_its_own_whose_id_is_answered(self, manager, worker):
     manager.request_convergence("w1")
-    manager.request_convergence("w1", force=True)
-    assert [(key, quiet) for _, key, _, quiet in requested(manager)] == [
-        (["converge_worker", "w1"], True), (["converge_worker", "w1", "force"], False)]
+    task_id = manager.request_convergence("w1", force=True)
+    assert [(task["key"], task["quiet"], task["task_id"] == task_id) for task in manager.task_queue.snapshot()["queued"]] == [
+        (["converge_worker", "w1"], True, False), (["converge_worker", "w1", "force"], False, True)]
 
 
 class TestAdd:
-  def test_the_request_writes_the_row_and_queues_the_add(self, manager, db):
-    manager.request_add_worker("w1", "red")
-    assert Worker.get_by_id("w1").subdomain == "red"
-    assert [(name, quiet) for name, _, _, quiet in requested(manager)] == [("add_worker", False)]
+  def test_the_request_writes_the_row_of_the_hostname_the_tailnet_gives_and_queues_its_add(self, manager, hosts, db):
+    hosts.machines["100.64.0.7"] = "w7"
+    hostname, task_id = manager.request_add_worker(" 100.64.0.7 ", "red")
+    assert (hostname, Worker.get_by_id("w7").subdomain) == ("w7", "red")
+    assert [(task["name"], task["key"], task["task_id"], task["quiet"]) for task in manager.task_queue.snapshot()["queued"]] == [
+        ("add_worker", ["add_worker", "w7"], task_id, False)]
 
-  def test_a_worker_already_added_is_refused(self, manager, worker):
+  @pytest.mark.parametrize("host", ["w9", "", None])
+  def test_a_machine_the_tailnet_does_not_list_is_not_found_and_nothing_is_written(self, manager, hosts, db, host):
+    hosts.machines["w1"] = "w1"
+    with pytest.raises(LookupError, match="No machine with hostname or IP"):
+      manager.request_add_worker(host, "red")
+    assert not Worker.select().exists() and requested(manager) == []
+
+  @pytest.mark.parametrize("ts_name", ["manager", "Manager"])
+  def test_the_managers_own_name_is_refused(self, manager, hosts, db, monkeypatch, ts_name):
     from utils.errors import Conflict
+    monkeypatch.setenv("TS_NAME", ts_name)
+    hosts.machines["100.64.0.9"] = "manager"
+    with pytest.raises(Conflict, match="the manager's name"):
+      manager.request_add_worker("100.64.0.9", "red")
+    assert not Worker.select().exists() and requested(manager) == []
+
+  def test_a_worker_already_added_is_refused(self, manager, hosts, worker):
+    from utils.errors import Conflict
+    hosts.machines["w1"] = "w1"
     with pytest.raises(Conflict):
       manager.request_add_worker("w1", "green")
+    assert requested(manager) == []
 
   async def test_the_add_looks_at_the_worker_it_has_not_observed_yet_and_is_its_first_setup(self, manager, hosts, worker, notices):
     hosts.found["w1"] = "unobserved"

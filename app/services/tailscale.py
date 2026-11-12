@@ -224,9 +224,10 @@ class Tailscale(Base):
     return self._ip
 
   def peers(self):
-    """Every machine of the tailnet that has an address, as objects with hostname and ip."""
+    """Every machine of the tailnet that has an address, as objects with hostname and ip; the hostname in lowercase,
+    as Sage names a worker (`tailscale nc` resolves a name in any case)."""
     return [
-        dict_to_obj({"hostname": peer["HostName"], "ip": peer["TailscaleIPs"][0]})
+        dict_to_obj({"hostname": peer["HostName"].lower(), "ip": peer["TailscaleIPs"][0]})
         for peer in self.status().get("Peer", {}).values()
         if peer.get("TailscaleIPs")
     ]
@@ -234,7 +235,7 @@ class Tailscale(Base):
   def find_peer(self, query: str):
     """The machine with that hostname (any case) or Tailscale IP, or None."""
     query = query.strip().lower()
-    return next((peer for peer in self.peers() if query in (peer.hostname.lower(), peer.ip)), None)
+    return next((peer for peer in self.peers() if query in (peer.hostname, peer.ip)), None)
 
   async def _start_command(self, hostname, command):
     """Open a channel on a pooled connection and start `command` on it. A stale pooled
