@@ -20,8 +20,10 @@ Say the mode, the subject and the baseline (commit or branch) at the start.
 
 ## Ground it
 
-- Initialize the memory repo through the root AGENTS (Agent Memory). Read the tracker, the detail files of the items
-  in scope and, for a closing review, the sprint's plan in the backlog and its settled decisions.
+- Initialize the memory repo through the root AGENTS (Agent Memory). For an audit, read the tracker and the detail
+  files of the items in scope. For a closing review, read the sprint's plan in the backlog and the settled decisions
+  in its items, but skip the tracker's findings and the items' earlier review sections: they are read only after the
+  review's own pass, to reconcile (Record and hand off), so that known answers do not steer it.
 - Read the README, the three AGENTS files and the docs the subject touches
   ([architecture](../../../docs/architecture.md), [backend](../../../docs/backend.md),
   [operations](../../../docs/operations.md), [frontend](../../../docs/frontend.md)). Docs, comments, tests and the
@@ -85,6 +87,9 @@ File and line counts are context, never the measure.
 
 ## Record and hand off
 
+- A closing review reconciles once its own pass is done: read the open findings and the earlier review sections, then
+  say which the pass found itself, which it missed (and which step should have caught each, for Refine this skill)
+  and which no longer hold against the source.
 - Follow the memory repo's tracker rules. A new finding is a new numbered item with its detail file: locations,
   initial state, trigger or interleaving, wrong outcome, the rule or requirement, a direction for the fix, the
   evidence and its limits. Update a matching open item instead of adding another, and say which known findings still
