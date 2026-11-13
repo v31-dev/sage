@@ -23,6 +23,10 @@ async def refresh_worker_paths():
   Manager().request_worker_paths()
 
 
+async def list_tunnels():
+  Manager().request_tunnel_listing()
+
+
 async def observe_containers():
   Manager().request_container_observation()
 
@@ -76,6 +80,7 @@ _JOBS = [
     (dispatch_tick, IntervalTrigger(seconds=1)),
     (observe_workers, IntervalTrigger(seconds=30)),
     (refresh_worker_paths, IntervalTrigger(seconds=60)),
+    (list_tunnels, CronTrigger.from_crontab("* * * * *")),
     (observe_containers, CronTrigger.from_crontab("* * * * *")),
     (list_container_records, CronTrigger.from_crontab("*/10 * * * *")),
     (schedule_application_backups, CronTrigger.from_crontab("* * * * *")),

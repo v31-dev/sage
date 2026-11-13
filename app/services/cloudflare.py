@@ -1,5 +1,5 @@
 import logging
-from datetime import timezone
+from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 
 import httpx
@@ -60,13 +60,26 @@ class Cloudflare(Base):
     self.tunnel_id = None
     self.tunnel_name = f"sage-{self.domain}"
     # Each tunnel's health (healthy, degraded, down or inactive) by name, the platform's and the workers', as
-    # `tunnels` last listed them.
+    # `tunnels` last listed them, and when.
     self.tunnel_health: dict[str, str] = {}
+    self.tunnels_listed_at: datetime | None = None
 
   @property
   def tunnel_status(self) -> str | None:
-    """The platform tunnel's health as last listed."""
-    return self.tunnel_health.get(self.tunnel_name)
+    """The platform tunnel's health as known now (`tunnel`)."""
+    return self.tunnel(self.tunnel_name)
+
+  def tunnel(self, name: str) -> str | None:
+    """The tunnel's health as known now (`tunnel_statuses`); None when it is not known."""
+    return self.tunnel_statuses().get(name)
+
+  def tunnel_statuses(self) -> dict[str, str]:
+    """Each tunnel's health as last listed, by name; none when they have not been listed within
+    TUNNEL_LISTING_STALE_SECONDS."""
+    with self.lock:
+      if self.tunnels_listed_at is None or (utcnow() - self.tunnels_listed_at).total_seconds() > config.TUNNEL_LISTING_STALE_SECONDS:
+        return {}
+      return dict(self.tunnel_health)
 
   def is_manager_hostname(self, hostname: str | None) -> bool:
     return (hostname or "").lower() == self.manager_hostname.lower()
@@ -232,19 +245,21 @@ class Cloudflare(Base):
   def worker_tunnel_name(self, hostname: str) -> str:
     return f"sage-{self.domain}-{hostname}"
 
-  def find_tunnel(self, name) -> dict | None:
-    tunnels = self.list_all(f"/accounts/{self.account_id}/cfd_tunnel", name=name, is_deleted="false")
+  def find_tunnel(self, name, **options) -> dict | None:
+    """The tunnel of that name, or None. `options` (a `timeout`, `delays`) go to its call."""
+    tunnels = self.list_all(f"/accounts/{self.account_id}/cfd_tunnel", name=name, is_deleted="false", **options)
     return next((t for t in tunnels if t["name"] == name), None)
 
   def tunnels(self, **options) -> dict[str, dict]:
     """The account's tunnels by name, each with its `id` and health (`status`: healthy, degraded, down or inactive), in
-    one call (a page holds up to 1,000); their health is kept as `tunnel_health`. `options` (a `timeout`, `delays`) go
-    to its call."""
+    one call (a page holds up to 1,000); their health is kept as `tunnel_health`, with when they were listed.
+    `options` (a `timeout`, `delays`) go to its call."""
     self.connect()
     tunnels = {tunnel["name"]: tunnel
                for tunnel in self.list_all(f"/accounts/{self.account_id}/cfd_tunnel", per_page=1000, is_deleted="false",
                                            **options)}
-    self.tunnel_health = {name: tunnel.get("status") for name, tunnel in tunnels.items()}
+    with self.lock:
+      self.tunnel_health, self.tunnels_listed_at = {name: tunnel.get("status") for name, tunnel in tunnels.items()}, utcnow()
     return tunnels
 
   def create_tunnel(self, name):

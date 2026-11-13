@@ -5,25 +5,33 @@ import pytest
 
 import config
 from services.worker_reports import ContainerReading, Received, Snapshot
-from services.workers.decisions import (SETUPS, SSH, STATUSES, WorkerFacts, WorkerReport, addressable, decide_worker, discovery_member,
-                                        reboot_outcome, report_of, workable, worker_claim_refusal, worker_owner)
+from services.workers.decisions import (SETUPS, SSH, STATUSES, TUNNELS, WorkerFacts, WorkerReport, addressable, connectivity, decide_worker,
+                                        discovery_member, reboot_outcome, report_of, workable, worker_claim_refusal, worker_owner)
 
 GOOD = WorkerReport("known", True)
 LATE = config.REPORT_STARTUP_GRACE_SECONDS + 1
-REASONS = {None, "ssh_unreachable", "manager_offline", "unobserved", "owned_elsewhere", "setup_failed", "not_reporting",
-           "stack_down", "traefik_down", "traefik_unchecked"}
+REASONS = {None, "unreachable", "ssh_unreachable", "tailnet_unreachable", "manager_offline", "unobserved", "owned_elsewhere",
+           "setup_failed", "not_reporting", "stack_down", "traefik_down", "traefik_unchecked"}
 
 
-def facts(ssh="reachable", setup="succeeded", report=GOOD, tasks=(), since=LATE):
-  return WorkerFacts(ssh, setup, report, frozenset(tasks), since)
+def facts(ssh="reachable", setup="succeeded", report=GOOD, tasks=(), since=LATE, tunnel=None):
+  return WorkerFacts(ssh, setup, report, frozenset(tasks), since, tunnel)
 
 
 SCENARIOS = {
     "a removal under way": (facts(tasks=["remove_worker", "add_worker"]), "removing", None),
     "an addition under way": (facts(ssh="unreachable", tasks=["add_worker", "reboot_worker"]), "adding", None),
     "a reboot under way": (facts(ssh="unreachable", tasks=["reboot_worker"]), "rebooting", None),
-    "its SSH server does not answer": (facts(ssh="unreachable"), "offline", "ssh_unreachable"),
+    "its SSH server does not answer and its tunnel is not known": (facts(ssh="unreachable"), "offline", "ssh_unreachable"),
+    "neither its SSH server nor its tunnel answers": (facts(ssh="unreachable", setup=None, tunnel="down"), "offline", "unreachable"),
+    "its SSH server does not answer and its tunnel never connected": (facts(ssh="unreachable", tunnel="inactive"), "offline",
+                                                                      "unreachable"),
+    "only its tunnel answers": (facts(ssh="unreachable", setup=None, tunnel="healthy"), "not ready", "tailnet_unreachable"),
+    "only its degraded tunnel answers": (facts(ssh="unreachable", tunnel="degraded"), "not ready", "tailnet_unreachable"),
     "the Manager is cut off from the tailnet": (facts(ssh="unknown"), "checking", "manager_offline"),
+    "the Manager is cut off and the worker's tunnel is up": (facts(ssh="unknown", tunnel="healthy"), "checking", "manager_offline"),
+    "the Manager is cut off and the worker's tunnel is down": (facts(ssh="unknown", tunnel="down"), "offline", "unreachable"),
+    "a reboot under way while its tunnel is down": (facts(ssh="unknown", tunnel="down", tasks=["reboot_worker"]), "rebooting", None),
     "nothing looked at yet": (facts(ssh="unobserved", setup=None, report=WorkerReport("unobserved"), since=0), "checking",
                               "unobserved"),
     "answering but not set up yet": (facts(setup=None), "checking", "unobserved"),
@@ -36,6 +44,7 @@ SCENARIOS = {
     "Traefik not answering": (facts(report=WorkerReport("known", False)), "not ready", "traefik_down"),
     "a report without the Traefik check": (facts(report=WorkerReport("known", None)), "not ready", "traefik_unchecked"),
     "set up, reporting, Traefik answering": (facts(), "online", None),
+    "set up, reporting, Traefik answering, its tunnel down": (facts(tunnel="down"), "online", None),
 }
 
 
@@ -66,8 +75,8 @@ def every_report():
 def test_every_combination_of_facts_keeps_the_invariants():
   seen_statuses, seen_reasons = set(), set()
   task_sets = [frozenset(tasks) for size in range(4) for tasks in itertools.combinations(("remove_worker", "add_worker", "reboot_worker"), size)]
-  for ssh, setup, report, tasks, since in itertools.product(SSH, SETUPS, every_report(), task_sets, (0, LATE)):
-    given = WorkerFacts(ssh, setup, report, tasks, since)
+  for ssh, tunnel, setup, report, tasks, since in itertools.product(SSH, TUNNELS, SETUPS, every_report(), task_sets, (0, LATE)):
+    given = WorkerFacts(ssh, setup, report, tasks, since, tunnel)
     view = decide_worker(given)
     seen_statuses.add(view.status)
     seen_reasons.add(view.reason)
@@ -79,12 +88,15 @@ def test_every_combination_of_facts_keeps_the_invariants():
                                                   ("reboot_worker", "rebooting")) if name in tasks)
       assert view.status == expected, given
     elif ssh == "unreachable":
-      assert (view.status, view.reason) == ("offline", "ssh_unreachable"), given
+      assert view.status in ("offline", "not ready") and view.reason in ("unreachable", "ssh_unreachable", "tailnet_unreachable"), given
     if view.status == "online":
       assert not tasks and ssh == "reachable" and setup == "succeeded", given
       assert report == WorkerReport("known", True), given
     if view.status == "offline":
-      assert not tasks and ssh == "unreachable", given
+      assert not tasks and (ssh == "unreachable" and tunnel not in ("healthy", "degraded")
+                            or ssh == "unknown" and tunnel in ("down", "inactive")), given
+    if view.reason == "ssh_unreachable":
+      assert tunnel is None, given
     if view.status == "checking" and view.reason == "unobserved" and ssh == "reachable" and setup == "succeeded":
       assert report.knowledge == "unobserved" and since < config.REPORT_STARTUP_GRACE_SECONDS, given
 
@@ -140,23 +152,42 @@ def test_a_reboot_is_verified_only_by_a_new_boot_and_a_ready_worker(boot_id, rea
   assert reboot_outcome("old", boot_id, ready) == outcome
 
 
-@pytest.mark.parametrize("ssh, setup, address, held, after", [
-    ("reachable", "succeeded", "100.64.0.2", True, True),
-    ("reachable", "succeeded", None, None, False),
-    ("reachable", None, "100.64.0.2", None, False),
-    ("unobserved", None, None, None, False),
-    ("unknown", "succeeded", "100.64.0.2", None, None),
-    ("unknown", None, None, None, None),
-    ("unreachable", "succeeded", "100.64.0.2", False, False),
-    ("unreachable", None, None, False, False),
-    ("reachable", "failed", "100.64.0.2", False, False),
-    ("reachable", "refused", "100.64.0.2", False, False),
-    ("unknown", "failed", "100.64.0.2", False, False),
+@pytest.mark.parametrize("ssh, tunnel, setup, address, held, after", [
+    ("reachable", None, "succeeded", "100.64.0.2", True, True),
+    ("reachable", "down", "succeeded", "100.64.0.2", True, True),
+    ("reachable", None, "succeeded", None, None, False),
+    ("reachable", None, None, "100.64.0.2", None, False),
+    ("unobserved", None, None, None, None, False),
+    ("unknown", None, "succeeded", "100.64.0.2", None, None),
+    ("unknown", "healthy", "succeeded", "100.64.0.2", None, None),
+    ("unknown", None, None, None, None, None),
+    ("unknown", "down", "succeeded", "100.64.0.2", False, False),
+    ("unreachable", None, "succeeded", "100.64.0.2", False, False),
+    ("unreachable", None, None, None, False, False),
+    ("unreachable", "inactive", None, "100.64.0.2", False, False),
+    ("unreachable", "healthy", None, "100.64.0.2", None, None),
+    ("unreachable", "degraded", None, "100.64.0.2", None, None),
+    ("reachable", None, "failed", "100.64.0.2", False, False),
+    ("reachable", None, "refused", "100.64.0.2", False, False),
+    ("unknown", None, "failed", "100.64.0.2", False, False),
 ])
-def test_discovery_points_at_a_worker_reachable_and_set_up_and_holds_one_not_known_yet_for_the_hold_unless_cut_off(
-        ssh, setup, address, held, after):
+def test_discovery_points_at_a_worker_reachable_and_set_up_and_leaves_one_not_known_or_answering_only_by_its_tunnel(
+        ssh, tunnel, setup, address, held, after):
   hold = config.UNKNOWN_HOLD_SECONDS
-  assert (discovery_member(ssh, setup, address, hold - 1), discovery_member(ssh, setup, address, hold)) == (held, after)
+  assert (discovery_member(ssh, tunnel, setup, address, hold - 1), discovery_member(ssh, tunnel, setup, address, hold)) == (
+      held, after)
+
+
+@pytest.mark.parametrize("ssh, connected, down, unknown", [
+    ("reachable", "reachable", "reachable", "reachable"),
+    ("unobserved", "unobserved", "unobserved", "unobserved"),
+    ("unreachable", "tailnet_unreachable", "offline", "offline"),
+    ("unknown", "unknown", "offline", "unknown"),
+])
+def test_a_worker_is_offline_only_when_neither_path_answers_or_its_ssh_server_does_not_and_its_tunnel_is_not_known(
+        ssh, connected, down, unknown):
+  assert [connectivity(ssh, tunnel) for tunnel in ("healthy", "degraded", "down", "inactive", None)] == [
+      connected, connected, down, down, unknown]
 
 
 def test_sage_acts_only_on_a_worker_reachable_and_set_up_since_the_manager_started():

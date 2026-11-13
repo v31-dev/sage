@@ -1,12 +1,14 @@
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
 import config
 from services.certs import Certs
+from services.cloudflare import Cloudflare, CloudflareError
 from services.containers.placement import runtime_name
 from services.db.models import Application, Container, Domain, Project, Worker, WorkerEvent
 from services.manager.queue import SCOPES, QueueMixin
@@ -15,19 +17,26 @@ from services.metrics import Metrics
 from services.tailscale import Tailscale
 from services.updates import UpdateSource
 from services.worker_reports import ContainerReading, HostReading, Snapshot, WorkerReports
+from services.workers.decisions import WorkerView
 from services.workers.state import Workers
+from tests.services.test_cloudflare import ACCOUNT, TUNNELS, Api, fail, ok
+from utils.common import utcnow
+from utils.executor import active_executor
 from utils.queue import TaskQueue
 
 
 class Tailnet:
   """The workers' observation: `answers` is what each worker's SSH server will be found to be at the next observation,
-  `addresses` each worker's address; the paths asked for are kept."""
+  `addresses` each worker's address; the paths asked for are kept. With `failure`, the observation finds the answers
+  and then raises it."""
 
   def __init__(self):
-    self.answers, self.addresses, self.found, self.pinged = {}, {}, {}, []
+    self.answers, self.addresses, self.found, self.pinged, self.failure = {}, {}, {}, [], None
 
   async def observe_workers(self, hostnames):
     self.found = {hostname: self.answers.get(hostname, "unobserved") for hostname in hostnames}
+    if self.failure is not None:
+      raise self.failure
 
   def ssh(self, hostname):
     return self.found.get(hostname, "unobserved")
@@ -50,9 +59,11 @@ class Manager(WorkersMixin, QueueMixin):
     self.pool = ThreadPoolExecutor(max_workers=2)
     self.queue_facts = self.workers_queue_facts()
     self.worker_state = self.workers_state_fact()
+    self.tunnel_state = self.tunnels_fact()
     self.setup_failures, self.stack_repairs = {}, {}
     self.discovered = 0
-    self.task_queue = TaskQueue(SCOPES, {"app": self.pool}, record=lambda task, status: None, notify=self._queue_changed)
+    self.task_queue = TaskQueue(SCOPES, {"app": self.pool, "common": self.pool}, record=lambda task, status: None,
+                                notify=self._queue_changed)
 
   def request_discovery(self):
     self.discovered += 1
@@ -129,11 +140,58 @@ class TestObservation:
     assert tailnet.pinged == [["100.64.0.2"]]
 
   @pytest.mark.parametrize("request_name, key", [("request_worker_observation", ["observe_workers"]),
-                                                 ("request_worker_paths", ["refresh_worker_paths"])])
+                                                 ("request_worker_paths", ["refresh_worker_paths"]),
+                                                 ("request_tunnel_listing", ["list_tunnels"])])
   def test_observation_tasks_are_quiet_and_hold_no_scope(self, manager, request_name, key):
     getattr(manager, request_name)()
     [task] = manager.task_queue.snapshot()["queued"]
     assert (task["key"], task["scopes"], task["quiet"]) == (key, [], True)
+
+  def test_the_tunnel_listing_runs_on_the_low_priority_lane(self, manager):
+    manager.request_tunnel_listing()
+    [task] = manager.task_queue.snapshot()["queued"]
+    assert task["executor"] == "common"
+
+
+class TestTunnelListing:
+  @pytest.fixture
+  def account(self, register, clock, manager, workers):
+    """The account's tunnels as Cloudflare lists them, with what the pages were told so far already sent."""
+    api = Api()
+    cloudflare = register(Cloudflare, Cloudflare())
+    cloudflare.http.close()
+    cloudflare.http = httpx.Client(base_url="https://cloudflare.test", transport=httpx.MockTransport(api.handle))
+    cloudflare.zone_id, cloudflare.account_id = "zone1", ACCOUNT
+    token = active_executor.set(manager.pool)
+    manager.tunnel_state.check()
+    manager.worker_state.check()
+    yield api
+    active_executor.reset(token)
+    cloudflare.http.close()
+
+  async def test_a_listing_tells_the_info_topic_and_the_workers_whose_tunnel_changed_once(self, manager, account, signals):
+    signals.clear()
+    account.on("GET", TUNNELS, ok([{"id": "t1", "name": "sage-example.test-w1", "status": "healthy"}]))
+    await manager.list_tunnels()
+    assert sorted(signals) == sorted([(UpdateSource.TUNNELS, None), *pages("w1")])
+    signals.clear()
+    await manager.list_tunnels()
+    assert signals == []
+
+  async def test_a_failed_listing_fails_and_tells_the_pages_once_what_was_known_has_grown_old(
+          self, manager, account, signals, clock):
+    account.on("GET", TUNNELS, ok([{"id": "t1", "name": "sage-example.test-w1", "status": "healthy"}]))
+    await manager.list_tunnels()
+    account.on("GET", TUNNELS, fail(403, "Authentication error"))
+    clock.advance(timedelta(seconds=config.TUNNEL_LISTING_STALE_SECONDS))
+    signals.clear()
+    with pytest.raises(CloudflareError):
+      await manager.list_tunnels()
+    assert signals == []
+    clock.advance(timedelta(seconds=1))
+    with pytest.raises(CloudflareError):
+      await manager.list_tunnels()
+    assert sorted(signals) == sorted([(UpdateSource.TUNNELS, None), *pages("w1")])
 
 
 class TestPublication:
@@ -148,6 +206,16 @@ class TestPublication:
     tailnet.answers["w2"] = "unreachable"
     await manager.observe_workers()
     assert signals == pages("w2")
+
+  async def test_an_observation_that_fails_still_shows_the_workers_whose_state_changed_and_fails(
+          self, manager, tailnet, workers, signals):
+    tailnet.answers = {"w1": "reachable", "w2": "reachable"}
+    await manager.observe_workers()
+    signals.clear()
+    tailnet.answers, tailnet.failure = {"w1": "unknown", "w2": "unknown"}, Exception("Tailscale status timed out")
+    with pytest.raises(Exception, match="timed out"):
+      await manager.observe_workers()
+    assert sorted(signals) == sorted(pages("w1", "w2"))
 
   async def test_a_worker_whose_readiness_changed_shows_the_domains_routed_to_it_again(
           self, manager, tailnet, workers, application, signals):
@@ -250,6 +318,65 @@ class TestEvents:
     assert {transition for _, _, transition, _ in events()} == {"observed"}
     assert notices() == [("error", "Worker w1 is offline.", "https://manager.core.example.test/workers/w1"),
                          ("success", "Worker w1 is reachable again.", "https://manager.core.example.test/workers/w1")]
+
+  @pytest.mark.parametrize("found", ["unreachable", "unknown"], ids=["not over the tailnet", "manager cut off"])
+  async def test_a_worker_whose_tunnel_still_answers_is_not_offline_until_its_tunnel_is_down_too(
+          self, manager, tailnet, workers, notices, found):
+    cloudflare = Cloudflare()
+    cloudflare.tunnel_health, cloudflare.tunnels_listed_at = {"sage-example.test-w1": "healthy"}, utcnow()
+    tailnet.answers = {"w1": "reachable"}
+    ready("w1")
+    await manager.observe_workers()
+    tailnet.answers = {"w1": found}
+    await manager.observe_workers()
+    assert notices() == []
+    cloudflare.tunnel_health = {"sage-example.test-w1": "down"}
+    await manager.observe_workers()
+    assert manager.worker_state.last["w1"].view == WorkerView("offline", "unreachable")
+    assert notices() == [("error", "Worker w1 is offline.", "https://manager.core.example.test/workers/w1")]
+
+  async def test_a_change_across_checking_is_recorded_from_the_last_status_observed(self, manager, tailnet, workers, notices):
+    tailnet.answers = {"w1": "reachable"}
+    ready("w1")
+    await manager.observe_workers()
+    tailnet.answers = {"w1": "unknown"}
+    await manager.observe_workers()
+    tailnet.answers = {"w1": "reachable"}
+    await manager.observe_workers()
+    assert events() == []
+    tailnet.answers = {"w1": "unknown"}
+    await manager.observe_workers()
+    Workers().record_setup("w1", "failed")
+    tailnet.answers = {"w1": "reachable"}
+    await manager.observe_workers()
+    assert [(action, reason) for _, action, _, reason in events()] == [
+        ("readiness", {"status": "not ready", "reason": "setup_failed"})]
+    assert notices() == []
+
+  async def test_a_worker_back_from_offline_is_recorded_online_once_it_is_set_up_again(self, manager, tailnet, workers, notices):
+    tailnet.answers = {"w1": "reachable"}
+    ready("w1")
+    await manager.observe_workers()
+    tailnet.answers = {"w1": "unreachable"}
+    await manager.observe_workers()
+    tailnet.answers = {"w1": "reachable"}
+    await manager.observe_workers()
+    assert manager.worker_state.last["w1"].view.status == "checking"
+    ready("w1")
+    manager.worker_reported("w1")
+    assert [(action, reason["status"]) for _, action, _, reason in events()] == [
+        ("connectivity", "offline"), ("connectivity", "online")]
+
+  async def test_a_worker_removed_and_added_again_starts_with_no_status_observed(self, manager, tailnet, workers, notices):
+    tailnet.answers = {"w1": "reachable"}
+    ready("w1")
+    await manager.observe_workers()
+    Worker.delete().where(Worker.hostname == "w1").execute()
+    manager.worker_state.check()
+    Worker.create(hostname="w1", subdomain="red")
+    tailnet.answers = {"w1": "unreachable"}
+    await manager.observe_workers()
+    assert (events(), notices()) == ([], [])
 
   async def test_a_worker_that_answers_again_says_so_once_while_it_is_set_up_again(self, manager, tailnet, workers, notices):
     tailnet.answers = {"w1": "reachable"}

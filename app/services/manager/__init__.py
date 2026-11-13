@@ -63,6 +63,7 @@ class Manager(
                           *self.settings_queue_facts()]
       self.container_state = self.containers_state_fact()
       self.worker_state = self.workers_state_fact()
+      self.tunnel_state = self.tunnels_fact()
       # When each worker's setup last failed or was refused, and when its stack was last started for being down, on
       # this process's monotonic clock: how often they are tried again.
       self.setup_failures = {}

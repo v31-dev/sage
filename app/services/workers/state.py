@@ -82,8 +82,8 @@ class Workers(Base):
 class WorkerState:
   """The decided view with the facts it was decided from, the worker's address and path in the tailnet, its two
   certificates (`worker`, `discovery`): whether each covers the names it needs, whether the worker applied it, and its
-  expiry and error; and its tunnel's health as Cloudflare last listed it. Certificates and tunnel stay out of its
-  readiness."""
+  expiry and error; and its tunnel's health as known now (`Cloudflare.tunnel`). Certificates stay out of its readiness,
+  and the tunnel decides only how it answers (`connectivity`)."""
   view: WorkerView
   ssh: str
   setup: str | None
@@ -117,12 +117,13 @@ def worker_state(hostname: str, subdomain: str, tasks: frozenset[str]) -> Worker
   """The worker's state now, given its subdomain and the worker tasks queued or running on it."""
   now = utcnow()
   ssh, setup = Tailscale().ssh(hostname), Workers().setup(hostname)
+  tunnel = Cloudflare().tunnel(Cloudflare().worker_tunnel_name(hostname))
   report = report_of(WorkerReports().latest(hostname), now)
-  view = decide_worker(WorkerFacts(ssh, setup, report, tasks, (now - WorkerReports().started).total_seconds()))
+  view = decide_worker(WorkerFacts(ssh, setup, report, tasks, (now - WorkerReports().started).total_seconds(), tunnel))
   address = Tailscale().address(hostname)
   return WorkerState(view, ssh, setup, report, tasks, address, Tailscale().path(address) if address else None,
                      Certs().worker_state(hostname, subdomain, Workers().certificates(hostname), TEMPLATE_DIGEST),
-                     Cloudflare().tunnel_health.get(Cloudflare().worker_tunnel_name(hostname)))
+                     tunnel)
 
 
 def worker_payload(worker: Worker, state: WorkerState, tunnel_name: str, metrics: dict | None) -> dict:

@@ -11,7 +11,7 @@ from services.updates import Feed, Topic, UpdateFeed, Updates, UpdateSource, Upd
 TOPICS = {
     UpdateTopic.INFO: Topic(lambda: Manager().info(), frozenset({
         UpdateSource.QUEUE_STATE, UpdateSource.RESTORING, UpdateSource.SETTINGS_APPLYING, UpdateSource.SETTINGS_TESTING,
-        UpdateSource.CHECKS, UpdateSource.CERTIFICATES, UpdateSource.LATEST_VERSION})),
+        UpdateSource.CHECKS, UpdateSource.CERTIFICATES, UpdateSource.TUNNELS, UpdateSource.LATEST_VERSION})),
     UpdateTopic.TASKS: Topic(lambda: Manager().task_snapshot(), frozenset({UpdateSource.TASKS})),
     UpdateTopic.BACKUP_STATUS: Topic(lambda: Manager().backup_status(), frozenset({UpdateSource.BACKUP_STATUS})),
     UpdateTopic.BACKUPS: Topic(platform_backups, frozenset({UpdateSource.BACKUPS})),

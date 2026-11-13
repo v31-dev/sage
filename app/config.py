@@ -94,6 +94,9 @@ WORKER_METRICS_STALE_SECONDS = 180
 # of their containers.
 WORKER_STACK_SERVICES = ("traefik", "vector", "telegraf", "cloudflared", "cloudflared-discovery")
 
+# The account's tunnels are listed every minute; a tunnel's health is not known once they have not been listed for
+# this long.
+TUNNEL_LISTING_STALE_SECONDS = 240
 # A worker is offline after this many checks in a row went unanswered (about a minute).
 OFFLINE_AFTER_MISSED_CHECKS = 2
 # How long to wait for a worker's SSH banner.

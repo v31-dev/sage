@@ -129,7 +129,7 @@ characters on Cloudflare's Free plan, which has no record tags.
 | `discovery.<domain>`, a proxied CNAME to the platform's tunnel, its one record (any other with its comment is deleted), written by `publish_discovery_dns` | `sage-tunnel` |
 | `<TS_NAME>.core.<domain>`, an A record to the manager's tailnet IP | `sage-manager` |
 | `*.<subdomain>.int.<domain>`, an A record to the worker's tailnet IP: kept while the worker is offline, so its names work again as soon as it is back, and deleted when it is removed | `sage-worker-<hostname>` |
-| `discovery.int.<domain>`, an A record to the tailnet IP of each worker reachable and set up, written by `publish_discovery_dns`: kept while that is not known yet: for two minutes after the manager starts, and while it is cut off from the tailnet | `sage-discovery-<hostname>` |
+| `discovery.int.<domain>`, an A record to the tailnet IP of each worker reachable and set up, written by `publish_discovery_dns`: kept while that is not known yet: for two minutes after the manager starts, and while it is cut off from the tailnet; kept too while the worker answers only through its tunnel | `sage-discovery-<hostname>` |
 | Each public name linked to a container, a proxied CNAME to its worker's tunnel, written by its Domain's `apply_domain` | `sage-domain-<id>` |
 | `_acme-challenge.<name>`, a TXT record while a certificate is issued | `sage-acme-challenge` |
 

@@ -336,7 +336,7 @@ class TestFacts:
     assert [fact._compute() for fact in facts] == [None, manager.backup_status()]
 
 
-STARTUP = ["request_worker_observation", "request_worker_paths", "request_container_observation",
+STARTUP = ["request_worker_observation", "request_worker_paths", "request_tunnel_listing", "request_container_observation",
            "request_certificate_renewal", "request_domain_reconciliation", "request_backup_discovery",
            "request_settings_checks"]
 

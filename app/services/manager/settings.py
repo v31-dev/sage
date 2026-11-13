@@ -139,15 +139,15 @@ class SettingsMixin:
     return f"The node is running as {machine}; {peers}."
 
   def _test_cloudflare(self, value: dict, side_effects: bool) -> str:
-    """Env vars, so checked as configured: token, zone and account, and the platform tunnel's health; every tunnel's
-    health is read in the same call and kept by Cloudflare, so each worker's state shows its own."""
+    """Env vars, so checked as configured: token, zone and account, and that the platform tunnel is in the account;
+    its health is the one the tunnel listing knows (`list_tunnels`)."""
     cloudflare = Cloudflare()
     cloudflare.check_config(cloudflare.config)
-    if cloudflare.tunnel_name not in cloudflare.tunnels(timeout=config.SETTINGS_TEST_TIMEOUT_SECONDS,
-                                                        delays=config.SETTINGS_TEST_RETRY_DELAYS):
+    if cloudflare.find_tunnel(cloudflare.tunnel_name, timeout=config.SETTINGS_TEST_TIMEOUT_SECONDS,
+                              delays=config.SETTINGS_TEST_RETRY_DELAYS) is None:
       raise ValueError(f"The tunnel {cloudflare.tunnel_name} is not in the account.")
-    self.worker_state.check()
-    return f"API token, zone {cloudflare.domain} and account verified; tunnel {cloudflare.tunnel_status}."
+    return (f"API token, zone {cloudflare.domain} and account verified; tunnel "
+            f"{cloudflare.tunnel_status or 'health not known'}.")
 
   def _test_s3(self, value: dict, side_effects: bool) -> str:
     if not Settings().is_valid("s3", value):

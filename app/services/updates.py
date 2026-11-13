@@ -27,6 +27,7 @@ class UpdateSource(StrEnum):
   WORKER_LIST = "worker_list"        # each worker's status, path, container count and subdomain
   CHECKS = "checks"                  # the result of checking a settings section
   CERTIFICATES = "certificates"
+  TUNNELS = "tunnels"                # each tunnel's health as known now
   LATEST_VERSION = "latest_version"  # the newest version released
   RELEASE = "release"                # a release was fetched
   APPLICATION = "application"        # keyed by `<project>/<name>`: the application, or a container, domain or volume of it, was written

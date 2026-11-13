@@ -68,13 +68,14 @@ class DiscoveryMixin:
   async def publish_discovery_dns(self):
     """Points `discovery.int.<domain>` at every worker reachable and set up, one record each under
     `sage-discovery-<hostname>`, and `discovery.<domain>` at the platform's tunnel, from one list of the zone. The
-    record of a worker known to be out (`discovery_member`), or removed, is deleted; that of one not known yet is left
-    as it is."""
-    since_start = (utcnow() - self.started_at).total_seconds()
-    members = {worker.hostname: discovery_member(Tailscale().ssh(worker.hostname), Workers().setup(worker.hostname),
-                                                 Tailscale().address(worker.hostname), since_start)
+    record of a worker known to be out (`discovery_member`), or removed, is deleted; that of one not known yet, or
+    answering only through its tunnel, is left as it is."""
+    since_start, cloudflare = (utcnow() - self.started_at).total_seconds(), Cloudflare()
+    members = {worker.hostname: discovery_member(Tailscale().ssh(worker.hostname),
+                                                 cloudflare.tunnel(cloudflare.worker_tunnel_name(worker.hostname)),
+                                                 Workers().setup(worker.hostname), Tailscale().address(worker.hostname),
+                                                 since_start)
                for worker in Worker.select(Worker.hostname)}
-    cloudflare = Cloudflare()
     try:
       await run_in_executor_with_context(cloudflare.connect)
       zone = await run_in_executor_with_context(cloudflare.get_dns_records)

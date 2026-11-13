@@ -62,14 +62,21 @@ class DiscoveryHosts(Hosts):
 
 
 class Zone:
-  """Cloudflare's zone as discovery's DNS sees it: its records, the listings taken and a failure (`fails`)."""
+  """Cloudflare's zone as discovery's DNS sees it: its records, the listings taken, a failure (`fails`) and each worker
+  tunnel's status as known now (`tunnels`, by hostname)."""
 
   def __init__(self):
     self.domain, self.tunnel_id, self.records, self.listings, self.fails = "example.test", "tunnel-platform", [], 0, None
-    self.manager_hostname = "manager.core.example.test"
+    self.manager_hostname, self.tunnels = "manager.core.example.test", {}
 
   def connect(self):
     pass
+
+  def worker_tunnel_name(self, hostname):
+    return hostname
+
+  def tunnel(self, name):
+    return self.tunnels.get(name)
 
   def get_dns_records(self, name=None):
     self.listings += 1
@@ -397,6 +404,19 @@ class TestDns:
                      "type": "A", "proxied": False}]
     hosts.found["w2"] = found
     Workers().record_setup("w2", setup)
+    await manager.publish_discovery_dns()
+    assert [content for comment, _, content, *_ in zone.held() if comment == "sage-discovery-w2"] == (
+        ["100.64.0.9"] if kept else [])
+
+  @pytest.mark.parametrize("found, tunnel, kept", [("unreachable", "healthy", True), ("unreachable", "down", False),
+                                                   ("unknown", "healthy", True), ("unknown", "down", False)])
+  async def test_a_worker_answering_only_through_its_tunnel_keeps_its_record_and_one_answering_neither_way_loses_it(
+          self, clock, manager, hosts, zone, workers, found, tunnel, kept):
+    zone.records = [{"comment": "sage-discovery-w2", "name": "discovery.int.example.test", "content": "100.64.0.9",
+                     "type": "A", "proxied": False}]
+    hosts.found["w2"], zone.tunnels["w2"] = found, tunnel
+    Workers().record_setup("w2", None if found == "unreachable" else "succeeded")
+    clock.advance(timedelta(seconds=config.UNKNOWN_HOLD_SECONDS))
     await manager.publish_discovery_dns()
     assert [content for comment, _, content, *_ in zone.held() if comment == "sage-discovery-w2"] == (
         ["100.64.0.9"] if kept else [])

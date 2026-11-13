@@ -738,16 +738,31 @@ class TestObserveWorkers:
   @pytest.fixture
   def answers(self, tailscale, monkeypatch):
     """Which machines the tailnet lists (hostname to address), which workers' SSH servers answer, and which were asked;
-    `connected` is whether the manager's own node is."""
-    state = SimpleNamespace(listed={"a": "100.64.0.2", "b": "100.64.0.3", "c": "100.64.0.4"}, up=set(), connected=True, asked=[])
+    `connected` is whether the manager's own node is; `failing` names the call that raises (peers, reachable or
+    connected)."""
+    state = SimpleNamespace(listed={"a": "100.64.0.2", "b": "100.64.0.3", "c": "100.64.0.4"}, up=set(), connected=True, asked=[],
+                            failing=None)
+
+    def fail(call):
+      if state.failing == call:
+        raise Exception(f"Tailscale {call} timed out")
 
     async def reachable(hostname):
+      fail("reachable")
       state.asked.append(hostname)
       return hostname in state.up
 
+    def connected():
+      fail("connected")
+      return state.connected
+
+    def peers():
+      fail("peers")
+      return [SimpleNamespace(hostname=name, ip=ip) for name, ip in state.listed.items()]
+
     monkeypatch.setattr(tailscale, "reachable", reachable)
-    monkeypatch.setattr(tailscale, "connected", lambda: state.connected)
-    monkeypatch.setattr(tailscale, "peers", lambda: [SimpleNamespace(hostname=name, ip=ip) for name, ip in state.listed.items()])
+    monkeypatch.setattr(tailscale, "connected", connected)
+    monkeypatch.setattr(tailscale, "peers", peers)
     # The blocking calls run on the pool of the task that calls them.
     executor = ThreadPoolExecutor(max_workers=1)
     token = active_executor.set(executor)
@@ -803,6 +818,56 @@ class TestObserveWorkers:
     assert self.observe(tailscale, "a", "b") == {"a": "unknown", "b": "unknown"}
     answers.connected = True
     assert self.observe(tailscale, "a", "b") == {"a": "reachable", "b": "unreachable"}
+
+  def fail(self, tailscale, *hostnames):
+    with pytest.raises(Exception, match="timed out"):
+      asyncio.run(tailscale.observe_workers(list(hostnames)))
+    return {hostname: tailscale.ssh(hostname) for hostname in hostnames}
+
+  @pytest.mark.parametrize("call", ["peers", "reachable", "connected"])
+  def test_a_failed_observation_changes_nothing_and_the_second_in_a_row_cuts_the_manager_off(self, tailscale, answers, call):
+    answers.up = {"a"}
+    self.observe(tailscale, "a", "b")
+    answers.up, answers.failing = set(), call
+    assert self.fail(tailscale, "a", "b") == {"a": "reachable", "b": "unobserved"}
+    assert self.fail(tailscale, "a", "b") == {"a": "unknown", "b": "unknown"}
+    assert tailscale.address("a") == "100.64.0.2"
+
+  def test_after_the_failures_what_was_found_before_and_the_misses_carry_on(self, tailscale, answers):
+    answers.up = {"a"}
+    self.observe(tailscale, "a")
+    answers.failing = "peers"
+    self.fail(tailscale, "a")
+    self.fail(tailscale, "a")
+    answers.up, answers.failing = set(), None
+    assert self.observe(tailscale, "a") == {"a": "reachable"}
+    assert self.observe(tailscale, "a") == {"a": "unreachable"}
+
+  def test_failures_from_the_start_leave_workers_unobserved_once_then_unknown_until_an_observation_succeeds(self, tailscale, answers):
+    answers.failing = "peers"
+    assert self.fail(tailscale, "a") == {"a": "unobserved"}
+    assert self.fail(tailscale, "a") == {"a": "unknown"}
+    assert self.fail(tailscale, "a") == {"a": "unknown"}
+    answers.up, answers.failing = {"a"}, None
+    assert self.observe(tailscale, "a") == {"a": "reachable"}
+
+  def test_an_observation_that_succeeds_between_failures_starts_the_count_again(self, tailscale, answers):
+    answers.up = {"a"}
+    self.observe(tailscale, "a")
+    answers.failing = "peers"
+    self.fail(tailscale, "a")
+    answers.failing = None
+    self.observe(tailscale, "a")
+    answers.failing = "peers"
+    assert self.fail(tailscale, "a") == {"a": "reachable"}
+
+  def test_a_manager_cut_off_whose_observation_then_fails_stays_cut_off(self, tailscale, answers):
+    answers.up = {"a"}
+    self.observe(tailscale, "a")
+    answers.up, answers.connected = set(), False
+    self.observe(tailscale, "a")
+    answers.failing = "peers"
+    assert self.fail(tailscale, "a") == {"a": "unknown"}
 
   def test_a_worker_no_longer_observed_is_forgotten(self, tailscale, answers):
     answers.up = {"a", "b"}

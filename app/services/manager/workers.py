@@ -109,23 +109,29 @@ class WorkersMixin:
 
   def workers_state_fact(self) -> Fact:
     """Every worker's state, checked at each observation and report: a worker whose state changed is shown again, with
-    the domains routed to it when its readiness changed, a change of its observed status is recorded in its history (with
-    a notice when it went offline), a notice is sent when one that was offline answers again, and discovery is published
-    again when the ready workers, or those reachable and set up, changed."""
-    previous = {}
+    the domains routed to it when its readiness changed, a change of its observed status from the last one it was
+    observed in (whatever it was checking in between) is recorded in its history (with a notice when it went offline), a
+    notice is sent when one last observed offline answers again, and discovery is published again when the ready
+    workers, or those reachable and set up, changed."""
+    previous, observed = {}, {}
 
     def changed(current):
       nonlocal previous
       affected = {hostname for hostname in current.keys() | previous.keys() if current.get(hostname) != previous.get(hostname)}
       for hostname in affected:
-        before, after = previous.get(hostname), current.get(hostname)
-        if (before is not None and after is not None and before.view.status != after.view.status
-                and {before.view.status, after.view.status} <= set(OBSERVED)):
-          record_worker_event(hostname, "connectivity" if "offline" in (before.view.status, after.view.status) else "readiness",
-                              "observed", reason={"status": after.view.status, "reason": after.view.reason})
-          if after.view.status == "offline":
-            Notifications().notify(f"Worker {hostname} is offline.", "error", f"/workers/{hostname}")
-        if before is not None and after is not None and before.view.status == "offline" and after.ssh == "reachable":
+        prior, after = previous.get(hostname), current.get(hostname)
+        if after is None:
+          observed.pop(hostname, None)
+          continue
+        seen = observed.get(hostname)
+        if after.view.status in OBSERVED:
+          observed[hostname] = after.view.status
+          if seen is not None and seen != after.view.status:
+            record_worker_event(hostname, "connectivity" if "offline" in (seen, after.view.status) else "readiness",
+                                "observed", reason={"status": after.view.status, "reason": after.view.reason})
+            if after.view.status == "offline":
+              Notifications().notify(f"Worker {hostname} is offline.", "error", f"/workers/{hostname}")
+        if seen == "offline" and after.ssh == "reachable" and prior is not None and prior.ssh != "reachable":
           Notifications().notify(f"Worker {hostname} is reachable again.", "success", f"/workers/{hostname}")
       readiness = {hostname for hostname in affected if hostname in previous and hostname in current
                    and previous[hostname].view.ready != current[hostname].view.ready}
@@ -154,9 +160,14 @@ class WorkersMixin:
     """Asks every configured worker's SSH server, tells the pages of the workers whose state changed, then asks for the
     convergence of each reachable worker not set up since the Manager started or since it came back, whose address
     changed, or whose last setup failed or was refused WORKER_SETUP_RETRY_SECONDS ago; and for the repair of the stack of
-    a worker set up but not ready because of it."""
+    a worker set up but not ready because of it. A look that fails tells the pages of the workers whose state changed
+    and fails."""
     hostnames = [worker.hostname for worker in Worker.select(Worker.hostname)]
-    await Tailscale().observe_workers(hostnames)
+    try:
+      await Tailscale().observe_workers(hostnames)
+    except Exception:
+      self.worker_state.check()
+      raise
     for hostname in hostnames:
       if Tailscale().ssh(hostname) == "unreachable":
         Workers().record_setup(hostname, None)
@@ -460,6 +471,23 @@ class WorkersMixin:
     await Tailscale().refresh_paths([Tailscale().address(hostname) for hostname in hostnames
                                      if is_addressable(hostname)])
     self.worker_state.check()
+
+  def tunnels_fact(self) -> Fact:
+    """Each tunnel's health as known now: the info topic is sent again when it changed."""
+    return Fact(Cloudflare().tunnel_statuses, UpdateSource.TUNNELS)
+
+  def request_tunnel_listing(self):
+    """Queues the listing of the account's tunnels."""
+    self.add_task(task=self.list_tunnels, key=("list_tunnels",), scopes=set(), executor="common", quiet=True)
+
+  async def list_tunnels(self):
+    """Lists the account's tunnels with their health, then tells the pages of the workers whose state changed and the
+    info topic when the health known now changed, also when the listing failed and what was known has grown old."""
+    try:
+      await run_in_executor_with_context(Cloudflare().tunnels)
+    finally:
+      self.tunnel_state.check()
+      self.worker_state.check()
 
   def _worker_tasks(self) -> dict[str, set[str]]:
     """The worker tasks queued or running on each worker, by hostname."""

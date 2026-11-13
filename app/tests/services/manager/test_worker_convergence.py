@@ -108,10 +108,13 @@ class Provider:
 
   def __init__(self):
     self.domain, self.tunnel_id, self.records, self.tunnels = "example.test", "tunnel-platform", {}, []
-    self.tunnel_health, self.manager_hostname = {}, "manager.core.example.test"
+    self.manager_hostname = "manager.core.example.test"
 
   def connect(self):
     pass
+
+  def tunnel(self, name):
+    return None
 
   def worker_tunnel_name(self, hostname):
     return f"sage-{self.domain}-{hostname}"

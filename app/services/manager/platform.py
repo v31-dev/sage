@@ -80,6 +80,7 @@ class PlatformMixin:
     discovery follows; the backup discovery; the settings checks; the release check."""
     self.request_worker_observation()
     self.request_worker_paths()
+    self.request_tunnel_listing()
     self.request_container_observation()
     self.request_certificate_renewal()
     self.request_domain_reconciliation()

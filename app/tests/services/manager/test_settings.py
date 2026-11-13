@@ -162,17 +162,14 @@ def account(register):
 class TestCloudflareCheck:
   def check(self, account, statuses):
     account.on("GET", TUNNELS, ok([{"id": name, "name": name, "status": status} for name, status in statuses.items()]))
-    checked = []
-    return SettingsMixin._test_cloudflare(SimpleNamespace(worker_state=SimpleNamespace(check=lambda: checked.append(True))),
-                                          {}, False), checked
+    return SettingsMixin._test_cloudflare(SimpleNamespace(), {}, False)
 
-  def test_every_tunnels_health_is_kept_and_the_workers_states_are_checked_again(self, account):
-    message, checked = self.check(account, {
-        "sage-example.test-w1": "healthy", "sage-example.test": "degraded", "sage-other.test-w2": "down"})
-
-    assert message == "API token, zone example.test and account verified; tunnel degraded."
-    assert (Cloudflare().tunnel_status, checked) == ("degraded", [True])
-    assert Cloudflare().tunnel_health["sage-example.test-w1"] == "healthy"
+  def test_the_check_keeps_no_health_and_names_the_platform_tunnels_health_as_the_listing_knows_it(self, account):
+    statuses = {"sage-example.test-w1": "healthy", "sage-example.test": "degraded"}
+    assert self.check(account, statuses) == "API token, zone example.test and account verified; tunnel health not known."
+    assert Cloudflare().tunnel_statuses() == {}
+    Cloudflare().tunnels()
+    assert self.check(account, statuses) == "API token, zone example.test and account verified; tunnel degraded."
 
   def test_without_the_platform_tunnel_the_check_fails(self, account):
     with pytest.raises(ValueError, match="The tunnel sage-example.test is not in the account."):

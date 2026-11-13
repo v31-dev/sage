@@ -59,7 +59,10 @@ class Tailscale(Base):
     # What the last `observe_workers` found of each worker: its SSH server's answer and its address in the tailnet.
     self._ssh: dict[str, str] = {}
     self._addresses: dict[str, str] = {}
-    self._cut_off = False
+    # Whether the manager's own node was connected to the tailnet (None until known), and the observations failed in a
+    # row since it was last known.
+    self._connected: bool | None = None
+    self._failures = 0
 
   async def _get_conn(self, hostname):
     """Return a live pooled SSH connection to `hostname`, connecting if needed."""
@@ -167,15 +170,21 @@ class Tailscale(Base):
     reachable at the first answer, unreachable once OFFLINE_AFTER_MISSED_CHECKS checks in a row have gone unanswered
     or when the tailnet does not list it, as it was until then (`next_online`). While the manager's own node is cut
     off from the tailnet a miss says nothing of the workers: every one is unknown, and what was found before and the
-    misses stay as they were."""
-    addresses = {peer.hostname: peer.ip for peer in await run_in_executor_with_context(self.peers) if peer.hostname in hostnames}
-    listed = [hostname for hostname in hostnames if hostname in addresses]
-    answers = dict(zip(listed, await asyncio.gather(*(self.reachable(hostname) for hostname in listed))))
-    cut_off = not all(answers.values()) and not await run_in_executor_with_context(self.connected)
+    misses stay as they were. An observation that fails is a miss of the manager's own node: everything stays as it
+    was, and once OFFLINE_AFTER_MISSED_CHECKS in a row have failed the manager is cut off; the failure is raised."""
+    try:
+      addresses = {peer.hostname: peer.ip for peer in await run_in_executor_with_context(self.peers) if peer.hostname in hostnames}
+      listed = [hostname for hostname in hostnames if hostname in addresses]
+      answers = dict(zip(listed, await asyncio.gather(*(self.reachable(hostname) for hostname in listed))))
+      cut_off = not all(answers.values()) and not await run_in_executor_with_context(self.connected)
+    except Exception:
+      with self.lock:
+        self._connected, self._failures = next_online(self._connected, False, self._failures)
+      raise
     if cut_off:
       logger.warning("The manager is not connected to the tailnet; nothing is known of the workers.")
     with self.lock:
-      self._addresses, self._cut_off = addresses, cut_off
+      self._addresses, self._connected, self._failures = addresses, not cut_off, 0
       if cut_off:
         return
       states, misses = {}, {}
@@ -200,7 +209,7 @@ class Tailscale(Base):
     """What the last observation found of the worker's SSH server: reachable, unreachable, unknown (the manager was
     cut off) or unobserved."""
     with self.lock:
-      return "unknown" if self._cut_off else self._ssh.get(hostname, "unobserved")
+      return "unknown" if self._connected is False else self._ssh.get(hostname, "unobserved")
 
   def address(self, hostname: str) -> str | None:
     """The worker's address in the tailnet at the last observation; None when it was not listed."""

@@ -53,7 +53,9 @@ const CONTAINER_INDICATORS: Record<ContainerHeadline, Indicator> = {
 
 // What each reason of a worker's state means; `detail` when the manager's detail reads as part of it.
 const WORKER_REASONS: Record<string, { text: string; detail?: boolean }> = {
+  unreachable: { text: 'It answers neither over the tailnet nor through its tunnel' },
   ssh_unreachable: { text: 'Its SSH server does not answer' },
+  tailnet_unreachable: { text: 'It answers through its tunnel but not over the tailnet' },
   manager_offline: { text: 'The manager is not connected to the tailnet' },
   unobserved: { text: 'It has not been looked at yet' },
   owned_elsewhere: { text: 'Another Sage manages it' },
