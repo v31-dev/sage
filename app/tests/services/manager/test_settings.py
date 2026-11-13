@@ -1,4 +1,5 @@
 import inspect
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -184,8 +185,8 @@ class Settled(SettingsMixin, QueueMixin):
 def settled(db, thread_connections, register, signals):
   register(Tailscale, Node())
   installed = SimpleNamespace(s3=[], notifications=[])
-  register(S3, SimpleNamespace(install=installed.s3.append, check_config=lambda values, write: None))
-  register(Notifications, SimpleNamespace(install=installed.notifications.append,
+  register(S3, SimpleNamespace(install=lambda values, revision: installed.s3.append(values), check_config=lambda values, write: None))
+  register(Notifications, SimpleNamespace(install=lambda values, revision: installed.notifications.append(values),
                                           check_config=lambda values, send: ["Discord"]))
   manager = Settled()
   manager.installed = installed
@@ -318,3 +319,42 @@ class TestSettingsStatus:
     status = self.status(register, applying={"s3": {"task_id": "t1"}})
     assert (status["s3"]["state"], status["s3"]["task_id"]) == ("applying", "t1")
     assert (status["tailscale"]["state"], status["notifications"]["state"]) == ("ok", "not_configured")
+
+
+def test_overlapping_saves_of_a_section_end_with_the_last_saved_values_installed(db, monkeypatch):
+  from services import s3
+
+  older = {"access_key": "a", "secret_key": "a", "bucket": "a", "endpoint": "https://a.example.test", "path": "base"}
+  newer = {**older, "endpoint": "https://b.example.test"}
+  building, release = threading.Event(), threading.Event()
+
+  class Clients:
+    def client(self, *args, **kwargs):
+      if kwargs["endpoint_url"] == older["endpoint"]:
+        building.set()
+        assert release.wait(5)
+      return object()
+
+  class Workflow(SettingsMixin):
+    def request_backup_discovery(self):
+      pass
+
+    def _request_check(self, key, quiet):
+      pass
+
+  monkeypatch.setattr(s3.boto3.session, "Session", Clients)
+  Settings().set("s3", older)
+  first = threading.Thread(target=Workflow().settings_saved, args=("s3",))
+  first.start()
+  try:
+    assert building.wait(5)
+    Settings().set("s3", newer)
+    Workflow().settings_saved("s3")
+  finally:
+    release.set()
+    first.join(5)
+  assert not first.is_alive()
+  assert S3().session().target.endpoint == newer["endpoint"]
+  Settings().set("s3", {**older, "endpoint": "https://c.example.test"})
+  Workflow().settings_saved("s3")
+  assert S3().session().target.endpoint == "https://c.example.test"

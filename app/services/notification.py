@@ -111,11 +111,14 @@ class Notifications(Base):
   def __init__(self):
     super().__init__()
     self.notifications_config = {}
+    self._revision: int | None = None
 
-  def install(self, values: dict):
-    """Deliver to the channels of `values`, a saved notifications section."""
+  def install(self, values: dict, revision: int):
+    """Deliver to the channels of `values`, the notifications section saved at `revision`. A revision older than the
+    one installed is ignored, so the last save is the one in use."""
     with self.lock:
-      self.notifications_config = dict(values)
+      if self._revision is None or revision > self._revision:
+        self.notifications_config, self._revision = dict(values), revision
 
   def notify(self, message: str, type: str = "info", link: str | None = None):
     """A notice: logged at its level, recorded as a Notification row, pushed on the `notifications` feed and sent to the

@@ -83,8 +83,9 @@ class Manager(
       WorkerReports()
       Tailscale()
       Settings()
-      Notifications().install(Settings().snapshot("notifications").values)
-      S3().install(Settings().snapshot("s3").values)
+      for consumer, key in ((Notifications(), "notifications"), (S3(), "s3")):
+        saved = Settings().snapshot(key)
+        consumer.install(saved.values, saved.revision)
       Certs()
       Metrics().start_sampler()
       Notifications().notify("Manager started.")

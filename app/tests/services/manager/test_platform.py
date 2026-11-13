@@ -104,7 +104,7 @@ def stores(tmp_path, register):
       raise Conflict("S3 is not configured.")
     return stores.configured
 
-  register(S3, SimpleNamespace(session=session, install=lambda values: stores.installed.append(values)))
+  register(S3, SimpleNamespace(session=session, install=lambda values, revision: stores.installed.append(values)))
   stores.installed = []
   return stores
 
@@ -112,7 +112,7 @@ def stores(tmp_path, register):
 @pytest.fixture
 def manager(db, stores, register):
   notices = []
-  register(Notifications, SimpleNamespace(install=lambda values: None, notify=lambda *notice: notices.append(notice)))
+  register(Notifications, SimpleNamespace(install=lambda values, revision: None, notify=lambda *notice: notices.append(notice)))
   manager = Manager()
   manager.notices = notices
   manager.fetched = []

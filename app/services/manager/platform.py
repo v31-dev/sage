@@ -178,8 +178,9 @@ class PlatformMixin:
       restored = True
       Settings().load_all()
       Settings().set("s3", store)
-      S3().install(Settings().snapshot("s3").values)
-      Notifications().install(Settings().snapshot("notifications").values)
+      for consumer, key in ((S3(), "s3"), (Notifications(), "notifications")):
+        saved = Settings().snapshot(key)
+        consumer.install(saved.values, saved.revision)
       for owner in (Containers(), Workers(), Domains()):
         owner.clear()
       for held in (self.setup_failures, self.stack_repairs, self.recoveries, self.orphans):

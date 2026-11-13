@@ -50,12 +50,12 @@ class SettingsMixin:
   def settings_saved(self, key: str):
     """After a Save of the section (the values already validated and saved): its consumer installed from the saved
     snapshot, the backups of a new store discovered, and the section checked as saved."""
-    saved = Settings().snapshot(key).values
+    saved = Settings().snapshot(key)
     if key == "s3":
-      S3().install(saved)
+      S3().install(saved.values, saved.revision)
       self.request_backup_discovery()
     elif key == "notifications":
-      Notifications().install(saved)
+      Notifications().install(saved.values, saved.revision)
     if self.section_configured(key):
       self._request_check(key, quiet=False)
 

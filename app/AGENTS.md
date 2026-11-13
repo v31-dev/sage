@@ -194,8 +194,9 @@ Each resource's own rules, on top of the root's working rules 9–13. The workfl
   and queue activity are separate facts, and a result certifies only the configuration snapshot it checked. An
   explicit Test evaluates its candidate values and declared test effects without saving them.
 - A section's consumer (S3, Notifications) is installed from `Settings().snapshot(key)` by the workflow that saved or
-  restored it, and never reads Settings itself. A check result is recorded with the revision it checked
-  (`Settings().record_check`) and counts only while that revision is current.
+  restored it, keeps the revision it installed and ignores an older one, and never reads Settings itself. A check
+  result is recorded with the revision it checked (`Settings().record_check`) and counts only while that revision is
+  current.
 
 ## Operation Queue And Scheduler
 

@@ -69,7 +69,7 @@ def notifications(db):
 @pytest.fixture
 def configured_notifications(db):
   notifications = Notifications()
-  notifications.install({"discord_webhook": URL})
+  notifications.install({"discord_webhook": URL}, 1)
   return notifications
 
 
@@ -180,9 +180,15 @@ class TestLoadingTheConfig:
     Settings().set("notifications", {"discord_webhook": "https://discord.test/saved"})
     assert configured_notifications.get_notification_value("discord_webhook") == URL
 
-    configured_notifications.install({"discord_webhook": "https://discord.test/other"})
+    configured_notifications.install({"discord_webhook": "https://discord.test/other"}, 2)
 
     assert configured_notifications.get_notification_value("discord_webhook") == "https://discord.test/other"
+
+  def test_a_revision_older_than_the_one_installed_is_ignored(self, configured_notifications):
+    configured_notifications.install({"discord_webhook": "https://discord.test/newer"}, 3)
+    configured_notifications.install({"discord_webhook": "https://discord.test/older"}, 2)
+    configured_notifications.install({"discord_webhook": "https://discord.test/again"}, 3)
+    assert configured_notifications.get_notification_value("discord_webhook") == "https://discord.test/newer"
 
 
 class TestCheckConfig:

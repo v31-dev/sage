@@ -28,7 +28,7 @@ def make_s3(db):
   """S3 with these settings installed: `make_s3(bucket="other")`."""
   def make(**overrides):
     s3 = S3()
-    s3.install({**VALUES, **overrides})
+    s3.install({**VALUES, **overrides}, 1)
     return s3
   return make
 
@@ -45,7 +45,7 @@ class TestInstall:
 
   def test_incomplete_settings_leave_it_off_and_say_so(self, unconfigured, caplog):
     with caplog.at_level(logging.WARNING, logger="services.s3"):
-      unconfigured.install({**VALUES, "bucket": ""})
+      unconfigured.install({**VALUES, "bucket": ""}, 1)
 
     with pytest.raises(Conflict, match="S3 is not configured"):
       unconfigured.session()
@@ -61,19 +61,27 @@ class TestInstall:
     s3 = make_s3()
     Settings().set("s3", {**VALUES, "bucket": "saved"})
 
-    s3.install({**VALUES, "bucket": "other"})
+    s3.install({**VALUES, "bucket": "other"}, 2)
     assert s3.session().target.bucket == "other"
 
-    s3.install({**VALUES, "bucket": ""})
+    s3.install({**VALUES, "bucket": ""}, 3)
     with pytest.raises(Conflict, match="S3 is not configured"):
       s3.session()
 
+  def test_a_revision_older_than_the_one_installed_is_ignored(self, make_s3, signals):
+    s3 = make_s3()
+    s3.install({**VALUES, "bucket": "newer"}, 3)
+    signals.clear()
+    s3.install({**VALUES, "bucket": "older"}, 2)
+    s3.install({**VALUES, "bucket": "again"}, 3)
+    assert s3.session().target.bucket == "newer" and signals == []
+
   def test_another_store_changes_the_backups_and_new_credentials_for_the_same_store_do_not(self, unconfigured, signals):
     changes = []
-    for values in (VALUES, {**VALUES, "access_key": "AK2", "secret_key": "SK2"}, {**VALUES, "path": "elsewhere"},
-                   {**VALUES, "bucket": ""}, {**VALUES, "bucket": ""}):
+    for revision, values in enumerate((VALUES, {**VALUES, "access_key": "AK2", "secret_key": "SK2"}, {**VALUES, "path": "elsewhere"},
+                                       {**VALUES, "bucket": ""}, {**VALUES, "bucket": ""}), 1):
       signals.clear()
-      unconfigured.install(values)
+      unconfigured.install(values, revision)
       changes.append(signals.count((UpdateSource.BACKUPS, None)))
     assert changes == [1, 0, 1, 1, 0]
 
@@ -83,7 +91,7 @@ class TestFrozenSession:
     s3 = make_s3()
     held = s3.session()
 
-    s3.install({**VALUES, "bucket": "other"})
+    s3.install({**VALUES, "bucket": "other"}, 2)
 
     assert (held.target.bucket, s3.session().target.bucket) == ("bucket", "other")
     assert held.identity != s3.session().identity

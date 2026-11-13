@@ -66,14 +66,18 @@ class S3(Base):
   def __init__(self):
     super().__init__()
     self._session = None
+    self._revision: int | None = None
 
-  def install(self, values: dict):
-    """Use the store `values` name, a saved S3 section; none unless every field is set."""
+  def install(self, values: dict, revision: int):
+    """Use the store `values` name, the S3 section saved at `revision`; none unless every field is set. A revision
+    older than the one installed is ignored, so the last save is the one in use."""
     session = S3Session(StorageTarget.of(values)) if fields_set("s3", values) else None
+    with self.lock:
+      if self._revision is not None and revision <= self._revision:
+        return
+      previous, self._session, self._revision = self._session, session, revision
     if session is None:
       logger.warning("No complete S3 config found in settings, S3 functionality will be disabled")
-    with self.lock:
-      previous, self._session = self._session, session
     if (previous and previous.identity) != (session and session.identity):
       Updates().changed(UpdateSource.BACKUPS)
 
