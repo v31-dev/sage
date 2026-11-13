@@ -406,9 +406,18 @@ class TestAutomaticRequests:
     Volume.update(backup_cron="0 3 * * *").where(Volume.id == volumes[0].id).execute()
     Volume.update(backup_cron="0 4 * * *").where(Volume.id == volumes[1].id).execute()
     manager.request_automatic_backups(at)
-    assert self.queued(manager) == [(("backup_preserve", container.id), "backup_preserve", [volumes[0].id], False)]
+    assert self.queued(manager) == [(("backup_preserve", container.id, volumes[0].id), "backup_preserve", [volumes[0].id], False)]
     [task] = manager.task_queue.snapshot()["queued"]
     assert task["scopes"] == sorted({f"worker:{container.worker_id}:container:{container.id}", f"backup:store:s1:write:{container.id}"})
+
+  def test_other_volumes_due_while_a_backup_waits_get_their_own_and_the_same_ones_do_not(self, manager, container, volumes, at):
+    Volume.update(backup_cron="* * * * *").where(Volume.id == volumes[0].id).execute()
+    Volume.update(backup_cron="1 3 * * *").where(Volume.id == volumes[1].id).execute()
+    manager.request_stop(container.id)
+    for minute in range(3):
+      manager.request_automatic_backups(at + timedelta(minutes=minute))
+    assert [(task["name"], task["params"].get("volume_ids")) for task in manager.task_queue.snapshot()["queued"]] == [
+        ("stop", None), ("backup_preserve", [volumes[0].id]), ("backup_preserve", sorted(ids(volumes)))]
 
   def test_a_volume_backed_up_this_minute_is_not_due_again(self, manager, container, volumes, at):
     Volume.update(backup_cron="0 3 * * *").where(Volume.id == volumes[0].id).execute()

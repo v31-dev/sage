@@ -66,8 +66,9 @@ class BackupsMixin:
 
   def request_automatic_backups(self, now: datetime):
     """Queues, for each container of an application with volumes due now by their schedule and not backed up this
-    minute, an automatic backup of those volumes into the configured store; nothing without one. It has its own key
-    on the container's scope: a user request waits behind a running one and is never refused or replaced by it."""
+    minute, an automatic backup of those volumes into the configured store; nothing without one. It has its own key,
+    by container and volumes, on the container's scope: a user request waits behind a running one and is never refused
+    or replaced by it, and the backup of other volumes due meanwhile is queued after it."""
     session = configured_session()
     if session is None:
       return
@@ -82,11 +83,11 @@ class BackupsMixin:
         names.setdefault(volume.application_id, []).append(volume.name)
     for container in (Container.select(Container, Application, Project).join(Application).join(Project)
                       .where(Container.application.in_(list(due)))):
-      self.add_task(task=self.backup_container_preserving, key=("backup_preserve", container.id),
+      volume_ids = sorted(due[container.application_id])
+      self.add_task(task=self.backup_container_preserving, key=("backup_preserve", container.id, *volume_ids),
                     scopes={f"worker:{container.worker_id}:container:{container.id}",
                             f"backup:store:{session.identity}:write:{container.id}"},
-                    executor="app", params={"container_id": container.id, "volume_ids": sorted(due[container.application_id]),
-                                            "storage_id": session.identity},
+                    executor="app", params={"container_id": container.id, "volume_ids": volume_ids, "storage_id": session.identity},
                     labels={**self.container_labels(container), "Volumes": ", ".join(sorted(names[container.application_id]))})
 
   def request_restore(self, container_id: str, backup_id: int, volume_id: str) -> str:
