@@ -60,6 +60,10 @@ Calls are resolved by name, so a list can name more than really reaches a line: 
 before citing it, and complete what a name cannot show (a value passed in, a writer reached through a callback). For
 a change, run it on the baseline too (`git archive <rev> app | tar -x -C <scratch dir>`) and compare.
 
+Cross-check the candidate list against provider implementations and their route, startup, callback and thread
+entry points: synchronous provider calls made inline can be absent, including an explicit test's effects. Inspect
+explicit `.acquire()` / `.release()` paths too; the lock list covers context-manager blocks.
+
 ## Answer these, each with source locations
 
 1. **Races on the resources tasks touch.** For each remote write, the resource it changes (from its path or its
@@ -77,7 +81,8 @@ a change, run it on the baseline too (`git archive <rev> app | tar -x -C <scratc
    against writers outside the queue. Each DEDUP key has its periodic pass; a change that must be seen after a running
    task uses REPLACE. Order between tasks comes from scopes or from a body's follow-up request; nothing relies on when
    a task starts or on the order of tasks that do not conflict, and nothing starts a task ahead of earlier conflicting
-   work.
+   work. An owner's memory that tasks sharing no scope write (one replacing it whole with what it gathered across an
+   await) is traced for lost updates, and a Fact callback for the requests lost when it raises after `last` is set.
 4. **Data flow.** Each reader of the queue finds a subject by key and a resource by scope, never identity in params;
    the queue's facts only publish, and work is requested by a body's end, a state Fact's callback or a scheduled pass.
    For each decision table: its inputs with their owner, source and knowledge states, the bound on each state not
