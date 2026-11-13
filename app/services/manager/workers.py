@@ -21,9 +21,9 @@ from services.tailscale import Tailscale
 from services.updates import Fact, Updates, UpdateSource
 from services.worker_reports import WorkerReports
 from services.workers import commands
-from services.workers.decisions import TASKS, reboot_outcome, worker_claim_refusal, worker_owner
+from services.workers.decisions import TASKS, addressable, reboot_outcome, worker_claim_refusal, worker_owner
 from services.workers.rendering import InfraInputs, infra_fingerprint, render_infrastructure, stack_scope, worker_scope
-from services.workers.state import Workers, WorkerState, worker_payload, worker_state
+from services.workers.state import Workers, WorkerState, is_addressable, is_workable, worker_payload, worker_state
 from utils.common import get_env, utcnow
 from utils.errors import Conflict
 from utils.executor import run_in_executor_with_context
@@ -131,7 +131,7 @@ class WorkersMixin:
                    and previous[hostname].view.ready != current[hostname].view.ready}
       published = [({hostname for hostname, state in states.items() if state.view.ready},
                     {(hostname, state.address) for hostname, state in states.items()
-                     if state.ssh == "reachable" and state.setup == "succeeded"}) for states in (previous, current)]
+                     if state.workable}) for states in (previous, current)]
       previous = current
       self._workers_changed(affected)
       for domain in Domain.select().join(Container, JOIN.LEFT_OUTER).where(
@@ -163,7 +163,7 @@ class WorkersMixin:
     self.worker_state.check()
     now = monotonic()
     for hostname, state in self.worker_state.last.items():
-      if state.ssh != "reachable" or state.address is None:
+      if not state.addressable:
         continue
       failed_at = self.setup_failures.get(hostname)
       if (state.setup is None or Workers().setup_address(hostname) != state.address
@@ -199,7 +199,7 @@ class WorkersMixin:
     whatever their stamps say. Another Sage's worker is refused and left alone."""
     worker = Worker.get_or_none(Worker.hostname == hostname)
     address = Tailscale().address(hostname)
-    if worker is None or address is None or Tailscale().ssh(hostname) != "reachable":
+    if worker is None or not addressable(Tailscale().ssh(hostname), address):
       logger.info(f"Worker {hostname} is not there to set up; nothing to do.")
       return
     home, cloudflare = config.WORKER_HOME_DIR, Cloudflare()
@@ -273,8 +273,7 @@ class WorkersMixin:
                   executor="app", params={"hostname": hostname}, labels={"Worker": hostname}, quiet=True)
 
   async def repair_worker_stack(self, hostname: str):
-    if (Worker.get_or_none(Worker.hostname == hostname) is None or Tailscale().ssh(hostname) != "reachable"
-            or Workers().setup(hostname) != "succeeded"):
+    if Worker.get_or_none(Worker.hostname == hostname) is None or not is_workable(hostname):
       logger.info(f"Worker {hostname} is not there to repair; nothing to do.")
       return
     if await self._start_stack(hostname):
@@ -392,7 +391,7 @@ class WorkersMixin:
     worker = Worker.get_or_none(Worker.hostname == hostname)
     if worker is None:
       return
-    if Tailscale().ssh(hostname) != "reachable" or Workers().setup(hostname) != "succeeded":
+    if not is_workable(hostname):
       record_worker_event(hostname, "reboot", "rejected", reason={"ssh": Tailscale().ssh(hostname), "setup": Workers().setup(hostname)})
       Notifications().notify(f"Worker {hostname} was not rebooted: it is not reachable and set up.", "error",
                              f"/workers/{hostname}")
@@ -459,7 +458,7 @@ class WorkersMixin:
     """Finds how each reachable worker is reached, direct or through a relay."""
     hostnames = [worker.hostname for worker in Worker.select(Worker.hostname)]
     await Tailscale().refresh_paths([Tailscale().address(hostname) for hostname in hostnames
-                                     if Tailscale().ssh(hostname) == "reachable" and Tailscale().address(hostname)])
+                                     if is_addressable(hostname)])
     self.worker_state.check()
 
   def _worker_tasks(self) -> dict[str, set[str]]:

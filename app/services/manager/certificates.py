@@ -11,7 +11,7 @@ from services.cloudflare import Cloudflare
 from services.db.models import Worker
 from services.notification import Notifications
 from services.tailscale import Tailscale
-from services.workers.state import Workers
+from services.workers.state import Workers, is_workable
 from utils.common import fill
 from utils.executor import run_in_executor_with_context
 from utils.logging import TaskFailed
@@ -67,7 +67,7 @@ class CertificatesMixin:
         Notifications().notify(f"Issued the certificate for {', '.join(certificate.names)}; it expires on "
                                f"{certificate.expiry():%Y-%m-%d}.", "success", "/cloudflare")
     for worker in Worker.select(Worker.hostname):
-      if Tailscale().ssh(worker.hostname) == "reachable" and Workers().setup(worker.hostname) == "succeeded":
+      if is_workable(worker.hostname):
         self.request_certificate_distribution(worker.hostname)
     self.worker_state.check()
     if failures:
@@ -89,8 +89,7 @@ class CertificatesMixin:
     then the other managed files removed, then its `certs` stamp with their proofs. A certificate not valid is not
     published. Nothing is written while the stamp, the files and the list are already what they should be, unless
     forced; nothing on a worker not reachable and set up."""
-    if (Worker.get_or_none(Worker.hostname == hostname) is None or Tailscale().ssh(hostname) != "reachable"
-            or Workers().setup(hostname) != "succeeded"):
+    if Worker.get_or_none(Worker.hostname == hostname) is None or not is_workable(hostname):
       logger.info(f"Worker {hostname} is not there to copy certificates to; nothing to do.")
       return
     dynamic, managed = f"{config.WORKER_HOME_DIR}/traefik/dynamic/certs.yml", f"{config.WORKER_HOME_DIR}/traefik/certs/managed"

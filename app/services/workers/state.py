@@ -9,7 +9,7 @@ from services.cloudflare import Cloudflare
 from services.db.models import Worker
 from services.tailscale import Tailscale
 from services.worker_reports import WorkerReports
-from services.workers.decisions import WorkerFacts, WorkerReport, WorkerView, decide_worker, report_of
+from services.workers.decisions import WorkerFacts, WorkerReport, WorkerView, addressable, decide_worker, report_of, workable
 from utils.common import utcnow
 
 
@@ -93,6 +93,24 @@ class WorkerState:
   path: str | None
   certificates: dict
   tunnel: str | None
+
+  @property
+  def workable(self) -> bool:
+    return workable(self.ssh, self.setup)
+
+  @property
+  def addressable(self) -> bool:
+    return addressable(self.ssh, self.address)
+
+
+def is_workable(hostname: str) -> bool:
+  """Whether Sage can act on the worker now (`workable`)."""
+  return workable(Tailscale().ssh(hostname), Workers().setup(hostname))
+
+
+def is_addressable(hostname: str) -> bool:
+  """Whether the worker answers at an address in the tailnet now (`addressable`)."""
+  return addressable(Tailscale().ssh(hostname), Tailscale().address(hostname))
 
 
 def worker_state(hostname: str, subdomain: str, tasks: frozenset[str]) -> WorkerState:

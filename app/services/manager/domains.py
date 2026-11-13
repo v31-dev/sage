@@ -17,7 +17,7 @@ from services.domains.updates import domain_changed
 from services.notification import Notifications
 from services.tailscale import Tailscale
 from services.updates import Fact
-from services.workers.state import Workers
+from services.workers.state import is_workable
 from utils.common import get_env
 from utils.executor import run_in_executor_with_context
 from utils.logging import TaskFailed
@@ -107,8 +107,7 @@ class DomainsMixin:
     if snapshot.container_id is not None:
       eligible = self.container_states([domain.container])[snapshot.container_id].routable
     goal = route_goal(snapshot.container_id is not None, eligible)
-    routed = worker is None or (goal is not None and Tailscale().ssh(worker) == "reachable"
-                                and Workers().setup(worker) == "succeeded")
+    routed = worker is None or (goal is not None and is_workable(worker))
     phase, failure = "route", None
     try:
       if worker is not None and routed:
@@ -167,8 +166,7 @@ class DomainsMixin:
     route and DNS; then requests the apply of each Domain in error, drifted or not applied, and discovery's
     publication. Holding every Domain, it never crosses an apply; it lists before it reads the rows, so a Domain
     created meanwhile is never taken for one gone."""
-    hostnames = [worker.hostname for worker in Worker.select(Worker.hostname)
-                 if Tailscale().ssh(worker.hostname) == "reachable" and Workers().setup(worker.hostname) == "succeeded"]
+    hostnames = [worker.hostname for worker in Worker.select(Worker.hostname) if is_workable(worker.hostname)]
     cloudflare, failures = Cloudflare(), []
     zone, tunnels, *listings = await asyncio.gather(
         run_in_executor_with_context(cloudflare.get_dns_records), run_in_executor_with_context(cloudflare.tunnels),

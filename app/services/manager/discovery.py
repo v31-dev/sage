@@ -9,7 +9,7 @@ from services.domains.discovery import discovery_files, discovery_files_scope, d
 from services.notification import Notifications
 from services.tailscale import Tailscale
 from services.workers.decisions import discovery_member
-from services.workers.state import Workers
+from services.workers.state import Workers, is_workable
 from utils.common import get_env, utcnow
 from utils.executor import run_in_executor_with_context
 from utils.logging import TaskFailed
@@ -28,7 +28,7 @@ class DiscoveryMixin:
     if hostname is not None:
       workers = workers.where(Worker.hostname == hostname)
     for worker in workers:
-      if Tailscale().ssh(worker.hostname) == "reachable" and Workers().setup(worker.hostname) == "succeeded":
+      if is_workable(worker.hostname):
         self.add_task(task=self.publish_discovery, key=("publish_discovery", worker.hostname, *(("force",) if force else ())),
                       scopes={discovery_files_scope(worker.hostname)}, executor="app",
                       params={"hostname": worker.hostname, "force": force}, labels={"Worker": worker.hostname},
@@ -41,8 +41,7 @@ class DiscoveryMixin:
     now (every one, forced), then removes those of services no Domain has. A name whose availability is not known yet
     keeps what the worker's file publishes for it (`discovery_services`). Nothing on a worker not reachable and set
     up."""
-    if (Worker.get_or_none(Worker.hostname == hostname) is None or Tailscale().ssh(hostname) != "reachable"
-            or Workers().setup(hostname) != "succeeded"):
+    if Worker.get_or_none(Worker.hostname == hostname) is None or not is_workable(hostname):
       logger.info(f"Worker {hostname} is not there to publish discovery to; nothing to do.")
       return
     domains = list(Domain.select().where(Domain.service.is_null(False)))

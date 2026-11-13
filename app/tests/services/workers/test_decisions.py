@@ -5,8 +5,8 @@ import pytest
 
 import config
 from services.worker_reports import ContainerReading, Received, Snapshot
-from services.workers.decisions import (SETUPS, SSH, STATUSES, WorkerFacts, WorkerReport, decide_worker, discovery_member, reboot_outcome, report_of,
-                                        worker_claim_refusal, worker_owner)
+from services.workers.decisions import (SETUPS, SSH, STATUSES, WorkerFacts, WorkerReport, addressable, decide_worker, discovery_member,
+                                        reboot_outcome, report_of, workable, worker_claim_refusal, worker_owner)
 
 GOOD = WorkerReport("known", True)
 LATE = config.REPORT_STARTUP_GRACE_SECONDS + 1
@@ -157,6 +157,15 @@ def test_discovery_points_at_a_worker_reachable_and_set_up_and_holds_one_not_kno
         ssh, setup, address, held, after):
   hold = config.UNKNOWN_HOLD_SECONDS
   assert (discovery_member(ssh, setup, address, hold - 1), discovery_member(ssh, setup, address, hold)) == (held, after)
+
+
+def test_sage_acts_only_on_a_worker_reachable_and_set_up_since_the_manager_started():
+  assert {(ssh, setup) for ssh, setup in itertools.product(SSH, SETUPS) if workable(ssh, setup)} == {("reachable", "succeeded")}
+
+
+def test_a_worker_is_addressable_only_reachable_and_with_an_address():
+  assert {(ssh, address) for ssh, address in itertools.product(SSH, (None, "100.64.0.2")) if addressable(ssh, address)} == {
+      ("reachable", "100.64.0.2")}
 
 
 class TestWorkerOwner:

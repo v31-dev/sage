@@ -88,6 +88,16 @@ def decide_worker(facts: WorkerFacts) -> WorkerView:
   return WorkerView("online")
 
 
+def workable(ssh: str, setup: str | None) -> bool:
+  """Whether Sage can act on the worker: its SSH server answers and it was set up since the Manager started."""
+  return ssh == "reachable" and setup == "succeeded"
+
+
+def addressable(ssh: str, address: str | None) -> bool:
+  """Whether the worker answers at an address in the tailnet."""
+  return ssh == "reachable" and address is not None
+
+
 def discovery_member(ssh: str, setup: str | None, address: str | None, seconds_since_start: float) -> bool | None:
   """Whether `discovery.int.<domain>` points at the worker: yes while it is reachable, set up since the Manager started
   and has an address; no once its SSH server is unreachable or its setup failed or was refused. None while that is not
@@ -95,7 +105,7 @@ def discovery_member(ssh: str, setup: str | None, address: str | None, seconds_s
   for UNKNOWN_HOLD_SECONDS after the Manager started, then no."""
   if ssh == "unreachable" or setup in ("failed", "refused"):
     return False
-  if ssh == "reachable" and setup == "succeeded" and address:
+  if workable(ssh, setup) and address:
     return True
   return None if ssh == "unknown" or seconds_since_start < config.UNKNOWN_HOLD_SECONDS else False
 
