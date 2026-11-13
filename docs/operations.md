@@ -26,7 +26,7 @@ flowchart TB
     route["HTTP action<br/>or worker report event"]
     direct["Direct CRUD / request helper<br/>model write without queue scope"]
     queue["Manager.add_task<br/>admit, deduplicate or replace"]
-    tick["Dispatcher every second<br/>queue state permits work?<br/>required scopes free?"]
+    tick["Dispatcher every second<br/>queue state permits work?<br/>no conflict with running<br/>or earlier queued work?"]
     task["Run operation<br/>hold scopes until body ends<br/>bind task_id and executor"]
     main[("Main SQLite model")]
     effects["Other state<br/>worker files, Docker, Cloudflare, S3<br/>certificates, shards and memory"]
@@ -94,8 +94,8 @@ The platform restore holds no scope: it is the queue's own entry and starts once
 
 Pending tasks can be cancelled by key, name, or a scope and the scopes below it (`cancel_tasks`); the Manager cancels a container's queued Deploy, Stop, manual backup, volume restore or Delete on request, and every queued task of a container when it is deleted.
 
-A visible request joining a quiet task with its key makes that task visible. Conflicting scopes defer admitted work; they do not reject it. Pending tasks reserve no scopes, so a broad
-task can wait while later work starts. Paused queues admit work but start nothing; restoring starts the tasks queued
+A visible request joining a quiet task with its key makes that task visible. Conflicting scopes defer admitted work; they do not reject it. A pending task holds back the later tasks it
+conflicts with: among conflicting tasks the one queued first starts first, and tasks that do not conflict start together. Paused queues admit work but start nothing; restoring starts the tasks queued
 before the restore, then the restore once nothing runs or waits; stopping cancels pending/new work and drains running tasks. The main API refuses mutations while
 the queue is not running, except pause/resume. The separate ingestion API keeps accepting pushes.
 See [queue semantics](backend.md#operation-queue) and [pause/restore/stop](backend.md#pause-and-stop).

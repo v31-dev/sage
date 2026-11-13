@@ -344,7 +344,7 @@ APScheduler is a pure cron/interval trigger: each scheduled coroutine only calls
 - platform backup scheduling
 - the daily summary, cleanup and certificate renewal
 
-All execution and mutual exclusion live in an in-memory operation queue on the `Manager` singleton (`app/utils/queue.py`). Routes (deploy, stop, delete, backup, restore, worker removal and reboot) and the cron triggers above enqueue through the same `add_task` path; a single one-second dispatcher starts each pending task whose scope is free. See [backend.md](backend.md) for the queue model and execution semantics.
+All execution and mutual exclusion live in an in-memory operation queue on the `Manager` singleton (`app/utils/queue.py`). Routes (deploy, stop, delete, backup, restore, worker removal and reboot) and the cron triggers above enqueue through the same `add_task` path; a single one-second dispatcher starts each pending task whose scopes conflict with no running task and no task queued before it. See [backend.md](backend.md) for the queue model and execution semantics.
 
 For the visual execution flows, exact schedules, complete task catalog and synchronous model writers, see
 [Scheduler and data writes](operations.md).

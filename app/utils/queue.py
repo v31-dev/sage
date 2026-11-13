@@ -133,7 +133,8 @@ def admit(state: QueueState, running: list[QueuedTask], queue: list[QueuedTask],
 def next_to_start(state: QueueState, queue: list[QueuedTask], running: list[QueuedTask],
                   restore: QueuedTask | None = None) -> list[QueuedTask]:
   """The tasks to start now, in order: none unless running or restoring; the pending tasks whose scopes conflict with
-  no running task and with none started earlier in this scan; and the waiting `restore` once nothing runs or waits."""
+  no running task and with no task queued before them, started or waiting; and the waiting `restore` once nothing runs
+  or waits."""
   if state not in (QueueState.RUNNING, QueueState.RESTORING):
     return []
   if restore is not None and not queue and not running:
@@ -141,9 +142,8 @@ def next_to_start(state: QueueState, queue: list[QueuedTask], running: list[Queu
   held = [task.scopes for task in running]
   starting = []
   for task in queue:
-    if any(_scopes_conflict(task.scopes, scopes) for scopes in held):
-      continue
-    starting.append(task)
+    if not any(_scopes_conflict(task.scopes, scopes) for scopes in held):
+      starting.append(task)
     held.append(task.scopes)
   return starting
 
@@ -384,8 +384,8 @@ class TaskQueue:
       raise ValueError(f"Task labels name each subject in text, not {task.labels!r}")
 
   def dispatch_tick(self):
-    """Start every pending task whose scopes do not conflict with running work, and the restore once nothing runs or
-    waits."""
+    """Start every pending task whose scopes conflict with no running task and no task queued before it, and the
+    restore once nothing runs or waits."""
     with self._lock:
       starting = next_to_start(self._state, self._queue, self._running, self._restore)
       for task in starting:

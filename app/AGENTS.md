@@ -206,6 +206,8 @@ Stop](../docs/backend.md#pause-and-stop).
   compares keys, never scopes: a task with another key on a conflicting scope defers a new one, never refuses it.
   Scope roots are declared in `services/manager/queue.py` and lanes in `utils/executor.py`, independently. `common`
   is single-thread and low priority, so nothing urgent goes there.
+- A queued task cannot start while its scopes conflict with a running task or with a task queued before it, either
+  way (a parent before its child, a child before its parent); tasks that do not conflict start together.
 - Derive exclusions from the complete effect inventory, inline calls and writers outside the queue included; a
   direct configuration edit needs guarded results independently of queue scopes.
 - `params` are JSON-safe ids and flags, recorded and shown; frozen execution objects (a deploy snapshot, an S3

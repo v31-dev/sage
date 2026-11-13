@@ -145,9 +145,14 @@ class TestNextToStart:
     queue = [queued("a", "certificate"), queued("b", "certificate")]
     assert self.names(QueueState.RUNNING, queue) == ["a"]
 
-  def test_a_parent_scope_waits_for_a_running_child_without_holding_back_the_children_after_it(self):
-    queue = [queued("host", "worker:w1"), queued("b", "worker:w1:container:c2")]
-    assert self.names(QueueState.RUNNING, queue, running=[queued("a", "worker:w1:container:c1")]) == ["b"]
+  def test_a_parent_scope_that_waits_holds_back_the_children_queued_after_it_and_nothing_else(self):
+    queue = [queued("host", "worker:w1"), queued("b", "worker:w1:container:c2"), queued("c", "worker:w2:container:c3")]
+    assert self.names(QueueState.RUNNING, queue, running=[queued("a", "worker:w1:container:c1")]) == ["c"]
+
+  def test_a_child_that_waits_holds_back_the_parent_queued_after_it(self):
+    queue = [queued("backup", "worker:w1:container:c1", "backup:store:s1:write:c1"), queued("host", "worker:w1"),
+             queued("c", "certificate")]
+    assert self.names(QueueState.RUNNING, queue, running=[queued("discover", "backup:store:s1")]) == ["c"]
 
   def test_a_parent_scope_that_starts_holds_back_the_children_after_it(self):
     queue = [queued("host", "worker:w1"), queued("b", "worker:w1:container:c2")]

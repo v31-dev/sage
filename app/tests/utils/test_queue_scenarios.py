@@ -288,9 +288,8 @@ class Sim:
     starts = []
     for entry in pending:
       scopes = set(entry["scopes"])
-      if any(conflict(scopes, other) for other in held):
-        continue
-      starts.append(entry["task_id"])
+      if not any(conflict(scopes, other) for other in held):
+        starts.append(entry["task_id"])
       held.append(scopes)
     return starts
 
@@ -715,21 +714,23 @@ class TestBroadWork:
     await sim.drain()
     sim.verify()
 
-  async def test_a_host_wide_change_keeps_waiting_while_the_hosts_containers_overlap_and_starts_at_the_first_gap(self, sim):
-    previous = sim.add("overlap#0", "worker:w1:container:c0", hold=True)
+  async def test_a_host_wide_change_starts_once_the_work_queued_before_it_ends_and_holds_back_the_hosts_later_work(self, sim):
+    first = sim.add("deploy#0", "worker:w1:container:c0", hold=True)
     await sim.settle()
-    waiting = sim.add("reboot", "worker:w1", key=("reboot", "w1"))
-    for round_ in range(1, 15):
-      following = sim.add(f"overlap#{round_}", f"worker:w1:container:c{round_ % 3}", hold=True)
-      await sim.settle()
-      previous.release()
-      await sim.settle()
-      assert waiting.runs == 0, "the reboot started while a container operation was running"
-      previous = following
-    previous.release()
+    reboot = sim.add("reboot", "worker:w1", key=("reboot", "w1"), hold=True)
+    for index in range(1, 4):
+      sim.add(f"deploy#{index}", f"worker:w1:container:c{index}")
+    elsewhere = sim.add("elsewhere", "worker:w2:container:c9", hold=True)
+    await sim.settle()
+    assert sim.running() == ["deploy#0", "elsewhere"]
+    first.release()
+    await sim.settle()
+    assert sim.running() == ["elsewhere", "reboot"] and sim.queued() == ["deploy#1", "deploy#2", "deploy#3"]
+    reboot.release()
+    elsewhere.release()
     await sim.drain()
     sim.verify()
-    assert waiting.runs == 1
+    assert sim.starts() == ["deploy#0", "elsewhere", "reboot", "deploy#1", "deploy#2", "deploy#3"]
 
   async def test_certificate_work_never_overlaps_and_keeps_its_order(self, sim):
     jobs = [sim.add(f"certificate#{i}", "certificate", key=("certificate", f"{i}"), on_conflict=OnConflict.QUEUE,

@@ -59,7 +59,7 @@ Say the mode, the subject and the baseline (commit or branch) at the start.
   the event loop). Check progress as well as exclusion; a lane's size is not a lock.
 - An optimization names the redundant work or needless exclusion, the simplest change that keeps the behavior, and
   its cost in state, threads, locks and requests. A speed, size or capacity claim is measured or labelled unmeasured.
-  Accepted lag and opportunistic dispatch are not bugs.
+  Accepted lag is not a bug.
 - Use focused existing tests or scratch reproductions, in the session's scratch space, when they settle a doubt: real
   local state and Sage's own decisions, with provider effects replaced. Never contact a live provider or write to the
   live database. A reproduction that fails stays failing. Run the suites without writing into the tree:
