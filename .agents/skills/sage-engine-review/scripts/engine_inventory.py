@@ -60,9 +60,11 @@ class Function:
     self.calls = []           # (kind, name, class, call node, argument node or None)
     self.remote = []          # (provider, method, line, summary)
     self.enqueues = []        # (line, keywords)
-    self.locks = []           # (line, lock, names called)
+    self.locks = []           # (line, lock or transaction, names called)
+    self.entered = []         # (line, function name, text, names called): a `with` on a plain function's call
     self.queue_reads, self.params_read = set(), set()
     self.fact_checks, self.facts, self.comparisons = [], [], []
+    self.compared, self.read_off = set(), []  # owner methods compared; (line, attribute, text) compared off a value
 
   @property
   def where(self):
@@ -71,12 +73,12 @@ class Function:
 
 def own_nodes(function):
   """The nodes of the function's body, without those of the functions nested in it."""
-  stack = list(function.node.body)
+  nested = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
+  stack = [node for node in function.node.body if not isinstance(node, nested)]
   while stack:
     node = stack.pop()
     yield node
-    stack.extend(child for child in ast.iter_child_nodes(node)
-                 if not isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)))
+    stack.extend(child for child in ast.iter_child_nodes(node) if not isinstance(child, nested))
 
 
 def provider_of(value, assigned):
@@ -132,17 +134,27 @@ def scan(function, classes, async_methods):
       if isinstance(inner.slice, ast.Constant) and inner.slice.value == "params" and isinstance(node.slice, ast.Constant):
         function.params_read.add(node.slice.value)
     elif isinstance(node, (ast.With, ast.AsyncWith)):
-      if any("lock" in segment(source, item.context_expr).lower() for item in node.items):
-        called = sorted({segment(source, call.func, 60) for statement in node.body for call in ast.walk(statement)
-                         if isinstance(call, ast.Call)})
+      called = sorted({segment(source, call.func, 60) for statement in node.body for call in ast.walk(statement)
+                       if isinstance(call, ast.Call)})
+      expressions = [segment(source, item.context_expr) for item in node.items]
+      if any("lock" in text.lower() or "atomic(" in text for text in expressions):
         function.locks.append((node.lineno, segment(source, node.items[0].context_expr, 40), called))
+      for item in node.items:
+        if isinstance(item.context_expr, ast.Call) and isinstance(item.context_expr.func, ast.Name):
+          function.entered.append((node.lineno, item.context_expr.func.id, segment(source, item.context_expr, 40), called))
     elif isinstance(node, ast.Compare) and function.module.name.startswith(("services/manager/", "routes/")):
       sides = [node.left, *node.comparators]
       owner_fact = any(isinstance(side, ast.Call) and isinstance(side.func, ast.Attribute)
                        and isinstance(side.func.value, ast.Call) and isinstance(side.func.value.func, ast.Name)
                        and side.func.value.func.id in classes for side in sides)
-      if owner_fact and any(isinstance(side, ast.Constant) and isinstance(side.value, str) for side in sides):
+      literal = any(isinstance(side, ast.Constant) and isinstance(side.value, str) for side in sides)
+      if owner_fact and literal:
         function.comparisons.append((node.lineno, segment(source, node, 90)))
+        function.compared.update(side.func.attr for side in sides if isinstance(side, ast.Call)
+                                 and isinstance(side.func, ast.Attribute))
+      elif literal:
+        function.read_off.extend((node.lineno, side.attr, segment(source, node, 90)) for side in sides
+                                 if isinstance(side, ast.Attribute))
 
 
 def collect(root):
@@ -167,6 +179,13 @@ def collect(root):
     visit(module, module.tree.body)
   for function in functions:
     scan(function, classes, async_methods)
+  # A `with` on a context manager that opens a transaction holds that transaction, as `with db.atomic()` does.
+  transactions = {function.node.name for function in functions if function.parent is None and function.owner is None
+                  and any(lock for _, lock, _ in function.locks if "atomic(" in lock)
+                  and any(segment(function.module.source, decorator) == "contextmanager"
+                          for decorator in function.node.decorator_list)}
+  for function in functions:
+    function.locks.extend((line, text, called) for line, name, text, called in function.entered if name in transactions)
   return functions
 
 
@@ -339,7 +358,8 @@ def main():
   if "locks" in wanted:
     locks = sorted(((function, lock) for function in functions for lock in function.locks),
                    key=lambda item: (item[0].module.path, item[1][0]))
-    print(f"## locks ({len(locks)}): each block that holds a lock and what it calls (* requests work, checks or publishes)")
+    print(f"## locks ({len(locks)}): each block that holds a lock or a database transaction and what it calls"
+          " (* requests work, checks or publishes)")
     for function, (line, lock, called) in locks:
       print(f"{function.module.path}:{line}  {function.name}  with {lock}: {marked(called)}")
     print()
@@ -383,6 +403,12 @@ def main():
                          key=lambda item: (item[0].module.path, item[1][0]))
     print(f"### an owner's raw fact compared in a workflow or route ({len(comparisons)})")
     for function, (line, text_) in comparisons:
+      print(f"{function.module.path}:{line}  {function.name}  {text_}")
+    compared = set().union(*(function.compared for function in functions))
+    read_off = sorted(((function, item) for function in functions for item in function.read_off if item[1] in compared),
+                      key=lambda item: (item[0].module.path, item[1][0]))
+    print(f"### the same facts compared off a value that holds them ({len(read_off)})")
+    for function, (line, _, text_) in read_off:
       print(f"{function.module.path}:{line}  {function.name}  {text_}")
 
 

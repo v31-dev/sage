@@ -49,11 +49,12 @@ the source:
   and task body, and each call of a wrapper that enqueues the task it is given;
 - **effects:** each remote call (SSH, Cloudflare, S3) by enclosing function, with every task body that reaches it
   through inline calls and that task's scopes and policy, or the root it is reached from when no task is;
-- **locks:** each block that holds a lock and what it calls, marking a request, a Fact check or a publication;
+- **locks:** each block that holds a lock or a database transaction and what it calls, marking a request, a Fact
+  check or a publication;
 - **readers:** what reads the queue and the params it reads;
 - **facts:** each Fact, what its callback calls, and where Facts are checked;
 - **decisions:** each decision in a `decisions.py` and its users, and each owner's raw fact compared in a workflow or
-  a route.
+  a route, called on its owner or read off a value that holds it.
 
 Calls are resolved by name, so a list can name more than really reaches a line: read the source behind every line
 before citing it, and complete what a name cannot show (a value passed in, a writer reached through a callback). For

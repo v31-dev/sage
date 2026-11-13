@@ -14,6 +14,7 @@ from services.manager.queue import SCOPES, QueueMixin
 from services.manager.workers import WorkersMixin
 from services.tailscale import Tailscale
 from services.worker_reports import ContainerReading, HostReading, Snapshot, WorkerReports
+from services.workers import commands
 from services.workers.rendering import InfraInputs, infra_fingerprint
 from services.workers.state import Workers
 from utils.executor import active_executor
@@ -673,6 +674,35 @@ class TestSubdomain:
   def test_a_new_subdomain_converges_the_worker_so_its_record_moves(self, manager, worker):
     manager.worker_subdomain_changed("w1")
     assert [name for name, *_ in requested(manager)] == ["converge_worker"]
+
+  async def test_a_change_during_a_running_setup_is_set_up_again_after_it(self, manager, hosts, provider, worker):
+    inside, release = asyncio.Event(), asyncio.Event()
+    original = hosts.exec_command
+
+    async def exec_command(hostname, command, timeout=300):
+      if command.startswith("stat -c %g") and not release.is_set():
+        inside.set()
+        await release.wait()
+      return await original(hostname, command, timeout)
+
+    hosts.exec_command = exec_command
+    manager.request_convergence("w1")
+    manager.task_queue.dispatch_tick()
+    await asyncio.wait_for(inside.wait(), 2)
+    manager.request_convergence("w1")
+    assert requested(manager) == []
+    commands.set_worker_subdomain("w1", "blue")
+    manager.worker_subdomain_changed("w1")
+    manager.request_convergence("w1")
+    assert [(name, key) for name, key, *_ in requested(manager)] == [("converge_worker", ["converge_worker", "w1"])]
+    release.set()
+    for _ in range(200):
+      snapshot = manager.task_queue.snapshot()
+      if not (snapshot["running"] or snapshot["queued"]):
+        break
+      manager.task_queue.dispatch_tick()
+      await asyncio.sleep(0.01)
+    assert provider.records["w1"] == ("blue", "100.64.0.2")
 
   def test_its_certificate_is_renewed_for_the_new_names_whether_or_not_it_answers(self, manager, worker):
     manager.worker_subdomain_changed("w1")

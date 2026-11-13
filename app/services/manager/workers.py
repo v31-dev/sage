@@ -28,6 +28,7 @@ from utils.common import get_env, utcnow
 from utils.errors import Conflict
 from utils.executor import run_in_executor_with_context
 from utils.logging import TaskFailed
+from utils.queue import OnConflict
 
 from .domains import capture
 from .lifecycle import mark
@@ -177,13 +178,16 @@ class WorkersMixin:
     for hostname in self.setup_failures.keys() - set(hostnames):
       self.setup_failures.pop(hostname, None)
 
-  def request_convergence(self, hostname: str, force: bool = False) -> str:
+  def request_convergence(self, hostname: str, force: bool = False, changed: bool = False) -> str:
     """Queues the convergence of the worker's stack with Sage; with `force` (the worker's resync), as a visible task
     of its own, its files are written and its stack restarted whatever its infra stamp says, and everything else Sage
-    keeps on it is written again: its certificates, its Domains' routes and its discovery files. The task's id."""
+    keeps on it is written again: its certificates, its Domains' routes and its discovery files. With `changed` (the
+    worker's configuration changed), it runs after a convergence already running, which read the configuration before.
+    The task's id."""
     return self.add_task(task=self.converge_worker, key=("converge_worker", hostname, *(("force",) if force else ())),
                          scopes={f"worker:{hostname}"}, executor="app", params={"hostname": hostname, "force": force},
-                         labels={"Worker": hostname}, quiet=not force).task_id
+                         labels={"Worker": hostname}, on_conflict=OnConflict.REPLACE if changed else OnConflict.DEDUP,
+                         quiet=not force).task_id
 
   async def converge_worker(self, hostname: str, force: bool = False):
     """Brings the worker's stack in line with Sage: claims it, removes the routing files there of Domains gone or bound
@@ -431,7 +435,7 @@ class WorkersMixin:
     """After the worker's subdomain changed (its command): its `*.<subdomain>.int` record moves with its convergence,
     its internal and TCP domains, whose names are under it, are applied again, and its certificate is renewed for the
     new names."""
-    self.request_convergence(hostname)
+    self.request_convergence(hostname, changed=True)
     self.request_domain_applies(domain.id for domain in Domain.select(Domain.id).where(Domain.namespace_worker == hostname))
     self.request_certificate_renewal()
 
