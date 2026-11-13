@@ -27,6 +27,9 @@ here and are not repeated. How the backend works (the queue's modes, each workfl
 - The Manager mixins (`services/manager/`) are the workflows: the `request_*` functions (admission and enqueue), the
   task bodies (effects in order, follow-up requests) and the readers (`*_states`, `*_payloads`, `*_page`, `*_list`,
   `*_graphs`) that gather the owners' facts for a decision. They call the resource's rules, never restate them.
+- A question several tasks or readers ask of a resource (whether a container can be routed to, whether Sage can act
+  on a worker) is one decision in its package, which every gate and reader uses; none composes it again from the
+  owners' raw facts.
 - A route holds no policy: it calls the command or the request function for the request and returns the reader's
   payload or the task's id, catching none of the standard errors (Database And Commands).
 
@@ -38,6 +41,9 @@ here and are not repeated. How the backend works (the queue's modes, each workfl
   list) is refreshed wherever that data is replaced: a settings save, a restore.
 - A topic is computed again when one of its sources fires, and an owner fires a source only when what it holds
   differs, so every state a topic shows needs a source.
+- A Fact's callback runs under the Fact's lock: it publishes or requests work and never checks a Fact. An owner checks
+  a Fact, enqueues or publishes only outside its own lock. So locks nest one way (a state Fact, the queue's facts, the
+  queue's lock), and nothing runs under the queue's lock.
 - `GET /api` is the `info` topic, and the pause banner and the restore overlay rely on it, so it reads memory only: no
   network, no database.
 - A Socket.IO topic is for a change the page did not make, so name that change before proposing one; a page's own
@@ -200,16 +206,27 @@ Stop](../docs/backend.md#pause-and-stop).
 - A task is declared once, at its enqueue definition: its `key`, `scopes`, `executor`, `on_conflict` and `labels`.
   Add or update its row in the [Task Catalog](../docs/operations.md#task-catalog) with its triggers and model writes,
   and the route, startup and model-index entries of that reference when those paths change.
-- A key is what the request competes for (its operation, its subject's ids, its intent); requests that take turns on
-  one subject share one, and a weaker background request and a stronger explicit one get different keys. Scopes are
-  what it excludes, hierarchically, always including its subject's own; the executor is its capacity. Admission
-  compares keys, never scopes: a task with another key on a conflicting scope defers a new one, never refuses it.
-  Scope roots are declared in `services/manager/queue.py` and lanes in `utils/executor.py`, independently. `common`
-  is single-thread and low priority, so nothing urgent goes there.
-- A queued task cannot start while its scopes conflict with a running task or with a task queued before it, either
-  way (a parent before its child, a child before its parent); tasks that do not conflict start together.
+- A task's key is its request: its operation, then its subject's ids, then its intent; requests that take turns on one
+  subject share one, and a weaker background request and a stronger explicit one get different keys. Its scopes are
+  the resources it locks, hierarchically, always including its subject's own; its name is what it does; its params
+  are its arguments; its executor is its capacity. Admission compares keys, never scopes: a task with another key on a
+  conflicting scope defers a new one, never refuses it. A reader of the queue (a fact, a precondition, a payload) finds
+  a subject's requests by key and a resource's holders by scope, takes the kind of work from the name, and never reads
+  identity from params. Scope roots are declared in `services/manager/queue.py` and lanes in `utils/executor.py`,
+  independently. `common` is single-thread and low priority, so nothing urgent goes there.
+- Only the dispatcher starts tasks, on the loop. A queued task cannot start while its scopes conflict with a running
+  task or with a task queued before it, either way (a parent before its child, a child before its parent); tasks that
+  do not conflict start together. Nothing relies on when a queued task starts or on the order of tasks that do not
+  conflict: order comes from scopes, or from a body requesting its follow-up at its end.
+- A DEDUP request that finds its task running is absorbed by it: right for a repeat of the same request, and for one
+  that carries a change only with a periodic pass behind it; a change that must be seen after a running task uses
+  REPLACE. A scope built from a binding that can change before the task runs (a Domain's worker, the store) is checked
+  again at its start, before any effect, and the task does nothing under a binding that moved.
 - Derive exclusions from the complete effect inventory, inline calls and writers outside the queue included; a
-  direct configuration edit needs guarded results independently of queue scopes.
+  direct configuration edit needs guarded results independently of queue scopes. A resource Sage writes outside its
+  database has one scope, built by its package, and every task that writes it holds that scope or an ancestor, so its
+  writers exclude each other. A resource under two roots (a Domain's route on a worker, a worker's certificate files)
+  is held on both sides by a writer that changes it; a writer that holds a single side only removes.
 - `params` are JSON-safe ids and flags, recorded and shown; frozen execution objects (a deploy snapshot, an S3
   session) go in `inputs`, never recorded or pushed; `labels` name the subjects the way the UI does
   (`{"Application": "shop / web"}`), taken when queued. `quiet=True` is for scheduled housekeeping only.
@@ -221,7 +238,8 @@ Stop](../docs/backend.md#pause-and-stop).
   second mutable registry; a refused pre-check is recorded as rejected, never as a failed lifecycle transition.
 - Task shape: one async task that `asyncio.gather`s its offloaded leaves, one `add_task` per entity, or sequential
   `await`s; a fan-out parent is async ([Choosing A Task Shape](../docs/backend.md#choosing-a-task-shape)).
-- Never enqueue from a queue Fact's callback: enqueueing re-enters that Fact's lock.
+- The queue's facts only publish: activity is shown and admitted on, never a trigger for work. Work is requested by a
+  task body's end, a state Fact's callback (an observed change) or a scheduled pass.
 - Scheduler cadence lives in `app/scheduler.py`: cron jobs fire on wall-clock instants, and the `_AT_STARTUP` list
   also runs once right after startup. Sub-minute pumps use `IntervalTrigger`, everything else
   `CronTrigger.from_crontab`. APScheduler's `from_crontab` reads numeric day-of-week `0` as **Monday**, while the

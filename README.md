@@ -211,8 +211,9 @@ a laptop, a PaaS or a VM.
 
 ### Sizing
 
-The smallest recommended machine, for the manager and for each worker, is 1 GB of memory and
-1 core. Give a machine more as its applications and logs grow.
+Sage is meant for one domain with about 10 workers and 50 applications; another domain or
+landscape runs its own Sage. The smallest recommended machine, for the manager and for each
+worker, is 1 GB of memory and 1 core. Give a machine more as its applications and logs grow.
 
 ### First steps
 
