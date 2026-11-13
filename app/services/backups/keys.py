@@ -1,5 +1,6 @@
 """Where backups are kept in a store, under its base path: platform backups by time, volume archives by the opaque ids
 of their volume and of the placement they were taken from."""
+import hashlib
 import re
 from datetime import datetime
 
@@ -9,6 +10,21 @@ BACKUP_TIMESTAMP_FORMAT = "%Y%m%d_%H%M%S"
 PLATFORM_PREFIX = "backups/platform"
 APPLICATIONS_PREFIX = "backups/applications"
 VOLUME_ARCHIVE_SUFFIX = ".tar.gz.enc"
+
+
+def store_scope(storage_id: str) -> str:
+  """The queue's scope of the store, over every archive in it."""
+  return f"backup:store:{storage_id}"
+
+
+def archive_write_scope(storage_id: str, part: str) -> str:
+  """The queue's scope of the archives written for `part` (a container's id, or `platform`)."""
+  return f"{store_scope(storage_id)}:write:{part}"
+
+
+def archive_scope(storage_id: str, s3_path: str) -> str:
+  """The queue's scope of one archive in its store, which a restore from it and its deletion share."""
+  return f"{store_scope(storage_id)}:archive:{hashlib.sha256(s3_path.encode()).hexdigest()[:16]}"
 
 
 def timestamp_from_key(key: str) -> str | None:

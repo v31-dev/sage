@@ -12,8 +12,10 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 
 import config
-from services.certs import Certificate, Certs
+from services.certs import Certificate, Certs, certificate_files_scope, certificate_scope
 from services.updates import Updates
+from services.workers.rendering import stack_scope, worker_scope
+from utils.queue import _scope_conflict
 
 NAMES = ["manager.core.example.test"]
 
@@ -500,3 +502,11 @@ def test_the_same_names_again_keep_the_certificate_as_it_is(catalog):
   certificate = catalog.workers["w1"]
   catalog.set_workers({"w1": "red"})
   assert catalog.workers["w1"] is certificate
+
+
+def test_every_certificate_covers_each_workers_and_a_workers_certificate_files_are_under_the_worker():
+  assert _scope_conflict(certificate_scope(), certificate_scope("w1"))
+  assert not _scope_conflict(certificate_scope("w1"), certificate_scope("w2"))
+  assert _scope_conflict(worker_scope("w1"), certificate_files_scope("w1"))
+  assert not any(_scope_conflict(certificate_files_scope("w1"), scope)
+                 for scope in (stack_scope("w1"), certificate_scope("w1"), certificate_files_scope("w2")))

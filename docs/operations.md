@@ -61,23 +61,29 @@ Sources: [scheduler](../app/scheduler.py), [queue engine](../app/utils/queue.py)
 `<id>` is a Domain ID;
 `<manager>` is `TS_NAME`. Braces mean **all** listed scopes are held together.
 
-| Scope | Excludes | Does not exclude by itself |
-| --- | --- | --- |
-| `domain:<id>` | Work for that record, and tasks holding root `domain` | Other records |
-| `domain:host:<fqdn>` | The apply of any record with that full name, so a name swapped between two records is applied by one at a time | Other names |
-| `domain` | Every Domain apply, and every other task holding it: the Domain pass, maintenance | Worker and application tasks |
-| `worker:<host>` | Work on that worker and every scope below it: its containers, its stack, its routes and its discovery files | Other workers |
-| `worker:<host>:container:<id>`, `worker:<host>:stack`, `worker:<host>:routing:<id>`, `worker:<host>:discovery`, `worker:<host>:tls` | That one and `worker:<host>` | Their siblings: a container's operations, the stack's repair, a Domain's route, the discovery files and the certificate files on the same worker |
-| `certificate:worker:<host>` | That worker's certificate copy, and `certificate` | Other workers' copies |
-| `discovery` | The discovery DNS publication | Every other root, the workers' discovery files included |
-| `certificate` | The certificates' renewal, and every task under it | Worker, domain and application work |
-| `settings:<section>` | That section's check | Other sections' checks |
-| `release` | The release check | The other roots |
-| `metrics:flush` | The metrics flush, and root `metrics` maintenance | The other roots |
-| `backup:store:<identity>` | The store's discovery and retention, and every archive's write, read or deletion in that store | Other stores' work |
-| `backup:store:<identity>:write:<part>` | That archive write and the store's root | Other archives' work in the store |
-| `backup:store:<identity>:archive:<part>` | A restore from that archive, its deletion, and the store's root | Other archives' work in the store |
-| `metrics` | All metric flushes and maintenance | The other roots |
+Each scope of a resource Sage writes outside its database is built by its resource's package, beside its other names there:
+`services/containers/placement.py`, `services/workers/rendering.py`, `services/domains/config.py` and `discovery.py`,
+`services/certs.py`, `services/backups/keys.py` and `services/metrics`; the scopes under a worker are built on `worker_scope`.
+A task holding a whole root calls the root's builder with no argument. The settings checks and the release check write
+only memory, so their scopes are written as they are.
+
+| Scope | Built by | Excludes | Does not exclude by itself |
+| --- | --- | --- | --- |
+| `domain:<id>` | `domain_scope(id)` | Work for that record, and tasks holding root `domain` | Other records |
+| `domain:host:<fqdn>` | `host_scope` | The apply of any record with that full name, so a name swapped between two records is applied by one at a time | Other names |
+| `domain` | `domain_scope()` | Every Domain apply, and every other task holding it: the Domain pass, maintenance | Worker and application tasks |
+| `worker:<host>` | `worker_scope` | Work on that worker and every scope below it: its containers, its stack, its routes and its discovery files | Other workers |
+| `worker:<host>:container:<id>`, `worker:<host>:stack`, `worker:<host>:routing:<id>`, `worker:<host>:discovery`, `worker:<host>:tls` | `placement_scope`, `stack_scope`, `route_scope`, `discovery_files_scope`, `certificate_files_scope` | That one and `worker:<host>` | Their siblings: a container's operations, the stack's repair, a Domain's route, the discovery files and the certificate files on the same worker |
+| `certificate:worker:<host>` | `certificate_scope(host)` | That worker's certificate copy, and `certificate` | Other workers' copies |
+| `discovery` | `discovery_scope()` | The discovery DNS publication | Every other root, the workers' discovery files included |
+| `certificate` | `certificate_scope()` | The certificates' renewal, and every task under it | Worker, domain and application work |
+| `settings:<section>` | — | That section's check | Other sections' checks |
+| `release` | — | The release check | The other roots |
+| `metrics:flush` | `metrics_scope("flush")` | The metrics flush, and root `metrics` maintenance | The other roots |
+| `backup:store:<identity>` | `store_scope` | The store's discovery and retention, and every archive's write, read or deletion in that store | Other stores' work |
+| `backup:store:<identity>:write:<part>` | `archive_write_scope` | That archive write and the store's root | Other archives' work in the store |
+| `backup:store:<identity>:archive:<part>` | `archive_scope` | A restore from that archive, its deletion, and the store's root | Other archives' work in the store |
+| `metrics` | `metrics_scope()` | All metric flushes and maintenance | The other roots |
 
 A Domain's apply holds its route's scope under its worker, not its container's: it does not wait for the container's
 operations, and the worker's convergence and reboot exclude it. The `common` pool has one thread;

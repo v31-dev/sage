@@ -8,8 +8,9 @@ import pytest
 
 import config
 from services.tailscale import Tailscale
-from services.workers.rendering import INFRA_TEMPLATES, InfraInputs, infra_fingerprint, render_infrastructure
+from services.workers.rendering import INFRA_TEMPLATES, InfraInputs, infra_fingerprint, render_infrastructure, stack_scope, worker_scope
 from services.workers.state import Workers
+from utils.queue import _scope_conflict
 
 INPUTS = InfraInputs(hostname="w1", address="100.64.0.2", manager_address="100.64.0.1", domain="example.test",
                      platform_tunnel="tunnel-platform", worker_tunnel="tunnel-w1", version="1.2.3", report_interval=10)
@@ -102,3 +103,9 @@ class TestRevisions:
     await Workers().write_revision("w1", "infra", "old")
     await Workers().write_revision("w1", "infra", "new")
     assert (await Workers().read_revisions("w1"))["infra"] == "new"
+
+
+def test_a_workers_stack_is_under_the_worker_and_apart_from_another_workers():
+  assert _scope_conflict(worker_scope("w1"), stack_scope("w1"))
+  assert not _scope_conflict(worker_scope("w1"), stack_scope("w2"))
+  assert not _scope_conflict(worker_scope("w1"), worker_scope("w10"))

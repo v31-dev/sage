@@ -9,7 +9,8 @@ import config
 from services.cloudflare import Cloudflare, dns_record_matches
 from services.containers.state import container_reference
 from services.db.models import Application, Container, Domain, Project, Worker
-from services.domains.config import DomainConfig, domain_artifact_name, domain_artifact_owner, parse_route_listing, routes_command
+from services.domains.config import (DomainConfig, domain_artifact_name, domain_artifact_owner, domain_scope, host_scope, parse_route_listing,
+                                     route_scope, routes_command)
 from services.domains.decisions import ApplyOutcome, RouteObservation, route_goal
 from services.domains.state import Domains, DomainState, domain_payload, domain_state
 from services.domains.updates import domain_changed
@@ -77,11 +78,11 @@ class DomainsMixin:
     route on the worker it goes to. A running apply is not interrupted: the latest request waits for it."""
     for domain in Domain.select().where(Domain.id.in_(list(domain_ids))):
       snapshot = capture(domain)
-      scopes = {f"domain:{domain.id}"}
+      scopes = {domain_scope(domain.id)}
       if snapshot.host is not None:
-        scopes.add(f"domain:host:{snapshot.host}")
+        scopes.add(host_scope(snapshot.host))
       if snapshot.worker is not None:
-        scopes.add(f"worker:{snapshot.worker}:routing:{domain.id}")
+        scopes.add(route_scope(snapshot.worker, domain.id))
       self.add_task(task=self.apply_domain, key=("apply_domain", domain.id), scopes=scopes, executor="app",
                     params={"domain_id": domain.id, "worker": snapshot.worker, "host": snapshot.host},
                     labels={"Domain": snapshot.host or domain.name}, on_conflict=OnConflict.REPLACE, quiet=True)
@@ -157,7 +158,7 @@ class DomainsMixin:
   def request_domain_reconciliation(self):
     """Queues the pass over every Domain's artifacts. A request while one runs gets a pass of its own after it, so a
     change that pass did not see is not missed."""
-    self.add_task(task=self.reconcile_domains, key=("reconcile_domains",), scopes={"domain"}, executor="app",
+    self.add_task(task=self.reconcile_domains, key=("reconcile_domains",), scopes={domain_scope()}, executor="app",
                   on_conflict=OnConflict.REPLACE, quiet=True)
 
   async def reconcile_domains(self):

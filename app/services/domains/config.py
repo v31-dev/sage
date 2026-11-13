@@ -6,6 +6,7 @@ from dataclasses import asdict, dataclass
 import config
 from services.containers.placement import runtime_name
 from services.db.models import Domain
+from services.workers.rendering import worker_scope
 from utils.common import OPAQUE_ID, fill
 
 ROUTING_TEMPLATES = {
@@ -21,6 +22,21 @@ ARTIFACTS = {"file": ("domain-", ".yml"), "dns": ("sage-domain-", "")}
 # The first line of a routing file, naming the domain and the fingerprint it was rendered from.
 ROUTE_HEADER = "# sage-domain"
 RESERVED_DOMAIN_NAMES = {"core", "int", "discovery"}
+
+
+def domain_scope(domain_id: str | None = None) -> str:
+  """The queue's scope of the Domain and its DNS records; without an id, of every Domain."""
+  return f"domain:{domain_id}" if domain_id else "domain"
+
+
+def host_scope(host: str) -> str:
+  """The queue's scope of a full name, which the applies of every Domain with that name share."""
+  return f"{domain_scope()}:host:{host}"
+
+
+def route_scope(hostname: str, domain_id: str) -> str:
+  """The queue's scope of the Domain's routing file on the worker."""
+  return f"{worker_scope(hostname)}:routing:{domain_id}"
 
 
 def domain_artifact_name(kind: str, domain_id: str) -> str:

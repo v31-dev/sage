@@ -7,14 +7,14 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from services.backups.commands import add_backup
-from services.backups.keys import BACKUP_TIMESTAMP_FORMAT, PLATFORM_PREFIX, taken_at, timestamp_from_key
+from services.backups.keys import BACKUP_TIMESTAMP_FORMAT, PLATFORM_PREFIX, archive_write_scope, taken_at, timestamp_from_key
 from services.containers.targets import Containers
 from services.db.database import Database
 from services.db.models import Backup
 from services.domains.state import Domains
 from services.history import purge_history
 from services.logs import Logs
-from services.metrics import Metrics
+from services.metrics import Metrics, metrics_scope
 from services.notification import Notifications
 from services.releases import Releases
 from services.s3 import S3
@@ -89,7 +89,7 @@ class PlatformMixin:
   def request_cleanup(self):
     """Requests the daily cleanup, each part a task of its own: the metrics, logs and history past their retention,
     and the store's old backups."""
-    self.add_task(task=Metrics().cleanup, key=("metrics_cleanup",), scopes={"metrics"}, executor="metrics", quiet=True,
+    self.add_task(task=Metrics().cleanup, key=("metrics_cleanup",), scopes={metrics_scope()}, executor="metrics", quiet=True,
                   on_conflict=OnConflict.REPLACE)
     self.add_task(task=Logs().cleanup, key=("logs_cleanup",), scopes=set(), executor="common", quiet=True,
                   on_conflict=OnConflict.REPLACE)
@@ -99,7 +99,7 @@ class PlatformMixin:
 
   def request_metrics_flush(self):
     """Queues the write of the metrics' completed minutes, the manager's and each worker's."""
-    self.add_task(task=Metrics().flush, key=("flush_metrics",), scopes={"metrics:flush"}, executor="metrics", quiet=True)
+    self.add_task(task=Metrics().flush, key=("flush_metrics",), scopes={metrics_scope("flush")}, executor="metrics", quiet=True)
 
   def request_release_check(self, quiet: bool = True) -> str:
     """Queues fetching the newest release: quietly from the schedule and at startup, visibly when asked for. The
@@ -114,7 +114,7 @@ class PlatformMixin:
     if session is None:
       return None
     return self.add_task(task=self.backup_platform, key=("backup_platform",),
-                         scopes={f"backup:store:{session.identity}:write:platform"}, executor="platform",
+                         scopes={archive_write_scope(session.identity, "platform")}, executor="platform",
                          params={"storage_id": session.identity}, on_conflict=OnConflict.REPLACE).task_id
 
   async def backup_platform(self, storage_id: str):

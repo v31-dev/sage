@@ -19,6 +19,11 @@ from .shards import open_shard
 logger = logging.getLogger(__name__)
 
 
+def metrics_scope(part: str | None = None) -> str:
+  """The queue's scope of the metric files; with a part (`flush`), of that work on them."""
+  return f"metrics:{part}" if part else "metrics"
+
+
 class Metrics(Base):
   """Each host's metrics: what the workers' reports and the manager's own sampler (`sampler`) read, held as the peaks of
   each minute (`peaks`) until the minute ends, then written to the host's file (`shards`), and read back as the graphs'

@@ -22,7 +22,7 @@ from services.updates import Fact, Updates, UpdateSource
 from services.worker_reports import WorkerReports
 from services.workers import commands
 from services.workers.decisions import TASKS, reboot_outcome, worker_claim_refusal, worker_owner
-from services.workers.rendering import InfraInputs, infra_fingerprint, render_infrastructure
+from services.workers.rendering import InfraInputs, infra_fingerprint, render_infrastructure, stack_scope, worker_scope
 from services.workers.state import Workers, WorkerState, worker_payload, worker_state
 from utils.common import get_env, utcnow
 from utils.errors import Conflict
@@ -185,7 +185,7 @@ class WorkersMixin:
     worker's configuration changed), it runs after a convergence already running, which read the configuration before.
     The task's id."""
     return self.add_task(task=self.converge_worker, key=("converge_worker", hostname, *(("force",) if force else ())),
-                         scopes={f"worker:{hostname}"}, executor="app", params={"hostname": hostname, "force": force},
+                         scopes={worker_scope(hostname)}, executor="app", params={"hostname": hostname, "force": force},
                          labels={"Worker": hostname}, on_conflict=OnConflict.REPLACE if changed else OnConflict.DEDUP,
                          quiet=not force).task_id
 
@@ -269,7 +269,7 @@ class WorkersMixin:
   def request_stack_repair(self, hostname: str):
     """Queues the start of whatever of the worker's stack is stopped. It holds the stack's own scope, so a deploy on the
     worker does not delay it; convergence and reboot, holding the whole worker, exclude it."""
-    self.add_task(task=self.repair_worker_stack, key=("repair_worker_stack", hostname), scopes={f"worker:{hostname}:stack"},
+    self.add_task(task=self.repair_worker_stack, key=("repair_worker_stack", hostname), scopes={stack_scope(hostname)},
                   executor="app", params={"hostname": hostname}, labels={"Worker": hostname}, quiet=True)
 
   async def repair_worker_stack(self, hostname: str):
@@ -295,7 +295,7 @@ class WorkersMixin:
       raise Conflict("A worker with the manager's name is not allowed.")
     commands.add_worker(peer.hostname, subdomain)
     return peer.hostname, self.add_task(task=self.add_worker, key=("add_worker", peer.hostname),
-                                        scopes={f"worker:{peer.hostname}"}, executor="app",
+                                        scopes={worker_scope(peer.hostname)}, executor="app",
                                         params={"hostname": peer.hostname}, labels={"Worker": peer.hostname}).task_id
 
   async def add_worker(self, hostname: str):
@@ -328,7 +328,7 @@ class WorkersMixin:
     refusal = commands.removal_refusal(worker)
     if refusal is not None:
       raise Conflict(refusal)
-    return self.add_task(task=self.remove_worker, key=("remove_worker", hostname), scopes={f"worker:{hostname}"},
+    return self.add_task(task=self.remove_worker, key=("remove_worker", hostname), scopes={worker_scope(hostname)},
                          executor="app", params={"hostname": hostname}, labels={"Worker": hostname}).task_id
 
   async def remove_worker(self, hostname: str):
@@ -382,7 +382,7 @@ class WorkersMixin:
     """Queues the worker's reboot. The task's id."""
     if Worker.get_or_none(Worker.hostname == hostname) is None:
       raise LookupError("Worker not found.")
-    return self.add_task(task=self.reboot_worker, key=("reboot_worker", hostname), scopes={f"worker:{hostname}"},
+    return self.add_task(task=self.reboot_worker, key=("reboot_worker", hostname), scopes={worker_scope(hostname)},
                          executor="app", params={"hostname": hostname}, labels={"Worker": hostname}).task_id
 
   async def reboot_worker(self, hostname: str):

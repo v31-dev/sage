@@ -4,9 +4,11 @@ import pytest
 import yaml
 
 from services.db.models import Container, Domain, Worker
-from services.domains.config import (ROUTING_DIGEST, DomainConfig, address, allowed_origins, domain_artifact_name, domain_artifact_owner, host,
-                                     parse_route_listing, validate_port)
+from services.domains.config import (ROUTING_DIGEST, DomainConfig, address, allowed_origins, domain_artifact_name, domain_artifact_owner,
+                                     domain_scope, host, host_scope, parse_route_listing, route_scope, validate_port)
+from services.workers.rendering import worker_scope
 from utils.common import new_id
+from utils.queue import _scope_conflict
 
 ID = "0123456789abcdef"
 
@@ -184,3 +186,13 @@ class TestRoute:
     tcp = yaml.safe_load(DomainConfig.capture(domain, "example.test").route())["tcp"]
     assert tcp["routers"][f"domain_{domain.id}"]["rule"] == "HostSNI(`db.red.int.example.test`)"
     assert tcp["services"][f"domain_{domain.id}"]["loadBalancer"]["servers"] == [{"address": f"sage-{red.id}:5432"}]
+
+
+def test_every_domain_covers_each_domain_and_name_and_a_route_is_under_its_worker_only():
+  first, second = new_id(), new_id()
+  assert all(_scope_conflict(domain_scope(), scope) for scope in (domain_scope(first), host_scope("shop.example.test")))
+  assert not any(_scope_conflict(domain_scope(first), scope)
+                 for scope in (domain_scope(second), host_scope("shop.example.test"), route_scope("w1", first)))
+  assert not _scope_conflict(host_scope("shop.example.test"), host_scope("api.example.test"))
+  assert _scope_conflict(worker_scope("w1"), route_scope("w1", first))
+  assert not _scope_conflict(route_scope("w1", first), route_scope("w1", second))

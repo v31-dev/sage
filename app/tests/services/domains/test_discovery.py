@@ -7,7 +7,11 @@ import pytest
 import yaml
 
 import config
-from services.domains.discovery import Published, discovery_files, discovery_services, files_command, parse_file_listing
+from services.domains.config import route_scope
+from services.domains.discovery import (Published, discovery_files, discovery_files_scope, discovery_scope, discovery_services, files_command,
+                                        parse_file_listing)
+from services.workers.rendering import stack_scope, worker_scope
+from utils.queue import _scope_conflict
 
 STARTED = datetime(2026, 1, 1, 12)
 
@@ -170,3 +174,9 @@ class TestFilesCommand:
   def test_only_a_name_with_its_availability_is_read(self):
     line = '/x/_discovery-public-shop.yml:      Sage-Endpoints: \'"a.example.test";pool="eu", "b";online, nope, "c";online=?0\''
     assert parse_file_listing([line]) == {"_discovery-public-shop.yml": Published(None, {"b": True, "c": False})}
+
+
+def test_a_workers_discovery_files_are_under_it_apart_from_its_stack_and_routes_and_from_discoverys_records():
+  assert _scope_conflict(worker_scope("w1"), discovery_files_scope("w1"))
+  assert not any(_scope_conflict(discovery_files_scope("w1"), scope)
+                 for scope in (stack_scope("w1"), route_scope("w1", "0123456789abcdef"), discovery_scope(), discovery_files_scope("w2")))

@@ -2,6 +2,7 @@
 import re
 
 from services.containers.record import Authority, TargetRead, parse_record_listing
+from services.workers.rendering import worker_scope
 from utils.common import OPAQUE_ID
 
 LABEL_INSTANCE = "sage.instance"
@@ -10,6 +11,11 @@ LABEL_CONTAINER = "sage.container"
 LABEL_DEPLOYMENT = "sage.deployment"
 LABEL_APPLICATION = "sage.application"
 LABELS = (LABEL_INSTANCE, LABEL_GENERATION, LABEL_CONTAINER, LABEL_DEPLOYMENT, LABEL_APPLICATION)
+
+
+def placement_scope(hostname: str, container_id: str) -> str:
+  """The queue's scope of the placement: its record, runtime and volumes."""
+  return f"{worker_scope(hostname)}:container:{container_id}"
 
 
 def placements_dir(home: str) -> str:

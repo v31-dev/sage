@@ -15,8 +15,8 @@ from services.applications.lookup import find_application
 from services.applications.payload import application_payload, application_summary, project_payload
 from services.applications.updates import container_changed
 from services.containers.decisions import PROGRESS, Runtime, correction
-from services.containers.placement import (LABEL_APPLICATION, labels_authority, parse_placements, placement_dir, placements_command, records_command,
-                                           runtime_name, runtime_owner, volume_dir)
+from services.containers.placement import (LABEL_APPLICATION, labels_authority, parse_placements, placement_dir, placement_scope, placements_command,
+                                           records_command, runtime_name, runtime_owner, volume_dir)
 from services.containers.record import Applied, Authority, Operation, Recovery, Settled, TargetRead, TargetRecord, parse_record_listing
 from services.containers.rendering import render_placement
 from services.containers.state import ContainerState, QueuedRequest, container_payload, container_state
@@ -209,13 +209,13 @@ class ContainersMixin:
     """Queues the recovery of the operation `incident` on the container (or of its unreadable record): its
     containment, or once the old work's allowance has passed its settlement."""
     self.add_task(task=self.recover_container, key=("recover", container.id),
-                  scopes={f"worker:{container.worker_id}:container:{container.id}"}, executor="app",
+                  scopes={placement_scope(container.worker_id, container.id)}, executor="app",
                   params={"container_id": container.id, "incident": incident, "final": final}, labels=self.container_labels(container))
 
   def request_reset(self, container: Container, cause: str):
     """Queues the reset of a container whose runtime contradicts its record."""
     self.add_task(task=self.reset_container, key=("reset", container.id),
-                  scopes={f"worker:{container.worker_id}:container:{container.id}"}, executor="app",
+                  scopes={placement_scope(container.worker_id, container.id)}, executor="app",
                   params={"container_id": container.id, "cause": cause}, labels=self.container_labels(container))
 
   async def recover_container(self, container_id: str, incident: str, final: bool):
@@ -332,7 +332,7 @@ class ContainersMixin:
   def request_record_read(self, container: Container):
     """Queues a read of the container's record from its worker, under its scope so it never crosses a write."""
     self.add_task(
-        task=self.read_record, key=("read_record", container.id), scopes={f"worker:{container.worker_id}:container:{container.id}"},
+        task=self.read_record, key=("read_record", container.id), scopes={placement_scope(container.worker_id, container.id)},
         executor="app", params={"container_id": container.id}, labels=self.container_labels(container), quiet=True)
 
   async def read_record(self, container_id: str):
@@ -381,7 +381,7 @@ class ContainersMixin:
     if seen is not None and monotonic() - seen[1] < seen[2]:
       return
     self.add_task(task=self.cleanup_orphan, key=("cleanup_orphan", hostname, container_id),
-                  scopes={f"worker:{hostname}:container:{container_id}"}, executor="app",
+                  scopes={placement_scope(hostname, container_id)}, executor="app",
                   params={"hostname": hostname, "container_id": container_id},
                   labels={"Worker": hostname, "Container": container_id, **({"Application": application} if application else {})})
 

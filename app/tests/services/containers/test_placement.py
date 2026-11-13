@@ -4,10 +4,12 @@ from pathlib import Path
 import pytest
 
 from services.containers.placement import (LABEL_APPLICATION, LABEL_CONTAINER, LABEL_DEPLOYMENT, LABEL_GENERATION, LABEL_INSTANCE, LABELS,
-                                           labels_authority, parse_placements, placement_dir, placements_command, record_path, runtime_name,
-                                           runtime_owner, volume_dir)
+                                           labels_authority, parse_placements, placement_dir, placement_scope, placements_command, record_path,
+                                           runtime_name, runtime_owner, volume_dir)
 from services.containers.record import Authority, TargetRead
+from services.workers.rendering import stack_scope, worker_scope
 from utils.common import new_id
+from utils.queue import _scope_conflict
 
 AUTHORITY = Authority("0123456789abcdef", "1111111111111111", "2222222222222222")
 
@@ -67,3 +69,10 @@ def test_a_worker_without_placements_lists_none(tmp_path):
 def test_an_answer_that_is_not_a_listing_is_refused():
   with pytest.raises(ValueError):
     parse_placements(["0123456789abcdef"])
+
+
+def test_a_placement_is_under_its_worker_and_apart_from_the_workers_other_placements_and_stack():
+  first, second = new_id(), new_id()
+  assert _scope_conflict(worker_scope("w1"), placement_scope("w1", first))
+  assert not any(_scope_conflict(placement_scope("w1", first), other)
+                 for other in (placement_scope("w1", second), stack_scope("w1"), worker_scope("w2"), placement_scope("w2", first)))

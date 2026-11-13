@@ -9,7 +9,7 @@ import pytest
 
 import config
 from services.applications.deploy_input import capture_deploy_config
-from services.containers.placement import placement_dir, record_path, runtime_name
+from services.containers.placement import placement_dir, placement_scope, record_path, runtime_name
 from services.containers.record import Applied, Authority, Operation, Settled, TargetRead, TargetRecord, encode_record
 from services.containers.targets import Containers
 from services.db.models import Application, Container, Domain, Instance, Project, Worker
@@ -410,6 +410,10 @@ def requested(manager):
   return [(task["name"], task["params"], task["quiet"]) for task in manager.task_queue.snapshot()["queued"]]
 
 
+def scopes(manager, name):
+  return [task["scopes"] for task in manager.task_queue.snapshot()["queued"] if task["name"] == name]
+
+
 class TestCorrections:
   async def test_an_interrupted_operation_is_contained_once_and_settled_after_its_allowance(
           self, manager, containers, monotonic):
@@ -420,6 +424,7 @@ class TestCorrections:
     report(container)
     await manager.observe_containers()
     assert ("recover", {"container_id": container.id, "incident": "d9", "final": False}, False) in requested(manager)
+    assert scopes(manager, "recover") == [[placement_scope("w1", container.id)]]
     manager.task_queue.cancel(scope="worker")
     monotonic.now += 904
     await manager.observe_containers()
@@ -448,6 +453,7 @@ class TestCorrections:
     report(container)
     await manager.observe_containers()
     assert ("reset", {"container_id": container.id, "cause": "unexpected_running"}, False) in requested(manager)
+    assert scopes(manager, "reset") == [[placement_scope("w1", container.id)]]
 
   async def test_the_bookkeeping_goes_when_the_record_no_longer_needs_recovery_or_the_container_is_gone(
           self, manager, containers, monotonic):
@@ -491,6 +497,7 @@ class TestOrphans:
     await manager.observe_containers()
     assert cleanups(manager) == ([({"hostname": "w1", "container_id": ORPHAN},
                                    {"Worker": "w1", "Container": ORPHAN, "Application": "demo-web"}, False)] if found else [])
+    assert scopes(manager, "cleanup_orphan") == ([[placement_scope("w1", ORPHAN)]] if found else [])
 
   async def test_a_reported_runtime_of_a_container_is_not_an_orphan(self, manager, containers):
     report(containers[0])

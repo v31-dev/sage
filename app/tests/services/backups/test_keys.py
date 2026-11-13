@@ -2,8 +2,10 @@ from datetime import datetime
 
 import pytest
 
-from services.backups.keys import is_expired_backup_key, is_expired_timestamp, parse_volume_archive, taken_at, timestamp_from_key, volume_archive_key
+from services.backups.keys import (archive_scope, archive_write_scope, is_expired_backup_key, is_expired_timestamp, parse_volume_archive, store_scope,
+                                   taken_at, timestamp_from_key, volume_archive_key)
 from utils.common import new_id
+from utils.queue import _scope_conflict
 
 VOLUME, CONTAINER = "1111111111111111", "2222222222222222"
 
@@ -81,3 +83,12 @@ class TestVolumeArchiveKey:
           "not an id"])
   def test_any_other_key_is_not_a_volume_archive(self, key):
     assert parse_volume_archive(key, "base") is None
+
+
+def test_a_store_covers_its_archives_writes_and_each_is_apart_from_the_others_and_another_stores():
+  parts = [archive_write_scope("sa", new_id()), archive_write_scope("sa", "platform"), archive_scope("sa", "base/backups/platform/a.db.enc"),
+           archive_scope("sa", "base/backups/platform/b.db.enc")]
+  assert all(_scope_conflict(store_scope("sa"), part) for part in parts)
+  assert not any(_scope_conflict(one, other) for index, one in enumerate(parts) for other in parts[index + 1:])
+  assert not any(_scope_conflict(store_scope("sb"), part) for part in parts)
+  assert archive_scope("sa", "base/backups/platform/a.db.enc") == archive_scope("sa", "base/backups/platform/a.db.enc")

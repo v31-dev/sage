@@ -7,6 +7,16 @@ from dataclasses import asdict, dataclass
 import config
 from utils.common import fill
 
+
+def worker_scope(hostname: str) -> str:
+  """The queue's scope of the worker, over all it holds: its containers, stack, routes, discovery and certificate files."""
+  return f"worker:{hostname}"
+
+
+def stack_scope(hostname: str) -> str:
+  return f"{worker_scope(hostname)}:stack"
+
+
 # The templates the stack's files come from, under the worker templates.
 INFRA_TEMPLATES = ("docker-compose.yml", "worker.env", "traefik/traefik.yml", "traefik/config.yml", "vector/vector.yml",
                    "telegraf/telegraf.conf")

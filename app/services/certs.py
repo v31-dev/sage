@@ -18,6 +18,7 @@ import config
 from services.base import Base
 from services.cloudflare import Cloudflare
 from services.updates import Fact, UpdateSource
+from services.workers.rendering import worker_scope
 from utils.common import get_env, utcnow
 from utils.retry import retry
 
@@ -27,6 +28,16 @@ logger = logging.getLogger(__name__)
 def _aware_now():
   """utcnow() for comparing with a certificate's aware expiry."""
   return utcnow().replace(tzinfo=timezone.utc)
+
+
+def certificate_scope(hostname: str | None = None) -> str:
+  """The queue's scope of the worker's certificate on the manager; without a hostname, of every certificate."""
+  return f"certificate:worker:{hostname}" if hostname else "certificate"
+
+
+def certificate_files_scope(hostname: str) -> str:
+  """The queue's scope of the certificate files on the worker."""
+  return f"{worker_scope(hostname)}:tls"
 
 
 CHALLENGE_COMMENT = "sage-acme-challenge"

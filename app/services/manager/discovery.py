@@ -5,7 +5,7 @@ import logging
 import config
 from services.cloudflare import Cloudflare
 from services.db.models import Domain, Worker
-from services.domains.discovery import discovery_files, discovery_services, files_command, parse_file_listing
+from services.domains.discovery import discovery_files, discovery_files_scope, discovery_scope, discovery_services, files_command, parse_file_listing
 from services.notification import Notifications
 from services.tailscale import Tailscale
 from services.workers.decisions import discovery_member
@@ -30,10 +30,10 @@ class DiscoveryMixin:
     for worker in workers:
       if Tailscale().ssh(worker.hostname) == "reachable" and Workers().setup(worker.hostname) == "succeeded":
         self.add_task(task=self.publish_discovery, key=("publish_discovery", worker.hostname, *(("force",) if force else ())),
-                      scopes={f"worker:{worker.hostname}:discovery"}, executor="app",
+                      scopes={discovery_files_scope(worker.hostname)}, executor="app",
                       params={"hostname": worker.hostname, "force": force}, labels={"Worker": worker.hostname},
                       on_conflict=OnConflict.REPLACE, quiet=not force)
-    self.add_task(task=self.publish_discovery_dns, key=("publish_discovery_dns",), scopes={"discovery"}, executor="app",
+    self.add_task(task=self.publish_discovery_dns, key=("publish_discovery_dns",), scopes={discovery_scope()}, executor="app",
                   on_conflict=OnConflict.REPLACE, quiet=True)
 
   async def publish_discovery(self, hostname: str, force: bool = False):

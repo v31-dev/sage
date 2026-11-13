@@ -8,14 +8,14 @@ from functools import partial
 import config
 from services.backups.catalog import CatalogPlan, CatalogRow, reconcile_catalog
 from services.backups.commands import apply_catalog, remove_backup
-from services.backups.keys import APPLICATIONS_PREFIX, PLATFORM_PREFIX, is_expired_backup_key, taken_at
+from services.backups.keys import APPLICATIONS_PREFIX, PLATFORM_PREFIX, archive_scope, is_expired_backup_key, store_scope, taken_at
 from services.db.models import Backup, Volume
 from services.notification import Notifications
 from utils.common import utcnow
 from utils.logging import TaskFailed
 from utils.queue import OnConflict
 
-from .backups import archive_scope, configured_session
+from .backups import configured_session
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +49,7 @@ class BackupCatalogMixin:
     session = configured_session()
     if session is None:
       return None
-    return self.add_task(task=self.discover_backups, key=("discover_backups",), scopes={f"backup:store:{session.identity}"},
+    return self.add_task(task=self.discover_backups, key=("discover_backups",), scopes={store_scope(session.identity)},
                          executor="common", params={"storage_id": session.identity}, on_conflict=OnConflict.REPLACE).task_id
 
   async def discover_backups(self, storage_id: str):
@@ -82,7 +82,7 @@ class BackupCatalogMixin:
     session = configured_session()
     if session is None:
       return
-    self.add_task(task=self.prune_backups, key=("prune_backups",), scopes={f"backup:store:{session.identity}"},
+    self.add_task(task=self.prune_backups, key=("prune_backups",), scopes={store_scope(session.identity)},
                   executor="common", params={"storage_id": session.identity}, on_conflict=OnConflict.REPLACE, quiet=True)
 
   async def prune_backups(self, storage_id: str):

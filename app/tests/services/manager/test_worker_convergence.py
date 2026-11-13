@@ -15,7 +15,7 @@ from services.manager.workers import WorkersMixin
 from services.tailscale import Tailscale
 from services.worker_reports import ContainerReading, HostReading, Snapshot, WorkerReports
 from services.workers import commands
-from services.workers.rendering import InfraInputs, infra_fingerprint
+from services.workers.rendering import InfraInputs, infra_fingerprint, worker_scope
 from services.workers.state import Workers
 from utils.executor import active_executor
 from utils.logging import TaskFailed
@@ -490,8 +490,8 @@ class TestAdd:
     hosts.machines["100.64.0.7"] = "w7"
     hostname, task_id = manager.request_add_worker(" 100.64.0.7 ", "red")
     assert (hostname, Worker.get_by_id("w7").subdomain) == ("w7", "red")
-    assert [(task["name"], task["key"], task["task_id"], task["quiet"]) for task in manager.task_queue.snapshot()["queued"]] == [
-        ("add_worker", ["add_worker", "w7"], task_id, False)]
+    assert [(task["name"], task["key"], task["scopes"], task["task_id"], task["quiet"]) for task in manager.task_queue.snapshot()["queued"]] == [
+        ("add_worker", ["add_worker", "w7"], [worker_scope("w7")], task_id, False)]
 
   @pytest.mark.parametrize("host", ["w9", "", None])
   def test_a_machine_the_tailnet_does_not_list_is_not_found_and_nothing_is_written(self, manager, hosts, db, host):
@@ -589,6 +589,11 @@ class TestRemove:
     [(level, content, _)] = notices()
     assert (level, content.endswith("; its Cloudflare tunnel could not be deleted (the tunnel has connections): delete it by hand.")) == (
         "warning", True)
+
+  def test_the_request_queues_a_visible_removal_holding_the_worker(self, manager, worker):
+    task_id = manager.request_remove_worker("w1")
+    assert [(task["name"], task["key"], task["scopes"], task["task_id"], task["quiet"]) for task in manager.task_queue.snapshot()["queued"]] == [
+        ("remove_worker", ["remove_worker", "w1"], [worker_scope("w1")], task_id, False)]
 
   async def test_a_worker_with_a_container_is_refused_and_untouched(self, manager, hosts, worker, application, notices):
     from services.db.models import Container

@@ -6,7 +6,8 @@ from datetime import datetime, timedelta
 
 import config
 from services.containers.decisions import RUNNING, RuntimeReading, lifecycle_refusal
-from services.containers.placement import LABEL_CONTAINER, LABEL_DEPLOYMENT, LABEL_GENERATION, LABEL_INSTANCE, labels_authority, runtime_name
+from services.containers.placement import (LABEL_CONTAINER, LABEL_DEPLOYMENT, LABEL_GENERATION, LABEL_INSTANCE, labels_authority, placement_scope,
+                                           runtime_name)
 from services.containers.record import Authority, Baseline, Operation, Settled, TargetRecord
 from services.containers.targets import Containers
 from services.db.models import Application, Container, Instance, Project
@@ -95,7 +96,7 @@ class LifecycleMixin:
     """Queues the request `name` on the container in its slot (`REQUESTS`); a Delete first cancels the container's
     queued tasks, and any other request is refused while one runs or waits. The queue's answer."""
     slot, on_conflict = REQUESTS[name]
-    scope = f"worker:{container.worker_id}:container:{container.id}"
+    scope = placement_scope(container.worker_id, container.id)
     if name == "delete":
       self.cancel_tasks(scope=scope)
     elif self.has_task(("delete", container.id)):

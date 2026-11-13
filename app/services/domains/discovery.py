@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 import config
+from services.workers.rendering import worker_scope
 from utils.common import fill
 
 TEMPLATES = {"public": "discovery_public.yml", "internal": "discovery_internal.yml"}
@@ -17,6 +18,15 @@ TEMPLATES_DIGEST = hashlib.sha256(b"".join(
 PREFIX, SUFFIX = "_discovery-", ".yml"
 HEADER = "# sage-discovery"
 ENDPOINTS = "Sage-Endpoints"
+
+
+def discovery_files_scope(hostname: str) -> str:
+  return f"{worker_scope(hostname)}:discovery"
+
+
+def discovery_scope() -> str:
+  """The queue's scope of discovery's DNS records."""
+  return "discovery"
 
 
 @dataclass(frozen=True)

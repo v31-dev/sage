@@ -2,7 +2,6 @@
 container's runtime, and the restore of a backup into a stopped container's volume, with the requests that queue them.
 Tasks name volumes by their names in their labels: their ids mean nothing to people, and a backup can be restored into
 another volume, on another container and worker."""
-import hashlib
 import logging
 from dataclasses import replace
 from datetime import datetime
@@ -11,9 +10,9 @@ from croniter import croniter
 
 import config
 from services.backups.commands import add_backup
-from services.backups.keys import BACKUP_TIMESTAMP_FORMAT, taken_at, volume_archive_key
+from services.backups.keys import BACKUP_TIMESTAMP_FORMAT, archive_scope, archive_write_scope, taken_at, volume_archive_key
 from services.containers.decisions import maintenance_refusal
-from services.containers.placement import placement_dir
+from services.containers.placement import placement_dir, placement_scope
 from services.containers.record import Authority, Baseline, Settled
 from services.containers.targets import Containers
 from services.db.models import Application, Backup, Container, Instance, Project, Volume
@@ -40,11 +39,6 @@ def configured_session(storage_id: str | None = None) -> S3Session | None:
   return session if storage_id in (None, session.identity) else None
 
 
-def archive_scope(storage_id: str, s3_path: str) -> str:
-  """The scope of one archive in its store, which a restore from it and its deletion share."""
-  return f"backup:store:{storage_id}:archive:{hashlib.sha256(s3_path.encode()).hexdigest()[:16]}"
-
-
 class BackupsMixin:
   def request_backup(self, application_id: int, volume_ids: list[str]) -> list[str]:
     """Queues a backup of the volumes from each of the application's containers into the configured store, each in
@@ -60,7 +54,7 @@ class BackupsMixin:
       raise Conflict(f"A container of this application can't be backed up: {REFUSALS[refusal]}.")
     added = [self.queue_lifecycle(container, "backup_stopped", self.backup_container, {},
                                   {"volume_ids": sorted(set(volume_ids)), "storage_id": session.identity},
-                                  (f"backup:store:{session.identity}:write:{container.id}",), {"Volumes": ", ".join(names)})
+                                  (archive_write_scope(session.identity, container.id),), {"Volumes": ", ".join(names)})
              for container in containers]
     return [result.task_id for result in added if result.outcome == Outcome.ACCEPTED]
 
@@ -85,8 +79,7 @@ class BackupsMixin:
                       .where(Container.application.in_(list(due)))):
       volume_ids = sorted(due[container.application_id])
       self.add_task(task=self.backup_container_preserving, key=("backup_preserve", container.id, *volume_ids),
-                    scopes={f"worker:{container.worker_id}:container:{container.id}",
-                            f"backup:store:{session.identity}:write:{container.id}"},
+                    scopes={placement_scope(container.worker_id, container.id), archive_write_scope(session.identity, container.id)},
                     executor="app", params={"container_id": container.id, "volume_ids": volume_ids, "storage_id": session.identity},
                     labels={**self.container_labels(container), "Volumes": ", ".join(sorted(names[container.application_id]))})
 
