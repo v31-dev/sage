@@ -7,7 +7,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from services.backups.commands import add_backup
-from services.backups.keys import BACKUP_TIMESTAMP_FORMAT, PLATFORM_PREFIX, archive_write_scope, taken_at, timestamp_from_key
+from services.backups.keys import (BACKUP_TIMESTAMP_FORMAT, PLATFORM_BACKUP_SUFFIX, PLATFORM_PREFIX, archive_name, archive_write_scope, taken_at,
+                                   timestamp_from_key)
 from services.containers.targets import Containers
 from services.db.database import Database
 from services.db.models import Backup
@@ -124,10 +125,10 @@ class PlatformMixin:
     if session is None:
       logger.error("The configured store is not the one this backup was asked for; nothing was written.")
       raise TaskFailed()
-    timestamp = utcnow().strftime(BACKUP_TIMESTAMP_FORMAT)
+    name = archive_name(utcnow())
     try:
       with TemporaryDirectory() as directory:
-        plain, encrypted = Path(directory) / f"{timestamp}.db", Path(directory) / f"{timestamp}.db.enc"
+        plain, encrypted = Path(directory) / f"{name}.db", Path(directory) / f"{name}{PLATFORM_BACKUP_SUFFIX}"
         await run_in_executor_with_context(Database().snapshot, plain)
         await run_in_executor_with_context(encrypt_file, plain, encrypted)
         key = await session.upload_to_key(encrypted, PLATFORM_PREFIX)

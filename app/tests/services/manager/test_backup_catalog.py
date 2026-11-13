@@ -104,12 +104,13 @@ def volume(application):
   return Volume.create(application=application, name="data", path="/data")
 
 
-def stamp(days_ago=0):
-  return (NOW - timedelta(days=days_ago)).strftime(BACKUP_TIMESTAMP_FORMAT)
+def named(days_ago=0):
+  """An archive's name, taken `days_ago` days before NOW."""
+  return f"{(NOW - timedelta(days=days_ago)).strftime(BACKUP_TIMESTAMP_FORMAT)}_4444444444444444"
 
 
 def archive_key(volume, days_ago=0, container="0123456789abcdef"):
-  return volume_archive_key(volume.id, container, stamp(days_ago))
+  return volume_archive_key(volume.id, container, named(days_ago))
 
 
 def row(store, key, volume=None, **fields):
@@ -138,7 +139,7 @@ class TestDeletion:
                                 {"s3_path": backup.s3_path, "storage_id": "sa"}, {"Backup of": "data"}, False)]
 
   def test_a_platform_backup_is_named_so(self, manager, stores, db):
-    manager.request_backup_deletion(row(stores.a, f"backups/platform/{stamp()}.db.enc").id)
+    manager.request_backup_deletion(row(stores.a, f"backups/platform/{named()}.db.enc").id)
     assert queued(manager)[0][3] == {"Backup of": "the platform"}
 
   def test_a_backup_not_listed_is_not_found(self, manager, db):
@@ -200,9 +201,9 @@ class TestDiscovery:
     assert manager.request_backup_discovery() is None
 
   async def test_the_table_comes_to_mirror_the_store(self, manager, stores, volume, signals):
-    platform = stores.a.put(f"backups/platform/{stamp(1)}.db.enc")
+    platform = stores.a.put(f"backups/platform/{named(1)}.db.enc")
     archive = stores.a.put(archive_key(volume, 2))
-    stores.a.put(volume_archive_key("fedcba9876543210", "0123456789abcdef", stamp()))
+    stores.a.put(volume_archive_key("fedcba9876543210", "0123456789abcdef", named()))
     kept = row(stores.a, archive_key(volume, 3), volume)
     stores.a.put(kept.s3_path, full=True)
     row(stores.a, archive_key(volume, 4), volume)
@@ -285,7 +286,7 @@ class TestRetention:
 
   async def test_backups_past_the_retention_period_go_with_their_rows(self, manager, stores, volume):
     old = [row(stores.a, key, volume if "applications" in key else None)
-           for key in (archive_key(volume, config.RETENTION_DAYS + 1), f"backups/platform/{stamp(config.RETENTION_DAYS + 2)}.db.enc")]
+           for key in (archive_key(volume, config.RETENTION_DAYS + 1), f"backups/platform/{named(config.RETENTION_DAYS + 2)}.db.enc")]
     recent = row(stores.a, archive_key(volume, config.RETENTION_DAYS - 1), volume)
     elsewhere = row(stores.b, archive_key(volume, config.RETENTION_DAYS + 1), volume)
     for backup in (*old, recent):
@@ -297,7 +298,7 @@ class TestRetention:
 
   @pytest.mark.parametrize("failing", ["backups/platform", "backups/applications"])
   async def test_a_prefix_that_fails_still_lets_the_other_go_and_fails_the_task(self, manager, stores, volume, failing, notices):
-    platform = row(stores.a, f"backups/platform/{stamp(config.RETENTION_DAYS + 1)}.db.enc")
+    platform = row(stores.a, f"backups/platform/{named(config.RETENTION_DAYS + 1)}.db.enc")
     archive = row(stores.a, archive_key(volume, config.RETENTION_DAYS + 1), volume)
     for backup in (platform, archive):
       stores.a.put(backup.s3_path, full=True)

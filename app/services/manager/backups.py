@@ -10,7 +10,7 @@ from croniter import croniter
 
 import config
 from services.backups.commands import add_backup
-from services.backups.keys import BACKUP_TIMESTAMP_FORMAT, archive_scope, archive_write_scope, taken_at, volume_archive_key
+from services.backups.keys import archive_name, archive_scope, archive_write_scope, taken_at, volume_archive_key
 from services.containers.decisions import maintenance_refusal
 from services.containers.placement import placement_dir, placement_scope
 from services.containers.record import Authority, Baseline, Settled
@@ -261,15 +261,16 @@ class BackupsMixin:
   async def _archive(self, container: Container, session: S3Session, volume_ids: list[str]) -> list[str]:
     """Archives each of the volumes configured among `volume_ids` from the container's placement into the store, each
     with its Backup row once uploaded; what failed, one line each."""
-    timestamp, failures = utcnow().strftime(BACKUP_TIMESTAMP_FORMAT), []
+    now, failures = utcnow(), []
     for volume in (Volume.select().where((Volume.application == container.application_id) & Volume.id.in_(volume_ids))
                    .order_by(Volume.name)):
-      key = session.get_full_path(volume_archive_key(volume.id, container.id, timestamp))
+      name = archive_name(now)
+      key = session.get_full_path(volume_archive_key(volume.id, container.id, name))
       script = f"/tmp/sage-backup-{new_id()}.sh"
       try:
         await Tailscale().sync_file(container.worker_id, config.TEMPLATES_DIR / "worker/application/backup.sh", script, {
             "PLACEMENT_DIR": placement_dir(config.WORKER_HOME_DIR, container.id), "VOLUME_ID": volume.id,
-            "ARCHIVE_NAME": timestamp, "ENCRYPTION_KEY": get_env("ENCRYPTION_KEY"),
+            "ARCHIVE_NAME": name, "ENCRYPTION_KEY": get_env("ENCRYPTION_KEY"),
             "UPLOAD_URL": session.create_presigned_upload_url(key, config.WORKER_LINK_SECONDS, raw_path=True),
         }, mode=0o700)
         await Tailscale().exec_command(container.worker_id, script, timeout=config.BACKUP_TIMEOUT_SECONDS)

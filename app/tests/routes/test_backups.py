@@ -8,7 +8,7 @@ from tests.services.backups.test_download import Session
 from utils.errors import Conflict
 
 URL = "/api/backups"
-PLATFORM_KEY = "base/backups/platform/20260102_030405.db.enc"
+PLATFORM_KEY = "base/backups/platform/20260102_030405_4444444444444444.db.enc"
 
 
 @pytest.fixture
@@ -19,7 +19,7 @@ def platform(db):
 @pytest.fixture
 def archive(application):
   volume = Volume.create(application=application, name="data", path="/data")
-  return Backup.create(type="application", s3_path=f"base/backups/applications/{volume.id}/c1/20260102_030405.tar.gz.enc",
+  return Backup.create(type="application", s3_path=f"base/backups/applications/{volume.id}/c1/20260102_030405_4444444444444444.tar.gz.enc",
                        storage_id="s1", source_volume_id=volume.id, source_volume_name="data", application=application)
 
 

@@ -19,6 +19,7 @@ from services.db.models import Backup, ContainerEvent, Instance, Notification, W
 from services.domains.decisions import ApplyOutcome
 from services.domains.state import Domains
 from services.logs import Logs
+from services.manager.backup_catalog import BackupCatalogMixin
 from services.manager.platform import PlatformMixin
 from services.manager.queue import SCOPES, QueueMixin
 from services.manager.settings import SettingsMixin
@@ -60,6 +61,13 @@ class Store:
     if self.fails:
       raise Exception(self.fails)
     shutil.copy(self.root / s3_path, local_path)
+
+  async def delete_key(self, s3_path, filter=None, raw_path=False):
+    (self.root / s3_path).unlink()
+    return [s3_path]
+
+  def keys(self) -> set[str]:
+    return {str(path.relative_to(self.root)) for path in self.root.rglob("*") if path.is_file()}
 
 
 class Manager(PlatformMixin, QueueMixin):
@@ -154,6 +162,51 @@ class TestBackup:
     assert Backup.select().count() == 0
     assert manager.notices == [("The platform backup failed: AccessDenied", "error", "/backups")]
 
+  async def test_two_taken_in_the_same_second_are_two_backups(self, manager, stores, clock):
+    await manager.backup_platform("sa")
+    await manager.backup_platform("sa")
+    paths = [row.s3_path for row in Backup.select()]
+    assert len(set(paths)) == 2 and stores.a.keys() == set(paths)
+
+  async def test_deleting_one_while_the_next_uploads_in_the_same_second_leaves_the_next(self, stores, register, clock):
+    class Catalog(Manager, BackupCatalogMixin):
+      pass
+
+    register(Notifications, SimpleNamespace(notify=lambda *notice: None))
+    manager, uploading, release = Catalog(), asyncio.Event(), asyncio.Event()
+    upload = stores.a.upload_to_key
+
+    async def held(file_path, s3_path):
+      key = await upload(file_path, s3_path)
+      if Backup.select().count():
+        uploading.set()
+        await release.wait()
+      return key
+
+    stores.a.upload_to_key = held
+    token = active_executor.set(manager.pool)
+    try:
+      manager.request_platform_backup()
+      await manager.run()
+      [first] = Backup.select()
+      manager.request_platform_backup()
+      manager.task_queue.dispatch_tick()
+      await asyncio.wait_for(uploading.wait(), 5)
+      manager.request_backup_deletion(first.id)
+      for _ in range(500):
+        manager.task_queue.dispatch_tick()
+        if [task["name"] for task in manager.task_queue.snapshot()["running"]] == ["backup_platform"]:
+          break
+        await asyncio.sleep(0.01)
+      assert first.s3_path not in stores.a.keys()
+      release.set()
+      await manager.run()
+    finally:
+      active_executor.reset(token)
+      manager.pool.shutdown(wait=False, cancel_futures=True)
+    [second] = Backup.select()
+    assert stores.a.keys() == {second.s3_path}
+
 
 class TestRestoreRequest:
   def test_only_a_platform_backup_of_the_configured_store_is_restored(self, manager, stores):
@@ -167,7 +220,7 @@ class TestRestoreRequest:
       manager.request_platform_restore(elsewhere.id)
 
   def test_it_waits_as_the_restore_and_names_its_backup_while_restoring(self, manager, stores):
-    backup = Backup.create(s3_path="base/backups/platform/20260101_030000.db.enc", storage_id="sa", type="platform")
+    backup = Backup.create(s3_path="base/backups/platform/20260101_030000_4444444444444444.db.enc", storage_id="sa", type="platform")
     manager.request_platform_restore(backup.id)
     [task] = manager.task_queue.snapshot()["queued"]
     assert (task["name"], task["key"], task["scopes"], task["executor"], task["params"]) == (
@@ -176,12 +229,12 @@ class TestRestoreRequest:
 
   def test_the_backup_being_restored_is_the_one_its_key_names_whatever_its_params_say(self, manager, stores):
     manager.add_restore(task=manager.restore_platform, name="restore_platform", executor="platform",
-                        key=("restore_platform", "base/backups/platform/20260101_030000.db.enc"),
-                        params={"s3_path": "base/backups/platform/20250101_030000.db.enc", "storage_id": "sa"})
+                        key=("restore_platform", "base/backups/platform/20260101_030000_4444444444444444.db.enc"),
+                        params={"s3_path": "base/backups/platform/20250101_030000_4444444444444444.db.enc", "storage_id": "sa"})
     assert manager.restoring_from() == "2026-01-01T03:00:00"
 
   def test_every_other_request_is_refused_while_it_waits(self, manager, stores):
-    backup = Backup.create(s3_path="base/backups/platform/20260101_030000.db.enc", storage_id="sa", type="platform")
+    backup = Backup.create(s3_path="base/backups/platform/20260101_030000_4444444444444444.db.enc", storage_id="sa", type="platform")
     manager.request_platform_restore(backup.id)
     assert manager.add_task(task=asyncio.sleep, key=("later",), scopes=set(), executor="app").outcome == Outcome.REFUSED
     with pytest.raises(Conflict, match="not running"):
@@ -273,7 +326,7 @@ class TestFacts:
     assert (manager.task_state(), manager.restoring_from()) == ("restoring", None)
 
   def test_a_restore_is_refused_while_sage_is_stopping(self, manager, stores):
-    backup = Backup.create(s3_path="base/backups/platform/20260101_030000.db.enc", storage_id="sa", type="platform")
+    backup = Backup.create(s3_path="base/backups/platform/20260101_030000_4444444444444444.db.enc", storage_id="sa", type="platform")
     manager.stop_tasks()
     with pytest.raises(Conflict, match="not running"):
       manager.request_platform_restore(backup.id)

@@ -24,7 +24,7 @@ def other(application):
 
 
 def archive(volume, storage_id="s1"):
-  return Backup.create(type="application", s3_path=f"base/backups/applications/{volume.id}/c1/20260102_030405.tar.gz.enc",
+  return Backup.create(type="application", s3_path=f"base/backups/applications/{volume.id}/c1/20260102_030405_4444444444444444.tar.gz.enc",
                        storage_id=storage_id, source_volume_id=volume.id, source_volume_name=volume.name,
                        application=volume.application_id)
 
@@ -78,7 +78,7 @@ class TestBackups:
 
   def test_a_backup_of_another_volume_or_the_platform_is_not_found_here(self, client, volume, other, register):
     elsewhere = archive(other)
-    platform = Backup.create(type="platform", s3_path="base/backups/platform/20260102_030405.db.enc", storage_id="s1")
+    platform = Backup.create(type="platform", s3_path="base/backups/platform/20260102_030405_4444444444444444.db.enc", storage_id="s1")
     store = Session(keys={elsewhere.s3_path, platform.s3_path})
     register(S3, SimpleNamespace(session=lambda: store))
     for backup in (elsewhere, platform):

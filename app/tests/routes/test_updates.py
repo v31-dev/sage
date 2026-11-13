@@ -439,11 +439,11 @@ class TestBackups:
     register(S3, SimpleNamespace(session=lambda: SimpleNamespace(identity="s1")))
     one = browser()
     one.subscribe("backups")
-    add_backup("base/backups/platform/20260102_030405.db.enc", "s1")
+    add_backup("base/backups/platform/20260102_030405_4444444444444444.db.enc", "s1")
     event, message = one.next()
     assert (event, message["topic"]) == ("state", "backups")
     assert message["data"] == jsonable_encoder(platform_backups())
-    assert [backup["s3_path"] for backup in message["data"]] == ["base/backups/platform/20260102_030405.db.enc"]
+    assert [backup["s3_path"] for backup in message["data"]] == ["base/backups/platform/20260102_030405_4444444444444444.db.enc"]
 
 
 class TestLeaving:
