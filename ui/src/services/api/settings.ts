@@ -26,6 +26,8 @@ export interface SettingSectionStatus {
   details: CloudflareDetails | null
   // Notifications: why each failing channel failed, by settings field.
   channels: Record<string, string> | null
+  // Whether its Test (`test_<section>`) is queued or running, apart from its state.
+  testing: boolean
 }
 
 export type TunnelStatus = 'healthy' | 'degraded' | 'down' | 'inactive'
@@ -54,9 +56,17 @@ export const fetchSetting = (section: SettingSection) =>
 export const updateSetting = (section: SettingSection, value: Record<string, string | null>) =>
   request<Setting>('PUT', `/settings/${section}`, { body: { value } })
 
-// Checks the values given, saved or not, against the provider.
+// Queues a check of the values given, saved or not, against the provider: the task `test_<section>`, whose outcome
+// the section's `setting-tests` feed pushes.
 export const testSetting = (section: SettingSection, value: Record<string, string | null>) =>
-  request<{ message: string }>('POST', `/settings/${section}/test`, { body: { value } })
+  request<{ task_id: string }>('POST', `/settings/${section}/test`, { body: { value } })
+
+// A Test's outcome, as `setting-tests:<section>` pushes it when the Test ends; the manager keeps none.
+export interface SettingTestOutcome {
+  ok: boolean
+  message: string
+  at: string
+}
 
 export const pauseSage = () => request<{ state: AppInfo['state'] }>('POST', '/settings/pause')
 

@@ -162,6 +162,25 @@ class TestCheckConfig:
     with pytest.raises(ValueError, match="Fill in every field, or leave them all empty."):
       unconfigured.check_config({**VALUES, missing: ""})
 
+  def test_its_client_waits_the_test_timeout_and_tries_once_more_than_the_test_delays(self, unconfigured, monkeypatch):
+    built = []
+
+    class Client:
+      def list_objects_v2(self, **kwargs):
+        return {}
+
+    class Clients:
+      def client(self, service, **kwargs):
+        built.append(kwargs["config"])
+        return Client()
+
+    monkeypatch.setattr(config, "SETTINGS_TEST_TIMEOUT_SECONDS", 3)
+    monkeypatch.setattr(config, "SETTINGS_TEST_RETRY_DELAYS", (1, 1))
+    monkeypatch.setattr(s3_module.boto3.session, "Session", Clients)
+    unconfigured.check_config(VALUES)
+    [client_config] = built
+    assert (client_config.connect_timeout, client_config.read_timeout, client_config.retries) == (3, 3, {"total_max_attempts": 3})
+
 
 class TestPresignedUrls:
   def test_upload_url_points_at_the_key_under_the_base_path(self, make_s3):

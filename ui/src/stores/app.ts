@@ -243,6 +243,11 @@ export const useAppStore = defineStore('app', () => {
     if (entry) entry.state = 'applying'
   }
 
+  function setSettingTesting(section: SettingSection) {
+    const entry = info.value?.settings?.[section]
+    if (entry) entry.testing = true
+  }
+
   return {
     // State
     info,
@@ -269,5 +274,6 @@ export const useAppStore = defineStore('app', () => {
     refresh,
     setState,
     setSettingApplying,
+    setSettingTesting,
   }
 })

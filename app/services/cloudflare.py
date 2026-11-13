@@ -71,9 +71,11 @@ class Cloudflare(Base):
   def is_manager_hostname(self, hostname: str | None) -> bool:
     return (hostname or "").lower() == self.manager_hostname.lower()
 
-  def request(self, method: str, path: str, token: str | None = None, **kwargs) -> dict:
+  def request(self, method: str, path: str, token: str | None = None, delays: tuple[float, ...] | None = None,
+              **kwargs) -> dict:
     """One API call; returns the response body. Retries network errors, rate limits and
-    server errors; raises CloudflareError when the API refuses the request."""
+    server errors after `delays` (CLOUDFLARE_RETRY_DELAYS when not given); raises CloudflareError when the API refuses
+    the request. `timeout` among the keyword arguments replaces the client's own."""
     headers = {"Authorization": f"Bearer {token or self.config['api_token']}"}
 
     def attempt():
@@ -86,23 +88,25 @@ class Cloudflare(Base):
         errors = []
       raise CloudflareError(response.status_code, "; ".join(e.get("message", "") for e in errors), response.headers.get("Retry-After"))
 
-    return retry(attempt, delays=config.CLOUDFLARE_RETRY_DELAYS)
+    return retry(attempt, delays=config.CLOUDFLARE_RETRY_DELAYS if delays is None else delays)
 
-  def list_all(self, path: str, per_page: int = 100, **params) -> list[dict]:
+  def list_all(self, path: str, per_page: int = 100, timeout=httpx.USE_CLIENT_DEFAULT,
+               delays: tuple[float, ...] | None = None, **params) -> list[dict]:
     """Every item of a paginated list."""
     items, page = [], 1
     while True:
-      body = self.request("GET", path, params={**params, "page": page, "per_page": per_page})
+      body = self.request("GET", path, params={**params, "page": page, "per_page": per_page}, timeout=timeout,
+                          delays=delays)
       items.extend(body["result"])
       if page >= (body.get("result_info") or {}).get("total_pages", 1):
         return items
       page += 1
 
-  def find_zone(self, domain: str, token: str | None = None) -> dict:
+  def find_zone(self, domain: str, token: str | None = None, **options) -> dict:
     """The active zone of `domain` that the token can see. A domain added to several accounts
     is active in only one of them. Raises with the reason when there is no such zone, or more
     than one."""
-    zones = self.request("GET", "/zones", token=token, params={"name": domain, "status": "active"})["result"]
+    zones = self.request("GET", "/zones", token=token, params={"name": domain, "status": "active"}, **options)["result"]
     if not zones:
       raise ValueError(
           f"No active zone for {domain} is visible to this API token. Check that the domain's "
@@ -151,12 +155,13 @@ class Cloudflare(Base):
     if missing:
       raise ValueError(f"Missing values for: {', '.join(missing)}.")
 
-    token = values["api_token"]
-    if self.request("GET", "/user/tokens/verify", token=token)["result"]["status"] != "active":
+    token, options = values["api_token"], {"timeout": config.SETTINGS_TEST_TIMEOUT_SECONDS,
+                                           "delays": config.SETTINGS_TEST_RETRY_DELAYS}
+    if self.request("GET", "/user/tokens/verify", token=token, **options)["result"]["status"] != "active":
       raise ValueError("The API token is not active.")
-    zone = self.find_zone(values["domain"], token)
+    zone = self.find_zone(values["domain"], token, **options)
     # Tunnel access for the zone's account
-    self.request("GET", f"/accounts/{zone['account']['id']}/cfd_tunnel", token=token, params={"per_page": 1})
+    self.request("GET", f"/accounts/{zone['account']['id']}/cfd_tunnel", token=token, params={"per_page": 1}, **options)
 
   def get_dns_records(self, name: str | None = None) -> list[dict]:
     """The zone's records at `name`, or all of them in one call (a page can hold 5,000,000)."""
@@ -231,12 +236,14 @@ class Cloudflare(Base):
     tunnels = self.list_all(f"/accounts/{self.account_id}/cfd_tunnel", name=name, is_deleted="false")
     return next((t for t in tunnels if t["name"] == name), None)
 
-  def tunnels(self) -> dict[str, dict]:
+  def tunnels(self, **options) -> dict[str, dict]:
     """The account's tunnels by name, each with its `id` and health (`status`: healthy, degraded, down or inactive), in
-    one call (a page holds up to 1,000); their health is kept as `tunnel_health`."""
+    one call (a page holds up to 1,000); their health is kept as `tunnel_health`. `options` (a `timeout`, `delays`) go
+    to its call."""
     self.connect()
     tunnels = {tunnel["name"]: tunnel
-               for tunnel in self.list_all(f"/accounts/{self.account_id}/cfd_tunnel", per_page=1000, is_deleted="false")}
+               for tunnel in self.list_all(f"/accounts/{self.account_id}/cfd_tunnel", per_page=1000, is_deleted="false",
+                                           **options)}
     self.tunnel_health = {name: tunnel.get("status") for name, tunnel in tunnels.items()}
     return tunnels
 

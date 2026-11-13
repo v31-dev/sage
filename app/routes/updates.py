@@ -10,8 +10,8 @@ from services.updates import Feed, Topic, UpdateFeed, Updates, UpdateSource, Upd
 # owner.
 TOPICS = {
     UpdateTopic.INFO: Topic(lambda: Manager().info(), frozenset({
-        UpdateSource.QUEUE_STATE, UpdateSource.RESTORING, UpdateSource.SETTINGS_APPLYING, UpdateSource.CHECKS,
-        UpdateSource.CERTIFICATES, UpdateSource.LATEST_VERSION})),
+        UpdateSource.QUEUE_STATE, UpdateSource.RESTORING, UpdateSource.SETTINGS_APPLYING, UpdateSource.SETTINGS_TESTING,
+        UpdateSource.CHECKS, UpdateSource.CERTIFICATES, UpdateSource.LATEST_VERSION})),
     UpdateTopic.TASKS: Topic(lambda: Manager().task_snapshot(), frozenset({UpdateSource.TASKS})),
     UpdateTopic.BACKUP_STATUS: Topic(lambda: Manager().backup_status(), frozenset({UpdateSource.BACKUP_STATUS})),
     UpdateTopic.BACKUPS: Topic(platform_backups, frozenset({UpdateSource.BACKUPS})),
@@ -29,6 +29,8 @@ TOPICS = {
     UpdateFeed.TASK_LOGS: Feed(parameterised=True),
     UpdateFeed.APPLICATION_LOGS: Feed(parameterised=True),
     UpdateFeed.REQUESTS: Feed(),
+    # A settings section's Test outcomes, followed by section.
+    UpdateFeed.SETTING_TESTS: Feed(parameterised=True),
 }
 
 SCHEMES = {"http": "http", "https": "https", "ws": "http", "wss": "https"}

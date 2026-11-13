@@ -10,7 +10,7 @@ This is a living project-context file for AI coding agents. Keep it concise, cur
 
 ## Model
 
-- Claude Code: use Opus 5.5 at `xhigh` effort or above.
+- Claude Code: use Opus 5.5 at `high` effort or above.
 - Codex: use GPT-6.1 Sol at `xhigh` effort or above.
 - Select the model and effort in the client settings. Evaluation and design decisions are subtle; when the user requests subagents, use the parent's model and effort.
 

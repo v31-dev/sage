@@ -89,23 +89,24 @@ class S3(Base):
       raise Conflict("S3 is not configured.")
     return session
 
-  def check_config(self, config: dict, write: bool = False):
+  def check_config(self, values: dict, write: bool = False):
     """Check a candidate S3 config against its bucket; raises with the reason. A config with
     no values at all is valid (S3 off). With write, also writes and deletes a marker object."""
-    validate_section("s3", config)
-    if not any(config.get(key) for key in SETTING_DEFINITIONS["s3"]):
+    validate_section("s3", values)
+    if not any(values.get(key) for key in SETTING_DEFINITIONS["s3"]):
       return
 
-    kwargs = client_kwargs(config["endpoint"], config["access_key"], config["secret_key"])
-    kwargs["config"] = Config(signature_version='s3v4', connect_timeout=5, read_timeout=10,
-                              retries={"max_attempts": 2})
+    kwargs = client_kwargs(values["endpoint"], values["access_key"], values["secret_key"])
+    kwargs["config"] = Config(signature_version='s3v4', connect_timeout=config.SETTINGS_TEST_TIMEOUT_SECONDS,
+                              read_timeout=config.SETTINGS_TEST_TIMEOUT_SECONDS,
+                              retries={"total_max_attempts": len(config.SETTINGS_TEST_RETRY_DELAYS) + 1})
     client = boto3.session.Session().client('s3', **kwargs)
-    prefix = config["path"].strip('/')
-    client.list_objects_v2(Bucket=config["bucket"], Prefix=prefix, MaxKeys=1)
+    prefix = values["path"].strip('/')
+    client.list_objects_v2(Bucket=values["bucket"], Prefix=prefix, MaxKeys=1)
     if write:
       marker = f"{prefix}/.sage-check"
-      client.put_object(Bucket=config["bucket"], Key=marker, Body=b"")
-      client.delete_object(Bucket=config["bucket"], Key=marker)
+      client.put_object(Bucket=values["bucket"], Key=marker, Body=b"")
+      client.delete_object(Bucket=values["bucket"], Key=marker)
 
 
 class S3Session:

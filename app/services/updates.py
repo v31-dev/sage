@@ -21,6 +21,7 @@ class UpdateSource(StrEnum):
   QUEUE_STATE = "queue_state"        # running, paused, restoring or stopping
   RESTORING = "restoring"            # the backup being restored
   SETTINGS_APPLYING = "settings_applying"  # the task that makes each settings section apply
+  SETTINGS_TESTING = "settings_testing"    # whether each settings section's Test is queued or running
   BACKUP_STATUS = "backup_status"    # whether a platform backup runs or backups are being discovered
   BACKUPS = "backups"                # a backup row was written, or the configured store changed
   WORKER_LIST = "worker_list"        # each worker's status, path, container count and subdomain
@@ -57,6 +58,7 @@ class UpdateFeed(StrEnum):
   TASK_LOGS = "task-logs"                # a task's lines: `task-logs:<task>`
   APPLICATION_LOGS = "application-logs"  # an application's lines: `application-logs:<project>-<app>`
   REQUESTS = "requests"                  # Traefik's requests on every worker
+  SETTING_TESTS = "setting-tests"        # a settings section's Test outcomes, `setting-tests:<section>`; stored nowhere
 
 
 @dataclass(frozen=True)

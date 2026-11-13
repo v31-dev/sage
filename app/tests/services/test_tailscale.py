@@ -715,14 +715,14 @@ class TestPeers:
         "k3": {"HostName": "pending", "TailscaleIPs": []},
         "k4": {"HostName": "no-addresses"},
     }}
-    monkeypatch.setattr(tailscale, "status", lambda: status)
+    monkeypatch.setattr(tailscale, "status", lambda timeout: status)
     return tailscale
 
   def test_every_machine_with_an_address_is_listed_with_its_first_address_and_its_hostname_in_lowercase(self, peers):
     assert [(peer.hostname, peer.ip) for peer in peers.peers()] == [("worker-1", "100.64.0.2"), ("worker-2", "100.64.0.3")]
 
   def test_a_tailnet_without_peers_lists_none(self, tailscale, monkeypatch):
-    monkeypatch.setattr(tailscale, "status", lambda: {})
+    monkeypatch.setattr(tailscale, "status", lambda timeout: {})
     assert tailscale.peers() == []
 
   @pytest.mark.parametrize("query", ["worker-2", "WORKER-2", " Worker-2 ", "100.64.0.3"])

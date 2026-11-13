@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Body, HTTPException
+from fastapi import APIRouter, Body
 
 from services.db.models import Worker
 from services.manager import Manager
@@ -53,10 +53,7 @@ def save_setting(section: str, data: dict = Body(...)):
 
 @router.post("/{section}/test")
 def test_setting(section: str, data: dict = Body(...)):
-  """Checks the values against the provider with the test's effects (S3 writes and deletes a marker object,
-  notifications send a message), saving nothing."""
-  values = candidate(section, data)
-  try:
-    return {"message": Manager().test_setting(section, values)}
-  except Exception as error:
-    raise HTTPException(status_code=400, detail=Manager().describe_check_error(error)[0])
+  """Queues a check of the values against the provider with the test's effects (S3 writes and deletes a marker
+  object, notifications send a message), saving nothing; one Test of a section at a time. Its outcome is pushed on
+  `setting-tests:<section>`. The task's id."""
+  return {"task_id": Manager().request_test(section, candidate(section, data))}

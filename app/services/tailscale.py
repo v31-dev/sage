@@ -107,14 +107,14 @@ class Tailscale(Base):
         connection.close()
     await asyncio.gather(*(connection.wait_closed() for connection in connections), return_exceptions=True)
 
-  def status(self):
+  def status(self, timeout: float = 10):
     try:
       result = subprocess.run(
           ["tailscale", "status", "--json"],
-          capture_output=True, text=True, timeout=10,
+          capture_output=True, text=True, timeout=timeout,
       )
     except subprocess.TimeoutExpired:
-      raise Exception("Tailscale status timed out after 10s (tailscaled unresponsive?).")
+      raise Exception(f"Tailscale status timed out after {timeout:g}s (tailscaled unresponsive?).")
     if result.returncode != 0:
       raise Exception(f"Tailscale status failed: {result.stderr.strip()}")
     return json.loads(result.stdout)
@@ -223,12 +223,12 @@ class Tailscale(Base):
       logger.info(f"Tailscale IP address: {self._ip}")
     return self._ip
 
-  def peers(self):
+  def peers(self, timeout: float = 10):
     """Every machine of the tailnet that has an address, as objects with hostname and ip; the hostname in lowercase,
     as Sage names a worker (`tailscale nc` resolves a name in any case)."""
     return [
         dict_to_obj({"hostname": peer["HostName"].lower(), "ip": peer["TailscaleIPs"][0]})
-        for peer in self.status().get("Peer", {}).values()
+        for peer in self.status(timeout).get("Peer", {}).values()
         if peer.get("TailscaleIPs")
     ]
 

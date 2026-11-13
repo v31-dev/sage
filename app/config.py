@@ -50,6 +50,10 @@ LIST_MAX_ROWS = 1000
 CLOUDFLARE_RETRY_DELAYS = (1, 2)
 # S3 deletes are retried after these delays (seconds).
 S3_RETRY_DELAYS = (1, 2)
+# A settings section's checks against its provider, an explicit Test's and the scheduled one's: each call waits at most
+# this long (seconds) and is retried after these delays.
+SETTINGS_TEST_TIMEOUT_SECONDS = 5
+SETTINGS_TEST_RETRY_DELAYS = (1,)
 # A cold start without a certificate retries before giving up (seconds).
 STARTUP_RETRY_DELAYS = (60, 240, 960)
 RENEWAL_THRESHOLD_DAYS = 7

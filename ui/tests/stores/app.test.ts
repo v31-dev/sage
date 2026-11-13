@@ -462,6 +462,18 @@ describe('the changes an action makes at once', () => {
     expect(store.sectionIndicator('cloudflare')).toEqual({ state: 'ok', label: 'OK' })
   })
 
+  it('setSettingTesting marks only that section, apart from its state', async () => {
+    fetchInfo.mockResolvedValue(appInfo())
+    const store = useAppStore()
+    await store.init()
+
+    store.setSettingTesting('s3')
+
+    expect(store.info?.settings?.s3.testing).toBe(true)
+    expect(store.info?.settings?.cloudflare.testing).toBeFalsy()
+    expect(store.sectionIndicator('s3')).toEqual({ state: 'ok', label: 'OK' })
+  })
+
   it('setSettingApplying does nothing without the info', () => {
     const store = useAppStore()
     store.setSettingApplying('s3')

@@ -1,4 +1,6 @@
+import asyncio
 import inspect
+import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -8,6 +10,7 @@ import botocore.exceptions
 import httpx
 import pytest
 
+import config
 from services.certs import Certs
 from services.cloudflare import Cloudflare, CloudflareError
 from services.manager import Manager
@@ -17,10 +20,12 @@ from services.notification import ChannelCheckFailed, Notifications
 from services.s3 import S3
 from services.settings import SettingCheck, Settings
 from services.tailscale import Tailscale
-from services.updates import Updates
+from services.updates import UpdateFeed, Updates
 from tests.services.test_certs import write_certificate
 from tests.services.test_cloudflare import ACCOUNT, TUNNELS, ZONE, Api, ok, zone
+from utils.errors import Conflict
 from utils.executor import active_executor
+from utils.logging import TaskFailed
 from utils.queue import TaskQueue
 
 STORE = {"access_key": "a", "secret_key": "a", "bucket": "a", "endpoint": "https://a.example.test", "path": "base"}
@@ -98,13 +103,17 @@ class TestIsApplying:
 
 
 class Node:
-  def __init__(self, state="Running", dns_name="manager.tail1234.ts.net."):
-    self.state, self.dns_name = state, dns_name
+  """The manager's node; `timeouts` are what each call was given."""
 
-  def status(self):
+  def __init__(self, state="Running", dns_name="manager.tail1234.ts.net."):
+    self.state, self.dns_name, self.timeouts = state, dns_name, []
+
+  def status(self, timeout):
+    self.timeouts.append(timeout)
     return {"BackendState": self.state, "Self": {"HostName": "manager", "DNSName": self.dns_name}}
 
-  def peers(self):
+  def peers(self, timeout):
+    self.timeouts.append(timeout)
     return ["w1", "w2"]
 
 
@@ -126,6 +135,12 @@ class TestTailscaleCheck:
   def test_a_node_that_is_not_running_fails_the_check(self, register):
     with pytest.raises(ValueError, match=r"not running \(NeedsLogin\)"):
       self.check(register, state="NeedsLogin")
+
+  def test_its_calls_wait_the_test_timeout(self, register, monkeypatch):
+    monkeypatch.setattr(config, "SETTINGS_TEST_TIMEOUT_SECONDS", 3)
+    node = register(Tailscale, Node())
+    SettingsMixin._test_tailscale(SimpleNamespace(), {}, False)
+    assert node.timeouts == [3, 3]
 
 
 @pytest.fixture
@@ -244,8 +259,77 @@ class TestScheduledChecks:
   def test_its_fact_is_the_task_that_makes_each_section_apply(self, settled):
     Settings().set("s3", STORE)
     settled.settings_saved("s3")
-    [fact] = settled.settings_queue_facts()
-    assert fact._compute() == (None, None, settled.applying_tasks()["s3"]["task_id"], None)
+    applying, _ = settled.settings_queue_facts()
+    assert applying._compute() == (None, None, settled.applying_tasks()["s3"]["task_id"], None)
+
+  def test_a_sections_test_is_a_fact_of_its_own_apart_from_its_check(self, settled):
+    applying, testing = settled.settings_queue_facts()
+    settled.request_test("s3", STORE)
+    assert (applying._compute(), testing._compute()) == ((None, None, None, None), (False, False, True, False))
+    Settings().set("s3", STORE)
+    settled.settings_saved("s3")
+    assert testing._compute() == (False, False, True, False)
+
+
+async def drain(settled):
+  for _ in range(500):
+    snapshot = settled.task_queue.snapshot()
+    if not (snapshot["running"] or snapshot["queued"]):
+      return
+    settled.task_queue.dispatch_tick()
+    await asyncio.sleep(0.01)
+
+
+def unreachable(values, write):
+  raise ValueError("bucket unreachable")
+
+
+class TestTest:
+  def test_it_is_queued_apart_from_the_check_naming_what_it_tests_and_no_secret(self, settled):
+    settled.request_test("s3", STORE)
+    settled.request_test("notifications", WEBHOOK)
+    assert settled.queued() == [
+        (("test_s3",), [], "common", {"section": "s3", "endpoint": STORE["endpoint"], "bucket": "a", "path": "base"}, False),
+        (("test_notifications",), [], "common", {"section": "notifications", "channels": ["Discord"], "discord_webhook_id": "1"},
+         False)]
+    assert [task.inputs for task in settled.task_queue._queue] == [{"value": STORE}, {"value": WEBHOOK}]
+
+  async def test_another_test_of_a_section_is_refused_while_one_is_queued_or_running_and_another_section_is_free(
+          self, settled, register):
+    entered, release = threading.Event(), threading.Event()
+
+    def held(values, write):
+      entered.set()
+      assert release.wait(5)
+
+    register(S3, SimpleNamespace(check_config=held))
+    settled.request_test("s3", STORE)
+    with pytest.raises(Conflict, match="A test of this section is already running."):
+      settled.request_test("s3", STORE)
+    settled.task_queue.dispatch_tick()
+    for _ in range(500):
+      if entered.is_set():
+        break
+      await asyncio.sleep(0.01)
+    with pytest.raises(Conflict, match="A test of this section is already running."):
+      settled.request_test("s3", STORE)
+    settled.request_test("notifications", WEBHOOK)
+    release.set()
+    await drain(settled)
+    assert settled.request_test("s3", STORE) is not None
+
+  async def test_its_outcome_is_one_line_of_its_log_and_one_row_of_its_sections_feed_and_a_failure_fails_it(
+          self, settled, register, clock, caplog):
+    with caplog.at_level(logging.INFO, logger="services.manager.settings"):
+      await settled.run_test("s3", STORE, bucket="a")
+      register(S3, SimpleNamespace(check_config=unreachable))
+      with pytest.raises(TaskFailed):
+        await settled.run_test("s3", STORE, bucket="a")
+    assert [record.getMessage() for record in caplog.records if record.name == "services.manager.settings"] == [
+        "The s3 test: Bucket reachable and writable.", "The s3 test failed: bucket unreachable"]
+    assert Updates().published == [
+        (UpdateFeed.SETTING_TESTS, [{"ok": True, "message": "Bucket reachable and writable.", "at": clock.current}], "s3"),
+        (UpdateFeed.SETTING_TESTS, [{"ok": False, "message": "bucket unreachable", "at": clock.current}], "s3")]
 
 
 class TestCheck:
@@ -295,9 +379,10 @@ def catalog(db, clock, register):
 
 
 class TestSettingsStatus:
-  def status(self, register, applying=None):
+  def status(self, register, applying=None, testing=()):
     register(Cloudflare, SimpleNamespace(account_id="a", tunnel_id="t", tunnel_name="platform", tunnel_status="healthy"))
     manager = SimpleNamespace(applying_tasks=lambda: {**dict.fromkeys(SETTING_SECTIONS), **(applying or {})},
+                              testing_sections=lambda: tuple(key in testing for key in SETTING_SECTIONS),
                               section_configured=lambda key: key != "notifications")
     for key in SETTING_SECTIONS:
       Settings().record_check(key, SettingCheck(Settings().snapshot(key).revision, "ok", "Provider reachable", "now"))
@@ -314,6 +399,10 @@ class TestSettingsStatus:
     assert "order rejected" in status["message"]
     assert status["details"]["certificates"][1]["valid"]
     assert status["details"]["tunnel_status"] == "healthy"
+
+  def test_a_section_shows_whether_its_test_runs_apart_from_its_state(self, catalog, register):
+    status = self.status(register, testing=("s3",))
+    assert (status["s3"]["testing"], status["s3"]["state"], status["notifications"]["testing"]) == (True, "ok", False)
 
   def test_a_section_applies_while_its_task_is_queued_and_shows_its_check_otherwise(self, catalog, register):
     status = self.status(register, applying={"s3": {"task_id": "t1"}})

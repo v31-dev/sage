@@ -1,19 +1,23 @@
 """The settings sections' checks against their providers, the workflow of a Save, and the status the settings pages
 show."""
 import logging
+import re
 
 import httpx
 
+import config
 from services.certs import Certs
 from services.cloudflare import Cloudflare
-from services.notification import ChannelCheckFailed, Notifications
+from services.notification import CHANNELS, ChannelCheckFailed, Notifications
 from services.s3 import S3
 from services.settings import SETTING_DEFINITIONS, SettingCheck, Settings, section_status
 from services.tailscale import Tailscale
-from services.updates import Fact, Updates, UpdateSource
+from services.updates import Fact, UpdateFeed, Updates, UpdateSource
 from utils.common import get_env, utcnow
+from utils.errors import Conflict
 from utils.executor import run_in_executor_with_context
-from utils.queue import OnConflict
+from utils.logging import TaskFailed
+from utils.queue import OnConflict, Outcome
 from utils.retry import is_transient
 
 logger = logging.getLogger(__name__)
@@ -33,6 +37,17 @@ APPLYING_TASKS = {
     "cloudflare": (task("check_cloudflare"), task("renew_certificates")),
     "s3": (task("check_s3"),),
     "notifications": (task("check_notifications"),),
+}
+
+
+# What a Test's record names of the values it tested, per section; never a secret. A Discord webhook's id is the
+# number in its URL, before the token.
+TESTED = {
+    "s3": lambda value: {field: value.get(field) for field in ("endpoint", "bucket", "path")},
+    "notifications": lambda value: {
+        "channels": [channel["name"] for field, channel in CHANNELS.items() if value.get(field)],
+        "discord_webhook_id": (match[1] if (match := re.search(r"/webhooks/(\d+)/", value.get("discord_webhook") or ""))
+                               else None)},
 }
 
 
@@ -69,6 +84,34 @@ class SettingsMixin:
     self.add_task(task=self.check_setting, key=(f"check_{key}",), scopes={f"settings:{key}"}, executor="common",
                   params={"key": key}, on_conflict=OnConflict.REPLACE, quiet=quiet)
 
+  def request_test(self, key: str, value: dict) -> str:
+    """Queues the explicit Test of a section's candidate values, with its test effects, apart from the section's
+    check: one per section, a Conflict while one is queued or running. The task's id."""
+    if key not in SETTING_SECTIONS:
+      raise KeyError(f"Unknown settings section: {key}")
+    added = self.add_task(task=self.run_test, key=(f"test_{key}",), scopes=set(), executor="common",
+                          params={"section": key, **TESTED.get(key, lambda value: {})(value)}, inputs={"value": value},
+                          labels={"Section": key})
+    if added.outcome == Outcome.EXISTING:
+      raise Conflict("A test of this section is already running.")
+    return added.task_id
+
+  async def run_test(self, section: str, value: dict, **tested):
+    """The explicit Test of a section's candidate `value`: its outcome in one line of this task's log and in a row of
+    the section's `setting-tests` feed, which only a page following it then sees; failed when the Test failed.
+    `tested` names what it tested."""
+    try:
+      message, ok = await run_in_executor_with_context(self.test_setting, section, value), True
+    except Exception as error:
+      message, ok = self.describe_check_error(error)[0], False
+    if ok:
+      logger.info(f"The {section} test: {message}")
+    else:
+      logger.error(f"The {section} test failed: {message}")
+    Updates().publish(UpdateFeed.SETTING_TESTS, [{"ok": ok, "message": message, "at": utcnow()}], section)
+    if not ok:
+      raise TaskFailed()
+
   def test_setting(self, key: str, value: dict, side_effects: bool = True) -> str:
     """Check a section's values; returns what was verified, raises with the reason
     otherwise. With side_effects, S3 also writes to the bucket and notifications send a
@@ -85,10 +128,10 @@ class SettingsMixin:
 
   def _test_tailscale(self, value: dict, side_effects: bool) -> str:
     """Env vars, so checked as configured: the node is up and sees the tailnet, and the name it has there."""
-    status = Tailscale().status()
+    status = Tailscale().status(config.SETTINGS_TEST_TIMEOUT_SECONDS)
     if status.get("BackendState") != "Running":
       raise ValueError(f"The manager's tailnet node is not running ({status.get('BackendState')}).")
-    peers = f"{len(Tailscale().peers())} other machine(s) on the tailnet"
+    peers = f"{len(Tailscale().peers(config.SETTINGS_TEST_TIMEOUT_SECONDS))} other machine(s) on the tailnet"
     # The machine name, which Tailscale suffixes when another machine has it.
     machine = (status.get("Self", {}).get("DNSName") or "").split(".")[0]
     if machine.lower() != get_env("TS_NAME").lower():
@@ -100,7 +143,8 @@ class SettingsMixin:
     health is read in the same call and kept by Cloudflare, so each worker's state shows its own."""
     cloudflare = Cloudflare()
     cloudflare.check_config(cloudflare.config)
-    if cloudflare.tunnel_name not in cloudflare.tunnels():
+    if cloudflare.tunnel_name not in cloudflare.tunnels(timeout=config.SETTINGS_TEST_TIMEOUT_SECONDS,
+                                                        delays=config.SETTINGS_TEST_RETRY_DELAYS):
       raise ValueError(f"The tunnel {cloudflare.tunnel_name} is not in the account.")
     self.worker_state.check()
     return f"API token, zone {cloudflare.domain} and account verified; tunnel {cloudflare.tunnel_status}."
@@ -156,18 +200,23 @@ class SettingsMixin:
     """The task that makes each section apply, or None, in the order of the sections."""
     return tuple(task and task["task_id"] for task in self.applying_tasks().values())
 
+  def testing_sections(self) -> tuple[bool, ...]:
+    """Whether each section's Test is queued or running, in the order of the sections."""
+    return tuple(self.has_task((f"test_{key}",)) for key in SETTING_SECTIONS)
+
   def settings_queue_facts(self) -> list[Fact]:
-    return [Fact(self.applying_task_ids, UpdateSource.SETTINGS_APPLYING)]
+    return [Fact(self.applying_task_ids, UpdateSource.SETTINGS_APPLYING),
+            Fact(self.testing_sections, UpdateSource.SETTINGS_TESTING)]
 
   def settings_status(self) -> dict:
-    """Per section: not_configured, applying (with the task), ok, retrying or error; Cloudflare's with the details its
-    read-only page shows."""
+    """Per section: not_configured, applying (with the task), ok, retrying or error, and apart from that whether its
+    Test is queued or running; Cloudflare's with the details its read-only page shows."""
     applying_tasks, cloudflare, certificates = self.applying_tasks(), Cloudflare(), Certs().status()
     status = {}
-    for key in SETTING_SECTIONS:
+    for key, testing in zip(SETTING_SECTIONS, self.testing_sections()):
       applying = applying_tasks[key]
-      status[key] = section_status(self.section_configured(key), applying and applying["task_id"], Settings().check(key),
-                                   certificates if key == "cloudflare" else None)
+      status[key] = {**section_status(self.section_configured(key), applying and applying["task_id"], Settings().check(key),
+                                      certificates if key == "cloudflare" else None), "testing": testing}
     status["cloudflare"]["details"] = {
         "account_id": cloudflare.account_id,
         "tunnel_id": cloudflare.tunnel_id,

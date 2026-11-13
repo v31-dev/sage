@@ -166,7 +166,7 @@ def state(monkeypatch):
 class TestTopics:
   def test_the_topics_are_the_ones_the_pages_follow(self):
     assert set(TOPICS) == {"info", "tasks", "backup-status", "backups", "release", "workers", "worker", "application", "domains",
-                           "notifications", "task-history", "task-logs", "application-logs", "requests"}
+                           "notifications", "task-history", "task-logs", "application-logs", "requests", "setting-tests"}
 
   def test_the_table_has_each_topic_and_each_feed_once(self):
     assert not set(UpdateTopic) & set(UpdateFeed)
@@ -179,7 +179,8 @@ class TestTopics:
 
   def test_the_info_follows_what_the_manager_status_is_made_of(self):
     assert TOPICS["info"].sources == {UpdateSource.QUEUE_STATE, UpdateSource.RESTORING, UpdateSource.SETTINGS_APPLYING,
-                                      UpdateSource.CHECKS, UpdateSource.CERTIFICATES, UpdateSource.LATEST_VERSION}
+                                      UpdateSource.SETTINGS_TESTING, UpdateSource.CHECKS, UpdateSource.CERTIFICATES,
+                                      UpdateSource.LATEST_VERSION}
 
   @pytest.mark.parametrize("topic, source", [("tasks", UpdateSource.TASKS), ("backup-status", UpdateSource.BACKUP_STATUS),
                                              ("backups", UpdateSource.BACKUPS), ("release", UpdateSource.RELEASE),
@@ -210,7 +211,7 @@ class TestTopics:
     assert TOPICS["backups"].load is platform_backups
 
   def test_the_log_feeds_of_a_task_and_of_an_application_take_an_argument_and_the_others_none(self):
-    assert TOPICS["task-logs"].parameterised and TOPICS["application-logs"].parameterised
+    assert all(TOPICS[name].parameterised for name in ("task-logs", "application-logs", "setting-tests"))
     assert not any(TOPICS[name].parameterised for name in ("notifications", "task-history", "requests"))
 
   def test_the_hub_serves_the_table_of_the_socket_server(self):

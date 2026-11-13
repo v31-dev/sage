@@ -2,6 +2,7 @@ import pytest
 
 from services.db.models import Worker
 from services.settings import Settings
+from utils.errors import Conflict
 
 URL = "/api/settings"
 STORE = {"access_key": "a", "secret_key": "s", "bucket": "b", "endpoint": "https://s3.example.test", "path": "sage"}
@@ -41,18 +42,17 @@ class TestSave:
 
 
 class TestTest:
-  def test_the_saved_values_with_those_sent_are_tested_and_its_message_answered(self, client, settings, manager):
+  def test_the_saved_values_with_those_sent_are_tested_by_a_task_whose_id_is_answered(self, client, settings, manager):
     settings.set("s3", STORE)
-    manager.answers["test_setting"] = lambda section, values: f"{section} {values['bucket']}"
-    assert client.post(f"{URL}/s3/test", json={"value": {"bucket": "other"}}).json() == {"message": "s3 other"}
-    assert manager.called("test_setting") == [(("s3", {**STORE, "bucket": "other"}), {})]
+    manager.answers["request_test"] = lambda section, values: "t1"
+    assert client.post(f"{URL}/s3/test", json={"value": {"bucket": "other"}}).json() == {"task_id": "t1"}
+    assert manager.called("request_test") == [(("s3", {**STORE, "bucket": "other"}), {})]
     assert settings.get("s3") == STORE
 
-  def test_a_failed_test_is_a_400_with_its_described_reason(self, client, settings, manager):
-    manager.answers["test_setting"] = TimeoutError("timed out")
-    manager.answers["describe_check_error"] = lambda error: (f"described: {error}", True)
-    response = client.post(f"{URL}/notifications/test", json={"value": {}})
-    assert (response.status_code, response.json()["detail"]) == (400, "described: timed out")
+  def test_a_test_while_one_of_the_section_is_queued_or_running_is_a_409(self, client, settings, manager):
+    manager.answers["request_test"] = Conflict("A test of this section is already running.")
+    response = client.post(f"{URL}/s3/test", json={"value": {}})
+    assert (response.status_code, response.json()["detail"]) == (409, "A test of this section is already running.")
 
 
 class TestQueue:
