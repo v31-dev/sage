@@ -243,12 +243,14 @@ class TaskQueue:
     return Added(admission.outcome, admission.task.task_id)
 
   def request_restore(self, task: Callable, name: str, executor: str, params: dict | None = None,
-                      labels: dict[str, str] | None = None, task_id: str | None = None) -> Added:
+                      labels: dict[str, str] | None = None, task_id: str | None = None,
+                      key: tuple[str, ...] | None = None) -> Added:
     """Request the platform restore: accepted only while running, else refused with no record. From then on the queue
     is restoring and refuses every other request; the tasks already queued start as usual, and the restore starts once
     nothing runs or waits. It runs as a task, with its id, lines and record, and ends the restoring state with
-    `end_restore`, whatever its outcome."""
-    restore = QueuedTask(name=name, key=(name,), scopes=frozenset(), task=task, executor=executor, params=params or {},
+    `end_restore`, whatever its outcome. Its key names what it restores, its name alone when omitted; no admission
+    compares it."""
+    restore = QueuedTask(name=name, key=tuple(key) if key else (name,), scopes=frozenset(), task=task, executor=executor, params=params or {},
                          labels=labels or {}, task_id=task_id or new_task_id())
     self._validate(restore)
     with self._lock:

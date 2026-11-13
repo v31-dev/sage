@@ -434,12 +434,11 @@ class ContainersMixin:
     and the requests of that kind queued on it in their turn, each cancellable when it is the user's request that
     `request_cancel` takes."""
     snapshot = self.task_snapshot()
-    live = {task["params"]["container_id"]: task["name"] for task in snapshot["running"]
-            if task["name"] in PROGRESS and "container_id" in task["params"]}
+    live = {task["key"][1]: task["name"] for task in snapshot["running"] if task["name"] in PROGRESS}
     queued = {}
     for task in snapshot["queued"]:
-      if task["name"] in PROGRESS and "container_id" in task["params"]:
-        container_id = task["params"]["container_id"]
+      if task["name"] in PROGRESS:
+        container_id = task["key"][1]
         cancellable = task["name"] in REQUESTS and task["key"] == [REQUESTS[task["name"]][0], container_id]
         queued[container_id] = (*queued.get(container_id, ()), QueuedRequest(task["name"], task["task_id"], cancellable))
     return live, queued

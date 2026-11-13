@@ -183,6 +183,14 @@ class TestPublication:
     manager.worker_reported("w1")
     assert signals == pages("w1")
 
+  def test_a_worker_task_counts_for_the_worker_its_key_names_whatever_its_params_say(self, manager, tailnet, workers):
+    async def reboot_worker(hostname):
+      pass
+
+    manager.add_task(task=reboot_worker, key=("reboot_worker", "w1"), scopes={"worker:w1"}, executor="app", params={"hostname": "w2"})
+    states = manager.worker_states()
+    assert (states["w1"].view.status, states["w2"].tasks) == ("rebooting", frozenset())
+
   async def test_a_worker_task_queued_and_ended_shows_its_worker(self, manager, tailnet, workers, signals):
     release = asyncio.Event()
 

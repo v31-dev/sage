@@ -69,7 +69,7 @@ class PlatformMixin:
       return None
     snapshot = self.task_snapshot()
     for task in (*snapshot["running"], *snapshot["queued"]):
-      if task["name"] == "restore_platform" and (timestamp := timestamp_from_key(task["params"]["s3_path"])):
+      if task["name"] == "restore_platform" and (timestamp := timestamp_from_key(task["key"][1])):
         return datetime.strptime(timestamp, BACKUP_TIMESTAMP_FORMAT).isoformat()
     return None
 
@@ -149,8 +149,8 @@ class PlatformMixin:
       raise ValueError("Only a platform backup restores the platform.")
     if backup.storage_id != session.identity:
       raise Conflict("This backup is not in the configured store.")
-    added = self.add_restore(task=self.restore_platform, name="restore_platform", executor="platform",
-                             params={"s3_path": backup.s3_path, "storage_id": backup.storage_id})
+    added = self.add_restore(task=self.restore_platform, name="restore_platform", key=("restore_platform", backup.s3_path),
+                             executor="platform", params={"s3_path": backup.s3_path, "storage_id": backup.storage_id})
     if added.outcome == Outcome.REFUSED:
       raise Conflict("Sage is not running, so it can't restore now.")
     return added.task_id

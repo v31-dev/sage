@@ -175,15 +175,16 @@ the `TaskQueue` (`QueueState`: `running`, `paused`, `restoring`, `stopping`), ex
   every scope; DEDUP/REPLACE keep each recurring task to one pending copy, and they run on
   resume. In memory only, so a restart comes back running.
 - **Restoring** (a platform restore). The restore is the queue's own entry
-  (`TaskQueue.request_restore`, through `Manager().add_restore`), with no key, scope or admission
-  policy: refused unless the queue is running, it sets the state at once. From then on every other
-  request is refused, with no record; the tasks queued before it start as usual, and the restore
-  starts once nothing runs or waits, so it runs alone. The UI shows a blocking overlay
-  (`RestoreOverlay`) from `GET /api` — the state and `restoring_from`, the backup's timestamp — so a
-  refreshed page shows the same. The restore ends the state with `Manager().end_restore()` in a
-  `finally`, whatever its outcome; nothing waits behind it. When it took effect, what runs at
-  startup is requested (`request_startup`) and the UI reloads. A stop signal cancels a restore that
-  hasn't started; one that is running finishes first.
+  (`TaskQueue.request_restore`, through `Manager().add_restore`), keyed by the archive it restores
+  (`("restore_platform", <s3 path>)`), with no scope or admission policy: refused unless the queue
+  is running, it sets the state at once. From then on every other request is refused, with no
+  record; the tasks queued before it start as usual, and the restore starts once nothing runs or
+  waits, so it runs alone. The UI shows a blocking overlay (`RestoreOverlay`) from `GET /api` — the
+  state and `restoring_from`, the backup's timestamp — so a refreshed page shows the same. The
+  restore ends the state with `Manager().end_restore()` in a `finally`, whatever its outcome;
+  nothing waits behind it. When it took effect, what runs at startup is requested
+  (`request_startup`) and the UI reloads. A stop signal cancels a restore that hasn't started; one
+  that is running finishes first.
 - **Stop signal** (`app/main.py`). The first SIGTERM/SIGINT shuts the scheduler down and
   stops the queue: queued tasks, and any added later (e.g. a follow-up queued by a
   finishing task), are recorded as `cancelled`; running ones finish, then the API server

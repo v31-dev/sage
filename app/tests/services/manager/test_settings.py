@@ -67,27 +67,28 @@ class TestDescribeCheckError:
 
 
 class TestIsApplying:
-  @pytest.mark.parametrize("name, params, sections", [
-      ("check_tailscale", {}, {"tailscale"}),
-      ("converge_worker", {"hostname": "w1", "force": True}, {"tailscale"}),
-      ("converge_worker", {"hostname": "w1"}, set()),
-      ("converge_worker", {"hostname": "w1", "force": False}, set()),
-      ("check_cloudflare", {}, {"cloudflare"}),
-      ("renew_certificates", {}, {"cloudflare"}),
-      ("check_s3", {}, {"s3"}),
-      ("check_notifications", {}, {"notifications"}),
-      ("backup_platform", {}, set()),
+  @pytest.mark.parametrize("name, key, params, sections", [
+      ("check_tailscale", ["check_tailscale"], {}, {"tailscale"}),
+      ("converge_worker", ["converge_worker", "w1", "force"], {"hostname": "w1", "force": True}, {"tailscale"}),
+      ("converge_worker", ["converge_worker", "w1"], {"hostname": "w1", "force": False}, set()),
+      ("converge_worker", ["converge_worker", "w1"], {"hostname": "w1", "force": True}, set()),
+      ("check_cloudflare", ["check_cloudflare"], {}, {"cloudflare"}),
+      ("renew_certificates", ["renew_certificates"], {}, {"cloudflare"}),
+      ("check_s3", ["check_s3"], {}, {"s3"}),
+      ("check_notifications", ["check_notifications"], {}, {"notifications"}),
+      ("backup_platform", ["backup_platform"], {}, set()),
   ])
-  def test_a_task_makes_only_its_own_sections_apply(self, name, params, sections):
-    queued = {"name": name, "params": params}
-    assert {key for key in APPLYING_TASKS if _is_applying(queued, key)} == sections
+  def test_a_task_makes_only_its_own_sections_apply_by_its_name_and_the_intent_its_key_ends_with(self, name, key, params,
+                                                                                                 sections):
+    queued = {"name": name, "key": key, "params": params}
+    assert {section for section in APPLYING_TASKS if _is_applying(queued, section)} == sections
 
   def test_every_settings_section_has_applying_tasks(self):
     assert set(APPLYING_TASKS) == set(SETTING_SECTIONS)
 
   @pytest.mark.parametrize("key", SETTING_SECTIONS)
   def test_every_section_applies_while_its_own_check_runs(self, key):
-    assert _is_applying({"name": f"check_{key}", "params": {"key": key}}, key)
+    assert _is_applying({"name": f"check_{key}", "key": [f"check_{key}"], "params": {"key": key}}, key)
 
   @pytest.mark.parametrize("key, name, params", [
       (key, name, params) for key, tasks in APPLYING_TASKS.items() for name, params in tasks if name != f"check_{key}"])

@@ -547,6 +547,16 @@ class TestQueuedRequests:
     assert manager.request_cancel(container.id, "deploy") == queued[0].task_id
     assert [request.operation for request in manager.container_states([container])[container.id].queued] == ["backup_preserve"]
 
+  def test_a_request_counts_for_the_container_its_key_names_whatever_its_params_say(self, manager, containers):
+    async def automatic(container_id):
+      pass
+
+    first, second = containers
+    manager.add_task(task=automatic, key=("backup_preserve", first.id), scopes={f"worker:w1:container:{first.id}"},
+                     executor="app", params={"container_id": second.id})
+    states = manager.container_states(containers)
+    assert ([request.operation for request in states[first.id].queued], states[second.id].queued) == (["backup_preserve"], ())
+
   async def test_a_request_that_starts_leaves_the_queued_ones_and_is_the_live_operation(self, manager, containers):
     release = asyncio.Event()
 

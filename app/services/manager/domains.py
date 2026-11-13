@@ -239,6 +239,6 @@ class DomainsMixin:
     applying = {}
     for task in (*snapshot["running"], *snapshot["queued"]):
       if task["name"] == "apply_domain":
-        domain_id = task["params"]["domain_id"]
+        domain_id = task["key"][1]
         applying[domain_id] = min(applying.get(domain_id, task["queued_at"]), task["queued_at"])
     return applying

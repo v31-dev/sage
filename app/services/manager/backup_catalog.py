@@ -68,7 +68,7 @@ class BackupCatalogMixin:
       logger.error(f"The backups in the store could not be listed: {error}")
       raise TaskFailed()
     snapshot = self.task_snapshot()
-    deleting = {task["params"]["s3_path"] for task in (*snapshot["running"], *snapshot["queued"]) if task["name"] == "delete_archive"}
+    deleting = {task["key"][1] for task in (*snapshot["running"], *snapshot["queued"]) if task["name"] == "delete_archive"}
     plan = reconcile_catalog(
         session.identity, session.target.path, platform_keys - deleting, volume_keys - deleting,
         [CatalogRow(row.id, row.s3_path, row.storage_id) for row in Backup.select(Backup.id, Backup.s3_path, Backup.storage_id)],

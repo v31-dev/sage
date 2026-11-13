@@ -401,6 +401,14 @@ class TestPayloads:
         (public.id, "https://shop.example.test"), (internal.id, "https://api.red.int.example.test")]
     assert [payload["view"]["reason"] for payload in payloads] == ["worker_not_ready", "worker_not_ready"]
 
+  def test_an_apply_counts_for_the_domain_its_key_names_whatever_its_params_say(self, manager, public, internal):
+    async def apply_domain(domain_id, worker, host):
+      pass
+
+    manager.add_task(task=apply_domain, key=("apply_domain", public.id), scopes={f"domain:{public.id}"}, executor="app",
+                     params={"domain_id": internal.id, "worker": None, "host": None})
+    assert state(manager, public).view.status == "syncing" and state(manager, internal).view.status != "syncing"
+
   def test_a_domain_whose_apply_is_queued_shows_it_syncing(self, manager, public):
     manager.request_domain_applies([public.id])
     [payload] = manager.domain_payloads([Domain.get_by_id(public.id)])

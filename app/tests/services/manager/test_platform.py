@@ -170,9 +170,15 @@ class TestRestoreRequest:
     backup = Backup.create(s3_path="base/backups/platform/20260101_030000.db.enc", storage_id="sa", type="platform")
     manager.request_platform_restore(backup.id)
     [task] = manager.task_queue.snapshot()["queued"]
-    assert (task["name"], task["scopes"], task["executor"], task["params"]) == (
-        "restore_platform", [], "platform", {"s3_path": backup.s3_path, "storage_id": "sa"})
+    assert (task["name"], task["key"], task["scopes"], task["executor"], task["params"]) == (
+        "restore_platform", ["restore_platform", backup.s3_path], [], "platform", {"s3_path": backup.s3_path, "storage_id": "sa"})
     assert (manager.task_state(), manager.restoring_from()) == ("restoring", "2026-01-01T03:00:00")
+
+  def test_the_backup_being_restored_is_the_one_its_key_names_whatever_its_params_say(self, manager, stores):
+    manager.add_restore(task=manager.restore_platform, name="restore_platform", executor="platform",
+                        key=("restore_platform", "base/backups/platform/20260101_030000.db.enc"),
+                        params={"s3_path": "base/backups/platform/20250101_030000.db.enc", "storage_id": "sa"})
+    assert manager.restoring_from() == "2026-01-01T03:00:00"
 
   def test_every_other_request_is_refused_while_it_waits(self, manager, stores):
     backup = Backup.create(s3_path="base/backups/platform/20260101_030000.db.enc", storage_id="sa", type="platform")

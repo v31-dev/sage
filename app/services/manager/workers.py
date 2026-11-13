@@ -467,8 +467,8 @@ class WorkersMixin:
     snapshot = self.task_snapshot()
     tasks = {}
     for task in (*snapshot["running"], *snapshot["queued"]):
-      if task["name"] in TASKS and "hostname" in task["params"]:
-        tasks.setdefault(task["params"]["hostname"], set()).add(task["name"])
+      if task["name"] in TASKS:
+        tasks.setdefault(task["key"][1], set()).add(task["name"])
     return tasks
 
   def _workers_changed(self, hostnames):

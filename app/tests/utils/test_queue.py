@@ -605,15 +605,19 @@ class TestRestore:
     assert self.restore(lane, task_id="second") == Added(Outcome.REFUSED)
     assert (lane.queue.state, lane.queue.snapshot()["queued"], lane.recorded, lane.changes) == (state, queued, [], changes)
 
+  def test_its_key_is_its_name_alone_unless_one_is_given(self, lane):
+    self.restore(lane)
+    assert lane.queue.snapshot()["queued"][0]["key"] == ["restore_platform"]
+
   def test_it_waits_last_as_a_task_without_scopes_and_the_queue_is_restoring(self, lane):
     lane.add(done, key=("waiting",))
     added = self.restore(lane, params={"s3_path": "base/backups/platform/x.db.enc"}, labels={"Backup": "x"},
-                         task_id="r1")
+                         task_id="r1", key=("restore_platform", "base/backups/platform/x.db.enc"))
     assert added == Added(Outcome.ACCEPTED, "r1") and lane.queue.state == QueueState.RESTORING
     waiting, restore = lane.queue.snapshot()["queued"]
     assert waiting["name"] == "waiting"
     assert {name: restore[name] for name in ("task_id", "name", "key", "scopes", "params", "labels", "executor", "quiet")} == {
-        "task_id": "r1", "name": "restore_platform", "key": ["restore_platform"], "scopes": [],
+        "task_id": "r1", "name": "restore_platform", "key": ["restore_platform", "base/backups/platform/x.db.enc"], "scopes": [],
         "params": {"s3_path": "base/backups/platform/x.db.enc"}, "labels": {"Backup": "x"}, "executor": "platform",
         "quiet": False}
     assert lane.queue.has_task(("restore_platform",)) and not lane.queue.has_task(("restore_platform",), running_only=True)

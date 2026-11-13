@@ -202,6 +202,18 @@ class TestDiscovery:
     await manager.discover_backups("sa")
     assert catalog() == []
 
+  async def test_the_archive_left_out_is_the_one_a_deletions_key_names_whatever_its_params_say(self, manager, stores, volume):
+    async def delete_archive(s3_path, storage_id):
+      pass
+
+    deleted, kept = stores.a.get_full_path(archive_key(volume)), stores.a.get_full_path(archive_key(volume, 1))
+    stores.a.put(archive_key(volume))
+    stores.a.put(archive_key(volume, 1))
+    manager.add_task(task=delete_archive, key=("delete_archive", deleted), scopes={"backup:store:sa:archive:x"}, executor="common",
+                     params={"s3_path": kept, "storage_id": "sa"})
+    await manager.discover_backups("sa")
+    assert [s3_path for _, s3_path, _, _ in catalog()] == [kept]
+
   async def test_nothing_is_done_once_the_store_changed(self, manager, stores, volume):
     stores.a.put(archive_key(volume))
     stores.b.put(archive_key(volume, 1))
