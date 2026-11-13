@@ -177,6 +177,8 @@ Each resource's own rules, on top of the root's working rules 9–13. The workfl
 - Storage work takes one `S3().session()` at its start (a `Conflict` when S3 is not configured, so a user action gets
   its 409) and uses it to the end, its result included. A Backup row records the `storage_id` (`S3Session.identity`)
   it was written to, and work admitted under another identity is refused, never retargeted to the configured store.
+- A store change invalidates the old store's backups: they are not listed and their rows go at the next discovery,
+  the old store is no longer Sage's to manage, and the new store is reconciled afresh, blank or not.
 - A platform backup is a coherent SQLite configuration snapshot, without history or Backup rows, taken while
   operations continue.
 - A platform restore is a pseudo restart: install, clear the memory of the old configuration, `request_startup`; the

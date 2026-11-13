@@ -11,6 +11,7 @@ import config
 from services import s3 as s3_module
 from services.s3 import S3, StorageTarget, client_kwargs, region_of
 from services.settings import Settings
+from services.updates import UpdateSource
 from utils.errors import Conflict
 from utils.executor import active_executor
 
@@ -66,6 +67,15 @@ class TestInstall:
     s3.install({**VALUES, "bucket": ""})
     with pytest.raises(Conflict, match="S3 is not configured"):
       s3.session()
+
+  def test_another_store_changes_the_backups_and_new_credentials_for_the_same_store_do_not(self, unconfigured, signals):
+    changes = []
+    for values in (VALUES, {**VALUES, "access_key": "AK2", "secret_key": "SK2"}, {**VALUES, "path": "elsewhere"},
+                   {**VALUES, "bucket": ""}, {**VALUES, "bucket": ""}):
+      signals.clear()
+      unconfigured.install(values)
+      changes.append(signals.count((UpdateSource.BACKUPS, None)))
+    assert changes == [1, 0, 1, 1, 0]
 
 
 class TestFrozenSession:

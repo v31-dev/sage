@@ -29,6 +29,7 @@ from services.backups.payload import platform_backups
 from services.db.models import Notification
 from services.notification import list_notifications
 from services.releases import Releases
+from services.s3 import S3
 from services.updates import Feed, Topic, UpdateFeed, Updates, UpdateSource, UpdateTopic
 
 BOTH = ["polling", "websocket"]
@@ -434,7 +435,8 @@ class TestOneWorkerAndOneApplication:
 
 
 class TestBackups:
-  def test_a_platform_backup_written_is_pushed_in_the_list_of_platform_backups(self, browser, db):
+  def test_a_platform_backup_written_is_pushed_in_the_list_of_platform_backups(self, browser, db, register):
+    register(S3, SimpleNamespace(session=lambda: SimpleNamespace(identity="s1")))
     one = browser()
     one.subscribe("backups")
     add_backup("base/backups/platform/20260102_030405.db.enc", "s1")

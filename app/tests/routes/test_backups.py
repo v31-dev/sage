@@ -38,7 +38,7 @@ def no_store(register):
 
 
 class TestReads:
-  def test_the_list_is_the_platforms_backups_only(self, client, platform, archive):
+  def test_the_list_is_the_platforms_backups_only(self, client, platform, archive, store):
     assert [backup["id"] for backup in client.get(f"{URL}/").json()] == [platform.id]
 
   def test_the_status_is_the_managers(self, client, manager):

@@ -57,7 +57,8 @@ class TestVolumes:
 
 
 class TestBackups:
-  def test_the_list_is_this_volumes_backups(self, client, volume, other):
+  def test_the_list_is_this_volumes_backups(self, client, volume, other, register):
+    register(S3, SimpleNamespace(session=Session))
     own = archive(volume)
     archive(other)
     assert [backup["id"] for backup in client.get(f"{URL}/data/backups/").json()] == [own.id]

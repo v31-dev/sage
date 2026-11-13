@@ -12,6 +12,7 @@ from botocore.exceptions import ClientError, NoCredentialsError
 import config
 from services.base import Base
 from services.settings import SETTING_DEFINITIONS, fields_set, validate_section
+from services.updates import Updates, UpdateSource
 from utils.errors import Conflict
 from utils.executor import run_in_executor_with_context
 from utils.retry import retry_async
@@ -72,7 +73,9 @@ class S3(Base):
     if session is None:
       logger.warning("No complete S3 config found in settings, S3 functionality will be disabled")
     with self.lock:
-      self._session = session
+      previous, self._session = self._session, session
+    if (previous and previous.identity) != (session and session.identity):
+      Updates().changed(UpdateSource.BACKUPS)
 
   def session(self) -> "S3Session":
     """The configured store's session, for an operation to hold from start to end; a Conflict when S3 is not set."""
