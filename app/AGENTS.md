@@ -254,7 +254,8 @@ Stop](../docs/backend.md#pause-and-stop).
 - Sage never restarts or upgrades itself. Pause, restore and stop are queue states. While not running, `app/api.py`
   refuses changes with 503 (every method but GET, HEAD and OPTIONS, except pause and resume), so a route that only
   reads is a GET. A change route writes straight after that check and anything that calls a provider goes in a task,
-  so no change lands after a restore's install. Pause comes only before a shutdown or an upgrade, so nothing else has
+  so no change lands after a restore's install. A change during which another request starts a restore gets the
+  same 503 after it ran, since the restore replaces what it wrote; a pause or stop meanwhile leaves its answer. Pause comes only before a shutdown or an upgrade, so nothing else has
   to work while paused.
 - When touching orchestration, verify the task flow, the logging flow and the async boundaries, including overlapping
   calls and a cache replaced while another thread reads it.

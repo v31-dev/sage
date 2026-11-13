@@ -11,6 +11,7 @@ from starlette.routing import Route
 from starlette.staticfiles import StaticFiles
 
 import config
+from routes.backups import restore_backup
 from routes.backups import router as backups_router
 from routes.domains import router as domains_router
 from routes.info import router as info_router
@@ -33,20 +34,25 @@ SOCKET_IO_PATH = "/api/socket.io"
 
 # While Sage is paused, restoring or stopping, only reads are served: GETs, and pause/resume themselves.
 _ALLOWED_WHILE_PAUSED = ("/api/settings/pause", "/api/settings/resume")
+_REFUSALS = {
+    "paused": "Sage is paused; resume it first.",
+    "restoring": "Sage is restoring a backup; wait for it to finish.",
+    "stopping": "Sage is stopping.",
+}
 
 
 @app.middleware("http")
 async def refuse_changes_unless_running(request: Request, call_next):
-  state = Manager().task_state()
-  if (state != "running"
-          and request.method not in ("GET", "HEAD", "OPTIONS")
-          and request.url.path not in _ALLOWED_WHILE_PAUSED):
-    detail = {
-        "paused": "Sage is paused; resume it first.",
-        "restoring": "Sage is restoring a backup; wait for it to finish.",
-    }.get(state, "Sage is stopping.")
-    return JSONResponse(status_code=503, content={"detail": detail})
-  return await call_next(request)
+  if request.method in ("GET", "HEAD", "OPTIONS") or request.url.path in _ALLOWED_WHILE_PAUSED:
+    return await call_next(request)
+  if (state := Manager().task_state()) != "running":
+    return JSONResponse(status_code=503, content={"detail": _REFUSALS[state]})
+  response = await call_next(request)
+  # Sage started restoring while this change ran: the restore will overwrite what it wrote, and any task it asked for
+  # was not queued.
+  if Manager().task_state() == "restoring" and request.scope.get("endpoint") is not restore_backup:
+    return JSONResponse(status_code=503, content={"detail": _REFUSALS["restoring"]})
+  return response
 
 
 @app.exception_handler(ValueError)

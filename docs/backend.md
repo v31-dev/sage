@@ -193,7 +193,10 @@ the `TaskQueue` (`QueueState`: `running`, `paused`, `restoring`, `stopping`), ex
   worker logs keep arriving until the process exits.
 
 `GET /api` reports that `state` and the `settings` status; the workers are the `workers` topic's, not part of it. It reads memory only (the certificate expiry too: `Certificate.load` reads the PEM at startup and after each write), because the pause banner and the restore overlay depend on it while the database is being replaced; if building the settings status fails, that part is `null` and the rest is still returned. While it isn't `running`,
-`api.py` refuses changes with 503: every method but GET/HEAD/OPTIONS, except pause/resume.
+`api.py` refuses changes with 503: every method but GET/HEAD/OPTIONS, except pause/resume. A change that was let in
+while another request started a restore answers the same 503 once it has run: the restore replaces what it wrote, and
+the queue refused any task it asked for. A pause or a stop meanwhile leaves its answer alone: its write stays, and its
+task waits for resume or is recorded as cancelled.
 A read is a GET. Pause comes only before a shutdown or an upgrade, so the settings test (a POST, since it takes the
 values to check in its body) is refused too.
 

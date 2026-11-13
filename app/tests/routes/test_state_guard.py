@@ -38,6 +38,27 @@ class TestChangesRefused:
     assert lenient.post(url).status_code != 503
 
 
+class TestStateChangedWhileTheChangeRan:
+  def becomes(self, manager, state, answer="task-1"):
+    return lambda *args, **kwargs: setattr(manager, "state", state) or answer
+
+  def test_a_restore_started_meanwhile_makes_it_the_restoring_503(self, client, manager):
+    manager.answers["request_release_check"] = self.becomes(manager, "restoring", answer=None)
+    response = client.post("/api/release/refresh")
+    assert (response.status_code, response.json()) == (503, {"detail": MESSAGES["restoring"]})
+
+  def test_the_restore_request_itself_answers_its_task(self, client, manager):
+    manager.answers["request_platform_restore"] = self.becomes(manager, "restoring", answer="r1")
+    response = client.post("/api/backups/7/restore")
+    assert (response.status_code, response.json()) == (200, {"task_id": "r1"})
+
+  @pytest.mark.parametrize("state", ["paused", "stopping"])
+  def test_a_pause_or_stop_meanwhile_leaves_its_answer(self, client, manager, state):
+    manager.answers["request_release_check"] = self.becomes(manager, state)
+    response = client.post("/api/release/refresh")
+    assert (response.status_code, response.json()) == (200, {"task_id": "task-1"})
+
+
 class TestRunning:
   def test_a_change_goes_through_and_answers_its_task(self, client, manager):
     response = client.post("/api/release/refresh")

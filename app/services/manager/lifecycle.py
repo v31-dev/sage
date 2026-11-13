@@ -120,13 +120,10 @@ class LifecycleMixin:
     return f"{labels['Application']} on {labels['Worker']}", f"/projects/{application.project_id}/{application.name}"
 
   @staticmethod
-  def admitted_task_id(added: Added) -> str:
-    """The id of the task that does the request; a Conflict when the container is busy or Sage is stopping or
-    restoring."""
+  def admitted_task_id(added: Added) -> str | None:
+    """The id of the task that does the request, as `Added` has it; a Conflict when the container is busy."""
     if added.outcome == Outcome.BUSY:
       raise Conflict("This container already has an operation in progress.")
-    if added.outcome == Outcome.REFUSED:
-      raise Conflict("Sage is stopping or restoring a backup.")
     return added.task_id
 
   async def begin_lifecycle(self, container_id: str, contract: str, input_hash: str | None = None, force: bool = False,
