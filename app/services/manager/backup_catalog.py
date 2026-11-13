@@ -24,7 +24,7 @@ class BackupCatalogMixin:
   def request_backup_deletion(self, backup_id: int) -> str:
     """Deletes the backup's row now and queues the deletion of its archive from the store it is in. The task's id."""
     backup = remove_backup(backup_id)
-    return self.add_task(task=self.delete_archive, key=("delete_archive", backup.s3_path),
+    return self.add_task(task=self.delete_archive, key=("delete_archive", backup.storage_id, backup.s3_path),
                          scopes={archive_scope(backup.storage_id, backup.s3_path)}, executor="common",
                          params={"s3_path": backup.s3_path, "storage_id": backup.storage_id},
                          labels={"Backup of": backup.source_volume_name if backup.type == "application" else "the platform"}).task_id
@@ -68,7 +68,8 @@ class BackupCatalogMixin:
       logger.error(f"The backups in the store could not be listed: {error}")
       raise TaskFailed()
     snapshot = self.task_snapshot()
-    deleting = {task["key"][1] for task in (*snapshot["running"], *snapshot["queued"]) if task["name"] == "delete_archive"}
+    deleting = {task["key"][2] for task in (*snapshot["running"], *snapshot["queued"])
+                if task["name"] == "delete_archive" and task["key"][1] == session.identity}
     plan = reconcile_catalog(
         session.identity, session.target.path, platform_keys - deleting, volume_keys - deleting,
         [CatalogRow(row.id, row.s3_path, row.storage_id) for row in Backup.select(Backup.id, Backup.s3_path, Backup.storage_id)],

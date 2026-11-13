@@ -616,7 +616,7 @@ class TestRestoreRequests:
     restore, own, elsewhere = [QueuedTask(name=task["name"], key=tuple(task["key"]), scopes=frozenset(task["scopes"]),
                                           task=None, executor=task["executor"]) for task in manager.task_queue.snapshot()["queued"]]
     assert (restore.name, own.key, elsewhere.key) == (
-        "restore_stopped", ("delete_archive", backup.s3_path), ("delete_archive", other.s3_path))
+        "restore_stopped", ("delete_archive", "s1", backup.s3_path), ("delete_archive", "s1", other.s3_path))
     assert next_to_start(QueueState.RUNNING, [own, elsewhere], [restore]) == [elsewhere]
     assert next_to_start(QueueState.RUNNING, [restore], [own]) == []
 

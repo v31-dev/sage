@@ -134,7 +134,7 @@ class TestDeletion:
     manager.request_backup_deletion(backup.id)
     assert catalog() == [] and (UpdateSource.BACKUPS, None) in signals
     part = hashlib.sha256(backup.s3_path.encode()).hexdigest()[:16]
-    assert queued(manager) == [(("delete_archive", backup.s3_path), [f"backup:store:sa:archive:{part}"],
+    assert queued(manager) == [(("delete_archive", "sa", backup.s3_path), [f"backup:store:sa:archive:{part}"],
                                 {"s3_path": backup.s3_path, "storage_id": "sa"}, {"Backup of": "data"}, False)]
 
   def test_a_platform_backup_is_named_so(self, manager, stores, db):
@@ -159,6 +159,29 @@ class TestDeletion:
     stores.configured = stores.b
     await manager.run()
     assert stores.a.keys() == {backup.s3_path} and stores.b.keys() == {backup.s3_path}
+
+  async def test_one_path_in_two_stores_is_two_deletions_and_a_repeat_in_one_store_is_absorbed(self, manager, stores, volume):
+    key = archive_key(volume)
+    stores.a.put(key)
+    stores.b.put(key)
+    entered, release = asyncio.Event(), asyncio.Event()
+    original = stores.a.delete_key
+
+    async def delete_key(*args, **kwargs):
+      entered.set()
+      await release.wait()
+      return await original(*args, **kwargs)
+
+    stores.a.delete_key = delete_key
+    first = manager.request_backup_deletion(row(stores.a, key, volume).id)
+    manager.task_queue.dispatch_tick()
+    await entered.wait()
+    assert manager.request_backup_deletion(row(stores.a, key, volume).id) == first
+    stores.configured = stores.b
+    assert manager.request_backup_deletion(row(stores.b, key, volume).id) != first
+    release.set()
+    await manager.run()
+    assert stores.a.keys() == set() and stores.b.keys() == set()
 
   async def test_a_deletion_that_fails_fails_the_task_and_says_which_backup(self, manager, stores, volume, notices):
     key = stores.a.put(archive_key(volume))
@@ -209,10 +232,16 @@ class TestDiscovery:
     deleted, kept = stores.a.get_full_path(archive_key(volume)), stores.a.get_full_path(archive_key(volume, 1))
     stores.a.put(archive_key(volume))
     stores.a.put(archive_key(volume, 1))
-    manager.add_task(task=delete_archive, key=("delete_archive", deleted), scopes={"backup:store:sa:archive:x"}, executor="common",
+    manager.add_task(task=delete_archive, key=("delete_archive", "sa", deleted), scopes={"backup:store:sa:archive:x"}, executor="common",
                      params={"s3_path": kept, "storage_id": "sa"})
     await manager.discover_backups("sa")
     assert [s3_path for _, s3_path, _, _ in catalog()] == [kept]
+
+  async def test_a_deletion_in_another_store_leaves_this_stores_archive_of_that_path_listed(self, manager, stores, volume):
+    key = stores.a.put(archive_key(volume))
+    manager.request_backup_deletion(row(stores.b, archive_key(volume), volume).id)
+    await manager.discover_backups("sa")
+    assert catalog() == [("sa", key, "application", "data")]
 
   async def test_nothing_is_done_once_the_store_changed(self, manager, stores, volume):
     stores.a.put(archive_key(volume))
