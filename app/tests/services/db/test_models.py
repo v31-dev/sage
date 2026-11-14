@@ -17,6 +17,24 @@ def container(application, worker):
 
 
 class TestBaseModel:
+  @pytest.mark.parametrize("model, fields", [
+      (Application, {"name": "extra", "label": "Extra"}),
+      (ContainerEvent, {"subject_id": "gone", "action": "stop", "transition": "succeeded",
+                        "application_name": "demo-web", "worker_hostname": "w1"}),
+      (WorkerEvent, {"subject_id": "gone", "action": "remove", "transition": "succeeded"}),
+      (Notification, {"content": "Notice"}),
+  ])
+  def test_numeric_ids_are_not_reused_after_deleting_rows(self, project, model, fields):
+    fields = {**fields, **({"project": project} if model is Application else {})}
+    first = model.create(**fields)
+    first.delete_instance()
+    second = model.create(**fields)
+    assert second.id > first.id
+
+    model.delete().execute()
+    third = model.create(**fields)
+    assert third.id > second.id
+
   def test_both_timestamps_are_set_when_a_row_is_created(self, db):
     before = utcnow()
     project = Project.create(name="demo", label="Demo")
@@ -238,6 +256,21 @@ class TestVolume:
 
 
 class TestBackup:
+  def test_a_recreated_backup_has_a_distinct_opaque_primary_key(self, db):
+    first = Backup.create(type="platform", s3_path="old", storage_id="s1")
+    first.delete_instance()
+    second = Backup.create(type="platform", s3_path="new", storage_id="s1")
+
+    assert OPAQUE_ID.fullmatch(first.id) and OPAQUE_ID.fullmatch(second.id)
+    assert second.id != first.id
+    assert Backup.get_or_none(Backup.id == first.id) is None
+    assert Backup.get_by_id(second.id).s3_path == "new"
+
+  def test_catalog_inserts_receive_distinct_identities(self, db):
+    Backup.insert_many([{"type": "platform", "s3_path": key, "storage_id": "s1"} for key in ("one", "two")]).execute()
+
+    assert len(set(Backup.select(Backup.id).scalars())) == 2
+
   def test_a_backup_names_the_store_it_was_written_to(self, application):
     with pytest.raises(IntegrityError, match="NOT NULL constraint failed: backup.storage_id"):
       Backup.create(type="platform", s3_path="backups/platform/x")

@@ -83,7 +83,7 @@ class BackupsMixin:
                     executor="app", params={"container_id": container.id, "volume_ids": volume_ids, "storage_id": session.identity},
                     labels={**self.container_labels(container), "Volumes": ", ".join(sorted(names[container.application_id]))})
 
-  def request_restore(self, container_id: str, backup_id: int, volume_id: str) -> str:
+  def request_restore(self, container_id: str, backup_id: str, volume_id: str) -> str:
     """Queues the restore of a backup of one of the application's volumes into the container's copy of `volume_id`,
     any volume of that application, in the container's lifecycle slot; refused unless the container is stopped or never
     deployed, and the backup is in the configured store. The task's id."""
@@ -173,18 +173,18 @@ class BackupsMixin:
     record_container_event(container, "backup_preserve", "succeeded", operation.id, dedupe_key=f"{operation.id}:succeeded")
     await mark(container, "Backed up")
 
-  async def restore_container(self, container_id: str, backup_id: int, volume_id: str, storage_id: str):
+  async def restore_container(self, container_id: str, backup_id: str, volume_id: str, storage_id: str):
     """Replaces the container's copy of the volume with the backup, read from the store it was requested for, and
     commits the container stopped and succeeded. Refused while it runs, once the configured store is another, or when
-    the backup or the volume is gone; a failed restore leaves it stopped and in error, the volume possibly part
-    replaced, and a Deploy allowed."""
+    the selected backup or the volume is gone; a failed restore leaves it stopped and in error,
+    the volume possibly part replaced, and a Deploy allowed."""
     session = configured_session(storage_id)
+    backup = Backup.get_or_none(Backup.id == backup_id)
 
     async def prepare(container: Container, kept) -> None:
-      backup = Backup.get_or_none((Backup.id == backup_id) & (Backup.application == container.application_id))
       if session is None or (backup is not None and backup.storage_id != session.identity):
         raise Refused("store_changed")
-      if backup is None or backup.source_volume_id is None:
+      if backup is None or backup.application_id != container.application_id or backup.source_volume_id is None:
         raise Refused("no_backup")
       if not Volume.select().where((Volume.id == volume_id) & (Volume.application == container.application_id)).exists():
         raise Refused("no_volumes")
@@ -200,7 +200,7 @@ class BackupsMixin:
     operation = record.operation
     try:
       await Containers().write(container, record)
-      backup, volume = Backup.get_by_id(backup_id), Volume.get_by_id(volume_id)
+      volume = Volume.get_by_id(volume_id)
       script = f"/tmp/sage-restore-{new_id()}.sh"
       await Tailscale().sync_file(container.worker_id, config.TEMPLATES_DIR / "worker/application/restore.sh", script, {
           "PLACEMENT_DIR": placement_dir(config.WORKER_HOME_DIR, container.id), "ARCHIVED_VOLUME_ID": backup.source_volume_id,

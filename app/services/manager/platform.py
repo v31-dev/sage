@@ -140,7 +140,7 @@ class PlatformMixin:
     logger.info(f"Platform backup written to {key}.")
     Notifications().notify("Platform backup created.", "success", "/backups")
 
-  def request_platform_restore(self, backup_id: int) -> str:
+  def request_platform_restore(self, backup_id: str) -> str:
     """Requests the restore of a platform backup in the configured store: from now on every other request is refused,
     and the restore starts once the tasks queued before it have finished. The task's id."""
     session = S3().session()

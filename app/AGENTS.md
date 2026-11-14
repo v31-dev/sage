@@ -56,6 +56,8 @@ here and are not repeated. How the backend works (the queue's modes, each workfl
   importing the models touches no disk. Preserve this lightweight storage unless a task requires otherwise.
 - Models declare schema, storage conversion and constraints. Save hooks and signals perform no cross-resource effects:
   dependent fields, membership, counters and unlinks belong to the resource's command.
+- Add opaque identities on demand for a resource's durable references; do not make opaque ids the shared model default.
+- Main database models inherit an AUTOINCREMENT numeric primary key unless they declare their own primary key.
 - A resource command (built on `services/db/writes.py`) runs in its own `db.atomic("IMMEDIATE")` transaction and
   refuses to run inside another; it re-fetches by id, merges the patch's explicit keys and writes the affected fields;
   it publishes only after its commit. It raises `ValueError` for an invalid value, `LookupError` for a missing row and
@@ -174,6 +176,8 @@ Each resource's own rules, on top of the root's working rules 9–13. The workfl
 
 ### Backups And Restore
 
+- A Backup's primary key is opaque and identifies API actions and queued source references. Lists order by
+  `created_at`, with the id as a stable tie-breaker; a stale reference must not select another archive.
 - Storage work takes one `S3().session()` at its start (a `Conflict` when S3 is not configured, so a user action gets
   its 409) and uses it to the end, its result included. A Backup row records the `storage_id` (`S3Session.identity`)
   it was written to, and work admitted under another identity is refused, never retargeted to the configured store.

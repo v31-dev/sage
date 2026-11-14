@@ -51,7 +51,7 @@ const selectedContainerId = ref('')
 const selectedVolume = ref('')
 
 const selectedBackup = computed(
-  () => backups.value.find(backup => String(backup.id) === selectedBackupId.value) ?? null
+  () => backups.value.find(backup => backup.id === selectedBackupId.value) ?? null
 )
 const selectedContainer = computed(
   () =>
@@ -79,7 +79,7 @@ async function loadBackups() {
       props.application.name,
       props.volume.name
     )
-    selectedBackupId.value = backups.value[0] ? String(backups.value[0].id) : ''
+    selectedBackupId.value = backups.value[0]?.id ?? ''
   } catch (err) {
     loadError.value = err instanceof Error ? err.message : 'Failed to load backups'
   } finally {
@@ -171,7 +171,7 @@ watch(isOpen, async open => {
                 <SelectValue placeholder="Select backup" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem v-for="backup in backups" :key="backup.id" :value="String(backup.id)">
+                <SelectItem v-for="backup in backups" :key="backup.id" :value="backup.id">
                   {{ formatDate(backup.created_at) }}
                 </SelectItem>
               </SelectContent>

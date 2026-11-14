@@ -37,23 +37,23 @@ def test_keys_that_are_not_backups_are_skipped():
 
 
 def test_a_recorded_backup_still_listed_stays():
-  assert plan(platform=[PLATFORM], rows=[CatalogRow(1, PLATFORM, CURRENT)]) == CatalogPlan()
+  assert plan(platform=[PLATFORM], rows=[CatalogRow("b1", PLATFORM, CURRENT)]) == CatalogPlan()
 
 
 def test_a_recorded_backup_whose_object_is_gone_is_dropped():
-  assert plan(rows=[CatalogRow(1, PLATFORM, CURRENT)]) == CatalogPlan(deletes=[1])
+  assert plan(rows=[CatalogRow("b1", PLATFORM, CURRENT)]) == CatalogPlan(deletes=["b1"])
 
 
 def test_a_backup_of_another_store_is_dropped_even_where_the_same_key_is_listed_here():
   """Item 29: the same key in two stores is two backups; a row of the old store never stands for the new one's."""
-  result = plan(platform=[PLATFORM], rows=[CatalogRow(1, PLATFORM, OTHER)])
-  assert result.deletes == [1]
+  result = plan(platform=[PLATFORM], rows=[CatalogRow("b1", PLATFORM, OTHER)])
+  assert result.deletes == ["b1"]
   assert [row["storage_id"] for row in result.inserts] == [CURRENT]
 
 
 def test_applying_any_plan_leaves_exactly_the_listed_backups_of_this_store():
   listings = [PLATFORM, ARCHIVE, STRANGER]
-  rows = [CatalogRow(1, PLATFORM, CURRENT), CatalogRow(2, ARCHIVE, OTHER), CatalogRow(3, STRANGER, CURRENT)]
+  rows = [CatalogRow("b1", PLATFORM, CURRENT), CatalogRow("b2", ARCHIVE, OTHER), CatalogRow("b3", STRANGER, CURRENT)]
   for listed, recorded in itertools.product(itertools.product((False, True), repeat=3), itertools.product((False, True), repeat=3)):
     keys = {key for key, present in zip(listings, listed) if present}
     held = [row for row, present in zip(rows, recorded) if present]

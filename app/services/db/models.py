@@ -1,4 +1,5 @@
 from peewee import SQL, CharField, Check, DateTimeField, ForeignKeyField, IntegerField, Model, SqliteDatabase
+from playhouse.sqlite_ext import AutoIncrementField
 
 from services.db.fields import (AlphaNumericField, ChoiceField, CleanCharField, EncryptedJSONField, EncryptedKeyValueField, JSONField, LabelField,
                                 OriginListField)
@@ -9,6 +10,7 @@ db = SqliteDatabase(None)
 
 
 class BaseModel(Model):
+  id = AutoIncrementField()
   created_at = DateTimeField(default=utcnow)
   updated_at = DateTimeField(default=utcnow)
 
@@ -158,6 +160,7 @@ class Notification(BaseModel):
 
 
 class Backup(BaseModel):
+  id = CharField(primary_key=True, default=new_id)
   type = ChoiceField(("platform", "application"), default="platform")
   s3_path = CharField()
   # The store it was written to (`S3Session.identity`): a backup is reached only through that store.

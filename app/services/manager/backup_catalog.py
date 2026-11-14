@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 
 class BackupCatalogMixin:
-  def request_backup_deletion(self, backup_id: int) -> str:
+  def request_backup_deletion(self, backup_id: str) -> str:
     """Deletes the backup's row now and queues the deletion of its archive from the store it is in. The task's id."""
     backup = remove_backup(backup_id)
     return self.add_task(task=self.delete_archive, key=("delete_archive", backup.storage_id, backup.s3_path),
@@ -72,7 +72,8 @@ class BackupCatalogMixin:
                 if task["name"] == "delete_archive" and task["key"][1] == session.identity}
     plan = reconcile_catalog(
         session.identity, session.target.path, platform_keys - deleting, volume_keys - deleting,
-        [CatalogRow(row.id, row.s3_path, row.storage_id) for row in Backup.select(Backup.id, Backup.s3_path, Backup.storage_id)],
+        [CatalogRow(row.id, row.s3_path, row.storage_id)
+         for row in Backup.select(Backup.id, Backup.s3_path, Backup.storage_id)],
         {volume.id: (volume.application_id, volume.name) for volume in Volume.select(Volume.id, Volume.application, Volume.name)})
     apply_catalog(plan)
     logger.info(f"Backups discovered: {len(plan.inserts)} added, {len(plan.deletes)} dropped, "

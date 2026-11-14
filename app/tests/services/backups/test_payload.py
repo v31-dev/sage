@@ -33,6 +33,18 @@ def test_the_platforms_backups_are_listed_newest_first_without_the_volumes(appli
   assert [item["id"] for item in platform_backups()] == [new.id, old.id]
 
 
+@pytest.mark.parametrize("kind", ["platform", "application"])
+def test_backup_order_uses_timestamps_with_a_stable_tie_breaker(application, kind):
+  fields = {"type": kind, "application": application, "source_volume_id": "v1"}
+  backup(datetime(2026, 1, 1), id="ffffffffffffffff", **fields)
+  backup(datetime(2026, 1, 2), id="1111111111111111", **fields)
+  backup(datetime(2026, 1, 2), id="2222222222222222", **fields)
+
+  items = platform_backups() if kind == "platform" else volume_backups("v1")
+
+  assert [item["id"] for item in items] == ["2222222222222222", "1111111111111111", "ffffffffffffffff"]
+
+
 def test_a_volumes_backups_are_found_by_its_id_whatever_it_was_named(application):
   volume = Volume.create(application=application, name="data", path="/data")
   before_rename = backup(datetime(2026, 1, 1), type="application", source_volume_id=volume.id, source_volume_name="old",

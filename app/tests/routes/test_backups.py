@@ -61,6 +61,15 @@ class TestBackupAndDiscovery:
 
 
 class TestOneBackup:
+  @pytest.mark.parametrize("method, suffix", [("GET", "/download"), ("DELETE", "")])
+  def test_an_old_reference_cannot_select_a_replacement(self, client, platform, manager, method, suffix):
+    platform.delete_instance()
+    replacement = Backup.create(type="platform", s3_path="new", storage_id="s1")
+    assert replacement.id != platform.id
+
+    assert client.request(method, f"{URL}/{platform.id}{suffix}").status_code == 404
+    assert manager.calls == []
+
   def test_a_download_is_a_link_to_the_platform_backup(self, client, platform, store):
     assert client.get(f"{URL}/{platform.id}/download").json()["url"] == "https://store.example.test/link"
     assert [link["s3_path"] for link in store.links] == [PLATFORM_KEY]
@@ -74,7 +83,7 @@ class TestOneBackup:
     assert manager.called("request_platform_restore") == [((platform.id,), {})]
 
   def test_a_volumes_backup_or_none_is_not_found_here_and_asks_for_nothing(self, client, archive, store, manager):
-    for backup in (archive.id, 999):
+    for backup in (archive.id, "missing"):
       assert client.delete(f"{URL}/{backup}").status_code == 404
       assert client.get(f"{URL}/{backup}/download").status_code == 404
     assert manager.calls == [] and store.links == []

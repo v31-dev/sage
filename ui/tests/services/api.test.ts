@@ -389,8 +389,15 @@ const CALLS: Array<[string, () => Promise<unknown>, string, string, object, unkn
   ],
   ['createBackup', () => api.createBackup(), 'POST', '/api/backups/', {}, undefined],
   ['discoverBackups', () => api.discoverBackups(), 'POST', '/api/backups/discover', {}, undefined],
-  ['deleteBackup', () => api.deleteBackup(7), 'DELETE', '/api/backups/7', {}, undefined],
-  ['restoreBackup', () => api.restoreBackup(7), 'POST', '/api/backups/7/restore', {}, undefined],
+  ['deleteBackup', () => api.deleteBackup('b7'), 'DELETE', '/api/backups/b7', {}, undefined],
+  [
+    'restoreBackup',
+    () => api.restoreBackup('b7'),
+    'POST',
+    '/api/backups/b7/restore',
+    {},
+    undefined,
+  ],
   [
     'fetchVolumeBackups',
     () => api.fetchVolumeBackups('demo', 'web', 'data'),
@@ -409,9 +416,9 @@ const CALLS: Array<[string, () => Promise<unknown>, string, string, object, unkn
   ],
   [
     'restoreVolumeBackup',
-    () => api.restoreVolumeBackup('demo', 'web', 'data', 7, 'c1', 'logs'),
+    () => api.restoreVolumeBackup('demo', 'web', 'data', 'b7', 'c1', 'logs'),
     'POST',
-    `${APP}/volumes/data/backups/7/restore`,
+    `${APP}/volumes/data/backups/b7/restore`,
     {},
     { container: 'c1', volume: 'logs' },
   ],
@@ -449,11 +456,11 @@ describe('downloading a backup', () => {
   }
 
   it.each([
-    ['a platform backup', () => api.downloadBackup(7), '/api/backups/7/download'],
+    ['a platform backup', () => api.downloadBackup('b7'), '/api/backups/b7/download'],
     [
       'a volume backup',
-      () => api.downloadVolumeBackup('demo', 'web', 'data', 7),
-      `${APP}/volumes/data/backups/7/download`,
+      () => api.downloadVolumeBackup('demo', 'web', 'data', 'b7'),
+      `${APP}/volumes/data/backups/b7/download`,
     ],
   ])('asks for the link of %s and then opens it', async (_name, call, path) => {
     const clicked = clicks()
@@ -469,7 +476,7 @@ describe('downloading a backup', () => {
     const clicked = clicks()
     fetchMock.mockResolvedValue(reply({ detail: 'S3 is not configured.' }, 400))
 
-    await expect(api.downloadBackup(3)).rejects.toThrow('S3 is not configured.')
+    await expect(api.downloadBackup('b3')).rejects.toThrow('S3 is not configured.')
     expect(clicked).toEqual([])
   })
 })

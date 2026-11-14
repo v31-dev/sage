@@ -4,7 +4,7 @@ import { applicationPath, download } from './_common'
 // A backup in the configured store (`storage_id`): the platform's, or a volume's (`application`), with the volume's id
 // and the name it had when it was taken.
 export interface Backup {
-  id: number
+  id: string
   type: 'platform' | 'application'
   s3_path: string
   storage_id: string
@@ -31,12 +31,12 @@ export const createBackup = () => request<{ task_id: string }>('POST', '/backups
 // Lists the backups in S3 that are not listed yet.
 export const discoverBackups = () => request<{ task_id: string }>('POST', '/backups/discover')
 
-export const deleteBackup = (id: number) => request<{ task_id: string }>('DELETE', `/backups/${id}`)
+export const deleteBackup = (id: string) => request<{ task_id: string }>('DELETE', `/backups/${id}`)
 
-export const restoreBackup = (id: number) =>
+export const restoreBackup = (id: string) =>
   request<{ task_id: string }>('POST', `/backups/${id}/restore`)
 
-export const downloadBackup = (id: number) => download(`/backups/${id}/download`)
+export const downloadBackup = (id: string) => download(`/backups/${id}/download`)
 
 // The backups of a volume of an application.
 const volumeBackupsPath = (project: string, application: string, volume: string) =>
@@ -55,7 +55,7 @@ export const restoreVolumeBackup = (
   project: string,
   application: string,
   volume: string,
-  id: number,
+  id: string,
   container: string,
   target: string
 ) =>
@@ -69,5 +69,5 @@ export const downloadVolumeBackup = (
   project: string,
   application: string,
   volume: string,
-  id: number
+  id: string
 ) => download(`${volumeBackupsPath(project, application, volume)}/${id}/download`)

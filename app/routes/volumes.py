@@ -39,12 +39,12 @@ def back_up(project: str, application: str, volume: str):
 
 
 @router.get("/{volume}/backups/{backup}/download")
-def download_backup(project: str, application: str, volume: str, backup: int):
+def download_backup(project: str, application: str, volume: str, backup: str):
   return download_link(volume_backup(find_volume(find_application(project, application).id, volume).id, backup))
 
 
 @router.post("/{volume}/backups/{backup}/restore")
-def restore_backup(project: str, application: str, volume: str, backup: int, data: dict = Body(...)):
+def restore_backup(project: str, application: str, volume: str, backup: str, data: dict = Body(...)):
   """The backup restored into a stopped container of the application (`container`), into the volume it was taken of
   or another of the application's (`volume`, by name)."""
   owner = find_application(project, application)

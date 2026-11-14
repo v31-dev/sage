@@ -7,7 +7,7 @@ from services.backups.keys import BACKUP_TIMESTAMP_FORMAT, parse_volume_archive,
 
 @dataclass(frozen=True)
 class CatalogRow:
-  id: int
+  id: str
   s3_path: str
   storage_id: str
 
@@ -16,7 +16,7 @@ class CatalogRow:
 class CatalogPlan:
   """Rows to insert, as Backup fields; ids to delete; and how many archives name no volume here."""
   inserts: list[dict] = field(default_factory=list)
-  deletes: list[int] = field(default_factory=list)
+  deletes: list[str] = field(default_factory=list)
   unmatched: int = 0
 
 

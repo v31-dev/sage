@@ -244,6 +244,8 @@ Main database:
 - `/app/data/data.db`
 - SQLite
 - WAL mode enabled
+- numeric primary keys in the main database use SQLite AUTOINCREMENT; resource models can declare opaque or natural
+  primary keys, and log/metric shards have their own schemas
 - some fields are encrypted through custom Peewee field types
 - its schema follows the models: at boot and after a platform restore, `Database.reconcile_schema` creates the
   missing tables and indexes, adds the missing columns and drops those no model has, in one transaction with foreign
@@ -295,6 +297,12 @@ Backups live in S3, which is optional: creating, discovering, restoring or downl
 **Downloading a backup** (`GET /backups/{b}/download`, also nested under a volume): the manager checks the object is still in S3 and answers with a presigned GET link that expires after 60 seconds (`BROWSER_LINK_SECONDS` in `services/s3.py`) and asks for the file as an attachment with a name that says which volume it is from. The browser then fetches the file from S3 directly, so no backup passes through the manager. The link is made when asked for, never stored or listed, and S3 checks its expiry when a request starts, so a download already under way isn't cut off. Whoever has a link can read the file until it expires, but the file is encrypted and authenticated with `ENCRYPTION_KEY` (see Settings → S3 for the `openssl` command that opens it). Who may ask for a link is the same as for every other route: whoever the tailnet policy lets reach the manager. Every presigned link states its validity: the links handed to workers for volume backup and restore use `WORKER_LINK_SECONDS` (1200 s; the upload starts after the archive is built, which the script's 900 s command timeout bounds) and reach `curl` through a `--config` file, so they stay out of its command line. The download route is a GET, so it also works while Sage is paused or restoring. The S3 endpoint has to be reachable from the browser, and over https (a browser may refuse to save a file from a plain-http endpoint opened from an https page).
 
 A container's operations (Deploy, Stop, Delete, backups, a volume restore, recovery and reset) and a Domain's apply re-fetch their target by id with `get_or_none` and treat a missing row as a **quiet no-op**; a volume restore whose backup or target volume is gone is refused with a `rejected` event. Instant deletes can interleave with queued work; Domain artifacts keep their record id for the pass's cleanup. `remove_worker` returns for a missing worker, but fails loudly when its precondition re-check finds containers or internal domains. See [consistency boundaries](operations.md#consistency-boundaries).
+
+Each Backup has an opaque primary key; backup action URLs, catalog deletion plans and queued source references use
+that id. Lists order by `created_at` descending, with the opaque id breaking timestamp ties consistently. A volume
+restore requires that selected source row before lifecycle effects; a missing selection is rejected. Once checked,
+the captured source and storage session are used
+through the download and result, even if another store's discovery removes its catalog row.
 
 Container create is an **instant route-side model write**, like most entities' CRUD — not a queued task: its command (`attach_container`) recomputes the application's `container_count` from the rows in its own transaction. Only a container's Delete is queued (it does remote cleanup).
 

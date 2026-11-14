@@ -8,6 +8,8 @@ from types import SimpleNamespace
 import pytest
 
 import config
+from services.backups.catalog import CatalogRow, reconcile_catalog
+from services.backups.commands import apply_catalog
 from services.backups.keys import BACKUP_TIMESTAMP_FORMAT, volume_archive_key
 from services.db.models import Backup, Volume
 from services.manager.backup_catalog import BackupCatalogMixin
@@ -144,7 +146,7 @@ class TestDeletion:
 
   def test_a_backup_not_listed_is_not_found(self, manager, db):
     with pytest.raises(LookupError):
-      manager.request_backup_deletion(999)
+      manager.request_backup_deletion("missing")
 
   async def test_exactly_its_archive_is_deleted(self, manager, stores, volume):
     key = stores.a.put(archive_key(volume))
@@ -194,6 +196,18 @@ class TestDeletion:
 
 
 class TestDiscovery:
+  def test_a_catalog_plan_does_not_delete_a_replacement(self, stores, db):
+    original = row(stores.a, f"backups/platform/{named()}.db.enc")
+    plan = reconcile_catalog(stores.a.identity, "base", set(), set(), [
+        CatalogRow(original.id, original.s3_path, original.storage_id)], {})
+    original.delete_instance()
+    replacement = row(stores.a, f"backups/platform/{named(1)}.db.enc")
+    assert replacement.id != original.id
+
+    assert not apply_catalog(plan)
+
+    assert Backup.get_by_id(replacement.id).s3_path == replacement.s3_path
+
   def test_it_holds_its_store_and_nothing_is_queued_without_one(self, manager, stores, db):
     assert manager.request_backup_discovery() is not None
     assert queued(manager) == [(("discover_backups",), ["backup:store:sa"], {"storage_id": "sa"}, {}, False)]

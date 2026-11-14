@@ -73,7 +73,7 @@ def test_creates_the_data_dir_when_it_is_missing(data_dir, monkeypatch):
 
 def test_every_model_is_registered_and_has_a_table(db):
   assert set(MODELS) == set(BaseModel.__subclasses__()) - {BaseEvent} | set(BaseEvent.__subclasses__())
-  assert set(db.get_tables()) == {model._meta.table_name for model in MODELS}
+  assert set(db.get_tables()) == {model._meta.table_name for model in MODELS} | {"sqlite_sequence"}
 
 
 @pytest.mark.parametrize("pragma, expected", [

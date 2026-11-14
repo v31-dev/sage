@@ -34,7 +34,7 @@ async function onClickDownload() {
   }
 }
 
-async function onConfirmDeleteBackup(backupId: number) {
+async function onConfirmDeleteBackup(backupId: string) {
   try {
     await deleteBackup(backupId)
     toast.success('Backup deleted successfully')
@@ -44,7 +44,7 @@ async function onConfirmDeleteBackup(backupId: number) {
   }
 }
 
-async function onConfirmRestoreBackup(backupId: number) {
+async function onConfirmRestoreBackup(backupId: string) {
   try {
     await restoreBackup(backupId)
     toast.success('Backup restore initiated successfully')

@@ -18,7 +18,8 @@ const item = {
   template: '<button data-backup @click="loadBackups()">{{ backup.s3_path }}</button>',
 }
 
-const backup = (id: number) => ({ id, type: 'platform', s3_path: `b${id}` }) as unknown as Backup
+const backup = (id: number) =>
+  ({ id: `b${id}`, type: 'platform', s3_path: `b${id}` }) as unknown as Backup
 
 async function mountPage() {
   const topics = followTopics({ pending: true })

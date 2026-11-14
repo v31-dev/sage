@@ -16,7 +16,7 @@ def add_backup(key: str, storage_id: str, volume_id: str | None = None, volume_n
   return backup
 
 
-def remove_backup(backup_id: int) -> Backup:
+def remove_backup(backup_id: str) -> Backup:
   """Deletes the backup's row and returns it; its object is the store's, removed by its own task."""
   with write():
     backup = get(Backup, Backup.id == backup_id)

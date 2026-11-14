@@ -209,9 +209,19 @@ class TestBackup:
 
 
 class TestRestoreRequest:
+  def test_an_old_reference_cannot_restore_a_replacement(self, manager, stores):
+    first = Backup.create(s3_path="old", storage_id="sa", type="platform")
+    first.delete_instance()
+    second = Backup.create(s3_path="new", storage_id="sa", type="platform")
+    assert second.id != first.id
+
+    with pytest.raises(LookupError):
+      manager.request_platform_restore(first.id)
+    assert manager.task_state() == "running" and manager.task_snapshot() == {"running": [], "queued": []}
+
   def test_only_a_platform_backup_of_the_configured_store_is_restored(self, manager, stores):
     with pytest.raises(LookupError):
-      manager.request_platform_restore(999)
+      manager.request_platform_restore("missing")
     archive = Backup.create(s3_path="base/backups/applications/x", storage_id="sa", type="application")
     with pytest.raises(ValueError):
       manager.request_platform_restore(archive.id)

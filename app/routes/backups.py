@@ -33,16 +33,16 @@ def discover_backups():
 
 
 @router.get("/{backup}/download")
-def download_backup(backup: int):
+def download_backup(backup: str):
   return download_link(platform_backup(backup))
 
 
 @router.delete("/{backup}")
-def delete_backup(backup: int):
+def delete_backup(backup: str):
   """The backup's row now, its archive by a task."""
   return {"task_id": Manager().request_backup_deletion(platform_backup(backup).id)}
 
 
 @router.post("/{backup}/restore")
-def restore_backup(backup: int):
+def restore_backup(backup: str):
   return {"task_id": Manager().request_platform_restore(backup)}

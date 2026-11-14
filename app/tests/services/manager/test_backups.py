@@ -12,8 +12,9 @@ import pytest
 
 import config
 from services.applications.deploy_input import capture_deploy_config
-from services.backups.keys import parse_volume_archive, taken_at
-from services.containers.placement import runtime_name, volume_dir
+from services.backups.commands import add_backup
+from services.backups.keys import APPLICATIONS_PREFIX, archive_name, parse_volume_archive, taken_at, volume_archive_key
+from services.containers.placement import record_path, runtime_name, volume_dir
 from services.containers.record import Applied, Baseline, Operation, Settled, TargetRecord
 from services.db.models import Backup, Container, Volume
 from services.manager.backup_catalog import BackupCatalogMixin
@@ -23,7 +24,7 @@ from services.s3 import S3
 from services.tailscale import Tailscale
 from tests.services.manager.test_containers import PAGE, VERIFIED, Lifecycle, Worker, authority, deployed, events, place, worker_record
 from utils.archive import decrypt_file
-from utils.common import get_env
+from utils.common import get_env, utcnow
 from utils.errors import Conflict
 from utils.logging import TaskFailed, task_id
 from utils.queue import QueuedTask, QueueState, TaskQueue, next_to_start
@@ -522,6 +523,46 @@ class TestRestore:
     directory = Path(volume_dir(config.WORKER_HOME_DIR, container.id, volume.id))
     return {path.name: path.read_text() for path in directory.iterdir()} if directory.exists() else None
 
+  async def test_a_restore_rejects_an_archive_replaced_by_a_backup_after_retention(
+          self, manager, worker_host, store, container, volumes, monkeypatch, thread_connections):
+    from services.containers.targets import Containers
+    place(container, stopped(container))
+    await Containers().read(container)
+    before = worker_record(container)
+    selected = add_backup(store.get_full_path(volume_archive_key(
+        volumes[0].id, container.id, archive_name(utcnow() - timedelta(days=config.RETENTION_DAYS + 1)))),
+        store.identity, volumes[0].id, volumes[0].name, container.application_id)
+    volumes[1].backup_cron = "* * * * *"
+    volumes[1].save()
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def delete_key(prefix, filter=None, raw_path=False):
+      if prefix != APPLICATIONS_PREFIX:
+        return []
+      entered.set()
+      await release.wait()
+      return [selected.s3_path] if filter(selected.s3_path) else []
+
+    monkeypatch.setattr(store, "delete_key", delete_key, raising=False)
+    manager.request_backup_retention()
+    manager.task_queue.dispatch_tick()
+    try:
+      await asyncio.wait_for(entered.wait(), 2)
+      manager.request_automatic_backups(utcnow())
+      manager.request_restore(container.id, selected.id, volumes[0].id)
+    finally:
+      release.set()
+      await manager.run()
+    assert Backup.get_or_none(Backup.id == selected.id) is None
+    replacement = Backup.get()
+    assert replacement.s3_path != selected.s3_path and replacement.source_volume_id == volumes[1].id
+    assert replacement.id != selected.id
+    assert self.files(container, volumes[0]) == {"data.txt": f"data of {container.id}"}
+    record = worker_record(container)
+    assert record.operation.contract == "backup_preserve" and record.settled == before.settled and record.applied == before.applied
+    assert [event for event in events(container) if event[0] == "restore_stopped"] == [
+        ("restore_stopped", "rejected", {"refusal": "no_backup"})]
+
   async def test_a_backup_is_restored_into_a_container_on_another_worker_never_deployed(
           self, manager, worker_host, container, other, volumes, archived, notices):
     await manager.restore_container(other.id, archived["data"].id, volumes[0].id, "s1")
@@ -530,6 +571,39 @@ class TestRestore:
                              f"{taken_at(archived['data'].s3_path)}.", PAGE)
     record = worker_record(other)
     assert (record.applied, record.settled.runtime_goal, record.settled.result) == (None, "stopped", "succeeded")
+    assert events(other)[-1] == ("restore_stopped", "succeeded", {"volume": "data", "backup_of": "data"})
+
+  async def test_a_restore_keeps_its_source_when_another_stores_discovery_removes_its_row(
+          self, manager, worker_host, store, container, other, volumes, archived, monkeypatch, register, thread_connections):
+    entered, release = asyncio.Event(), asyncio.Event()
+    sync_file = worker_host.sync_file
+
+    async def gated_sync(hostname, src, dst, keys=None, **kwargs):
+      if dst == record_path(config.WORKER_HOME_DIR, other.id) and not entered.is_set():
+        entered.set()
+        await release.wait()
+      return await sync_file(hostname, src, dst, keys, **kwargs)
+
+    async def get_keys(prefix):
+      return []
+
+    monkeypatch.setattr(worker_host, "sync_file", gated_sync)
+    manager.request_restore(other.id, archived["data"].id, volumes[0].id)
+    manager.task_queue.dispatch_tick()
+    try:
+      await asyncio.wait_for(entered.wait(), 2)
+      register(S3, SimpleNamespace(session=lambda: SimpleNamespace(identity="s2", target=SimpleNamespace(path="elsewhere"), get_keys=get_keys)))
+      manager.request_backup_discovery()
+      manager.task_queue.dispatch_tick()
+      async with asyncio.timeout(2):
+        while manager.has_task(("discover_backups",)):
+          await asyncio.sleep(0)
+      assert Backup.select().count() == 0
+    finally:
+      release.set()
+      await manager.run()
+    assert self.files(other, volumes[0]) == {"data.txt": f"data of {container.id}"}
+    assert worker_record(other).settled.result == "succeeded"
     assert events(other)[-1] == ("restore_stopped", "succeeded", {"volume": "data", "backup_of": "data"})
 
   async def test_it_is_restored_into_another_volume_of_the_application_whose_files_it_replaces(
@@ -649,4 +723,4 @@ class TestRestoreRequests:
 
   def test_a_backup_not_listed_is_not_found(self, manager, container, volumes):
     with pytest.raises(LookupError):
-      manager.request_restore(container.id, 999, volumes[0].id)
+      manager.request_restore(container.id, "missing", volumes[0].id)

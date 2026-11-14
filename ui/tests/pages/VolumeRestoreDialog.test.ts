@@ -62,7 +62,7 @@ const application = (containers = [stopped]) =>
   }) as unknown as Application
 
 const backup = {
-  id: 7,
+  id: 'b7',
   s3_path: 'base/backups/applications/v1/c1/20260101_120000.tar.gz.enc',
   source_volume_name: 'data',
   created_at: '2026-01-01T12:00:00',
@@ -104,7 +104,7 @@ describe('a volume restore', () => {
     await restoreButton(wrapper).trigger('click')
     await flushPromises()
 
-    expect(restoreVolumeBackup).toHaveBeenCalledWith('demo', 'web', 'data', 7, 'c1', 'data')
+    expect(restoreVolumeBackup).toHaveBeenCalledWith('demo', 'web', 'data', 'b7', 'c1', 'data')
     expect(toast.success).toHaveBeenCalledWith('Restore queued for volume data')
     expect(loadApplication).toHaveBeenCalledOnce()
     expect(wrapper.findComponent(dialog).props('open')).toBe(false)
