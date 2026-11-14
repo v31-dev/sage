@@ -65,7 +65,9 @@ a change, run it on the baseline too (`git archive <rev> app | tar -x -C <scratc
 
 Cross-check the candidate list against provider implementations and their route, startup, callback and thread
 entry points: synchronous provider calls made inline can be absent, including an explicit test's effects. Inspect
-explicit `.acquire()` / `.release()` paths too; the lock list covers context-manager blocks.
+explicit `.acquire()` / `.release()` paths too; the lock list covers context-manager blocks. Inside a provider class
+its own API calls are not listed as remote, so read its lock blocks: a lock held across one makes every reader of that
+lock wait on the provider, the event loop included.
 
 ## Answer these, each with source locations
 
@@ -87,7 +89,9 @@ explicit `.acquire()` / `.release()` paths too; the lock list covers context-man
    task uses REPLACE. Order between tasks comes from scopes or from a body's follow-up request; nothing relies on when
    a task starts or on the order of tasks that do not conflict, and nothing starts a task ahead of earlier conflicting
    work. An owner's memory that tasks sharing no scope write (one replacing it whole with what it gathered across an
-   await) is traced for lost updates, and a Fact callback for the requests lost when it raises after `last` is set.
+   await) is traced for lost updates, and a Fact callback for the requests lost when it raises after `last` is set. A
+   request function that writes rows before its `add_task` leaves a moment with neither; a body that reads the queue
+   and then those rows is traced across it.
 4. **Data flow.** Each reader of the queue finds a subject by key and a resource by scope, never identity in params;
    the queue's facts only publish, and work is requested by a body's end, a state Fact's callback or a scheduled pass.
    For each decision table: its inputs with their owner, source and knowledge states, the bound on each state not
