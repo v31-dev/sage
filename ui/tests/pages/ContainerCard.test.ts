@@ -2,61 +2,52 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it } from 'vitest'
 import ContainerCard from '@/pages/Application/ContainerCard.vue'
-import type { Application, Container, Domain, WorkerListItem, WorkerStatus } from '@/services/api'
+import type { Application, Domain, DomainStatus, WorkerStatus } from '@/services/api'
+import { container } from '../helpers/containers'
+import { worker } from '../helpers/workers'
 import { useAppStore } from '@/stores/app'
 
-function listed(hostname: string, status: WorkerStatus): WorkerListItem {
-  return {
-    hostname,
-    ip: '100.64.0.2',
-    subdomain: null,
-    online: status !== 'offline',
-    status,
-    path: null,
-    container_count: null,
-    infra: null,
-    metrics: null,
-    certificate: { covered: true, synced: true, expiry: null, error: null },
-    discovery_certificate: { covered: true, synced: true, expiry: null, error: null },
-    tunnel: 'healthy',
-  }
-}
+const listed = (hostname: string, status: WorkerStatus) => worker(hostname, status)
 
-const domain = (overrides: Partial<Domain> = {}) =>
+// A domain, with its state's `status` and `error` given apart.
+const domain = ({
+  status = 'synced',
+  error = null,
+  ...overrides
+}: Partial<Domain> & { status?: DomainStatus; error?: string | null } = {}) =>
   ({
-    id: 1,
+    id: 'd1',
     name: 'shop',
     type: 'public',
     port: 80,
     service: null,
     pool: null,
-    status: 'synced',
-    sync_error: null,
-    synced_hash: null,
-    synced_at: null,
+    cors_origins: null,
     host: 'shop.example.test',
     address: 'https://shop.example.test',
     worker: 'w1',
-    container: { id: 1, status: 'active', worker: 'w1', application: {} },
+    container: { id: 'c1', worker: 'w1', application: {} },
+    view: {
+      status,
+      conforms: status === 'synced',
+      reason: status === 'error' ? 'dns' : null,
+      error,
+    },
     ...overrides,
   }) as Domain
 
 function mountCard(hostname = 'w1', domains: Domain[] = []) {
-  const container = {
-    id: 1,
-    worker: { hostname },
-    status: 'active',
-    domains,
-  } as unknown as Container
   return mount(ContainerCard, {
     props: {
       application: {} as Application,
-      container,
+      container: container({ worker: { hostname, subdomain: 'red' }, domains }),
       loadApplication: async () => {},
     },
     global: {
       stubs: {
         DeleteContainerButton: true,
+        DeployApplicationButton: true,
+        StopApplicationButton: true,
         EventLogsButton: true,
         CopyButton: true,
         RouterLink: { template: '<a><slot /></a>' },
@@ -115,7 +106,7 @@ describe('the domains linked to the container', () => {
   it('shows several names linked to the container', () => {
     const wrapper = mountCard('w1', [
       domain(),
-      domain({ id: 2, address: 'https://other.example.test' }),
+      domain({ id: 'd2', address: 'https://other.example.test' }),
     ])
 
     expect(wrapper.findAll('[data-domain] a').map(link => link.attributes('href'))).toEqual([
@@ -130,7 +121,7 @@ describe('the domains linked to the container', () => {
     await wrapper.setProps({
       container: {
         ...wrapper.props('container'),
-        domains: [domain({ id: 2, address: 'https://new.example.test', status: 'syncing' })],
+        domains: [domain({ id: 'd2', address: 'https://new.example.test', status: 'syncing' })],
       },
     })
 
@@ -175,13 +166,15 @@ describe('the domains linked to the container', () => {
     'shows the record sync state %s separately from container health',
     (status, label) => {
       const wrapper = mountCard('w1', [
-        domain({ status, sync_error: status === 'error' ? 'DNS: unavailable' : null }),
+        domain({ status, error: status === 'error' ? 'DNS: unavailable' : null }),
       ])
 
       expect(wrapper.text()).toContain('active')
       expect(wrapper.get('[data-domain]').text()).toContain(label)
       if (status === 'error')
-        expect(wrapper.get('[data-domain] [title]').attributes('title')).toBe('DNS: unavailable')
+        expect(wrapper.get('[data-domain] [data-reason]').text()).toBe(
+          'Its DNS records could not be applied: DNS: unavailable'
+        )
     }
   )
 
@@ -189,7 +182,9 @@ describe('the domains linked to the container', () => {
     [{ covered: false, synced: false, expiry: null, error: null }, 'waiting for the certificate'],
     [{ covered: true, synced: false, expiry: null, error: null }, 'syncing the certificate'],
   ])('shows an internal name’s worker certificate until it is ready', (certificate, shown) => {
-    useAppStore().workers = [{ ...listed('w1', 'online'), certificate }]
+    useAppStore().workers = [
+      worker('w1', 'online', { certificates: { worker: certificate, discovery: certificate } }),
+    ]
     const internal = domain({ type: 'internal', address: 'https://shop.red.int.example.test' })
 
     expect(mountCard('w1', [internal]).text()).toContain(shown)

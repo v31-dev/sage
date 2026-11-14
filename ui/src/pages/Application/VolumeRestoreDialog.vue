@@ -27,78 +27,59 @@ import {
   type Backup,
   downloadVolumeBackup,
   fetchVolumeBackups,
+  refusesRequests,
   restoreVolumeBackup,
   type Volume,
 } from '@/services/api'
-import { useAppStore } from '@/stores/app'
 import { formatDate } from '@/lib/utils'
 
-interface Props {
+// The volume's backups, each downloadable, and restoring one into a stopped container of the application, into this
+// volume or another of the application's; the page is loaded again once the restore is queued.
+const props = defineProps<{
   application: Application
   volume: Volume
-}
+  loadApplication: () => Promise<void>
+}>()
 
-const props = withDefaults(defineProps<Props>(), {})
-
-const appStore = useAppStore()
 const isOpen = ref(false)
 const isLoading = ref(false)
 const isRestoring = ref(false)
 const loadError = ref('')
 const backups = ref<Backup[]>([])
 const selectedBackupId = ref('')
-const selectedTargetWorker = ref('')
+const selectedContainerId = ref('')
+const selectedVolume = ref('')
 
-const canStartRestore = computed(() => {
-  return [
-    !selectedBackup.value,
-    !selectedTargetWorker.value,
-    isRestoring.value,
-    appStore.applicationDeployStatus !== 'inactive',
-    props.application.status !== 'inactive',
-    targetWorkers.value.length === 0,
-  ].includes(true)
-})
-
-const targetWorkers = computed(() => {
-  return props.application.containers.map(container => container.worker.hostname)
-})
-
-const selectedBackup = computed(() => {
-  return backups.value.find(backup => String(backup.id) === selectedBackupId.value) || null
-})
-
-function parseBackupPath(s3Path: string) {
-  const parts = s3Path.split('/').filter(Boolean)
-  const filename = parts[parts.length - 1] || ''
-  const rawTimestamp = filename.replace(/\.tar\.gz\.enc$/, '') || '-'
-
-  return {
-    worker: parts[parts.length - 3] || '-',
-    timestamp: formatBackupTimestamp(rawTimestamp),
-  }
-}
-
-function formatBackupTimestamp(rawTimestamp: string) {
-  const match = rawTimestamp.match(/^(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})$/)
-  if (!match) return rawTimestamp
-
-  const [, year, month, day, hour, minute, second] = match
-  return formatDate(`${year}-${month}-${day}T${hour}:${minute}:${second}`)
-}
+const selectedBackup = computed(
+  () => backups.value.find(backup => backup.id === selectedBackupId.value) ?? null
+)
+const selectedContainer = computed(
+  () =>
+    props.application.containers.find(container => container.id === selectedContainerId.value) ??
+    null
+)
+const containerStopped = computed(
+  () =>
+    !!selectedContainer.value &&
+    selectedContainer.value.view.headline === 'inactive' &&
+    !refusesRequests(selectedContainer.value)
+)
+const restoreDisabled = computed(
+  () =>
+    !selectedBackup.value || !containerStopped.value || !selectedVolume.value || isRestoring.value
+)
 
 async function loadBackups() {
   isLoading.value = true
   loadError.value = ''
 
   try {
-    const response = await fetchVolumeBackups(
+    backups.value = await fetchVolumeBackups(
       props.application.project.name,
       props.application.name,
       props.volume.name
     )
-    backups.value = [...response].reverse()
-    selectedBackupId.value = backups.value[0] ? String(backups.value[0].id) : ''
+    selectedBackupId.value = backups.value[0]?.id ?? ''
   } catch (err) {
     loadError.value = err instanceof Error ? err.message : 'Failed to load backups'
   } finally {
@@ -122,24 +103,22 @@ async function onClickDownload() {
 }
 
 async function onClickRestore() {
-  if (!selectedBackup.value || !selectedTargetWorker.value) return
+  if (!selectedBackup.value || !selectedContainer.value) return
 
-  const previousStatus = appStore.applicationDeployStatus
   isRestoring.value = true
-  appStore.updateApplicationDeployStatus('restoring', [selectedTargetWorker.value])
-
   try {
     await restoreVolumeBackup(
       props.application.project.name,
       props.application.name,
       props.volume.name,
       selectedBackup.value.id,
-      selectedTargetWorker.value
+      selectedContainer.value.id,
+      selectedVolume.value
     )
-    toast.success(`Restore initiated for volume ${props.volume.name}`)
+    toast.success(`Restore queued for volume ${selectedVolume.value}`)
     isOpen.value = false
+    await props.loadApplication()
   } catch (err) {
-    appStore.updateApplicationDeployStatus(previousStatus)
     toast.error(err instanceof Error ? err.message : 'Failed to restore volume')
   } finally {
     isRestoring.value = false
@@ -149,7 +128,8 @@ async function onClickRestore() {
 watch(isOpen, async open => {
   if (!open) return
 
-  selectedTargetWorker.value = targetWorkers.value[0] || ''
+  selectedContainerId.value = props.application.containers[0]?.id ?? ''
+  selectedVolume.value = props.volume.name
   await loadBackups()
 })
 </script>
@@ -169,8 +149,8 @@ watch(isOpen, async open => {
       </DialogHeader>
 
       <div class="rounded-md border bg-destructive/5 text-sm text-muted-foreground p-3">
-        Restore is destructive. The selected target worker volume will be cleared before restore.
-        Multi-container targeting is user-controlled.
+        Restore is destructive. The target volume of the chosen container is cleared before the
+        backup is extracted into it.
       </div>
 
       <div class="space-y-4">
@@ -191,9 +171,8 @@ watch(isOpen, async open => {
                 <SelectValue placeholder="Select backup" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem v-for="backup in backups" :key="backup.id" :value="String(backup.id)">
-                  {{ parseBackupPath(backup.s3_path).timestamp }} on
-                  {{ parseBackupPath(backup.s3_path).worker }}
+                <SelectItem v-for="backup in backups" :key="backup.id" :value="backup.id">
+                  {{ formatDate(backup.created_at) }}
                 </SelectItem>
               </SelectContent>
             </Select>
@@ -202,30 +181,51 @@ watch(isOpen, async open => {
               v-if="selectedBackup"
               class="rounded-md border p-3 text-sm text-muted-foreground space-y-1"
             >
-              <p>Source Worker: {{ parseBackupPath(selectedBackup.s3_path).worker }}</p>
-              <p>Backup Timestamp: {{ parseBackupPath(selectedBackup.s3_path).timestamp }}</p>
+              <p>Taken: {{ formatDate(selectedBackup.created_at) }}</p>
+              <p>Of volume: {{ selectedBackup.source_volume_name }}</p>
               <p class="break-all">S3 Path: {{ selectedBackup.s3_path }}</p>
             </div>
           </div>
         </div>
 
         <div class="space-y-2">
-          <Label>Target Worker</Label>
-          <Select v-model="selectedTargetWorker">
+          <Label>Into the container on</Label>
+          <Select v-model="selectedContainerId">
             <SelectTrigger>
-              <SelectValue placeholder="Select target worker" />
+              <SelectValue placeholder="Select a container" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem v-for="worker in targetWorkers" :key="worker" :value="worker">
-                {{ worker }}
+              <SelectItem
+                v-for="container in props.application.containers"
+                :key="container.id"
+                :value="container.id"
+              >
+                {{ container.worker.hostname }} ({{ container.view.headline }})
               </SelectItem>
             </SelectContent>
           </Select>
         </div>
 
-        <p v-if="props.application.status !== 'inactive'" class="text-sm text-muted-foreground">
-          Restore can only be started while the application is inactive. You can still browse
-          available backups now.
+        <div class="space-y-2">
+          <Label>Into the volume</Label>
+          <Select v-model="selectedVolume">
+            <SelectTrigger>
+              <SelectValue placeholder="Select a volume" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem
+                v-for="volume in props.application.volumes"
+                :key="volume.id"
+                :value="volume.name"
+              >
+                {{ volume.name }}
+              </SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+
+        <p v-if="selectedContainer && !containerStopped" class="text-sm text-muted-foreground">
+          A restore needs the container stopped. You can still browse and download the backups.
         </p>
       </div>
 
@@ -240,7 +240,7 @@ watch(isOpen, async open => {
         >
           <Download />Download
         </Button>
-        <Button size="sm" :disabled="canStartRestore" @click="onClickRestore">
+        <Button size="sm" :disabled="restoreDisabled" @click="onClickRestore">
           <Spinner class="animate-spin" v-if="isRestoring" />
           <ArchiveRestore v-else />Restore
         </Button>

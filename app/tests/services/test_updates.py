@@ -6,7 +6,7 @@ import time
 from datetime import datetime, timezone
 
 import pytest
-from fastapi import HTTPException
+from fastapi.encoders import jsonable_encoder
 
 import config
 from services.updates import Fact, Feed, Topic, Updates, UpdateSource
@@ -48,12 +48,12 @@ class Source:
     self.block = None
 
   def load_for(self, argument):
-    """The state for an argument of a parameterised topic, or the route's 404 while the resource is `gone`."""
+    """The state for an argument of a parameterised topic, or a LookupError while the resource is `gone`."""
     self.loads += 1
     if self.fail:
       raise RuntimeError("cannot load")
     if self.gone:
-      raise HTTPException(status_code=404, detail="Thing not found")
+      raise LookupError("Thing not found.")
     return {"value": self.value, "argument": argument}
 
   def load(self):
@@ -132,7 +132,7 @@ def world(monkeypatch):
       "p": Topic(sources["p"].load_for, frozenset({"x"}), parameterised=True),
   }
   hub = Updates()
-  hub.serve(topics)
+  hub.serve(topics, jsonable_encoder)
   sids = []
 
   def connect(delay=0.0):

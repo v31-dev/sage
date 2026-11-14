@@ -1,11 +1,9 @@
 #!/bin/sh
 set -eu
 
-APP_ROOT="${WORKER_HOME_DIR}/applications"
-APP_NAME="${APP_NAME}"
-APP_DIR="$APP_ROOT/$APP_NAME"
-VOLUME_NAME="${VOLUME_NAME}"
-VOLUME_DIR="$APP_DIR/volumes/$VOLUME_NAME"
+PLACEMENT_DIR="${PLACEMENT_DIR}"
+VOLUME_ID="${VOLUME_ID}"
+VOLUME_DIR="$PLACEMENT_DIR/volumes/$VOLUME_ID"
 TMP_DIR="$(mktemp -d)"
 
 cleanup() {
@@ -15,8 +13,8 @@ cleanup() {
 
 trap cleanup EXIT
 
-if [ ! -d "$APP_DIR" ]; then
-  echo "Application directory not found: $APP_DIR" >&2
+if [ ! -d "$PLACEMENT_DIR" ]; then
+  echo "Container directory not found: $PLACEMENT_DIR" >&2
   exit 1
 fi
 
@@ -49,7 +47,7 @@ cat <<'__SAGE_UPLOAD_URL__' > "$UPLOAD_CONFIG_PATH"
 url = "${UPLOAD_URL}"
 __SAGE_UPLOAD_URL__
 
-tar -C "$APP_DIR/volumes" -czf "$ARCHIVE_PATH" "$VOLUME_NAME"
+tar -C "$PLACEMENT_DIR/volumes" -czf "$ARCHIVE_PATH" "$VOLUME_ID"
 
 openssl enc -aes-256-cbc -pbkdf2 -salt \
   -in "$ARCHIVE_PATH" \

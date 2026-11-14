@@ -7,9 +7,10 @@ from peewee import CharField, Model, SqliteDatabase, TextField
 from playhouse.sqlite_ext import FTS5Model, RowIDField, SearchField
 
 import config
-from services.db import Application, Project
+from services.db.models import Application
 from services.updates import UpdateFeed, Updates
 from utils.common import utcnow
+from values.names import qualified_name
 
 from .store import Store, contains, newest, stored_time
 
@@ -67,7 +68,7 @@ class ApplicationsMixin:
     return name
 
   def _application_names(self) -> set[str]:
-    return {application.qualified_name for application in Application.select(Application, Project).join(Project)}
+    return {qualified_name(project, name) for project, name in Application.select(Application.project, Application.name).tuples()}
 
   def application_store(self, name: str) -> Store:
     return self._store(self._shard(name))

@@ -23,7 +23,7 @@ import {
 
 import TaskLogs from '@/components/TaskLogs.vue'
 import { formatDate } from '@/lib/utils'
-import { type Container } from '@/services/api'
+import { type Container, type ContainerEvent, OPERATION_LABELS } from '@/services/api'
 import { Logs } from 'lucide-vue-next'
 
 interface Props {
@@ -34,18 +34,25 @@ const props = withDefaults(defineProps<Props>(), {})
 const attrs = useAttrs()
 
 const isEventLogsDialogOpen = ref(false)
-const selectedEventId = ref('')
-const events = computed(() => [...props.container.events].reverse())
-const selectedEvent = computed(() =>
-  props.container.events.find(event => event.container_task_id === selectedEventId.value)
-)
+const selectedRun = ref('')
 
-function openEventLogsDialog(container: Container) {
-  selectedEventId.value = ''
-  if (container.events && container.events.length > 0) {
-    const lastItemIndex = container.events.length - 1
-    selectedEventId.value = container.events[lastItemIndex]!.container_task_id
+// Each operation whose task holds its lines, by its newest event (the events come newest first).
+const runs = computed(() => {
+  const newest = new Map<string, ContainerEvent>()
+  for (const event of props.container.events) {
+    if (event.task_id && !newest.has(event.task_id)) newest.set(event.task_id, event)
   }
+  return [...newest.values()]
+})
+const selectedEvent = computed(() => runs.value.find(event => event.task_id === selectedRun.value))
+
+function label(event: ContainerEvent) {
+  const action = OPERATION_LABELS[event.action as keyof typeof OPERATION_LABELS] ?? event.action
+  return `${formatDate(event.created_at)} - ${action} ${event.transition}`
+}
+
+function openEventLogsDialog() {
+  selectedRun.value = runs.value[0]?.task_id ?? ''
   isEventLogsDialogOpen.value = true
 }
 
@@ -55,14 +62,9 @@ function closeEventLogsDialog() {
 </script>
 
 <template>
-  <Dialog v-model:open="isEventLogsDialogOpen" :key="props.container.worker.hostname">
+  <Dialog v-model:open="isEventLogsDialogOpen" :key="props.container.id">
     <DialogTrigger asChild>
-      <Button
-        v-bind="attrs"
-        variant="outline"
-        size="sm"
-        @click="openEventLogsDialog(props.container)"
-      >
+      <Button v-bind="attrs" variant="outline" size="sm" @click="openEventLogsDialog">
         <Logs />
         Event Logs
       </Button>
@@ -79,18 +81,13 @@ function closeEventLogsDialog() {
           <Field />
           <Field>
             <FieldLabel for="event-select"> Select Event </FieldLabel>
-            <Select v-model="selectedEventId" :disabled="selectedEventId === ''">
+            <Select v-model="selectedRun" :disabled="selectedRun === ''">
               <SelectTrigger id="event-select">
                 <SelectValue placeholder="No events available" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem
-                  v-for="event in events"
-                  :key="event.container_task_id"
-                  :value="event.container_task_id"
-                >
-                  {{ formatDate(event.created_at) }} - {{ event.type }} -
-                  {{ event.container_task_id }}
+                <SelectItem v-for="event in runs" :key="event.task_id!" :value="event.task_id!">
+                  {{ label(event) }}
                 </SelectItem>
               </SelectContent>
             </Select>
@@ -99,10 +96,9 @@ function closeEventLogsDialog() {
       </FieldSet>
       <div class="flex flex-col max-h-[60vh]">
         <TaskLogs
-          v-if="selectedEvent"
-          :key="selectedEvent.container_task_id"
-          :taskId="selectedEvent.application_task_id"
-          :subTaskId="selectedEvent.container_task_id"
+          v-if="selectedEvent?.task_id"
+          :key="selectedEvent.task_id"
+          :taskId="selectedEvent.task_id"
         />
       </div>
       <DialogFooter>

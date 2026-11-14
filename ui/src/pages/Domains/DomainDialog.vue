@@ -37,12 +37,12 @@ import {
 } from '@/components/ui/select'
 import { Spinner } from '@/components/ui/spinner'
 import { useAppStore } from '@/stores/app'
-import { type Domain, type LinkableContainer, createDomain, updateDomain } from '@/services/api'
+import { type ContainerReference, type Domain, createDomain, updateDomain } from '@/services/api'
 
 // Creates a domain, or edits `domain`. The container comes first: it decides the worker, so the name's shape follows
 // it, and choosing another one clears the type.
 interface Props {
-  containers: LinkableContainer[]
+  containers: ContainerReference[]
   domains: Domain[]
   domain?: Domain
   reload: () => Promise<void>
@@ -117,7 +117,7 @@ function chooseContainer(value: unknown) {
   type.value = ''
 }
 
-function containerLabel(container: LinkableContainer) {
+function containerLabel(container: ContainerReference) {
   return `${container.application.label} (${container.application.project.label}) · ${container.worker.hostname}`
 }
 

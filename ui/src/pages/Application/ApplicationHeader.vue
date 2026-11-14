@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { toast } from 'vue-sonner'
-import { Logs, Activity, TriangleAlert, Trash } from 'lucide-vue-next'
+import { Logs, Activity, Trash } from 'lucide-vue-next'
 import {
   Card,
   CardAction,
@@ -24,8 +24,6 @@ import { type Application, deleteApplication } from '@/services/api'
 import SectionTitle from '@/components/SectionTitle.vue'
 import StateIndicator from '@/components/StateIndicator.vue'
 import { useAppStore } from '@/stores/app'
-import { formatDateStringAgo } from '@/lib/utils'
-import { TONES } from '@/lib/tone'
 
 interface Props {
   application: Application
@@ -76,10 +74,7 @@ const repoURL = computed(() => {
     <CardHeader class="border-b">
       <CardTitle>
         <SectionTitle :title="props.application.label" :size="3">
-          <StateIndicator
-            v-bind="appStore.applicationIndicator(appStore.applicationDeployStatus)"
-            show-label
-          />
+          <StateIndicator v-bind="appStore.applicationIndicator(props.application)" show-label />
         </SectionTitle>
       </CardTitle>
       <CardAction>
@@ -147,28 +142,19 @@ const repoURL = computed(() => {
           {{ props.application.command }}
         </p>
       </div>
-      <div>
-        <Label>Last Deployed</Label>
-        <p class="text-sm text-muted-foreground">
-          {{
-            props.application.deployed_at ? formatDateStringAgo(props.application.deployed_at) : '-'
-          }}
-        </p>
-      </div>
-      <div
-        v-if="props.application.config_dirty"
-        :class="['flex items-center gap-1.5 text-sm', TONES.warning.text]"
-      >
-        <TriangleAlert class="w-4 h-4 shrink-0" />
-        Configuration changed since last deploy — redeploy to apply.
-      </div>
     </CardContent>
     <CardFooter
       class="border-t flex flex-col md:flex-row justify-between items-center gap-2 md:gap-0"
     >
       <ButtonGroup class="space-x-1 w-full md:w-auto flex">
-        <DeployApplicationButton :application="props.application" />
-        <StopApplicationButton :application="props.application" />
+        <DeployApplicationButton
+          :application="props.application"
+          :loadApplication="props.loadApplication"
+        />
+        <StopApplicationButton
+          :application="props.application"
+          :loadApplication="props.loadApplication"
+        />
       </ButtonGroup>
       <ButtonGroup class="space-x-1 w-full md:w-auto flex">
         <Button size="sm" class="flex-1 md:flex-initial" variant="outline" @click="onClickLogs">

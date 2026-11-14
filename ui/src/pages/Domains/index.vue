@@ -48,6 +48,13 @@ const namespaces = computed(() =>
     }))
 )
 
+// Each linked container's headline, from the containers the page holds.
+const headlines = computed(() =>
+  Object.fromEntries(
+    state.value.containers.map(container => [container.id, container.view.headline])
+  )
+)
+
 function groups(domains: Domain[], key: 'service' | 'pool') {
   const names = [...new Set(domains.map(domain => domain[key]))].sort((a, b) =>
     a === null ? 1 : b === null ? -1 : a.localeCompare(b)
@@ -169,14 +176,14 @@ onUnmounted(() => stop?.())
                       {{ domain.container.application.label }} · {{ domain.container.worker }}
                     </Badge>
                     <StateIndicator
-                      v-bind="appStore.applicationIndicator(domain.container.status)"
+                      v-if="headlines[domain.container.id]"
+                      v-bind="appStore.containerIndicator(headlines[domain.container.id]!)"
                       show-label
                     />
                   </template>
                   <StateIndicator v-else state="warning" label="not linked" show-label />
                   <StateIndicator
-                    v-bind="appStore.domainIndicator(domain.status)"
-                    :title="domain.sync_error ?? undefined"
+                    v-bind="appStore.domainIndicator(domain.view.status)"
                     show-label
                   />
                   <DomainDialog
@@ -194,6 +201,13 @@ onUnmounted(() => stop?.())
                     destructive
                     :onConfirm="() => onConfirmDelete(domain)"
                   />
+                  <p
+                    v-if="appStore.domainReason(domain.view)"
+                    class="w-full text-sm text-muted-foreground"
+                    data-reason
+                  >
+                    {{ appStore.domainReason(domain.view) }}
+                  </p>
                 </div>
               </div>
             </section>

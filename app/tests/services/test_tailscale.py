@@ -715,80 +715,189 @@ class TestPeers:
         "k3": {"HostName": "pending", "TailscaleIPs": []},
         "k4": {"HostName": "no-addresses"},
     }}
-    monkeypatch.setattr(tailscale, "status", lambda: status)
+    monkeypatch.setattr(tailscale, "status", lambda timeout: status)
     return tailscale
 
-  def test_every_machine_with_an_address_is_listed_with_its_first_address(self, peers):
-    assert [(peer.hostname, peer.ip) for peer in peers.peers()] == [("worker-1", "100.64.0.2"), ("Worker-2", "100.64.0.3")]
+  def test_every_machine_with_an_address_is_listed_with_its_first_address_and_its_hostname_in_lowercase(self, peers):
+    assert [(peer.hostname, peer.ip) for peer in peers.peers()] == [("worker-1", "100.64.0.2"), ("worker-2", "100.64.0.3")]
 
   def test_a_tailnet_without_peers_lists_none(self, tailscale, monkeypatch):
-    monkeypatch.setattr(tailscale, "status", lambda: {})
+    monkeypatch.setattr(tailscale, "status", lambda timeout: {})
     assert tailscale.peers() == []
 
   @pytest.mark.parametrize("query", ["worker-2", "WORKER-2", " Worker-2 ", "100.64.0.3"])
   def test_a_machine_is_found_by_hostname_in_any_case_or_by_address(self, peers, query):
-    assert peers.find_peer(query).hostname == "Worker-2"
+    assert peers.find_peer(query).hostname == "worker-2"
 
   @pytest.mark.parametrize("query", ["worker-3", "100.64.0.9", "", "pending", "fd7a::2"])
   def test_a_machine_that_is_not_listed_is_not_found(self, peers, query):
     assert peers.find_peer(query) is None
 
 
-class TestOnlineStates:
+class TestObserveWorkers:
   @pytest.fixture
   def answers(self, tailscale, monkeypatch):
-    """Which workers' SSH servers answer, by hostname, and which were asked; `connected` is whether the manager's own node is."""
-    state = SimpleNamespace(up=set(), connected=True, asked=[])
+    """Which machines the tailnet lists (hostname to address), which workers' SSH servers answer, and which were asked;
+    `connected` is whether the manager's own node is; `failing` names the call that raises (peers, reachable or
+    connected)."""
+    state = SimpleNamespace(listed={"a": "100.64.0.2", "b": "100.64.0.3", "c": "100.64.0.4"}, up=set(), connected=True, asked=[],
+                            failing=None)
+
+    def fail(call):
+      if state.failing == call:
+        raise Exception(f"Tailscale {call} timed out")
 
     async def reachable(hostname):
+      fail("reachable")
       state.asked.append(hostname)
       return hostname in state.up
 
+    def connected():
+      fail("connected")
+      return state.connected
+
+    def peers():
+      fail("peers")
+      return [SimpleNamespace(hostname=name, ip=ip) for name, ip in state.listed.items()]
+
     monkeypatch.setattr(tailscale, "reachable", reachable)
-    monkeypatch.setattr(tailscale, "connected", lambda: state.connected)
-    # The blocking check runs on the pool of the task that calls it.
+    monkeypatch.setattr(tailscale, "connected", connected)
+    monkeypatch.setattr(tailscale, "peers", peers)
+    # The blocking calls run on the pool of the task that calls them.
     executor = ThreadPoolExecutor(max_workers=1)
     token = active_executor.set(executor)
     yield state
     active_executor.reset(token)
     executor.shutdown()
 
-  def states(self, tailscale, **was):
-    return asyncio.run(tailscale.online_states(was))
+  def observe(self, tailscale, *hostnames):
+    asyncio.run(tailscale.observe_workers(list(hostnames)))
+    return {hostname: tailscale.ssh(hostname) for hostname in hostnames}
 
-  def test_workers_that_answer_are_online_at_once(self, tailscale, answers):
+  def test_a_worker_never_asked_is_unobserved(self, tailscale):
+    assert (tailscale.ssh("a"), tailscale.address("a")) == ("unobserved", None)
+
+  def test_workers_that_answer_are_reachable_at_once_with_their_address(self, tailscale, answers):
     answers.up = {"a", "b"}
-    assert self.states(tailscale, a=False, b=True) == {"a": True, "b": True}
+    assert self.observe(tailscale, "a", "b") == {"a": "reachable", "b": "reachable"}
+    assert tailscale.address("b") == "100.64.0.3"
 
-  def test_a_worker_that_missed_once_stays_online_and_the_second_miss_takes_it_out(self, tailscale, answers):
-    assert self.states(tailscale, a=True) == {"a": True}
-    assert self.states(tailscale, a=True) == {"a": False}
+  def test_a_reachable_worker_that_misses_once_stays_reachable_and_the_second_miss_makes_it_unreachable(
+          self, tailscale, answers):
+    answers.up = {"a"}
+    self.observe(tailscale, "a")
+    answers.up = set()
+    assert self.observe(tailscale, "a") == {"a": "reachable"}
+    assert self.observe(tailscale, "a") == {"a": "unreachable"}
+
+  def test_a_worker_never_answered_stays_unobserved_until_its_misses_make_it_unreachable(self, tailscale, answers):
+    assert self.observe(tailscale, "a") == {"a": "unobserved"}
+    assert self.observe(tailscale, "a") == {"a": "unreachable"}
 
   def test_an_answer_between_misses_starts_the_count_again(self, tailscale, answers):
-    self.states(tailscale, a=True)
     answers.up = {"a"}
-    assert self.states(tailscale, a=True) == {"a": True}
+    self.observe(tailscale, "a")
     answers.up = set()
-    assert self.states(tailscale, a=True) == {"a": True}
+    self.observe(tailscale, "a")
+    answers.up = {"a"}
+    self.observe(tailscale, "a")
+    answers.up = set()
+    assert self.observe(tailscale, "a") == {"a": "reachable"}
 
-  def test_the_workers_are_counted_separately(self, tailscale, answers):
-    answers.up = {"b"}
-    self.states(tailscale, a=True, b=True)
-    assert self.states(tailscale, a=True, b=True) == {"a": False, "b": True}
+  def test_a_worker_the_tailnet_does_not_list_is_unreachable_and_not_asked(self, tailscale, answers):
+    answers.listed = {"a": "100.64.0.2"}
+    answers.up = {"a"}
+    assert self.observe(tailscale, "a", "gone") == {"a": "reachable", "gone": "unreachable"}
+    assert answers.asked == ["a"] and tailscale.address("gone") is None
 
-  def test_a_worker_that_is_no_longer_listed_starts_again_with_no_misses(self, tailscale, answers):
-    self.states(tailscale, a=True)
-    self.states(tailscale, b=True)
-    assert self.states(tailscale, a=True) == {"a": True}
-
-  def test_when_the_manager_is_cut_off_nobody_changes_and_the_misses_are_not_counted(self, tailscale, answers):
-    answers.connected = False
-    assert self.states(tailscale, a=True, b=False, c=None) == {"a": True, "b": False, "c": None}
+  def test_while_the_manager_is_cut_off_every_worker_is_unknown_and_what_was_found_stays(self, tailscale, answers):
+    answers.up = {"a"}
+    self.observe(tailscale, "a", "b")
+    answers.up, answers.connected = set(), False
+    assert self.observe(tailscale, "a", "b") == {"a": "unknown", "b": "unknown"}
+    assert self.observe(tailscale, "a", "b") == {"a": "unknown", "b": "unknown"}
     answers.connected = True
-    assert self.states(tailscale, a=True) == {"a": True}
+    assert self.observe(tailscale, "a", "b") == {"a": "reachable", "b": "unreachable"}
 
-  def test_no_workers_is_no_states(self, tailscale, answers):
-    assert asyncio.run(tailscale.online_states({})) == {}
+  def fail(self, tailscale, *hostnames):
+    with pytest.raises(Exception, match="timed out"):
+      asyncio.run(tailscale.observe_workers(list(hostnames)))
+    return {hostname: tailscale.ssh(hostname) for hostname in hostnames}
+
+  @pytest.mark.parametrize("call", ["peers", "reachable", "connected"])
+  def test_a_failed_observation_changes_nothing_and_the_second_in_a_row_cuts_the_manager_off(self, tailscale, answers, call):
+    answers.up = {"a"}
+    self.observe(tailscale, "a", "b")
+    answers.up, answers.failing = set(), call
+    assert self.fail(tailscale, "a", "b") == {"a": "reachable", "b": "unobserved"}
+    assert self.fail(tailscale, "a", "b") == {"a": "unknown", "b": "unknown"}
+    assert tailscale.address("a") == "100.64.0.2"
+
+  def test_after_the_failures_what_was_found_before_and_the_misses_carry_on(self, tailscale, answers):
+    answers.up = {"a"}
+    self.observe(tailscale, "a")
+    answers.failing = "peers"
+    self.fail(tailscale, "a")
+    self.fail(tailscale, "a")
+    answers.up, answers.failing = set(), None
+    assert self.observe(tailscale, "a") == {"a": "reachable"}
+    assert self.observe(tailscale, "a") == {"a": "unreachable"}
+
+  def test_failures_from_the_start_leave_workers_unobserved_once_then_unknown_until_an_observation_succeeds(self, tailscale, answers):
+    answers.failing = "peers"
+    assert self.fail(tailscale, "a") == {"a": "unobserved"}
+    assert self.fail(tailscale, "a") == {"a": "unknown"}
+    assert self.fail(tailscale, "a") == {"a": "unknown"}
+    answers.up, answers.failing = {"a"}, None
+    assert self.observe(tailscale, "a") == {"a": "reachable"}
+
+  def test_an_observation_that_succeeds_between_failures_starts_the_count_again(self, tailscale, answers):
+    answers.up = {"a"}
+    self.observe(tailscale, "a")
+    answers.failing = "peers"
+    self.fail(tailscale, "a")
+    answers.failing = None
+    self.observe(tailscale, "a")
+    answers.failing = "peers"
+    assert self.fail(tailscale, "a") == {"a": "reachable"}
+
+  def test_a_manager_cut_off_whose_observation_then_fails_stays_cut_off(self, tailscale, answers):
+    answers.up = {"a"}
+    self.observe(tailscale, "a")
+    answers.up, answers.connected = set(), False
+    self.observe(tailscale, "a")
+    answers.failing = "peers"
+    assert self.fail(tailscale, "a") == {"a": "unknown"}
+
+  def test_a_worker_no_longer_observed_is_forgotten(self, tailscale, answers):
+    answers.up = {"a", "b"}
+    self.observe(tailscale, "a", "b")
+    self.observe(tailscale, "a")
+    assert (tailscale.ssh("b"), tailscale.address("b")) == ("unobserved", None)
+
+  def test_no_workers_is_nothing_to_ask(self, tailscale, answers):
+    assert self.observe(tailscale) == {} and answers.asked == []
+
+  def test_one_worker_looked_at_now_is_reachable_with_its_address_when_it_answers(self, tailscale, answers):
+    answers.up = set()
+    self.observe(tailscale, "a")
+    self.observe(tailscale, "a")
+    assert tailscale.ssh("a") == "unreachable"
+    answers.up = {"a"}
+    asyncio.run(tailscale.observe_worker("a"))
+    assert (tailscale.ssh("a"), tailscale.address("a")) == ("reachable", "100.64.0.2")
+    answers.up = set()
+    assert self.observe(tailscale, "a") == {"a": "reachable"}
+
+  @pytest.mark.parametrize("listed", [True, False], ids=["silent", "not listed"])
+  def test_one_worker_that_does_not_answer_or_is_not_listed_is_left_as_it_was(self, tailscale, answers, listed):
+    answers.up = {"a"}
+    self.observe(tailscale, "a")
+    answers.up = set()
+    if not listed:
+      answers.listed = {}
+    asyncio.run(tailscale.observe_worker("a"))
+    assert tailscale.ssh("a") == "reachable"
 
 
 class TestRefreshPaths:

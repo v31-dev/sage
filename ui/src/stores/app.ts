@@ -2,13 +2,13 @@ import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 
 import {
-  APPLICATION_BUSY_STATUSES,
   fetchAppInfo,
   fetchWorkers,
   type AppInfo,
-  type Application,
-  type Container,
-  type Domain,
+  type ApplicationSummary,
+  type ContainerHeadline,
+  type DomainStatus,
+  type DomainView,
   type Indicator,
   type IndicatorState,
   type InfraContainer,
@@ -18,6 +18,7 @@ import {
   type WorkerCertificate,
   type WorkerListItem,
   type WorkerStatus,
+  type WorkerView,
 } from '@/services/api'
 import { watchState } from '@/lib/updates'
 
@@ -39,7 +40,43 @@ const WORKER_INDICATORS: Record<WorkerStatus, Indicator> = {
   removing: { state: 'busy', label: 'removing' },
 }
 
-const DOMAIN_INDICATORS: Record<Domain['status'], Indicator> = {
+const CONTAINER_INDICATORS: Record<ContainerHeadline, Indicator> = {
+  active: { state: 'ok', label: 'active' },
+  inactive: { state: 'idle', label: 'inactive' },
+  deploying: { state: 'busy', label: 'deploying' },
+  stopping: { state: 'busy', label: 'stopping' },
+  backup: { state: 'busy', label: 'backup' },
+  restoring: { state: 'busy', label: 'restoring' },
+  error: { state: 'error', label: 'error' },
+  checking: { state: 'busy', label: 'checking' },
+}
+
+// What each reason of a worker's state means; `detail` when the manager's detail reads as part of it.
+const WORKER_REASONS: Record<string, { text: string; detail?: boolean }> = {
+  unreachable: { text: 'It answers neither over the tailnet nor through its tunnel' },
+  ssh_unreachable: { text: 'Its SSH server does not answer' },
+  tailnet_unreachable: { text: 'It answers through its tunnel but not over the tailnet' },
+  manager_offline: { text: 'The manager is not connected to the tailnet' },
+  unobserved: { text: 'It has not been looked at yet' },
+  owned_elsewhere: { text: 'Another Sage manages it' },
+  setup_failed: { text: 'Its setup failed' },
+  not_reporting: { text: 'It sends no reports' },
+  stack_down: { text: 'Part of its stack is down', detail: true },
+  traefik_down: { text: 'Traefik does not answer on it' },
+  traefik_unchecked: { text: 'Traefik has not been checked yet' },
+}
+
+// What each reason of a Domain's state means; `detail` when its error reads as part of it.
+const DOMAIN_REASONS: Record<string, { text: string; detail?: boolean }> = {
+  route: { text: 'Its route could not be applied', detail: true },
+  dns: { text: 'Its DNS records could not be applied', detail: true },
+  drifted: { text: 'Its route or DNS records differ from its configuration' },
+  worker_not_ready: { text: 'Its worker is not ready' },
+  eligibility_unknown: { text: "Its container's state is not known yet" },
+  not_applied: { text: 'It has not been applied yet' },
+}
+
+const DOMAIN_INDICATORS: Record<DomainStatus, Indicator> = {
   pending: { state: 'idle', label: 'pending' },
   syncing: { state: 'busy', label: 'syncing' },
   synced: { state: 'ok', label: 'synced' },
@@ -56,27 +93,22 @@ export const useAppStore = defineStore('app', () => {
   const workers = ref<WorkerListItem[] | null>(null)
   const workersError = ref('')
 
-  // Immediate updates to block UI button till the next push gives the real update
-  const applicationDeployStatus = ref('inactive' as Application['status'])
-  // The open application's containers by worker hostname, as the last action set them.
-  const containerStatuses = ref<Record<string, Application['status']>>({})
-
   const workersIndicator = computed<Indicator | undefined>(() => {
     if (!workers.value) return undefined
     const total = workers.value.length
-    const online = workers.value.filter(worker => worker.status === 'online').length
+    const online = workers.value.filter(worker => worker.view.status === 'online').length
     if (total === 0) return { state: 'idle', label: 'No workers' }
     return { state: online === total ? 'ok' : 'error', label: `${online} of ${total} online` }
   })
 
   // The status of the worker in the list, undefined before the list has loaded or for a name that is not in it.
   function workerStatus(hostname: string): WorkerStatus | undefined {
-    return workers.value?.find(worker => worker.hostname === hostname)?.status
+    return workers.value?.find(worker => worker.hostname === hostname)?.view.status
   }
 
   // The worker's own certificate in the list, as `workerStatus`.
   function workerCertificate(hostname: string): WorkerCertificate | undefined {
-    return workers.value?.find(worker => worker.hostname === hostname)?.certificate
+    return workers.value?.find(worker => worker.hostname === hostname)?.certificates.worker
   }
 
   // Whether the worker's internal names have their certificate: issued for them, then synced to the worker.
@@ -106,21 +138,29 @@ export const useAppStore = defineStore('app', () => {
     return state ? SETTING_INDICATORS[state] : undefined
   }
 
-  // Applications and containers share one set of statuses.
-  function applicationIndicator(status: Application['status']): Indicator {
-    const state: IndicatorState =
-      status === 'active'
-        ? 'ok'
-        : status === 'error'
-          ? 'error'
-          : APPLICATION_BUSY_STATUSES.includes(status)
-            ? 'busy'
-            : 'idle'
-    return { state, label: status }
+  // How many of its containers are active: an application has no state of its own.
+  function applicationIndicator({ active_count, container_count }: ApplicationSummary): Indicator {
+    if (container_count === 0) return { state: 'idle', label: 'No containers' }
+    return {
+      state: active_count === container_count ? 'ok' : active_count === 0 ? 'idle' : 'warning',
+      label: `${active_count} of ${container_count} active`,
+    }
+  }
+
+  function containerIndicator(headline: ContainerHeadline): Indicator {
+    return CONTAINER_INDICATORS[headline]
   }
 
   function workerIndicator(status: WorkerStatus): Indicator {
     return WORKER_INDICATORS[status]
+  }
+
+  // Why the worker is in its state, for people; empty when it is online or busy with a task of its own.
+  function workerReason({ reason, detail }: WorkerView): string {
+    if (!reason) return ''
+    const meaning = WORKER_REASONS[reason]
+    if (!meaning) return reason
+    return meaning.detail && detail ? `${meaning.text}: ${detail}` : `${meaning.text}.`
   }
 
   function pathIndicator(path: string): Indicator {
@@ -138,8 +178,16 @@ export const useAppStore = defineStore('app', () => {
     return { state, label: `${name}: ${status}` }
   }
 
-  function domainIndicator(status: Domain['status']): Indicator {
+  function domainIndicator(status: DomainStatus): Indicator {
     return DOMAIN_INDICATORS[status]
+  }
+
+  // Why the Domain is in its state, for people; empty when it is synced or syncing.
+  function domainReason({ reason, error }: DomainView): string {
+    if (!reason) return ''
+    const meaning = DOMAIN_REASONS[reason]
+    if (!meaning) return reason
+    return meaning.detail && error ? `${meaning.text}: ${error}` : `${meaning.text}.`
   }
 
   function taskIndicator(status: string): Indicator {
@@ -197,18 +245,9 @@ export const useAppStore = defineStore('app', () => {
     if (entry) entry.state = 'applying'
   }
 
-  // The containers named are shown with the status too; the others keep the pushed one.
-  function updateApplicationDeployStatus(status: Application['status'], hostnames: string[] = []) {
-    applicationDeployStatus.value = status
-    containerStatuses.value = Object.fromEntries(hostnames.map(hostname => [hostname, status]))
-  }
-
-  function updateContainerStatus(hostname: string, status: Application['status']) {
-    containerStatuses.value = { ...containerStatuses.value, [hostname]: status }
-  }
-
-  function containerStatus(container: Container): Application['status'] {
-    return containerStatuses.value[container.worker.hostname] ?? container.status
+  function setSettingTesting(section: SettingSection) {
+    const entry = info.value?.settings?.[section]
+    if (entry) entry.testing = true
   }
 
   return {
@@ -216,7 +255,6 @@ export const useAppStore = defineStore('app', () => {
     info,
     workers,
     workersError,
-    applicationDeployStatus,
     // Getters
     workersIndicator,
     workerStatus,
@@ -225,18 +263,19 @@ export const useAppStore = defineStore('app', () => {
     tunnelIndicator,
     sectionIndicator,
     applicationIndicator,
+    containerIndicator,
     workerIndicator,
+    workerReason,
     pathIndicator,
     infraIndicator,
     domainIndicator,
+    domainReason,
     taskIndicator,
-    containerStatus,
     // Actions
     init,
     refresh,
     setState,
     setSettingApplying,
-    updateApplicationDeployStatus,
-    updateContainerStatus,
+    setSettingTesting,
   }
 })

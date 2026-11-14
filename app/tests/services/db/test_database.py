@@ -3,16 +3,18 @@ import logging
 
 import pytest
 from peewee import IntegrityError
+from playhouse.migrate import SqliteMigrator, migrate
 
 import config
-from services.db import Application, Backup, BaseModel, Container, Database, Domain, Event, Instance, Project, SchemaRefused, Volume, Worker
-from services.db import db as database
-from services.db.database import MODELS
+from services.db.database import MODELS, Database, SchemaRefused
+from services.db.models import (Application, Backup, BaseEvent, BaseModel, Container, ContainerEvent, Domain, Instance, Project, Volume, Worker,
+                                WorkerEvent)
+from services.db.models import db as database
 
 ORPHAN_DOMAIN = [
     "PRAGMA foreign_keys=OFF",
-    "INSERT INTO domain (container_id, name, type, port, status, created_at, updated_at) "
-    "VALUES (999, 'ghost', 'public', 80, 'pending', '2026-01-01 00:00:00', '2026-01-01 00:00:00')",
+    "INSERT INTO domain (id, container_id, name, type, port, created_at, updated_at) "
+    "VALUES ('ghost', 'missing', 'ghost', 'public', 80, '2026-01-01 00:00:00', '2026-01-01 00:00:00')",
     "PRAGMA foreign_keys=ON",
 ]
 
@@ -25,17 +27,37 @@ def counts(db):
   return {table: db.execute_sql(f'SELECT count(*) FROM "{table}"').fetchone()[0] for table in db.get_tables()}
 
 
+def schema(db):
+  return db.execute_sql("SELECT type, name, sql FROM sqlite_master ORDER BY name").fetchall()
+
+
 def point_a_domain_at_a_missing_container(db):
   for statement in ORPHAN_DOMAIN:
     db.execute_sql(statement)
 
 
+def rewrite_table(db, table, old, new):
+  """Rebuilds `table` from its own CREATE statement with `old` replaced by `new`, keeping its rows and indexes."""
+  (sql,) = db.execute_sql("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)).fetchone()
+  assert old in sql
+  indexes = [row[0] for row in db.execute_sql(
+      "SELECT sql FROM sqlite_master WHERE type = 'index' AND tbl_name = ? AND sql IS NOT NULL", (table,))]
+  db.execute_sql("PRAGMA foreign_keys=OFF")
+  db.execute_sql(sql.replace(old, new).replace(f'CREATE TABLE "{table}"', f'CREATE TABLE "{table}_new"', 1))
+  db.execute_sql(f'INSERT INTO "{table}_new" SELECT * FROM "{table}"')
+  db.execute_sql(f'DROP TABLE "{table}"')
+  db.execute_sql(f'ALTER TABLE "{table}_new" RENAME TO "{table}"')
+  for index in indexes:
+    db.execute_sql(index)
+  db.execute_sql("PRAGMA foreign_keys=ON")
+
+
 @pytest.fixture
 def clash(db, worker):
   """A database from before the name index: one worker holds an internal and a TCP name that are the same."""
-  db.execute_sql("DROP INDEX domain_name_worker")
-  Domain.insert(name="shop", type="internal", port=80, worker=worker).execute()
-  Domain.insert(name="shop", type="tcp", port=80, worker=worker).execute()
+  db.execute_sql("DROP INDEX domain_name_namespace_worker")
+  Domain.insert(name="shop", type="internal", port=80, namespace_worker=worker).execute()
+  Domain.insert(name="shop", type="tcp", port=80, namespace_worker=worker).execute()
 
 
 def test_opens_in_the_data_dir(db, data_dir):
@@ -50,8 +72,8 @@ def test_creates_the_data_dir_when_it_is_missing(data_dir, monkeypatch):
 
 
 def test_every_model_is_registered_and_has_a_table(db):
-  assert set(MODELS) == set(BaseModel.__subclasses__())
-  assert set(db.get_tables()) == {model._meta.table_name for model in MODELS}
+  assert set(MODELS) == set(BaseModel.__subclasses__()) - {BaseEvent} | set(BaseEvent.__subclasses__())
+  assert set(db.get_tables()) == {model._meta.table_name for model in MODELS} | {"sqlite_sequence"}
 
 
 @pytest.mark.parametrize("pragma, expected", [
@@ -65,20 +87,32 @@ def test_applies_the_connection_pragmas(db, pragma, expected):
 
 
 class TestInstance:
-  def test_a_new_database_has_one_instance_with_an_id(self, db):
+  def test_a_new_database_has_one_instance_with_an_id_and_a_generation(self, db):
     (instance,) = Instance.select()
-    assert len(instance.id) == 16
+    assert len(instance.id) == len(instance.state_generation) == 16
+    assert instance.id != instance.state_generation
 
-  def test_the_instance_survives_reconciling_and_a_restart(self, db):
-    before = Instance.get().id
+  def test_the_instance_and_its_generation_survive_reconciling_and_a_restart(self, db):
+    before = Instance.get()
     Database().reconcile_schema()
     Database()
-    assert [instance.id for instance in Instance.select()] == [before]
+    assert [(instance.id, instance.state_generation) for instance in Instance.select()] == [
+        (before.id, before.state_generation)]
 
   def test_a_snapshot_from_before_the_instance_existed_gets_one_when_it_is_restored(self, db):
     db.execute_sql("DROP TABLE instance")
     Database().reconcile_schema()
     assert Instance.select().count() == 1
+
+  def test_a_snapshot_from_before_the_generation_keeps_its_instance_and_gets_a_generation(self, db):
+    before = Instance.get().id
+    db.execute_sql("ALTER TABLE instance DROP COLUMN state_generation")
+
+    Database().reconcile_schema()
+
+    (instance,) = Instance.select()
+    assert instance.id == before
+    assert len(instance.state_generation) == 16
 
 
 class TestReconcileSchema:
@@ -105,10 +139,12 @@ class TestReconcileSchema:
     assert "updated_at" in columns(db, table)
 
   def test_a_current_schema_is_left_alone(self, db, caplog):
+    before = schema(db)
     with caplog.at_level(logging.INFO, logger="services.db.database"):
       Database().reconcile_schema()
     assert "Adding missing column" not in caplog.text
     assert "Dropping column" not in caplog.text
+    assert schema(db) == before
 
   def test_drops_a_column_no_model_has_any_more_and_keeps_the_rows(self, db):
     Project.create(name="demo", label="Demo")
@@ -120,17 +156,18 @@ class TestReconcileSchema:
     assert Project.get_by_id("demo").label == "Demo"
 
   def test_a_not_null_column_without_a_default_that_no_model_has_does_not_stop_a_new_row(self, db):
-    """A worker table from before `online` left the models has it NOT NULL, so a new worker could not be inserted."""
+    """A worker table from before `online` and `ip` left the models has them NOT NULL, so a new worker could not be
+    inserted."""
     db.execute_sql("DROP TABLE worker")
     db.execute_sql(
         "CREATE TABLE worker (hostname VARCHAR(255) NOT NULL PRIMARY KEY, ip CHAR(15) NOT NULL, online INTEGER NOT NULL, "
-        "created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL)")
+        "created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL, subdomain VARCHAR(63) NOT NULL)")
 
     Database().reconcile_schema()
 
-    assert "online" not in columns(db, "worker")
-    Worker.create(hostname="w1", ip="100.64.0.2")
-    assert Worker.get_by_id("w1").ip == "100.64.0.2"
+    assert columns(db, "worker") == {"hostname", "created_at", "updated_at", "subdomain"}
+    Worker.create(hostname="w1", subdomain="red")
+    assert Worker.get_by_id("w1").subdomain == "red"
 
   def test_logs_the_column_it_drops(self, db, caplog):
     db.execute_sql("ALTER TABLE project ADD COLUMN retired INTEGER NOT NULL DEFAULT 0")
@@ -143,54 +180,42 @@ class TestReconcileSchema:
     with pytest.raises(ValueError, match="not null but has no default"):
       Database().reconcile_schema()
 
-  def test_a_new_column_with_an_index_gets_both_on_a_table_with_rows(self, db):
-    Worker.create(hostname="w1", ip="100.64.0.2", subdomain="aaa111")
-    Worker.create(hostname="w2", ip="100.64.0.3", subdomain="bbb222")
-    db.execute_sql("DROP INDEX worker_subdomain")
-    db.execute_sql("ALTER TABLE worker DROP COLUMN subdomain")
+  def test_a_new_column_with_an_index_gets_both_on_a_table_with_rows(self, db, worker):
+    WorkerEvent.create(worker=worker, subject_id="w1", action="add", transition="succeeded", dedupe_key="a")
+    WorkerEvent.create(worker=worker, subject_id="w1", action="add", transition="succeeded", dedupe_key="b")
+    db.execute_sql("DROP INDEX workerevent_dedupe_key")
+    db.execute_sql("ALTER TABLE worker_event DROP COLUMN dedupe_key")
 
     Database().reconcile_schema()
 
-    assert "subdomain" in columns(db, "worker")
-    assert [row[0] for row in db.execute_sql("SELECT sql FROM sqlite_master WHERE name = 'worker_subdomain'")] == [
-        'CREATE UNIQUE INDEX "worker_subdomain" ON "worker" ("subdomain")']
-    assert Worker.select().count() == 2
+    assert "dedupe_key" in columns(db, "worker_event")
+    assert [row[0] for row in db.execute_sql("SELECT sql FROM sqlite_master WHERE name = 'workerevent_dedupe_key'")] == [
+        'CREATE UNIQUE INDEX "workerevent_dedupe_key" ON "worker_event" ("dedupe_key")']
+    assert WorkerEvent.select().count() == 2
 
   def test_an_existing_domain_table_gets_the_name_index(self, db):
-    db.execute_sql("DROP INDEX domain_name_worker")
+    db.execute_sql("DROP INDEX domain_name_namespace_worker")
 
     Database().reconcile_schema()
 
-    assert "domain_name_worker" in {index.name for index in db.get_indexes("domain")}
+    assert "domain_name_namespace_worker" in {index.name for index in db.get_indexes("domain")}
 
   @pytest.mark.parametrize("type", ["public", "internal", "tcp"])
-  def test_domain_sync_columns_are_added_pending_and_keep_the_binding(self, db, application, worker, type):
-    container = Container.create(application=application, worker=worker, status="active")
-    domain = Domain.create(name="shop", type=type, port=80, container=container, service="shop", pool="eu")
-    before = counts(db)
-    for column in ("status", "sync_error", "synced_hash", "synced_at"):
-      db.execute_sql(f"ALTER TABLE domain DROP COLUMN {column}")
-
-    Database().reconcile_schema()
-
-    stored = Domain.get_by_id(domain.id)
-    assert (stored.status, stored.sync_error, stored.synced_hash, stored.synced_at) == ("pending", None, None, None)
-    assert (stored.name, stored.type, stored.port, stored.container_id, stored.worker_id, stored.service, stored.pool) == (
-        "shop", type, 80, container.id, None if type == "public" else worker.hostname, "shop", "eu")
-    assert counts(db) == before
-
-  def test_a_domain_keeps_its_error_and_previous_success_when_its_table_is_rebuilt(self, db, application, worker, clock):
+  def test_a_domain_keeps_its_binding_and_policy_when_its_table_is_rebuilt(self, db, application, worker, type):
     container = Container.create(application=application, worker=worker)
-    domain = Domain.create(name="shop", type="public", port=80, container=container,
-                           status="error", sync_error="DNS: unavailable", synced_hash="applied", synced_at=clock.current)
+    origins = None if type == "tcp" else ["https://app.example.test"]
+    domain = Domain.create(name="shop", type=type, port=80, container=container, service="shop", pool="eu",
+                           namespace_worker=None if type == "public" else worker, cors_origins=origins)
+    before = counts(db)
     db.execute_sql("ALTER TABLE domain DROP COLUMN updated_at")
 
     Database().reconcile_schema()
 
     stored = Domain.get_by_id(domain.id)
-    assert (stored.status, stored.sync_error, stored.synced_hash, stored.synced_at) == (
-        "error", "DNS: unavailable", "applied", clock.current)
-    assert stored.container_id == container.id
+    assert (stored.name, stored.type, stored.port, stored.container_id, stored.namespace_worker_id, stored.service,
+            stored.pool, stored.cors_origins) == (
+        "shop", type, 80, container.id, None if type == "public" else worker.hostname, "shop", "eu", origins)
+    assert counts(db) == before
 
   def test_an_index_no_model_declares_is_dropped_and_the_declared_ones_and_sqlites_own_stay(self, db):
     db.execute_sql("CREATE UNIQUE INDEX domain_name_namespace ON domain (name, (type = 'public'))")
@@ -204,13 +229,34 @@ class TestReconcileSchema:
 
   def test_a_column_in_a_foreign_key_that_no_model_has_is_dropped_and_the_rows_stay(self, db, application, worker):
     container = Container.create(application=application, worker=worker)
-    Domain.create(name="shop", type="internal", port=80, container=container)
+    Domain.create(name="shop", type="internal", port=80, container=container, namespace_worker=worker)
     db.execute_sql("ALTER TABLE domain ADD COLUMN application_id INTEGER REFERENCES application (id) ON DELETE CASCADE")
 
     Database().reconcile_schema()
 
     assert "application_id" not in columns(db, "domain")
     assert Domain.get(Domain.name == "shop").container_id == container.id
+
+  def test_a_column_no_model_has_is_dropped_while_an_undeclared_expression_index_names_it(self, db):
+    db.execute_sql("ALTER TABLE domain ADD COLUMN worker_id VARCHAR(255)")
+    db.execute_sql("CREATE UNIQUE INDEX domain_name_worker ON domain (name, coalesce(worker_id, ''))")
+    Domain.create(name="shop", type="public", port=80)
+
+    Database().reconcile_schema()
+
+    assert "worker_id" not in columns(db, "domain")
+    assert "domain_name_worker" not in {index.name for index in db.get_indexes("domain")}
+    assert Domain.select().count() == 1
+
+  def test_a_column_it_adds_has_its_check_and_compares_equal_afterwards(self, db, application):
+    migrate(SqliteMigrator(db).drop_column("application", "type", legacy=True))
+
+    Database().reconcile_schema()
+    Database().reconcile_schema()
+
+    assert Application.get_by_id(application.id).type == "docker"
+    with pytest.raises(IntegrityError, match="CHECK constraint failed"):
+      db.execute_sql("UPDATE application SET type = 'bogus'")
 
   def test_data_that_refuses_an_index_stops_the_startup_saying_what_failed_and_where_the_fix_is(self, db, clash, monkeypatch):
     monkeypatch.setattr(config, "VERSION", "1.2.3")
@@ -220,11 +266,69 @@ class TestReconcileSchema:
 
     message = str(refused.value)
     assert f"Sage 1.2.3 can't update the schema of {config.DB_PATH}" in message
-    assert "UNIQUE constraint failed: index 'domain_name_worker'" in message
-    assert """The refused index: CREATE UNIQUE INDEX IF NOT EXISTS "domain_name_worker" ON "domain" ("name", coalesce(worker_id, '')).""" in message
+    assert "UNIQUE constraint failed: index 'domain_name_namespace_worker'" in message
+    assert ("""The refused index: CREATE UNIQUE INDEX IF NOT EXISTS "domain_name_namespace_worker" ON "domain" """
+            """("name", coalesce(namespace_worker_id, '')).""") in message
     assert "The database was left as it was." in message
     assert message.endswith("How to fix it: https://github.com/v31-dev/sage/releases/tag/v1.2.3")
     assert isinstance(refused.value.__cause__, IntegrityError)
+
+
+class TestAChangedColumnIsRefused:
+  @pytest.mark.parametrize("table, old, new, difference", [
+      ("container", '"id" VARCHAR(255) NOT NULL PRIMARY KEY', '"id" INTEGER NOT NULL PRIMARY KEY',
+       "container.id is INTEGER NOT NULL PRIMARY KEY, this version's is VARCHAR(255) NOT NULL PRIMARY KEY"),
+      ("project", '"description" VARCHAR(255)', '"description" VARCHAR(255) NOT NULL',
+       "project.description is VARCHAR(255) NOT NULL, this version's is VARCHAR(255)"),
+      ("setting", '"key" VARCHAR(255) NOT NULL PRIMARY KEY', '"key" VARCHAR(255) NOT NULL',
+       "setting.key is VARCHAR(255) NOT NULL, this version's is VARCHAR(255) NOT NULL PRIMARY KEY"),
+      ("volume", 'REFERENCES "application" ("id") ON DELETE CASCADE', 'REFERENCES "application" ("id")',
+       "volume.application_id is INTEGER NOT NULL REFERENCES application (id) ON DELETE NO ACTION, "
+       "this version's is INTEGER NOT NULL REFERENCES application (id) ON DELETE CASCADE"),
+      ("application", """ CHECK ("type" IN ('docker', 'git'))""", "",
+       """application has the checks CHECK (container_count >= 0), this version's are """
+       """CHECK ("type" IN ('docker', 'git')); CHECK (container_count >= 0)"""),
+      ("task", "'completed', 'failed', 'cancelled'", "'completed', 'failed'",
+       """task has the checks CHECK ("status" IN ('completed', 'failed')), """
+       """this version's are CHECK ("status" IN ('completed', 'failed', 'cancelled'))"""),
+  ], ids=["type", "NOT NULL", "primary key", "foreign key", "a missing CHECK", "a new choice value"])
+  def test_it_stops_the_startup_saying_what_differs_and_leaves_the_database_as_it_was(
+          self, db, monkeypatch, table, old, new, difference):
+    monkeypatch.setattr(config, "VERSION", "1.2.3")
+    rewrite_table(db, table, old, new)
+    before = schema(db)
+
+    with pytest.raises(SchemaRefused) as refused:
+      Database().reconcile_schema()
+
+    message = str(refused.value)
+    assert message.startswith(f"Sage 1.2.3 can't update the schema of {config.DB_PATH}: "
+                              "its tables differ from this version's where SQLite can't change them: ")
+    assert difference in message
+    assert message.endswith("The database was left as it was. "
+                            "How to fix it: https://github.com/v31-dev/sage/releases/tag/v1.2.3")
+    assert schema(db) == before
+
+  def test_the_columns_it_would_add_and_drop_in_the_same_step_are_rolled_back(self, db):
+    db.execute_sql("ALTER TABLE project DROP COLUMN description")
+    db.execute_sql("ALTER TABLE worker ADD COLUMN ip CHAR(15)")
+    rewrite_table(db, "container", '"id" VARCHAR(255) NOT NULL PRIMARY KEY', '"id" INTEGER NOT NULL PRIMARY KEY')
+
+    with pytest.raises(SchemaRefused):
+      Database().reconcile_schema()
+
+    assert "description" not in columns(db, "project")
+    assert "ip" in columns(db, "worker")
+
+  def test_every_changed_table_is_named(self, db):
+    rewrite_table(db, "container", '"id" VARCHAR(255) NOT NULL PRIMARY KEY', '"id" INTEGER NOT NULL PRIMARY KEY')
+    rewrite_table(db, "domain", '"container_id" VARCHAR(255)', '"container_id" INTEGER')
+
+    with pytest.raises(SchemaRefused) as refused:
+      Database().reconcile_schema()
+
+    assert "container.id is INTEGER" in str(refused.value)
+    assert "domain.container_id is INTEGER REFERENCES container (id) ON DELETE SET NULL" in str(refused.value)
 
 
 class TestANotNullColumnAddedToATableOtherRowsReference:
@@ -234,14 +338,15 @@ class TestANotNullColumnAddedToATableOtherRowsReference:
   @pytest.fixture
   def deployed(self, application, worker):
     container = Container.create(application=application, worker=worker)
-    Event.create(container=container, type="deploy", application_task_id="t1", container_task_id="t2")
-    Domain.create(name="shop", type="internal", port=80, container=container)
+    ContainerEvent.create(container=container, subject_id=container.id, action="deploy", transition="succeeded",
+                          application_name="demo-web", worker_hostname=worker.hostname)
+    Domain.create(name="shop", type="internal", port=80, container=container, namespace_worker=worker)
 
   @pytest.fixture
   def undeployed(self, project):
     application = Application.create(project=project, name="api", label="API", image="nginx")
     Volume.create(application=application, name="data", path="/data")
-    Backup.create(type="application", s3_path="backups/api", application=application)
+    Backup.create(storage_id="aaaaaaaaaaaaaaaa", type="application", s3_path="backups/api", application=application)
 
   @pytest.mark.parametrize("table, rows", [
       ("project", "deployed"),
@@ -254,7 +359,7 @@ class TestANotNullColumnAddedToATableOtherRowsReference:
       "application, whose volumes and backups cascade",
       "application, which a container restricts",
       "worker, which a container and a domain restrict",
-      "container, whose events cascade and whose domains are unlinked",
+      "container, whose events and domains are unlinked",
   ])
   def test_every_row_stays_and_the_column_is_not_null(self, db, request, table, rows):
     request.getfixturevalue(rows)
@@ -307,7 +412,7 @@ class TestARefusedSchemaStep:
     Domain.delete().where(Domain.type == "tcp").execute()
     Database().reconcile_schema()
 
-    assert "domain_name_worker" in {index.name for index in db.get_indexes("domain")}
+    assert "domain_name_namespace_worker" in {index.name for index in db.get_indexes("domain")}
 
 
 @pytest.mark.parametrize("setup, error", [
@@ -334,3 +439,105 @@ def test_it_refuses_to_run_inside_a_transaction_where_foreign_keys_cannot_be_tur
 
   assert "description" not in columns(db, "project")
   assert db.execute_sql("PRAGMA foreign_keys").fetchone()[0] == 1
+
+
+class TestPlatformCopies:
+  @pytest.fixture
+  def live(self, db, application, worker):
+    """A configuration with its history: a container with an event, a worker event, a notification, a task, a
+    backup row."""
+    from services.db.models import Notification, Task
+    container = Container.create(application=application, worker=worker)
+    ContainerEvent.create(container=container, subject_id=container.id, action="deploy", transition="admitted",
+                          application_name="demo-web", worker_hostname=worker.hostname)
+    WorkerEvent.create(worker=worker, subject_id=worker.hostname, action="add", transition="admitted")
+    Notification.create(content="Deployed.")
+    Task.create(task_id="t1", name="deploy", executor="app", status="completed")
+    Backup.create(s3_path="base/backups/platform/x.db.enc", storage_id="s1", type="platform")
+    return container
+
+  def tables(self, path):
+    import sqlite3
+    with contextlib.closing(sqlite3.connect(path)) as copy:
+      return {table: copy.execute(f'SELECT count(*) FROM "{table}"').fetchone()[0]
+              for (table,) in copy.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+
+  def test_a_snapshot_holds_the_configuration_without_its_history_or_its_backup_rows(self, live, tmp_path):
+    Database().snapshot(tmp_path / "snapshot.db")
+    held = self.tables(tmp_path / "snapshot.db")
+    assert {table: held[table] for table in ("container", "worker", "application", "project", "instance")} == {
+        "container": 1, "worker": 1, "application": 1, "project": 1, "instance": 1}
+    assert {table: held[table] for table in ("container_event", "worker_event", "notification", "task", "backup")} == dict.fromkeys(
+        ("container_event", "worker_event", "notification", "task", "backup"), 0)
+    assert ContainerEvent.select().count() == 1 and Backup.select().count() == 1
+
+  def test_a_snapshot_is_compacted_with_no_room_left_by_what_it_left_out(self, live, tmp_path):
+    import sqlite3
+
+    from services.db.models import Notification
+    Notification.insert_many([{"content": "x" * 500}] * 500).execute()
+    Database().snapshot(tmp_path / "snapshot.db")
+    with contextlib.closing(sqlite3.connect(tmp_path / "snapshot.db")) as copy:
+      assert copy.execute("PRAGMA freelist_count").fetchone()[0] == 0
+
+  def test_an_install_replaces_the_configuration_and_starts_the_history_and_the_backup_rows_empty(self, live, tmp_path, application):
+    from services.db.models import Notification, Task
+    Database().snapshot(tmp_path / "snapshot.db")
+    generation = Instance.get().state_generation
+    other = Worker.create(hostname="w2", subdomain="blue")
+    Container.create(application=application, worker=other)
+    Notification.create(content="Added w2.")
+    Database().install(tmp_path / "snapshot.db")
+    assert [worker.hostname for worker in Worker.select()] == ["w1"] and [c.id for c in Container.select()] == [live.id]
+    assert [model.select().count() for model in (ContainerEvent, WorkerEvent, Notification, Task, Backup)] == [0] * 5
+    assert Instance.get().state_generation != generation
+    assert [path for path in config.DB_PATH.parent.iterdir() if ".restore-" in path.name] == []
+
+  def test_a_backup_that_holds_history_is_installed_without_it(self, live, tmp_path):
+    import sqlite3
+
+    from services.db.models import Notification
+    with contextlib.closing(sqlite3.connect(tmp_path / "old.db")) as copy:
+      database.connection().backup(copy)
+    Database().install(tmp_path / "old.db")
+    assert (ContainerEvent.select().count(), Notification.select().count(), Backup.select().count()) == (0, 0, 0)
+
+  def test_an_older_backup_gets_this_versions_schema(self, live, tmp_path):
+    import sqlite3
+    Database().snapshot(tmp_path / "snapshot.db")
+    with contextlib.closing(sqlite3.connect(tmp_path / "snapshot.db")) as copy:
+      copy.execute("ALTER TABLE domain DROP COLUMN pool")
+      copy.commit()
+    Database().install(tmp_path / "snapshot.db")
+    assert "pool" in columns(database, "domain")
+
+  @pytest.mark.parametrize("damage", ["not a database", "a damaged page"])
+  def test_a_backup_that_is_not_a_sound_database_is_refused_and_nothing_changes(self, live, tmp_path, damage):
+    path = tmp_path / "broken.db"
+    if damage == "not a database":
+      path.write_bytes(b"not a database at all" * 100)
+    else:
+      Database().snapshot(path)
+      data = bytearray(path.read_bytes())
+      page = next(offset for offset in range(4096, len(data), 4096) if data[offset] == 0x0D)
+      data[page + 8:page + 64] = bytes(range(56))
+      path.write_bytes(bytes(data))
+    before = counts(database)
+    with pytest.raises(Exception):
+      Database().install(path)
+    assert counts(database) == before
+
+  def test_an_install_that_fails_part_way_puts_the_live_database_back(self, live, tmp_path, monkeypatch):
+    Database().snapshot(tmp_path / "snapshot.db")
+    Worker.create(hostname="w2", subdomain="blue")
+    generation = Instance.get().state_generation
+
+    def refuse():
+      raise SchemaRefused("its tables differ")
+
+    monkeypatch.setattr(Database(), "reconcile_schema", refuse)
+    with pytest.raises(SchemaRefused):
+      Database().install(tmp_path / "snapshot.db")
+    assert sorted(worker.hostname for worker in Worker.select()) == ["w1", "w2"]
+    assert (Instance.get().state_generation, ContainerEvent.select().count()) == (generation, 1)
+    assert [path for path in config.DB_PATH.parent.iterdir() if ".restore-" in path.name] == []

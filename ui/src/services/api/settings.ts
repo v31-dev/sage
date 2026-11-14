@@ -4,8 +4,8 @@ import type { AppInfo } from './info'
 export interface Setting {
   key: string
   value: Record<string, unknown> | null
-  created_at: Date
-  updated_at: Date
+  created_at: string
+  updated_at: string
 }
 
 export type SettingSection = 'tailscale' | 'cloudflare' | 's3' | 'notifications'
@@ -26,6 +26,8 @@ export interface SettingSectionStatus {
   details: CloudflareDetails | null
   // Notifications: why each failing channel failed, by settings field.
   channels: Record<string, string> | null
+  // Whether its Test (`test_<section>`) is queued or running, apart from its state.
+  testing: boolean
 }
 
 export type TunnelStatus = 'healthy' | 'degraded' | 'down' | 'inactive'
@@ -54,14 +56,21 @@ export const fetchSetting = (section: SettingSection) =>
 export const updateSetting = (section: SettingSection, value: Record<string, string | null>) =>
   request<Setting>('PUT', `/settings/${section}`, { body: { value } })
 
-// Checks the values given, saved or not, against the provider.
+// Queues a check of the values given, saved or not, against the provider: the task `test_<section>`, whose outcome
+// the section's `setting-tests` feed pushes.
 export const testSetting = (section: SettingSection, value: Record<string, string | null>) =>
-  request<{ message: string }>('POST', `/settings/${section}/test`, { body: { value } })
+  request<{ task_id: string }>('POST', `/settings/${section}/test`, { body: { value } })
+
+// A Test's outcome, as `setting-tests:<section>` pushes it when the Test ends; the manager keeps none.
+export interface SettingTestOutcome {
+  ok: boolean
+  message: string
+  at: string
+}
 
 export const pauseSage = () => request<{ state: AppInfo['state'] }>('POST', '/settings/pause')
 
 export const resumeSage = () => request<{ state: AppInfo['state'] }>('POST', '/settings/resume')
 
-export const resyncTraefik = () => request<unknown>('POST', '/settings/resync_traefik')
-
-export const resyncWorkers = () => request<unknown>('POST', '/settings/resync_workers')
+export const resyncWorkers = () =>
+  request<{ task_ids: string[] }>('POST', '/settings/resync_workers')

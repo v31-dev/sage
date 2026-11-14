@@ -5,8 +5,10 @@ import socket
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 
 import pytest
+import requests
 import socketio
 import uvicorn
 from cryptography import x509
@@ -21,16 +23,13 @@ from socketio.exceptions import ConnectionError as SocketConnectionError
 import config
 import services.updates as updates_module
 from api import build_asgi_app
-from routes.applications import load_application
-from routes.backups import get_platform_backup_status, list_platform_backups
-from routes.info import get as info
-from routes.info import get_release
-from routes.notifications import list_notifications
-from routes.tasks import list_tasks
 from routes.updates import TOPICS, same_origin, sio
-from routes.workers import get as list_workers
-from routes.workers import load_worker
-from services.db import Backup, Notification
+from services.backups.commands import add_backup
+from services.backups.payload import platform_backups
+from services.db.models import Notification
+from services.notification import list_notifications
+from services.releases import Releases
+from services.s3 import S3
 from services.updates import Feed, Topic, UpdateFeed, Updates, UpdateSource, UpdateTopic
 
 BOTH = ["polling", "websocket"]
@@ -99,26 +98,34 @@ def served_over_tls(manager, thread_connections, monkeypatch, tmp_path):
                                                        serialization.NoEncryption()))
   port, stop = serve(build_asgi_app(False), monkeypatch, ssl_certfile=str(tmp_path / "cert.pem"),
                      ssl_keyfile=str(tmp_path / "key.pem"))
-  yield port
+  yield SimpleNamespace(port=port, ca=str(tmp_path / "cert.pem"))
   stop()
 
 
 class Browser:
   """A Socket.IO client that keeps what it is sent."""
 
-  def __init__(self, port, transports=None, origin=SAME_ORIGIN, headers=None, tls=False):
-    """`origin` is what the page sends: its own origin, another one, or none."""
+  def __init__(self, port, transports=None, origin=SAME_ORIGIN, headers=None, ca=None):
+    """`origin` is what the page sends: its own origin, another one, or none. `ca` is the certificate of a server over
+    TLS, which the browser trusts."""
     self.port = port
-    scheme = "https" if tls else "http"
+    scheme = "https" if ca else "http"
     self.received = queue.Queue()
     headers = dict(headers or {})
     if origin is not NO_ORIGIN:
       headers["Origin"] = f"{scheme}://127.0.0.1:{port}" if origin is SAME_ORIGIN else origin
-    self.client = socketio.Client(reconnection=False, ssl_verify=False, websocket_extra_options={"suppress_origin": True})
+    self.session = requests.Session()
+    self.session.verify = ca or True
+    self.client = socketio.Client(reconnection=False, http_session=self.session,
+                                  websocket_extra_options={"suppress_origin": True})
     self.client.on("state", lambda payload: self.received.put(("state", payload)))
     self.client.on("topic_error", lambda payload: self.received.put(("topic_error", payload)))
-    self.client.connect(f"{scheme}://127.0.0.1:{port}", socketio_path="api/socket.io", transports=transports or BOTH,
-                        headers=headers, wait_timeout=5)
+    try:
+      self.client.connect(f"{scheme}://127.0.0.1:{port}", socketio_path="api/socket.io", transports=transports or BOTH,
+                          headers=headers, wait_timeout=5)
+    except Exception:
+      self.session.close()
+      raise
 
   def subscribe(self, topic):
     """Subscribe, and wait until the manager says it has."""
@@ -131,7 +138,9 @@ class Browser:
     return self.received.get(timeout=5)
 
   def close(self):
-    self.client.disconnect()
+    if self.client.connected:
+      self.client.disconnect()
+    self.session.close()
 
 
 @pytest.fixture
@@ -144,8 +153,7 @@ def browser(served):
 
   yield open_one
   for one in opened:
-    if one.client.connected:
-      one.close()
+    one.close()
 
 
 @pytest.fixture
@@ -158,7 +166,7 @@ def state(monkeypatch):
 class TestTopics:
   def test_the_topics_are_the_ones_the_pages_follow(self):
     assert set(TOPICS) == {"info", "tasks", "backup-status", "backups", "release", "workers", "worker", "application", "domains",
-                           "notifications", "task-history", "task-logs", "application-logs", "requests"}
+                           "notifications", "task-history", "task-logs", "application-logs", "requests", "setting-tests"}
 
   def test_the_table_has_each_topic_and_each_feed_once(self):
     assert not set(UpdateTopic) & set(UpdateFeed)
@@ -171,7 +179,8 @@ class TestTopics:
 
   def test_the_info_follows_what_the_manager_status_is_made_of(self):
     assert TOPICS["info"].sources == {UpdateSource.QUEUE_STATE, UpdateSource.RESTORING, UpdateSource.SETTINGS_APPLYING,
-                                      UpdateSource.CHECKS, UpdateSource.CERTIFICATES, UpdateSource.LATEST_VERSION}
+                                      UpdateSource.SETTINGS_TESTING, UpdateSource.CHECKS, UpdateSource.CERTIFICATES,
+                                      UpdateSource.TUNNELS, UpdateSource.LATEST_VERSION}
 
   @pytest.mark.parametrize("topic, source", [("tasks", UpdateSource.TASKS), ("backup-status", UpdateSource.BACKUP_STATUS),
                                              ("backups", UpdateSource.BACKUPS), ("release", UpdateSource.RELEASE),
@@ -185,14 +194,24 @@ class TestTopics:
     assert TOPICS["application"].sources == {UpdateSource.APPLICATION}
     assert not any(TOPICS[name].parameterised for name in ("info", "tasks", "backup-status", "backups", "release", "workers"))
 
-  @pytest.mark.parametrize("topic, route", [("info", info), ("tasks", list_tasks), ("backup-status", get_platform_backup_status),
-                                            ("backups", list_platform_backups), ("release", get_release),
-                                            ("workers", list_workers), ("worker", load_worker), ("application", load_application)])
-  def test_a_topic_is_loaded_by_the_function_of_its_route(self, topic, route):
-    assert TOPICS[topic].load is route
+  @pytest.mark.parametrize("topic, argument, reader, arguments", [
+      ("info", None, "info", ()), ("tasks", None, "task_snapshot", ()), ("backup-status", None, "backup_status", ()),
+      ("workers", None, "worker_list", ()), ("domains", None, "domains_page", ()),
+      ("worker", "w1", "worker_page", ("w1",)), ("application", "demo/web", "application_page", ("demo", "web")),
+      ("application", "demo", "application_page", ("demo", ""))])
+  def test_a_topic_is_loaded_by_the_managers_reader_of_its_page(self, manager, topic, argument, reader, arguments):
+    manager.answers[reader] = {"page": topic}
+    loaded = TOPICS[topic].load(argument) if argument is not None else TOPICS[topic].load()
+    assert loaded == {"page": topic}
+    assert [(name, args) for name, args, _ in manager.calls] == [(reader, arguments)]
+
+  def test_the_release_and_the_backups_are_loaded_from_their_owners(self, register):
+    register(Releases, SimpleNamespace(latest=lambda: {"tag_name": "v2.0.0"}))
+    assert TOPICS["release"].load() == {"tag_name": "v2.0.0"}
+    assert TOPICS["backups"].load is platform_backups
 
   def test_the_log_feeds_of_a_task_and_of_an_application_take_an_argument_and_the_others_none(self):
-    assert TOPICS["task-logs"].parameterised and TOPICS["application-logs"].parameterised
+    assert all(TOPICS[name].parameterised for name in ("task-logs", "application-logs", "setting-tests"))
     assert not any(TOPICS[name].parameterised for name in ("notifications", "task-history", "requests"))
 
   def test_the_hub_serves_the_table_of_the_socket_server(self):
@@ -309,12 +328,12 @@ class TestHandshakeWithTls:
 
   @pytest.mark.parametrize("transports", [["polling"], ["websocket"], BOTH], ids=["long-polling", "websocket", "upgrading"])
   def test_a_page_of_the_same_secure_origin_is_accepted(self, served_over_tls, transports):
-    one = Browser(served_over_tls, transports, SAME_ORIGIN, tls=True)
+    one = Browser(served_over_tls.port, transports, SAME_ORIGIN, ca=served_over_tls.ca)
     assert one.client.connected
     one.close()
 
   def test_the_upgrade_reaches_a_websocket(self, served_over_tls):
-    one = Browser(served_over_tls, BOTH, SAME_ORIGIN, tls=True)
+    one = Browser(served_over_tls.port, BOTH, SAME_ORIGIN, ca=served_over_tls.ca)
     deadline = time.monotonic() + 5
     while one.client.transport() != "websocket" and time.monotonic() < deadline:
       time.sleep(0.05)
@@ -325,12 +344,12 @@ class TestHandshakeWithTls:
   @pytest.mark.parametrize("origin", ["https://evil.example", "http://127.0.0.1", "null"])
   def test_a_page_of_another_origin_is_refused(self, served_over_tls, transports, origin):
     with pytest.raises(REFUSED):
-      Browser(served_over_tls, transports, origin, tls=True)
+      Browser(served_over_tls.port, transports, origin, ca=served_over_tls.ca)
 
   @pytest.mark.parametrize("transports", [["polling"], ["websocket"]], ids=["long-polling", "websocket"])
   def test_the_same_host_over_plain_http_is_refused(self, served_over_tls, transports):
     with pytest.raises(REFUSED):
-      Browser(served_over_tls, transports, f"http://127.0.0.1:{served_over_tls}", tls=True)
+      Browser(served_over_tls.port, transports, f"http://127.0.0.1:{served_over_tls.port}", ca=served_over_tls.ca)
 
 
 class TestSameOrigin:
@@ -371,77 +390,43 @@ class TestWhilePaused:
 
 
 class TestOneWorkerAndOneApplication:
-  def test_a_worker_is_followed_by_its_hostname_and_pushed_what_its_route_returns(self, browser, client, worker, manager):
-    manager.worker_list = [{"hostname": "w1", "ip": "100.64.0.2", "online": True, "status": "online", "path": None,
-                            "container_count": None, "infra": None}]
+  def test_a_worker_is_followed_by_its_hostname_and_pushed_its_page(self, browser, manager):
+    manager.answers["worker_page"] = lambda hostname: {"hostname": hostname, "view": {"status": "rebooting"}}
     one = browser()
     one.subscribe("worker:w1")
     assert one.received.empty()
-    manager.worker_list = [{**manager.worker_list[0], "status": "rebooting"}]
     Updates().changed(UpdateSource.WORKER_ENTRY, "w1")
-    event, message = one.next()
-    assert (event, message["topic"]) == ("state", "worker:w1")
-    assert message["data"] == jsonable_encoder(client.get("/api/workers/w1").json())
-    assert message["data"]["status"] == "rebooting"
+    assert one.next() == ("state", {"topic": "worker:w1", "data": {"hostname": "w1", "view": {"status": "rebooting"}}})
 
-  def test_an_application_is_followed_by_its_project_and_name_and_pushed_what_its_route_returns(self, browser, client, application):
+  def test_an_application_is_followed_by_its_project_and_name_and_pushed_its_page(self, browser, manager):
+    manager.answers["application_page"] = lambda project, name: {"project": project, "name": name}
     one = browser()
     one.subscribe("application:demo/web")
-    application.status = "deploying"
-    application.save()
     Updates().changed(UpdateSource.APPLICATION, "demo/web")
-    event, message = one.next()
-    assert (event, message["topic"]) == ("state", "application:demo/web")
-    assert message["data"] == client.get("/api/projects/demo/applications/web").json()
-    assert message["data"]["status"] == "deploying"
+    assert one.next() == ("state", {"topic": "application:demo/web", "data": {"project": "demo", "name": "web"}})
 
-  def test_another_application_is_not_pushed_to_this_ones_followers(self, browser, application):
-    from services.db import Application
-    Application.create(project=application.project, name="api", label="Api", image="nginx")
+  def test_another_application_or_worker_is_not_pushed_to_this_ones_followers(self, browser, manager):
+    manager.answers.update(application_page=lambda project, name: {"name": name},
+                           worker_page=lambda hostname: {"hostname": hostname})
     one = browser()
     one.subscribe("application:demo/web")
+    one.subscribe("worker:w1")
     Updates().changed(UpdateSource.APPLICATION, "demo/api")
-    Updates().changed(UpdateSource.APPLICATION, "demo/web")
-    event, message = one.next()
-    assert message["topic"] == "application:demo/web" and message["data"]["name"] == "web"
-    assert one.received.empty()
-
-  def test_another_worker_is_not_pushed_to_this_ones_followers(self, browser, worker, manager):
-    manager.worker_list = [{"hostname": "w1", "ip": "100.64.0.2", "online": True, "status": "online", "path": None,
-                            "container_count": None, "infra": None}]
-    one = browser()
-    one.subscribe("worker:w1")
     Updates().changed(UpdateSource.WORKER_CONTAINERS, "w2")
+    Updates().changed(UpdateSource.APPLICATION, "demo/web")
     Updates().changed(UpdateSource.WORKER_CONTAINERS, "w1")
-    assert one.next()[1]["topic"] == "worker:w1"
+    assert {one.next()[1]["topic"], one.next()[1]["topic"]} == {"application:demo/web", "worker:w1"}
     assert one.received.empty()
 
-  def test_two_projects_may_each_have_an_application_of_the_same_name(self, browser, application):
-    from services.db import Application, Project
-    other = Project.create(name="other", label="Other")
-    Application.create(project=other, name="web", label="Elsewhere", image="nginx")
-    here, there = browser(), browser()
-    here.subscribe("application:demo/web")
-    there.subscribe("application:other/web")
-    Updates().changed(UpdateSource.APPLICATION, "demo/web")
-    Updates().changed(UpdateSource.APPLICATION, "other/web")
-    assert (here.next()[1]["data"]["label"], there.next()[1]["data"]["label"]) == ("Web", "Elsewhere")
-
-  def test_a_worker_that_is_removed_is_sent_to_its_followers_as_not_found(self, browser, worker, manager):
-    manager.worker_list = [{"hostname": "w1", "ip": "100.64.0.2", "online": True, "status": "removing", "path": None,
-                            "container_count": None, "infra": None}]
+  @pytest.mark.parametrize("topic, reader, source, key", [
+      ("worker:w1", "worker_page", UpdateSource.WORKER_ENTRY, "w1"),
+      ("application:demo/web", "application_page", UpdateSource.APPLICATION, "demo/web")])
+  def test_one_that_is_gone_is_sent_to_its_followers_as_not_found(self, browser, manager, topic, reader, source, key):
+    manager.answers[reader] = LookupError("Not found.")
     one = browser()
-    one.subscribe("worker:w1")
-    worker.delete_instance()
-    manager.worker_list = []
-    Updates().changed(UpdateSource.WORKER_ENTRY, "w1")
-    assert one.next() == ("topic_error", {"topic": "worker:w1", "status": 404})
-
-  def test_an_application_that_is_deleted_is_sent_to_its_followers_as_not_found(self, browser, client, application):
-    one = browser()
-    one.subscribe("application:demo/web")
-    assert client.delete("/api/projects/demo/applications/web").status_code == 200
-    assert one.next() == ("topic_error", {"topic": "application:demo/web", "status": 404})
+    one.subscribe(topic)
+    Updates().changed(source, key)
+    assert one.next() == ("topic_error", {"topic": topic, "status": 404})
 
   @pytest.mark.parametrize("name", ["worker", "worker:", "application", "application:", "info:demo", "tasks:1"])
   def test_a_name_without_the_argument_it_needs_or_with_one_it_does_not_take_is_refused(self, browser, name):
@@ -451,15 +436,15 @@ class TestOneWorkerAndOneApplication:
 
 
 class TestBackups:
-  def test_the_platform_backups_are_pushed_as_their_route_lists_them(self, browser, client, db):
+  def test_a_platform_backup_written_is_pushed_in_the_list_of_platform_backups(self, browser, db, register):
+    register(S3, SimpleNamespace(session=lambda: SimpleNamespace(identity="s1")))
     one = browser()
     one.subscribe("backups")
-    Backup.create(type="platform", s3_path="backups/platform/20260102_030405.db.enc")
-    Updates().changed(UpdateSource.BACKUPS)
+    add_backup("base/backups/platform/20260102_030405_4444444444444444.db.enc", "s1")
     event, message = one.next()
     assert (event, message["topic"]) == ("state", "backups")
-    assert message["data"] == client.get("/api/backups/").json()
-    assert [backup["s3_path"] for backup in message["data"]] == ["backups/platform/20260102_030405.db.enc"]
+    assert message["data"] == jsonable_encoder(platform_backups())
+    assert [backup["s3_path"] for backup in message["data"]] == ["base/backups/platform/20260102_030405_4444444444444444.db.enc"]
 
 
 class TestLeaving:

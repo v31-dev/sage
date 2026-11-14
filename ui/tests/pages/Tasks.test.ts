@@ -3,6 +3,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { toast } from 'vue-sonner'
 import { watchFeed, watchState } from '@/lib/updates'
 import Tasks from '@/pages/Tasks/index.vue'
+import TaskTable from '@/pages/Tasks/TaskTable.vue'
+import TaskCard from '@/pages/Tasks/TaskCard.vue'
+import { createPinia, setActivePinia } from 'pinia'
 import {
   fetchTaskHistory,
   fetchTaskHistoryFilters,
@@ -51,6 +54,7 @@ function running(id: string): QueueTask {
     name: 'deploy',
     scopes: [],
     params: {},
+    labels: {},
     executor: 'app',
     status: 'running',
     queued_at: at(0),
@@ -65,6 +69,7 @@ function finished(id: string, fields: Partial<FinishedTask> = {}): FinishedTask 
     name: 'deploy',
     scopes: ['app:demo-web'],
     params: {},
+    labels: {},
     executor: 'app',
     status: 'completed',
     created_at: at(0),
@@ -132,6 +137,7 @@ describe('what the page follows', () => {
       executor: '',
       status: '',
       scope: '',
+      label: '',
       from_ts: '',
       to_ts: '',
       limit: 100,
@@ -237,6 +243,7 @@ describe('the finished tasks', () => {
     await choose(wrapper, 1, 'platform')
     await choose(wrapper, 2, 'failed')
     await commit(wrapper, 'task-scope', ' app:demo-web ')
+    await commit(wrapper, 'task-label', ' web ')
     await commit(wrapper, 'task-from', '2026-01-01T12:00')
     await commit(wrapper, 'task-to', '2026-01-01T13:30')
 
@@ -245,6 +252,7 @@ describe('the finished tasks', () => {
       executor: 'platform',
       status: 'failed',
       scope: 'app:demo-web',
+      label: 'web',
       from_ts: '2026-01-01T12:00:00.000Z',
       to_ts: '2026-01-01T13:30:00.000Z',
       limit: 100,
@@ -392,5 +400,33 @@ describe('what the manager pushes', () => {
     expect(fetchTaskHistory).toHaveBeenCalledTimes(2)
     expect(shown(wrapper)).toBe('t4,t3,t2')
     expect(wrapper.text()).toContain('Finished (7)')
+  })
+})
+
+describe('resource labels', () => {
+  it('filters pushed tasks by a literal substring of any label value', async () => {
+    const { wrapper, history } = await mountPage()
+    await commit(wrapper, 'task-label', 'WEB_100%')
+    history.push([
+      finished('in', { labels: { Application: 'shop / web_100%' } }),
+      finished('out', { labels: { Application: 'shop / web' } }),
+      finished('key', { labels: { WEB_100: 'api' } }),
+    ])
+    await flushPromises()
+    expect(shown(wrapper)).toBe('in')
+    expect(wrapper.text()).toContain('Finished (1)')
+  })
+
+  it.each([TaskTable, TaskCard])('shows resource names with their values', component => {
+    setActivePinia(createPinia())
+    const task = finished('labelled', { labels: { Application: 'Shop / Web', Worker: 'w1' } })
+    const wrapper = mount(component as typeof TaskCard, {
+      props: { task, rows: [task], section: 'finished' },
+      global: { stubs: { TaskLogsButton: true } },
+    })
+    expect(wrapper.text()).toContain('Application')
+    expect(wrapper.text()).toContain('Shop / Web')
+    expect(wrapper.text()).toContain('Worker')
+    expect(wrapper.text()).toContain('w1')
   })
 })

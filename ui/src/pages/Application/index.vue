@@ -8,7 +8,6 @@ import type { APIError } from '@/lib/api'
 import { watchState } from '@/lib/updates'
 
 import { fetchApplication, type Application } from '@/services/api'
-import { useAppStore } from '@/stores/app'
 import ApplicationHeader from './ApplicationHeader.vue'
 import AddContainerButton from './AddContainerButton.vue'
 import ContainerCard from './ContainerCard.vue'
@@ -20,7 +19,6 @@ const route = useRoute()
 const router = useRouter()
 const projectName = route.params.projectId as string
 const appName = route.params.appId as string
-const appStore = useAppStore()
 
 const application = ref<Application | null>(null)
 const isLoading = ref(true)
@@ -64,27 +62,19 @@ onMounted(async () => {
 })
 onUnmounted(() => stop?.())
 
-// Each state replaces the one shown, and its status the one an action set; a dialog being edited keeps the values it
-// copied when it opened.
+// Each state replaces the one shown; a dialog being edited keeps the values it copied when it opened.
 function showApplication(next: Application) {
   loadError.value = ''
   isNotFound.value = false
   application.value = next
-  appStore.updateApplicationDeployStatus(next.status)
 }
 
-// The whole application again, after an action on it.
+// The whole application again after an action on it, shown in place: what the action queued or started is in it.
 async function loadApplication() {
   try {
-    isLoading.value = true
-    loadError.value = ''
-    isNotFound.value = false
-    application.value = await fetchApplication(projectName, appName)
-    appStore.updateApplicationDeployStatus(application.value.status)
+    showApplication(await fetchApplication(projectName, appName))
   } catch (err) {
     showLoadError(err)
-  } finally {
-    isLoading.value = false
   }
 }
 
@@ -180,7 +170,7 @@ function goBack() {
           <div v-else class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             <ContainerCard
               v-for="container in application.containers"
-              :key="container.worker.hostname"
+              :key="container.id"
               :application="application"
               :container="container"
               :loadApplication="loadApplication"

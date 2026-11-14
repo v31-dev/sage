@@ -34,7 +34,7 @@ async function onClickDownload() {
   }
 }
 
-async function onConfirmDeleteBackup(backupId: number) {
+async function onConfirmDeleteBackup(backupId: string) {
   try {
     await deleteBackup(backupId)
     toast.success('Backup deleted successfully')
@@ -44,7 +44,7 @@ async function onConfirmDeleteBackup(backupId: number) {
   }
 }
 
-async function onConfirmRestoreBackup(backupId: number) {
+async function onConfirmRestoreBackup(backupId: string) {
   try {
     await restoreBackup(backupId)
     toast.success('Backup restore initiated successfully')
@@ -72,9 +72,10 @@ async function onConfirmRestoreBackup(backupId: number) {
       <ConfirmationButton
         triggerText="Restore"
         :title="'Restore backup ' + formatDate(backup.created_at)"
-        body="Are you sure you want to restore this backup? This action cannot be undone."
+        body="The configuration is replaced by this backup's and the history (events, notifications, tasks) starts empty; the S3 settings stay as they are. Containers are stopped and show an error until they are deployed again, and containers that aren't in the backup are removed from their workers with their volumes' data. This can't be undone."
         description="Restore Platform Backup"
         :icon="ArchiveRestore"
+        destructive
         :onConfirm="() => onConfirmRestoreBackup(backup.id)"
       />
       <ConfirmationButton

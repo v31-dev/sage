@@ -8,12 +8,11 @@ from functools import partial
 # from os.cpu_count(): these lanes run blocking network I/O (Cloudflare API, S3,
 # tailscale status, httpx), so the manager's core count doesn't gate them -- and in a CPU-limited
 # container os.cpu_count() reports host cores, not the container's allowance.
-# platform has no child scopes, so its tasks never run concurrently -- one worker.
+# platform runs the platform backup and restore and certificate renewal, one at a time.
 # common is the low-priority lane (settings checks, log cleanup, release refresh), one
 # worker too: its tasks run one at a time even where their scopes would allow more.
-# app sizes for a couple of parallel multi-worker deploys plus the minutely per-app status
-# sweep; metrics for concurrent per-host collection that tolerates a few slow hosts against
-# the 10s collect timeout.
+# app runs the containers', workers' and Domains' operations, sized for a couple of parallel
+# deploys beside the minutely observations; metrics runs the minutely flush beside the daily cleanup.
 LANES = {
     "platform": ThreadPoolExecutor(max_workers=1, thread_name_prefix="sage-platform"),
     "common": ThreadPoolExecutor(max_workers=1, thread_name_prefix="sage-common"),

@@ -1,15 +1,21 @@
+name: ${RUNTIME_NAME}
+
 services:
-  ${CONTAINER_NAME}:
+  ${RUNTIME_NAME}:
     image: ${IMAGE}
     pull_policy: always
-    container_name: ${CONTAINER_NAME}
+    container_name: ${RUNTIME_NAME}
     logging:
       driver: json-file
       options:
         max-size: 10m
         max-file: "5"
     labels:
-      sage.deployed_at: "${DEPLOYED_AT}"
+      sage.instance: "${INSTANCE_ID}"
+      sage.generation: "${STATE_GENERATION}"
+      sage.container: "${CONTAINER_ID}"
+      sage.deployment: "${DEPLOYMENT_ID}"
+      sage.application: "${APPLICATION}"
     restart: unless-stopped
     command: ${COMMAND}
     volumes: [ ${VOLUMES} ]

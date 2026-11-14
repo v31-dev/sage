@@ -24,26 +24,29 @@ The shell is assembled in `ui/src/App.vue`:
 - reload dialog on initialization failure
 - toast notifications
 
-Initial app boot fetches `GET /api` through the Pinia store in `ui/src/stores/app.ts`. That store owns the manager's status and follows its `info` topic: the version, the queue state (the pause banner and the restore overlay) and the settings status (the sidebar indicators and the settings pages). It also follows the `workers` topic (`workers`, null until loaded, and `workersError` if the first load fails) without holding the app back: the sidebar count (`workersIndicator`), the Workers page, the worker dot of an application's container cards (`workerStatus(hostname)`) and the Add Container dialog (the workers without a container of the application) all read that one list. The manager pushes each change (see Pushed Updates below). After an action the page updates the store at once (`setState` for pause and resume, `setSettingApplying` after a save, or `refresh()` after a save that empties a section, since nothing checks an empty one) and the next push confirms it, as with `applicationDeployStatus`, which the deploy, stop, backup and restore buttons set together with the statuses of the containers they touch (`containerStatus` for a card), and which the application header shows; deleting a container sets only that container (`updateContainerStatus`); `refresh()` fetches right away. A part the manager couldn't build comes as `null` and the store keeps the last value. The metrics views poll while they are open; the log views follow feeds (below).
+Initial app boot fetches `GET /api` through the Pinia store in `ui/src/stores/app.ts`. That store owns the manager's status and follows its `info` topic: the version, the queue state (the pause banner and the restore overlay) and the settings status (the sidebar indicators and the settings pages). It also follows the `workers` topic (`workers`, null until loaded, and `workersError` if the first load fails) without holding the app back: the sidebar count (`workersIndicator`), the Workers page, the worker dot of an application's container cards (`workerStatus(hostname)`) and the Add Container dialog (the workers without a container of the application) all read that one list. The manager pushes each change (see Pushed Updates below). After an action the page updates shared manager state at once (`setState` for pause and resume,
+`setSettingApplying` after a settings save, or `refresh()` after emptying a section); the next push confirms it.
+Resource actions spin while the request runs, then reload their own page's resource. Applications show active/total
+container counts, and each container owns its headline, runtime details and queued requests. A part the manager couldn't build comes as `null` and the store keeps the last value. The metrics views poll while they are open; the log views follow feeds (below).
 
 ## Pushed Updates
 
 `ui/src/lib/updates.ts` holds the one Socket.IO connection (`/api/socket.io`) and the topics followed over it. A page or store follows a state topic with `watchState(topic, load, onState, onNotFound?)` or a feed with `watchFeed(topic, load, onRows)`, where `load` is the page's own REST call, and calls the returned `stop()` when it goes away; `first` settles with the first load, or rejects if it fails, so a page has its data without the socket. `onNotFound` is called when the manager answers 404 instead of a state, pushed or to a load after the first: the resource is gone. The manager sends nothing when a topic is followed, only each change after that, so the library loads again every time the socket connects (the first time and after every reconnect), once the manager has acknowledged the subscription: what changed before that is in the load. A state loaded before a newer one was pushed is dropped; a feed's rows are not, since they are merged. Reconnecting, and the fall back from WebSocket to long-polling, are Socket.IO's, and the UI has no polling of its own. The connection opens with the first watcher and closes when the last one stops. Topics so far, with what follows them:
-- `info`: the app store (loading `GET /api`).
-- `workers`: the app store (loading `GET /workers`): for each worker its status, ip, path, container count and newest minute of metrics. The Workers page, the sidebar, the container cards and the Add Container dialog read the store; each card on the Workers page shows the worker's minute from it, so the page asks for no metrics of its own. The graph pages (a worker's and an application's metrics, the Home page) still poll every 60 s.
-- `worker:<hostname>`: the Worker page (loading `GET /workers/{hostname}`): the worker with its containers, its stack and its status. The page has no timer; an action on a container reloads it at once through `loadWorkerStatus`. A worker removed while the page is open shows as not found.
+- `info`: the app store (loading `GET /api`). A settings section's Test button is busy while its `testing` is true, set at once when its request is answered (`setSettingTesting`) and confirmed by the next push.
+- `workers`: the app store (loading `GET /workers`): for each worker its status, address, path, certificates, newest report and newest minute of metrics. The Workers page, the sidebar, the container cards and the Add Container dialog read the store; each card on the Workers page shows the worker's minute from it, so the page asks for no metrics of its own. The graph pages (a worker's and an application's metrics, the Home page) still poll every 60 s.
+- `worker:<hostname>`: the Worker page (loading `GET /workers/{hostname}`): the worker with its containers, its stack and its status, and why the manager would refuse to remove it now (`removal_refusal`), which disables Delete and is shown on the page. The page has no timer; an action on a container reloads it at once through `loadWorkerStatus`. A worker removed while the page is open shows as not found.
 - `domains`: the Domains page (loading `GET /domains/`): every domain with its container, and every container a domain can be linked to. The manager pushes it when a domain, a container (its state too) or a worker's subdomain is written, and when per-record sync results or their queued/running tasks change. Each name shows sync state separately from its container's health. Each service heading links to that service's public or internal discovery URL in a new tab.
-- `application:<project>/<name>`: the Application page (loading the application route). Each push replaces the whole application (volumes, domains and variables changed elsewhere too) and puts its status over the one an action set; an edit dialog keeps the values it copied when it opened. An action on the page reloads it at once through `loadApplication`. An application deleted while the page is open shows as not found.
-- `tasks`: the Tasks page, the Upgrade page (which tasks it waits for before a stop) and the restore overlay, which follows it only while restoring (loading `GET /tasks`).
+- `application:<project>/<name>`: the Application page (loading the application route). Each push replaces the whole application, including its counts, containers, volumes and variables; an edit dialog keeps the values it copied when it opened. An action on the page reloads it at once through `loadApplication`. An application deleted while the page is open shows as not found.
+- `tasks`: the Tasks page, the Upgrade page (which tasks it waits for before a stop) and the restore overlay, which follows it only while restoring (loading `GET /tasks`). The overlay counts both running and queued tasks ahead of `restore_platform`; it reloads the page when the restore ends.
 - `task-history`, a feed: the Tasks page's finished tasks (`GET /tasks/history`), a list (below).
-  - Filtered by name, executor and status (dropdowns from `GET /tasks/history/filters`), a scope (its children too, `*` for any characters) and a From/To window the task was active in.
+  - Filtered by name, executor and status (dropdowns from `GET /tasks/history/filters`), a scope (its children too, `*` for any characters), a literal case-insensitive substring of any resource label value, and a From/To window the task was active in.
   - The newest 100 that match at first, newest finished first, and the list grows with the tasks pushed, up to 1000; the title counts all that match, and a note says when not all are shown. There is no paging.
-  - The tables show when each task was queued, started and finished.
+  - The desktop tables and mobile cards show resource labels alongside task details and when each task was queued, started and finished.
 - `backup-status`: the Create Backup and Discover Backups buttons, each mirroring its own flag (loading `GET /backups/platform_backup_status`).
 - `backups`: the Backups page (loading `GET /backups`), newest first; each pushed list replaces the shown one. A delete on the page loads the list again at once.
 - `release`: the Upgrade page (loading `GET /release`). A check for updates is over when a release with a new `fetched_at` is pushed, or after 60 s with an error.
-- `task-logs:<task>` and `task-logs:<task>/<part>`, feeds: the task log dialogs (`components/TaskLogs.vue`), a task's on the Tasks page and a container's part from its Event Logs; a list (below), of every line, oldest first, with no ceiling (a dialog has no filters).
-  - The Tasks page's dialog reads the task's parts (`GET /tasks/{task_id}/parts`) when it opens: a select shows all the lines or one part's, and all the lines carry a Part column (the worker, or the part's id when its event is gone).
+- `task-logs:<task>`, a feed: the task log dialogs (`components/TaskLogs.vue`), a task's on the Tasks page and an operation's from a container's Event Logs; a list (below), of every line, oldest first, with no ceiling (a dialog has no filters).
+- `setting-tests:<section>`, a feed: a settings section's Test outcome as the Test ends, a success toast or the error under the form; stored nowhere, so it has no route and a page that was not open misses it (the task's log keeps its line).
 - `application-logs:<project>-<app>`, a feed: the application logs page (`pages/ApplicationLogs.vue`); a list (below), of the newest 1000 lines that match, oldest first, up to 1000, in one scroll container that follows new lines while it is at the bottom.
   - Filtered by the worker (a dropdown, or a click on a line's worker), the search and the From/To window (From starts five minutes back).
   - A marker of what Sage did (`MARKER_STREAM`, `sage`: deployed, stopped, stopped for a backup, …, with its task's id) is drawn apart from the container's lines, with a flag.
@@ -86,13 +89,18 @@ Routes in `ui/src/router/index.ts` currently cover:
 - Application containers, domains, and volumes
 - Application logs and metrics
 - Worker inventory and worker metrics
-- Global logs view
+- Requests view (Traefik's access lines on every worker)
 - Backups and restore flows
 - Settings: one page per section, listed under a "Settings" group in the sidebar
 
 The Application page shows linked domains on their container cards. Each domain keeps its address/copy controls,
 sync state, type, service and pool; internal/TCP names also show the worker's pending certificate state. The
 card reads `container.domains` from the application's pushed data. Domain editing stays on the Domains page.
+
+The Home summary reads project and application counts, worker/container/Domain state counts, succeeded and failed
+deploys, platform and volume archives, and recent error/warning notices. Its minute refresh waits for the previous
+request to finish. Application counts carry no application lifecycle status. Platform backups are listed in the
+newest-first order supplied by the backend.
 
 ## Forms
 
@@ -116,7 +124,7 @@ next to the shadcn tokens, and available as `text-success`, `bg-warning/10`,
 `neutral`) to the class sets the UI needs: `text`, `chip`, `soft`, `dot` and `bar`. A place that
 shows a state maps its own value to a tone: log levels
 (`levelClass`), notification types, and health bars and chips on the home page. In progress is
-`info` (blue) everywhere, including applications in transition; `warning` (amber) is for
+`info` (blue) everywhere, including containers in transition; `warning` (amber) is for
 warnings. A solid green or red button is a button variant (`success`, `destructive`), not a
 class of its own. New states and new places use a tone; no `text-green-600`, `bg-red-500`,
 `text-gray-500` and the like.
@@ -129,7 +137,8 @@ that is also its accessible name. It is an icon, an icon with the label in a bad
 (`show-label`), or a small dot (`dot`, sized and placed by the caller). A place that has its
 own states maps them to one of these in the app store (`sectionIndicator` for a settings
 section, `workersIndicator` for the Workers menu item, `applicationIndicator` for an
-application or container, `workerIndicator`, `domainIndicator`, `taskIndicator`). Used by the
+application's counts, `containerIndicator`, `workerIndicator`, `certificateIndicator`, `tunnelIndicator`,
+`pathIndicator`, `infraIndicator`, `domainIndicator`, `taskIndicator`). Used by the
 settings badge and sidebar, the Workers menu item, the application, container, worker and
 task statuses, a domain's sync state and the worker dot in a container card. A title with a
 state beside it is a `SectionTitle` with the indicator in its slot. Both Domain views read the same record status:
@@ -145,7 +154,7 @@ raw. Both parse with `parseDate`: backend timestamps without a timezone are UTC;
 ## Certificate Status
 
 The Worker page shows its wildcard and the shared internal discovery certificate separately, even without a
-current worker report. Both come from the worker topic's `certificate` and `discovery_certificate` fields. A
+current worker report. Both come from the worker topic's `certificates.worker` and `certificates.discovery`. A
 certificate is ready only when valid and applied; its expiry is shown only with that matching applied proof.
 Missing status stays unknown, and pending or stale material has no displayed expiry. Settings inventory expiry
 is not used for a worker's applied certificate.
@@ -164,14 +173,15 @@ drawn by `components/StateIndicator.vue` (see State Indicators).
 Cloudflare's certificate inventory comes from `info.settings.cloudflare.details.certificates`: manager,
 shared discovery, and hostname-owned worker entries. Each shows its desired names, local validity, expiry and
 maintenance error; removed owners with retained public leaves show pending retirement. This inventory describes
-the manager's material; worker pages independently show what is applied. Resync Traefik runs the global
-maintenance/application operation and exposes its queued/running state through the existing settings indicator.
+the manager's material; worker pages independently show what is applied. Tailscale's Resync Workers action reapplies
+each worker's setup and requests its certificates, Domain routes and discovery configuration; its queued/running
+forced setups show through the Tailscale settings indicator.
 
 ## API Layer
 
 `ui/src/lib/api.ts` holds `request(method, path, { query, body })`, the only place the UI calls `fetch` for the API: it waits `LOAD_DELAY` (see the development guide), builds the URL under `/api` with the query (leaving out null, undefined and empty values), sends the body as JSON and returns the answer's JSON. A failed answer throws an `APIError` with the manager's `detail` as its message (or which call failed, when there is none) and its `status` and `response`; it logs nothing, the caller does.
 
-`ui/src/services/api/` has a named, typed function for every call, each a line over `request` (`fetchApplication(project, name)`, `deployApplication(project, name)`, `deleteContainer(project, application, hostname, force)`, …), even one that a single component uses, in a module for each resource (`applications.ts`, `tasks.ts`, …) with the shapes it answers with. Everything imports from `@/services/api` (its `index.ts` re-exports every module), never a module, so that a test's mock of it reaches every caller; `_common.ts` holds what the modules share and is not exported. Components import these functions and pass the names of what they act on; they never write a method or a path, and no API client is passed down as a prop. A list's query type has its `matches` beside it (`matchesLogQuery`, `matchesRequestQuery`, `matchesTaskHistoryQuery`): whether its route lets a row through the query, which is what a view keeps of the rows pushed to it. `ui/src/lib/metrics.ts` shapes what the metrics calls return.
+`ui/src/services/api/` has a named, typed function for every call, each a line over `request` (`fetchApplication(project, name)`, `deployApplication(project, name)`, `deleteContainer(project, application, containerId, force)`, …), even one that a single component uses, in a module for each resource (`applications.ts`, `tasks.ts`, …) with the shapes it answers with. Everything imports from `@/services/api` (its `index.ts` re-exports every module), never a module, so that a test's mock of it reaches every caller; `_common.ts` holds what the modules share and is not exported. Components import these functions and pass the names of what they act on; they never write a method or a path, and no API client is passed down as a prop. A list's query type has its `matches` beside it (`matchesLogQuery`, `matchesRequestQuery`, `matchesTaskHistoryQuery`): whether its route lets a row through the query, which is what a view keeps of the rows pushed to it. `ui/src/lib/metrics.ts` shapes what the metrics calls return.
 
 The service typings mirror the backend models closely, including:
 

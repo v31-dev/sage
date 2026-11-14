@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { ref } from 'vue'
 import {
   Dialog,
   DialogContent,
@@ -8,33 +8,12 @@ import {
   DialogTitle,
   DialogTrigger,
 } from '@/components/ui/dialog'
-import { Label } from '@/components/ui/label'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
 import { ScrollText } from 'lucide-vue-next'
 import TaskLogs from '@/components/TaskLogs.vue'
-import { fetchTaskParts, type FinishedTask, type QueueTask, type TaskPart } from '@/services/api'
+import { type FinishedTask, type QueueTask } from '@/services/api'
 
 const props = defineProps<{ task: QueueTask | FinishedTask }>()
 const isOpen = ref(false)
-
-const ALL = 'all'
-const parts = ref<TaskPart[]>([])
-const part = ref(ALL)
-
-const partLabel = (each: TaskPart) => [each.worker, each.type, each.id].filter(Boolean).join(' · ')
-
-// Read each time the dialog opens; without them, it shows all the lines, as for a task without parts.
-watch(isOpen, async open => {
-  if (!open) return
-  part.value = ALL
-  parts.value = await fetchTaskParts(props.task.task_id).catch(() => [])
-})
 </script>
 
 <template>
@@ -55,28 +34,8 @@ watch(isOpen, async open => {
           {{ props.task.name }} {{ JSON.stringify(props.task.params) }}
         </DialogDescription>
       </DialogHeader>
-      <div v-if="parts.length" class="space-y-1">
-        <Label for="task-part" class="text-xs">Part</Label>
-        <Select v-model="part">
-          <SelectTrigger id="task-part" class="w-full sm:w-96">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem :value="ALL">All lines</SelectItem>
-            <SelectItem v-for="each in parts" :key="each.id" :value="each.id">
-              {{ partLabel(each) }}
-            </SelectItem>
-          </SelectContent>
-        </Select>
-      </div>
       <div class="flex flex-col max-h-[60vh]">
-        <TaskLogs
-          v-if="isOpen"
-          :key="part"
-          :taskId="props.task.task_id"
-          :subTaskId="part === ALL ? '' : part"
-          :parts="parts"
-        />
+        <TaskLogs v-if="isOpen" :taskId="props.task.task_id" />
       </div>
     </DialogContent>
   </Dialog>

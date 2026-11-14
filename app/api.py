@@ -2,6 +2,7 @@ import os
 
 import socketio
 from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, RedirectResponse
 from starlette.applications import Starlette
 from starlette.datastructures import URL
@@ -10,7 +11,8 @@ from starlette.routing import Route
 from starlette.staticfiles import StaticFiles
 
 import config
-from routes.backups import router as backup_router
+from routes.backups import restore_backup
+from routes.backups import router as backups_router
 from routes.domains import router as domains_router
 from routes.info import router as info_router
 from routes.notifications import router as notifications_router
@@ -23,6 +25,7 @@ from routes.workers import router as workers_router
 from services.cloudflare import Cloudflare
 from services.manager import Manager
 from services.updates import Updates
+from utils.errors import Conflict
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, redirect_slashes=False)
 
@@ -31,25 +34,43 @@ SOCKET_IO_PATH = "/api/socket.io"
 
 # While Sage is paused, restoring or stopping, only reads are served: GETs, and pause/resume themselves.
 _ALLOWED_WHILE_PAUSED = ("/api/settings/pause", "/api/settings/resume")
+_REFUSALS = {
+    "paused": "Sage is paused; resume it first.",
+    "restoring": "Sage is restoring a backup; wait for it to finish.",
+    "stopping": "Sage is stopping.",
+}
 
 
 @app.middleware("http")
 async def refuse_changes_unless_running(request: Request, call_next):
-  state = Manager().task_state()
-  if (state != "running"
-          and request.method not in ("GET", "HEAD", "OPTIONS")
-          and request.url.path not in _ALLOWED_WHILE_PAUSED):
-    detail = {
-        "paused": "Sage is paused; resume it first.",
-        "restoring": "Sage is restoring a backup; wait for it to finish.",
-    }.get(state, "Sage is stopping.")
-    return JSONResponse(status_code=503, content={"detail": detail})
-  return await call_next(request)
+  if request.method in ("GET", "HEAD", "OPTIONS") or request.url.path in _ALLOWED_WHILE_PAUSED:
+    return await call_next(request)
+  if (state := Manager().task_state()) != "running":
+    return JSONResponse(status_code=503, content={"detail": _REFUSALS[state]})
+  response = await call_next(request)
+  # Sage started restoring while this change ran: the restore will overwrite what it wrote, and any task it asked for
+  # was not queued.
+  if Manager().task_state() == "restoring" and request.scope.get("endpoint") is not restore_backup:
+    return JSONResponse(status_code=503, content={"detail": _REFUSALS["restoring"]})
+  return response
 
 
 @app.exception_handler(ValueError)
 async def value_error_handler(request: Request, exc: ValueError):
   return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+
+@app.exception_handler(LookupError)
+async def lookup_error_handler(request: Request, exc: LookupError):
+  # A KeyError or IndexError is a bug, not a missing resource: it stays a 500.
+  if type(exc) is not LookupError:
+    raise exc
+  return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+
+@app.exception_handler(Conflict)
+async def conflict_handler(request: Request, exc: Conflict):
+  return JSONResponse(status_code=409, content={"detail": str(exc)})
 
 
 class SpaStaticFiles(StaticFiles):
@@ -67,7 +88,7 @@ class SpaStaticFiles(StaticFiles):
 
 # Mount routes
 app.include_router(info_router, prefix="/api")
-app.include_router(backup_router, prefix="/api/backups")
+app.include_router(backups_router, prefix="/api/backups")
 app.include_router(settings_router, prefix="/api/settings")
 app.include_router(workers_router, prefix="/api/workers")
 app.include_router(domains_router, prefix="/api/domains")
@@ -112,7 +133,7 @@ def build_asgi_app(only_manager_address: bool):
   """What the servers serve: the Socket.IO server in front of the API, and in production only at the manager's
   address https://TS_NAME.core.domain, other names for it redirecting (the tailnet name or IP, after a certificate
   warning)."""
-  Updates().serve(TOPICS)
+  Updates().serve(TOPICS, jsonable_encoder)
   served = socketio.ASGIApp(sio, other_asgi_app=app, socketio_path=SOCKET_IO_PATH.lstrip("/"))
   return OnlyManagerAddress(served) if only_manager_address else served
 

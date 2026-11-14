@@ -1,93 +1,53 @@
-from croniter import croniter
-from fastapi import APIRouter, Body, Depends, HTTPException, Request
+from fastapi import APIRouter, Body
 
-from routes.backups import router as backups_router
-from services.db import Volume
-from services.manager.application import application_changed
-from utils.api import generic_create, generic_delete, generic_get, generic_list, generic_update, get_request_models, parse_api_data
-
-
-def inject_volume(request: Request):
-  models = get_request_models(request, ["project", "application"])
-  application = models["application"]
-
-  # Fetch and store volume
-  volume_name = request.path_params.get("volume")
-
-  models["volume"] = generic_get(
-      Volume,
-      (Volume.application == application) & (Volume.name == volume_name),
-      return_model=True,
-  )
-
-  return None
-
+from services.applications import commands
+from services.applications.lookup import find_application, find_container, find_volume
+from services.applications.payload import volume_payload
+from services.backups.download import download_link
+from services.backups.payload import volume_backup, volume_backups
+from services.manager import Manager
 
 router = APIRouter()
 
 
-def validate_backup_cron(expression: str | None):
-  if expression == "":
-    expression = None
-
-  if expression is None:
-    return None
-
-  value = expression.strip()
-  if value == "":
-    return None
-
-  parts = value.split()
-  if len(parts) != 5:
-    raise HTTPException(status_code=400, detail="backup_cron must be a 5-part cron expression.")
-
-  if not croniter.is_valid(value):
-    raise HTTPException(status_code=400, detail="Invalid backup_cron expression.")
-
-  return expression
-
-
-@router.get("/")
-def list_volumes(request: Request):
-  return generic_list(Volume, (Volume.application == request.state.models["application"]))
-
-
 @router.post("/")
-def create_volume(request: Request, volume_data: dict = Body(...)):
-  data = {
-      "application": request.state.models["application"],
-      "name": volume_data.get("name"),
-      "path": volume_data.get("path"),
-      "backup_cron": validate_backup_cron(volume_data.get("backup_cron")),
-  }
-
-  result = generic_create(Volume, data)
-  application_changed(data["application"])
-  return result
+def create_volume(project: str, application: str, data: dict = Body(...)):
+  return volume_payload(commands.create_volume(find_application(project, application).id, data.get("name"),
+                                               data.get("path"), data.get("backup_cron")))
 
 
-@router.put("/{volume}", dependencies=[Depends(inject_volume)])
-def update_volume(request: Request, volume_data: dict = Body(...)):
-  volume = request.state.models["volume"]
-  data = parse_api_data(volume_data, ["name", "path", "backup_cron"])
-
-  if "backup_cron" in data:
-    data["backup_cron"] = validate_backup_cron(data["backup_cron"])
-
-  result = generic_update(Volume, volume, data)
-  application_changed(request.state.models["application"])
-  return result
+@router.put("/{volume}")
+def update_volume(project: str, application: str, volume: str, data: dict = Body(...)):
+  return volume_payload(commands.patch_volume(find_volume(find_application(project, application).id, volume).id, data))
 
 
-@router.delete("/{volume}", dependencies=[Depends(inject_volume)])
-def delete_volume(request: Request):
-  result = generic_delete(Volume, request.state.models["volume"])
-  application_changed(request.state.models["application"])
-  return result
+@router.delete("/{volume}", status_code=204)
+def delete_volume(project: str, application: str, volume: str):
+  commands.delete_volume(find_volume(find_application(project, application).id, volume).id)
 
 
-router.include_router(
-    backups_router,
-    prefix="/{volume}/backups",
-    dependencies=[Depends(inject_volume)],
-)
+@router.get("/{volume}/backups/")
+def list_backups(project: str, application: str, volume: str):
+  return volume_backups(find_volume(find_application(project, application).id, volume).id)
+
+
+@router.post("/{volume}/backups/")
+def back_up(project: str, application: str, volume: str):
+  """A backup of the volume from each of the application's containers, all of them stopped."""
+  owner = find_application(project, application)
+  return {"task_ids": Manager().request_backup(owner.id, [find_volume(owner.id, volume).id])}
+
+
+@router.get("/{volume}/backups/{backup}/download")
+def download_backup(project: str, application: str, volume: str, backup: str):
+  return download_link(volume_backup(find_volume(find_application(project, application).id, volume).id, backup))
+
+
+@router.post("/{volume}/backups/{backup}/restore")
+def restore_backup(project: str, application: str, volume: str, backup: str, data: dict = Body(...)):
+  """The backup restored into a stopped container of the application (`container`), into the volume it was taken of
+  or another of the application's (`volume`, by name)."""
+  owner = find_application(project, application)
+  archived = volume_backup(find_volume(owner.id, volume).id, backup)
+  target = find_volume(owner.id, data.get("volume") or volume)
+  return {"task_id": Manager().request_restore(find_container(owner.id, data.get("container")).id, archived.id, target.id)}

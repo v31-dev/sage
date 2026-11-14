@@ -8,7 +8,6 @@ import {
   METRICS_POLL_MS,
   type WorkerMetricsResponse,
   type MetricsPeriod,
-  type ContainerMetricsPoint,
 } from '@/services/api'
 import MetricChart from '@/components/MetricChart.vue'
 import { processContainerData } from '@/lib/metrics'
@@ -85,9 +84,7 @@ const chartData = computed(() => {
   })
 })
 
-const containerChartData = computed(() =>
-  processContainerData((data.value?.containers ?? []) as Array<Array<ContainerMetricsPoint>>)
-)
+const containerChartData = computed(() => processContainerData(data.value?.containers ?? []))
 
 const hasLoad = computed(() =>
   chartData.value.some(d => d.load_1 !== null || d.load_5 !== null || d.load_15 !== null)

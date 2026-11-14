@@ -44,6 +44,10 @@ async function onConfirm() {
     errorMessage.value = 'Hostname or IP is required'
     return
   }
+  if (!subdomain.value.trim()) {
+    errorMessage.value = 'Subdomain is required'
+    return
+  }
 
   try {
     isSubmitting.value = true
@@ -84,11 +88,11 @@ async function onConfirm() {
             <Input id="worker-host" v-model="host" placeholder="e.g. worker-1 or 100.64.0.2" />
           </Field>
           <Field>
-            <FieldLabel for="worker-subdomain"> Subdomain (optional) </FieldLabel>
+            <FieldLabel for="worker-subdomain"> Subdomain </FieldLabel>
             <Input id="worker-subdomain" v-model="subdomain" placeholder="e.g. eu1" />
             <FieldDescription>
               The worker's internal names are under it, as in shop.eu1.int. Lowercase letters,
-              digits and dashes, unique to this worker. Left empty, Sage picks one.
+              digits and dashes, unique to this worker.
             </FieldDescription>
             <FieldDescription>
               Sage issues this worker's own certificate. Let's Encrypt rate limits apply across this

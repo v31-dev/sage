@@ -1,11 +1,9 @@
 import logging
-import threading
 
 import config
 from services.base import Base
 from services.certs import Certs
-from services.cloudflare import Cloudflare
-from services.db import Database
+from services.db.database import Database
 from services.logs import Logs
 from services.metrics import Metrics
 from services.notification import Notifications
@@ -13,37 +11,42 @@ from services.s3 import S3
 from services.settings import Settings
 from services.tailscale import Tailscale
 from services.worker_reports import WorkerReports
+from utils.common import utcnow
 from utils.executor import LANES
 from utils.queue import TaskQueue
 
-from .application import ApplicationMixin
+from .backup_catalog import BackupCatalogMixin
 from .backups import BackupsMixin
-from .core import CoreMixin
+from .certificates import CertificatesMixin
+from .containers import ContainersMixin
+from .discovery import DiscoveryMixin
 from .domains import DomainsMixin
+from .lifecycle import LifecycleMixin
 from .platform import PlatformMixin
 from .queue import SCOPES, QueueMixin
 from .settings import SettingsMixin
-from .traefik import TraefikMixin
+from .summary import SummaryMixin
 from .workers import WorkersMixin
 
 logger = logging.getLogger(__name__)
 
 
 class Manager(
-    CoreMixin,
-    WorkersMixin,
-    TraefikMixin,
-    DomainsMixin,
-    ApplicationMixin,
+    ContainersMixin,
     BackupsMixin,
+    LifecycleMixin,
+    BackupCatalogMixin,
+    DomainsMixin,
+    DiscoveryMixin,
+    WorkersMixin,
+    CertificatesMixin,
     PlatformMixin,
     SettingsMixin,
+    SummaryMixin,
     QueueMixin,
     Base,
 ):
   worker_home_dir = config.WORKER_HOME_DIR
-  s3_backup_path_platform = "/backups/platform"
-  s3_backup_path_applications = "/backups/applications"
 
   def __init__(self):
     super().__init__()
@@ -52,43 +55,41 @@ class Manager(
       logger.info("Running Manager setup...")
 
       self.version = config.VERSION
-      self.latest_version = self.version
-      self.latest_release = None
+      self.started_at = utcnow()
 
-      # Last check result per settings section (services/manager/settings.py).
-      self.setting_checks = {}
-      # The workers: what their owners pushed (`WorkerInputs` by hostname), the entry derived from each (status, path,
-      # container count, and whether it answered the last sync and was set up, `online`, which is not known until a
-      # sync has looked at it) (services/manager/workers.py).
-      self._worker_inputs = {}
-      self.worker_list = []
-      self._worker_list_lock = threading.Lock()
-      self.worker_discovery = self.workers_discovery_fact()
-      # What each owner works out from the queue at every change of it: the tasks and the state, the settings sections
-      # applying, the restore and the backups, the worker and domain tasks.
-      self.queue_facts = [*self.tasks_queue_facts(), *self.settings_queue_facts(), *self.platform_queue_facts(),
-                          *self.workers_queue_facts(), *self.domains_queue_facts()]
-      # When the stack of each worker was last started for being down, until its cooldown is over
-      # (services/manager/workers.py).
-      self.worker_stack_repairs = {}
+      # What each owner works out from the queue at every change of it.
+      self.queue_facts = [*self.tasks_queue_facts(), *self.containers_queue_facts(), *self.domains_queue_facts(),
+                          *self.workers_queue_facts(), *self.platform_queue_facts(),
+                          *self.settings_queue_facts()]
+      self.container_state = self.containers_state_fact()
+      self.worker_state = self.workers_state_fact()
+      self.tunnel_state = self.tunnels_fact()
+      # When each worker's setup last failed or was refused, and when its stack was last started for being down, on
+      # this process's monotonic clock: how often they are tried again.
+      self.setup_failures = {}
+      self.stack_repairs = {}
+      # Each container recovering from an interrupted operation: the incident and when it was first seen, on this
+      # process's monotonic clock, so a restart waits the old work's whole allowance again.
+      self.recoveries = {}
+      # Each orphan waiting out an operation its record shows unsettled, by (worker, container id): the incident, when
+      # it was first seen on the monotonic clock and its allowance.
+      self.orphans = {}
 
       self.task_queue = TaskQueue(scopes=SCOPES, executors=LANES, record=self._persist_task,
                                   notify=self._queue_changed)
 
       # Initialize all services
       Database()
-      Settings()
       Logs().start_capture()
-      Notifications()
-      Metrics().start_sampler()
       WorkerReports()
-      self.tailscale = Tailscale()
-      self.cloudflare = Cloudflare()
-      self.certs = Certs()
-      self.s3 = S3()
-      self.load_workers()
-
-      self.notify("Manager started.")
+      Tailscale()
+      Settings()
+      for consumer, key in ((Notifications(), "notifications"), (S3(), "s3")):
+        saved = Settings().snapshot(key)
+        consumer.install(saved.values, saved.revision)
+      Certs()
+      Metrics().start_sampler()
+      Notifications().notify("Manager started.")
     except Exception as e:
       raise Exception(f"Manager setup failed : {e}.")
 

@@ -1,4 +1,5 @@
 import os
+import sys
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -6,7 +7,6 @@ import pytest
 from cryptography.fernet import Fernet
 from peewee import SqliteDatabase
 
-# Set before any test module imports the app: utils.db reads the key at import.
 # TZ puts the suite away from UTC (+5:30), so a time read from the local clock fails a test.
 os.environ.update(
     TZ="Asia/Kolkata",
@@ -41,6 +41,15 @@ def _reset_singletons():
   yield
   Singleton._instances.clear()
   Singleton._locks.clear()
+
+
+@pytest.fixture
+def eager_threads():
+  """Threads switch as often as they can, which is what exposes a missing lock."""
+  interval = sys.getswitchinterval()
+  sys.setswitchinterval(1e-6)
+  yield
+  sys.setswitchinterval(interval)
 
 
 class Clock:
@@ -97,6 +106,31 @@ def register():
   return _register
 
 
+class Signals:
+  def __init__(self):
+    self.signals, self.published = [], []
+
+  def changed(self, source, key=None):
+    self.signals.append((source, key))
+
+  def publish(self, feed, rows, key=None):
+    self.published.append((feed, rows, key))
+
+
+@pytest.fixture
+def signals(register):
+  """What was published to the update hub, as (source, key) pairs in order."""
+  from services.updates import Updates
+  return register(Updates, Signals()).signals
+
+
+@pytest.fixture
+def notices(db):
+  """The notices recorded so far, oldest first, as (type, content, link)."""
+  from services.db.models import Notification
+  return lambda: [(row.type, row.content, row.link) for row in Notification.select().order_by(Notification.id)]
+
+
 @pytest.fixture
 def data_dir(tmp_path, monkeypatch):
   import config
@@ -106,9 +140,12 @@ def data_dir(tmp_path, monkeypatch):
 
 
 @pytest.fixture
-def db(data_dir):
-  from services.db import Database
-  from services.db import db as database
+def db(data_dir, monkeypatch):
+  from services.db import encryption
+  from services.db.database import Database
+  from services.db.models import db as database
+  monkeypatch.setattr(encryption, "_cipher", None)
+  encryption.initialize_encryption(os.environ["ENCRYPTION_KEY"])
   Database()
   yield database
   database.close()
@@ -135,17 +172,17 @@ def thread_connections(db, monkeypatch):
 
 @pytest.fixture
 def project(db):
-  from services.db import Project
+  from services.db.models import Project
   return Project.create(name="demo", label="Demo")
 
 
 @pytest.fixture
 def application(project):
-  from services.db import Application
+  from services.db.models import Application
   return Application.create(project=project, name="web", label="Web", image="nginx")
 
 
 @pytest.fixture
 def worker(db):
-  from services.db import Worker
-  return Worker.create(hostname="w1", ip="100.64.0.2")
+  from services.db.models import Worker
+  return Worker.create(hostname="w1", subdomain="red")

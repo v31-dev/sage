@@ -4,58 +4,53 @@ import { StopCircle } from 'lucide-vue-next'
 
 import ConfirmationButton from '@/components/ConfirmationButton.vue'
 import {
-  APPLICATION_STOP_ELIGIBLE_STATUSES,
   type Application,
+  type Container,
+  refusesRequests,
   stopApplication,
+  stopContainer,
 } from '@/services/api'
-import { useAppStore } from '@/stores/app'
 
-interface Props {
+// Stop all, or with `container` that container's Stop; the page is loaded again once it is queued.
+const props = defineProps<{
   application: Application
-}
+  container?: Container
+  loadApplication: () => Promise<void>
+}>()
 
-const props = withDefaults(defineProps<Props>(), {})
-
-const appStore = useAppStore()
-
-const stopButtonDisabled = computed(() => {
-  return [
-    !APPLICATION_STOP_ELIGIBLE_STATUSES.includes(appStore.applicationDeployStatus),
-    !APPLICATION_STOP_ELIGIBLE_STATUSES.includes(props.application.status),
-    props.application?.container_count === 0,
-  ].includes(true)
-})
-const stopButtonSpinner = computed(() => {
-  return [
-    appStore.applicationDeployStatus === 'stopping',
-    props.application?.status === 'stopping',
-  ].includes(true)
-})
+const containers = computed(() =>
+  props.container ? [props.container] : props.application.containers
+)
+const disabled = computed(
+  () => containers.value.length === 0 || containers.value.every(refusesRequests)
+)
 
 async function onConfirmStop() {
-  appStore.updateApplicationDeployStatus(
-    'stopping',
-    props.application.containers.map(container => container.worker.hostname)
-  )
-  try {
-    await stopApplication(props.application.project.name, props.application.name)
-  } catch (err) {
-    appStore.updateApplicationDeployStatus('error')
-    throw err
+  const { project, name } = props.application
+  if (props.container) {
+    await stopContainer(project.name, name, props.container.id)
+  } else {
+    await stopApplication(project.name, name)
   }
+  await props.loadApplication()
 }
 </script>
 
 <template>
   <ConfirmationButton
-    triggerText="Stop"
-    title="Stop Application"
-    body="Are you sure you want to stop this application? Its containers will be stopped and it will go offline."
-    :description="props.application.name"
+    :triggerText="props.container ? 'Stop' : 'Stop all'"
+    :title="props.container ? 'Stop Container' : 'Stop Application'"
+    :body="
+      props.container
+        ? 'Are you sure you want to stop this container? It will go offline.'
+        : 'Are you sure you want to stop this application? Its containers will be stopped and it will go offline.'
+    "
+    :description="
+      props.container ? `Worker: ${props.container.worker.hostname}` : props.application.name
+    "
     :icon="StopCircle"
     destructive
-    :disabled="stopButtonDisabled"
-    :loading="stopButtonSpinner"
+    :disabled="disabled"
     triggerClass="flex-1 md:flex-initial"
     :onConfirm="onConfirmStop"
   />

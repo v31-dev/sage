@@ -57,6 +57,8 @@ const barAccessors = computed(() =>
 
 const barColors = computed(() => props.series.map(s => s.color))
 
+const yAccessors = computed(() => props.series.map(s => (d: ChartDataPoint) => d[s.key] as number))
+
 // Counts read badly on fractional ticks, so bars get integer ticks derived from yMax
 const yTickValues = computed(() => {
   if (props.type !== 'bar' || !props.yMax) return undefined
@@ -150,6 +152,9 @@ function tooltipColor(_: any, i: number) {
 
           <ChartTooltip />
           <ChartCrosshair
+            :x="(d: ChartDataPoint) => d.date.getTime()"
+            :y="props.type === 'bar' ? undefined : yAccessors"
+            :yStacked="props.type === 'bar' ? yAccessors : undefined"
             :template="
               componentToString(chartConfig, ChartTooltipContent, {
                 labelFormatter: formatDateForTooltip,

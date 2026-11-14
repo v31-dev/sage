@@ -12,6 +12,7 @@ import config
 import services.logs.store as store_module
 from services.logs.store import stored_time
 from utils.common import utcnow
+from values.names import qualified_name
 
 from .builders import access_line, event, lines, push, stamp, task_entries
 
@@ -265,7 +266,7 @@ class TestTrimTotal:
 
 class TestCleanup:
   def test_lines_past_the_retention_and_the_shards_of_anything_but_an_application_go(self, logs, application):
-    kept = application.qualified_name
+    kept = qualified_name(application.project_id, application.name)
     old = (utcnow() - timedelta(days=config.RETENTION_DAYS + 1)).isoformat()
     fresh = utcnow().isoformat()
     logs.write_application_lines(kept, [{"hostname": "w1", "ts": old, "stream": "stdout", "message": "stale"},
@@ -278,7 +279,7 @@ class TestCleanup:
 
   def test_a_line_older_than_the_cutoff_goes_whatever_the_precision_of_its_time(self, logs, application, clock):
     clock.set(datetime(2026, 1, 15, 12, 0, 0, 500000))
-    name = application.qualified_name
+    name = qualified_name(application.project_id, application.name)
     logs.ingest("w1", push({**event(name, "half a second too old"), "timestamp": "2026-01-01T12:00:00Z"},
                            {**event(name, "just in time"), "timestamp": "2026-01-01T12:00:00.6Z"}))
 
@@ -301,7 +302,7 @@ class TestCleanup:
     assert [line["message"] for line in logs.query_task_logs("t1")["lines"]] == ["recent"]
 
   def test_it_applies_the_size_limits(self, logs, application, small, limit):
-    name = application.qualified_name
+    name = qualified_name(application.project_id, application.name)
     logs.write_application_lines(name, lines(0, 3000))
     logs.ingest("w1", push(*(event("traefik", access_line(index)) for index in range(3000))))
     limit(shard=logs._store("requests").live_bytes() // 2)
@@ -344,7 +345,7 @@ class TestUnderLoad:
       try:
         for _ in range(25):
           for entry in next_lines(rng, "tasks"):
-            logs.write_task_line({"task_id": "t1", "sub_task_id": "", "ts": entry["ts"], "level": "INFO",
+            logs.write_task_line({"task_id": "t1", "ts": entry["ts"], "level": "INFO",
                                   "logger": "tests.task", "message": entry["message"]})
       except Exception:
         errors.append(traceback.format_exc())

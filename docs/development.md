@@ -134,6 +134,9 @@ backend module is measured, including the ones no test imports; only `main.py` (
 Manager when imported) and the tests are left out. CI reports it in the job summary and uploads
 `coverage.xml` as an artifact; it doesn't fail a build on a coverage level.
 
+Every warning is an error (`filterwarnings` in `app/pyproject.toml`): a deprecation, a library's included, fails the
+test it is raised in.
+
 `-q` (quiet) only shortens pytest's own output to the dots and the summary line; `-v` lists each
 test by name.
 
@@ -163,13 +166,14 @@ folder and append cases to the copy:
 
 ```yaml
 tests:
-  - name: an application's line keeps only the stored fields
+  - name: an application's line keeps only the stored fields and names its application
     inputs:
       - insert_at: shipped
         type: log
         log_fields:
-          container_name: web
-          label."sage.deployed_at": "1"
+          container_name: sage-0123456789abcdef
+          label."sage.container": "0123456789abcdef"
+          label."sage.application": demo-web
           stream: stdout
           message: hello
           extra: dropped
@@ -178,9 +182,9 @@ tests:
         conditions:
           - type: vrl
             source: |
-              assert_eq!(.container_name, "web")
+              assert_eq!(.application, "demo-web")
               assert!(!exists(.extra))
-  - name: a container without the label is dropped
+  - name: a container without the container label is dropped
     inputs:
       - insert_at: shipped
         type: log

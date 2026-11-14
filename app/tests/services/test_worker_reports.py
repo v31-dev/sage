@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 import config
-from services.worker_reports import WorkerReports, container_started_at, infra_of, is_current, parse_batch
+from services.worker_reports import WorkerReports, container_started_at, is_current, parse_batch
 
 BATCH = json.loads((Path(__file__).parent.parent / "data" / "telegraf_batch.json").read_text())
 
@@ -43,7 +43,8 @@ class TestParseBatch:
   def test_container_readings_join_the_measurements_by_name(self):
     web = parse_batch(BATCH)[0].containers["web"]
     assert web.status == "running"
-    assert web.deployed_at == "2026-10-24T23:08:35.718155"
+    assert web.labels == {"sage.instance": "aaaaaaaaaaaaaaaa", "sage.generation": "bbbbbbbbbbbbbbbb",
+                          "sage.container": "0123456789abcdef", "sage.deployment": "d1", "sage.application": "demo-web"}
     assert web.health == "healthy"
     assert web.exit_code == 0 and web.oom_killed is False
     assert web.mem_bytes is not None and web.cpu_percent is not None
@@ -59,7 +60,7 @@ class TestParseBatch:
     old = parse_batch(BATCH)[0].containers["old-job"]
     assert old.status == "exited"
     assert old.finished_at is not None and old.started_at < old.finished_at
-    assert old.deployed_at is None
+    assert old.labels == {}
 
   def test_the_traefik_check(self):
     assert parse_batch(BATCH)[0].traefik_reachable is True
@@ -143,6 +144,26 @@ class TestReports:
     assert received.snapshot.host.cpu_idle_percent == 30
     assert received.arrived_at == datetime(2026, 1, 1, 12, 0, 0)
 
+  def test_a_replay_of_the_held_snapshot_is_ignored_and_leaves_its_arrival(self, clock):
+    reports = WorkerReports()
+    reports.accept("w1", snapshots_at(30))
+    clock.advance(timedelta(seconds=25))
+    assert reports.accept("w1", snapshots_at(30)) is None
+    assert reports.latest("w1").arrived_at == datetime(2026, 1, 1, 12, 0, 0)
+
+  def test_it_keeps_the_newest_snapshots_up_to_the_history_size_oldest_first(self, monkeypatch):
+    monkeypatch.setattr(config, "REPORT_HISTORY_SIZE", 3)
+    reports = WorkerReports()
+    for seconds in (10, 20, 30, 40):
+      reports.accept("w1", snapshots_at(seconds))
+    assert [received.snapshot.host.cpu_idle_percent for received in reports.history("w1")] == [20, 30, 40]
+
+  def test_a_batch_adds_each_snapshot_newer_than_the_newest_held(self):
+    reports = WorkerReports()
+    reports.accept("w1", snapshots_at(20))
+    reports.accept("w1", snapshots_at(10) + snapshots_at(20) + snapshots_at(30) + snapshots_at(40))
+    assert [received.snapshot.host.cpu_idle_percent for received in reports.history("w1")] == [20, 30, 40]
+
   def test_each_worker_has_its_own(self):
     reports = WorkerReports()
     reports.accept("w1", snapshots_at(10))
@@ -170,6 +191,7 @@ class TestReports:
     reports.forget("w1")
     reports.forget("never-seen")
     assert reports.latest("w1") is None
+    assert reports.history("w1") == []
 
   def test_an_unknown_name_is_first_only_once(self):
     reports = WorkerReports()
@@ -197,9 +219,9 @@ def with_containers(seconds, *readings):
   return [Snapshot(at=base.at, host=host, containers={c.name: c for c in readings}, traefik_reachable=True)]
 
 
-def reading(name, status="running", started_at=1, deployed_at="stamp"):
+def reading(name, status="running", started_at=1, deployment="d1"):
   from services.worker_reports import ContainerReading
-  return ContainerReading(name=name, status=status, image="img", deployed_at=deployed_at, exit_code=0, oom_killed=False,
+  return ContainerReading(name=name, status=status, image="img", labels={"sage.deployment": deployment}, exit_code=0, oom_killed=False,
                           started_at=started_at, finished_at=None, health=None, cpu_percent=None, mem_bytes=None,
                           net_rx_bytes=None, net_tx_bytes=None)
 
@@ -217,7 +239,7 @@ class TestWhatChanged:
   @pytest.mark.parametrize("after", [
       reading("web", status="restarting"),
       reading("web", started_at=2),
-      reading("web", deployed_at="newer"),
+      reading("web", deployment="d2"),
   ])
   def test_a_new_state_start_or_version_changes_the_container(self, after):
     reports = WorkerReports()
@@ -238,7 +260,7 @@ class TestArrival:
     assert reports.accept("w1", snapshots_at(20)).received is reports.latest("w1")
 
 
-class TestCurrentAndTrusted:
+class TestCurrent:
   def test_a_report_is_current_for_the_stale_window(self, clock):
     reports = WorkerReports()
     reports.accept("w1", snapshots_at(10))
@@ -249,27 +271,6 @@ class TestCurrentAndTrusted:
 
   def test_a_worker_that_never_reported_has_no_current_report(self):
     assert WorkerReports().current("w1") is None
-
-  def test_a_snapshot_counts_only_if_it_arrived_after_the_last_write_and_the_settle_time(self, clock):
-    reports = WorkerReports()
-    wrote = clock.current
-    clock.advance(timedelta(seconds=config.REPORT_SETTLE_SECONDS - 1))
-    reports.accept("w1", snapshots_at(10))
-    assert reports.trusted("w1", wrote) is None
-
-  def test_a_snapshot_that_arrived_after_the_settle_time_counts(self, clock):
-    reports = WorkerReports()
-    wrote = clock.current
-    clock.advance(timedelta(seconds=config.REPORT_SETTLE_SECONDS))
-    reports.accept("w1", snapshots_at(10))
-    assert reports.trusted("w1", wrote) is not None
-
-  def test_a_snapshot_that_is_no_longer_current_does_not_count(self, clock):
-    reports = WorkerReports()
-    wrote = clock.current - timedelta(minutes=5)
-    reports.accept("w1", snapshots_at(10))
-    clock.advance(timedelta(seconds=config.REPORT_STALE_SECONDS + 1))
-    assert reports.trusted("w1", wrote) is None
 
   def test_the_seconds_since_the_last_report_or_since_the_start(self, clock):
     reports = WorkerReports()
@@ -296,19 +297,6 @@ class TestContainerStartedAt:
     received = WorkerReports().accept("w1", with_containers(10, reading("web"))).received
     assert container_started_at(None, "telegraf") is None
     assert container_started_at(received, "telegraf") is None
-
-
-class TestInfra:
-  def test_each_container_of_the_stack_has_its_state_and_a_missing_one_says_so(self):
-    received = WorkerReports().accept("w1", with_containers(10, reading("traefik"), reading("vector", status="restarting"),
-                                                            reading("telegraf"), reading("web"))).received
-    assert infra_of(received) == [
-        {"name": "traefik", "status": "running"},
-        {"name": "vector", "status": "restarting"},
-        {"name": "telegraf", "status": "running"},
-        {"name": "cloudflared", "status": "missing"},
-        {"name": "cloudflared-discovery", "status": "missing"},
-    ]
 
 
 class TestStartedAt:

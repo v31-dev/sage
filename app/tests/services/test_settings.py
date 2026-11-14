@@ -1,7 +1,8 @@
 import pytest
 
-from services.db import Setting
-from services.settings import SETTING_DEFINITIONS, Settings
+from services.db.models import Setting
+from services.notification import CHANNELS
+from services.settings import SETTING_DEFINITIONS, SettingCheck, Settings, section_status, setting_payload, validate_section
 
 S3_VALUES = {"access_key": "AK", "secret_key": "SK", "bucket": "bucket", "endpoint": "https://s3.example.test", "path": "backups"}
 S3_UNSET = dict.fromkeys(SETTING_DEFINITIONS["s3"])
@@ -160,3 +161,142 @@ class TestIsConfigured:
     assert settings.is_configured("s3", S3_VALUES) is True
     assert settings.is_configured("notifications", {"discord_webhook": "https://discord.test/hook"}) is True
     assert settings.is_configured("notifications", {"discord_webhook": ""}) is False
+
+
+def ok(revision, message="Bucket reachable.", channels=None):
+  return SettingCheck(revision, "ok", message, "2026-01-01T12:00:00", channels)
+
+
+class TestRevisions:
+  def test_every_save_and_reload_of_a_section_moves_its_revision_on_alone(self, settings):
+    before = settings.snapshot("s3").revision
+    other = settings.snapshot("notifications").revision
+
+    settings.set("s3", S3_VALUES)
+    assert settings.snapshot("s3").revision == before + 1
+    settings.load("s3")
+    assert settings.snapshot("s3").revision == before + 2
+    assert settings.snapshot("notifications").revision == other
+
+  def test_reloading_everything_moves_every_section_on(self, settings):
+    before = {key: settings.snapshot(key).revision for key in SETTING_DEFINITIONS}
+    settings.load_all()
+    assert all(settings.snapshot(key).revision == before[key] + 1 for key in SETTING_DEFINITIONS)
+
+  def test_a_snapshot_is_a_copy_of_the_saved_values(self, settings):
+    settings.set("s3", S3_VALUES)
+    snapshot = settings.snapshot("s3")
+    snapshot.values["bucket"] = "changed"
+    assert settings.get("s3", "bucket") == "bucket"
+
+  def test_a_required_env_section_is_revision_zero_with_no_values(self, settings):
+    assert (settings.snapshot("tailscale").revision, settings.snapshot("tailscale").values) == (0, {})
+
+
+class TestChecks:
+  def test_a_check_of_the_saved_revision_is_kept_and_read(self, settings):
+    revision = settings.snapshot("s3").revision
+    assert settings.record_check("s3", ok(revision)) is True
+    assert settings.check("s3") == ok(revision)
+
+  def test_a_check_of_an_older_revision_is_dropped(self, settings):
+    revision = settings.snapshot("s3").revision
+    settings.set("s3", S3_VALUES)
+    assert settings.record_check("s3", ok(revision)) is False
+    assert settings.check("s3") is None
+
+  def test_a_save_after_the_check_leaves_no_current_check_until_the_next(self, settings):
+    settings.record_check("s3", ok(settings.snapshot("s3").revision))
+    settings.set("s3", S3_VALUES)
+    assert settings.check("s3") is None
+    settings.record_check("s3", ok(settings.snapshot("s3").revision, "Again."))
+    assert settings.check("s3").message == "Again."
+
+  def test_a_restore_reload_leaves_no_check_of_what_was_saved_before(self, settings):
+    settings.record_check("notifications", ok(settings.snapshot("notifications").revision))
+    settings.load_all()
+    assert settings.check("notifications") is None
+
+  def test_an_env_section_keeps_its_check(self, settings):
+    settings.record_check("tailscale", ok(0, "The node is running."))
+    settings.load_all()
+    assert settings.check("tailscale").message == "The node is running."
+
+
+class TestValidateSection:
+  @pytest.mark.parametrize("values", [S3_VALUES, S3_UNSET, dict.fromkeys(SETTING_DEFINITIONS["s3"], ""), {}])
+  def test_s3_complete_or_empty_is_accepted(self, values):
+    validate_section("s3", values)
+
+  @pytest.mark.parametrize("missing", SETTING_DEFINITIONS["s3"])
+  def test_s3_partly_filled_is_refused(self, missing):
+    with pytest.raises(ValueError, match="Fill in every field, or leave them all empty."):
+      validate_section("s3", {**S3_VALUES, missing: ""})
+
+  def test_each_notification_channel_stands_alone(self):
+    validate_section("notifications", {"discord_webhook": "https://discord.test/x"})
+    validate_section("notifications", {"discord_webhook": None})
+
+  def test_a_field_the_section_does_not_have_is_refused(self):
+    with pytest.raises(ValueError, match="Unknown fields: region, zone."):
+      validate_section("s3", {**S3_VALUES, "zone": "z", "region": "eu"})
+
+  def test_a_field_that_is_not_text_is_refused(self):
+    with pytest.raises(ValueError, match="bucket must be text."):
+      validate_section("s3", {**S3_VALUES, "bucket": 5})
+
+  def test_an_unknown_section_is_refused(self):
+    with pytest.raises(KeyError):
+      validate_section("tailscale", {})
+
+
+def test_the_notification_fields_are_its_channels():
+  assert SETTING_DEFINITIONS["notifications"] == tuple(CHANNELS)
+
+
+CERTIFICATES = [{"id": "manager", "names": ["manager.core.example.test"], "valid": True, "error": None, "expiry": "2026-03-01T00:00:00"},
+                {"id": "discovery", "names": ["discovery.int.example.test"], "valid": True, "error": None,
+                 "expiry": "2026-02-15T00:00:00"}]
+
+
+class TestSectionStatus:
+  def test_a_section_not_configured_shows_nothing_of_a_check(self):
+    assert section_status(False, None, ok(1)) == {"state": "not_configured", "message": None, "task_id": None,
+                                                  "checked_at": "2026-01-01T12:00:00", "details": None, "channels": None}
+
+  def test_a_task_that_makes_it_apply_shows_applying_with_the_task(self):
+    status = section_status(True, "t1", ok(1))
+    assert (status["state"], status["task_id"]) == ("applying", "t1")
+
+  def test_before_its_first_check_of_what_is_saved_it_shows_checking(self):
+    assert (section_status(True, None, None)["state"], section_status(True, None, None)["message"]) == ("applying", "Checking…")
+
+  def test_otherwise_its_check(self):
+    failed = SettingCheck(1, "error", "Webhook invalid", "2026-01-01T12:00:00", {"discord_webhook": "404"})
+    assert section_status(True, None, failed) == {"state": "error", "message": "Webhook invalid", "task_id": None,
+                                                  "checked_at": "2026-01-01T12:00:00", "details": None,
+                                                  "channels": {"discord_webhook": "404"}}
+
+  def test_cloudflare_adds_the_earliest_certificate_expiry_to_a_good_check(self):
+    status = section_status(True, None, ok(0, "Verified."), CERTIFICATES)
+    assert (status["state"], status["message"]) == ("ok", "Verified. Certificates valid until 2026-02-15.")
+
+  def test_a_certificate_that_needs_attention_turns_a_good_check_into_an_error(self):
+    broken = [{**CERTIFICATES[0], "error": "order rejected"}, {**CERTIFICATES[1], "valid": False}]
+    status = section_status(True, None, ok(0, "Verified."), broken)
+    assert status["state"] == "error"
+    assert status["message"] == ("Certificates need attention: manager.core.example.test: order rejected; "
+                                 "discovery.int.example.test: not valid")
+
+
+class TestPayloads:
+  def test_a_saved_section_is_its_row_with_its_values_readable(self, settings):
+    settings.set("s3", S3_VALUES)
+    assert (setting_payload("s3")["key"], setting_payload("s3")["value"]) == ("s3", S3_VALUES)
+
+  def test_a_section_never_saved_has_its_row_with_every_field_unset(self, settings):
+    assert setting_payload("notifications")["value"] == {field: None for field in SETTING_DEFINITIONS["notifications"]}
+
+  def test_an_unknown_section_is_a_lookup_error(self, settings):
+    with pytest.raises(LookupError):
+      setting_payload("nope")

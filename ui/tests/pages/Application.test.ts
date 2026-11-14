@@ -3,12 +3,8 @@ import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { watchState } from '@/lib/updates'
 import Application from '@/pages/Application/index.vue'
-import {
-  fetchApplication,
-  type Application as ApplicationState,
-  type Container,
-} from '@/services/api'
-import { useAppStore } from '@/stores/app'
+import { fetchApplication, type Application as ApplicationState } from '@/services/api'
+import { container } from '../helpers/containers'
 import { followTopics } from '../helpers/topics'
 
 vi.mock('@/lib/updates', () => ({ watchState: vi.fn(), watchFeed: vi.fn() }))
@@ -27,22 +23,20 @@ vi.mock('@/services/api', async importOriginal => ({
 const header = {
   props: ['application', 'loadApplication'],
   template:
-    '<button data-header @click="loadApplication()">{{ application.name }}:{{ application.status }}:{{ application.config_dirty }}</button>',
+    '<button data-header @click="loadApplication()">{{ application.name }}:{{ application.active_count }}/{{ application.container_count }}</button>',
 }
-const list = (attribute: string, key: string) => ({
+const list = (attribute: string, path: string) => ({
   props: ['container', 'volume'],
-  template: `<div ${attribute}>{{ ($props.container ?? $props.volume).${key} }}</div>`,
+  template: `<div ${attribute}>{{ ($props.container ?? $props.volume).${path} }}</div>`,
 })
 
 // The fields the page shows; the rest of an application is left out.
 const application = (overrides: Record<string, unknown> = {}) =>
   ({
     name: 'web',
-    status: 'inactive',
     container_count: 0,
+    active_count: 0,
     updated_at: '2026-10-29T10:00:00',
-    deployed_at: null,
-    config_dirty: false,
     containers: [],
     volumes: [{ name: 'data' }],
     ...overrides,
@@ -53,7 +47,7 @@ const stubs = {
   AddContainerButton: true,
   AddVolumeButton: true,
   SectionTitle: true,
-  ContainerCard: list('data-container', 'status'),
+  ContainerCard: list('data-container', 'view.headline'),
   VolumeCard: list('data-volume', 'name'),
 }
 
@@ -120,14 +114,8 @@ describe('loading', () => {
     await loaded(topics)
 
     expect(wrapper.text()).not.toContain('Loading application...')
-    expect(wrapper.find('[data-header]').text()).toBe('web:inactive:false')
+    expect(wrapper.find('[data-header]').text()).toBe('web:0/0')
     expect(texts(wrapper, 'data-volume')).toEqual(['data'])
-  })
-
-  it('gives the deploy status to the app store', async () => {
-    const { topics } = await mountPage()
-    await loaded(topics, application({ status: 'deploying' }))
-    expect(useAppStore().applicationDeployStatus).toBe('deploying')
   })
 
   it('says an application that is not there is not found, and why any other failure happened', async () => {
@@ -161,18 +149,13 @@ describe('what the manager pushes', () => {
     const { wrapper, topics } = await mountPage()
     await loaded(topics)
 
-    topics.topic('application:demo/web').push(
-      application({
-        status: 'active',
-        config_dirty: true,
-        containers: [{ status: 'active', worker: { hostname: 'w1' } }],
-      })
-    )
+    topics
+      .topic('application:demo/web')
+      .push(application({ container_count: 1, active_count: 1, containers: [container()] }))
     await flushPromises()
 
-    expect(wrapper.find('[data-header]').text()).toBe('web:active:true')
+    expect(wrapper.find('[data-header]').text()).toBe('web:1/1')
     expect(texts(wrapper, 'data-container')).toEqual(['active'])
-    expect(useAppStore().applicationDeployStatus).toBe('active')
   })
 
   it('shows the volumes it pushes, changed elsewhere', async () => {
@@ -185,28 +168,30 @@ describe('what the manager pushes', () => {
     expect(texts(wrapper, 'data-volume')).toEqual([])
   })
 
-  it('puts the status the manager sends over the one an action set', async () => {
-    const { topics } = await mountPage()
-    await loaded(topics)
-    useAppStore().updateApplicationDeployStatus('deploying', ['w1'])
-
-    topics.topic('application:demo/web').push(application({ status: 'inactive' }))
-    await flushPromises()
-
-    expect(useAppStore().applicationDeployStatus).toBe('inactive')
-    const container = { status: 'inactive', worker: { hostname: 'w1' } } as Container
-    expect(useAppStore().containerStatus(container)).toBe('inactive')
-  })
-
-  it('reloads all of it after an action', async () => {
+  it('reloads all of it after an action, keeping the page shown while it loads', async () => {
     const { wrapper, topics } = await mountPage()
     await loaded(topics)
-    vi.mocked(fetchApplication).mockResolvedValue(application({ volumes: [], status: 'stopping' }))
+    let answer: (value: ApplicationState) => void = () => {}
+    vi.mocked(fetchApplication).mockReturnValue(new Promise(resolve => (answer = resolve)))
 
     await wrapper.find('[data-header]').trigger('click')
     await flushPromises()
+    expect(wrapper.text()).not.toContain('Loading application...')
+    expect(wrapper.find('[data-header]').exists()).toBe(true)
+
+    answer(
+      application({
+        volumes: [],
+        container_count: 1,
+        containers: [
+          container({ live: 'stop', view: { ...container().view, headline: 'stopping' } }),
+        ],
+      })
+    )
+    await flushPromises()
 
     expect(texts(wrapper, 'data-volume')).toEqual([])
-    expect(wrapper.find('[data-header]').text()).toBe('web:stopping:false')
+    expect(texts(wrapper, 'data-container')).toEqual(['stopping'])
+    expect(wrapper.find('[data-header]').text()).toBe('web:0/1')
   })
 })

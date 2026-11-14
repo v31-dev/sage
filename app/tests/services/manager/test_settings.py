@@ -1,14 +1,35 @@
+import asyncio
 import inspect
+import logging
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import botocore.exceptions
 import httpx
 import pytest
 
-from services.cloudflare import CloudflareError
+import config
+from services.certs import Certs
+from services.cloudflare import Cloudflare, CloudflareError
 from services.manager import Manager
+from services.manager.queue import SCOPES, QueueMixin
 from services.manager.settings import APPLYING_TASKS, SETTING_SECTIONS, SettingsMixin, _is_applying
-from services.notification import ChannelCheckFailed
+from services.notification import ChannelCheckFailed, Notifications
+from services.s3 import S3
+from services.settings import SettingCheck, Settings
+from services.tailscale import Tailscale
+from services.updates import UpdateFeed, Updates
+from tests.services.test_certs import write_certificate
+from tests.services.test_cloudflare import ACCOUNT, TUNNELS, ZONE, Api, ok, zone
+from utils.errors import Conflict
+from utils.executor import active_executor
+from utils.logging import TaskFailed
+from utils.queue import TaskQueue
+
+STORE = {"access_key": "a", "secret_key": "a", "bucket": "a", "endpoint": "https://a.example.test", "path": "base"}
+WEBHOOK = {"discord_webhook": "https://discord.example.test/api/webhooks/1/x"}
 
 
 def describe(error):
@@ -52,31 +73,28 @@ class TestDescribeCheckError:
 
 
 class TestIsApplying:
-  @pytest.mark.parametrize("name, params, sections", [
-      ("check_tailscale", {}, {"tailscale"}),
-      ("sync_workers", {"force": True}, {"tailscale"}),
-      ("sync_workers", {"check_stamps": True}, {"tailscale"}),
-      ("sync_workers", {"force": True, "check_stamps": True, "other": 1}, {"tailscale"}),
-      ("sync_workers", {}, set()),
-      ("sync_workers", {"force": False}, set()),
-      ("sync_workers", {"force": False, "check_stamps": False}, set()),
-      ("check_cloudflare", {}, {"cloudflare"}),
-      ("refresh_traefik", {}, {"cloudflare"}),
-      ("renew_certificates", {}, {"cloudflare"}),
-      ("check_s3", {}, {"s3"}),
-      ("check_notifications", {}, {"notifications"}),
-      ("backup_platform", {}, set()),
+  @pytest.mark.parametrize("name, key, params, sections", [
+      ("check_tailscale", ["check_tailscale"], {}, {"tailscale"}),
+      ("converge_worker", ["converge_worker", "w1", "force"], {"hostname": "w1", "force": True}, {"tailscale"}),
+      ("converge_worker", ["converge_worker", "w1"], {"hostname": "w1", "force": False}, set()),
+      ("converge_worker", ["converge_worker", "w1"], {"hostname": "w1", "force": True}, set()),
+      ("check_cloudflare", ["check_cloudflare"], {}, {"cloudflare"}),
+      ("renew_certificates", ["renew_certificates"], {}, {"cloudflare"}),
+      ("check_s3", ["check_s3"], {}, {"s3"}),
+      ("check_notifications", ["check_notifications"], {}, {"notifications"}),
+      ("backup_platform", ["backup_platform"], {}, set()),
   ])
-  def test_a_task_makes_only_its_own_sections_apply(self, name, params, sections):
-    queued = {"name": name, "params": params}
-    assert {key for key in APPLYING_TASKS if _is_applying(queued, key)} == sections
+  def test_a_task_makes_only_its_own_sections_apply_by_its_name_and_the_intent_its_key_ends_with(self, name, key, params,
+                                                                                                 sections):
+    queued = {"name": name, "key": key, "params": params}
+    assert {section for section in APPLYING_TASKS if _is_applying(queued, section)} == sections
 
   def test_every_settings_section_has_applying_tasks(self):
     assert set(APPLYING_TASKS) == set(SETTING_SECTIONS)
 
   @pytest.mark.parametrize("key", SETTING_SECTIONS)
   def test_every_section_applies_while_its_own_check_runs(self, key):
-    assert _is_applying({"name": f"check_{key}", "params": {"key": key}}, key)
+    assert _is_applying({"name": f"check_{key}", "key": [f"check_{key}"], "params": {"key": key}}, key)
 
   @pytest.mark.parametrize("key, name, params", [
       (key, name, params) for key, tasks in APPLYING_TASKS.items() for name, params in tasks if name != f"check_{key}"])
@@ -84,47 +102,345 @@ class TestIsApplying:
     assert set(params) <= set(inspect.signature(getattr(Manager, name)).parameters)
 
 
-class TestTailscaleCheck:
-  def check(self, state="Running", dns_name="manager.tail1234.ts.net."):
-    status = {"BackendState": state, "Self": {"HostName": "manager", "DNSName": dns_name}}
-    tailscale = SimpleNamespace(status=lambda: status, peers=lambda: ["w1", "w2"])
-    return SettingsMixin._test_tailscale(SimpleNamespace(tailscale=tailscale), {}, False)
+class Node:
+  """The manager's node; `timeouts` are what each call was given."""
 
-  def test_a_node_named_ts_name_says_so(self):
-    assert self.check() == "The node is running as manager; 2 other machine(s) on the tailnet."
+  def __init__(self, state="Running", dns_name="manager.tail1234.ts.net."):
+    self.state, self.dns_name, self.timeouts = state, dns_name, []
+
+  def status(self, timeout):
+    self.timeouts.append(timeout)
+    return {"BackendState": self.state, "Self": {"HostName": "manager", "DNSName": self.dns_name}}
+
+  def peers(self, timeout):
+    self.timeouts.append(timeout)
+    return ["w1", "w2"]
+
+
+class TestTailscaleCheck:
+  def check(self, register, **node):
+    register(Tailscale, Node(**node))
+    return SettingsMixin._test_tailscale(SimpleNamespace(), {}, False)
+
+  def test_a_node_named_ts_name_says_so(self, register):
+    assert self.check(register) == "The node is running as manager; 2 other machine(s) on the tailnet."
 
   @pytest.mark.parametrize("dns_name", ["manager-1.tail1234.ts.net.", "renamed.tail1234.ts.net."])
-  def test_a_node_under_another_name_says_which(self, dns_name):
+  def test_a_node_under_another_name_says_which(self, register, dns_name):
     machine = dns_name.split(".")[0]
 
-    assert self.check(dns_name=dns_name) == (
+    assert self.check(register, dns_name=dns_name) == (
         f"The node is running as {machine}, not manager (TS_NAME); 2 other machine(s) on the tailnet.")
 
-  def test_a_node_that_is_not_running_fails_the_check(self):
+  def test_a_node_that_is_not_running_fails_the_check(self, register):
     with pytest.raises(ValueError, match=r"not running \(NeedsLogin\)"):
-      self.check(state="NeedsLogin")
+      self.check(register, state="NeedsLogin")
+
+  def test_its_calls_wait_the_test_timeout(self, register, monkeypatch):
+    monkeypatch.setattr(config, "SETTINGS_TEST_TIMEOUT_SECONDS", 3)
+    node = register(Tailscale, Node())
+    SettingsMixin._test_tailscale(SimpleNamespace(), {}, False)
+    assert node.timeouts == [3, 3]
+
+
+@pytest.fixture
+def account(register):
+  """Cloudflare connected to an account whose token is active and whose zone is visible; its tunnels are what the test
+  lists in `api`."""
+  api = Api()
+  api.on("GET", "/user/tokens/verify", ok({"status": "active"}))
+  api.on("GET", "/zones", ok([zone(ZONE, ACCOUNT)]))
+  cloudflare = Cloudflare()
+  cloudflare.http.close()
+  cloudflare.http = httpx.Client(base_url="https://cloudflare.test", transport=httpx.MockTransport(api.handle))
+  cloudflare.zone_id, cloudflare.account_id, cloudflare.tunnel_id = ZONE, ACCOUNT, "tunnel1"
+  register(Cloudflare, cloudflare)
+  yield api
+  cloudflare.http.close()
 
 
 class TestCloudflareCheck:
-  def check(self, statuses, listed=("w1", "w2")):
-    cloudflare = SimpleNamespace(
-        config={}, check_config=lambda config: None, tunnel_name="sage-example.test",
-        tunnels=lambda: {name: {"id": name, "status": status} for name, status in statuses.items()},
-        tunnel_status=None, domain="example.test", worker_tunnel_name=lambda hostname: f"sage-example.test-{hostname}")
-    pushed = {}
-    manager = SimpleNamespace(cloudflare=cloudflare, worker_list=[{"hostname": hostname} for hostname in listed],
-                              update_workers=pushed.update)
-    message = SettingsMixin._test_cloudflare(manager, {}, False)
-    return message, cloudflare.tunnel_status, pushed
+  def check(self, account, statuses):
+    account.on("GET", TUNNELS, ok([{"id": name, "name": name, "status": status} for name, status in statuses.items()]))
+    return SettingsMixin._test_cloudflare(SimpleNamespace(), {}, False)
 
-  def test_the_platform_tunnels_health_is_kept_and_each_listed_worker_gets_its_own_tunnels(self):
-    message, status, pushed = self.check({
-        "sage-example.test": "degraded", "sage-example.test-w1": "healthy", "sage-other.test-w2": "down"})
+  def test_the_check_keeps_no_health_and_names_the_platform_tunnels_health_as_the_listing_knows_it(self, account):
+    statuses = {"sage-example.test-w1": "healthy", "sage-example.test": "degraded"}
+    assert self.check(account, statuses) == "API token, zone example.test and account verified; tunnel health not known."
+    assert Cloudflare().tunnel_statuses() == {}
+    Cloudflare().tunnels()
+    assert self.check(account, statuses) == "API token, zone example.test and account verified; tunnel degraded."
 
-    assert message == "API token, zone example.test and account verified; tunnel degraded."
-    assert status == "degraded"
-    assert pushed == {"w1": {"tunnel": "healthy"}, "w2": {"tunnel": None}}
-
-  def test_without_the_platform_tunnel_the_check_fails(self):
+  def test_without_the_platform_tunnel_the_check_fails(self, account):
     with pytest.raises(ValueError, match="The tunnel sage-example.test is not in the account."):
-      self.check({"sage-example.test-w1": "healthy"})
+      self.check(account, {"sage-example.test-w1": "healthy"})
+
+
+class Settled(SettingsMixin, QueueMixin):
+  """The settings part of the Manager on a real queue; what it requests of the other parts is recorded."""
+
+  def __init__(self):
+    self.pool = ThreadPoolExecutor(max_workers=1)
+    self.queue_facts, self.requested = [], []
+    self.task_queue = TaskQueue(SCOPES, {"common": self.pool}, record=lambda task, status: None,
+                                notify=self._queue_changed)
+
+  def request_backup_discovery(self):
+    self.requested.append("request_backup_discovery")
+
+  def queued(self):
+    return [(tuple(task["key"]), task["scopes"], task["executor"], task["params"], task["quiet"])
+            for task in self.task_queue.snapshot()["queued"]]
+
+
+@pytest.fixture
+def settled(db, thread_connections, register, signals):
+  register(Tailscale, Node())
+  installed = SimpleNamespace(s3=[], notifications=[])
+  register(S3, SimpleNamespace(install=lambda values, revision: installed.s3.append(values), check_config=lambda values, write: None))
+  register(Notifications, SimpleNamespace(install=lambda values, revision: installed.notifications.append(values),
+                                          check_config=lambda values, send: ["Discord"]))
+  manager = Settled()
+  manager.installed = installed
+  token = active_executor.set(manager.pool)
+  yield manager
+  active_executor.reset(token)
+  manager.pool.shutdown(wait=False, cancel_futures=True)
+
+
+class TestSave:
+  def test_a_saved_store_is_installed_its_backups_discovered_and_checked_visibly(self, settled):
+    Settings().set("s3", STORE)
+    settled.settings_saved("s3")
+    assert (settled.installed.s3, settled.installed.notifications, settled.requested) == (
+        [STORE], [], ["request_backup_discovery"])
+    assert settled.queued() == [(("check_s3",), ["settings:s3"], "common", {"key": "s3"}, False)]
+    assert settled.applying_tasks()["s3"]["name"] == "check_s3"
+
+  def test_a_cleared_store_is_installed_off_and_not_checked(self, settled):
+    Settings().set("s3", dict.fromkeys(STORE, ""))
+    settled.settings_saved("s3")
+    assert (settled.installed.s3, settled.queued()) == ([dict.fromkeys(STORE, "")], [])
+
+  def test_saved_notifications_are_installed_and_checked_without_a_discovery(self, settled):
+    Settings().set("notifications", WEBHOOK)
+    settled.settings_saved("notifications")
+    assert (settled.installed.notifications, settled.installed.s3, settled.requested) == ([WEBHOOK], [], [])
+    assert [key for key, *_ in settled.queued()] == [("check_notifications",)]
+
+  def test_a_second_save_replaces_the_check_still_queued(self, settled):
+    Settings().set("s3", STORE)
+    settled.settings_saved("s3")
+    Settings().set("s3", {**STORE, "bucket": "b"})
+    settled.settings_saved("s3")
+    assert [key for key, *_ in settled.queued()] == [("check_s3",)]
+
+
+class TestScheduledChecks:
+  def test_every_configured_section_is_checked_quietly(self, settled):
+    Settings().set("notifications", WEBHOOK)
+    settled.request_settings_checks()
+    assert settled.queued() == [
+        (("check_tailscale",), ["settings:tailscale"], "common", {"key": "tailscale"}, True),
+        (("check_cloudflare",), ["settings:cloudflare"], "common", {"key": "cloudflare"}, True),
+        (("check_notifications",), ["settings:notifications"], "common", {"key": "notifications"}, True)]
+    assert set(settled.applying_tasks().values()) == {None}
+
+  def test_a_scheduled_check_after_a_save_keeps_it_applying(self, settled):
+    Settings().set("s3", STORE)
+    settled.settings_saved("s3")
+    settled.request_settings_checks()
+    assert [(key, quiet) for key, _, _, _, quiet in settled.queued() if key == ("check_s3",)] == [(("check_s3",), False)]
+    assert settled.applying_tasks()["s3"] is not None
+
+  def test_its_fact_is_the_task_that_makes_each_section_apply(self, settled):
+    Settings().set("s3", STORE)
+    settled.settings_saved("s3")
+    applying, _ = settled.settings_queue_facts()
+    assert applying._compute() == (None, None, settled.applying_tasks()["s3"]["task_id"], None)
+
+  def test_a_sections_test_is_a_fact_of_its_own_apart_from_its_check(self, settled):
+    applying, testing = settled.settings_queue_facts()
+    settled.request_test("s3", STORE)
+    assert (applying._compute(), testing._compute()) == ((None, None, None, None), (False, False, True, False))
+    Settings().set("s3", STORE)
+    settled.settings_saved("s3")
+    assert testing._compute() == (False, False, True, False)
+
+
+async def drain(settled):
+  for _ in range(500):
+    snapshot = settled.task_queue.snapshot()
+    if not (snapshot["running"] or snapshot["queued"]):
+      return
+    settled.task_queue.dispatch_tick()
+    await asyncio.sleep(0.01)
+
+
+def unreachable(values, write):
+  raise ValueError("bucket unreachable")
+
+
+class TestTest:
+  def test_it_is_queued_apart_from_the_check_naming_what_it_tests_and_no_secret(self, settled):
+    settled.request_test("s3", STORE)
+    settled.request_test("notifications", WEBHOOK)
+    assert settled.queued() == [
+        (("test_s3",), [], "common", {"section": "s3", "endpoint": STORE["endpoint"], "bucket": "a", "path": "base"}, False),
+        (("test_notifications",), [], "common", {"section": "notifications", "channels": ["Discord"], "discord_webhook_id": "1"},
+         False)]
+    assert [task.inputs for task in settled.task_queue._queue] == [{"value": STORE}, {"value": WEBHOOK}]
+
+  async def test_another_test_of_a_section_is_refused_while_one_is_queued_or_running_and_another_section_is_free(
+          self, settled, register):
+    entered, release = threading.Event(), threading.Event()
+
+    def held(values, write):
+      entered.set()
+      assert release.wait(5)
+
+    register(S3, SimpleNamespace(check_config=held))
+    settled.request_test("s3", STORE)
+    with pytest.raises(Conflict, match="A test of this section is already running."):
+      settled.request_test("s3", STORE)
+    settled.task_queue.dispatch_tick()
+    for _ in range(500):
+      if entered.is_set():
+        break
+      await asyncio.sleep(0.01)
+    with pytest.raises(Conflict, match="A test of this section is already running."):
+      settled.request_test("s3", STORE)
+    settled.request_test("notifications", WEBHOOK)
+    release.set()
+    await drain(settled)
+    assert settled.request_test("s3", STORE) is not None
+
+  async def test_its_outcome_is_one_line_of_its_log_and_one_row_of_its_sections_feed_and_a_failure_fails_it(
+          self, settled, register, clock, caplog):
+    with caplog.at_level(logging.INFO, logger="services.manager.settings"):
+      await settled.run_test("s3", STORE, bucket="a")
+      register(S3, SimpleNamespace(check_config=unreachable))
+      with pytest.raises(TaskFailed):
+        await settled.run_test("s3", STORE, bucket="a")
+    assert [record.getMessage() for record in caplog.records if record.name == "services.manager.settings"] == [
+        "The s3 test: Bucket reachable and writable.", "The s3 test failed: bucket unreachable"]
+    assert Updates().published == [
+        (UpdateFeed.SETTING_TESTS, [{"ok": True, "message": "Bucket reachable and writable.", "at": clock.current}], "s3"),
+        (UpdateFeed.SETTING_TESTS, [{"ok": False, "message": "bucket unreachable", "at": clock.current}], "s3")]
+
+
+class TestCheck:
+  async def test_a_check_is_recorded_for_the_revision_it_checked(self, settled, signals):
+    await settled.check_setting("tailscale")
+    check = Settings().check("tailscale")
+    assert (check.revision, check.state, check.message) == (
+        0, "ok", "The node is running as manager; 2 other machine(s) on the tailnet.")
+    assert signals
+
+  @pytest.mark.parametrize("error, state", [(ValueError("refused"), "error"), (client_error(503), "retrying")])
+  async def test_a_failed_check_records_whether_it_will_pass_by_itself(self, settled, register, error, state):
+    Settings().set("s3", STORE)
+
+    def refuse(values, write):
+      raise error
+
+    register(S3, SimpleNamespace(check_config=refuse))
+    await settled.check_setting("s3")
+    assert (Settings().check("s3").state, Settings().check("s3").message) == (state, str(error))
+
+  async def test_a_notifications_check_names_its_channels_and_a_failing_one_says_why(self, settled, register):
+    Settings().set("notifications", WEBHOOK)
+    await settled.check_setting("notifications")
+    assert Settings().check("notifications").message == "Webhook valid: Discord."
+
+    def refuse(values, send):
+      raise ChannelCheckFailed({"discord_webhook": ("Discord answered HTTP 404", False)}, configured=1)
+
+    register(Notifications, SimpleNamespace(check_config=refuse))
+    await settled.check_setting("notifications")
+    check = Settings().check("notifications")
+    assert (check.state, check.channels) == ("error", {"discord_webhook": "Discord answered HTTP 404"})
+
+  async def test_a_check_of_values_saved_over_meanwhile_is_dropped(self, settled, register, signals):
+    Settings().set("s3", STORE)
+    register(S3, SimpleNamespace(check_config=lambda values, write: Settings().set("s3", {**STORE, "bucket": "b"})))
+    await settled.check_setting("s3")
+    assert (Settings().check("s3"), signals) == (None, [])
+
+
+@pytest.fixture
+def catalog(db, clock, register):
+  clock.set(datetime.now(timezone.utc).replace(tzinfo=None))
+  register(Updates, SimpleNamespace(changed=lambda source: None))
+  return Certs()
+
+
+class TestSettingsStatus:
+  def status(self, register, applying=None, testing=()):
+    register(Cloudflare, SimpleNamespace(account_id="a", tunnel_id="t", tunnel_name="platform", tunnel_status="healthy"))
+    manager = SimpleNamespace(applying_tasks=lambda: {**dict.fromkeys(SETTING_SECTIONS), **(applying or {})},
+                              testing_sections=lambda: tuple(key in testing for key in SETTING_SECTIONS),
+                              section_configured=lambda key: key != "notifications")
+    for key in SETTING_SECTIONS:
+      Settings().record_check(key, SettingCheck(Settings().snapshot(key).revision, "ok", "Provider reachable", "now"))
+    return SettingsMixin.settings_status(manager)
+
+  def test_settings_report_a_failed_renewal_even_when_the_leaf_remains_valid(self, catalog, register, monkeypatch):
+    for certificate in catalog.inventory().values():
+      write_certificate(certificate.fullchain_path.parent, certificate.names)
+      catalog.reload(certificate)
+    catalog.discovery.error = "order rejected"
+    monkeypatch.setattr(type(catalog.directory), "read_bytes", lambda self: pytest.fail("settings read certificate files"))
+    status = self.status(register)["cloudflare"]
+    assert status["state"] == "error"
+    assert "order rejected" in status["message"]
+    assert status["details"]["certificates"][1]["valid"]
+    assert status["details"]["tunnel_status"] == "healthy"
+
+  def test_a_section_shows_whether_its_test_runs_apart_from_its_state(self, catalog, register):
+    status = self.status(register, testing=("s3",))
+    assert (status["s3"]["testing"], status["s3"]["state"], status["notifications"]["testing"]) == (True, "ok", False)
+
+  def test_a_section_applies_while_its_task_is_queued_and_shows_its_check_otherwise(self, catalog, register):
+    status = self.status(register, applying={"s3": {"task_id": "t1"}})
+    assert (status["s3"]["state"], status["s3"]["task_id"]) == ("applying", "t1")
+    assert (status["tailscale"]["state"], status["notifications"]["state"]) == ("ok", "not_configured")
+
+
+def test_overlapping_saves_of_a_section_end_with_the_last_saved_values_installed(db, monkeypatch):
+  from services import s3
+
+  older = {"access_key": "a", "secret_key": "a", "bucket": "a", "endpoint": "https://a.example.test", "path": "base"}
+  newer = {**older, "endpoint": "https://b.example.test"}
+  building, release = threading.Event(), threading.Event()
+
+  class Clients:
+    def client(self, *args, **kwargs):
+      if kwargs["endpoint_url"] == older["endpoint"]:
+        building.set()
+        assert release.wait(5)
+      return object()
+
+  class Workflow(SettingsMixin):
+    def request_backup_discovery(self):
+      pass
+
+    def _request_check(self, key, quiet):
+      pass
+
+  monkeypatch.setattr(s3.boto3.session, "Session", Clients)
+  Settings().set("s3", older)
+  first = threading.Thread(target=Workflow().settings_saved, args=("s3",))
+  first.start()
+  try:
+    assert building.wait(5)
+    Settings().set("s3", newer)
+    Workflow().settings_saved("s3")
+  finally:
+    release.set()
+    first.join(5)
+  assert not first.is_alive()
+  assert S3().session().target.endpoint == newer["endpoint"]
+  Settings().set("s3", {**older, "endpoint": "https://c.example.test"})
+  Workflow().settings_saved("s3")
+  assert S3().session().target.endpoint == "https://c.example.test"

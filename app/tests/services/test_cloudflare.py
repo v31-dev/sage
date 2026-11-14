@@ -1,5 +1,6 @@
 import json
 import time
+from datetime import timedelta
 
 import httpx
 import pytest
@@ -452,6 +453,15 @@ class TestCheckConfig:
     with pytest.raises(ValueError, match="No active zone for other.test is visible to this API token."):
       cloudflare.check_config(self.VALUES)
 
+  def test_its_calls_wait_the_test_timeout_and_retry_after_the_test_delays(self, cloudflare, candidate, sleeps, monkeypatch):
+    monkeypatch.setattr(config, "SETTINGS_TEST_TIMEOUT_SECONDS", 3)
+    monkeypatch.setattr(config, "SETTINGS_TEST_RETRY_DELAYS", (7,))
+    candidate.on("GET", "/accounts/other-account/cfd_tunnel", fail(503, "unavailable"))
+    with pytest.raises(CloudflareError, match="HTTP 503"):
+      cloudflare.check_config(self.VALUES)
+    assert sleeps == [7] and len(candidate.sent("GET", "/accounts/other-account/cfd_tunnel")) == 2
+    assert {request.extensions["timeout"]["read"] for request in candidate.requests} == {3}
+
   def test_no_tunnel_access_for_the_accounts_of_the_zone_raises_the_apis_error(self, cloudflare, candidate):
     candidate.on("GET", "/accounts/other-account/cfd_tunnel", fail(403, "Authentication error"))
     with pytest.raises(CloudflareError, match="HTTP 403: Authentication error"):
@@ -465,6 +475,51 @@ class TestTunnels:
     api.on("GET", TUNNELS, ok(tunnels))
 
     assert connected.tunnels() == {"sage-example.test": tunnels[0], "sage-example.test-w1": tunnels[1]}
+
+  def test_a_listing_keeps_the_clients_timeout_and_retries_unless_given_its_own(self, connected, api, sleeps):
+    api.on("GET", TUNNELS, fail(503, "unavailable"))
+    with pytest.raises(CloudflareError):
+      connected.tunnels()
+    assert sleeps == [1, 2] and api.requests[-1].extensions["timeout"]["read"] == connected.http.timeout.read
+    sleeps.clear()
+    with pytest.raises(CloudflareError):
+      connected.tunnels(timeout=3, delays=(7,))
+    assert sleeps == [7] and api.requests[-1].extensions["timeout"]["read"] == 3
+
+
+class TestTunnelStatuses:
+  @pytest.fixture
+  def listed(self, connected, api, clock):
+    api.on("GET", TUNNELS, ok([{"id": "1", "name": "sage-example.test", "status": "healthy"},
+                               {"id": "2", "name": "sage-example.test-w1", "status": "down"}]))
+    return connected
+
+  def test_nothing_is_known_before_a_listing(self, listed):
+    assert (listed.tunnel_statuses(), listed.tunnel("sage-example.test-w1"), listed.tunnel_status) == ({}, None, None)
+
+  def test_a_listing_is_known_for_the_bound_and_then_not_at_all(self, listed, clock):
+    listed.tunnels()
+    clock.advance(timedelta(seconds=config.TUNNEL_LISTING_STALE_SECONDS))
+    assert listed.tunnel_statuses() == {"sage-example.test": "healthy", "sage-example.test-w1": "down"}
+    assert (listed.tunnel("sage-example.test-w1"), listed.tunnel("sage-example.test-w2")) == ("down", None)
+    clock.advance(timedelta(seconds=1))
+    assert (listed.tunnel_statuses(), listed.tunnel("sage-example.test-w1"), listed.tunnel_status) == ({}, None, None)
+
+  def test_a_failed_listing_keeps_what_was_listed_and_when(self, listed, api, clock, sleeps):
+    listed.tunnels()
+    clock.advance(timedelta(seconds=200))
+    api.on("GET", TUNNELS, fail(503, "unavailable"))
+    with pytest.raises(CloudflareError):
+      listed.tunnels()
+    assert listed.tunnel_status == "healthy"
+    clock.advance(timedelta(seconds=config.TUNNEL_LISTING_STALE_SECONDS - 199))
+    assert listed.tunnel_status is None
+
+  def test_a_tunnel_gone_from_the_newest_listing_is_not_known(self, listed, api):
+    listed.tunnels()
+    api.on("GET", TUNNELS, ok([{"id": "1", "name": "sage-example.test", "status": "degraded"}]))
+    listed.tunnels()
+    assert listed.tunnel_statuses() == {"sage-example.test": "degraded"}
 
 
 class TestDnsRecords:

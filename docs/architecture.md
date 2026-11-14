@@ -20,7 +20,7 @@ are checked at startup and daily; valid certificates outside that window stay in
 The container entrypoint (`app/entrypoint.sh`) first brings up the manager's own tailnet
 node — `tailscaled` in userspace networking mode, state under `/app/data/tailscale` — and
 then starts the manager process. Tailnet connections to the node's IP are delivered to
-the same port on `127.0.0.1` inside the container, so `:80` and `:9001` need no published
+the same port on `127.0.0.1` inside the container, so `:443`, `:80` and `:9001` need no published
 ports — and anything listening there is reachable from the tailnet wherever the tailnet
 policy allows.
 
@@ -31,15 +31,15 @@ through `tailscaled`: SSH to workers uses asyncssh's `proxy_command` with
 
 The manager process starts these concurrent services from `app/main.py`:
 
-1. Main FastAPI API and UI on port `80`, plain HTTP — it is reached over the tailnet,
-   which WireGuard already encrypts
+1. Main FastAPI API and UI on port `443`, serving TLS with the manager's own certificate; port `80` only
+   redirects there (in development, plain HTTP on `9000` behind the dev Traefik)
 2. Ingestion FastAPI API on port `9001` (receives workers' Telegraf reports and Vector log shipments)
 3. APScheduler (cron/interval) scheduler
 
 Startup is service-driven:
 
 - `Manager()` initializes the platform services.
-- Before serving, startup sets up the domain (`Manager.setup_domain`): connect to Cloudflare (zone, tunnel, the manager's record) and get the manager's certificate, retrying a failure that clears by itself (a network error, HTTP 5xx or 429) after 1, 4 and 16 minutes and then exiting; any other failure, such as a rejected token, and a rate limit exit at once, and a still-valid certificate lets startup continue. Other startup work that touches the network (release check, worker and discovery certificates, S3 backup discovery, settings checks, re-checking online workers against their stamps) runs as queued tasks once the servers are up. S3 and notifications are optional.
+- Before serving, startup sets up the domain (`Manager.setup_domain`): connect to Cloudflare (zone, tunnel, the manager's record) and get the manager's certificate, retrying a failure that clears by itself (a network error, HTTP 5xx or 429) after 1, 4 and 16 minutes and then exiting; any other failure, such as a rejected token, and a rate limit exit at once, and a still-valid certificate lets startup continue. Other startup work that touches the network (release check, worker and discovery certificates, S3 backup discovery, settings checks, each reachable worker's setup, by its stamps) runs as queued tasks once the servers are up. S3 and notifications are optional.
 - If service initialization fails, the process exits.
 
 ## Worker Runtime
@@ -71,7 +71,8 @@ before issuance of the replacement; other workers' leaves and the shared discove
 Deleting a worker also retires its leaf. Revocation can run while a worker is offline; its next setup repairs the
 remote certificate inventory. An offline removed VM still needs manual decommissioning.
 
-Maintenance runs sequentially under the platform/app/domain scopes, leaving common and metrics independent.
+Renewal takes one certificate at a time under `certificate`, on the platform lane. Each worker's copy holds that
+worker's `certificate:worker:<host>` and `worker:<host>:tls`, so the workers' copies go on in parallel.
 An individual failure is reported while other certificate owners continue. A valid leaf stays in use if ordinary
 renewal fails. Retired public leaves survive restart until revocation succeeds or they expire; their private keys
 are removed. [Certificate state and worker application](backend.md)
@@ -90,27 +91,29 @@ Current traffic and naming patterns are driven by Cloudflare, Traefik, and Tails
 - A domain is a name linked to one container, and the worker that runs it routes it to that container with its own
   Traefik: there is no hop between workers. Domains are managed on the Domains page; an application's page lists the
   linked names on each container's card.
-- A worker has a **subdomain** (one DNS label, unique; random when none is given) that its internal names are under.
+- A worker has a **subdomain** (one DNS label, unique, given when it is added) that its internal names are under.
 - Public names are proxied CNAMEs to the tunnel of the worker their container is on. Every worker's tunnel carries the
   same ingress (`*.<domain>` to Traefik, then 404), so the record alone decides the worker.
 - Internal and TCP names are `<name>.<subdomain>.int.<domain>`, through one DNS-only `*.<subdomain>.int.<domain>` record
   per worker pointing at its tailnet IP. No record names an application, so application names stay out of public DNS.
 - **Discovery** lists a service's names for clients that choose one: `discovery.<domain>?service=<service>` for public
   names (through the platform's tunnel, so any worker answers while the manager is down) and
-  `discovery.int.<domain>?service=<service>` for internal and TCP ones (tailnet only, an A record per online worker).
+  `discovery.int.<domain>?service=<service>` for internal and TCP ones (tailnet only, an A record per worker reachable and set up).
   The answer is an RFC 9651 list in `Sage-Endpoints`, for example
   `"a.example.test";pool="eu";online, "b.example.test";pool="eu";online=?0`, to HEAD, GET or OPTIONS.
   `;online` means available; `;online=?0` means offline. Every service-assigned name stays listed, including unlinked
   names and pending or failed syncs. An available name needs an active container, its worker's cached ready status,
   and a successful Domain sync for its current configuration. This is last-known state, derived when discovery
-  config is generated; discovery performs no live health checks. Responses have `Cache-Control: private, max-age=30`
+  config is generated; discovery performs no live health checks. The names follow the Domains at once; a name whose
+  state is not known yet (after the manager starts, or while its Domain is being applied) keeps the availability it was
+  published with, for two minutes at most. Responses have `Cache-Control: private, max-age=30`
   and CORS for any origin; another method or an unknown service gets a 404. A client can time `HEAD /ping` on the
   available names to choose, which Traefik answers while the container is active (GET still reaches the application).
 
 Each Domain record owns its DNS and Traefik synchronization result. A record is synced once both effects have
 completed for its desired configuration. A parent pass on demand and every five minutes cleans orphan/old-placement
-artifacts, queues record repairs and generates discovery. Container availability and worker readiness changes also
-request this pass. Domain sync status remains separate from the derived discovery availability flag.
+artifacts, queues record repairs and generates discovery. A container's availability changing requests its Domains'
+applies and discovery's publication; a worker's readiness changing requests discovery's publication. Domain sync status remains separate from the derived discovery availability flag.
 
 ### Cloudflare Resources
 
@@ -123,11 +126,11 @@ characters on Cloudflare's Free plan, which has no record tags.
 | --- | --- |
 | The platform's tunnel, run by `cloudflared-discovery` on every worker: created at start, and never deleted with a worker | `sage-<domain>` |
 | Each worker's own tunnel, run by its `cloudflared`: created when the worker is set up, deleted when it is removed | `sage-<domain>-<hostname>` |
-| `discovery.<domain>`, a proxied CNAME to the platform's tunnel, its one record (any other with its comment is deleted), written by `sync_discovery` | `sage-tunnel` |
+| `discovery.<domain>`, a proxied CNAME to the platform's tunnel, its one record (any other with its comment is deleted), written by `publish_discovery_dns` | `sage-tunnel` |
 | `<TS_NAME>.core.<domain>`, an A record to the manager's tailnet IP | `sage-manager` |
 | `*.<subdomain>.int.<domain>`, an A record to the worker's tailnet IP: kept while the worker is offline, so its names work again as soon as it is back, and deleted when it is removed | `sage-worker-<hostname>` |
-| `discovery.int.<domain>`, an A record to each online worker's tailnet IP, written by `sync_discovery` | `sage-discovery-<hostname>` |
-| Each public name linked to a container, a proxied CNAME to its worker's tunnel, written by its record's `sync_domain` | `sage-domain-<id>` |
+| `discovery.int.<domain>`, an A record to the tailnet IP of each worker reachable and set up, written by `publish_discovery_dns`: kept while that is not known yet: for two minutes after the manager starts, and while it is cut off from the tailnet; kept too while the worker answers only through its tunnel | `sage-discovery-<hostname>` |
+| Each public name linked to a container, a proxied CNAME to its worker's tunnel, written by its Domain's `apply_domain` | `sage-domain-<id>` |
 | `_acme-challenge.<name>`, a TXT record while a certificate is issued | `sage-acme-challenge` |
 
 After a change of domain, account or `TS_NAME`, the previous domain's or name's resources stay in Cloudflare until
@@ -137,7 +140,7 @@ they are deleted by hand.
 
 Each linked public Domain uses one CNAME, including a stopped container's name. Internal and TCP names share one
 wildcard record per worker. Steady Sage records total **P + W + O + 2**: P linked public Domains, W workers,
-O online workers' internal discovery records, plus the manager and public discovery records. For example, 40 public
+O internal discovery records (one per worker reachable and set up), plus the manager and public discovery records. For example, 40 public
 Domains and four online workers use 50 records. Allow space for unrelated zone records and temporary ACME TXT records.
 
 Cloudflare's Free quota is 200 records per zone; some Free zones have a 1,000-record quota. Pro and Business allow
@@ -145,10 +148,10 @@ Cloudflare's Free quota is 200 records per zone; some Free zones have a 1,000-re
 not by itself increase the API allowance. See [Cloudflare's DNS quotas](https://developers.cloudflare.com/dns/manage-dns-records/#dns-records-quota).
 
 The API allows 1,200 requests per five minutes per user, shared across tokens and dashboard activity. Exceeding it
-can block calls for five minutes with HTTP 429. Sage inventories DNS once per discovery pass and account tunnels
-only for full repair scans, reuses those lists for cleanup and writes only drift. With one page per inventory,
-a clean full scan needs two API calls and a clean cleanup-only pass needs one; record repairs, worker setup,
-certificates and other operations add calls. Sage applies no proactive rate limiter.
+can block calls for five minutes with HTTP 429. The Domain pass lists the zone and the account's tunnels once each
+and reuses them for its cleanup and its comparison: two calls with one page per list, every five minutes. Discovery's
+DNS publication lists the zone once; a Domain's apply lists the zone and looks up its worker's tunnel. Writes happen
+only on drift; record repairs, worker setup, certificates and other operations add calls. Sage applies no proactive rate limiter.
 See [Cloudflare's API limits](https://developers.cloudflare.com/fundamentals/api/reference/limits/).
 
 Retryable requests use bounded retries and honor a valid `Retry-After` minimum wait when supplied. Long provider
@@ -246,12 +249,15 @@ Core entities:
 - `Container`
 - `Domain`
 - `Volume`
-- `Event`
+- `ContainerEvent`
+- `WorkerEvent`
 - `Notification`
 - `Backup`
 - `Task` (log of finished queue operations)
 
-Its sensitive fields are encrypted with `ENCRYPTION_KEY` (Fernet, `utils/db.py`). The
+Its sensitive fields are encrypted with `ENCRYPTION_KEY` (Fernet, `services/db/encryption.py`).
+Bootstrap initializes the cipher explicitly before encrypted storage access; importing value rules or
+DB fields does not read the key or open storage. The
 same key encrypts every backup, platform and volume alike, in one format (`utils/archive.py`
 on the manager, `backup.sh` and `restore.sh` on workers): `openssl enc -aes-256-cbc
 -pbkdf2`, then a 32-byte HMAC-SHA256 trailer that is checked before anything is decrypted.
@@ -264,10 +270,33 @@ Relationships are centered on:
 - project -> applications
 - application -> containers, volumes, backups
 - container -> domains, events
-- worker -> containers and internal/TCP domains
+- worker -> containers, internal/TCP domains, events
 
 The [model writer index](operations.md#model-writer-index) lists every model's direct, queued and implicit
 writers. The [flow diagrams](operations.md) show how scheduler, route and startup work reach them.
+
+## Platform Backup And Restore
+
+A platform backup is the configuration: the database without its history (container and worker events,
+notifications, tasks) and without the Backup rows, which mirror the store and are rebuilt from its listing. It is
+taken twice a day and from the Backups page, while other work goes on, and is encrypted into the configured S3 store.
+
+A restore puts a backup's configuration in place of the current one:
+
+- From the request on, Sage refuses every other change and the workers' reports, and the UI shows an overlay. The
+  tasks queued before it finish first; then the restore runs alone.
+- It installs the backup with a fresh state generation, keeps the S3 settings in use (every other setting comes from
+  the backup) and starts the history and the backup list empty. Sage then starts its work as it does at startup, which
+  lists the store's backups again. A backup that can't be installed leaves the database as it was.
+- Each container with a record on its worker from before the restore, running or not, is stopped once its worker
+  reports, and shows an error until it is deployed again. This includes recovering onto a new volume while the workers
+  kept serving: the applications are down until they are deployed.
+- A container that isn't in the restored configuration is removed from its worker with its volumes' data, once an
+  operation it was in the middle of has had its time to end. A Domain that isn't in it has its route and DNS records
+  removed.
+- Workers in the restored configuration keep their stack; each is set up again only where its stamps differ.
+- A worker that isn't in the restored configuration is left as it is: unmanaged, with its stack and containers still
+  running, until it is cleaned up by hand.
 
 ## Metrics And Logs Storage
 
@@ -297,25 +326,25 @@ The task logs have the same limit as a container's shard and count towards the t
 The UI keeps one Socket.IO connection to the manager (`/api/socket.io`) and follows topics over it instead of polling: the manager's status (`info`), the workers (`workers`, and one worker as `worker:<hostname>`), an application (`application:<project>/<name>`), the domains (`domains`), the tasks (`tasks`, and the finished ones as `task-history`), the backup and discovery status, the platform backups (`backups`), the release, the notifications and the logs (a task's, an application's and the requests). A page loads a topic from its REST route, and the manager pushes the whole state of a state topic each time it changes and each new row of a feed (a notification, a finished task) as it is stored; the page loads again each time the socket connects, so it makes up for what it missed. Socket.IO reconnects and falls back from WebSocket to long-polling by itself, a heartbeat every 10 s shows in an indicator at the top left of the UI, and a connection from another origin is refused. See [backend.md](backend.md) and [frontend.md](frontend.md).
 
 What is pushed, and what the API keeps:
-- **A topic is for changes a page did not make:** a background task, the manager's own checks, or another tab. Examples: an application's status while a deploy runs and when a container goes to error (`application:<project>/<name>`); a worker going offline or coming back (`workers`, `worker:<hostname>`); a settings check ending (`info`); a worker removed by its background task while its page is open (the topic answers 404 and the page shows not found).
+- **A topic is for changes a page did not make:** a background task, the manager's own checks, or another tab. Examples: a container's status while a deploy runs and when it goes to error (`application:<project>/<name>`); a worker going offline or coming back (`workers`, `worker:<hostname>`); a settings check ending (`info`); a worker removed by its background task while its page is open (the topic answers 404 and the page shows not found).
 - **A page's own synchronous action is shown by the page,** from the response or by loading again, and needs no topic. Examples: creating or deleting an application (the page that did it reloads or leaves, so a project's application list has no topic); emptying a settings section, which no check follows (the saving page reads `info` back, and another tab sees it at its next `info` push).
 - **Where both fit** (a page's own action that another tab or another part of the page also shows), it is decided case by case, in the tracker item that meets it.
-- **The API stays complete.** A route returns its whole resource whether or not a topic carries it, and a field is not dropped because the UI gets it from a push: `GET /workers/{hostname}` keeps `online`, though the UI reads `status`. What belongs to another resource is not copied in: `GET /api` has no worker count (the workers are `GET /workers`), and an application's containers name their worker without its state (`GET /workers/{hostname}`).
+- **The API stays complete.** A route returns its whole resource whether or not a topic carries it, and a field is not dropped because the UI gets it from a push: `GET /workers/{hostname}` keeps `ssh` and `setup`, the facts its status was decided from, though the UI reads `view`. What belongs to another resource is not copied in: `GET /api` has no worker count (the workers are `GET /workers`), and an application's containers name their worker without its state (`GET /workers/{hostname}`).
 
 ## Scheduler And Operation Queue
 
-APScheduler is a pure cron/interval trigger: each scheduled coroutine only calls `Manager().add_task(...)` to enqueue work and owns no execution or concurrency logic. Recurring triggers cover:
+APScheduler is a pure cron/interval trigger: each scheduled coroutine only calls one of the Manager's request functions (`request_*`), which enqueues the work, and owns no execution or concurrency logic. Recurring triggers cover:
 
-- worker sync
-- application status sync
+- the workers' observation, which requests their setups and stack repairs, and their paths
+- the look at every container's state, and the listing of each worker's container records
 - scheduled volume backup dispatch
-- Domain artifact cleanup, repair scanning and discovery synchronization
-- metrics collection
+- the Domain pass, which removes what Domains left behind, applies those that drifted and publishes discovery
+- the metrics flush
+- the settings checks and the release check
 - platform backup scheduling
-- cleanup
-- certificate renewal
+- the daily summary, cleanup and certificate renewal
 
-All execution and mutual exclusion live in an in-memory operation queue on the `Manager` singleton (`app/utils/queue.py`). Routes (deploy, stop, delete, backup, restore, worker removal and reboot) and the cron triggers above enqueue through the same `add_task` path; a single one-second dispatcher starts each pending task whose scope is free. See [backend.md](backend.md) for the queue model and execution semantics.
+All execution and mutual exclusion live in an in-memory operation queue on the `Manager` singleton (`app/utils/queue.py`). Routes (deploy, stop, delete, backup, restore, worker removal and reboot) and the cron triggers above enqueue through the same `add_task` path; a single one-second dispatcher starts each pending task whose scopes conflict with no running task and no task queued before it. See [backend.md](backend.md) for the queue model and execution semantics.
 
 For the visual execution flows, exact schedules, complete task catalog and synchronous model writers, see
 [Scheduler and data writes](operations.md).

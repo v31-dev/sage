@@ -8,10 +8,9 @@ import {
   restoreVolumeBackup,
   type Application,
   type Backup,
-  type Container,
   type Volume,
 } from '@/services/api'
-import { useAppStore } from '@/stores/app'
+import { container } from '../helpers/containers'
 
 vi.mock('vue-sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
 vi.mock('@/services/api', async importOriginal => ({
@@ -45,28 +44,49 @@ const stubs = {
   SelectItem: inline,
 }
 
-const application = {
-  name: 'web',
-  project: { name: 'demo' },
-  status: 'inactive',
-  containers: [{ worker: { hostname: 'w1' } }],
-} as unknown as Application
+const stopped = container({
+  id: 'c1',
+  view: { headline: 'inactive', config: 'current', reason: null, detail: null },
+})
+const running = container({ id: 'c2', worker: { hostname: 'w2', subdomain: 'blue' } })
 
-const backup = { id: 7, s3_path: 'demo/web/w1/data/20260101_120000.tar.gz.enc' } as Backup
+const application = (containers = [stopped]) =>
+  ({
+    name: 'web',
+    project: { name: 'demo' },
+    containers,
+    volumes: [
+      { id: 'v1', name: 'data' },
+      { id: 'v2', name: 'logs' },
+    ],
+  }) as unknown as Application
 
-const onW1 = { worker: { hostname: 'w1' }, status: 'inactive' } as Container
+const backup = {
+  id: 'b7',
+  s3_path: 'base/backups/applications/v1/c1/20260101_120000.tar.gz.enc',
+  source_volume_name: 'data',
+  created_at: '2026-01-01T12:00:00',
+} as Backup
 
-async function restore() {
+async function mountDialog(containers = [stopped]) {
+  const loadApplication = vi.fn(async () => {})
   const wrapper = mount(VolumeRestoreDialog, {
-    props: { application, volume: { name: 'data' } as Volume },
+    props: {
+      application: application(containers),
+      volume: { name: 'data' } as Volume,
+      loadApplication,
+    },
     global: { stubs },
   })
   await flushPromises()
-  const restoreButtons = wrapper.findAll('button').filter(button => button.text() === 'Restore')
-  await restoreButtons[restoreButtons.length - 1]!.trigger('click')
-  await flushPromises()
-  return wrapper
+  return { wrapper, loadApplication }
 }
+
+const restoreButton = (wrapper: Awaited<ReturnType<typeof mountDialog>>['wrapper']) =>
+  wrapper
+    .findAll('button')
+    .filter(button => button.text() === 'Restore')
+    .reverse()[0]!
 
 beforeEach(() => {
   setActivePinia(createPinia())
@@ -77,27 +97,36 @@ beforeEach(() => {
 })
 
 describe('a volume restore', () => {
-  it('says the restore started, and keeps showing it on its worker until the manager says otherwise', async () => {
-    vi.mocked(restoreVolumeBackup).mockResolvedValue({})
+  it('restores the backup into the first container and this volume, then loads the page again', async () => {
+    vi.mocked(restoreVolumeBackup).mockResolvedValue({ task_id: 't1' })
+    const { wrapper, loadApplication } = await mountDialog()
 
-    const wrapper = await restore()
+    await restoreButton(wrapper).trigger('click')
+    await flushPromises()
 
-    expect(restoreVolumeBackup).toHaveBeenCalledWith('demo', 'web', 'data', 7, 'w1')
-    expect(toast.success).toHaveBeenCalledWith('Restore initiated for volume data')
-    expect(useAppStore().applicationDeployStatus).toBe('restoring')
-    expect(useAppStore().containerStatus(onW1)).toBe('restoring')
+    expect(restoreVolumeBackup).toHaveBeenCalledWith('demo', 'web', 'data', 'b7', 'c1', 'data')
+    expect(toast.success).toHaveBeenCalledWith('Restore queued for volume data')
+    expect(loadApplication).toHaveBeenCalledOnce()
     expect(wrapper.findComponent(dialog).props('open')).toBe(false)
   })
 
-  it('that is refused says why, and shows the status as it was', async () => {
+  it('needs the chosen container stopped, and says so', async () => {
+    const { wrapper } = await mountDialog([running])
+
+    expect(restoreButton(wrapper).attributes('disabled')).toBeDefined()
+    expect(wrapper.text()).toContain('A restore needs the container stopped.')
+  })
+
+  it('that is refused says why, and loads nothing', async () => {
     vi.mocked(restoreVolumeBackup).mockRejectedValue(
-      new Error('Application already has an operation in progress.')
+      new Error('This container already has an operation in progress.')
     )
+    const { wrapper, loadApplication } = await mountDialog()
 
-    await restore()
+    await restoreButton(wrapper).trigger('click')
+    await flushPromises()
 
-    expect(toast.error).toHaveBeenCalledWith('Application already has an operation in progress.')
-    expect(useAppStore().applicationDeployStatus).toBe('inactive')
-    expect(useAppStore().containerStatus(onW1)).toBe('inactive')
+    expect(toast.error).toHaveBeenCalledWith('This container already has an operation in progress.')
+    expect(loadApplication).not.toHaveBeenCalled()
   })
 })

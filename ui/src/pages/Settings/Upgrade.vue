@@ -121,7 +121,9 @@ let stops: Array<() => void> = []
 const state = computed(() => appStore.info?.state ?? 'running')
 const running = computed(() => queue.value?.running ?? [])
 const queuedCount = computed(() => queue.value?.queued.length ?? 0)
-const safeToStop = computed(() => state.value === 'paused' && running.value.length === 0)
+const safeToStop = computed(
+  () => state.value === 'paused' && queue.value !== null && running.value.length === 0
+)
 
 async function onToggle() {
   toggling.value = true
@@ -290,6 +292,7 @@ onUnmounted(() => {
                 {{ queuedCount }} queued task(s) will be cancelled when Sage stops.
               </span>
             </p>
+            <p v-else-if="!queue" class="text-muted-foreground">Loading tasks…</p>
             <div v-else class="space-y-1">
               <p class="flex items-center gap-2">
                 <Spinner class="animate-spin" />

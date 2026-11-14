@@ -1,46 +1,49 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { toast } from 'vue-sonner'
 import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/ui/spinner'
 import { Play } from 'lucide-vue-next'
 
-import { APPLICATION_BUSY_STATUSES, type Application, deployApplication } from '@/services/api'
-import { useAppStore } from '@/stores/app'
+import {
+  type Application,
+  type Container,
+  deployApplication,
+  deployContainer,
+  refusesRequests,
+} from '@/services/api'
 
-interface Props {
+// Deploy all, or with `container` that container's Deploy; the page is loaded again once it is queued.
+const props = defineProps<{
   application: Application
-}
+  container?: Container
+  loadApplication: () => Promise<void>
+}>()
 
-const props = withDefaults(defineProps<Props>(), {})
+const isRequesting = ref(false)
 
-const appStore = useAppStore()
+const containers = computed(() =>
+  props.container ? [props.container] : props.application.containers
+)
+const disabled = computed(
+  () =>
+    isRequesting.value || containers.value.length === 0 || containers.value.every(refusesRequests)
+)
 
-const deployButtonDisabled = computed(() => {
-  return [
-    APPLICATION_BUSY_STATUSES.includes(appStore.applicationDeployStatus),
-    APPLICATION_BUSY_STATUSES.includes(props.application.status),
-    props.application?.container_count === 0,
-  ].includes(true)
-})
-const deployButtonSpinner = computed(() => {
-  return [
-    appStore.applicationDeployStatus === 'deploying',
-    props.application?.status === 'deploying',
-  ].includes(true)
-})
-
-async function onClickDeployApplication() {
-  appStore.updateApplicationDeployStatus(
-    'deploying',
-    props.application.containers.map(container => container.worker.hostname)
-  )
+async function onClickDeploy() {
+  isRequesting.value = true
   try {
-    await deployApplication(props.application.project.name, props.application.name)
+    const { project, name } = props.application
+    if (props.container) {
+      await deployContainer(project.name, name, props.container.id)
+    } else {
+      await deployApplication(project.name, name)
+    }
+    await props.loadApplication()
   } catch (err) {
-    // Deployment is a deferred operation so error means the deployment was rejected and not even triggered
-    appStore.updateApplicationDeployStatus(props.application.status)
-    toast.error('Failed to deploy application ' + (err instanceof Error ? err.message : ''))
+    toast.error(err instanceof Error ? err.message : 'Failed to deploy')
+  } finally {
+    isRequesting.value = false
   }
 }
 </script>
@@ -50,10 +53,10 @@ async function onClickDeployApplication() {
     size="sm"
     variant="success"
     class="flex-1 md:flex-initial"
-    @click="onClickDeployApplication"
-    :disabled="deployButtonDisabled"
+    @click="onClickDeploy"
+    :disabled="disabled"
   >
-    <Spinner class="animate-spin" v-if="deployButtonSpinner" />
-    <Play />Deploy
+    <Spinner class="animate-spin" v-if="isRequesting" />
+    <Play v-else />{{ props.container ? 'Deploy' : 'Deploy all' }}
   </Button>
 </template>

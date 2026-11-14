@@ -27,13 +27,23 @@ beforeEach(() => {
   vi.stubGlobal('fetch', fetchMock)
 })
 
-describe('the status lists', () => {
-  it('names the statuses in which an application is busy', () => {
-    expect(api.APPLICATION_BUSY_STATUSES).toEqual(['deploying', 'stopping', 'backup', 'restoring'])
-  })
+describe('the requests a container refuses', () => {
+  const container = (live: api.ContainerOperation | null, queued: api.ContainerOperation[] = []) =>
+    ({
+      live,
+      queued: queued.map(operation => ({ operation, task_id: 't1', cancellable: true })),
+    }) as api.Container
 
-  it('lets an application be stopped when it is active or in error', () => {
-    expect(api.APPLICATION_STOP_ELIGIBLE_STATUSES).toEqual(['active', 'error'])
+  it.each([
+    ['nothing runs or waits', container(null), false],
+    ['a request waits its turn', container(null, ['deploy']), false],
+    ['an automatic backup runs', container('backup_preserve'), false],
+    ['one of its own operations runs', container('deploy'), true],
+    ['a restore runs', container('restore_stopped'), true],
+    ['a Delete runs', container('delete'), true],
+    ['a Delete waits', container(null, ['delete']), true],
+  ])('when %s: %s', (_name, value, refused) => {
+    expect(api.refusesRequests(value)).toBe(refused)
   })
 })
 
@@ -64,6 +74,7 @@ const CALLS: Array<[string, () => Promise<unknown>, string, string, object, unkn
     { tag: 'eu1', pool: 'eu' },
   ],
   ['rebootWorker', () => api.rebootWorker('w1'), 'POST', '/api/workers/w1/reboot', {}, undefined],
+  ['resyncWorker', () => api.resyncWorker('w1'), 'POST', '/api/workers/w1/resync', {}, undefined],
   ['deleteWorker', () => api.deleteWorker('w1'), 'DELETE', '/api/workers/w1', {}, undefined],
   ['fetchProjects', () => api.fetchProjects(), 'GET', '/api/projects/', {}, undefined],
   ['fetchProject', () => api.fetchProject('demo'), 'GET', '/api/projects/demo', {}, undefined],
@@ -135,18 +146,42 @@ const CALLS: Array<[string, () => Promise<unknown>, string, string, object, unkn
     { worker: 'w1' },
   ],
   [
+    'deployContainer',
+    () => api.deployContainer('demo', 'web', 'c1'),
+    'POST',
+    `${APP}/containers/c1/deploy`,
+    {},
+    undefined,
+  ],
+  [
+    'stopContainer',
+    () => api.stopContainer('demo', 'web', 'c1'),
+    'POST',
+    `${APP}/containers/c1/stop`,
+    {},
+    undefined,
+  ],
+  [
+    'cancelContainerRequest',
+    () => api.cancelContainerRequest('demo', 'web', 'c1', 'delete'),
+    'POST',
+    `${APP}/containers/c1/cancel/delete`,
+    {},
+    undefined,
+  ],
+  [
     'deleteContainer',
-    () => api.deleteContainer('demo', 'web', 'w1'),
+    () => api.deleteContainer('demo', 'web', 'c1'),
     'DELETE',
-    `${APP}/containers/w1`,
+    `${APP}/containers/c1`,
     {},
     undefined,
   ],
   [
     'deleteContainer, forced',
-    () => api.deleteContainer('demo', 'web', 'w1', true),
+    () => api.deleteContainer('demo', 'web', 'c1', true),
     'DELETE',
-    `${APP}/containers/w1`,
+    `${APP}/containers/c1`,
     { force: 'true' },
     undefined,
   ],
@@ -177,21 +212,21 @@ const CALLS: Array<[string, () => Promise<unknown>, string, string, object, unkn
   ['fetchDomains', () => api.fetchDomains(), 'GET', '/api/domains/', {}, undefined],
   [
     'createDomain',
-    () => api.createDomain({ name: 'web', type: 'public', port: 80, container: 1 }),
+    () => api.createDomain({ name: 'web', type: 'public', port: 80, container: 'c1' }),
     'POST',
     '/api/domains/',
     {},
-    { name: 'web', type: 'public', port: 80, container: 1 },
+    { name: 'web', type: 'public', port: 80, container: 'c1' },
   ],
   [
     'updateDomain',
-    () => api.updateDomain(1, { port: 8080 }),
+    () => api.updateDomain('d1', { port: 8080 }),
     'PUT',
-    '/api/domains/1',
+    '/api/domains/d1',
     {},
     { port: 8080 },
   ],
-  ['deleteDomain', () => api.deleteDomain(1), 'DELETE', '/api/domains/1', {}, undefined],
+  ['deleteDomain', () => api.deleteDomain('d1'), 'DELETE', '/api/domains/d1', {}, undefined],
   ['fetchSetting', () => api.fetchSetting('s3'), 'GET', '/api/settings/s3', {}, undefined],
   [
     'updateSetting',
@@ -211,14 +246,6 @@ const CALLS: Array<[string, () => Promise<unknown>, string, string, object, unkn
   ],
   ['pauseSage', () => api.pauseSage(), 'POST', '/api/settings/pause', {}, undefined],
   ['resumeSage', () => api.resumeSage(), 'POST', '/api/settings/resume', {}, undefined],
-  [
-    'resyncTraefik',
-    () => api.resyncTraefik(),
-    'POST',
-    '/api/settings/resync_traefik',
-    {},
-    undefined,
-  ],
   [
     'resyncWorkers',
     () => api.resyncWorkers(),
@@ -345,26 +372,10 @@ const CALLS: Array<[string, () => Promise<unknown>, string, string, object, unkn
   ],
   [
     'fetchTaskLogs, after a line',
-    () => api.fetchTaskLogs('abc12345', '', 42),
+    () => api.fetchTaskLogs('abc12345', 42),
     'GET',
     '/api/tasks/abc12345/logs',
     { after_id: '42' },
-    undefined,
-  ],
-  [
-    'fetchTaskLogs, of a part',
-    () => api.fetchTaskLogs('abc12345', 'def67890'),
-    'GET',
-    '/api/tasks/abc12345/logs',
-    { sub_task_id: 'def67890' },
-    undefined,
-  ],
-  [
-    'fetchTaskParts',
-    () => api.fetchTaskParts('abc12345'),
-    'GET',
-    '/api/tasks/abc12345/parts',
-    {},
     undefined,
   ],
   ['fetchBackups', () => api.fetchBackups(), 'GET', '/api/backups/', {}, undefined],
@@ -378,8 +389,15 @@ const CALLS: Array<[string, () => Promise<unknown>, string, string, object, unkn
   ],
   ['createBackup', () => api.createBackup(), 'POST', '/api/backups/', {}, undefined],
   ['discoverBackups', () => api.discoverBackups(), 'POST', '/api/backups/discover', {}, undefined],
-  ['deleteBackup', () => api.deleteBackup(7), 'DELETE', '/api/backups/7', {}, undefined],
-  ['restoreBackup', () => api.restoreBackup(7), 'POST', '/api/backups/7/restore', {}, undefined],
+  ['deleteBackup', () => api.deleteBackup('b7'), 'DELETE', '/api/backups/b7', {}, undefined],
+  [
+    'restoreBackup',
+    () => api.restoreBackup('b7'),
+    'POST',
+    '/api/backups/b7/restore',
+    {},
+    undefined,
+  ],
   [
     'fetchVolumeBackups',
     () => api.fetchVolumeBackups('demo', 'web', 'data'),
@@ -398,11 +416,11 @@ const CALLS: Array<[string, () => Promise<unknown>, string, string, object, unkn
   ],
   [
     'restoreVolumeBackup',
-    () => api.restoreVolumeBackup('demo', 'web', 'data', 7, 'w2'),
+    () => api.restoreVolumeBackup('demo', 'web', 'data', 'b7', 'c1', 'logs'),
     'POST',
-    `${APP}/volumes/data/backups/7/restore`,
+    `${APP}/volumes/data/backups/b7/restore`,
     {},
-    { target_worker: 'w2' },
+    { container: 'c1', volume: 'logs' },
   ],
 ]
 
@@ -418,8 +436,9 @@ describe('every call', () => {
     const calls = Object.entries(api)
       .filter(([, value]) => typeof value === 'function')
       .map(([name]) => name)
-      // The downloads are tested below, and a `matches` function calls nothing (tests/services/api/).
-      .filter(name => !['downloadBackup', 'downloadVolumeBackup'].includes(name))
+      // The downloads are tested below; `refusesRequests` above and a `matches` function (tests/services/api/) call
+      // nothing.
+      .filter(name => !['downloadBackup', 'downloadVolumeBackup', 'refusesRequests'].includes(name))
       .filter(name => !name.startsWith('matches'))
     expect(calls.filter(name => !named.has(name))).toEqual([])
   })
@@ -437,11 +456,11 @@ describe('downloading a backup', () => {
   }
 
   it.each([
-    ['a platform backup', () => api.downloadBackup(7), '/api/backups/7/download'],
+    ['a platform backup', () => api.downloadBackup('b7'), '/api/backups/b7/download'],
     [
       'a volume backup',
-      () => api.downloadVolumeBackup('demo', 'web', 'data', 7),
-      `${APP}/volumes/data/backups/7/download`,
+      () => api.downloadVolumeBackup('demo', 'web', 'data', 'b7'),
+      `${APP}/volumes/data/backups/b7/download`,
     ],
   ])('asks for the link of %s and then opens it', async (_name, call, path) => {
     const clicked = clicks()
@@ -457,7 +476,7 @@ describe('downloading a backup', () => {
     const clicked = clicks()
     fetchMock.mockResolvedValue(reply({ detail: 'S3 is not configured.' }, 400))
 
-    await expect(api.downloadBackup(3)).rejects.toThrow('S3 is not configured.')
+    await expect(api.downloadBackup('b3')).rejects.toThrow('S3 is not configured.')
     expect(clicked).toEqual([])
   })
 })

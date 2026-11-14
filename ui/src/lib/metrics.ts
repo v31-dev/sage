@@ -1,18 +1,18 @@
 import { colors } from './utils'
 import { type ContainerMetricsPoint } from '@/services/api'
 
-export function processContainerData(containers: Array<Array<ContainerMetricsPoint>>) {
+// Each series under its label, one record per minute with every series' values, and a colour for each label.
+export function processContainerData(
+  series: Array<{ label: string; points: ContainerMetricsPoint[] }>
+) {
   const recordsByTimestamp = new Map<number, Record<string, any>>()
   const names = new Set<string>()
   let memMax = 0
   let netMax = 0
 
-  for (const containerData of containers) {
-    if (containerData.length > 0 && containerData[0] && containerData[0].name) {
-      names.add(containerData[0].name)
-    }
-    for (const point of containerData) {
-      const name = point.name
+  for (const { label: name, points } of series) {
+    if (points.length > 0) names.add(name)
+    for (const point of points) {
       const date = new Date(point.ts)
       const cpu = point.cpu_pct
       const mem = point.mem_used_mb

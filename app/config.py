@@ -5,6 +5,7 @@ from pathlib import Path
 DATA_DIR = Path("/app/data")
 DB_PATH = DATA_DIR / "data.db"
 STATIC_DIR = Path("/app/static")
+TEMPLATES_DIR = Path(__file__).parent / "templates"
 WORKER_HOME_DIR = "/opt/sage"
 CGROUP_ROOT = Path("/sys/fs/cgroup")
 
@@ -49,6 +50,10 @@ LIST_MAX_ROWS = 1000
 CLOUDFLARE_RETRY_DELAYS = (1, 2)
 # S3 deletes are retried after these delays (seconds).
 S3_RETRY_DELAYS = (1, 2)
+# A settings section's checks against its provider, an explicit Test's and the scheduled one's: each call waits at most
+# this long (seconds) and is retried after these delays.
+SETTINGS_TEST_TIMEOUT_SECONDS = 5
+SETTINGS_TEST_RETRY_DELAYS = (1,)
 # A cold start without a certificate retries before giving up (seconds).
 STARTUP_RETRY_DELAYS = (60, 240, 960)
 RENEWAL_THRESHOLD_DAYS = 7
@@ -70,13 +75,14 @@ REPORT_MAX_BYTES = 8 * 1024 * 1024
 # A push of logs from a worker's Vector is refused above this; Vector's batches are capped at half of it.
 LOG_INTAKE_MAX_BYTES = 8 * 1024 * 1024
 
-# A worker's report is current for this long. A snapshot can stand for how things are now only if
-# it arrived this long after the last change the manager made to the rows it is compared with
-# (a gather, a flush and a request), since a snapshot taken before that change says nothing about it.
+# A worker's report is current for this long after it arrived.
 REPORT_STALE_SECONDS = 30
-REPORT_SETTLE_SECONDS = 15
+# The snapshots kept for each worker, newest last.
+REPORT_HISTORY_SIZE = 5
 # After the manager starts, a worker that has not reported yet is not called not ready for this long.
 REPORT_STARTUP_GRACE_SECONDS = 60
+# A fact not known yet holds back the others for this long at most: a discovery name still not known is offline after it.
+UNKNOWN_HOLD_SECONDS = 120
 # The names of unknown senders remembered so that each is logged once.
 REPORT_UNKNOWN_LIMIT = 100
 # A worker's newest minute of metrics is shown in the worker list while it began less than this long ago: a minute is
@@ -88,25 +94,38 @@ WORKER_METRICS_STALE_SECONDS = 180
 # of their containers.
 WORKER_STACK_SERVICES = ("traefik", "vector", "telegraf", "cloudflared", "cloudflared-discovery")
 
+# The account's tunnels are listed every minute; a tunnel's health is not known once they have not been listed for
+# this long.
+TUNNEL_LISTING_STALE_SECONDS = 240
 # A worker is offline after this many checks in a row went unanswered (about a minute).
 OFFLINE_AFTER_MISSED_CHECKS = 2
 # How long to wait for a worker's SSH banner.
 SSH_BANNER_TIMEOUT_SECONDS = 3
 PING_TIMEOUT_SECONDS = 3
 
-# A reboot that has not finished by now (a worker that never came back) is no longer called one.
+# A requested reboot is verified (a new boot of the worker, set up again and ready) within this, its boot looked at this
+# often.
 WORKER_REBOOT_LIMIT_SECONDS = 300
+WORKER_REBOOT_POLL_SECONDS = 10
 
 # A worker whose stack is down (or silent for this long) gets `docker compose up -d`, at most
 # once per cooldown.
 WORKER_STACK_SILENCE_SECONDS = 60
 WORKER_STACK_REPAIR_COOLDOWN_SECONDS = 60
+# A worker whose setup failed or was refused is set up again at most this often while it answers.
+WORKER_SETUP_RETRY_SECONDS = 300
 
 # A command on a worker is wrapped in `timeout`, which stops it at its deadline and, if it
 # ignores that, kills it this many seconds later. The manager waits this much longer than the
 # deadline before it gives up on a worker that answers nothing.
 COMMAND_KILL_AFTER_SECONDS = 5
 COMMAND_WAIT_GRACE_SECONDS = 15
+# A container's `docker compose up --build --wait` (a Git build, an image pull and the health check), and its `down`,
+# `stop` or `start`.
+CONTAINER_UP_TIMEOUT_SECONDS = 900
+CONTAINER_DOWN_TIMEOUT_SECONDS = 60
+# A volume's archive and upload on its worker, or its download and unpacking.
+BACKUP_TIMEOUT_SECONDS = 900
 # How long to wait for a closed SSH connection to finish closing.
 SSH_CLOSE_WAIT_SECONDS = 5
 

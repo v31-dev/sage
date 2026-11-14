@@ -1,11 +1,16 @@
 import logging
+from datetime import datetime
 from types import SimpleNamespace
 
 import requests
+from playhouse.shortcuts import model_to_dict
 
 from services.base import Base
-from services.settings import Settings
+from services.cloudflare import Cloudflare
+from services.db.models import Notification
+from services.updates import UpdateFeed, Updates
 from utils.common import get_env
+from utils.executor import NOTIFICATIONS_EXECUTOR, submit_with_context
 from utils.retry import is_transient
 
 logger = logging.getLogger(__name__)
@@ -90,15 +95,40 @@ CHANNELS = {
 }
 
 
+def list_notifications(limit: int | None = None, from_ts: datetime | None = None, to_ts: datetime | None = None) -> list[dict]:
+  """The notices, newest first: after `from_ts` and up to `to_ts`, the newest `limit` of them."""
+  query = Notification.select().order_by(Notification.created_at.desc())
+  if from_ts:
+    query = query.where(Notification.created_at > from_ts)
+  if to_ts:
+    query = query.where(Notification.created_at <= to_ts)
+  if limit:
+    query = query.limit(limit)
+  return list(query.dicts())
+
+
 class Notifications(Base):
   def __init__(self):
     super().__init__()
     self.notifications_config = {}
-    self.load_notifications_config()
+    self._revision: int | None = None
 
-  def load_notifications_config(self):
+  def install(self, values: dict, revision: int):
+    """Deliver to the channels of `values`, the notifications section saved at `revision`. A revision older than the
+    one installed is ignored, so the last save is the one in use."""
     with self.lock:
-      self.notifications_config = Settings().get("notifications")
+      if self._revision is None or revision > self._revision:
+        self.notifications_config, self._revision = dict(values), revision
+
+  def notify(self, message: str, type: str = "info", link: str | None = None):
+    """A notice: logged at its level, recorded as a Notification row, pushed on the `notifications` feed and sent to the
+    channels on their pool. `link` is the path of a page of the UI, recorded as the manager's full address of it, so a
+    channel's message links to it too."""
+    (logger.info if type in ("info", "success") else getattr(logger, type))(message)
+    notification = Notification.create(content=message, type=type,
+                                       link=link and f"https://{Cloudflare().manager_hostname}{link}")
+    Updates().publish(UpdateFeed.NOTIFICATIONS, [model_to_dict(notification, recurse=False)])
+    submit_with_context(NOTIFICATIONS_EXECUTOR, self.dispatch, notification)
 
   def get_notification_value(self, key: str, default=None):
     with self.lock:

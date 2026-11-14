@@ -1,229 +1,69 @@
 from datetime import datetime
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
-from playhouse.shortcuts import model_to_dict
+from fastapi import APIRouter, Body, Query
 
 import config
-from routes.containers import container_payload
-from routes.containers import router as container_router
-from routes.volumes import router as volume_router
-from services.db import APPLICATION_BUSY_STATUSES, APPLICATION_STOP_ELIGIBLE_STATUSES, Application, Container, Project, Worker
+from routes.containers import router as containers_router
+from routes.volumes import router as volumes_router
+from services.applications import commands
+from services.applications.lookup import find_application
 from services.logs import Logs
 from services.manager import Manager
-from services.manager.application import application_changed, hosts_changed
-from services.metrics import Metrics
-from utils.api import generic_create, generic_delete, generic_get, generic_list, generic_update, get_request_models, parse_api_data
-from utils.db import AlphaNumericField
+from services.metrics.series import PERIODS
 from utils.logging import NO_ACCESS_LOG
-
-
-def inject_application(request: Request):
-  models = get_request_models(request, ["project"])
-  project = models["project"]
-
-  # Fetch and store application
-  application_name = request.path_params.get("application")
-  models["application"] = generic_get(
-      Application,
-      (Application.name == application_name) & (Application.project == project),
-      return_model=True,
-  )
-
-  return None
-
+from values.names import qualified_name
 
 router = APIRouter()
 
 
-@router.get("/")
-def list_applications(request: Request):
-  return generic_list(Application, Application.project == request.state.models["project"])
-
-
 @router.post("/")
-def create_application(
-    request: Request,
-    application_data: dict = Body(...),
-):
-  data = parse_api_data(application_data, ["label", "description"])
-  data["project"] = request.state.models["project"]
-  data["name"] = AlphaNumericField.clean(data.get("label"))
-  result = generic_create(Application, data)
-  application_changed(Application.get_by_id(result["id"]))
-  return result
+def create_application(project: str, data: dict = Body(...)):
+  application = commands.create_application(project, data.get("label"), data.get("description"))
+  return Manager().application_page(project, application.name)
 
 
-def application_payload(application: Application) -> dict:
-  data = model_to_dict(application, backrefs=True, max_depth=2, exclude=[Container.application])
-  data["config_dirty"] = application.config_dirty
-  data["containers"] = [container_payload(container) for container in application.containers]
-  return data
+@router.get("/{application}")
+def get_application(project: str, application: str):
+  return Manager().application_page(project, application)
 
 
-def load_application(name: str) -> dict:
-  """The `application` topic of `<project>/<name>`: what `GET /projects/<project>/applications/<name>` returns."""
-  project_name, _, application_name = name.partition("/")
-  project = generic_get(Project, Project.name == project_name, return_model=True)
-  return application_payload(
-      generic_get(Application, (Application.name == application_name) & (Application.project == project), return_model=True))
-
-
-@router.get("/{application}", dependencies=[Depends(inject_application)])
-def get_application(request: Request):
-  return application_payload(request.state.models["application"])
-
-
-@router.get("/{application}/logs", dependencies=[Depends(inject_application)], openapi_extra=NO_ACCESS_LOG)  # what the logs view loads
-def get_application_logs(request: Request, hostname: str = "", search: str = "", from_ts: datetime | None = None,
-                         to_ts: datetime | None = None, after_id: int = 0,
+@router.get("/{application}/logs", openapi_extra=NO_ACCESS_LOG)  # what the logs view loads
+def get_application_logs(project: str, application: str, hostname: str = "", search: str = "",
+                         from_ts: datetime | None = None, to_ts: datetime | None = None, after_id: int = 0,
                          limit: Annotated[int, Query(ge=1, le=config.LIST_MAX_ROWS)] = config.LIST_MAX_ROWS):
   """The application's lines from its containers: the newest `limit` that match (after the line `after_id`, if
   given), and whether there were more."""
-  return Logs().query_application_lines(request.state.models["application"].qualified_name, hostname=hostname,
-                                        search=search, from_ts=from_ts, to_ts=to_ts, after_id=after_id, limit=limit)
+  find_application(project, application)
+  return Logs().query_application_lines(qualified_name(project, application), hostname=hostname, search=search,
+                                        from_ts=from_ts, to_ts=to_ts, after_id=after_id, limit=limit)
 
 
-@router.put("/{application}", dependencies=[Depends(inject_application)])
-def update_application(request: Request, application_data: dict = Body(...)):
-  data = parse_api_data(
-      application_data,
-      ["label", "description", "image", "env", "args", "build_secrets", "command", "type", "repo", "path"],
-  )
-
-  application = request.state.models["application"]
-  result = generic_update(Application, application, data)
-  hosts_changed(application)
-  return result
+@router.put("/{application}")
+def update_application(project: str, application: str, data: dict = Body(...)):
+  commands.patch_application(find_application(project, application).id, data)
+  return Manager().application_page(project, application)
 
 
-@router.delete("/{application}", dependencies=[Depends(inject_application)])
-def delete_application(request: Request):
-  application = request.state.models["application"]
-
-  if application.status in APPLICATION_BUSY_STATUSES:
-    raise HTTPException(status_code=409, detail=f"Application is already {application.status}.")
-
-  if application.container_count > 0:
-    raise HTTPException(
-        status_code=409,
-        detail="Application has containers and cannot be deleted. Delete its containers first.",
-    )
-  result = generic_delete(Application, application)
-  application_changed(application)
-  return result
+@router.delete("/{application}", status_code=204)
+def delete_application(project: str, application: str):
+  commands.delete_application(find_application(project, application).id)
 
 
-@router.get("/{application}/get_available_workers", dependencies=[Depends(inject_application)])
-def get_available_workers(request: Request):
-  """Get list of all workers excluding those already in this application."""
-  application = request.state.models["application"]
-
-  # Get all workers
-  all_workers = list(Worker.select().dicts())
-
-  # Get workers already used in this application's containers
-  used_workers_query = Container.select().where(Container.application == application)
-  used_worker_hostnames = {w.worker.hostname for w in used_workers_query}
-
-  # Filter out used workers
-  available_workers = [w for w in all_workers if w["hostname"] not in used_worker_hostnames]
-
-  return available_workers
+@router.post("/{application}/deploy")
+def deploy_all(project: str, application: str):
+  return {"task_ids": Manager().request_deploy_all(find_application(project, application).id)}
 
 
-@router.post("/{application}/deploy", dependencies=[Depends(inject_application)])
-def deploy_application(request: Request):
-  """Trigger application deployment."""
-  application = request.state.models["application"]
-
-  if application.status in APPLICATION_BUSY_STATUSES:
-    raise HTTPException(status_code=409, detail=f"Application is already {application.status}.")
-
-  if application.container_count == 0:
-    raise HTTPException(status_code=400, detail="Application has no containers to deploy.")
-
-  if application.type == "docker" and (
-      application.image is None or application.image.strip() == ""
-  ):
-    raise HTTPException(
-        status_code=400, detail="Docker applications must have an image specified."
-    )
-
-  if application.type == "git" and (
-      application.repo is None
-      or application.repo.strip() == ""
-      or application.path is None
-      or application.path.strip() == ""
-  ):
-    raise HTTPException(
-        status_code=400,
-        detail="Git applications must have a repo & path specified.",
-    )
-
-  if not Manager().add_task(
-      task=Manager().deploy_application,
-      scopes={f"app:{application.qualified_name}"},
-      params={"application_id": application.id},
-      executor="app",
-  ):
-    raise HTTPException(status_code=409, detail="Application already has an operation in progress.")
-
-  return {"status": "OK"}
+@router.post("/{application}/stop")
+def stop_all(project: str, application: str):
+  return {"task_ids": Manager().request_stop_all(find_application(project, application).id)}
 
 
-@router.post("/{application}/stop", dependencies=[Depends(inject_application)])
-def stop_application(request: Request):
-  """Trigger application stop."""
-  application = request.state.models["application"]
-
-  if application.status in APPLICATION_BUSY_STATUSES:
-    raise HTTPException(status_code=409, detail=f"Application is already {application.status}.")
-
-  if application.status not in APPLICATION_STOP_ELIGIBLE_STATUSES:
-    raise HTTPException(
-        status_code=409,
-        detail="Application must be active or error before stop.",
-    )
-
-  if application.container_count == 0:
-    raise HTTPException(status_code=400, detail="Application has no containers to stop.")
-
-  if not Manager().add_task(
-      task=Manager().stop_application,
-      scopes={f"app:{application.qualified_name}"},
-      params={"application_id": application.id},
-      executor="app",
-  ):
-    raise HTTPException(status_code=409, detail="Application already has an operation in progress.")
-
-  return {"status": "OK"}
+@router.get("/{application}/metrics")
+def get_metrics(project: str, application: str, period: Literal[tuple(PERIODS)] = "1h"):
+  return Manager().application_graphs(project, application, period)
 
 
-@router.get("/{application}/metrics", dependencies=[Depends(inject_application)])
-def get_metrics(request: Request, period: Literal["1h", "24h", "1w", "1m"] = "1h"):
-  application = request.state.models["application"]
-
-  data = []
-  for container in application.containers:
-    container_metrics = Metrics().query_container_period(
-        container.worker.hostname, application.qualified_name, period
-    )
-    data.append({"hostname": container.worker.hostname, "metrics": container_metrics})
-
-  return data
-
-
-# Volume routes
-router.include_router(
-    volume_router,
-    prefix="/{application}/volumes",
-    dependencies=[Depends(inject_application)],
-)
-
-# Container routes
-router.include_router(
-    container_router,
-    prefix="/{application}/containers",
-    dependencies=[Depends(inject_application)],
-)
+router.include_router(containers_router, prefix="/{application}/containers")
+router.include_router(volumes_router, prefix="/{application}/volumes")

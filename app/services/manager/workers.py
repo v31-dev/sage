@@ -1,649 +1,505 @@
+"""Worker observation and each worker's state, with what tells its pages that it changed; the convergence of a
+worker's stack with Sage and its repair; and adding, removing and rebooting a worker."""
 import asyncio
 import logging
 import re
-from dataclasses import replace
-from typing import Callable
+from time import monotonic
+
+from peewee import JOIN
 
 import config
-from services.certs import Certs
-from services.db import Application, Container, Domain, Instance, Worker
-from services.domains import domains_changed
+from services.certs import TEMPLATE_DIGEST, Certs
+from services.cloudflare import Cloudflare
+from services.containers.placement import runtime_owner
+from services.db.models import Application, Container, Domain, Instance, Project, Worker
+from services.domains.config import parse_route_listing, routes_command
+from services.domains.updates import domain_changed
+from services.history import record_worker_event
 from services.metrics import Metrics
+from services.notification import Notifications
+from services.tailscale import Tailscale
 from services.updates import Fact, Updates, UpdateSource
 from services.worker_reports import WorkerReports
-from utils.common import utcnow
+from services.workers import commands
+from services.workers.decisions import TASKS, addressable, reboot_outcome, worker_claim_refusal, worker_owner
+from services.workers.rendering import InfraInputs, infra_fingerprint, render_infrastructure, stack_scope, worker_scope
+from services.workers.state import Workers, WorkerState, is_addressable, is_workable, worker_payload, worker_state
+from utils.common import get_env, utcnow
+from utils.errors import Conflict
 from utils.executor import run_in_executor_with_context
 from utils.logging import TaskFailed
 from utils.queue import OnConflict
 
-from ._common import CERTIFICATE_TEMPLATES, WORKER_INFRA_TEMPLATES, app_dir, content_hash
-from .application import mark
-from .decisions import (WORKER_TASKS, WorkerInputs, WorkerReboot, WorkerRow, plan_worker_sync, worker_claim_refusal, worker_entry, worker_owner,
-                        worker_stack_problem, worker_with_row, worker_without_row)
-from .domains import domain_changed
+from .domains import capture
+from .lifecycle import mark
 
 logger = logging.getLogger(__name__)
 
+# The statuses between which a worker's observed changes are recorded in its history: what its tasks show is theirs,
+# and checking says nothing is known yet.
+OBSERVED = ("offline", "not ready", "online")
+# Why a worker set up but not ready gets its stack started: part of it is down, Traefik does not answer, or it is
+# silent (for longer than WORKER_STACK_SILENCE_SECONDS).
+REPAIRED = ("stack_down", "traefik_down", "not_reporting")
+# Why a reboot was not confirmed in time, by how far it got.
+REBOOT_FAILURES = {"old_boot": "it did not restart", "not_ready": "it restarted but is not ready",
+                   "unknown": "it did not answer"}
+
 
 class WorkersMixin:
-  async def sync_workers(self, force: bool = False, check_stamps: bool = False):
-    """
-    Check the workers for changes. Workers are added by hand (`add_worker`), so a machine of
-    the tailnet that is not a known worker is not looked at. `check_stamps` also sets up
-    workers that stayed online, letting their stamps decide what to redo (at startup, since
-    the env may have changed while Sage was stopped). Whether a worker is online is whether its
-    SSH server answers (`Tailscale.online_states`), not Tailscale's own flag. The decisions are
-    `plan_worker_sync`'s:
-    - Offline workers (not answering, or not in the tailnet)
-    - Updated workers (IPs have changed)
-    - Recently online workers (previously offline but now answering)
-    After that, a worker whose reports say its stack is down gets it started.
-    """
-    for worker in Worker.select().where(Worker.subdomain.is_null()):
-      self.save_worker_subdomain(worker.hostname, Worker.random_subdomain())
-    known = [WorkerRow(w.hostname, w.ip, self.worker_online(w.hostname)) for w in Worker.select()]
-    names = {row.hostname for row in known}
-    listed = [peer for peer in await run_in_executor_with_context(self.tailscale.peers) if peer.hostname in names]
-    was_online = {row.hostname: row.online for row in known}
-    online = await self.tailscale.online_states({w.hostname: was_online[w.hostname] for w in listed})
-    peers = [WorkerRow(w.hostname, w.ip, online[w.hostname]) for w in listed]
+  def worker_states(self, hostnames: list[str] | None = None) -> dict[str, WorkerState]:
+    """The state of each worker now (every configured one unless named), by hostname."""
+    tasks = self._worker_tasks()
+    workers = Worker.select(Worker.hostname, Worker.subdomain)
+    if hostnames is not None:
+      workers = workers.where(Worker.hostname.in_(hostnames))
+    return {worker.hostname: worker_state(worker.hostname, worker.subdomain, frozenset(tasks.get(worker.hostname, ())))
+            for worker in workers}
 
-    states = {True: "online", False: "offline", None: "not known"}
-    logger.info(f"Existing workers: {[(w.hostname, w.ip, states[w.online]) for w in known]}")
-    logger.info(f"Tailscale workers: {[(w.hostname, w.ip, states[w.online]) for w in peers]}")
+  def worker_list(self) -> list[dict]:
+    """Every configured worker's payload, by hostname."""
+    workers = list(Worker.select().order_by(Worker.hostname))
+    states = self.worker_states([worker.hostname for worker in workers])
+    return [worker_payload(worker, states[worker.hostname], Cloudflare().worker_tunnel_name(worker.hostname),
+                           Metrics().newest(worker.hostname)) for worker in workers]
 
-    for action in plan_worker_sync(known, peers, force, check_stamps):
-      hostname = action.worker.hostname
-      try:
-        if action.kind == "offline":
-          logger.info(f"Worker {hostname}: {action.reason}.")
-          self.set_worker_offline(action.worker)
-        else:
-          logger.info(f"{'Force syncing' if action.force else 'Syncing'} worker {hostname}: {action.reason}.")
-          await self.setup_worker(action.worker, force=action.force)
-      except Exception as e:
-        logger.error(f"sync_workers failed for {hostname}: {e}")
+  def worker_page(self, hostname: str) -> dict:
+    """The worker's payload with its containers' payloads, by application, and why it can't be removed now (None when
+    it can); a LookupError when it is not configured."""
+    worker = Worker.get_or_none(Worker.hostname == hostname)
+    if worker is None:
+      raise LookupError("Worker not found.")
+    containers = (Container.select(Container, Application, Project, Worker).join(Application).join(Project)
+                  .switch(Container).join(Worker).where(Container.worker == hostname).order_by(Project.name, Application.name))
+    return {**worker_payload(worker, self.worker_states([hostname])[hostname], Cloudflare().worker_tunnel_name(hostname),
+                             Metrics().newest(hostname)),
+            "containers": self.container_payloads(containers), "removal_refusal": commands.removal_refusal(worker)}
 
-    await self.repair_worker_stacks()
-    self.update_workers({})  # works the list out as of now, for what only the clock changed
-
-  async def refresh_worker_paths(self):
-    """Find how each online worker is reached, direct or through a relay (`Tailscale.path`), and give it to the
-    worker list."""
-    await self.tailscale.refresh_paths([worker.ip for worker in self.online_workers()])
-    self.update_workers({worker["hostname"]: {"path": self.tailscale.path(worker["ip"])} for worker in self.worker_list})
-
-  def worker_tasks_busy(self) -> tuple:
-    """The workers that are being added, removed or rebooted, with the task."""
-    snapshot = self.task_snapshot()
-    busy = (task for task in (*snapshot["running"], *snapshot["queued"]) if task["name"] in WORKER_TASKS)
-    return tuple(sorted((task["name"], task["params"]["worker_hostname"]) for task in busy))
+  def worker_graphs(self, hostname: str, period: str) -> dict:
+    """The graphs of a worker, or of the manager itself, over `period`: the host's series, each container's series with
+    the name people know it by (a placement's application, a stack service's own name), and the host's size and
+    address. A LookupError for any other host."""
+    if hostname == get_env("TS_NAME"):
+      ip = Tailscale().ip()
+    elif Worker.get_or_none(Worker.hostname == hostname) is not None:
+      ip = Tailscale().address(hostname)
+    else:
+      raise LookupError("Worker not found.")
+    graphs = Metrics().query_period(hostname, period)
+    names = [points[0]["name"] for points in graphs["containers"]]
+    labels = {container.id: f"{container.application.project.label} / {container.application.label}"
+              for container in Container.select(Container, Application, Project).join(Application).join(Project)
+              .where(Container.id.in_({runtime_owner(name) for name in names} - {None}))}
+    return {"host": graphs["host"], "meta": {**graphs["meta"], "ip": ip},
+            "containers": [{"name": name, "label": labels.get(runtime_owner(name), name), "points": points}
+                           for name, points in zip(names, graphs["containers"])]}
 
   def workers_queue_facts(self) -> list[Fact]:
-    """The worker tasks are given to the worker list when the set of them differs; they fire no source of their own."""
-    return [Fact(self.worker_tasks_busy, on_change=self._set_worker_tasks)]
+    """The worker tasks queued or running: a worker whose task is queued, starts or ends is shown again."""
+    previous = frozenset()
 
-  def ready_workers(self) -> frozenset[str]:
-    return frozenset(worker["hostname"] for worker in self.worker_list if worker["status"] == "online")
+    def changed(current):
+      nonlocal previous
+      affected = {hostname for hostname, _ in current ^ previous}
+      previous = current
+      self._workers_changed(affected)
 
-  def workers_discovery_fact(self) -> Fact:
-    return Fact(self.ready_workers, on_change=lambda _: self.request_discovery_sync())
+    return [Fact(lambda: frozenset((hostname, name) for hostname, names in self._worker_tasks().items() for name in names),
+                 on_change=changed)]
 
-  def worker_online(self, hostname: str) -> bool | None:
-    """Whether the worker answered the last sync and was set up (`online` in `worker_list`): None until a sync has
-    looked at it, False for a name that is not in the list."""
-    entry = self.worker_entry(hostname)
-    return entry["online"] if entry else False
+  def workers_state_fact(self) -> Fact:
+    """Every worker's state, checked at each observation and report: a worker whose state changed is shown again, with
+    the domains routed to it when its readiness changed, a change of its observed status from the last one it was
+    observed in (whatever it was checking in between) is recorded in its history (with a notice when it went offline), a
+    notice is sent when one last observed offline answers again, and discovery is published again when the ready
+    workers, or those reachable and set up, changed."""
+    previous, observed = {}, {}
 
-  def is_worker_online(self, hostname: str) -> bool:
-    return self.worker_online(hostname) is True
+    def changed(current):
+      nonlocal previous
+      affected = {hostname for hostname in current.keys() | previous.keys() if current.get(hostname) != previous.get(hostname)}
+      for hostname in affected:
+        prior, after = previous.get(hostname), current.get(hostname)
+        if after is None:
+          observed.pop(hostname, None)
+          continue
+        seen = observed.get(hostname)
+        if after.view.status in OBSERVED:
+          observed[hostname] = after.view.status
+          if seen is not None and seen != after.view.status:
+            record_worker_event(hostname, "connectivity" if "offline" in (seen, after.view.status) else "readiness",
+                                "observed", reason={"status": after.view.status, "reason": after.view.reason})
+            if after.view.status == "offline":
+              Notifications().notify(f"Worker {hostname} is offline.", "error", f"/workers/{hostname}")
+        if seen == "offline" and after.ssh == "reachable" and prior is not None and prior.ssh != "reachable":
+          Notifications().notify(f"Worker {hostname} is reachable again.", "success", f"/workers/{hostname}")
+      readiness = {hostname for hostname in affected if hostname in previous and hostname in current
+                   and previous[hostname].view.ready != current[hostname].view.ready}
+      published = [({hostname for hostname, state in states.items() if state.view.ready},
+                    {(hostname, state.address) for hostname, state in states.items()
+                     if state.workable}) for states in (previous, current)]
+      previous = current
+      self._workers_changed(affected)
+      for domain in Domain.select().join(Container, JOIN.LEFT_OUTER).where(
+              Container.worker.in_(readiness) | Domain.namespace_worker.in_(readiness)):
+        domain_changed(domain)
+      if published[0] != published[1]:
+        self.request_discovery()
 
-  def online_workers(self) -> list[Worker]:
-    online = {worker["hostname"] for worker in self.worker_list if worker["online"]}
-    return [worker for worker in Worker.select() if worker.hostname in online]
+    return Fact(self.worker_states, on_change=changed)
 
-  def worker_entry(self, hostname: str) -> dict | None:
-    """The worker's entry in `worker_list`, None for a name that is not in it."""
-    return next((worker for worker in self.worker_list if worker["hostname"] == hostname), None)
+  def worker_reported(self, hostname: str):
+    """A report from the worker arrived: its state may have changed."""
+    self.worker_state.check()
 
-  def worker_status(self, hostname: str) -> str:
-    """What the worker is shown as (`worker_status` in `decisions`), as of the last change of the worker list.
-    "offline" for a name that is not in it."""
-    entry = self.worker_entry(hostname)
-    return entry["status"] if entry else "offline"
+  def request_worker_observation(self):
+    """Queues the look at every worker's SSH server."""
+    self.add_task(task=self.observe_workers, key=("observe_workers",), scopes=set(), executor="app", quiet=True)
 
-  def worker_counts(self) -> dict:
-    """How many workers there are and how many are online, from `worker_list`: a worker counts as online when its
-    status is "online", so the count and the statuses agree."""
-    return {"total": len(self.worker_list), "online": sum(worker["status"] == "online" for worker in self.worker_list)}
-
-  def update_workers(self, changes: dict[str, dict]):
-    """Give the worker list the inputs its owners push: `changes` maps a hostname to the `WorkerInputs` fields that
-    changed, and the rest of its record stays. A record is made for a name that has none, a worker only once the
-    row writer has given it an `ip`."""
-    def edit(records: dict):
-      for hostname, inputs in changes.items():
-        records[hostname] = replace(records.get(hostname, WorkerInputs()), **inputs)
-    self._edit_workers(edit)
-    self.worker_discovery.check()
-
-  def update_worker(self, hostname: str, **inputs):
-    self.update_workers({hostname: inputs})
-
-  def flush_worker_metrics(self):
-    """Write the completed minutes of the workers' metrics, and give the worker list each listed worker's newest one."""
-    newest = Metrics().flush_workers()
-    listed = {entry["hostname"] for entry in self.worker_list}
-    changes = {hostname: {"metrics": minute} for hostname, minute in newest.items() if hostname in listed}
-    if changes:
-      self.update_workers(changes)
-
-  def _set_worker_tasks(self, busy: tuple):
-    tasks = {}
-    for task, hostname in busy:
-      tasks.setdefault(hostname, set()).add(task)
-
-    def edit(records: dict):
-      for hostname in records.keys() | tasks.keys():
-        records[hostname] = replace(records.get(hostname, WorkerInputs()), tasks=frozenset(tasks.get(hostname, ())))
-    self._edit_workers(edit)
-
-  def _save_worker(self, hostname: str, ip: str, subdomain: str | None = None) -> Worker:
-    """Write the worker's row and its record together, and return the row. A new worker gets `subdomain`, or a random
-    one."""
-    Worker.insert(hostname=hostname, ip=ip, subdomain=subdomain or Worker.random_subdomain()).on_conflict(
-        conflict_target=[Worker.hostname], preserve=[Worker.ip]
-    ).execute()
-    row = Worker.get_by_id(hostname)
-    path = self.tailscale.path(ip)
-
-    def edit(records: dict):
-      records[hostname] = worker_with_row(records.get(hostname, WorkerInputs()), ip, row.subdomain, path)
-    self._edit_workers(edit)
-    self.worker_discovery.check()
-    return row
-
-  def save_worker_subdomain(self, hostname: str, subdomain: str):
-    """Write the worker's subdomain to its row and its record together. Its internal names are under it, so their
-    routing (the applications they are linked to, resynced), its record (the workers are set up again) and the workers'
-    certificate (renewed) follow, and the Domains page is told."""
-    if Worker.get_by_id(hostname).subdomain == subdomain:
-      return
-    Worker.update(subdomain=subdomain).where(Worker.hostname == hostname).execute()
-    self.update_worker(hostname, subdomain=subdomain)
-    for domain in Domain.select().where(Domain.worker == hostname):
-      self.request_domain_sync(domain)
-      domain_changed(domain)
-    domains_changed()
-    self.request_discovery_sync()
-    self.request_certificate_renewal()
-    self.add_task(
-        task=self.sync_workers,
-        scopes={"platform"},
-        params={"check_stamps": True},
-        executor="platform",
-        on_conflict=OnConflict.REPLACE,
-    )
-
-  def _forget_worker(self, hostname: str):
-    """Delete the worker's row and its record together."""
-    Worker.delete().where(Worker.hostname == hostname).execute()
-
-    def edit(records: dict):
-      if hostname in records:
-        records[hostname] = worker_without_row(records[hostname])
-    self._edit_workers(edit)
-    self.worker_discovery.check()
-
-  def load_workers(self):
-    """Read the Worker table into the worker list, at start and after a restore replaced the table: the only
-    reads of it, as `_save_worker`, `save_worker_subdomain` and `_forget_worker` are the only writes."""
-    rows = {worker.hostname: worker for worker in Worker.select()}
-    paths = {hostname: self.tailscale.path(row.ip) for hostname, row in rows.items()}
-
-    def edit(records: dict):
-      for hostname in records.keys() | rows.keys():
-        record = records.get(hostname, WorkerInputs())
-        row = rows.get(hostname)
-        records[hostname] = (worker_with_row(record, row.ip, row.subdomain, paths[hostname]) if row
-                             else worker_without_row(record))
-    self._edit_workers(edit)
-    self.worker_discovery.check()
-
-  def _edit_workers(self, edit: Callable[[dict], None]):
-    """The one place the worker list is worked out. `edit` changes the records (hostname to `WorkerInputs`) under
-    the lock; then each worker's entry is derived from its record and the clock, and the list is replaced. Nothing
-    is read from the table, the queue, the reports or Tailscale here: their owners push. Fires `worker_list` when the
-    list differs, and `worker_entry` for each worker whose entry does. What only the clock changes (a report going
-    stale, the start-up grace, the reboot limit) shows the next time the list is worked out, which every push does."""
-    with self._worker_list_lock:
-      edit(self._worker_inputs)
-      for hostname in [hostname for hostname, record in self._worker_inputs.items() if record == WorkerInputs()]:
-        del self._worker_inputs[hostname]
-      now, started = utcnow(), WorkerReports().started
-      workers = [(hostname, record) for hostname, record in sorted(self._worker_inputs.items()) if record.ip is not None]
-      self.certs.set_workers({hostname: record.subdomain for hostname, record in workers})
-      listed = {entry["hostname"]: entry for entry in self.worker_list}
-      self.worker_list = [worker_entry(hostname, record, now, started,
-                                       self.certs.worker_state(hostname, record.certs, CERTIFICATE_TEMPLATES))
-                          for hostname, record in workers]
-      now_listed = {entry["hostname"]: entry for entry in self.worker_list}
-    differing = [hostname for hostname in listed.keys() | now_listed.keys() if listed.get(hostname) != now_listed.get(hostname)]
-    if differing:
-      Updates().changed(UpdateSource.WORKER_LIST)
-    for hostname in differing:
-      Updates().changed(UpdateSource.WORKER_ENTRY, hostname)
-
-  async def start_worker_stack(self, worker) -> bool:
-    """`docker compose up -d` for the worker's stack: it starts what is stopped and leaves what runs
-    alone. True when it started something."""
-    _, lines = await self.tailscale.exec_command(
-        worker.hostname,
-        f"docker compose -f {self.worker_home_dir}/docker-compose.yml up -d --quiet-pull "
-        f"{' '.join(config.WORKER_STACK_SERVICES)}",
-        timeout=120,
-    )
-    return any(re.search(r"\b(Started|Starting|Created)\b", line) for line in lines)
-
-  async def repair_worker_stacks(self):
-    """Start the stack of every online worker whose reports say part of it is down (`worker_stack_problem`).
-    Docker does not retry a container whose start failed, as Traefik's does when the worker boots
-    before its Tailscale address exists. A worker is tried at most once per cooldown, and not while it is
-    being rebooted or removed."""
-    now = utcnow()
-    self.worker_stack_repairs = {
-        hostname: at for hostname, at in self.worker_stack_repairs.items()
-        if (now - at).total_seconds() < config.WORKER_STACK_REPAIR_COOLDOWN_SECONDS}
-    reports = WorkerReports()
-    for worker in self.online_workers():
-      current = reports.current(worker.hostname)
-      problem = worker_stack_problem(current.snapshot if current else None, reports.silent_for(worker.hostname))
-      if (problem is None or worker.hostname in self.worker_stack_repairs
-              or self.worker_status(worker.hostname) in ("rebooting", "removing")):
-        continue
-      self.worker_stack_repairs[worker.hostname] = now
-      try:
-        started = await self.start_worker_stack(worker)
-      except Exception as e:
-        self.notify(f"Worker {worker.hostname}: {problem}; starting its stack failed: {e}", "error")
-        continue
-      if started:
-        self.notify(f"Worker {worker.hostname}: {problem}; started its stack.", "warning")
-      else:
-        logger.warning(f"Worker {worker.hostname}: {problem}, but starting its stack changed nothing.")
-
-  def infra_hash(self, tunnel_id: str) -> str:
-    """Hash of every input `setup_worker` renders into a worker's infra files,
-    `tunnel_id` being the worker's own tunnel. Computed from current truth on
-    demand — the only stored copy is the worker-side `revisions/infra` stamp."""
-    return content_hash({
-        "templates": WORKER_INFRA_TEMPLATES,
-        "version": self.version,
-        "domain": self.cloudflare.domain,
-        "tunnel": self.cloudflare.tunnel_id,
-        "worker_tunnel": tunnel_id,
-        "manager_ip": self.tailscale.ip(),
-        "report_interval": config.REPORT_INTERVAL_SECONDS,
-    })
-
-  async def read_worker_revisions(self, hostname: str, timeout: int = 300) -> dict:
-    """All revision stamps stored on a worker ({} when none exist yet)."""
-    _, lines = await self.tailscale.exec_command(
-        hostname,
-        f"grep -H . {self.worker_home_dir}/revisions/* 2>/dev/null || true",
-        timeout=timeout,
-    )
-    revisions = {}
-    for line in lines:
-      path, separator, value = line.partition(":")
-      if separator and value.strip():
-        revisions[path.rsplit("/", 1)[-1]] = value.strip()
-    return revisions
-
-  async def write_worker_revision(self, hostname: str, key: str, value: str):
-    await self.tailscale.sync_file(
-        hostname,
-        app_dir / "templates/worker/file",
-        f"{self.worker_home_dir}/revisions/{key}",
-        {"CONTENT": value},
-    )
-
-  async def cleanup_orphan_containers(self, worker):
-    """
-    Existence-level cleanup during worker convergence: app containers and
-    directories with no owning Container row (e.g. force-deleted while this
-    worker was offline) would otherwise run forever and squat on a future
-    app's container name.
-    """
-    apps_root = f"{self.worker_home_dir}/applications"
-
-    # The compose working-dir label proves sage created the container, even if
-    # its app dir was deleted later; anything without it is not ours to touch.
-    _, ps_lines = await self.tailscale.exec_command(
-        worker.hostname,
-        "docker ps -a --format '{{.Names}}|{{.Label \"com.docker.compose.project.working_dir\"}}'",
-    )
-    sage_containers = set()
-    for line in ps_lines:
-      name, _, working_dir = line.partition("|")
-      if working_dir.startswith(f"{apps_root}/") and re.fullmatch(r"[a-z0-9-]+", name):
-        sage_containers.add(name)
-
-    _, dir_names = await self.tailscale.exec_command(
-        worker.hostname, f"ls -1 {apps_root} 2>/dev/null || true")
-    sage_dirs = {name for name in dir_names if re.fullmatch(r"[a-z0-9-]+", name)}
-
-    # Read the owning rows LAST: a Container row is created (instant route
-    # write) before any deploy materializes its app dir, so a dir/container
-    # captured above whose row is being created concurrently is present in this
-    # read. Anything left with no row is a genuine orphan, never an in-flight
-    # create being reaped mid-deploy.
-    expected = {
-        container.application.qualified_name
-        for container in Container.select().where(Container.worker == worker.hostname)
-    }
-
-    orphan_containers = sage_containers - expected
-    orphan_dirs = sage_dirs - expected
-
-    for name in sorted(orphan_containers | orphan_dirs):
-      # `docker rm -f` only for names the ps scan proved are sage containers
-      remove_container = f"docker rm -f {name} 2>/dev/null || true; " if name in orphan_containers else ""
-      await self.tailscale.exec_command(
-          worker.hostname,
-          f'[ ! -f "{apps_root}/{name}/docker-compose.yml" ] || '
-          f'docker compose -f "{apps_root}/{name}/docker-compose.yml" down --volumes --rmi all --remove-orphans; '
-          + remove_container +
-          f"rm -rf {apps_root}/{name}; "
-          f"rm -f {self.worker_home_dir}/revisions/{name}",
-          timeout=120,
-      )
-    if orphan_containers or orphan_dirs:
-      self.notify(
-          f"Removed orphaned containers on worker {worker.hostname}: "
-          f"{', '.join(sorted(orphan_containers | orphan_dirs))}.",
-          "warning")
-
-  async def add_worker(self, worker_hostname: str, subdomain: str | None = None):
-    """
-    Add a machine of the tailnet as a worker, with its subdomain (random when none is given): its SSH server
-    must answer and it must not be managed by another Sage (`setup_worker` checks). `setup_worker` does the rest.
-    """
-    peer = await run_in_executor_with_context(self.tailscale.find_peer, worker_hostname)
-    if peer is None or not await self.tailscale.reachable(peer.hostname):
-      self.notify(f"Failed to add worker {worker_hostname}: it is not in the tailnet or its SSH server does not answer.", "error")
-      raise TaskFailed()
-    await self.setup_worker(peer, subdomain=subdomain)
-
-  def instance_id(self) -> str:
-    return Instance.get().id
-
-  async def setup_worker(self, worker, force: bool = False, subdomain: str | None = None):
-    """
-    Converge a worker to current manager state — the single idempotent heal
-    for new, rejoining, IP-changed, and force-resynced workers. The worker's
-    revision stamps decide how much work that is: a matching infra stamp
-    skips the file syncs / compose up / restarts, and a matching cert stamp
-    skips its repair. Domain artifacts are reconciled by the parent pass. `force` deletes the stamps first — distrust everything, converge
-    from scratch. A worker that another Sage manages (its owner stamp names
-    another instance) is refused. On failure, the worker row + DNS are only
-    cleaned up if this call was adding a brand-new worker. `subdomain` is a new
-    worker's.
-    """
-    existing = Worker.get_or_none(Worker.hostname == worker.hostname)
-    is_new = existing is None
-    logger.info(f"{'Adding' if is_new else 'Converging'} worker {worker.hostname}.")
+  async def observe_workers(self):
+    """Asks every configured worker's SSH server, tells the pages of the workers whose state changed, then asks for the
+    convergence of each reachable worker not set up since the Manager started or since it came back, whose address
+    changed, or whose last setup failed or was refused WORKER_SETUP_RETRY_SECONDS ago; and for the repair of the stack of
+    a worker set up but not ready because of it. A look that fails tells the pages of the workers whose state changed
+    and fails."""
+    hostnames = [worker.hostname for worker in Worker.select(Worker.hostname)]
     try:
-      # Connected at startup; this retries if that failed, and sets the tunnel the
-      # infra stamp includes.
-      await run_in_executor_with_context(self.cloudflare.connect)
-      domain = self.cloudflare.domain
+      await Tailscale().observe_workers(hostnames)
+    except Exception:
+      self.worker_state.check()
+      raise
+    for hostname in hostnames:
+      if Tailscale().ssh(hostname) == "unreachable":
+        Workers().record_setup(hostname, None)
+    self.worker_state.check()
+    now = monotonic()
+    for hostname, state in self.worker_state.last.items():
+      if not state.addressable:
+        continue
+      failed_at = self.setup_failures.get(hostname)
+      if (state.setup is None or Workers().setup_address(hostname) != state.address
+              or (state.setup != "succeeded" and (failed_at is None or now - failed_at >= config.WORKER_SETUP_RETRY_SECONDS))):
+        self.request_convergence(hostname)
+      elif (state.setup == "succeeded" and state.view.reason in REPAIRED
+            and (state.view.reason != "not_reporting" or WorkerReports().silent_for(hostname) > config.WORKER_STACK_SILENCE_SECONDS)
+            and (hostname not in self.stack_repairs
+                 or now - self.stack_repairs[hostname] >= config.WORKER_STACK_REPAIR_COOLDOWN_SECONDS)):
+        self.stack_repairs[hostname] = now
+        self.request_stack_repair(hostname)
+    for hostname in self.setup_failures.keys() - set(hostnames):
+      self.setup_failures.pop(hostname, None)
 
-      revisions = await self.read_worker_revisions(worker.hostname)
-      instance_id = self.instance_id()
+  def request_convergence(self, hostname: str, force: bool = False, changed: bool = False) -> str:
+    """Queues the convergence of the worker's stack with Sage; with `force` (the worker's resync), as a visible task
+    of its own, its files are written and its stack restarted whatever its infra stamp says, and everything else Sage
+    keeps on it is written again: its certificates, its Domains' routes and its discovery files. With `changed` (the
+    worker's configuration changed), it runs after a convergence already running, which read the configuration before.
+    The task's id."""
+    return self.add_task(task=self.converge_worker, key=("converge_worker", hostname, *(("force",) if force else ())),
+                         scopes={worker_scope(hostname)}, executor="app", params={"hostname": hostname, "force": force},
+                         labels={"Worker": hostname}, on_conflict=OnConflict.REPLACE if changed else OnConflict.DEDUP,
+                         quiet=not force).task_id
+
+  async def converge_worker(self, hostname: str, force: bool = False):
+    """Brings the worker's stack in line with Sage: claims it, removes the routing files there of Domains gone or bound
+    to another worker, makes its tunnel and its `*.<subdomain>.int` record, and writes the stack's files and starts it
+    when its infra stamp differs (or on force), else starts what is stopped. It asks for the certificates' renewal when
+    its own or the shared discovery certificate does not cover its names, else for their copy to it when it did not
+    apply the current ones (its `certs` stamp), and once it is set up for the pass over the Domains' artifacts;
+    forced, for its certificates, the routes of the Domains routed to it and its discovery files to be written again
+    whatever their stamps say. Another Sage's worker is refused and left alone."""
+    worker = Worker.get_or_none(Worker.hostname == hostname)
+    address = Tailscale().address(hostname)
+    if worker is None or not addressable(Tailscale().ssh(hostname), address):
+      logger.info(f"Worker {hostname} is not there to set up; nothing to do.")
+      return
+    home, cloudflare = config.WORKER_HOME_DIR, Cloudflare()
+    try:
+      revisions = await Workers().read_revisions(hostname)
+      instance_id = Instance.get().id
       refusal = worker_claim_refusal(revisions, instance_id)
-      if refusal:
-        raise Exception(refusal)
+      if refusal is not None:
+        if Workers().setup(hostname) != "refused":
+          record_worker_event(hostname, "ownership", "rejected", reason={"refusal": refusal})
+        logger.warning(f"Worker {hostname} is not set up: {refusal}.")
+        Workers().record_setup(hostname, "refused", address)
+        self.setup_failures[hostname] = monotonic()
+        return
+      await run_in_executor_with_context(cloudflare.connect)
+      if revisions.get("owner") != f"{instance_id} {cloudflare.domain}":
+        await Workers().write_revision(hostname, "owner", f"{instance_id} {cloudflare.domain}")
+      Workers().record_certificates(hostname, Certs.read_proofs(revisions.get("certs")))
+      _, lines = await Tailscale().exec_command(hostname, routes_command(f"{home}/traefik/dynamic"), timeout=30)
+      await self.remove_obsolete_routes(hostname, parse_route_listing(lines), {domain.id: capture(domain) for domain in Domain.select()})
+      tunnel = await run_in_executor_with_context(cloudflare.create_tunnel, cloudflare.worker_tunnel_name(hostname))
+      await run_in_executor_with_context(cloudflare.sync_worker_records, hostname, worker.subdomain, address)
+      inputs = InfraInputs(hostname, address, Tailscale().ip(), cloudflare.domain, cloudflare.tunnel_id, tunnel, config.VERSION,
+                           config.REPORT_INTERVAL_SECONDS)
+      fingerprint = infra_fingerprint(inputs)
+      if force or revisions.get("infra") != fingerprint:
+        record_worker_event(hostname, "infrastructure", "admitted", reason={"force": force})
+        tunnel_token = (await run_in_executor_with_context(cloudflare.get_tunnel_token, tunnel)).token
+        discovery_token = (await run_in_executor_with_context(cloudflare.get_tunnel_token)).token
+        _, group = await Tailscale().exec_command(hostname, "stat -c %g /var/run/docker.sock", timeout=30)
+        for file in render_infrastructure(inputs, tunnel_token, discovery_token, group[-1].strip(), home):
+          await Tailscale().sync_file(hostname, config.TEMPLATES_DIR / "worker/file", f"{home}/{file.path}",
+                                      {"CONTENT": file.content}, mode=file.mode)
+        compose = f"docker compose -f {home}/docker-compose.yml"
+        await Tailscale().exec_command(
+            hostname, f"{compose} up -d --wait --remove-orphans --quiet-pull --quiet-build {' '.join(config.WORKER_STACK_SERVICES)}",
+            timeout=300)
+        # Each reads its configuration only when it starts.
+        for service in ("traefik", "vector", "telegraf"):
+          await Tailscale().exec_command(hostname, f"{compose} restart {service}", timeout=60)
+        await Workers().write_revision(hostname, "infra", fingerprint)
+        record_worker_event(hostname, "infrastructure", "succeeded")
+      else:
+        await self._start_stack(hostname)
+      certificates = Certs().worker_state(hostname, worker.subdomain, Workers().certificates(hostname), TEMPLATE_DIGEST).values()
+      if not all(state["covered"] for state in certificates):
+        self.request_certificate_renewal()
+      elif not force and not all(state["synced"] for state in certificates):
+        self.request_certificate_distribution(hostname)
+      Workers().record_setup(hostname, "succeeded", address)
+      self.setup_failures.pop(hostname, None)
+      self.request_domain_reconciliation()
       if force:
-        await self.tailscale.exec_command(
-            worker.hostname, f"rm -rf {self.worker_home_dir}/revisions")
-        revisions = {}
-      # Claim it before changing anything, so a failed setup leaves it claimed.
-      if revisions.get("owner") != f"{instance_id} {domain}":
-        await self.write_worker_revision(worker.hostname, "owner", f"{instance_id} {domain}")
-      tunnel_id = await run_in_executor_with_context(
-          self.cloudflare.create_tunnel, self.cloudflare.worker_tunnel_name(worker.hostname))
-      # The IP is rendered into infra files, so a changed IP is infra drift
-      # even under a matching stamp.
-      infra_stale = (revisions.get("infra") != self.infra_hash(tunnel_id)
-                     or is_new or existing.ip != worker.ip)
+        self.request_certificate_distribution(hostname, force=True)
+        self.request_domain_applies(domain.id for domain in Domain.select(Domain.id).join(Container, JOIN.LEFT_OUTER).where(
+            (Container.worker == hostname) | (Domain.namespace_worker == hostname)))
+        self.request_discovery(hostname, force=True)
+    except Exception as error:
+      Workers().record_setup(hostname, "failed", address)
+      self.setup_failures[hostname] = monotonic()
+      record_worker_event(hostname, "infrastructure", "failed", reason={"error": str(error)})
+      Notifications().notify(f"Worker {hostname} could not be set up: {error}", "error", f"/workers/{hostname}")
+      raise TaskFailed()
+    finally:
+      self.worker_state.check()
 
-      row = self._save_worker(worker.hostname, worker.ip, subdomain)
-      self.update_worker(worker.hostname, certs=Certs.read_proofs(revisions.get("certs")))
-      if is_new:
-        self.request_certificate_renewal()
-      await run_in_executor_with_context(self.cloudflare.sync_worker_records, worker.hostname, row.subdomain, worker.ip)
-      # It answers internal discovery once online, and its tunnel, which its public names point at, may be new.
-      self.request_discovery_sync()
+  def request_stack_repair(self, hostname: str):
+    """Queues the start of whatever of the worker's stack is stopped. It holds the stack's own scope, so a deploy on the
+    worker does not delay it; convergence and reboot, holding the whole worker, exclude it."""
+    self.add_task(task=self.repair_worker_stack, key=("repair_worker_stack", hostname), scopes={stack_scope(hostname)},
+                  executor="app", params={"hostname": hostname}, labels={"Worker": hostname}, quiet=True)
 
-      if infra_stale:
-        tunnel_token = (await run_in_executor_with_context(self.cloudflare.get_tunnel_token, tunnel_id)).token
-        discovery_tunnel_token = (await run_in_executor_with_context(self.cloudflare.get_tunnel_token)).token
-        # Telegraf runs as a user in the Docker socket's group, which differs between hosts.
-        _, socket_group = await self.tailscale.exec_command(
-            worker.hostname, "stat -c %g /var/run/docker.sock", timeout=30)
-        docker_gid = socket_group[-1].strip()
-
-        # Sync files
-        await self.tailscale.sync_file(
-            worker.hostname,
-            app_dir / "templates/worker/docker-compose.yml",
-            f"{self.worker_home_dir}/docker-compose.yml",
-        )
-        await self.tailscale.sync_file(
-            worker.hostname,
-            app_dir / "templates/worker/worker.env",
-            f"{self.worker_home_dir}/.env",
-            {
-                "SAGE_HOME": self.worker_home_dir,
-                "TS_IP": worker.ip,
-                "TS_HOSTNAME": worker.hostname,
-                "TUNNEL_TOKEN": tunnel_token,
-                "DISCOVERY_TUNNEL_TOKEN": discovery_tunnel_token,
-                "DOCKER_GID": docker_gid,
-            },
-            mode=0o600,
-        )
-        await self.tailscale.sync_file(
-            worker.hostname,
-            app_dir / "templates/worker/traefik/traefik.yml",
-            f"{self.worker_home_dir}/traefik/traefik.yml",
-        )
-        await self.tailscale.sync_file(
-            worker.hostname,
-            app_dir / "templates/worker/traefik/config.yml",
-            f"{self.worker_home_dir}/traefik/dynamic/config.yml",
-            {"DOMAIN": domain or "", "HOSTNAME": worker.hostname},
-        )
-        await self.tailscale.sync_file(
-            worker.hostname,
-            app_dir / "templates/worker/vector/vector.yml",
-            f"{self.worker_home_dir}/vector/config/vector.yml",
-            {"IP": self.tailscale.ip(), "HOSTNAME": worker.hostname},
-        )
-        await self.tailscale.sync_file(
-            worker.hostname,
-            app_dir / "templates/worker/telegraf/telegraf.conf",
-            f"{self.worker_home_dir}/telegraf/telegraf.conf",
-            {
-                "IP": self.tailscale.ip(),
-                "HOSTNAME": worker.hostname,
-                "TS_IP": worker.ip,
-                "INTERVAL": config.REPORT_INTERVAL_SECONDS,
-            },
-        )
-
-      repaired = []
-      if await self.sync_certificates_to_worker(worker):
-        repaired.append("certificates")
-      if not is_new and any(not certificate.is_valid() for certificate in self.certs.for_worker(worker.hostname).values()):
-        self.request_certificate_renewal()
-
-      if infra_stale:
-        # Start containers
-        await self.tailscale.exec_command(
-            worker.hostname,
-            f"docker compose -f {self.worker_home_dir}/docker-compose.yml up -d --wait --remove-orphans --quiet-pull --quiet-build "
-            f"{' '.join(config.WORKER_STACK_SERVICES)}",
-            timeout=300,
-        )
-
-        # Restart traefik to pick up static config changes
-        await self.tailscale.exec_command(
-            worker.hostname,
-            f"docker compose -f {self.worker_home_dir}/docker-compose.yml restart traefik",
-            timeout=60,
-        )
-
-        # Restart vector to pick up config changes
-        await self.tailscale.exec_command(
-            worker.hostname,
-            f"docker compose -f {self.worker_home_dir}/docker-compose.yml restart vector",
-            timeout=60,
-        )
-
-        # Restart telegraf to pick up config changes
-        await self.tailscale.exec_command(
-            worker.hostname,
-            f"docker compose -f {self.worker_home_dir}/docker-compose.yml restart telegraf",
-            timeout=60,
-        )
-      else:
-        # Nothing drifted, but a container may be stopped.
-        await self.start_worker_stack(worker)
-
-      self.update_worker(worker.hostname, online=True)
-
-      self.request_discovery_sync()
-
-      await self.cleanup_orphan_containers(worker)
-
-      if infra_stale:
-        # Success commit marker
-        await self.write_worker_revision(worker.hostname, "infra", self.infra_hash(tunnel_id))
-        self.notify(f"Worker {worker.hostname} {'added' if is_new else 'synced'}.")
-      elif repaired:
-        self.notify(
-            f"Worker {worker.hostname} converged with infra unchanged; repaired: {', '.join(repaired)}.")
-      else:
-        logger.info(f"Worker {worker.hostname} converged with infra unchanged; nothing stale.")
-    except Exception as e:
-      action = "setup" if is_new else "sync"
-      self.notify(f"Failed to {action} worker {worker.hostname} : {e}", "error")
-      # Only roll back the worker row + DNS if this was a fresh add.
-      if is_new:
-        await self.remove_worker(worker.hostname)
-      raise Exception(f"Failed to {action} worker {worker.hostname} : {e}")
-
-  async def reboot_worker(self, worker_hostname: str):
-    """
-    Reboot a worker host over Tailscale SSH. The reboot is backgrounded so the
-    SSH command returns before the host network drops.
-    """
-    worker = Worker.get_or_none(Worker.hostname == worker_hostname)
-    if not worker:
+  async def repair_worker_stack(self, hostname: str):
+    if Worker.get_or_none(Worker.hostname == hostname) is None or not is_workable(hostname):
+      logger.info(f"Worker {hostname} is not there to repair; nothing to do.")
       return
+    if await self._start_stack(hostname):
+      record_worker_event(hostname, "repair", "succeeded", reason={"started": "stack"})
+      Notifications().notify(f"Worker {hostname}: started the parts of its stack that were stopped.", "warning",
+                             f"/workers/{hostname}")
+    else:
+      logger.warning(f"Worker {hostname}'s stack was not ready, but starting it changed nothing.")
 
+  def request_add_worker(self, host: str | None, subdomain: str | None) -> tuple[str, str]:
+    """Adds the machine of the tailnet with that hostname (any case) or Tailscale IP as a worker, named by its hostname
+    in lowercase, with its subdomain: its row now, then a queued add that sets it up. Its hostname and the task's id."""
+    host = str(host or "").strip()
+    peer = Tailscale().find_peer(host) if host else None
+    if peer is None:
+      raise LookupError(f"No machine with hostname or IP '{host}' in the tailnet.")
+    if peer.hostname == get_env("TS_NAME").lower():
+      raise Conflict("A worker with the manager's name is not allowed.")
+    commands.add_worker(peer.hostname, subdomain)
+    return peer.hostname, self.add_task(task=self.add_worker, key=("add_worker", peer.hostname),
+                                        scopes={worker_scope(peer.hostname)}, executor="app",
+                                        params={"hostname": peer.hostname}, labels={"Worker": peer.hostname}).task_id
+
+  async def add_worker(self, hostname: str):
+    """Sets a worker just added up: its first convergence is part of the add. A worker whose first setup fails stays,
+    and is set up again as any other is."""
+    if Worker.get_or_none(Worker.hostname == hostname) is None:
+      logger.info(f"Worker {hostname} was removed before it was set up; nothing to do.")
+      return
+    record_worker_event(hostname, "add", "admitted")
+    await Tailscale().observe_worker(hostname)
     try:
-      await self.tailscale.exec_command(
-          worker.hostname, "(sleep 2 && reboot) </dev/null >/dev/null 2>&1 &", timeout=30)
-    except Exception as e:
-      self.notify(f"Failed to reboot worker {worker.hostname}: {e}", "error")
-      raise Exception(f"Failed to reboot worker {worker.hostname}: {e}")
+      await self.converge_worker(hostname)
+    except TaskFailed:
+      record_worker_event(hostname, "add", "failed", reason={"setup": "failed"})
+      raise
+    if Workers().setup(hostname) != "succeeded":
+      record_worker_event(hostname, "add", "failed", reason={"setup": Workers().setup(hostname) or "not reached"})
+      Notifications().notify(f"Worker {hostname} is added but not set up: "
+                             f"{'it is managed by another Sage' if Workers().setup(hostname) == 'refused' else 'its SSH server does not answer'}.",
+                             "error", f"/workers/{hostname}")
+      raise TaskFailed()
+    record_worker_event(hostname, "add", "succeeded")
+    Notifications().notify(f"Worker {hostname} added.", "success", f"/workers/{hostname}")
+
+  def request_remove_worker(self, hostname: str) -> str:
+    """Queues the worker's removal; refused while it has containers or internal domains. The task's id."""
+    worker = Worker.get_or_none(Worker.hostname == hostname)
+    if worker is None:
+      raise LookupError("Worker not found.")
+    refusal = commands.removal_refusal(worker)
+    if refusal is not None:
+      raise Conflict(refusal)
+    return self.add_task(task=self.remove_worker, key=("remove_worker", hostname), scopes={worker_scope(hostname)},
+                         executor="app", params={"hostname": hostname}, labels={"Worker": hostname}).task_id
+
+  async def remove_worker(self, hostname: str):
+    """Removes the worker from Sage: its row, then, when it answers and is this Sage's, its stack and Sage's files on
+    it; its DNS records and its tunnel; and what the sources hold of it. One that does not answer is removed from Sage
+    only, and the VM has to be cleaned up by hand."""
+    if Worker.get_or_none(Worker.hostname == hostname) is None:
+      logger.info(f"Worker {hostname} is already removed; nothing to do.")
+      return
+    try:
+      commands.remove_worker(hostname)
+    except Conflict as refusal:
+      record_worker_event(hostname, "remove", "rejected", reason={"refusal": str(refusal)})
+      Notifications().notify(f"Worker {hostname} was not removed: {refusal}", "error", f"/workers/{hostname}")
+      raise TaskFailed()
+    record_worker_event(hostname, "remove", "admitted")
+    home, cleaned, left = config.WORKER_HOME_DIR, False, []
+    if await Tailscale().reachable(hostname):
+      try:
+        owner = worker_owner(await Workers().read_revisions(hostname))
+        if owner is not None and owner[0] == Instance.get().id:
+          await Tailscale().exec_command(
+              hostname, f"docker compose -f {home}/docker-compose.yml down --remove-orphans && rm -rf {home}", timeout=120)
+          cleaned = True
+      except Exception as error:
+        left.append(f"its stack could not be stopped ({error}): stop it and remove its files by hand")
+    else:
+      left.append("it does not answer: anything on the VM, including the VM itself, has to be removed by hand")
+    cloudflare = Cloudflare()
+    await run_in_executor_with_context(cloudflare.connect)
+    await run_in_executor_with_context(cloudflare.sync_worker_records, hostname)
+    try:
+      await run_in_executor_with_context(cloudflare.delete_tunnel, cloudflare.worker_tunnel_name(hostname))
+    except Exception as error:
+      left.append(f"its Cloudflare tunnel could not be deleted ({error}): delete it by hand")
+    Workers().forget(hostname)
+    WorkerReports().forget(hostname)
+    Metrics().forget(hostname)
+    await Tailscale().forget(hostname)
+    self.setup_failures.pop(hostname, None)
+    self.stack_repairs.pop(hostname, None)
+    record_worker_event(hostname, "remove", "succeeded", reason={"cleaned": cleaned})
+    self.request_certificate_renewal()
+    if left:
+      Notifications().notify(f"Worker {hostname} is removed from Sage, but " + "; ".join(left) + ".", "warning", "/workers")
+    else:
+      Notifications().notify(f"Worker {hostname} removed.", "success", "/workers")
+    self.worker_state.check()
+
+  def request_reboot(self, hostname: str) -> str:
+    """Queues the worker's reboot. The task's id."""
+    if Worker.get_or_none(Worker.hostname == hostname) is None:
+      raise LookupError("Worker not found.")
+    return self.add_task(task=self.reboot_worker, key=("reboot_worker", hostname), scopes={worker_scope(hostname)},
+                         executor="app", params={"hostname": hostname}, labels={"Worker": hostname}).task_id
+
+  async def reboot_worker(self, hostname: str):
+    """Reboots the worker and waits, holding it, until a new boot of it is set up again and ready on a report that arrived
+    after that boot was seen: verified, or failed once WORKER_REBOOT_LIMIT_SECONDS have passed, saying how far it got
+    (old_boot, not_ready, unknown). A later return is ordinary observation."""
+    worker = Worker.get_or_none(Worker.hostname == hostname)
+    if worker is None:
+      return
+    if not is_workable(hostname):
+      record_worker_event(hostname, "reboot", "rejected", reason={"ssh": Tailscale().ssh(hostname), "setup": Workers().setup(hostname)})
+      Notifications().notify(f"Worker {hostname} was not rebooted: it is not reachable and set up.", "error",
+                             f"/workers/{hostname}")
+      raise TaskFailed()
+    baseline = await self._boot_id(hostname)
+    record_worker_event(hostname, "reboot", "admitted", reason={"boot_id": baseline})
     for container in worker.containers:
       await mark(container, "Worker rebooted by Sage")
-
-    self.update_worker(
-        worker.hostname, reboot=WorkerReboot(utcnow(), WorkerReports().started_at(worker.hostname, "telegraf", current=False)))
-
-    # Hold the scope past the backgrounded reboot's delay so a deploy can't grab a
-    # still-up worker in the gap between this task finishing and the host dropping.
-    await asyncio.sleep(3)
-
-    self.notify(f"Worker {worker.hostname} reboot triggered.")
-
-  async def remove_worker(self, worker_hostname: str):
-    """
-    Forget a worker. One that answers a ping and is this Sage's is cleaned up first: its stack is
-    stopped and Sage's files on it removed, so that another Sage can take it. One that is offline
-    (the VM may be gone) is forgotten as it is, and its containers are removed from Sage only. A worker
-    that is online and has containers is refused: they have to be deleted first; one with internal domains, linked
-    or not, is refused whatever its state -
-    - Remove from Manager database
-    - Delete its DNS records (`*.<subdomain>.int`; its `discovery.int` record goes with the records sync)
-    - Delete its own tunnel; one Cloudflare won't delete is left, with a warning
-    """
-    worker = Worker.get_or_none(Worker.hostname == worker_hostname)
-    if not worker:
-      return
-
-    # Re-check under the scope lock: a deploy could have placed a container here
-    # between the route's check and this task running. Fail loudly so it surfaces
-    # in the task table rather than vanishing.
-    if self.worker_online(worker_hostname) is not False and worker.containers.count() > 0:
-      logger.error(f"Worker {worker_hostname} gained containers before removal; aborting.")
-      raise TaskFailed()
-    if worker.domains.count() > 0:
-      logger.error(f"Worker {worker_hostname} has internal domains; aborting its removal.")
-      raise TaskFailed()
-
-    logger.info(f"Removing worker {worker.hostname} from manager.")
-    containers = list(worker.containers)
-    for container in containers:
-      await self.delete_container(container.id, force=True)
-
-    # The containers of an offline worker were deleted without cleaning up after them, so its files stay.
-    if not containers and await self.tailscale.reachable(worker.hostname):
+    await Tailscale().exec_command(hostname, "(sleep 2 && reboot) </dev/null >/dev/null 2>&1 &", timeout=30)
+    Workers().record_setup(hostname, None)
+    deadline, outcome, booted_at = monotonic() + config.WORKER_REBOOT_LIMIT_SECONDS, "unknown", None
+    while monotonic() < deadline:
+      await asyncio.sleep(config.WORKER_REBOOT_POLL_SECONDS)
       try:
-        owner = worker_owner(await self.read_worker_revisions(worker.hostname))
-        if owner and owner[0] == self.instance_id():
-          await self.tailscale.exec_command(
-              worker.hostname,
-              f"docker compose -f {self.worker_home_dir}/docker-compose.yml down --remove-orphans "
-              f"&& rm -rf {self.worker_home_dir}",
-              timeout=120,
-          )
-      except Exception as e:
-        self.notify(
-            f"Worker {worker.hostname} is removed from Sage, but its stack could not be stopped: {e}. "
-            "Stop it and remove its files by hand.", "warning")
-    else:
-      self.notify(
-          f"Worker {worker.hostname} was offline, so Sage could not clean it up. It is removed from Sage "
-          "only; anything on the VM, including the VM itself, has to be removed by hand.", "warning")
-    self._forget_worker(worker.hostname)
-    self.request_certificate_renewal()
-    WorkerReports().forget(worker.hostname)
-    Metrics().forget(worker.hostname)
-    await self.tailscale.forget(worker.hostname)
-    await run_in_executor_with_context(self.cloudflare.sync_worker_records, worker.hostname)
-    self.request_discovery_sync()
-    tunnel = self.cloudflare.worker_tunnel_name(worker.hostname)
-    try:
-      await run_in_executor_with_context(self.cloudflare.delete_tunnel, tunnel)
-    except Exception as e:
-      self.notify(
-          f"Worker {worker.hostname} is removed from Sage, but its Cloudflare tunnel {tunnel} could not be deleted: "
-          f"{e}. Delete it by hand.", "warning")
-    logger.info(f"Worker {worker.hostname} removed from manager.")
+        boot = await self._boot_id(hostname)
+      except Exception:
+        boot = None
+      if boot is not None and boot != baseline:
+        booted_at = booted_at or utcnow()
+        if Workers().setup(hostname) != "succeeded":
+          await Tailscale().observe_worker(hostname)
+          try:
+            await self.converge_worker(hostname)
+          except TaskFailed:
+            pass
+      received = WorkerReports().latest(hostname)
+      reported = booted_at is not None and received is not None and received.arrived_at >= booted_at
+      outcome = reboot_outcome(baseline, boot, worker_state(hostname, worker.subdomain, frozenset()).view.ready and reported)
+      if outcome == "verified":
+        break
+    if outcome != "verified":
+      record_worker_event(hostname, "reboot", "failed", reason={"outcome": outcome})
+      Notifications().notify(f"Worker {hostname}'s reboot could not be confirmed in time: {REBOOT_FAILURES[outcome]}.", "error",
+                             f"/workers/{hostname}")
+      raise TaskFailed()
+    record_worker_event(hostname, "reboot", "verified")
+    Notifications().notify(f"Worker {hostname} rebooted.", "success", f"/workers/{hostname}")
 
-  def set_worker_offline(self, worker):
-    """
-    A worker can be set to offline if it is expected to come back soon, e.g. after a reboot. Its `*.<subdomain>.int`
-    record stays, so its names work again as soon as it is back, and its `discovery.int` record goes (the records
-    sync); Cloudflare handles its offline tunnel.
-    """
-    logger.info(f"Setting worker {worker.hostname} offline.")
-    self.update_worker(worker.hostname, online=False)
-    self.request_discovery_sync()
-    self.notify(f"Worker {worker.hostname} is offline.", "error")
+  def worker_subdomain_changed(self, hostname: str):
+    """After the worker's subdomain changed (its command): its `*.<subdomain>.int` record moves with its convergence,
+    its internal and TCP domains, whose names are under it, are applied again, and its certificate is renewed for the
+    new names."""
+    self.request_convergence(hostname, changed=True)
+    self.request_domain_applies(domain.id for domain in Domain.select(Domain.id).where(Domain.namespace_worker == hostname))
+    self.request_certificate_renewal()
+
+  async def _boot_id(self, hostname: str) -> str:
+    _, lines = await Tailscale().exec_command(hostname, "cat /proc/sys/kernel/random/boot_id", timeout=10)
+    return lines[0].strip()
+
+  async def _start_stack(self, hostname: str) -> bool:
+    """`docker compose up -d` for the worker's stack: it starts what is stopped and leaves what runs alone. True when it
+    started something."""
+    _, lines = await Tailscale().exec_command(
+        hostname, f"docker compose -f {config.WORKER_HOME_DIR}/docker-compose.yml up -d --quiet-pull "
+        f"{' '.join(config.WORKER_STACK_SERVICES)}", timeout=120)
+    return any(re.search(r"\b(Started|Starting|Created)\b", line) for line in lines)
+
+  def request_worker_paths(self):
+    """Queues the look at how each reachable worker is reached."""
+    self.add_task(task=self.refresh_worker_paths, key=("refresh_worker_paths",), scopes=set(), executor="app", quiet=True)
+
+  async def refresh_worker_paths(self):
+    """Finds how each reachable worker is reached, direct or through a relay."""
+    hostnames = [worker.hostname for worker in Worker.select(Worker.hostname)]
+    await Tailscale().refresh_paths([Tailscale().address(hostname) for hostname in hostnames
+                                     if is_addressable(hostname)])
+    self.worker_state.check()
+
+  def tunnels_fact(self) -> Fact:
+    """Each tunnel's health as known now: the info topic is sent again when it changed."""
+    return Fact(Cloudflare().tunnel_statuses, UpdateSource.TUNNELS)
+
+  def request_tunnel_listing(self):
+    """Queues the listing of the account's tunnels."""
+    self.add_task(task=self.list_tunnels, key=("list_tunnels",), scopes=set(), executor="common", quiet=True)
+
+  async def list_tunnels(self):
+    """Lists the account's tunnels with their health, then tells the pages of the workers whose state changed and the
+    info topic when the health known now changed, also when the listing failed and what was known has grown old."""
+    try:
+      await run_in_executor_with_context(Cloudflare().tunnels)
+    finally:
+      self.tunnel_state.check()
+      self.worker_state.check()
+
+  def _worker_tasks(self) -> dict[str, set[str]]:
+    """The worker tasks queued or running on each worker, by hostname."""
+    snapshot = self.task_snapshot()
+    tasks = {}
+    for task in (*snapshot["running"], *snapshot["queued"]):
+      if task["name"] in TASKS:
+        tasks.setdefault(task["key"][1], set()).add(task["name"])
+    return tasks
+
+  def _workers_changed(self, hostnames):
+    if hostnames:
+      Updates().changed(UpdateSource.WORKER_LIST)
+    for hostname in hostnames:
+      Updates().changed(UpdateSource.WORKER_ENTRY, hostname)

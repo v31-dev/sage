@@ -1,4 +1,5 @@
 import logging
+import stat
 import time
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -11,7 +12,10 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 
 import config
-from services.certs import Certificate, Certs
+from services.certs import Certificate, Certs, certificate_files_scope, certificate_scope
+from services.updates import Updates
+from services.workers.rendering import stack_scope, worker_scope
+from utils.queue import _scope_conflict
 
 NAMES = ["manager.core.example.test"]
 
@@ -269,3 +273,240 @@ class TestEnsureManagerAtStartup:
     assert certs.calls == 1
     assert sleeps == []
     assert "Certificate renewal failed during startup: renewal failed. Continuing on the current certificate (expires tomorrow)" in caplog.text
+
+
+TEMPLATES = "templates"
+
+
+@pytest.fixture
+def catalog(data_dir, clock, register):
+  clock.set(datetime.now(timezone.utc).replace(tzinfo=None))
+  register(Updates, SimpleNamespace(changed=lambda source: None))
+  return Certs()
+
+
+class TestCertificateInventory:
+  def test_each_worker_has_only_its_namespace_and_the_shared_discovery_identity(self, catalog):
+    catalog.set_workers({"w1": "red", "w2": "blue"})
+    for certificate in catalog.inventory().values():
+      write_certificate(certificate.fullchain_path.parent, certificate.names)
+      catalog.reload(certificate)
+
+    assert catalog.manager.names == ("manager.core.example.test",)
+    assert catalog.discovery.names == ("discovery.int.example.test",)
+    assert {role: certificate.names for role, certificate in catalog.for_worker("w1").items()} == {
+        "discovery": ("discovery.int.example.test",), "worker": ("*.red.int.example.test",)}
+    own = catalog.workers["w1"].info(TEMPLATES)
+    state = catalog.worker_state("w1", "red", {"worker": own["proof"]}, TEMPLATES)
+    assert state["worker"] == {"covered": True, "synced": True, "expiry": own["expiry"], "error": None}
+    assert state["discovery"] == {"covered": True, "synced": False, "expiry": None, "error": None}
+    assert not catalog.worker_state("w2", "blue", {"worker": own["proof"]}, TEMPLATES)["worker"]["synced"]
+    assert not catalog.worker_state("w1", "red", {"worker": own["proof"]}, "other-template")["worker"]["synced"]
+
+  def test_issuance_generates_a_distinct_private_key_for_each_owner(self, catalog, monkeypatch):
+    catalog.set_workers({"w1": "red", "w2": "blue"})
+    ca_key = ec.generate_private_key(ec.SECP256R1())
+
+    def order(csr, **kwargs):
+      request = x509.load_pem_x509_csr(csr)
+      now = datetime.now(timezone.utc)
+      leaf = (x509.CertificateBuilder().subject_name(request.subject).issuer_name(request.subject)
+              .public_key(request.public_key()).serial_number(x509.random_serial_number())
+              .not_valid_before(now - timedelta(minutes=1)).not_valid_after(now + timedelta(days=45))
+              .add_extension(request.extensions.get_extension_for_class(x509.SubjectAlternativeName).value, critical=False)
+              .sign(ca_key, hashes.SHA256()))
+      return SimpleNamespace(authorizations=[], fullchain_pem=leaf.public_bytes(serialization.Encoding.PEM).decode())
+
+    ca = SimpleNamespace(new_order=order, poll_and_finalize=lambda order, **kwargs: order)
+    monkeypatch.setattr(catalog, "acme_client", lambda profile: (ca, None))
+    monkeypatch.setattr(catalog, "_wait_for_dns", lambda records: None)
+    for certificate in catalog.inventory().values():
+      catalog.issue(certificate)
+    assert len({certificate.key_path.read_bytes() for certificate in catalog.inventory().values()}) == 4
+    assert all(certificate.is_valid() for certificate in catalog.inventory().values())
+    assert all(stat.S_IMODE(certificate.key_path.stat().st_mode) == 0o600 for certificate in catalog.inventory().values())
+
+  @pytest.mark.parametrize("key", [None, "other"])
+  def test_a_missing_or_mismatched_key_cannot_be_published(self, catalog, tmp_path, key):
+    write_certificate(catalog.discovery.fullchain_path.parent, catalog.discovery.names)
+    if key:
+      write_certificate(tmp_path, ["other.example.test"])
+      catalog.discovery.key_path.write_bytes((tmp_path / "key.pem").read_bytes())
+    else:
+      catalog.discovery.key_path.unlink()
+    catalog.reload(catalog.discovery)
+    assert not catalog.discovery.is_valid()
+    assert catalog.discovery.info()["proof"] is None
+
+  def test_a_rename_leaves_the_chain_in_place_obsolete_and_renaming_back_makes_it_valid_again(self, catalog):
+    catalog.set_workers({"w1": "red"})
+    certificate = catalog.workers["w1"]
+    write_certificate(certificate.fullchain_path.parent, certificate.names)
+    catalog.reload(certificate)
+    public = certificate.fullchain_path.read_bytes()
+
+    catalog.set_workers({"w1": "blue"})
+
+    renamed = catalog.workers["w1"]
+    assert renamed.fullchain_path.read_bytes() == public and renamed.key_path.exists()
+    assert renamed.obsolete() and not renamed.is_valid()
+    assert not renamed.retired_directory.exists()
+
+    catalog.set_workers({"w1": "red"})
+    assert catalog.workers["w1"].is_valid()
+    assert not catalog.workers["w1"].retired_directory.exists()
+
+  def test_retiring_a_renamed_chain_keeps_its_public_leaf_for_revocation_across_a_restart(self, catalog, monkeypatch):
+    catalog.set_workers({"w1": "red"})
+    certificate = catalog.workers["w1"]
+    write_certificate(certificate.fullchain_path.parent, certificate.names)
+    catalog.reload(certificate)
+    public = certificate.fullchain_path.read_bytes()
+    catalog.set_workers({"w1": "blue"})
+
+    def fail(*args):
+      raise RuntimeError("CA unavailable")
+
+    monkeypatch.setattr(catalog, "acme_client", lambda: (SimpleNamespace(revoke=fail), None))
+    with pytest.raises(RuntimeError, match="CA unavailable"):
+      catalog.retire(catalog.workers["w1"])
+
+    restarted = Certs.__new__(Certs)
+    Certs.__init__(restarted)
+    restarted.set_workers({"w1": "blue"})
+    current = restarted.workers["w1"]
+    assert not current.is_valid() and not current.key_path.exists()
+    assert [path.read_bytes() for path in current.retired_directory.glob("*.pem")] == [public]
+
+  def test_removed_workers_are_found_on_disk_without_adopting_a_broad_certificate(self, catalog):
+    orphan = Certificate(catalog.directory / "workers" / "gone", ["*.gone.int.example.test"])
+    write_certificate(orphan.fullchain_path.parent, orphan.names)
+    write_certificate(catalog.directory / "workers", ["*.int.example.test"])
+    inventory = catalog.stored()
+    assert inventory["worker:gone"].names == ()
+    assert inventory["worker:gone"].obsolete()
+    assert set(inventory) == {"manager", "discovery", "worker:gone"}
+
+  def test_a_rename_while_the_ca_is_answering_retains_the_result_for_revocation(self, catalog, tmp_path, monkeypatch):
+    catalog.set_workers({"w1": "red"})
+    certificate = catalog.workers["w1"]
+    write_certificate(tmp_path, certificate.names)
+    public = (tmp_path / "fullchain.pem").read_text()
+
+    def finalize(*args, **kwargs):
+      catalog.set_workers({"w1": "blue"})
+      return SimpleNamespace(fullchain_pem=public)
+
+    ca = SimpleNamespace(new_order=lambda *args, **kwargs: SimpleNamespace(authorizations=[]), poll_and_finalize=finalize)
+    monkeypatch.setattr(catalog, "acme_client", lambda profile: (ca, None))
+    monkeypatch.setattr(catalog, "_wait_for_dns", lambda records: None)
+    with pytest.raises(RuntimeError, match="ownership changed"):
+      catalog.ensure(certificate)
+    assert catalog.workers["w1"].names == ("*.blue.int.example.test",)
+    assert not catalog.workers["w1"].is_valid()
+    assert not certificate.key_path.exists()
+    assert [path.read_text() for path in certificate.retired_directory.glob("*.pem")] == [public]
+
+  @pytest.mark.parametrize("value", [None, "invalid", "[]", '{"worker": 1}'])
+  def test_an_invalid_stamp_proves_nothing(self, value):
+    assert Certs.read_proofs(value) == {}
+
+  def test_after_a_subdomain_change_the_wildcard_is_not_covered_until_the_renewal(self, catalog):
+    catalog.set_workers({"w1": "red"})
+    certificate = catalog.workers["w1"]
+    write_certificate(certificate.fullchain_path.parent, certificate.names)
+    catalog.reload(certificate)
+    proof = certificate.info(TEMPLATES)["proof"]
+
+    assert catalog.worker_state("w1", "red", {"worker": proof}, TEMPLATES)["worker"]["covered"]
+    moved = catalog.worker_state("w1", "blue", {"worker": proof}, TEMPLATES)["worker"]
+    assert moved == {"covered": False, "synced": False, "expiry": None, "error": None}
+    assert certificate.fullchain_path.exists()
+
+
+class TestRetirement:
+  def test_a_local_cleanup_failure_is_retained_in_certificate_status(self, catalog, monkeypatch):
+    write_certificate(catalog.discovery.fullchain_path.parent, ["old.example.test"])
+    catalog.reload(catalog.discovery)
+
+    def fail():
+      raise OSError("read-only filesystem")
+
+    monkeypatch.setattr(catalog.discovery, "stash", fail)
+    with pytest.raises(OSError, match="read-only filesystem"):
+      catalog.retire(catalog.discovery)
+    assert catalog.discovery.error == "read-only filesystem"
+
+  def test_failed_revocation_keeps_only_the_public_leaf_until_retry(self, catalog, monkeypatch):
+    catalog.set_workers({"w1": "red"})
+    certificate = catalog.workers["w1"]
+    write_certificate(certificate.fullchain_path.parent, certificate.names)
+    catalog.reload(certificate)
+    catalog.set_workers({})
+    removed = catalog.workers["w1"]
+
+    def fail(*args):
+      raise RuntimeError("CA unavailable")
+
+    monkeypatch.setattr(catalog, "acme_client", lambda: (SimpleNamespace(revoke=fail), None))
+    with pytest.raises(RuntimeError, match="CA unavailable"):
+      catalog.retire(removed)
+    assert not certificate.key_path.exists()
+    assert not certificate.fullchain_path.exists()
+    assert len(list(certificate.retired_directory.glob("*.pem"))) == 1
+    assert "CA unavailable" in removed.error
+
+    monkeypatch.setattr(catalog, "acme_client", lambda: (SimpleNamespace(revoke=lambda cert, reason: None), None))
+    catalog.retire(removed)
+    assert "w1" not in catalog.workers
+    assert not certificate.fullchain_path.parent.exists()
+
+  def test_an_already_revoked_leaf_is_successful_cleanup(self, catalog, monkeypatch):
+    catalog.set_workers({"w1": "red"})
+    certificate = catalog.workers["w1"]
+    write_certificate(certificate.fullchain_path.parent, certificate.names)
+    catalog.reload(certificate)
+    catalog.set_workers({})
+
+    def revoked(*args):
+      raise messages.Error(typ="urn:ietf:params:acme:error:alreadyRevoked", detail="already revoked")
+
+    monkeypatch.setattr(catalog, "acme_client", lambda: (SimpleNamespace(revoke=revoked), None))
+    catalog.retire(catalog.workers["w1"])
+    assert "w1" not in catalog.workers
+
+  def test_expired_retired_material_needs_no_ca(self, catalog, monkeypatch):
+    catalog.set_workers({"w1": "red"})
+    certificate = catalog.workers["w1"]
+    write_certificate(certificate.fullchain_path.parent, certificate.names, timedelta(days=-1))
+    catalog.reload(certificate)
+    catalog.set_workers({})
+    monkeypatch.setattr(catalog, "acme_client", lambda: pytest.fail("expired certificate contacted CA"))
+    catalog.retire(catalog.workers["w1"])
+    assert "w1" not in catalog.workers
+
+
+@pytest.mark.parametrize("hostname", ["..", "a/b", "."])
+def test_a_hostname_that_is_not_one_directory_is_refused(catalog, hostname):
+  with pytest.raises(ValueError, match="Invalid worker hostname."):
+    catalog.set_workers({hostname: "red"})
+
+
+def test_a_worker_without_a_subdomain_gets_no_certificate(catalog):
+  catalog.set_workers({"w1": None})
+  assert "w1" not in catalog.workers
+
+
+def test_the_same_names_again_keep_the_certificate_as_it_is(catalog):
+  catalog.set_workers({"w1": "red"})
+  certificate = catalog.workers["w1"]
+  catalog.set_workers({"w1": "red"})
+  assert catalog.workers["w1"] is certificate
+
+
+def test_every_certificate_covers_each_workers_and_a_workers_certificate_files_are_under_the_worker():
+  assert _scope_conflict(certificate_scope(), certificate_scope("w1"))
+  assert not _scope_conflict(certificate_scope("w1"), certificate_scope("w2"))
+  assert _scope_conflict(worker_scope("w1"), certificate_files_scope("w1"))
+  assert not any(_scope_conflict(certificate_files_scope("w1"), scope)
+                 for scope in (stack_scope("w1"), certificate_scope("w1"), certificate_files_scope("w2")))

@@ -1,13 +1,17 @@
 import logging
+from datetime import datetime
 from types import SimpleNamespace
 
 import pytest
 import requests
 
 from services import notification
+from services.db.models import Notification
 from services.notification import (CHANNELS, NOTIFICATION_STYLES, TEST_NOTIFICATION, ChannelCheckFailed, Notifications, _request_webhook,
-                                   webhook_failure)
+                                   list_notifications, webhook_failure)
 from services.settings import Settings
+from services.updates import UpdateFeed, Updates
+from tests.conftest import Signals
 
 URL = "https://discord.test/api/webhooks/1/SECRET-TOKEN"
 
@@ -64,8 +68,9 @@ def notifications(db):
 
 @pytest.fixture
 def configured_notifications(db):
-  Settings().set("notifications", {"discord_webhook": URL})
-  return Notifications()
+  notifications = Notifications()
+  notifications.install({"discord_webhook": URL}, 1)
+  return notifications
 
 
 class TestWebhookFailure:
@@ -165,19 +170,25 @@ class TestDiscordPayload:
 
 
 class TestLoadingTheConfig:
-  def test_values_come_from_the_notifications_settings(self, configured_notifications):
+  def test_values_come_from_the_installed_section(self, configured_notifications):
     assert configured_notifications.get_notification_value("discord_webhook") == URL
 
   def test_an_unknown_key_gives_the_default(self, notifications):
     assert notifications.get_notification_value("nope", "fallback") == "fallback"
 
-  def test_changed_settings_are_picked_up_on_reload(self, configured_notifications):
-    Settings().set("notifications", {"discord_webhook": "https://discord.test/other"})
+  def test_a_newly_installed_section_replaces_the_last_and_saved_settings_alone_do_not(self, configured_notifications):
+    Settings().set("notifications", {"discord_webhook": "https://discord.test/saved"})
     assert configured_notifications.get_notification_value("discord_webhook") == URL
 
-    configured_notifications.load_notifications_config()
+    configured_notifications.install({"discord_webhook": "https://discord.test/other"}, 2)
 
     assert configured_notifications.get_notification_value("discord_webhook") == "https://discord.test/other"
+
+  def test_a_revision_older_than_the_one_installed_is_ignored(self, configured_notifications):
+    configured_notifications.install({"discord_webhook": "https://discord.test/newer"}, 3)
+    configured_notifications.install({"discord_webhook": "https://discord.test/older"}, 2)
+    configured_notifications.install({"discord_webhook": "https://discord.test/again"}, 3)
+    assert configured_notifications.get_notification_value("discord_webhook") == "https://discord.test/newer"
 
 
 class TestCheckConfig:
@@ -272,3 +283,51 @@ class TestDispatch:
       configured_notifications.dispatch({"content": "hello"})
 
     assert "Failed to send notification to Discord: boom" in caplog.text
+
+
+class TestNotify:
+  @pytest.fixture
+  def sent(self, monkeypatch):
+    """What was handed to the channels' pool."""
+    sent = []
+    monkeypatch.setattr(notification, "submit_with_context", lambda executor, func, *args: sent.append((executor, func, args)))
+    return sent
+
+  @pytest.fixture
+  def hub(self, register):
+    return register(Updates, Signals())
+
+  def test_a_notice_is_recorded_pushed_and_sent_with_its_page_as_the_managers_address(
+          self, configured_notifications, hub, sent, caplog):
+    with caplog.at_level(logging.INFO, logger="services.notification"):
+      configured_notifications.notify("Demo / Web on w1 deployed.", "success", "/projects/demo/web")
+    [row] = Notification.select()
+    assert (row.type, row.content, row.link) == ("success", "Demo / Web on w1 deployed.",
+                                                 "https://manager.core.example.test/projects/demo/web")
+    [(feed, [pushed], _)] = hub.published
+    assert (feed, pushed["id"], pushed["link"]) == (UpdateFeed.NOTIFICATIONS, row.id, row.link)
+    [(executor, func, (instance,))] = sent
+    assert (executor, func, instance.id) == (notification.NOTIFICATIONS_EXECUTOR, configured_notifications.dispatch, row.id)
+    assert [(record.levelname, record.message) for record in caplog.records] == [("INFO", "Demo / Web on w1 deployed.")]
+
+  @pytest.mark.parametrize("level, logged", [("info", "INFO"), ("warning", "WARNING"), ("error", "ERROR")])
+  def test_a_notice_without_a_page_has_no_link_and_is_logged_at_its_level(self, notifications, hub, sent, caplog, level, logged):
+    with caplog.at_level(logging.INFO, logger="services.notification"):
+      notifications.notify("Manager started.", level)
+    assert (Notification.get().link, caplog.records[-1].levelname) == (None, logged)
+
+  def test_the_row_a_notice_pushes_is_the_row_the_list_returns(self, notifications, hub, sent):
+    notifications.notify("Demo / Web on w1 deployed.", "success", "/projects/demo/web")
+    [(_, [pushed], _)] = hub.published
+    assert [pushed] == list_notifications()
+
+
+class TestList:
+  def test_the_notices_are_newest_first_within_the_window_and_the_limit(self, db, clock):
+    for minute in range(4):
+      clock.set(datetime(2026, 1, 1, 9, minute))
+      Notification.create(content=f"n{minute}")
+    assert [row["content"] for row in list_notifications()] == ["n3", "n2", "n1", "n0"]
+    assert [row["content"] for row in list_notifications(limit=2)] == ["n3", "n2"]
+    assert [row["content"] for row in list_notifications(from_ts=datetime(2026, 1, 1, 9, 0),
+                                                         to_ts=datetime(2026, 1, 1, 9, 2))] == ["n2", "n1"]

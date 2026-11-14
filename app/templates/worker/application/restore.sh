@@ -1,12 +1,12 @@
 #!/bin/sh
 set -eu
 
-APP_ROOT="${WORKER_HOME_DIR}/applications"
-APP_NAME="${APP_NAME}"
-APP_DIR="$APP_ROOT/$APP_NAME"
-VOLUME_NAME="${VOLUME_NAME}"
-VOLUMES_DIR="$APP_DIR/volumes"
-VOLUME_DIR="$VOLUMES_DIR/$VOLUME_NAME"
+PLACEMENT_DIR="${PLACEMENT_DIR}"
+# The archive holds its volume under that volume's id; it is restored into the volume `VOLUME_ID`, which may be another.
+ARCHIVED_VOLUME_ID="${ARCHIVED_VOLUME_ID}"
+VOLUME_ID="${VOLUME_ID}"
+VOLUMES_DIR="$PLACEMENT_DIR/volumes"
+VOLUME_DIR="$VOLUMES_DIR/$VOLUME_ID"
 TMP_DIR="$(mktemp -d)"
 
 cleanup() {
@@ -86,12 +86,12 @@ openssl enc -d -aes-256-cbc -pbkdf2 \
   -out "$ARCHIVE_PATH" \
   -pass file:"$PASSPHRASE_PATH"
 
-tar -tzf "$ARCHIVE_PATH" >/dev/null
-
-rm -rf "$VOLUME_DIR"
-tar -C "$VOLUMES_DIR" -xzf "$ARCHIVE_PATH"
-
-if [ ! -d "$VOLUME_DIR" ]; then
-  echo "Restore did not recreate expected volume directory: $VOLUME_DIR" >&2
+mkdir "$TMP_DIR/unpacked"
+tar -C "$TMP_DIR/unpacked" -xzf "$ARCHIVE_PATH"
+if [ ! -d "$TMP_DIR/unpacked/$ARCHIVED_VOLUME_ID" ]; then
+  echo "Backup archive does not hold the volume it was taken of" >&2
   exit 1
 fi
+
+rm -rf "$VOLUME_DIR"
+mv "$TMP_DIR/unpacked/$ARCHIVED_VOLUME_ID" "$VOLUME_DIR"

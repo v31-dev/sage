@@ -6,9 +6,6 @@ from dataclasses import dataclass
 from enum import StrEnum, unique
 from typing import Awaitable, Callable
 
-from fastapi import HTTPException
-from fastapi.encoders import jsonable_encoder
-
 import config
 from services.base import Base
 from utils.executor import UPDATES_EXECUTOR, run_in_executor_with_context
@@ -24,11 +21,13 @@ class UpdateSource(StrEnum):
   QUEUE_STATE = "queue_state"        # running, paused, restoring or stopping
   RESTORING = "restoring"            # the backup being restored
   SETTINGS_APPLYING = "settings_applying"  # the task that makes each settings section apply
+  SETTINGS_TESTING = "settings_testing"    # whether each settings section's Test is queued or running
   BACKUP_STATUS = "backup_status"    # whether a platform backup runs or backups are being discovered
-  BACKUPS = "backups"                # a backup row was written
+  BACKUPS = "backups"                # a backup row was written, or the configured store changed
   WORKER_LIST = "worker_list"        # each worker's status, path, container count and subdomain
   CHECKS = "checks"                  # the result of checking a settings section
   CERTIFICATES = "certificates"
+  TUNNELS = "tunnels"                # each tunnel's health as known now
   LATEST_VERSION = "latest_version"  # the newest version released
   RELEASE = "release"                # a release was fetched
   APPLICATION = "application"        # keyed by `<project>/<name>`: the application, or a container, domain or volume of it, was written
@@ -57,9 +56,10 @@ class UpdateFeed(StrEnum):
   """The names of the feeds a connection can follow. A feed's owner sends each new row to it."""
   NOTIFICATIONS = "notifications"
   TASK_HISTORY = "task-history"
-  TASK_LOGS = "task-logs"                # a task's lines: `task-logs:<task>`, or a container's part `<task>/<part>`
+  TASK_LOGS = "task-logs"                # a task's lines: `task-logs:<task>`
   APPLICATION_LOGS = "application-logs"  # an application's lines: `application-logs:<project>-<app>`
   REQUESTS = "requests"                  # Traefik's requests on every worker
+  SETTING_TESTS = "setting-tests"        # a settings section's Test outcomes, `setting-tests:<section>`; stored nowhere
 
 
 @dataclass(frozen=True)
@@ -171,10 +171,13 @@ class Updates(Base):
     self._timer = None
     self._loop = None
     self._tasks: set[asyncio.Task] = set()
+    self._encode: Callable[[object], object] | None = None
 
-  def serve(self, topics: dict[UpdateTopic | UpdateFeed, Topic | Feed]):
-    """The topics and feeds a connection can follow: the table of the Socket.IO server."""
+  def serve(self, topics: dict[UpdateTopic | UpdateFeed, Topic | Feed], encode: Callable[[object], object]):
+    """The topics and feeds a connection can follow, the table of the Socket.IO server, and how their states and rows
+    are encoded: as the REST routes encode what they return."""
     self._topics = topics
+    self._encode = encode
 
   def connect(self, sid: str, emit: Emit):
     self._loop = asyncio.get_running_loop()
@@ -240,7 +243,7 @@ class Updates(Base):
     name = f"{feed}:{key}" if key else str(feed)
     if loop is None or name not in self._subscribers:
       return
-    frame = state_frame(name, jsonable_encoder(rows))
+    frame = state_frame(name, self._encode(rows))
     try:
       loop.call_soon_threadsafe(self._send, name, frame)
     except RuntimeError:
@@ -267,8 +270,7 @@ class Updates(Base):
 
   async def _refresh(self, name: str):
     """Compute the topic and send it to who follows it. One at a time per topic, so an older state never overtakes a
-    newer one. What the route answers instead of the state (a 404 for a resource that is gone) is sent as the topic's
-    error."""
+    newer one. A resource that is gone (`LookupError`, as a REST route answers 404) is sent as the topic's error."""
     if name in self._running:
       self._rerun.add(name)
       return
@@ -279,9 +281,9 @@ class Updates(Base):
         self._rerun.discard(name)
         try:
           frame = state_frame(name, await run_in_executor_with_context(
-              lambda: jsonable_encoder(topic.load(argument) if topic.parameterised else topic.load()), executor=UPDATES_EXECUTOR))
-        except HTTPException as answer:
-          frame = error_frame(name, answer.status_code)
+              lambda: self._encode(topic.load(argument) if topic.parameterised else topic.load()), executor=UPDATES_EXECUTOR))
+        except LookupError:
+          frame = error_frame(name, 404)
         except Exception:
           logger.warning(f"Could not compute the '{name}' topic.", exc_info=True)
           frame = None

@@ -1,12 +1,12 @@
 import { request } from '@/lib/api'
 import { parseDate } from '@/lib/utils'
-import type { Event } from './applications'
 
 interface TaskFields {
   task_id: string
   name: string
   scopes: string[]
-  params: Record<string, any>
+  params: Record<string, unknown>
+  labels: Record<string, string>
   executor: string
   status: string
   started_at: string | null
@@ -39,6 +39,7 @@ export const fetchTasks = () => request<QueueResponse>('GET', '/tasks/')
 export type TaskHistoryQuery = {
   name?: string
   scope?: string
+  label?: string
   executor?: string
   status?: string
   from_ts?: string
@@ -58,13 +59,15 @@ export const fetchTaskHistory = (query: TaskHistoryQuery = {}) =>
 // Whether the history route lets a finished task through `query`, its page aside: what a view keeps of the tasks
 // pushed to it.
 export function matchesTaskHistoryQuery(query: TaskHistoryQuery, task: FinishedTask) {
-  const { name, executor, status, scope, from_ts, to_ts } = query
+  const { name, executor, status, scope, label, from_ts, to_ts } = query
   const scoped = scope ? scopePattern(scope) : null
+  const fold = (text: string) => text.replace(/[A-Z]/g, letter => letter.toLowerCase())
   return (
     (!name || task.name === name) &&
     (!executor || task.executor === executor) &&
     (!status || task.status === status) &&
     (!scoped || task.scopes.some(each => scoped.test(each))) &&
+    (!label || Object.values(task.labels).some(value => fold(value).includes(fold(label)))) &&
     (!from_ts || parseDate(task.finished_at) >= new Date(from_ts)) &&
     (!to_ts || parseDate(task.created_at) <= new Date(to_ts))
   )
@@ -85,11 +88,10 @@ export interface TaskHistoryFilters {
 export const fetchTaskHistoryFilters = () =>
   request<TaskHistoryFilters>('GET', '/tasks/history/filters')
 
-// A line a queued task logged; `sub_task_id` is the container's part it belongs to, if any.
+// A line a queued task logged.
 export interface TaskLogLine {
   id: number
   task_id: string
-  sub_task_id: string
   ts: string
   level: string
   logger: string
@@ -101,19 +103,6 @@ export interface TaskLogPage {
   lines: TaskLogLine[]
 }
 
-// A container's part of a task; its kind and worker are null when its event went with its container.
-export interface TaskPart {
-  id: string
-  type: Event['type'] | null
-  worker: string | null
-}
-
-// The parts of a task that logged lines, in the order of their first line.
-export const fetchTaskParts = (taskId: string) =>
-  request<TaskPart[]>('GET', `/tasks/${taskId}/parts`)
-
-// A task's lines, or only those of one container's part of it; after the line `afterId`, if given.
-export const fetchTaskLogs = (taskId: string, subTaskId = '', afterId = 0) =>
-  request<TaskLogPage>('GET', `/tasks/${taskId}/logs`, {
-    query: { sub_task_id: subTaskId, after_id: afterId || null },
-  })
+// A task's lines; after the line `afterId`, if given.
+export const fetchTaskLogs = (taskId: string, afterId = 0) =>
+  request<TaskLogPage>('GET', `/tasks/${taskId}/logs`, { query: { after_id: afterId || null } })
