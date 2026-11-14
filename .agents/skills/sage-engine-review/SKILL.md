@@ -95,7 +95,10 @@ explicit `.acquire()` / `.release()` paths too; the lock list covers context-man
   inventory shows every call site keeping it. Do not hold code to a rule the AGENTS files lack; a gap in the rules is
   itself a finding.
 - A race needs the reachable interleaving and why the actual protection (scope, transaction, fingerprint,
-  generation) does not stop it. A deadlock needs the whole wait cycle. Accepted lag is not a bug.
+  generation) does not stop it. Reachable means through an entry point the subject has (a route, startup, a scheduled
+  job, a Fact callback, a body's follow-up request, a thread) and past its guards: the resource kinds, filters and
+  preconditions it admits. A probe that calls a lower-level writer directly shows the mechanism, not the
+  interleaving, and does not count as reproduced. A deadlock needs the whole wait cycle. Accepted lag is not a bug.
 - A comparison with an outside design (a workqueue, a lock manager) is checked against its source or docs and
   linked.
 - Settle a doubt on the real `TaskQueue`, `Fact` or `next_to_start` in the session's scratch space, task bodies
