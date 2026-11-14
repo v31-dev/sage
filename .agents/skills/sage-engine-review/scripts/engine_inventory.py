@@ -288,7 +288,8 @@ def main():
       rows.append(f"{site}  {function.name}  key={text(function, keywords, 'key', '—')}"
                   f"{'  name=' + text(function, keywords, 'name') if 'name' in keywords else ''}  scopes={scopes}"
                   f"  {policy.replace('OnConflict.', '')}  lane={text(function, keywords, 'executor')}"
-                  f"  quiet={text(function, keywords, 'quiet', 'False')}  task={text(function, keywords, 'task')}")
+                  f"  quiet={text(function, keywords, 'quiet', 'False')}  task={text(function, keywords, 'task')}"
+                  f"  params={text(function, keywords, 'params', '—')}  inputs={text(function, keywords, 'inputs', '—')}")
       if isinstance(task, ast.Name) and task.id in function.parameters:
         wrappers[function] = (task.id, keywords, site)
       for body in task_bodies(resolve, function, task):
@@ -313,7 +314,7 @@ def main():
         for body in task_bodies(resolve, function, given):
           tasks[body].append((f"{function.module.path}:{node.lineno} via {wrapper.name}", scopes, policy))
           rows.append(f"{function.module.path}:{node.lineno}  {function.name}  via {wrapper.name}  task={body.name}"
-                      f"  scopes={scopes}  {policy}")
+                      f"  scopes={scopes}  {policy}  call={segment(function.module.source, node, 220)}")
 
   def reaching(function, depth=12):
     """The task bodies that reach the function, and the roots without a task above them that call it."""

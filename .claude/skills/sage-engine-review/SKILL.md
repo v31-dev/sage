@@ -1,6 +1,6 @@
 ---
 name: sage-engine-review
-description: Check Sage's core operation engine and the code that uses it - that every task's scopes cover the resources it writes, that nothing can deadlock or race on those resources, and that the facts tasks and decisions read flow one way from their owners. Use when a change adds or alters a task, a scope, a remote write, a Fact, a lock or a decision table, when asked to evaluate the engine, or to check a planned design for it.
+description: Independently check Sage's core operation engine and the code that uses it - that every task's scopes cover the resources it writes, that nothing can deadlock or race on those resources, and that the facts tasks and decisions read flow one way from their owners. Use when a change adds or alters a task, a scope, a remote write, a Fact, a lock or a decision table, when asked to evaluate the engine, or to check a planned design for it.
 ---
 
 # Sage Engine Review
@@ -29,8 +29,11 @@ records findings; fixing one is a separate change the user approves.
 
 ## Ground it
 
-- Initialize the memory repo through [root AGENTS](../../../AGENTS.md#agent-memory) and read the tracker items on the
-  engine.
+- Initialize the memory repo through [root AGENTS](../../../AGENTS.md#agent-memory): read its global rules and
+  memory index, skipping review and todo/backlog content.
+- Every run is independent. Do not read, search, reuse or cite prior reviews, their inventories or probes, or
+  todo/backlog items. Do not use earlier review conclusions already in context as a checklist or evidence. Build
+  the inventory, probes and findings afresh from the source being reviewed.
 - Read the engine's files in full, the rules above, and the docs on the queue: backend.md's [Operation
   Queue](../../../docs/backend.md#operation-queue), [Pause And Stop](../../../docs/backend.md#pause-and-stop),
   [Execution Modes And Pools](../../../docs/backend.md#execution-modes-and-pools), [Choosing A Task
@@ -45,8 +48,8 @@ records findings; fixing one is a separate change the user approves.
 From the repository root, `python3 -I .agents/skills/sage-engine-review/scripts/engine_inventory.py app` lists, from
 the source:
 
-- **enqueues:** each `add_task` with its key, name, scopes (what a variable in them holds), policy, lane, quiet flag
-  and task body, and each call of a wrapper that enqueues the task it is given;
+- **enqueues:** each `add_task` with its key, name, scopes (what a variable in them holds), policy, lane, quiet flag,
+  task body, params and inputs, and each call of a wrapper that enqueues the task it is given, with that call;
 - **effects:** each remote call (SSH, Cloudflare, S3) by enclosing function, with every task body that reaches it
   through inline calls and that task's scopes and policy, or the root it is reached from when no task is;
 - **locks:** each block that holds a lock or a database transaction and what it calls, marking a request, a Fact
@@ -78,7 +81,9 @@ explicit `.acquire()` / `.release()` paths too; the lock list covers context-man
    waits for another queued task.
 3. **Consistency over time.** Enqueue, start, result: what a task freezes in `inputs`, what it reads again at its
    start, how its result is tied to what it applied (a fingerprint, a generation, its authority), and what guards it
-   against writers outside the queue. Each DEDUP key has its periodic pass; a change that must be seen after a running
+   against writers outside the queue. Each reference a task carries in its key, params or inputs resolves at its start
+   to the resource its scopes were built for: an id a deletion frees for reuse, or a row field another writer can
+   change, is a binding to check again. Each DEDUP key has its periodic pass; a change that must be seen after a running
    task uses REPLACE. Order between tasks comes from scopes or from a body's follow-up request; nothing relies on when
    a task starts or on the order of tasks that do not conflict, and nothing starts a task ahead of earlier conflicting
    work. An owner's memory that tasks sharing no scope write (one replacing it whole with what it gathered across an
@@ -110,9 +115,10 @@ explicit `.acquire()` / `.release()` paths too; the lock list covers context-man
 
 ## Record and hand off
 
-- Follow the memory repo's tracker rules. A finding is a numbered item with its detail file: locations, the
-  interleaving or wait cycle, the rule it breaks, a direction for the fix, the evidence and its limits. Update a
-  matching open item instead of adding another, and say which known findings still hold against the source.
+- Save each run's report in a new directory in the memory repo, with run-local numbered findings and a detail
+  file for each: locations, the interleaving or wait cycle, the rule it breaks, a direction for the fix, the evidence
+  and its limits. Do not read or update existing tracker items, deduplicate against them or reconcile the report
+  with earlier runs.
 - Report by the four questions, races and deadlocks first, then what was not verified.
 - Change no runtime code, test or doc during the review.
 
