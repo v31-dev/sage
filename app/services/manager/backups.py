@@ -201,9 +201,10 @@ class BackupsMixin:
     try:
       await Containers().write(container, record)
       volume = Volume.get_by_id(volume_id)
-      script = f"/tmp/sage-restore-{new_id()}.sh"
+      run = f"{config.WORKER_TMP_DIR}/restore-{new_id()}"
+      script = f"{run}/restore.sh"
       await Tailscale().sync_file(container.worker_id, config.TEMPLATES_DIR / "worker/application/restore.sh", script, {
-          "PLACEMENT_DIR": placement_dir(config.WORKER_HOME_DIR, container.id), "ARCHIVED_VOLUME_ID": backup.source_volume_id,
+          "RUN_DIR": run, "PLACEMENT_DIR": placement_dir(config.WORKER_HOME_DIR, container.id), "ARCHIVED_VOLUME_ID": backup.source_volume_id,
           "VOLUME_ID": volume.id, "ENCRYPTION_KEY": get_env("ENCRYPTION_KEY"),
           "DOWNLOAD_URL": session.create_presigned_download_url(backup.s3_path, config.WORKER_LINK_SECONDS, raw_path=True),
       }, mode=0o700)
@@ -266,10 +267,11 @@ class BackupsMixin:
                    .order_by(Volume.name)):
       name = archive_name(now)
       key = session.get_full_path(volume_archive_key(volume.id, container.id, name))
-      script = f"/tmp/sage-backup-{new_id()}.sh"
+      run = f"{config.WORKER_TMP_DIR}/backup-{new_id()}"
+      script = f"{run}/backup.sh"
       try:
         await Tailscale().sync_file(container.worker_id, config.TEMPLATES_DIR / "worker/application/backup.sh", script, {
-            "PLACEMENT_DIR": placement_dir(config.WORKER_HOME_DIR, container.id), "VOLUME_ID": volume.id,
+            "RUN_DIR": run, "PLACEMENT_DIR": placement_dir(config.WORKER_HOME_DIR, container.id), "VOLUME_ID": volume.id,
             "ARCHIVE_NAME": name, "ENCRYPTION_KEY": get_env("ENCRYPTION_KEY"),
             "UPLOAD_URL": session.create_presigned_upload_url(key, config.WORKER_LINK_SECONDS, raw_path=True),
         }, mode=0o700)

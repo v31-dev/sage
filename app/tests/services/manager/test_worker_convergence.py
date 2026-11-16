@@ -433,6 +433,30 @@ class TestStackRepair:
     assert (hosts.commands, events(), notices()) == ([], [], [])
 
 
+class TestTmpCleanup:
+  def test_each_worker_reachable_and_set_up_gets_a_quiet_cleanup_holding_the_whole_worker(self, manager, hosts, worker):
+    Worker.create(hostname="w2", subdomain="blue")
+    Worker.create(hostname="w3", subdomain="green")
+    hosts.found["w2"], hosts.found["w3"] = "unreachable", "reachable"
+    Workers().record_setup("w1", "succeeded", "100.64.0.2")
+    Workers().record_setup("w3", "failed")
+    manager.request_worker_tmp_cleanup()
+    assert requested(manager) == [("cleanup_worker_tmp", ["cleanup_worker_tmp", "w1"], [worker_scope("w1")], True)]
+
+  @pytest.mark.parametrize("found, setup", [("unreachable", "succeeded"), ("reachable", None), ("reachable", "failed")])
+  async def test_a_worker_no_longer_reachable_and_set_up_by_the_time_it_runs_is_left_alone(self, manager, hosts, worker, found, setup):
+    hosts.found["w1"] = found
+    Workers().record_setup("w1", setup)
+    await manager.cleanup_worker_tmp("w1")
+    assert hosts.commands == []
+
+  async def test_a_removed_worker_is_left_alone(self, manager, hosts, worker):
+    Workers().record_setup("w1", "succeeded", "100.64.0.2")
+    worker.delete_instance()
+    await manager.cleanup_worker_tmp("w1")
+    assert hosts.commands == []
+
+
 class TestRequests:
   async def test_a_reachable_worker_not_set_up_is_converged_quietly_and_one_that_does_not_answer_is_not(
           self, manager, hosts, worker, monotonic):

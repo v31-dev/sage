@@ -54,12 +54,12 @@ mkdir -p "$(dirname "$url")" && cp "$file" "$url" && printf 200
 
 
 class BackupWorker(Worker):
-  """The worker of the container tests, with curl replaced and its /tmp in the test's directory."""
+  """The worker of the container tests, with curl replaced."""
 
   def __init__(self, root: Path):
     super().__init__(root)
-    self.tmp = root / "tmp"
-    self.tmp.mkdir()
+    self.tmp = Path(config.WORKER_TMP_DIR)
+    self.tmp.mkdir(parents=True)
     curl = root / "bin" / "curl"
     curl.write_text(CURL)
     curl.chmod(stat.S_IRWXU)
@@ -68,13 +68,10 @@ class BackupWorker(Worker):
   def ssh(self, hostname):
     return "reachable" if self.reachable else "unreachable"
 
-  async def exec_command(self, hostname, command, timeout=300):
-    return await super().exec_command(hostname, command.replace("/tmp/sage-", f"{self.tmp}/sage-"), timeout)
-
   async def sync_file(self, hostname, src, dst, keys=None, formatter=None, timeout=120, mode=0o644):
-    if dst.startswith("/tmp/sage-"):
+    if dst.startswith(config.WORKER_TMP_DIR):
       self.scripts.append((dst, mode))
-    await super().sync_file(hostname, src, dst.replace("/tmp/sage-", f"{self.tmp}/sage-"), keys, formatter, timeout, mode)
+    await super().sync_file(hostname, src, dst, keys, formatter, timeout, mode)
 
   def fail_upload(self, part):
     (self.state / "upload-fails").write_text(part)
@@ -116,6 +113,7 @@ class Manager(BackupsMixin, BackupCatalogMixin, Lifecycle):
 @pytest.fixture
 def worker_host(register, tmp_path, monkeypatch):
   monkeypatch.setattr(config, "WORKER_HOME_DIR", str(tmp_path / "home"))
+  monkeypatch.setattr(config, "WORKER_TMP_DIR", str(tmp_path / "home" / "tmp"))
   return register(Tailscale, BackupWorker(tmp_path))
 
 
@@ -286,7 +284,7 @@ class TestAutomaticBackup:
     original = worker_host.exec_command
 
     async def exec_command(hostname, command, timeout=300):
-      log.append(command.split()[4] if command.startswith("docker compose -p") else "archive" if "sage-backup-" in command else None)
+      log.append(command.split()[4] if command.startswith("docker compose -p") else "archive" if command.endswith("/backup.sh") else None)
       return await original(hostname, command, timeout)
 
     worker_host.exec_command = exec_command

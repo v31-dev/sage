@@ -89,6 +89,7 @@ class TestRevisions:
   @pytest.fixture(autouse=True)
   def worker(self, register, tmp_path, monkeypatch):
     monkeypatch.setattr(config, "WORKER_HOME_DIR", str(tmp_path / "home"))
+    monkeypatch.setattr(config, "WORKER_TMP_DIR", str(tmp_path / "home" / "tmp"))
     register(Tailscale, Worker())
 
   async def test_a_worker_without_stamps_has_none(self):

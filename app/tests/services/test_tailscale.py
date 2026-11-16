@@ -366,7 +366,7 @@ class TestSyncFileWithAMode:
     assert sftp.files == {DESTINATION: {"data": b"TOKEN=abc", "mode": 0o600}}
     [(temporary, target)] = sftp.renames
     assert target == DESTINATION
-    assert posixpath.dirname(temporary) == posixpath.dirname(DESTINATION)
+    assert posixpath.dirname(temporary) == config.WORKER_TMP_DIR
     assert temporary != DESTINATION
 
   async def test_a_file_written_earlier_with_the_default_mode_is_replaced_not_rewritten(self, tailscale, sftp, template):
@@ -377,9 +377,9 @@ class TestSyncFileWithAMode:
     assert sftp.files[DESTINATION] == {"data": b"TOKEN=new", "mode": 0o600}
 
   async def test_a_script_gets_its_own_mode(self, tailscale, sftp, template):
-    await tailscale.sync_file(HOST, template, "/tmp/sage-backup-1234.sh", {"CONTENT": "x"}, mode=0o700)
+    await tailscale.sync_file(HOST, template, "/opt/sage/tmp/backup-1234/backup.sh", {"CONTENT": "x"}, mode=0o700)
 
-    assert sftp.files["/tmp/sage-backup-1234.sh"]["mode"] == 0o700
+    assert sftp.files["/opt/sage/tmp/backup-1234/backup.sh"]["mode"] == 0o700
 
   async def test_a_file_copied_as_it_is_keeps_every_byte(self, tailscale, sftp, tmp_path):
     key = tmp_path / "key.pem"
@@ -389,10 +389,10 @@ class TestSyncFileWithAMode:
 
     assert sftp.files == {"/opt/sage/traefik/certs/key.pem": {"data": key.read_bytes(), "mode": 0o600}}
 
-  async def test_the_parent_directory_is_made(self, tailscale, sftp, template):
+  async def test_the_parent_directory_and_the_temp_folder_are_made(self, tailscale, sftp, template):
     await tailscale.sync_file(HOST, template, DESTINATION, {"CONTENT": "x"}, mode=0o600)
 
-    assert sftp.directories == ["/opt/sage/applications/demo-web"]
+    assert sftp.directories == ["/opt/sage/applications/demo-web", config.WORKER_TMP_DIR]
 
 
 class TestSyncFileWithoutAMode:
@@ -402,7 +402,7 @@ class TestSyncFileWithoutAMode:
     assert sftp.files == {DESTINATION: {"data": b"TOKEN=new", "mode": 0o644}}
     [(temporary, target)] = sftp.renames
     assert target == DESTINATION
-    assert posixpath.dirname(temporary) == posixpath.dirname(DESTINATION)
+    assert posixpath.dirname(temporary) == config.WORKER_TMP_DIR
     assert temporary != DESTINATION
 
   async def test_a_file_written_earlier_with_another_mode_is_replaced_with_0o644(self, tailscale, sftp, template):

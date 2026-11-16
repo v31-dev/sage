@@ -154,6 +154,7 @@ class Lifecycle(ContainersMixin, LifecycleMixin, QueueMixin):
 @pytest.fixture
 def worker_host(register, tmp_path, monkeypatch):
   monkeypatch.setattr(config, "WORKER_HOME_DIR", str(tmp_path / "home"))
+  monkeypatch.setattr(config, "WORKER_TMP_DIR", str(tmp_path / "home" / "tmp"))
   return register(Tailscale, Worker(tmp_path))
 
 

@@ -118,6 +118,7 @@ uses a 30-second misfire grace period.
 | --- | --- | --- | --- |
 | `dispatch_tick` | Interval 1 s | No | Start eligible queued operations; no task of its own |
 | `observe_workers` | Interval 30 s | Yes | `observe_workers` |
+| `cleanup_worker_tmp` | `worker:<host>` · app | DEDUP / Q | `request_worker_tmp_cleanup`: daily 04:00 (`request_cleanup`), for each worker reachable and set up | No main-DB write. Re-checks the worker; removes its temp folder (`WORKER_TMP_DIR`, `/opt/sage/tmp`), where `sync_file` stages its files and each volume backup and restore runs its script. Holding the whole worker, it runs while no task of this Sage writes there; a script a killed manager left running loses its files and fails. |
 | `refresh_worker_paths` | Interval 60 s | Yes | `refresh_worker_paths` |
 | `list_tunnels` | Cron `* * * * *` | Yes | `list_tunnels` |
 | `observe_containers` | Every minute, `* * * * *` | Yes | `observe_containers` |
@@ -129,7 +130,7 @@ uses a 30-second misfire grace period.
 | `refresh_latest_release` | Every 4 h, `0 */4 * * *` | Yes | `request_release_check`: a quiet `refresh_latest_release` |
 | `backup_database` | 00:00 and 12:00, `0 */12 * * *` | No | `backup_platform`; nothing without a store |
 | `renew_certificates` | Daily 03:00, `0 3 * * *` | Yes | `renew_certificates` |
-| `cleanup` | Daily 04:00, `0 4 * * *` | No | `request_cleanup`: independent quiet tasks, `metrics_cleanup`, `logs_cleanup`, `purge_history`, `safety_copies_cleanup` and `prune_backups` (nothing without a store) |
+| `cleanup` | Daily 04:00, `0 4 * * *` | No | `request_cleanup`: independent quiet tasks, `metrics_cleanup`, `logs_cleanup`, `purge_history`, `safety_copies_cleanup`, `cleanup_worker_tmp` for each worker reachable and set up, and `prune_backups` (nothing without a store) |
 | `send_summary_notification` | Daily 08:00, `0 8 * * *` | No | `request_summary`: `send_summary_notification`; nothing without a notification channel |
 | `start_work` | Startup only | Yes | `request_startup`: the workers' observation and paths, the tunnel listing, the containers' observation, certificate renewal, the Domain pass, backup discovery, the settings checks, the release check; also after a platform restore |
 

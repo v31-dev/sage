@@ -7,6 +7,8 @@ DB_PATH = DATA_DIR / "data.db"
 STATIC_DIR = Path("/app/static")
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 WORKER_HOME_DIR = "/opt/sage"
+# Everything temporary Sage writes on a worker, removed whole by the daily cleanup.
+WORKER_TMP_DIR = f"{WORKER_HOME_DIR}/tmp"
 CGROUP_ROOT = Path("/sys/fs/cgroup")
 
 VERSION = (Path(__file__).parent / "VERSION").read_text().strip()

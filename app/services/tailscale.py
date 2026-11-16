@@ -324,8 +324,9 @@ class Tailscale(Base):
     directories are created.
 
     The file is created with `mode` (secrets 0o600, scripts 0o700) under a temporary
-    name beside `dst` and renamed over it: a reader finds the whole old file or the
-    whole new one, and `dst` takes `mode` even when an earlier copy had another one.
+    name in the worker's temp folder (`WORKER_TMP_DIR`, on the same filesystem as every
+    `dst`) and renamed over it: a reader finds the whole old file or the whole new one,
+    and `dst` takes `mode` even when an earlier copy had another one.
 
     `timeout` caps the whole connect+transfer so a wedged sync can't hold a
     task's scope forever.
@@ -348,9 +349,10 @@ class Tailscale(Base):
 
     async def _upload(conn):
       async with conn.start_sftp_client() as sftp:
-        if remote_dir:
-          await sftp.makedirs(remote_dir, exist_ok=True)
-        temporary = posixpath.join(remote_dir, f".{posixpath.basename(dst)}.{secrets.token_hex(4)}.tmp")
+        for directory in (remote_dir, config.WORKER_TMP_DIR):
+          if directory:
+            await sftp.makedirs(directory, exist_ok=True)
+        temporary = posixpath.join(config.WORKER_TMP_DIR, f"{posixpath.basename(dst)}.{secrets.token_hex(4)}.tmp")
         try:
           async with sftp.open(temporary, "wb", asyncssh.SFTPAttrs(permissions=mode)) as remote_file:
             await remote_file.write(data)

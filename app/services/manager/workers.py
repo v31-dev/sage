@@ -294,6 +294,21 @@ class WorkersMixin:
     else:
       logger.warning(f"Worker {hostname}'s stack was not ready, but starting it changed nothing.")
 
+  def request_worker_tmp_cleanup(self):
+    """Queues, for each worker reachable and set up, the removal of its temp folder (`WORKER_TMP_DIR`). It holds the
+    whole worker, so no work of this Sage writes there meanwhile."""
+    for worker in Worker.select(Worker.hostname):
+      if is_workable(worker.hostname):
+        self.add_task(task=self.cleanup_worker_tmp, key=("cleanup_worker_tmp", worker.hostname),
+                      scopes={worker_scope(worker.hostname)}, executor="app", params={"hostname": worker.hostname},
+                      labels={"Worker": worker.hostname}, quiet=True)
+
+  async def cleanup_worker_tmp(self, hostname: str):
+    if Worker.get_or_none(Worker.hostname == hostname) is None or not is_workable(hostname):
+      logger.info(f"Worker {hostname} is not there to clean up; nothing to do.")
+      return
+    await Tailscale().exec_command(hostname, f"rm -rf {config.WORKER_TMP_DIR}", timeout=120)
+
   def request_add_worker(self, host: str | None, subdomain: str | None) -> tuple[str, str]:
     """Adds the machine of the tailnet with that hostname (any case) or Tailscale IP as a worker, named by its hostname
     in lowercase, with its subdomain: its row now, then a queued add that sets it up. Its hostname and the task's id."""

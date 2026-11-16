@@ -4,11 +4,12 @@ set -eu
 PLACEMENT_DIR="${PLACEMENT_DIR}"
 VOLUME_ID="${VOLUME_ID}"
 VOLUME_DIR="$PLACEMENT_DIR/volumes/$VOLUME_ID"
-TMP_DIR="$(mktemp -d)"
+RUN_DIR="${RUN_DIR}"
+# Tailscale SSH ignores a new folder's mode, so the secrets go in one that mktemp makes private.
+TMP_DIR="$(mktemp -d "$RUN_DIR/work.XXXXXX")"
 
 cleanup() {
-  rm -rf "$TMP_DIR"
-  rm -f "$0"
+  rm -rf "$RUN_DIR"
 }
 
 trap cleanup EXIT

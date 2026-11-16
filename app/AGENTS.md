@@ -12,9 +12,10 @@ here and are not repeated. How the backend works (the queue's modes, each workfl
 - The container has no route into the tailnet: SSH to workers goes through `tailscale nc` (asyncssh `proxy_command`),
   and for HTTP the workers reach the manager (Telegraf's reports and Vector's logs on 9001), not the other way round.
   Internet calls (Cloudflare, S3, ACME, GitHub) go direct.
-- `sync_file` creates every file with its mode under a temporary name and renames it into place, so a reader never
-  finds a partial file. A file with a secret in it goes with `mode=0o600` (a script `0o700`; the default is `0o644`):
-  Tailscale SSH ignores the mode of a new directory, so the file's own mode is what keeps it private.
+- `sync_file` creates every file with its mode under a temporary name in `config.WORKER_TMP_DIR` and renames it into
+  place, so a reader never finds a partial file. Anything else temporary on a worker goes in that folder too: the
+  daily cleanup removes it whole. A file with a secret in it goes with `mode=0o600` (a script `0o700`; the default
+  is `0o644`): Tailscale SSH ignores the mode of a new directory, so the file's own mode is what keeps it private.
 
 ## Code Layout
 
