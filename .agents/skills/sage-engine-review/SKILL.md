@@ -75,7 +75,9 @@ lock wait on the provider, the event loop included.
    owner's writer), every task that reaches it and that task's scopes. On one lock path, each writer holds the
    resource's scope or an ancestor; under two roots, each writer holds both sides or only removes. A write no task
    reaches (a route, a callback, a thread) is a finding. Each scope is built by its resource's package; one built from
-   a binding that can change is checked again at the task's start.
+   a binding that can change is checked again at the task's start. A remote command can outlive the attempt that
+   started it (a dropped connection leaves it running until its worker-side timeout): a retry of it, or the next task
+   on its resource once the scope is released, is a second writer while it may still run.
 2. **Deadlock.** The wait graph over scopes, the queue lock, Fact locks, service locks, lanes, the event loop and
    SQLite: for each lock, what runs under it and on which threads. Name the edges the engine makes impossible (the
    code) and those a rule forbids (the rule), and the call sites that keep or break each: a Fact callback that checks
@@ -116,13 +118,43 @@ lock wait on the provider, the event loop included.
   `PYTHONDONTWRITEBYTECODE=1 pytest --no-cov -p no:cacheprovider` from `app/`.
 - Grade each finding: source-proven, reproduced or live-verified. A passing suite or a bounded review does not prove
   the absence of races.
+- Give each finding a priority by its worst reachable outcome, apart from its grade: P0 loses or corrupts data or
+  committed state, or deadlocks the manager; P1 leaves a wrong state that lasts until someone acts (a second writer,
+  a row stuck, a refusal held for good, a stalled event loop); P2 loses or delays work that a pass or a later request
+  brings back, or needs a narrow window; P3 is a gap in the rules or an unguarded edge no reachable interleaving
+  shows yet.
 
 ## Record and hand off
 
-- Save each run's report in a new directory in the memory repo, with run-local numbered findings and a detail
-  file for each: locations, the interleaving or wait cycle, the rule it breaks, a direction for the fix, the evidence
-  and its limits. Do not read or update existing tracker items, deduplicate against them or reconcile the report
-  with earlier runs.
+- Save each run in a new directory `<memory repo>/sage/engine-review-<short commit>-<YYYYMMDD>/` (a second run on
+  the same commit and day adds `-2`); a focus goes in the subject, not the name. Do not read or update existing
+  tracker items, deduplicate against them or reconcile the report with earlier runs. The layout:
+
+  ```text
+  engine-review-<short commit>-<YYYYMMDD>/
+    README.md              the report
+    findings/NN-<slug>.md  one per finding, numbered from 01 in report order
+    evidence/
+      inventory.txt        the script's output (inventory-baseline.txt too, for a change)
+      probes.py            the probes, one test_NN_<slug> per finding they settle
+      probes.log           the probes' run
+      suite.log            the suites' run
+      planted.log          each planted violation and what caught it
+  ```
+
+- `README.md`: `# Engine review — <short commit> (<YYYY-MM-DD>)`, then a subject paragraph (the subject, full
+  commit, branch and tree state, the focus, anything read beyond the source and why, and the suite and probe
+  commands with their results). Then `## Findings`, a table `# | Priority | Question | Finding | Grade` linking each
+  detail file; one section per question, `## 1. Races on the resources tasks touch`, `## 2. Deadlock`, `## 3.
+  Consistency over time`, `## 4. Data flow`, each answered with source locations and citing findings by number, and
+  what was checked and holds; then `## Not verified`, `## Out of scope` (one line each) and `## Skill changes`
+  ("None" when none).
+- A finding file: `# NN — <the claim in one line>`, then `Priority: P<n>. Question: <n. name>. Grade: <grade>
+  (<how>).`, then `## Locations`, `## Interleaving` (or `## Wait cycle`), `## Why the protection doesn't hold`,
+  `## Rule`, `## Direction` and `## Evidence and limits`, which names the `evidence/` file and test that shows it and
+  what it does not show. Probe code lives in `probes.py`, not in a finding; a few quoted lines are fine.
+- `evidence/` holds only files the run produced and leaves out one with nothing in it. `probes.py` runs from an
+  extracted copy of `app/` in scratch space, with its command in its docstring.
 - Report by the four questions, races and deadlocks first, then what was not verified.
 - Change no runtime code, test or doc during the review.
 

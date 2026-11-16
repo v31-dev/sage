@@ -256,6 +256,9 @@ def task_bodies(resolve, function, value):
     return resolve(function, "class", value.attr, value.value.func.id)
   if isinstance(value, ast.Name):
     return resolve(function, "function", value.id, None)
+  if isinstance(value, ast.Call):
+    # A body wrapped by a call, `task=settling(self.backup)`: the bodies it is given.
+    return [body for argument in value.args for body in task_bodies(resolve, function, argument)]
   return []
 
 
@@ -326,6 +329,9 @@ def main():
           found[current] = tasks[current]
           continue
         above = callers.get(current, ())
+        if not above and current.parent is not None:
+          # A closure passed as a value (to a retry, or as a pre-check) runs for the function that defines it.
+          above = {current.parent}
         if not above:
           roots.add(f"route {current.name}" if current.module.name.startswith("routes/")
                     else f"{current.name}, which is passed as a value" if current.parent is not None else current.name)
