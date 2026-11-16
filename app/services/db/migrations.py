@@ -172,8 +172,9 @@ def from_0_1_3(db: SqliteDatabase) -> list[dict]:
         f"{home}/revisions/{qualified[row['application_id']]}" for row in placed),
         "why": "Removes what 0.1.3 left of its applications, once every move above has succeeded."})
   actions.append({"where": "Cloudflare", "command": None,
-                  "why": f"Delete the DNS record *.{domain} and the tunnel {domain}-sage: 0.1.3 routed every public "
-                  "name through them, and this version names each one and has a tunnel of its own."})
+                  "why": f"Delete the DNS record *.{domain} and the tunnel {domain}-sage. 0.1.3 routed every public "
+                  "name through them; until they're gone, a name without its own record reaches the idle tunnel "
+                  "and gets Cloudflare's error page."})
   actions.append({"where": "the S3 store", "command": None,
                   "why": "0.1.3's backups, under backups/platform/ and backups/applications/ without an id in their "
                          "names, are no longer listed: keep them for a restore by hand, or delete them."})

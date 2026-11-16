@@ -145,7 +145,9 @@ def test_the_actions_go_worker_by_worker_then_cloudflare_the_store_and_the_domai
   assert f"/opt/sage/containers/{web['w1']}/volumes/{volumes['data']}" in steps[2][1]
   assert steps[3][1] == "rm -rf /opt/sage/applications && rm -f /opt/sage/revisions/shop-web"
   assert f"/opt/sage/containers/{web['w2']}/volumes/{volumes['data']}" in steps[6][1]
-  assert "*.example.test" in steps[8][2] and "example.test-sage" in steps[8][2]
+  assert steps[8][2] == ("Delete the DNS record *.example.test and the tunnel example.test-sage. 0.1.3 routed every "
+                         "public name through them; until they're gone, a name without its own record reaches the idle "
+                         "tunnel and gets Cloudflare's error page.")
   assert [why for where, _, why in steps if where == "Sage"] == [
       "Add the internal domain web (port 8080) of shop-web again, linked to the container that serves it.",
       "Add the public domain shop (port 80) of shop-web again, linked to the container that serves it."]

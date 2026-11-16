@@ -1,13 +1,16 @@
 """A host's metrics file: its size, its minutes and its containers' minutes."""
+from pathlib import Path
+
 from peewee import CharField, CompositeKey, DateTimeField, FloatField, IntegerField, Model, SqliteDatabase
 
-from services.db.migrator import migrate, models_schema
+from services.db.migrator import discard, migrate, models_schema, unsound
 
 from . import migrations
 
 
-def open_shard(path: str) -> dict:
-  """The host's file at `path`, created when missing: its database and its models by name."""
+def open_shard(path: str, again: bool = True) -> dict:
+  """The host's file at `path`, created when missing and started again empty, once, when it isn't a sound database:
+  its database and its models by name."""
   db = SqliteDatabase(
       path,
       pragmas={
@@ -51,12 +54,15 @@ def open_shard(path: str) -> dict:
     class Meta:
       primary_key = CompositeKey("name", "ts")
 
-  db.connect(reuse_if_open=True)
   try:
+    db.connect(reuse_if_open=True)
     migrate(db, migrations.BASELINE, migrations.STEPS, models_schema([WorkerMeta, WorkerMetrics, ContainerMetrics]), disposable=True)
-  except Exception:
+  except Exception as error:
     db.close()
-    raise
+    if not (again and unsound(error)):
+      raise
+    discard(Path(path), error)
+    return open_shard(path, again=False)
   return {
       "db": db,
       "models": {
