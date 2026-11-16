@@ -3,6 +3,7 @@ import pytest
 import config
 from services.db.models import Application, Container, Project, Worker
 from services.logs import Logs
+from utils.errors import Conflict
 
 URL = "/api/projects/demo/applications"
 
@@ -41,14 +42,13 @@ class TestApplication:
     assert client.put("/api/projects/other/applications/web", json={"image": "redis"}).status_code == 404
     assert other.applications.count() == 0 and Application.get_by_id(application.id).image == "nginx"
 
-  def test_an_application_without_containers_is_deleted_with_no_content(self, client, application):
+  def test_a_delete_asks_for_the_applications_deletion_with_no_content(self, client, application, manager):
     assert client.delete(f"{URL}/web").status_code == 204
-    assert Application.select().count() == 0
+    assert manager.called("request_application_deletion") == [((application.id,), {})]
 
-  def test_one_with_containers_is_refused_and_stays(self, client, application, worker):
-    Container.create(application=application, worker=worker)
+  def test_a_refused_deletion_is_a_409(self, client, application, manager):
+    manager.answers["request_application_deletion"] = Conflict("An application with containers can't be deleted.")
     assert client.delete(f"{URL}/web").status_code == 409
-    assert Application.select().count() == 1
 
 
 class TestAllContainers:

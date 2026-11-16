@@ -3,7 +3,7 @@ import pytest
 from services.applications import commands
 from services.applications.commands import (attach_container, create_application, create_project, create_volume, delete_application, delete_project,
                                             delete_volume, detach_container, patch_application, patch_project, patch_volume)
-from services.db.models import Application, Container, ContainerEvent, Domain, Project, Volume, Worker
+from services.db.models import Application, Backup, Container, ContainerEvent, Domain, Project, Volume, Worker
 from services.updates import UpdateSource
 from utils.errors import Conflict
 
@@ -186,6 +186,18 @@ class TestVolume:
       create_volume(application.id, "data", "/other")
     with pytest.raises(Conflict, match="A volume named 'data' already exists in this application."):
       patch_volume(other.id, {"name": "data"})
+
+  @pytest.mark.parametrize("status, refused", [("queued", True), ("running", True), ("succeeded", False), ("failed", False)])
+  def test_one_with_a_backup_being_taken_cannot_be_deleted(self, application, status, refused):
+    volume = create_volume(application.id, "data", "/data")
+    Backup.create(s3_path="k", storage_id="s1", type="application", source_volume_id=volume.id, source_volume_name="data",
+                  application=application, status=status)
+    if refused:
+      with pytest.raises(Conflict, match="A volume with a backup being taken can't be deleted."):
+        delete_volume(volume.id)
+    else:
+      delete_volume(volume.id)
+    assert Volume.select().exists() is refused
 
   def test_a_rename_keeps_its_identity(self, application):
     volume = create_volume(application.id, "data", "/data", "0 3 * * *")

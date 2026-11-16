@@ -23,7 +23,8 @@ def update_volume(project: str, application: str, volume: str, data: dict = Body
 
 @router.delete("/{volume}", status_code=204)
 def delete_volume(project: str, application: str, volume: str):
-  commands.delete_volume(find_volume(find_application(project, application).id, volume).id)
+  """The volume deleted, and the deletion of its backups queued."""
+  Manager().request_volume_deletion(find_volume(find_application(project, application).id, volume).id)
 
 
 @router.get("/{volume}/backups/")
@@ -41,6 +42,13 @@ def back_up(project: str, application: str, volume: str):
 @router.get("/{volume}/backups/{backup}/download")
 def download_backup(project: str, application: str, volume: str, backup: str):
   return download_link(volume_backup(find_volume(find_application(project, application).id, volume).id, backup))
+
+
+@router.delete("/{volume}/backups/{backup}")
+def delete_backup(project: str, application: str, volume: str, backup: str):
+  """Queues deletion of the backup's archive, then marks it deleted; one that was not completed is marked at once."""
+  return {"task_id": Manager().request_backup_deletion(
+      volume_backup(find_volume(find_application(project, application).id, volume).id, backup).id)}
 
 
 @router.post("/{volume}/backups/{backup}/restore")

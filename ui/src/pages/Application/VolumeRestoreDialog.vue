@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onUnmounted, ref, watch } from 'vue'
 import { toast } from 'vue-sonner'
-import { ArchiveRestore, Download } from 'lucide-vue-next'
+import { ArchiveRestore, Download, Trash } from 'lucide-vue-next'
 
 import {
   Dialog,
@@ -13,6 +13,16 @@ import {
   DialogTrigger,
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
+import { Collapsible, CollapsibleContent } from '@/components/ui/collapsible'
+import {
+  Item,
+  ItemActions,
+  ItemContent,
+  ItemDescription,
+  ItemFooter,
+  ItemGroup,
+  ItemTitle,
+} from '@/components/ui/item'
 import { Label } from '@/components/ui/label'
 import {
   Select,
@@ -22,19 +32,25 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Spinner } from '@/components/ui/spinner'
+import BackupState from '@/components/BackupState.vue'
+import ConfirmationButton from '@/components/ConfirmationButton.vue'
 import {
   type Application,
   type Backup,
+  deleteVolumeBackup,
   downloadVolumeBackup,
   fetchVolumeBackups,
   refusesRequests,
   restoreVolumeBackup,
   type Volume,
 } from '@/services/api'
+import { watchState } from '@/lib/updates'
 import { formatDate } from '@/lib/utils'
 
-// The volume's backups, each downloadable, and restoring one into a stopped container of the application, into this
-// volume or another of the application's; the page is loaded again once the restore is queued.
+// The volume's backups, newest first, as the manager pushes them while the dialog is open: each taken one can be
+// downloaded, deleted or restored into a stopped container of the application, into this volume or another of the
+// application's, and another finished one deleted. One row's restore is open at a time; the page is loaded again
+// once a restore is queued.
 const props = defineProps<{
   application: Application
   volume: Volume
@@ -46,13 +62,11 @@ const isLoading = ref(false)
 const isRestoring = ref(false)
 const loadError = ref('')
 const backups = ref<Backup[]>([])
-const selectedBackupId = ref('')
+const restoringId = ref('')
 const selectedContainerId = ref('')
 const selectedVolume = ref('')
+let stop: (() => void) | undefined
 
-const selectedBackup = computed(
-  () => backups.value.find(backup => backup.id === selectedBackupId.value) ?? null
-)
 const selectedContainer = computed(
   () =>
     props.application.containers.find(container => container.id === selectedContainerId.value) ??
@@ -65,45 +79,62 @@ const containerStopped = computed(
     !refusesRequests(selectedContainer.value)
 )
 const restoreDisabled = computed(
-  () =>
-    !selectedBackup.value || !containerStopped.value || !selectedVolume.value || isRestoring.value
+  () => !containerStopped.value || !selectedVolume.value || isRestoring.value
 )
 
-async function loadBackups() {
-  isLoading.value = true
-  loadError.value = ''
+const finished = (backup: Backup) => backup.status !== 'queued' && backup.status !== 'running'
 
-  try {
-    backups.value = await fetchVolumeBackups(
-      props.application.project.name,
-      props.application.name,
-      props.volume.name
-    )
-    selectedBackupId.value = backups.value[0]?.id ?? ''
-  } catch (err) {
-    loadError.value = err instanceof Error ? err.message : 'Failed to load backups'
-  } finally {
-    isLoading.value = false
+const details = (backup: Backup) =>
+  [
+    `Volume ${backup.source_volume_name}`,
+    backup.automatic ? 'scheduled' : 'on request',
+    backup.worker_hostname && `from ${backup.worker_hostname}`,
+  ]
+    .filter(Boolean)
+    .join(' · ')
+
+function showBackups(next: Backup[]) {
+  backups.value = next
+  if (!next.some(backup => backup.id === restoringId.value && backup.status === 'succeeded')) {
+    restoringId.value = ''
   }
 }
 
-async function onClickDownload() {
-  if (!selectedBackup.value) return
+function openRestore(backup: Backup) {
+  restoringId.value = restoringId.value === backup.id ? '' : backup.id
+  selectedContainerId.value = props.application.containers[0]?.id ?? ''
+  selectedVolume.value = props.volume.name
+}
 
+async function onClickDownload(backup: Backup) {
   try {
     await downloadVolumeBackup(
       props.application.project.name,
       props.application.name,
       props.volume.name,
-      selectedBackup.value.id
+      backup.id
     )
   } catch (err) {
     toast.error(err instanceof Error ? err.message : 'Failed to download backup')
   }
 }
 
-async function onClickRestore() {
-  if (!selectedBackup.value || !selectedContainer.value) return
+async function onConfirmDelete(backup: Backup) {
+  try {
+    const { task_id } = await deleteVolumeBackup(
+      props.application.project.name,
+      props.application.name,
+      props.volume.name,
+      backup.id
+    )
+    toast.success(task_id ? 'Backup deletion queued' : 'Backup deleted')
+  } catch (err) {
+    toast.error(err instanceof Error ? err.message : 'Failed to delete backup')
+  }
+}
+
+async function onClickRestore(backup: Backup) {
+  if (!selectedContainer.value) return
 
   isRestoring.value = true
   try {
@@ -111,7 +142,7 @@ async function onClickRestore() {
       props.application.project.name,
       props.application.name,
       props.volume.name,
-      selectedBackup.value.id,
+      backup.id,
       selectedContainer.value.id,
       selectedVolume.value
     )
@@ -126,12 +157,29 @@ async function onClickRestore() {
 }
 
 watch(isOpen, async open => {
+  stop?.()
+  stop = undefined
   if (!open) return
 
-  selectedContainerId.value = props.application.containers[0]?.id ?? ''
-  selectedVolume.value = props.volume.name
-  await loadBackups()
+  restoringId.value = ''
+  isLoading.value = true
+  loadError.value = ''
+  const followed = watchState(
+    `volume-backups:${props.volume.id}`,
+    () =>
+      fetchVolumeBackups(props.application.project.name, props.application.name, props.volume.name),
+    showBackups
+  )
+  stop = followed.stop
+  try {
+    await followed.first
+  } catch (err) {
+    loadError.value = err instanceof Error ? err.message : 'Failed to load backups'
+  } finally {
+    isLoading.value = false
+  }
 })
+onUnmounted(() => stop?.())
 </script>
 
 <template>
@@ -139,111 +187,120 @@ watch(isOpen, async open => {
     <DialogTrigger asChild>
       <Button size="sm" class="flex-1" variant="outline"> <ArchiveRestore />Restore </Button>
     </DialogTrigger>
-    <DialogContent class="sm:max-w-xl">
+    <DialogContent class="sm:max-w-3xl">
       <DialogHeader>
-        <DialogTitle>Restore Volume</DialogTitle>
+        <DialogTitle>Backups of {{ props.volume.name }}</DialogTitle>
         <DialogDescription>
-          Backups for volume {{ props.volume.name }}. Restore will wipe the selected target volume
-          before extracting backup contents.
+          Each backup of this volume, newest first. A restore clears the chosen volume of the chosen
+          container before the backup is put in its place.
         </DialogDescription>
       </DialogHeader>
 
-      <div class="rounded-md border bg-destructive/5 text-sm text-muted-foreground p-3">
-        Restore is destructive. The target volume of the chosen container is cleared before the
-        backup is extracted into it.
+      <div v-if="isLoading" class="flex items-center justify-center py-8 rounded-md border">
+        <Spinner class="animate-spin" />
       </div>
-
-      <div class="space-y-4">
-        <div class="space-y-2">
-          <Label>Backup</Label>
-          <div v-if="isLoading" class="flex items-center justify-center py-8 rounded-md border">
-            <Spinner class="animate-spin" />
-          </div>
-          <div v-else-if="loadError" class="text-sm text-destructive">
-            {{ loadError }}
-          </div>
-          <div v-else-if="backups.length === 0" class="text-sm text-muted-foreground py-4">
-            No backups found for this volume.
-          </div>
-          <div v-else class="space-y-3">
-            <Select v-model="selectedBackupId">
-              <SelectTrigger>
-                <SelectValue placeholder="Select backup" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem v-for="backup in backups" :key="backup.id" :value="backup.id">
-                  {{ formatDate(backup.created_at) }}
-                </SelectItem>
-              </SelectContent>
-            </Select>
-
-            <div
-              v-if="selectedBackup"
-              class="rounded-md border p-3 text-sm text-muted-foreground space-y-1"
-            >
-              <p>Taken: {{ formatDate(selectedBackup.created_at) }}</p>
-              <p>Of volume: {{ selectedBackup.source_volume_name }}</p>
-              <p class="break-all">S3 Path: {{ selectedBackup.s3_path }}</p>
-            </div>
-          </div>
-        </div>
-
-        <div class="space-y-2">
-          <Label>Into the container on</Label>
-          <Select v-model="selectedContainerId">
-            <SelectTrigger>
-              <SelectValue placeholder="Select a container" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem
-                v-for="container in props.application.containers"
-                :key="container.id"
-                :value="container.id"
-              >
-                {{ container.worker.hostname }} ({{ container.view.headline }})
-              </SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-
-        <div class="space-y-2">
-          <Label>Into the volume</Label>
-          <Select v-model="selectedVolume">
-            <SelectTrigger>
-              <SelectValue placeholder="Select a volume" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem
-                v-for="volume in props.application.volumes"
-                :key="volume.id"
-                :value="volume.name"
-              >
-                {{ volume.name }}
-              </SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-
-        <p v-if="selectedContainer && !containerStopped" class="text-sm text-muted-foreground">
-          A restore needs the container stopped. You can still browse and download the backups.
-        </p>
+      <div v-else-if="loadError" class="text-sm text-destructive">
+        {{ loadError }}
       </div>
+      <div v-else-if="backups.length === 0" class="text-sm text-muted-foreground py-4">
+        No backups of this volume yet.
+      </div>
+      <ItemGroup v-else class="max-h-[60vh] overflow-y-auto gap-2">
+        <Collapsible
+          v-for="backup in backups"
+          :key="backup.id"
+          :open="restoringId === backup.id"
+          asChild
+        >
+          <Item variant="outline" class="flex-wrap" :data-backup="backup.id">
+            <ItemContent class="min-w-60">
+              <ItemTitle>{{ formatDate(backup.created_at) }}</ItemTitle>
+              <ItemDescription>{{ details(backup) }}</ItemDescription>
+              <BackupState :backup="backup" />
+            </ItemContent>
+            <ItemActions v-if="finished(backup)" class="gap-2">
+              <template v-if="backup.status === 'succeeded'">
+                <Button size="sm" variant="outline" @click="onClickDownload(backup)">
+                  <Download />Download
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  :aria-expanded="restoringId === backup.id"
+                  @click="openRestore(backup)"
+                >
+                  <ArchiveRestore />Restore
+                </Button>
+              </template>
+              <ConfirmationButton
+                triggerText="Delete"
+                :title="'Delete backup ' + formatDate(backup.created_at)"
+                body="This backup is deleted from the store. This can't be undone."
+                :description="`Backup of ${backup.source_volume_name}`"
+                :icon="Trash"
+                destructive
+                :onConfirm="() => onConfirmDelete(backup)"
+              />
+            </ItemActions>
+            <CollapsibleContent asChild>
+              <ItemFooter class="basis-full flex-col items-stretch gap-3" data-restore>
+                <div class="grid gap-3 sm:grid-cols-2">
+                  <div class="space-y-2">
+                    <Label>Into the container on</Label>
+                    <Select v-model="selectedContainerId">
+                      <SelectTrigger class="w-full">
+                        <SelectValue placeholder="Select a container" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem
+                          v-for="container in props.application.containers"
+                          :key="container.id"
+                          :value="container.id"
+                        >
+                          {{ container.worker.hostname }} ({{ container.view.headline }})
+                        </SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div class="space-y-2">
+                    <Label>Into the volume</Label>
+                    <Select v-model="selectedVolume">
+                      <SelectTrigger class="w-full">
+                        <SelectValue placeholder="Select a volume" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem
+                          v-for="volume in props.application.volumes"
+                          :key="volume.id"
+                          :value="volume.name"
+                        >
+                          {{ volume.name }}
+                        </SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+                <p
+                  v-if="selectedContainer && !containerStopped"
+                  class="text-sm text-muted-foreground"
+                >
+                  A restore needs the container stopped.
+                </p>
+                <div class="flex justify-end gap-2">
+                  <Button size="sm" variant="outline" @click="restoringId = ''">Cancel</Button>
+                  <Button size="sm" :disabled="restoreDisabled" @click="onClickRestore(backup)">
+                    <Spinner class="animate-spin" v-if="isRestoring" />
+                    <ArchiveRestore v-else />Restore here
+                  </Button>
+                </div>
+              </ItemFooter>
+            </CollapsibleContent>
+          </Item>
+        </Collapsible>
+      </ItemGroup>
 
       <DialogFooter>
         <Button size="sm" type="button" variant="outline" @click="isOpen = false">Close</Button>
-        <Button
-          size="sm"
-          type="button"
-          variant="outline"
-          :disabled="!selectedBackup"
-          @click="onClickDownload"
-        >
-          <Download />Download
-        </Button>
-        <Button size="sm" :disabled="restoreDisabled" @click="onClickRestore">
-          <Spinner class="animate-spin" v-if="isRestoring" />
-          <ArchiveRestore v-else />Restore
-        </Button>
       </DialogFooter>
     </DialogContent>
   </Dialog>

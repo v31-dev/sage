@@ -4,13 +4,15 @@ Tasks name volumes by their names in their labels: their ids mean nothing to peo
 another volume, on another container and worker."""
 import logging
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from croniter import croniter
 
 import config
-from services.backups.commands import add_backup
-from services.backups.keys import archive_name, archive_scope, archive_write_scope, taken_at, volume_archive_key
+from services.backups.catalog import CatalogPlan
+from services.backups.commands import add_backups, apply_catalog, requeue_backups, settle_backups
+from services.backups.decisions import SlotRow, slot_due
+from services.backups.keys import VOLUME_ARCHIVE_SUFFIX, archive_name, archive_scope, archive_write_scope, taken_at, volume_archive_key
 from services.containers.decisions import maintenance_refusal
 from services.containers.placement import placement_dir, placement_scope
 from services.containers.record import Authority, Baseline, Settled
@@ -24,6 +26,7 @@ from utils.common import get_env, new_id, utcnow
 from utils.errors import Conflict
 from utils.logging import TaskFailed
 from utils.queue import Outcome
+from utils.retry import is_transient, retry_async
 
 from .lifecycle import REFUSALS, Refused, mark
 
@@ -39,59 +42,112 @@ def configured_session(storage_id: str | None = None) -> S3Session | None:
   return session if storage_id in (None, session.identity) else None
 
 
+def settling(task):
+  """The backup task body `task`, its backups (`backup_ids`) set running as it starts and those it leaves unfinished
+  failed when it fails, its error as their reason."""
+  async def run(**arguments):
+    settle_backups(arguments["backup_ids"], "running")
+    # Only an outcome settles them: a body cancelled by the loop's shutdown leaves them to the next start's discovery.
+    try:
+      await task(**arguments)
+    except Exception as error:
+      settle_backups(arguments["backup_ids"], "failed", str(error) or "it could not be completed")
+      raise
+  return run
+
+
 class BackupsMixin:
   def request_backup(self, application_id: int, volume_ids: list[str]) -> list[str]:
     """Queues a backup of the volumes from each of the application's containers into the configured store, each in
-    its container's lifecycle slot; refused unless every one of them is stopped. The ids of the tasks queued."""
+    its container's lifecycle slot with its backups recorded queued, one per volume (dropped again when the queue
+    does not take it); refused unless every one of them is stopped. The ids of the tasks queued."""
     session = S3().session()
-    names = [volume.name for volume in Volume.select(Volume.name).where(
-        (Volume.application == application_id) & Volume.id.in_(volume_ids)).order_by(Volume.name)]
-    if not volume_ids or len(names) != len(set(volume_ids)):
+    volumes = list(Volume.select().where((Volume.application == application_id) & Volume.id.in_(volume_ids))
+                   .order_by(Volume.name))
+    if not volume_ids or len(volumes) != len(set(volume_ids)):
       raise ValueError("Choose volumes of this application to back up.")
     containers = self.application_containers(application_id)
     refusal = self._request_refusal("backup_stopped", containers)
     if refusal is not None:
       raise Conflict(f"A container of this application can't be backed up: {REFUSALS[refusal]}.")
-    added = [self.queue_lifecycle(container, "backup_stopped", self.backup_container, {},
-                                  {"volume_ids": sorted(set(volume_ids)), "storage_id": session.identity},
-                                  (archive_write_scope(session.identity, container.id),), {"Volumes": ", ".join(names)})
-             for container in containers]
-    return [result.task_id for result in added if result.outcome == Outcome.ACCEPTED]
+    now, task_ids = utcnow(), []
+    for container in containers:
+      backup_ids = add_backups(session.identity, now, False, [
+          session.get_full_path(volume_archive_key(volume.id, container.id, archive_name(now))) for volume in volumes],
+          volumes, container)
+      added = self.queue_lifecycle(container, "backup_stopped", settling(self.backup_container), {},
+                                   {"backup_ids": backup_ids, "storage_id": session.identity},
+                                   (archive_write_scope(session.identity, container.id),),
+                                   {"Volumes": ", ".join(volume.name for volume in volumes)})
+      if added.outcome == Outcome.ACCEPTED:
+        task_ids.append(added.task_id)
+      else:
+        apply_catalog(CatalogPlan(deletes=backup_ids))
+    return task_ids
 
-  def request_automatic_backups(self, now: datetime):
-    """Queues, for each container of an application with volumes due now by their schedule and not backed up this
-    minute, an automatic backup of those volumes into the configured store; nothing without one. It has its own key,
-    by container and volumes, on the container's scope: a user request waits behind a running one and is never refused
-    or replaced by it, and the backup of other volumes due meanwhile is queued after it."""
+  def request_automatic_backups(self, now: datetime, since_start: bool = False):
+    """Queues, for each container of an application, an automatic backup of its volumes whose schedule's slot is due
+    (`slot_due`) into the configured store: the slot of `now`'s minute, or with `since_start` each schedule's most
+    recent slot before the Manager started; nothing without a store. Its backups are recorded queued for the slot, a
+    slot's own interrupted or cancelled row taken again; the new ones are dropped when the queue does not take it. It
+    has its own key, by container and volumes, on the container's scope: a user request waits behind a running one and
+    is never refused or replaced by it, and the backup of other volumes due meanwhile is queued after it."""
     session = configured_session()
     if session is None:
       return
-    minute, due, names = now.replace(second=0, microsecond=0), {}, {}
-    for volume in Volume.select().where(Volume.backup_cron.is_null(False) & (Volume.backup_cron != "")):
+    minute, buffer, schedules = now.replace(second=0, microsecond=0), timedelta(seconds=config.BACKUP_SLOT_BUFFER_SECONDS), {}
+    for volume in Volume.select().where(Volume.backup_cron.is_null(False) & (Volume.backup_cron != "")).order_by(Volume.name):
       if not croniter.is_valid(volume.backup_cron):
         logger.error(f"Volume {volume.name} has an invalid backup schedule: {volume.backup_cron!r}")
         continue
-      if croniter.match(volume.backup_cron, now) and not Backup.select().where(
-              (Backup.source_volume_id == volume.id) & (Backup.created_at >= minute)).exists():
-        due.setdefault(volume.application_id, []).append(volume.id)
-        names.setdefault(volume.application_id, []).append(volume.name)
-    for container in (Container.select(Container, Application, Project).join(Application).join(Project)
-                      .where(Container.application.in_(list(due)))):
-      volume_ids = sorted(due[container.application_id])
-      self.add_task(task=self.backup_container_preserving, key=("backup_preserve", container.id, *volume_ids),
-                    scopes={placement_scope(container.worker_id, container.id), archive_write_scope(session.identity, container.id)},
-                    executor="app", params={"container_id": container.id, "volume_ids": volume_ids, "storage_id": session.identity},
-                    labels={**self.container_labels(container), "Volumes": ", ".join(sorted(names[container.application_id]))})
+      if since_start:
+        slot = croniter(volume.backup_cron, self.started_at).get_prev(datetime)
+      elif croniter.match(volume.backup_cron, now):
+        slot = minute
+      else:
+        continue
+      schedules.setdefault((volume.application_id, slot), []).append(volume)
+    for (application_id, slot), volumes in schedules.items():
+      for container in (Container.select(Container, Application, Project).join(Application).join(Project)
+                        .where(Container.application == application_id)):
+        due = {}
+        for volume in volumes:
+          is_due, reused = slot_due([SlotRow(row.id, row.status, row.deleted_at is not None, row.slot_at, row.updated_at, row.automatic)
+                                     for row in Backup.select().where(
+              (Backup.container_id == container.id) & (Backup.source_volume_id == volume.id)
+              & (Backup.storage_id == session.identity) & Backup.slot_at.between(slot - buffer, slot + buffer))],
+              slot, self.started_at, buffer)
+          if is_due:
+            due[volume] = reused
+        if not due:
+          continue
+        fresh = [volume for volume, reused in due.items() if reused is None]
+        added_ids = iter(add_backups(session.identity, slot, True, [
+            session.get_full_path(volume_archive_key(volume.id, container.id, archive_name(now))) for volume in fresh],
+            fresh, container) if fresh else ())
+        backup_ids = [reused or next(added_ids) for reused in due.values()]
+        added = self.add_task(
+            task=settling(self.backup_container_preserving),
+            key=("backup_preserve", container.id, *sorted(volume.id for volume in due)),
+            scopes={placement_scope(container.worker_id, container.id), archive_write_scope(session.identity, container.id)},
+            executor="app", params={"container_id": container.id, "backup_ids": backup_ids, "storage_id": session.identity},
+            labels={**self.container_labels(container), "Volumes": ", ".join(volume.name for volume in due)})
+        if added.outcome == Outcome.ACCEPTED:
+          requeue_backups([reused for reused in due.values() if reused])
+        else:
+          apply_catalog(CatalogPlan(deletes=[backup_id for backup_id, reused in zip(backup_ids, due.values()) if not reused]))
 
   def request_restore(self, container_id: str, backup_id: str, volume_id: str) -> str:
     """Queues the restore of a backup of one of the application's volumes into the container's copy of `volume_id`,
     any volume of that application, in the container's lifecycle slot; refused unless the container is stopped or never
-    deployed, and the backup is in the configured store. The task's id."""
+    deployed, and the backup is completed and in the configured store. The task's id."""
     session = S3().session()
     container = self.lifecycle_container(container_id)
-    backup = Backup.get_or_none(Backup.id == backup_id)
+    backup = Backup.get_or_none((Backup.id == backup_id) & Backup.deleted_at.is_null())
     if backup is None:
       raise LookupError("Backup not found.")
+    if backup.status != "succeeded":
+      raise Conflict("Only a completed backup can be restored.")
     volume = Volume.get_or_none((Volume.id == volume_id) & (Volume.application == container.application_id))
     if backup.type != "application" or backup.application_id != container.application_id or volume is None:
       raise ValueError("Choose a backup of this application's volumes, and one of its volumes.")
@@ -105,18 +161,22 @@ class BackupsMixin:
         {"backup_id": backup.id, "volume_id": volume.id, "storage_id": session.identity},
         (archive_scope(session.identity, backup.s3_path),), {"Volume": volume.name, "Backup of": backup.source_volume_name}))
 
-  async def backup_container(self, container_id: str, volume_ids: list[str], storage_id: str):
-    """Archives the volumes of a stopped container into the store it was requested for, then commits it stopped and
-    succeeded. Refused while it runs, or once the configured store is another; an archive that fails fails it."""
+  async def backup_container(self, container_id: str, backup_ids: list[str], storage_id: str):
+    """Takes the backups of a stopped container's volumes into the store it was requested for, then commits it stopped
+    and succeeded. Refused while it runs, or once the configured store is another; an archive that fails fails it.
+    Its backups are cancelled when the container is gone."""
     session = configured_session(storage_id)
+    backups = list(Backup.select().where(Backup.id.in_(backup_ids)))
+    volume_ids = [backup.source_volume_id for backup in backups]
     begun = await self.begin_lifecycle(container_id, "backup_stopped", prepare=self._backup_check("backup_stopped", session, volume_ids))
     if begun is None:
+      settle_backups(backup_ids, "cancelled", "its container was deleted")
       return
     container, record = begun
     operation = record.operation
     try:
       await Containers().write(container, record)
-      failures = await self._archive(container, session, volume_ids)
+      failures = await self._archive(container, session, backups)
       if failures:
         raise Exception("; ".join(failures))
       verified_at = await self.stop_runtime(container.worker_id, container.id)
@@ -133,16 +193,23 @@ class BackupsMixin:
         (Volume.application == container.application_id) & Volume.id.in_(volume_ids)).order_by(Volume.name))
     Notifications().notify(f"Backup of {volumes} from {name} created.", "success", page)
 
-  async def backup_container_preserving(self, container_id: str, volume_ids: list[str], storage_id: str):
+  async def backup_container_preserving(self, container_id: str, backup_ids: list[str], storage_id: str):
     """Archives the container's volumes into the store it was requested for and keeps its runtime: whether it ran,
     and then the deployment and Docker containers it ran, are recorded before it is stopped as it is, and it is
     brought back to that after the archives, whatever they did. A failed archive with the runtime back fails the task
     and keeps the container's last outcome; a runtime that can't be brought back is stopped and settled failed.
     Refused, failing the task, when its last action failed, its runtime disagrees with it, or the configured store is
-    another."""
+    another; tried again after `BACKUP_RETRY_DELAYS` while its worker can't be reached. Its backups are cancelled
+    when the container is gone."""
     session = configured_session(storage_id)
-    begun = await self.begin_lifecycle(container_id, "backup_preserve", prepare=self._backup_check("backup_preserve", session, volume_ids))
+    backups = list(Backup.select().where(Backup.id.in_(backup_ids)))
+    begun = await retry_async(
+        lambda: self.begin_lifecycle(container_id, "backup_preserve", prepare=self._backup_check(
+            "backup_preserve", session, [backup.source_volume_id for backup in backups])),
+        delays=config.BACKUP_RETRY_DELAYS,
+        on_retry=lambda error, delay: logger.warning(f"Automatic backup refused: {error}. Retrying in {delay}s."))
     if begun is None:
+      settle_backups(backup_ids, "cancelled", "its container was deleted")
       return
     container, record = begun
     operation, host = record.operation, container.worker_id
@@ -150,7 +217,7 @@ class BackupsMixin:
       await Containers().write(container, record)
       if operation.baseline.runtime == "running":
         await self.quiesce_runtime(host, container.id)
-      failure = "; ".join(await self._archive(container, session, volume_ids)) or None
+      failure = "; ".join(await self._archive(container, session, backups)) or None
     except Exception as error:
       failure = str(error) or type(error).__name__
     try:
@@ -169,7 +236,7 @@ class BackupsMixin:
       await mark(container, f"Automatic backup failed: {failure}")
       name, page = self.container_notice(container)
       Notifications().notify(f"Automatic backup of {name} failed: {failure}", "error", page)
-      raise TaskFailed()
+      raise TaskFailed(failure)
     record_container_event(container, "backup_preserve", "succeeded", operation.id, dedupe_key=f"{operation.id}:succeeded")
     await mark(container, "Backed up")
 
@@ -179,7 +246,7 @@ class BackupsMixin:
     the selected backup or the volume is gone; a failed restore leaves it stopped and in error,
     the volume possibly part replaced, and a Deploy allowed."""
     session = configured_session(storage_id)
-    backup = Backup.get_or_none(Backup.id == backup_id)
+    backup = Backup.get_or_none((Backup.id == backup_id) & Backup.deleted_at.is_null() & (Backup.status == "succeeded"))
 
     async def prepare(container: Container, kept) -> None:
       if session is None or (backup is not None and backup.storage_id != session.identity):
@@ -259,26 +326,49 @@ class BackupsMixin:
                       await self.runtime_ids(container.worker_id, container.id))
     return prepare
 
-  async def _archive(self, container: Container, session: S3Session, volume_ids: list[str]) -> list[str]:
-    """Archives each of the volumes configured among `volume_ids` from the container's placement into the store, each
-    with its Backup row once uploaded; what failed, one line each."""
-    now, failures = utcnow(), []
-    for volume in (Volume.select().where((Volume.application == container.application_id) & Volume.id.in_(volume_ids))
-                   .order_by(Volume.name)):
-      name = archive_name(now)
-      key = session.get_full_path(volume_archive_key(volume.id, container.id, name))
-      run = f"{config.WORKER_TMP_DIR}/backup-{new_id()}"
-      script = f"{run}/backup.sh"
-      try:
-        await Tailscale().sync_file(container.worker_id, config.TEMPLATES_DIR / "worker/application/backup.sh", script, {
-            "RUN_DIR": run, "PLACEMENT_DIR": placement_dir(config.WORKER_HOME_DIR, container.id), "VOLUME_ID": volume.id,
-            "ARCHIVE_NAME": name, "ENCRYPTION_KEY": get_env("ENCRYPTION_KEY"),
-            "UPLOAD_URL": session.create_presigned_upload_url(key, config.WORKER_LINK_SECONDS, raw_path=True),
-        }, mode=0o700)
-        await Tailscale().exec_command(container.worker_id, script, timeout=config.BACKUP_TIMEOUT_SECONDS)
-      except Exception as error:
-        failures.append(f"volume {volume.name}: {error}")
-        continue
-      add_backup(key, session.identity, volume.id, volume.name, container.application_id)
-      logger.info(f"Volume {volume.name} of container {container.id} backed up to {key}.")
+  async def _archive(self, container: Container, session: S3Session, backups: list[Backup]) -> list[str]:
+    """Takes each of the backups from the container's placement into the store at its key, and settles it: succeeded
+    once uploaded, failed with its error, cancelled when its volume is no longer configured. Those that failed
+    transiently are taken again together after each of `BACKUP_RETRY_DELAYS`. What failed, one line each."""
+    failures, last, waiting = [], {}, {backup.source_volume_id: backup for backup in backups}
+    pending = [(volume, waiting.pop(volume.id)) for volume in Volume.select().where(
+        (Volume.application == container.application_id) & Volume.id.in_(list(waiting))).order_by(Volume.name)]
+    if waiting:
+      settle_backups([backup.id for backup in waiting.values()], "cancelled", "its volume was deleted")
+
+    async def attempt():
+      transient = None
+      for volume, backup in list(pending):
+        key, name = backup.s3_path, backup.s3_path.rsplit("/", 1)[-1].removesuffix(VOLUME_ARCHIVE_SUFFIX)
+        run = f"{config.WORKER_TMP_DIR}/backup-{new_id()}"
+        script = f"{run}/backup.sh"
+        try:
+          await Tailscale().sync_file(container.worker_id, config.TEMPLATES_DIR / "worker/application/backup.sh", script, {
+              "RUN_DIR": run, "PLACEMENT_DIR": placement_dir(config.WORKER_HOME_DIR, container.id), "VOLUME_ID": volume.id,
+              "ARCHIVE_NAME": name, "ENCRYPTION_KEY": get_env("ENCRYPTION_KEY"),
+              "UPLOAD_URL": session.create_presigned_upload_url(key, config.WORKER_LINK_SECONDS, raw_path=True),
+          }, mode=0o700)
+          await Tailscale().exec_command(container.worker_id, script, timeout=config.BACKUP_TIMEOUT_SECONDS)
+        except Exception as error:
+          last[backup.id] = error
+          if is_transient(error):
+            transient = transient or error
+            continue
+          settle_backups([backup.id], "failed", str(error) or type(error).__name__)
+          failures.append(f"volume {volume.name}: {error}")
+        else:
+          settle_backups([backup.id], "succeeded")
+          logger.info(f"Volume {volume.name} of container {container.id} backed up to {key}.")
+        pending.remove((volume, backup))
+      if transient is not None:
+        raise transient
+
+    try:
+      await retry_async(attempt, delays=config.BACKUP_RETRY_DELAYS, on_retry=lambda error, delay: logger.warning(
+          f"Volumes of container {container.id} could not be backed up: {error}. Retrying in {delay}s."))
+    except Exception as error:
+      for volume, backup in pending:
+        reason = last.get(backup.id, error)
+        settle_backups([backup.id], "failed", str(reason) or type(reason).__name__)
+        failures.append(f"volume {volume.name}: {reason}")
     return failures

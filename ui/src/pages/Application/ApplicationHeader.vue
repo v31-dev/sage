@@ -86,7 +86,7 @@ const repoURL = computed(() => {
           <ConfirmationButton
             triggerText="Delete"
             title="Delete Application"
-            body="Are you sure you want to delete this application? This action cannot be undone."
+            body="The application, its volumes and all their backups are deleted. This can't be undone."
             :description="props.application.name"
             :icon="Trash"
             destructive

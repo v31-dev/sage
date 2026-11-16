@@ -20,7 +20,7 @@ from services.logs import Logs
 from services.manager.containers import ContainersMixin
 from services.manager.lifecycle import LifecycleMixin, mark
 from services.manager.queue import SCOPES, QueueMixin
-from services.tailscale import Tailscale
+from services.tailscale import EX_TEMPFAIL, CommandError, Tailscale
 from utils.errors import Conflict
 from utils.logging import TaskFailed, task_id
 from utils.queue import TaskQueue
@@ -107,13 +107,14 @@ class Worker:
     if self.breaks_at is not None and self.breaks_at in what:
       self.reachable = False
     if not self.reachable:
-      raise Exception("Error connecting to w1: no route")
+      raise CommandError("Error connecting to w1: no route", transient=True)
 
   async def exec_command(self, hostname, command, timeout=300):
     self.answer(command)
     result = subprocess.run(["sh", "-c", command], capture_output=True, text=True, env=self.env)
     if result.returncode:
-      raise Exception(f"Error executing command on {hostname}: exit code {result.returncode}\n{result.stdout}")
+      raise CommandError(f"Error executing command on {hostname}: exit code {result.returncode}\n{result.stdout}",
+                         transient=result.returncode == EX_TEMPFAIL)
     return result.returncode, result.stdout.splitlines()
 
   async def sync_file(self, hostname, src, dst, keys=None, formatter=None, timeout=120, mode=0o644):

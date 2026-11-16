@@ -5,6 +5,7 @@ from dataclasses import replace
 from datetime import datetime, timedelta
 
 import config
+from services.backups.commands import cancel_queued_backups
 from services.containers import commands
 from services.containers.decisions import RUNNING, RuntimeReading, lifecycle_refusal
 from services.containers.placement import (LABEL_CONTAINER, LABEL_DEPLOYMENT, LABEL_GENERATION, LABEL_INSTANCE, labels_authority, placement_scope,
@@ -62,6 +63,15 @@ class Refused(Exception):
     self.refusal = refusal
 
 
+class Rejected(TaskFailed):
+  """An operation refused at its start, failing its task with what REFUSALS says of `refusal`; transient when its
+  worker can't be reached."""
+
+  def __init__(self, refusal: str):
+    super().__init__(REFUSALS[refusal])
+    self.refusal, self.transient = refusal, refusal == "unreachable"
+
+
 async def mark(container: Container, text: str):
   """Writes into the container's application logs what Sage did to it, with the running task's id. A marker that
   cannot be written is a warning, never the action's failure."""
@@ -98,7 +108,8 @@ class LifecycleMixin:
                       scopes: tuple[str, ...] = (), labels: dict[str, str] | None = None, resume: bool = False) -> Added:
     """Queues the request `name` on the container in its slot (`REQUESTS`); a Delete first cancels the container's
     queued tasks, and any other request is refused while one runs or waits. One of `INTENTS` is recorded as the
-    container's intent first, put back as it was when the queue does not take it, and cleared at its outcome. A
+    container's intent first, put back as it was when the queue does not take it, and cleared at its outcome. Once
+    the queue takes it, a manual backup it replaced or cancelled is settled cancelled. A
     request `resume`d from its intent replaces nothing and cancels nothing: one queued or running with its key does it
     instead. The queue's answer."""
     slot, on_conflict = REQUESTS[name]
@@ -127,6 +138,8 @@ class LifecycleMixin:
         labels={**self.container_labels(container), **(labels or {})}, on_conflict=on_conflict)
     if name in INTENTS and added.outcome != Outcome.ACCEPTED:
       commands.settle_intent(container.id, name, previous)
+    if added.outcome == Outcome.ACCEPTED:
+      cancel_queued_backups((params or {}).get("backup_ids", ()), container.id)
     return added
 
   @staticmethod
@@ -154,7 +167,7 @@ class LifecycleMixin:
     """The container and the record that begins the operation on it, once its record was read and nothing refuses it;
     None when the container is gone. `prepare`, awaited with the container and its record under this Sage's current
     authority (None without one), checks what the operation itself needs, raising `Refused`, and gives the baseline
-    it records. A refusal is recorded and fails the task, with the record untouched. A forced operation on a worker
+    it records. A refusal is recorded and fails the task (`Rejected`), with the record untouched. A forced operation on a worker
     that can't be asked begins with no record."""
     container = Container.get_or_none(Container.id == container_id)
     if container is None:
@@ -177,7 +190,7 @@ class LifecycleMixin:
     if refusal is not None:
       record_container_event(container, contract, "rejected", reason={"refusal": refusal})
       logger.error(f"{NAMES[contract]} refused: {REFUSALS[refusal]}.")
-      raise TaskFailed()
+      raise Rejected(refusal)
     timeout = {"deploy": config.CONTAINER_UP_TIMEOUT_SECONDS, "stop": config.CONTAINER_DOWN_TIMEOUT_SECONDS,
                "delete": config.CONTAINER_DOWN_TIMEOUT_SECONDS, "backup_stopped": config.BACKUP_TIMEOUT_SECONDS,
                "backup_preserve": config.BACKUP_TIMEOUT_SECONDS, "restore_stopped": config.BACKUP_TIMEOUT_SECONDS}[contract]
@@ -216,7 +229,7 @@ class LifecycleMixin:
                            dedupe_key=f"{operation.id}:failed")
     await mark(container, f"{NAMES[operation.contract]} failed: {reason}")
     self.request_domain_applies(domain.id for domain in container.domains)
-    raise TaskFailed()
+    raise TaskFailed(reason)
 
   async def stop_runtime(self, hostname: str, container_id: str, options: str = "") -> datetime:
     """Stops the container's runtime on the worker (`options` for `docker compose down`); when the worker verified it

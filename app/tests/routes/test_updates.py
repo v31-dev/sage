@@ -24,9 +24,10 @@ import config
 import services.updates as updates_module
 from api import build_asgi_app
 from routes.updates import TOPICS, same_origin, sio
-from services.backups.commands import add_backup
+from services.backups.commands import add_backups
 from services.backups.payload import platform_backups
-from services.db.models import Notification
+from services.backups.updates import store_changed
+from services.db.models import Notification, Volume
 from services.notification import list_notifications
 from services.releases import Releases
 from services.s3 import S3
@@ -165,7 +166,8 @@ def state(monkeypatch):
 
 class TestTopics:
   def test_the_topics_are_the_ones_the_pages_follow(self):
-    assert set(TOPICS) == {"info", "tasks", "backup-status", "backups", "release", "workers", "worker", "application", "domains",
+    assert set(TOPICS) == {"info", "tasks", "backup-status", "backups", "volume-backups", "release", "workers", "worker",
+                           "application", "domains",
                            "notifications", "task-history", "task-logs", "application-logs", "requests", "setting-tests"}
 
   def test_the_table_has_each_topic_and_each_feed_once(self):
@@ -440,11 +442,26 @@ class TestBackups:
     register(S3, SimpleNamespace(session=lambda: SimpleNamespace(identity="s1")))
     one = browser()
     one.subscribe("backups")
-    add_backup("base/backups/platform/20260102_030405_4444444444444444.db.enc", "s1")
+    add_backups("s1", datetime.datetime(2026, 1, 2, 3, 4, 5), False, ["base/backups/platform/20260102_030405_4444444444444444.db.enc"])
     event, message = one.next()
     assert (event, message["topic"]) == ("state", "backups")
     assert message["data"] == jsonable_encoder(platform_backups())
     assert [backup["s3_path"] for backup in message["data"]] == ["base/backups/platform/20260102_030405_4444444444444444.db.enc"]
+
+  def test_a_volumes_backup_written_is_pushed_to_that_volumes_list_only_and_a_store_change_to_every_one(
+          self, browser, application, register):
+    register(S3, SimpleNamespace(session=lambda: SimpleNamespace(identity="s1")))
+    data, logs = (Volume.create(application=application, name=name, path=f"/{name}") for name in ("data", "logs"))
+    one = browser()
+    one.subscribe(f"volume-backups:{logs.id}")
+    add_backups("s1", datetime.datetime(2026, 1, 2, 3, 4), False, ["base/k1"], [data])
+    [backup_id] = add_backups("s1", datetime.datetime(2026, 1, 2, 3, 4), False, ["base/k2"], [logs])
+    event, message = one.next()
+    assert (event, message["topic"]) == ("state", f"volume-backups:{logs.id}")
+    assert [(backup["id"], backup["status"]) for backup in message["data"]] == [(backup_id, "queued")]
+    store_changed()
+    event, message = one.next()
+    assert message["topic"] == f"volume-backups:{logs.id}"
 
 
 class TestLeaving:

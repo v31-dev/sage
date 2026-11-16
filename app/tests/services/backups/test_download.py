@@ -73,3 +73,11 @@ class TestLink:
     with pytest.raises(LookupError):
       download_link(Backup.create(type="platform", s3_path="base/backups/platform/20260101_000000_4444444444444444.db.enc", storage_id="s1"))
     assert store.links == []
+
+  def test_a_backup_that_was_not_completed_is_refused_before_the_store_is_asked(self, register, db):
+    store = Session(keys={PLATFORM_KEY})
+    register(S3, SimpleNamespace(session=lambda: store))
+    for status in ("queued", "running", "failed", "cancelled", "interrupted"):
+      with pytest.raises(Conflict, match="Only a completed backup"):
+        download_link(Backup.create(type="platform", s3_path=PLATFORM_KEY, storage_id="s1", status=status))
+    assert store.links == []

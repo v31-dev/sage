@@ -14,6 +14,7 @@ from services.applications.deploy_input import DeployConfig, capture_deploy_conf
 from services.applications.lookup import find_application
 from services.applications.payload import application_payload, application_summary, project_payload
 from services.applications.updates import container_changed
+from services.backups.commands import cancel_queued_backups
 from services.containers.commands import settle_intent
 from services.containers.decisions import PROGRESS, Runtime, correction
 from services.containers.placement import (LABEL_APPLICATION, labels_authority, parse_placements, placement_dir, placement_scope, placements_command,
@@ -504,6 +505,8 @@ class ContainersMixin:
     if cancelled:
       if operation in INTENTS:
         settle_intent(container_id, operation)
+      if operation == "backup_stopped":
+        cancel_queued_backups([], container_id)
       return cancelled[0]
     if self.has_task(key, running_only=True):
       raise Conflict(f"The {operation} of this container has already started.")

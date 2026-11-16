@@ -109,7 +109,7 @@ async function onClickConfirmDelete() {
           <ConfirmationButton
             triggerText="Delete"
             title="Delete Volume"
-            body="Are you sure you want to delete this volume? This action cannot be undone."
+            body="The volume and all its backups are deleted. This can't be undone."
             :description="props.volume.name"
             :icon="Trash"
             destructive

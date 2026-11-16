@@ -51,9 +51,9 @@ class TestVolumes:
     assert client.put("/api/projects/demo/applications/api/volumes/data", json={"path": "/moved"}).status_code == 200
     assert (Volume.get_by_id(volume.id).path, Volume.get_by_id(other.id).path) == ("/data", "/moved")
 
-  def test_a_volume_is_deleted_with_no_content(self, client, volume):
+  def test_a_delete_asks_for_the_volumes_deletion_with_no_content(self, client, volume, manager):
     assert client.delete(f"{URL}/data").status_code == 204
-    assert Volume.select().count() == 0
+    assert manager.called("request_volume_deletion") == [((volume.id,), {})]
 
 
 class TestBackups:
@@ -62,6 +62,20 @@ class TestBackups:
     own = archive(volume)
     archive(other)
     assert [backup["id"] for backup in client.get(f"{URL}/data/backups/").json()] == [own.id]
+
+  def test_the_list_leaves_out_deleted_backups_and_says_each_ones_status(self, client, volume, register):
+    register(S3, SimpleNamespace(session=Session))
+    failed = archive(volume)
+    Backup.update(status="failed", reason="the worker can't be reached").where(Backup.id == failed.id).execute()
+    deleted = archive(volume)
+    Backup.update(deleted_at=deleted.created_at).where(Backup.id == deleted.id).execute()
+    assert [(backup["id"], backup["status"], backup["reason"]) for backup in client.get(f"{URL}/data/backups/").json()] == [
+        (failed.id, "failed", "the worker can't be reached")]
+
+  def test_a_delete_asks_for_the_deletion_of_this_volumes_backup(self, client, volume, manager):
+    backup = archive(volume)
+    assert client.delete(f"{URL}/data/backups/{backup.id}").json() == {"task_id": "task-1"}
+    assert manager.called("request_backup_deletion") == [((backup.id,), {})]
 
   def test_a_backup_asks_for_one_from_each_container_and_answers_the_tasks(self, client, application, volume, manager):
     manager.answers["request_backup"] = ["t1"]
@@ -76,14 +90,18 @@ class TestBackups:
     assert response.json()["url"] == "https://store.example.test/link"
     assert [link["s3_path"] for link in store.links] == [backup.s3_path]
 
-  def test_a_backup_of_another_volume_or_the_platform_is_not_found_here(self, client, volume, other, register):
+  def test_a_backup_of_another_volume_or_the_platform_or_a_deleted_one_is_not_found_here(
+          self, client, volume, other, register, manager):
     elsewhere = archive(other)
     platform = Backup.create(type="platform", s3_path="base/backups/platform/20260102_030405_4444444444444444.db.enc", storage_id="s1")
     store = Session(keys={elsewhere.s3_path, platform.s3_path})
     register(S3, SimpleNamespace(session=lambda: store))
-    for backup in (elsewhere, platform):
+    deleted = archive(volume)
+    Backup.update(deleted_at=deleted.created_at).where(Backup.id == deleted.id).execute()
+    for backup in (elsewhere, platform, deleted):
       assert client.get(f"{URL}/data/backups/{backup.id}/download").status_code == 404
-    assert store.links == []
+      assert client.delete(f"{URL}/data/backups/{backup.id}").status_code == 404
+    assert store.links == [] and manager.calls == []
 
 
 class TestRestore:

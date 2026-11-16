@@ -24,6 +24,7 @@ class UpdateSource(StrEnum):
   SETTINGS_TESTING = "settings_testing"    # whether each settings section's Test is queued or running
   BACKUP_STATUS = "backup_status"    # whether a platform backup runs or backups are being discovered
   BACKUPS = "backups"                # a backup row was written, or the configured store changed
+  VOLUME_BACKUPS = "volume_backups"  # keyed by volume id: a backup row of the volume was written, or the configured store changed
   WORKER_LIST = "worker_list"        # each worker's status, path, container count and subdomain
   CHECKS = "checks"                  # the result of checking a settings section
   CERTIFICATES = "certificates"
@@ -44,6 +45,7 @@ class UpdateTopic(StrEnum):
   TASKS = "tasks"
   BACKUP_STATUS = "backup-status"
   BACKUPS = "backups"
+  VOLUME_BACKUPS = "volume-backups"  # one volume's backups: `volume-backups:<volume id>`
   RELEASE = "release"
   WORKERS = "workers"
   WORKER = "worker"            # one worker: `worker:<hostname>`

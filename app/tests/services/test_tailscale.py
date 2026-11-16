@@ -10,7 +10,7 @@ import pytest
 
 import config
 from services import tailscale as tailscale_module
-from services.tailscale import Tailscale, next_online, ping_path
+from services.tailscale import CommandError, Tailscale, next_online, ping_path
 from utils.executor import active_executor
 
 HOST = "worker-1"
@@ -165,6 +165,14 @@ async def test_a_failing_command_raises_with_the_tail_of_its_output(tailscale):
   assert "line 5" not in message
 
 
+@pytest.mark.parametrize("status, transient", [(75, True), (1, False), (2, False)])
+async def test_only_a_command_exiting_with_a_temporary_failure_is_transient(tailscale, status, transient):
+  with pytest.raises(CommandError) as raised:
+    await run(tailscale, FakeProcess(status=status))
+
+  assert raised.value.transient is transient
+
+
 async def test_a_failing_command_without_output_names_only_the_exit_code(tailscale):
   with pytest.raises(Exception) as raised:
     await run(tailscale, FakeProcess(status=1))
@@ -239,10 +247,10 @@ async def test_an_open_that_fails_twice_raises(tailscale):
   second = FakeConn(asyncssh.ConnectionLost("gone"))
   use(tailscale, first, second)
 
-  with pytest.raises(Exception, match=f"Error executing command on {HOST}: gone"):
+  with pytest.raises(CommandError, match=f"Error executing command on {HOST}: gone") as raised:
     await tailscale.exec_command(HOST, "docker ps")
 
-  assert tailscale.evicted == [HOST, HOST]
+  assert tailscale.evicted == [HOST, HOST] and raised.value.transient
 
 
 async def test_a_worker_that_cannot_be_reached_raises(tailscale):
@@ -251,8 +259,10 @@ async def test_a_worker_that_cannot_be_reached_raises(tailscale):
 
   tailscale._get_conn = get_conn
 
-  with pytest.raises(Exception, match=f"Error connecting to {HOST}: no route"):
+  with pytest.raises(CommandError, match=f"Error connecting to {HOST}: no route") as raised:
     await tailscale.exec_command(HOST, "docker ps")
+
+  assert raised.value.transient
 
 
 async def test_the_channel_is_closed_after_success_and_after_failure(tailscale):

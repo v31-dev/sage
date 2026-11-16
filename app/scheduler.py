@@ -6,6 +6,9 @@ from apscheduler.triggers.interval import IntervalTrigger
 from services.manager import Manager
 from utils.common import utcnow
 
+# The platform's backup slots, which its trigger fires on and the catch-up after a start reads.
+PLATFORM_BACKUP_CRON = "0 */12 * * *"
+
 _scheduler = AsyncIOScheduler(
     job_defaults={"coalesce": True, "max_instances": 1, "misfire_grace_time": 30}
 )
@@ -56,11 +59,15 @@ async def refresh_latest_release():
 
 
 async def backup_database():
-  Manager().request_platform_backup()
+  Manager().request_platform_backup(utcnow())
 
 
 async def start_work():
   Manager().request_startup()
+
+
+async def catch_up_backups():
+  Manager().request_backup_catch_up(PLATFORM_BACKUP_CRON)
 
 
 async def cleanup():
@@ -86,7 +93,7 @@ _JOBS = [
     (schedule_application_backups, CronTrigger.from_crontab("* * * * *")),
     (flush_metrics, CronTrigger.from_crontab("* * * * *")),
     (refresh_latest_release, CronTrigger.from_crontab("0 */4 * * *")),
-    (backup_database, CronTrigger.from_crontab("0 */12 * * *")),
+    (backup_database, CronTrigger.from_crontab(PLATFORM_BACKUP_CRON)),
     (send_summary_notification, CronTrigger.from_crontab("0 8 * * *")),
     (cleanup, CronTrigger.from_crontab("0 4 * * *")),
     (renew_certificates, CronTrigger.from_crontab("0 3 * * *")),
@@ -95,8 +102,9 @@ _JOBS = [
 ]
 
 # Run once right after startup, as queued tasks, so the servers are already up: what runs when Sage starts
-# (`Manager().request_startup()`).
-_AT_STARTUP = [start_work]
+# (`Manager().request_startup()`), and the backup slots missed while it was down, which a platform restore does not
+# ask for.
+_AT_STARTUP = [start_work, catch_up_backups]
 
 
 def start():

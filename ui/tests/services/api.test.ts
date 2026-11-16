@@ -391,6 +391,14 @@ const CALLS: Array<[string, () => Promise<unknown>, string, string, object, unkn
   ['discoverBackups', () => api.discoverBackups(), 'POST', '/api/backups/discover', {}, undefined],
   ['deleteBackup', () => api.deleteBackup('b7'), 'DELETE', '/api/backups/b7', {}, undefined],
   [
+    'deleteVolumeBackup',
+    () => api.deleteVolumeBackup('demo', 'web', 'data', 'b7'),
+    'DELETE',
+    '/api/projects/demo/applications/web/volumes/data/backups/b7',
+    {},
+    undefined,
+  ],
+  [
     'restoreBackup',
     () => api.restoreBackup('b7'),
     'POST',

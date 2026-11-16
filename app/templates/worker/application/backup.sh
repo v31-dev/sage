@@ -65,6 +65,7 @@ openssl dgst -sha256 -mac HMAC -macopt hexkey:"$MAC_KEY" -binary \
   -out "$TMP_DIR/mac" "$ENCRYPTED_PATH"
 cat "$TMP_DIR/mac" >> "$ENCRYPTED_PATH"
 
+# Exit 75 (EX_TEMPFAIL) where trying again can work: no answer, or a server error.
 HTTP_STATUS="$(
   curl \
     --silent \
@@ -75,10 +76,15 @@ HTTP_STATUS="$(
     --header "Content-Type: application/octet-stream" \
     --upload-file "$ENCRYPTED_PATH" \
     --config "$UPLOAD_CONFIG_PATH"
-)"
+)" || { echo "Upload failed: no answer from the store" >&2; exit 75; }
 
 case "$HTTP_STATUS" in
   2*)
+    ;;
+  5*)
+    echo "Upload failed with status $HTTP_STATUS" >&2
+    cat "$TMP_DIR/upload_response" >&2 || true
+    exit 75
     ;;
   *)
     echo "Upload failed with status $HTTP_STATUS" >&2

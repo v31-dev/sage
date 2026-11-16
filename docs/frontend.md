@@ -44,6 +44,7 @@ container counts, and each container owns its headline, runtime details and queu
   - The desktop tables and mobile cards show resource labels alongside task details and when each task was queued, started and finished.
 - `backup-status`: the Create Backup and Discover Backups buttons, each mirroring its own flag (loading `GET /backups/platform_backup_status`).
 - `backups`: the Backups page (loading `GET /backups`), newest first; each pushed list replaces the shown one. A delete on the page loads the list again at once.
+- `volume-backups:<volume id>`: a volume's restore dialog while it is open (loading `GET …/volumes/{volume}/backups/`), newest first, so a backup shows queued, in progress, and then taken or why it was not; each pushed list replaces the shown one, and a row's open restore closes when its backup can no longer be restored.
 - `release`: the Upgrade page (loading `GET /release`). A check for updates is over when a release with a new `fetched_at` is pushed, or after 60 s with an error.
 - `task-logs:<task>`, a feed: the task log dialogs (`components/TaskLogs.vue`), a task's on the Tasks page and an operation's from a container's Event Logs; a list (below), of every line, oldest first, with no ceiling (a dialog has no filters).
 - `setting-tests:<section>`, a feed: a settings section's Test outcome as the Test ends, a success toast or the error under the form; stored nowhere, so it has no route and a page that was not open misses it (the task's log keeps its line).

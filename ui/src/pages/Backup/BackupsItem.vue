@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import {
   Item,
   ItemMedia,
@@ -12,6 +13,7 @@ import { toast } from 'vue-sonner'
 
 import { formatDate } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
+import BackupState from '@/components/BackupState.vue'
 import ConfirmationButton from '@/components/ConfirmationButton.vue'
 import { type Backup, deleteBackup, downloadBackup, restoreBackup } from '@/services/api'
 import { useAppStore } from '@/stores/app'
@@ -25,6 +27,8 @@ interface Props {
 const props = withDefaults(defineProps<Props>(), {})
 
 const appStore = useAppStore()
+const taken = computed(() => props.backup.status === 'succeeded')
+const finished = computed(() => !['queued', 'running'].includes(props.backup.status))
 
 async function onClickDownload() {
   try {
@@ -36,8 +40,8 @@ async function onClickDownload() {
 
 async function onConfirmDeleteBackup(backupId: string) {
   try {
-    await deleteBackup(backupId)
-    toast.success('Backup deletion queued')
+    const { task_id } = await deleteBackup(backupId)
+    toast.success(task_id ? 'Backup deletion queued' : 'Backup deleted')
     await props.loadBackups()
   } catch (err) {
     toast.error(err instanceof Error ? err.message : 'Failed to delete backup')
@@ -65,11 +69,15 @@ async function onConfirmRestoreBackup(backupId: string) {
     </ItemMedia>
     <ItemContent>
       <ItemTitle>{{ formatDate(backup.created_at) }}</ItemTitle>
-      <ItemDescription>{{ backup.s3_path }}</ItemDescription>
+      <ItemDescription
+        >{{ backup.automatic ? 'Scheduled' : 'On request' }} · {{ backup.s3_path }}</ItemDescription
+      >
+      <BackupState :backup="backup" />
     </ItemContent>
-    <ItemActions class="gap-2">
-      <Button variant="outline" @click="onClickDownload"><Download />Download</Button>
+    <ItemActions v-if="finished" class="gap-2">
+      <Button v-if="taken" variant="outline" @click="onClickDownload"><Download />Download</Button>
       <ConfirmationButton
+        v-if="taken"
         triggerText="Restore"
         :title="'Restore backup ' + formatDate(backup.created_at)"
         body="The configuration is replaced by this backup's and the history (events, notifications, tasks) starts empty; the S3 settings stay as they are. Containers are stopped and show an error until they are deployed again, and containers that aren't in the backup are removed from their workers with their volumes' data. This can't be undone."

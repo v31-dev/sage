@@ -11,7 +11,8 @@ from types import SimpleNamespace
 import pytest
 
 import config
-from services.backups.keys import taken_at
+from services.backups.commands import add_backups, settle_backups
+from services.backups.keys import archive_name, taken_at
 from services.certs import Certs
 from services.cloudflare import Cloudflare
 from services.containers.record import TargetRead
@@ -22,6 +23,7 @@ from services.domains.decisions import ApplyOutcome
 from services.domains.state import Domains
 from services.logs import Logs
 from services.manager.backup_catalog import BackupCatalogMixin
+from services.manager.backups import settling
 from services.manager.platform import PlatformMixin
 from services.manager.queue import SCOPES, QueueMixin
 from services.manager.settings import SettingsMixin
@@ -33,6 +35,7 @@ from services.settings import Settings
 from services.tailscale import Tailscale
 from services.workers.state import Workers
 from utils.archive import decrypt_file
+from utils.common import utcnow
 from utils.errors import Conflict
 from utils.executor import active_executor
 from utils.logging import TaskFailed
@@ -76,7 +79,7 @@ class Manager(PlatformMixin, QueueMixin):
   """The platform's part of the Manager; what it requests of the other parts is recorded."""
 
   def __init__(self):
-    self.pool = ThreadPoolExecutor(max_workers=1)
+    self.pool, self.started_at = ThreadPoolExecutor(max_workers=1), datetime(2000, 1, 1)
     self.queue_facts = []
     self.requested = []
     self.setup_failures, self.stack_repairs, self.removal_failures = {"w1": 1.0}, {"w1": 1.0}, {"w1": 1.0}
@@ -135,21 +138,66 @@ def tables(path):
             for (table,) in copy.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
 
 
+async def take(manager, storage_id="sa"):
+  """A platform backup recorded queued and then taken, as its request and the queue do; its row."""
+  [backup_id] = add_backups(storage_id, utcnow(), False, [f"base/backups/platform/{archive_name(utcnow())}.db.enc"])
+  await settling(manager.backup_platform)(backup_ids=[backup_id], storage_id=storage_id)
+  return Backup.get_by_id(backup_id)
+
+
 class TestBackup:
-  def test_it_holds_its_part_of_the_store_and_is_not_queued_without_one(self, manager, stores):
+  def test_it_holds_its_part_of_the_store_with_its_backup_queued_and_is_not_queued_without_one(self, manager, stores, clock):
     manager.request_platform_backup()
     [task] = manager.task_queue.snapshot()["queued"]
+    [row] = Backup.select()
     assert (tuple(task["key"]), task["scopes"], task["params"], task["quiet"]) == (
-        ("backup_platform",), ["backup:store:sa:write:platform"], {"storage_id": "sa"}, False)
+        ("backup_platform",), ["backup:store:sa:write:platform"], {"backup_ids": [row.id], "storage_id": "sa"}, False)
+    assert (row.type, row.storage_id, row.status, row.slot_at, row.automatic, row.s3_path.startswith("base/backups/platform/")) == (
+        "platform", "sa", "queued", clock.current, False, True)
     stores.configured = None
-    assert manager.request_platform_backup() is None
+    assert manager.request_platform_backup() is None and Backup.select().count() == 1
+
+  def test_the_schedules_backup_is_automatic(self, manager, stores):
+    manager.request_platform_backup(utcnow())
+    assert Backup.get().automatic
+
+  def test_the_schedules_is_skipped_while_its_slot_is_held_and_takes_its_left_backup_again(self, manager, stores, clock):
+    slot = clock.current.replace(second=0, microsecond=0)
+    settle_backups(add_backups("sa", slot - timedelta(minutes=3), False, ["base/backups/platform/m.db.enc"]), "succeeded")
+    assert manager.request_platform_backup(clock.current) is None
+    Backup.delete().execute()
+    [left] = add_backups("sa", slot, True, ["base/backups/platform/l.db.enc"])
+    settle_backups([left], "interrupted")
+    manager.request_platform_backup(clock.current)
+    [task] = manager.task_queue.snapshot()["queued"]
+    assert task["params"]["backup_ids"] == [left] and Backup.get_by_id(left).status == "queued"
+
+  def test_the_catch_up_asks_for_each_schedules_most_recent_slot_before_the_start(self, manager, stores):
+    manager.started_at, asked = datetime(2026, 1, 2, 9, 30), []
+    manager.request_automatic_backups = lambda now, since_start=False: asked.append(since_start)
+    manager.request_backup_catch_up("0 */12 * * *")
+    [row] = Backup.select()
+    assert asked == [True] and (row.slot_at, row.automatic, row.status) == (datetime(2026, 1, 2, 0, 0), True, "queued")
+
+  def test_one_replacing_a_queued_one_settles_that_one_cancelled(self, manager, stores):
+    first = manager.request_platform_backup()
+    second = manager.request_platform_backup()
+    assert [task["task_id"] for task in manager.task_queue.snapshot()["queued"]] == [second] != [first]
+    assert sorted(row.status for row in Backup.select()) == ["cancelled", "queued"]
+
+  def test_one_the_queue_does_not_take_leaves_no_backup(self, manager, stores):
+    manager.task_queue.stop()
+    manager.request_platform_backup()
+    assert Backup.select().count() == 0
 
   async def test_the_configuration_is_uploaded_encrypted_and_recorded_by_the_key_uploaded(
           self, manager, stores, worker, tmp_path):
     Notification.create(content="Deployed.")
-    await manager.backup_platform("sa")
+    await take(manager)
     [row] = Backup.select()
-    assert (row.storage_id, row.type, row.s3_path.startswith("base/backups/platform/")) == ("sa", "platform", True)
+    assert (row.storage_id, row.type, row.status, row.s3_path.startswith("base/backups/platform/")) == (
+        "sa", "platform", "succeeded", True)
+    assert stores.a.keys() == {row.s3_path}
     decrypt_file(stores.a.root / row.s3_path, tmp_path / "plain.db")
     held = tables(tmp_path / "plain.db")
     assert (held["worker"], held["notification"], held["backup"]) == (1, 0, 0)
@@ -158,22 +206,23 @@ class TestBackup:
   async def test_it_is_refused_once_the_store_changed_and_a_failed_upload_fails_it(self, manager, stores):
     stores.configured = stores.b
     with pytest.raises(TaskFailed):
-      await manager.backup_platform("sa")
+      await take(manager)
     stores.configured, stores.a.fails = stores.a, "AccessDenied"
     with pytest.raises(TaskFailed):
-      await manager.backup_platform("sa")
-    assert Backup.select().count() == 0
+      await take(manager)
+    assert [(row.status, row.reason) for row in Backup.select().order_by(Backup.created_at, Backup.reason.desc())] == [
+        ("failed", "the backup store is not the one it was requested for"), ("failed", "AccessDenied")]
     assert manager.notices == [("The platform backup failed: AccessDenied", "error", "/backups")]
 
   async def test_its_copies_are_made_in_the_managers_temp_folder_and_gone_after(self, manager, stores, monkeypatch):
     snapshot, made = Database().snapshot, []
     monkeypatch.setattr(Database(), "snapshot", lambda path: made.append(path) or snapshot(path))
-    await manager.backup_platform("sa")
+    await take(manager)
     assert [path.parent.parent for path in made] == [config.TMP_DIR] and list(config.TMP_DIR.iterdir()) == []
 
   async def test_two_taken_in_the_same_second_are_two_backups(self, manager, stores, clock):
-    await manager.backup_platform("sa")
-    await manager.backup_platform("sa")
+    await take(manager)
+    await take(manager)
     paths = [row.s3_path for row in Backup.select()]
     assert len(set(paths)) == 2 and stores.a.keys() == set(paths)
 
@@ -187,7 +236,7 @@ class TestBackup:
 
     async def held(file_path, s3_path):
       key = await upload(file_path, s3_path)
-      if Backup.select().count():
+      if Backup.select().where(Backup.status == "succeeded").count():
         uploading.set()
         await release.wait()
       return key
@@ -213,7 +262,7 @@ class TestBackup:
     finally:
       active_executor.reset(token)
       manager.pool.shutdown(wait=False, cancel_futures=True)
-    [second] = Backup.select()
+    [second] = Backup.select().where(Backup.deleted_at.is_null())
     assert stores.a.keys() == {second.s3_path}
 
 
@@ -237,6 +286,12 @@ class TestRestoreRequest:
     elsewhere = Backup.create(s3_path="base/backups/platform/x.db.enc", storage_id="sb", type="platform")
     with pytest.raises(Conflict):
       manager.request_platform_restore(elsewhere.id)
+    failed = Backup.create(s3_path="base/backups/platform/y.db.enc", storage_id="sa", type="platform", status="failed")
+    with pytest.raises(Conflict, match="Only a completed backup"):
+      manager.request_platform_restore(failed.id)
+    deleted = Backup.create(s3_path="base/backups/platform/z.db.enc", storage_id="sa", type="platform", deleted_at=utcnow())
+    with pytest.raises(LookupError):
+      manager.request_platform_restore(deleted.id)
 
   def test_it_waits_as_the_restore_and_names_its_backup_while_restoring(self, manager, stores):
     backup = Backup.create(s3_path="base/backups/platform/20260101_030000_4444444444444444.db.enc", storage_id="sa", type="platform")
@@ -267,7 +322,7 @@ class TestRestore:
     """A platform backup taken with store A's settings saved, then the live configuration changed: another worker, store
     B's settings, a notification, memory of the old configuration."""
     Settings().set("s3", STORE_A)
-    await manager.backup_platform("sa")
+    await take(manager)
     row = Backup.get()
     Worker.create(hostname="w2", subdomain="blue")
     Settings().set("s3", STORE_B)
@@ -318,7 +373,7 @@ class TestRestore:
   async def test_the_history_starts_empty(self, manager, stores, worker, application):
     from services.db.models import Container
     Settings().set("s3", STORE_A)
-    await manager.backup_platform("sa")
+    await take(manager)
     row = Backup.get()
     container = Container.create(application=application, worker=worker)
     ContainerEvent.create(container=container, subject_id=container.id, action="deploy", transition="admitted",

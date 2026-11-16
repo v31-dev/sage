@@ -1,8 +1,18 @@
 import { request } from '@/lib/api'
 import { applicationPath, download } from './_common'
 
+// Where a backup is: waiting or being taken, taken (`succeeded`), or not taken for the row's `reason`.
+export type BackupState =
+  | 'queued'
+  | 'running'
+  | 'succeeded'
+  | 'failed'
+  | 'cancelled'
+  | 'interrupted'
+
 // A backup in the configured store (`storage_id`): the platform's, or a volume's (`application`), with the volume's id
-// and the name it had when it was taken.
+// and the name it had when it was taken, and the container and worker it was taken from. One per slot: the
+// schedule's (`automatic`) or a request's.
 export interface Backup {
   id: string
   type: 'platform' | 'application'
@@ -10,7 +20,13 @@ export interface Backup {
   storage_id: string
   source_volume_id: string | null
   source_volume_name: string | null
+  container_id: string | null
+  worker_hostname: string | null
   application: number | null
+  slot_at: string | null
+  automatic: boolean
+  status: BackupState
+  reason: string | null
   created_at: string
   updated_at: string
 }
@@ -31,7 +47,9 @@ export const createBackup = () => request<{ task_id: string }>('POST', '/backups
 // Lists the backups in S3 that are not listed yet.
 export const discoverBackups = () => request<{ task_id: string }>('POST', '/backups/discover')
 
-export const deleteBackup = (id: string) => request<{ task_id: string }>('DELETE', `/backups/${id}`)
+// A completed backup's deletion is queued; one that was not completed is deleted at once, with no task.
+export const deleteBackup = (id: string) =>
+  request<{ task_id: string | null }>('DELETE', `/backups/${id}`)
 
 export const restoreBackup = (id: string) =>
   request<{ task_id: string }>('POST', `/backups/${id}/restore`)
@@ -63,6 +81,18 @@ export const restoreVolumeBackup = (
     'POST',
     `${volumeBackupsPath(project, application, volume)}/${id}/restore`,
     { body: { container, volume: target } }
+  )
+
+// As `deleteBackup`, for one of the volume's backups.
+export const deleteVolumeBackup = (
+  project: string,
+  application: string,
+  volume: string,
+  id: string
+) =>
+  request<{ task_id: string | null }>(
+    'DELETE',
+    `${volumeBackupsPath(project, application, volume)}/${id}`
   )
 
 export const downloadVolumeBackup = (

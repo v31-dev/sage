@@ -33,8 +33,9 @@ class SummaryMixin:
     deploys = Counter("succeeded" if transition == "succeeded" else "failed" for (transition,) in ContainerEvent.select(
         ContainerEvent.transition).where((ContainerEvent.action == "deploy") & (ContainerEvent.created_at >= since)
                                          & ContainerEvent.transition.in_(("succeeded", "failed", "interrupted"))).tuples())
-    backups = Counter(Backup.select(Backup.type).scalars())
-    latest_backup = Backup.select().order_by(Backup.created_at.desc()).first()
+    taken = Backup.select().where((Backup.status == "succeeded") & Backup.deleted_at.is_null())
+    backups = Counter(taken.select(Backup.type).scalars())
+    latest_backup = taken.order_by(Backup.created_at.desc()).first()
     notices = list(Notification.select().where((Notification.created_at >= since)
                                                & Notification.type.in_(("error", "warning")))
                    .order_by(Notification.created_at.desc()).dicts())
@@ -48,7 +49,7 @@ class SummaryMixin:
         "domains": counts((state.view.status for state in self.domain_states(Domain.select()).values()), DOMAIN_STATUSES),
         "deploys": {"succeeded": deploys["succeeded"], "failed": deploys["failed"]},
         "backups": {"platform": backups["platform"], "application": backups["application"],
-                    "since": Backup.select().where(Backup.created_at >= since).count(), "latest_at": latest_backup and latest_backup.created_at},
+                    "since": taken.where(Backup.created_at >= since).count(), "latest_at": latest_backup and latest_backup.created_at},
         "notices": {"error": sum(notice["type"] == "error" for notice in notices),
                     "warning": sum(notice["type"] == "warning" for notice in notices), "events": notices},
     }

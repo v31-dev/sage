@@ -80,6 +80,14 @@ class TestSummary:
     assert summarised.get_system_summary()["backups"] == {"platform": 1, "application": 2, "since": 2,
                                                           "latest_at": clock.current}
 
+  def test_only_completed_backups_not_deleted_are_counted(self, summarised, application, clock):
+    Backup.create(s3_path="a1", storage_id="s", type="application", application=application)
+    clock.advance(timedelta(hours=1))
+    for fields in ({"status": "failed"}, {"status": "running"}, {"deleted_at": clock.current}):
+      Backup.create(s3_path="a2", storage_id="s", type="application", application=application, **fields)
+    assert summarised.get_system_summary()["backups"] == {"platform": 0, "application": 1, "since": 1,
+                                                          "latest_at": clock.current - timedelta(hours=1)}
+
   def test_without_backups_there_is_no_latest(self, summarised):
     assert summarised.get_system_summary()["backups"] == {"platform": 0, "application": 0, "since": 0, "latest_at": None}
 

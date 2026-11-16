@@ -64,7 +64,7 @@ class Store:
 
 class Manager(BackupCatalogMixin, QueueMixin):
   def __init__(self):
-    self.pool = ThreadPoolExecutor(max_workers=1)
+    self.pool, self.started_at = ThreadPoolExecutor(max_workers=1), NOW
     self.queue_facts = []
     self.task_queue = TaskQueue(SCOPES, {"common": self.pool}, record=lambda task, status: None, notify=self._queue_changed)
 
@@ -148,6 +148,27 @@ class TestDeletion:
     with pytest.raises(LookupError):
       manager.request_backup_deletion("missing")
 
+  def test_a_deleted_backup_is_not_found_again(self, manager, stores, volume):
+    backup = row(stores.a, archive_key(volume), volume, deleted_at=NOW)
+    with pytest.raises(LookupError):
+      manager.request_backup_deletion(backup.id)
+    assert queued(manager) == []
+
+  def test_a_backup_that_was_not_completed_is_marked_deleted_at_once_with_no_task(self, manager, stores, volume, signals):
+    for status in ("failed", "cancelled", "interrupted"):
+      backup = row(stores.a, archive_key(volume), volume, status=status)
+      assert manager.request_backup_deletion(backup.id) is None
+      assert Backup.get_by_id(backup.id).deleted_at == NOW
+    assert queued(manager) == [] and signals.count((UpdateSource.BACKUPS, None)) == 3
+
+  def test_a_backup_being_taken_cannot_be_deleted(self, manager, stores, volume):
+    for status in ("queued", "running"):
+      backup = row(stores.a, archive_key(volume), volume, status=status)
+      with pytest.raises(Conflict, match="still being taken"):
+        manager.request_backup_deletion(backup.id)
+      assert Backup.get_by_id(backup.id).deleted_at is None
+    assert queued(manager) == []
+
   async def test_exactly_its_archive_is_deleted(self, manager, stores, volume):
     key = stores.a.put(archive_key(volume))
     sibling = stores.a.put(key + ".old", full=True)
@@ -156,11 +177,11 @@ class TestDeletion:
     elsewhere = row(stores.b, archive_key(volume), volume)
     await manager.delete_archive(key, "sa")
     assert stores.a.keys() == {sibling}
-    assert not Backup.select().where(Backup.id == backup.id).exists()
-    assert Backup.get_by_id(kept.id).s3_path == kept.s3_path
-    assert Backup.get_by_id(elsewhere.id).s3_path == key
+    assert Backup.get_by_id(backup.id).deleted_at == NOW
+    assert Backup.get_by_id(kept.id).deleted_at is None
+    assert Backup.get_by_id(elsewhere.id).deleted_at is None
 
-  async def test_a_slow_deletion_keeps_the_row_until_its_archive_is_removed(self, manager, stores, volume, signals):
+  async def test_a_slow_deletion_marks_the_row_only_once_its_archive_is_removed(self, manager, stores, volume, signals):
     backup = row(stores.a, archive_key(volume), volume)
     stores.a.put(backup.s3_path, full=True)
     entered, release = asyncio.Event(), asyncio.Event()
@@ -176,12 +197,12 @@ class TestDeletion:
     manager.task_queue.dispatch_tick()
     try:
       await asyncio.wait_for(entered.wait(), 5)
-      assert Backup.get_by_id(backup.id).s3_path == backup.s3_path
+      assert Backup.get_by_id(backup.id).deleted_at is None
       assert (UpdateSource.BACKUPS, None) not in signals
     finally:
       release.set()
       await manager.run()
-    assert not Backup.select().where(Backup.id == backup.id).exists()
+    assert Backup.get_by_id(backup.id).deleted_at is not None
     assert signals.count((UpdateSource.BACKUPS, None)) == 1
 
   def test_a_cancelled_deletion_keeps_the_backup(self, manager, stores, volume):
@@ -238,7 +259,7 @@ class TestDeletion:
     release.set()
     await manager.run()
     assert stores.a.keys() == set() and stores.b.keys() == set()
-    assert catalog() == []
+    assert all(backup.deleted_at is not None for backup in Backup.select())
 
   async def test_a_deletion_that_fails_fails_the_task_and_says_which_backup(self, manager, stores, volume, notices):
     key = stores.a.put(archive_key(volume))
@@ -255,7 +276,7 @@ class TestDiscovery:
   def test_a_catalog_plan_does_not_delete_a_replacement(self, stores, db):
     original = row(stores.a, f"backups/platform/{named()}.db.enc")
     plan = reconcile_catalog(stores.a.identity, "base", set(), set(), [
-        CatalogRow(original.id, original.s3_path, original.storage_id)], {})
+        CatalogRow(original.id, original.s3_path, original.storage_id, "succeeded", False, original.updated_at)], {}, NOW, {})
     original.delete_instance()
     replacement = row(stores.a, f"backups/platform/{named(1)}.db.enc")
     assert replacement.id != original.id
@@ -263,6 +284,22 @@ class TestDiscovery:
     assert not apply_catalog(plan)
 
     assert Backup.get_by_id(replacement.id).s3_path == replacement.s3_path
+
+  async def test_a_backup_an_earlier_run_left_unfinished_is_settled_and_one_being_taken_is_left(self, manager, stores, volume):
+    earlier = NOW - timedelta(minutes=1)
+    uploaded = row(stores.a, archive_key(volume), volume, status="running")
+    stores.a.put(uploaded.s3_path, full=True)
+    lost = row(stores.a, archive_key(volume, 1), volume, status="queued")
+    Backup.update(updated_at=earlier).where(Backup.id.in_([uploaded.id, lost.id])).execute()
+    taking = row(stores.a, archive_key(volume, 2), volume, status="running")
+    await manager.discover_backups("sa")
+    assert [Backup.get_by_id(backup.id).status for backup in (uploaded, lost, taking)] == ["succeeded", "interrupted", "running"]
+
+  async def test_a_deleted_backups_leftover_object_is_not_catalogued_again(self, manager, stores, volume):
+    backup = row(stores.a, archive_key(volume), volume, deleted_at=NOW)
+    stores.a.put(backup.s3_path, full=True)
+    await manager.discover_backups("sa")
+    assert [(entry.id, entry.deleted_at) for entry in Backup.select()] == [(backup.id, NOW)]
 
   def test_it_holds_its_store_and_nothing_is_queued_without_one(self, manager, stores, db):
     assert manager.request_backup_discovery() is not None
@@ -344,6 +381,70 @@ class TestDiscovery:
     assert len(catalog()) == 1
 
 
+class TestVolumeDeletion:
+  @pytest.fixture
+  def logs(self, application):
+    return Volume.create(application=application, name="logs", path="/logs")
+
+  def test_a_deleted_volumes_archives_are_queued_for_deletion_holding_the_store(self, manager, stores, volume):
+    manager.request_volume_deletion(volume.id)
+    assert not Volume.select().exists()
+    assert queued(manager) == [(("delete_volume_archives", "sa", volume.id), ["backup:store:sa"],
+                                {"volume_id": volume.id, "storage_id": "sa"}, {"Volume": "data"}, False)]
+
+  def test_without_a_store_the_volume_is_deleted_and_nothing_is_queued(self, manager, stores, volume):
+    stores.configured = None
+    manager.request_volume_deletion(volume.id)
+    assert not Volume.select().exists() and queued(manager) == []
+
+  def test_a_refused_deletion_queues_nothing(self, manager, stores, volume):
+    row(stores.a, archive_key(volume), volume, status="running")
+    with pytest.raises(Conflict):
+      manager.request_volume_deletion(volume.id)
+    assert Volume.select().exists() and queued(manager) == []
+
+  def test_a_deleted_application_queues_the_deletion_of_each_of_its_volumes_archives(self, manager, stores, volume, logs):
+    manager.request_application_deletion(volume.application_id)
+    assert sorted(key for key, *_ in queued(manager)) == sorted(
+        ("delete_volume_archives", "sa", each.id) for each in (volume, logs))
+
+  def test_a_refused_application_deletion_queues_nothing(self, manager, stores, volume, worker):
+    from services.db.models import Container
+    Container.create(application=volume.application_id, worker=worker)
+    with pytest.raises(Conflict):
+      manager.request_application_deletion(volume.application_id)
+    assert Volume.select().exists() and queued(manager) == []
+
+  async def test_exactly_its_archives_in_that_store_go_and_its_rows_there_are_marked_deleted(self, manager, stores, volume, logs):
+    own = [row(stores.a, archive_key(volume, days), volume) for days in (0, 1)]
+    for backup in own:
+      stores.a.put(backup.s3_path, full=True)
+    failed = row(stores.a, archive_key(volume, 2), volume, status="failed")
+    other = row(stores.a, archive_key(logs), logs)
+    stores.a.put(other.s3_path, full=True)
+    elsewhere = row(stores.b, archive_key(volume), volume)
+    stores.b.put(elsewhere.s3_path, full=True)
+    await manager.delete_volume_archives(volume.id, "sa")
+    assert stores.a.keys() == {other.s3_path} and stores.b.keys() == {elsewhere.s3_path}
+    assert [Backup.get_by_id(backup.id).deleted_at for backup in (*own, failed, other, elsewhere)] == [NOW, NOW, NOW, None, None]
+
+  async def test_a_failed_deletion_says_so_and_leaves_the_rows(self, manager, stores, volume, notices):
+    backup = row(stores.a, archive_key(volume), volume)
+    stores.a.put(backup.s3_path, full=True)
+    stores.a.fails = "backups"
+    with pytest.raises(TaskFailed):
+      await manager.delete_volume_archives(volume.id, "sa")
+    assert notices() == [("error", "The backups of a deleted volume could not be removed from S3: AccessDenied", f"{MANAGER}/backups")]
+    assert Backup.get_by_id(backup.id).deleted_at is None
+
+  async def test_once_the_store_changed_it_touches_neither_store(self, manager, stores, volume):
+    backup = row(stores.a, archive_key(volume), volume)
+    stores.a.put(backup.s3_path, full=True)
+    stores.configured = stores.b
+    await manager.delete_volume_archives(volume.id, "sa")
+    assert stores.a.keys() == {backup.s3_path} and Backup.get_by_id(backup.id).deleted_at is None
+
+
 class TestRetention:
   def test_it_is_quiet_holds_its_store_and_is_not_queued_without_one(self, manager, stores, db):
     manager.request_backup_retention()
@@ -364,6 +465,19 @@ class TestRetention:
     await manager.prune_backups("sa")
     assert stores.a.keys() == {recent.s3_path} and stores.b.keys() == {elsewhere.s3_path}
     assert catalog() == sorted([("sa", recent.s3_path, "application", "data"), ("sb", elsewhere.s3_path, "application", "data")])
+
+  async def test_rows_of_that_age_holding_no_backup_go_and_the_others_stay(self, manager, stores, volume):
+    old, recent = NOW - timedelta(days=config.RETENTION_DAYS + 1), NOW - timedelta(days=config.RETENTION_DAYS - 1)
+    gone = [row(stores.a, archive_key(volume), volume, status="failed", created_at=old),
+            row(stores.a, archive_key(volume), volume, created_at=old, deleted_at=old)]
+    kept = [row(stores.a, archive_key(volume), volume, status="failed", created_at=recent),
+            row(stores.a, archive_key(volume), volume, created_at=recent, deleted_at=recent),
+            row(stores.a, archive_key(volume), volume, created_at=old),
+            row(stores.b, archive_key(volume), volume, status="failed", created_at=old)]
+    stores.a.put(archive_key(volume))
+    await manager.prune_backups("sa")
+    assert sorted(Backup.select(Backup.id).scalars()) == sorted(backup.id for backup in kept)
+    assert not any(backup.id in Backup.select(Backup.id).scalars() for backup in gone)
 
   @pytest.mark.parametrize("failing", ["backups/platform", "backups/applications"])
   async def test_a_prefix_that_fails_still_lets_the_other_go_and_fails_the_task(self, manager, stores, volume, failing, notices):

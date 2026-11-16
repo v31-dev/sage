@@ -1,7 +1,7 @@
 import socketio
 
 import config
-from services.backups.payload import platform_backups
+from services.backups.payload import platform_backups, volume_backups
 from services.manager import Manager
 from services.releases import Releases
 from services.updates import Feed, Topic, UpdateFeed, Updates, UpdateSource, UpdateTopic
@@ -15,6 +15,7 @@ TOPICS = {
     UpdateTopic.TASKS: Topic(lambda: Manager().task_snapshot(), frozenset({UpdateSource.TASKS})),
     UpdateTopic.BACKUP_STATUS: Topic(lambda: Manager().backup_status(), frozenset({UpdateSource.BACKUP_STATUS})),
     UpdateTopic.BACKUPS: Topic(platform_backups, frozenset({UpdateSource.BACKUPS})),
+    UpdateTopic.VOLUME_BACKUPS: Topic(volume_backups, frozenset({UpdateSource.VOLUME_BACKUPS}), parameterised=True),
     UpdateTopic.RELEASE: Topic(lambda: Releases().latest(), frozenset({UpdateSource.RELEASE})),
     UpdateTopic.WORKERS: Topic(lambda: Manager().worker_list(), frozenset({UpdateSource.WORKER_LIST})),
     UpdateTopic.DOMAINS: Topic(lambda: Manager().domains_page(), frozenset({UpdateSource.DOMAINS})),

@@ -27,7 +27,10 @@ def download_filename(backup: Backup) -> str:
 
 def download_link(backup: Backup) -> dict:
   """A link that downloads the backup's file from the configured store for BROWSER_LINK_SECONDS, under its
-  `download_filename`; a Conflict when the backup is in another store, a LookupError when its file is gone."""
+  `download_filename`; a Conflict when the backup was not completed or is in another store, a LookupError when its
+  file is gone."""
+  if backup.status != "succeeded":
+    raise Conflict("Only a completed backup can be downloaded.")
   session = S3().session()
   if backup.storage_id != session.identity:
     raise Conflict("This backup is not in the configured store.")

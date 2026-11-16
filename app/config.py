@@ -60,6 +60,11 @@ SETTINGS_TEST_TIMEOUT_SECONDS = 5
 SETTINGS_TEST_RETRY_DELAYS = (1,)
 # A cold start without a certificate retries before giving up (seconds).
 STARTUP_RETRY_DELAYS = (60, 240, 960)
+# An automatic backup whose worker can't be reached, and a volume's archive that fails transiently, are retried after
+# these delays (seconds).
+BACKUP_RETRY_DELAYS = (30, 120)
+# A schedule's slot is taken by a backup of the same container's volume, or of the platform, this close to it (seconds).
+BACKUP_SLOT_BUFFER_SECONDS = 300
 RENEWAL_THRESHOLD_DAYS = 7
 DNS_PROPAGATION_TIMEOUT = 180
 DNS_POLL_INTERVAL = 5

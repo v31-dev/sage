@@ -45,6 +45,19 @@ def ping_path(output: str) -> str | None:
   return "direct" if re.fullmatch(r"[0-9a-fA-F.:\[\]]+:\d+", via) else "relay"
 
 
+# sysexits.h: a temporary failure, which a worker script exits with when trying again can work.
+EX_TEMPFAIL = 75
+
+
+class CommandError(Exception):
+  """A worker could not be reached, or a command on it failed; `transient` when trying again can work: the connection
+  failed, or the command exited with `EX_TEMPFAIL`."""
+
+  def __init__(self, message: str, transient: bool = False):
+    super().__init__(message)
+    self.transient = transient
+
+
 class Tailscale(Base):
   def __init__(self):
     super().__init__()
@@ -254,20 +267,20 @@ class Tailscale(Base):
       try:
         conn = await self._get_conn(hostname)
       except (OSError, asyncssh.Error) as e:
-        raise Exception(f"Error connecting to {hostname}: {e}")
+        raise CommandError(f"Error connecting to {hostname}: {e}", transient=True)
       try:
         # stderr is merged into stdout so a failed command's output is captured
         return await conn.create_process(command, stderr=asyncssh.STDOUT, errors="replace")
       except (OSError, asyncssh.Error) as e:
         await self._evict(hostname)
         if attempt == 1:
-          raise Exception(f"Error executing command on {hostname}: {e}")
+          raise CommandError(f"Error executing command on {hostname}: {e}", transient=True)
 
   async def exec_command(self, hostname, command, timeout=300):
     """
     Execute a command on a worker over the Tailscale SSH server via asyncssh,
     reusing a pooled connection. Each output line is logged as it arrives. Returns
-    (exit_status, output_lines); raises on timeout or non-zero exit.
+    (exit_status, output_lines); raises on timeout, and `CommandError` on a failed connection or a non-zero exit.
 
     The worker stops the command at `timeout` (GNU or uutils `timeout`, run through the
     session's own shell): Tailscale SSH ignores signals and a closed channel, so nothing the
@@ -297,7 +310,7 @@ class Tailscale(Base):
       raise Exception(f"Command on {hostname} timed out after {timeout}s: {command}")
     except (OSError, asyncssh.Error) as e:
       await self._evict(hostname)  # connection likely dead
-      raise Exception(f"Error executing command on {hostname}: {e}")
+      raise CommandError(f"Error executing command on {hostname}: {e}", transient=True)
     finally:
       process.close()
 
@@ -307,9 +320,9 @@ class Tailscale(Base):
       raise Exception(f"Command on {hostname} timed out after {timeout}s: {command}")
     if status != 0:
       tail = "\n".join(output_lines[-10:])
-      raise Exception(
-          f"Error executing command on {hostname}: exit code {status}"
-          + (f"\n{tail}" if tail else ""))
+      raise CommandError(
+          f"Error executing command on {hostname}: exit code {status}" + (f"\n{tail}" if tail else ""),
+          transient=status == EX_TEMPFAIL)
 
     logger.info(f"Successfully executed command on {hostname}.")
     return (status, output_lines)
@@ -367,7 +380,7 @@ class Tailscale(Base):
       try:
         conn = await self._get_conn(hostname)
       except (OSError, asyncssh.Error) as e:
-        raise Exception(f"Error connecting to {hostname}: {e}")
+        raise CommandError(f"Error connecting to {hostname}: {e}", transient=True)
       try:
         await asyncio.wait_for(_upload(conn), timeout)
         break
@@ -376,5 +389,5 @@ class Tailscale(Base):
       except (OSError, asyncssh.Error) as e:
         await self._evict(hostname)  # connection likely dead; retry once fresh
         if attempt == 1:
-          raise Exception(f"Error syncing file to {hostname}: {e}")
+          raise CommandError(f"Error syncing file to {hostname}: {e}", transient=True)
     logger.info(f"Successfully synced file to {hostname}: {dst}.")

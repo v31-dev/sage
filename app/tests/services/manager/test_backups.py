@@ -12,13 +12,14 @@ import pytest
 
 import config
 from services.applications.deploy_input import capture_deploy_config
-from services.backups.commands import add_backup
+from services.backups.commands import add_backups, settle_backups
 from services.backups.keys import APPLICATIONS_PREFIX, archive_name, parse_volume_archive, taken_at, volume_archive_key
 from services.containers.placement import record_path, runtime_name, volume_dir
 from services.containers.record import Applied, Baseline, Operation, Settled, TargetRecord
 from services.db.models import Backup, Container, Volume
 from services.manager.backup_catalog import BackupCatalogMixin
-from services.manager.backups import BackupsMixin
+from services.manager.backups import BackupsMixin, settling
+from services.manager.lifecycle import REFUSALS
 from services.manager.queue import SCOPES
 from services.s3 import S3
 from services.tailscale import Tailscale
@@ -31,7 +32,8 @@ from utils.queue import QueuedTask, QueueState, TaskQueue, next_to_start
 
 CURL = """#!/bin/sh
 # A presigned link is a local path: an upload copies the file there and answers 200, or 403 with `upload-fails` naming a
-# part of the path; a download copies it from there, or answers 404 without one.
+# part of the path, or 503 while `upload-unavailable` names a part of the path, once for each of its lines; a download
+# copies it from there, or answers 404 without one.
 file=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -45,6 +47,10 @@ if [ -e "$FAKE_DOCKER/upload-fails" ] && grep -qF "$(cat "$FAKE_DOCKER/upload-fa
 $url
 EOF
 then echo "AccessDenied" > "$out"; printf 403; exit 0; fi
+if [ -s "$FAKE_DOCKER/upload-unavailable" ] && grep -qF "$(head -n 1 "$FAKE_DOCKER/upload-unavailable")" <<EOF
+$url
+EOF
+then sed -i 1d "$FAKE_DOCKER/upload-unavailable"; echo "SlowDown" > "$out"; printf 503; exit 0; fi
 if [ -z "$file" ]; then
   [ -e "$url" ] && cp "$url" "$out" && printf 200 || printf 404
   exit 0
@@ -76,6 +82,10 @@ class BackupWorker(Worker):
   def fail_upload(self, part):
     (self.state / "upload-fails").write_text(part)
 
+  def unavailable(self, part, times):
+    """The store answers 503 to the next `times` uploads whose path holds `part`."""
+    (self.state / "upload-unavailable").write_text(f"{part}\n" * times)
+
 
 class Store:
   """The configured S3 store: a folder its presigned links name, under the base path `base`."""
@@ -106,6 +116,7 @@ class Store:
 class Manager(BackupsMixin, BackupCatalogMixin, Lifecycle):
   def __init__(self):
     super().__init__()
+    self.started_at = datetime(2000, 1, 1)
     self.task_queue = TaskQueue(SCOPES, {"app": self.pool, "common": self.pool}, record=lambda task, status: None,
                                 notify=self._queue_changed)
 
@@ -165,12 +176,45 @@ def running(container, worker_host):
 
 
 def rows():
+  """The backups taken."""
   return sorted((parse_volume_archive(row.s3_path, "base")[:2], row.storage_id, row.source_volume_name, row.type)
-                for row in Backup.select())
+                for row in Backup.select().where(Backup.status == "succeeded"))
+
+
+def outcomes():
+  return sorted((row.source_volume_name, row.status, row.reason) for row in Backup.select())
 
 
 def ids(volumes):
   return [volume.id for volume in volumes]
+
+
+def queued_backups(container, volumes, store_id="s1", automatic=False):
+  """The container's backups of the volumes recorded queued, as their request does; their ids."""
+  return add_backups(store_id, utcnow(), automatic, [f"base/{volume_archive_key(volume.id, container.id, archive_name(utcnow()))}"
+                                                     for volume in volumes], volumes, container)
+
+
+async def take(body, container, volumes, store_id="s1"):
+  """Runs the backup task `body` on the container's backups of the volumes, recorded queued first."""
+  await settling(body)(container_id=container.id, backup_ids=queued_backups(container, volumes, store_id), storage_id=store_id)
+
+
+@pytest.fixture(autouse=True)
+def no_retry_delays(monkeypatch):
+  monkeypatch.setattr(config, "BACKUP_RETRY_DELAYS", (0, 0))
+
+
+def steps(worker_host):
+  """What the container's backup asks of the worker, in order: Docker Compose's commands and each archive."""
+  log, original = [], worker_host.exec_command
+
+  async def exec_command(hostname, command, timeout=300):
+    log.append(command.split()[4] if command.startswith("docker compose -p") else "archive" if command.endswith("/backup.sh") else None)
+    return await original(hostname, command, timeout)
+
+  worker_host.exec_command = exec_command
+  return log
 
 
 pytestmark = pytest.mark.usefixtures("thread_connections", "in_task")
@@ -180,7 +224,7 @@ class TestManualBackup:
   async def test_a_stopped_containers_volumes_are_archived_by_id_and_it_is_committed_stopped(
           self, manager, worker_host, store, container, volumes, notices):
     place(container, stopped(container))
-    await manager.backup_container(container.id, ids(volumes), "s1")
+    await take(manager.backup_container, container, volumes)
     assert rows() == sorted(((volume.id, container.id), "s1", volume.name, "application") for volume in volumes)
     assert notices() == [("success", "Backup of data, logs from Demo / Web on w1 created.", PAGE)]
     for row in Backup.select():
@@ -195,20 +239,20 @@ class TestManualBackup:
 
   async def test_the_notice_names_only_the_volumes_backed_up(self, manager, worker_host, container, volumes, notices):
     place(container, stopped(container))
-    await manager.backup_container(container.id, [volumes[1].id], "s1")
+    await take(manager.backup_container, container, [volumes[1]])
     assert notices() == [("success", "Backup of logs from Demo / Web on w1 created.", PAGE)]
 
   async def test_a_failure_after_a_stop_is_cleared_by_a_backup(self, manager, worker_host, container, volumes):
     failed = stopped(container)
     place(container, TargetRecord(failed.authority, failed.applied, Settled("d1", "stopped", "failed", VERIFIED, "pull"), failed.operation))
-    await manager.backup_container(container.id, ids(volumes), "s1")
+    await take(manager.backup_container, container, volumes)
     assert worker_record(container).settled.result == "succeeded"
 
   @pytest.mark.parametrize("setup, refusal", [
       ("running", "running"), ("never deployed", "not_deployed"), ("another store", "store_changed"),
       ("no volumes", "no_volumes")])
   async def test_it_is_refused_with_the_container_untouched(self, manager, worker_host, container, volumes, setup, refusal):
-    asked, store_id = ids(volumes), "s1"
+    asked, store_id = volumes, "s1"
     if setup == "running":
       running(container, worker_host)
     elif setup != "never deployed":
@@ -216,11 +260,12 @@ class TestManualBackup:
     if setup == "another store":
       store_id = "s0"
     if setup == "no volumes":
-      asked = ["0123456789abcdef"]
+      asked = [SimpleNamespace(id="0123456789abcdef", name="gone", application_id=container.application_id)]
     before = worker_record(container)
     with pytest.raises(TaskFailed):
-      await manager.backup_container(container.id, asked, store_id)
-    assert worker_record(container) == before and Backup.select().count() == 0
+      await take(manager.backup_container, container, asked, store_id)
+    assert worker_record(container) == before and rows() == []
+    assert {(status, reason) for _, status, reason in outcomes()} == {("failed", REFUSALS[refusal])}
     assert events(container) == [("backup_stopped", "rejected", {"refusal": refusal})]
 
   async def test_a_failed_upload_keeps_the_other_archive_and_leaves_the_container_in_error(
@@ -228,8 +273,10 @@ class TestManualBackup:
     place(container, stopped(container))
     worker_host.fail_upload(volumes[0].id)
     with pytest.raises(TaskFailed):
-      await manager.backup_container(container.id, ids(volumes), "s1")
+      await take(manager.backup_container, container, volumes)
     assert [name for _, _, name, _ in rows()] == ["logs"]
+    [(_, _, reason), logs] = outcomes()
+    assert logs == ("logs", "succeeded", None) and reason and not reason.startswith("volume data")
     settled = worker_record(container).settled
     assert (settled.runtime_goal, settled.result) == ("stopped", "failed") and "volume data" in settled.reason
     assert events(container)[-1][:2] == ("backup_stopped", "failed")
@@ -256,6 +303,34 @@ class TestManualRequests:
         (("lifecycle", each.id), "backup_stopped",
          sorted({f"worker:{each.worker_id}:container:{each.id}", f"backup:store:s1:write:{each.id}"}), "s1")
         for each in (container, others))
+
+  async def test_each_containers_backups_are_recorded_queued_for_its_task(
+          self, manager, worker_host, container, others, volumes, clock):
+    for each in (container, others):
+      await self.held(each, stopped(each))
+    manager.request_backup(container.application_id, ids(volumes))
+    for task in manager.task_queue.snapshot()["queued"]:
+      backups = [Backup.get_by_id(backup_id) for backup_id in task["params"]["backup_ids"]]
+      assert [(parse_volume_archive(backup.s3_path, "base")[:2], backup.container_id, backup.status, backup.slot_at,
+               backup.automatic) for backup in backups] == [
+          ((volume.id, task["params"]["container_id"]), task["params"]["container_id"], "queued", clock.current, False)
+          for volume in volumes]
+    assert Backup.select().count() == 4
+
+  async def test_one_the_queue_does_not_take_leaves_no_backup(self, manager, worker_host, container, volumes):
+    await self.held(container, stopped(container))
+    manager.task_queue.stop()
+    assert manager.request_backup(container.application_id, ids(volumes)) == []
+    assert Backup.select().count() == 0
+
+  async def test_a_users_cancel_or_a_stop_replacing_it_cancels_its_backups(self, manager, worker_host, container, volumes):
+    await self.held(container, stopped(container))
+    manager.request_backup(container.application_id, ids(volumes))
+    manager.request_cancel(container.id, "backup_stopped")
+    manager.request_backup(container.application_id, ids(volumes))
+    manager.request_stop(container.id)
+    assert [task["name"] for task in manager.task_queue.snapshot()["queued"]] == ["stop"]
+    assert [status for _, status, _ in outcomes()] == ["cancelled"] * 4
 
   async def test_it_is_refused_while_a_container_runs(self, manager, worker_host, container, others, volumes):
     await self.held(container, stopped(container))
@@ -288,7 +363,7 @@ class TestAutomaticBackup:
       return await original(hostname, command, timeout)
 
     worker_host.exec_command = exec_command
-    await manager.backup_container_preserving(container.id, ids(volumes), "s1")
+    await take(manager.backup_container_preserving, container, volumes)
     assert [step for step in log if step] == ["ps", "stop", "archive", "archive", "start", "ps"]
     record = worker_record(container)
     assert (record.operation.contract, record.operation.phase, record.operation.outcome) == ("backup_preserve", "settled", "succeeded")
@@ -299,7 +374,7 @@ class TestAutomaticBackup:
 
   async def test_a_stopped_container_is_archived_and_left_stopped(self, manager, worker_host, container, volumes):
     place(container, stopped(container))
-    await manager.backup_container_preserving(container.id, ids(volumes), "s1")
+    await take(manager.backup_container_preserving, container, volumes)
     record = worker_record(container)
     assert record.operation.baseline == Baseline("s0", "stopped", None, ()) and record.operation.outcome == "succeeded"
     assert worker_host.runtime(container) is None and record.settled == stopped(container).settled
@@ -309,22 +384,23 @@ class TestAutomaticBackup:
     running(container, worker_host)
     worker_host.fail_upload(volumes[1].id)
     with pytest.raises(TaskFailed):
-      await manager.backup_container_preserving(container.id, ids(volumes), "s1")
+      await take(manager.backup_container_preserving, container, volumes)
     [(level, content, link)] = notices()
     assert (level, content.startswith("Automatic backup of Demo / Web on w1 failed: volume logs"), link) == ("error", True, PAGE)
     record = worker_record(container)
     assert (record.operation.phase, record.operation.outcome) == ("settled", "failed") and "volume logs" in record.operation.reason
     assert record.settled == deployed(container).settled and worker_host.runtime(container) == "running d0"
     assert [name for _, _, name, _ in rows()] == ["data"]
+    assert [(name, status) for name, status, _ in outcomes()] == [("data", "succeeded"), ("logs", "failed")]
     assert events(container)[-1][:2] == ("backup_preserve", "failed")
 
   async def test_a_failed_stop_still_brings_the_runtime_back(self, manager, worker_host, container, volumes):
     running(container, worker_host)
     worker_host.flag("stop-fails")
     with pytest.raises(TaskFailed):
-      await manager.backup_container_preserving(container.id, ids(volumes), "s1")
+      await take(manager.backup_container_preserving, container, volumes)
     assert worker_record(container).operation.outcome == "failed" and worker_host.runtime(container) == "running d0"
-    assert rows() == []
+    assert rows() == [] and {status for _, status, _ in outcomes()} == {"failed"}
 
   @pytest.mark.parametrize("change", ["start-fails", "replaced", "another deployment"])
   async def test_a_runtime_that_does_not_come_back_the_same_is_stopped_and_settled_failed(
@@ -341,7 +417,7 @@ class TestAutomaticBackup:
 
     manager._archive = archive
     with pytest.raises(TaskFailed):
-      await manager.backup_container_preserving(container.id, ids(volumes), "s1")
+      await take(manager.backup_container_preserving, container, volumes)
     settled = worker_record(container).settled
     assert (settled.runtime_goal, settled.result) == ("stopped", "failed") and "started again" in settled.reason
     assert worker_host.runtime(container) is None and len(rows()) == 2
@@ -361,17 +437,110 @@ class TestAutomaticBackup:
       worker_host.run(container, "exited d0")
     before = (worker_record(container), worker_host.runtime(container))
     with pytest.raises(TaskFailed):
-      await manager.backup_container_preserving(container.id, ids(volumes), store_id)
+      await take(manager.backup_container_preserving, container, volumes, store_id)
     assert (worker_record(container), worker_host.runtime(container)) == before and rows() == []
+    assert {(status, reason) for _, status, reason in outcomes()} == {("failed", REFUSALS[refusal])}
     assert events(container) == [("backup_preserve", "rejected", {"refusal": refusal})]
+
+
+class TestRetries:
+  async def test_a_volume_the_store_could_not_take_is_taken_again_alone_while_the_app_stays_paused(
+          self, manager, worker_host, container, volumes):
+    running(container, worker_host)
+    worker_host.unavailable(volumes[1].id, 2)
+    log = steps(worker_host)
+    await take(manager.backup_container_preserving, container, volumes)
+    assert [step for step in log if step] == ["ps", "stop", "archive", "archive", "archive", "archive", "start", "ps"]
+    assert outcomes() == [("data", "succeeded", None), ("logs", "succeeded", None)]
+    assert worker_host.runtime(container) == "running d0" and len(rows()) == 2
+
+  async def test_one_that_keeps_failing_fails_after_three_attempts_with_its_error(self, manager, worker_host, container, volumes):
+    running(container, worker_host)
+    worker_host.unavailable(volumes[1].id, 3)
+    log = steps(worker_host)
+    with pytest.raises(TaskFailed):
+      await take(manager.backup_container_preserving, container, volumes)
+    assert log.count("archive") == 4
+    [data, (_, status, reason)] = outcomes()
+    assert data == ("data", "succeeded", None) and status == "failed" and "exit code 75" in reason
+
+  async def test_a_refused_upload_is_not_taken_again_with_the_ones_that_failed_transiently(
+          self, manager, worker_host, container, volumes):
+    running(container, worker_host)
+    worker_host.unavailable(volumes[0].id, 1)
+    worker_host.fail_upload(volumes[1].id)
+    log = steps(worker_host)
+    with pytest.raises(TaskFailed):
+      await take(manager.backup_container_preserving, container, volumes)
+    assert log.count("archive") == 3
+    assert [(name, status) for name, status, _ in outcomes()] == [("data", "succeeded"), ("logs", "failed")]
+
+  async def test_a_manual_backups_archives_are_taken_again_too(self, manager, worker_host, container, volumes):
+    place(container, stopped(container))
+    worker_host.unavailable(volumes[0].id, 1)
+    await take(manager.backup_container, container, volumes)
+    assert outcomes() == [("data", "succeeded", None), ("logs", "succeeded", None)]
+
+  async def test_an_automatic_backup_whose_worker_cannot_be_reached_tries_again(self, manager, worker_host, container, volumes):
+    running(container, worker_host)
+    original, calls = manager.begin_lifecycle, []
+
+    async def begin(*args, **kwargs):
+      calls.append(args)
+      worker_host.reachable = len(calls) > 1
+      return await original(*args, **kwargs)
+
+    manager.begin_lifecycle = begin
+    await take(manager.backup_container_preserving, container, volumes)
+    assert [transition for _, transition, _ in events(container)] == ["rejected", "admitted", "succeeded"]
+    assert {status for _, status, _ in outcomes()} == {"succeeded"}
+
+  async def test_one_whose_worker_stays_unreachable_fails_after_three_attempts(self, manager, worker_host, container, volumes):
+    running(container, worker_host)
+    worker_host.reachable = False
+    with pytest.raises(TaskFailed):
+      await take(manager.backup_container_preserving, container, volumes)
+    assert events(container) == [("backup_preserve", "rejected", {"refusal": "unreachable"})] * 3
+    assert {(status, reason) for _, status, reason in outcomes()} == {("failed", REFUSALS["unreachable"])}
+
+  async def test_a_manual_backup_whose_worker_cannot_be_reached_is_refused_at_once(self, manager, worker_host, container, volumes):
+    place(container, stopped(container))
+    worker_host.reachable = False
+    with pytest.raises(TaskFailed):
+      await take(manager.backup_container, container, volumes)
+    assert events(container) == [("backup_stopped", "rejected", {"refusal": "unreachable"})]
+
+
+class TestSettling:
+  async def test_its_backups_run_as_it_starts_and_one_cut_off_by_a_shutdown_stays_unfinished(self, manager, container, volumes):
+    seen = []
+
+    async def body(container_id, backup_ids, storage_id):
+      seen.append({status for _, status, _ in outcomes()})
+      raise asyncio.CancelledError()
+
+    with pytest.raises(asyncio.CancelledError):
+      await take(body, container, volumes)
+    assert seen == [{"running"}] and {status for _, status, _ in outcomes()} == {"running"}
+
+  async def test_a_body_that_fails_fails_the_backups_it_left_with_its_error(self, manager, container, volumes):
+    async def body(container_id, backup_ids, storage_id):
+      settle_backups(backup_ids[:1], "succeeded")
+      raise Exception("Syncing file to w1 timed out")
+
+    with pytest.raises(Exception):
+      await take(body, container, volumes)
+    assert outcomes() == [("data", "succeeded", None), ("logs", "failed", "Syncing file to w1 timed out")]
 
 
 class TestEdges:
   @pytest.mark.parametrize("task", ["backup_container", "backup_container_preserving"])
-  async def test_a_container_deleted_before_its_backup_runs_is_a_quiet_no_op(self, manager, worker_host, container, volumes, task):
+  async def test_a_container_deleted_before_its_backup_runs_is_a_quiet_no_op_that_cancels_its_backups(
+          self, manager, worker_host, container, volumes, task):
+    backup_ids = queued_backups(container, volumes)
     Container.delete().where(Container.id == container.id).execute()
-    await getattr(manager, task)(container.id, ids(volumes), "s1")
-    assert rows() == []
+    await settling(getattr(manager, task))(container_id=container.id, backup_ids=backup_ids, storage_id="s1")
+    assert outcomes() == [("data", "cancelled", "its container was deleted"), ("logs", "cancelled", "its container was deleted")]
 
   async def test_an_automatic_backup_whose_end_is_not_recorded_fails_with_the_runtime_back(
           self, manager, worker_host, container, volumes, monkeypatch):
@@ -387,10 +556,16 @@ class TestEdges:
 
     monkeypatch.setattr(Containers(), "write", write)
     with pytest.raises(TaskFailed):
-      await manager.backup_container_preserving(container.id, ids(volumes), "s1")
+      await take(manager.backup_container_preserving, container, volumes)
     assert worker_record(container).operation.phase == "executing" and worker_host.runtime(container) == "running d0"
     assert events(container)[-1] == ("backup_preserve", "failed", {"error": "its end could not be recorded on the worker: "
                                                                             "Syncing file to w1 timed out"})
+
+
+def volumes_of(task):
+  """The volumes a queued backup task takes, by id, from its backups."""
+  return sorted(Backup.get_by_id(backup_id).source_volume_id for backup_id in task["params"]["backup_ids"]) if (
+      "backup_ids" in task["params"]) else None
 
 
 class TestAutomaticRequests:
@@ -399,7 +574,7 @@ class TestAutomaticRequests:
     return datetime(2026, 1, 1, 3, 0, 20)
 
   def queued(self, manager):
-    return [(tuple(task["key"]), task["name"], task["params"]["volume_ids"], task["quiet"]) for task in manager.task_queue.snapshot()["queued"]]
+    return [(tuple(task["key"]), task["name"], volumes_of(task), task["quiet"]) for task in manager.task_queue.snapshot()["queued"]]
 
   def test_each_container_of_an_application_with_volumes_due_gets_its_own_automatic_backup(self, manager, container, volumes, at):
     Volume.update(backup_cron="0 3 * * *").where(Volume.id == volumes[0].id).execute()
@@ -415,13 +590,69 @@ class TestAutomaticRequests:
     manager.request_stop(container.id)
     for minute in range(3):
       manager.request_automatic_backups(at + timedelta(minutes=minute))
-    assert [(task["name"], task["params"].get("volume_ids")) for task in manager.task_queue.snapshot()["queued"]] == [
+    assert [(task["name"], volumes_of(task)) for task in manager.task_queue.snapshot()["queued"]] == [
         ("stop", None), ("backup_preserve", [volumes[0].id]), ("backup_preserve", sorted(ids(volumes)))]
+
+  def test_its_backups_are_recorded_queued_for_the_minutes_slot_and_a_repeat_the_queue_absorbs_leaves_none(
+          self, manager, container, volumes, at):
+    Volume.update(backup_cron="* * * * *").where(Volume.id == volumes[0].id).execute()
+    Volume.update(backup_cron="1 3 * * *").where(Volume.id == volumes[1].id).execute()
+    manager.request_stop(container.id)
+    for minute in range(3):
+      manager.request_automatic_backups(at + timedelta(minutes=minute))
+    assert sorted((row.source_volume_name, row.slot_at.minute, row.automatic, row.status, row.container_id)
+                  for row in Backup.select()) == [
+        ("data", 0, True, "queued", container.id), ("data", 1, True, "queued", container.id),
+        ("logs", 1, True, "queued", container.id)]
+
+  def test_a_backup_not_of_the_schedule_holds_the_slot_within_five_minutes(self, manager, container, volumes, at):
+    Volume.update(backup_cron="0 3 * * *").execute()
+    for volume, minutes in zip(volumes, (4, 6)):
+      settle_backups(add_backups("s1", at - timedelta(minutes=minutes), False, [f"base/{volume.name}"], [volume], container),
+                     "succeeded")
+    manager.request_automatic_backups(at)
+    assert [volumes_of(task) for task in manager.task_queue.snapshot()["queued"]] == [[volumes[1].id]]
+
+  def test_the_catch_up_takes_each_containers_most_recent_slot_before_the_start(self, manager, container, volumes):
+    from services.db.models import Worker as Host
+    other = Container.create(application=container.application, worker=Host.create(hostname="w2", subdomain="blue"))
+    Volume.update(backup_cron="0 3 * * *").where(Volume.id == volumes[0].id).execute()
+    manager.started_at, slot = datetime(2026, 1, 2, 9, 30), datetime(2026, 1, 2, 3, 0)
+    settle_backups(add_backups("s1", slot, True, ["base/k"], [volumes[0]], other), "succeeded")
+    manager.request_automatic_backups(datetime(2026, 1, 3, 3, 10), since_start=True)
+    assert [(row.container_id, row.source_volume_id, row.slot_at, row.automatic) for row in Backup.select().where(
+        Backup.status == "queued")] == [(container.id, volumes[0].id, slot, True)]
+
+  def test_a_backup_in_another_store_does_not_hold_the_slot(self, manager, container, volumes, at):
+    Volume.update(backup_cron="0 3 * * *").where(Volume.id == volumes[0].id).execute()
+    settle_backups(add_backups("s0", at.replace(second=0), True, ["base/k"], [volumes[0]], container), "succeeded")
+    manager.request_automatic_backups(at)
+    assert [volumes_of(task) for task in manager.task_queue.snapshot()["queued"]] == [[volumes[0].id]]
+
+  def test_the_catch_up_takes_a_slots_interrupted_backup_again_at_its_key(self, manager, container, volumes):
+    Volume.update(backup_cron="0 3 * * *").where(Volume.id == volumes[0].id).execute()
+    manager.started_at = datetime(2026, 1, 2, 9, 30)
+    [left] = add_backups("s1", datetime(2026, 1, 2, 3, 0), True, ["base/k"], [volumes[0]], container)
+    settle_backups([left], "interrupted", "it was cut off")
+    manager.request_automatic_backups(datetime(2026, 1, 2, 9, 31), since_start=True)
+    [task] = manager.task_queue.snapshot()["queued"]
+    backup = Backup.get_by_id(left)
+    assert task["params"]["backup_ids"] == [left] and Backup.select().count() == 1
+    assert (backup.status, backup.reason, backup.s3_path) == ("queued", None, "base/k")
+
+  def test_a_slots_backup_the_queue_does_not_take_again_stays_as_it_was(self, manager, container, volumes):
+    Volume.update(backup_cron="0 3 * * *").execute()
+    manager.started_at = datetime(2026, 1, 2, 9, 30)
+    [left] = add_backups("s1", datetime(2026, 1, 2, 3, 0), True, ["base/k"], [volumes[0]], container)
+    settle_backups([left], "cancelled")
+    manager.task_queue.stop()
+    manager.request_automatic_backups(datetime(2026, 1, 2, 9, 31), since_start=True)
+    assert [(row.id, row.status) for row in Backup.select()] == [(left, "cancelled")]
 
   def test_a_volume_backed_up_this_minute_is_not_due_again(self, manager, container, volumes, at):
     Volume.update(backup_cron="0 3 * * *").where(Volume.id == volumes[0].id).execute()
     Backup.create(s3_path="k", storage_id="s1", type="application", source_volume_id=volumes[0].id, source_volume_name="data",
-                  application=container.application_id, created_at=at.replace(second=5))
+                  application=container.application_id, container_id=container.id, slot_at=at.replace(second=5))
     manager.request_automatic_backups(at)
     assert self.queued(manager) == []
 
@@ -514,7 +745,7 @@ class TestRestore:
   async def archived(self, manager, worker_host, container, volumes):
     """The volumes of `container` backed up, by volume name."""
     place(container, stopped(container))
-    await manager.backup_container(container.id, ids(volumes), "s1")
+    await take(manager.backup_container, container, volumes)
     return {row.source_volume_name: row for row in Backup.select()}
 
   def files(self, container, volume):
@@ -527,9 +758,11 @@ class TestRestore:
     place(container, stopped(container))
     await Containers().read(container)
     before = worker_record(container)
-    selected = add_backup(store.get_full_path(volume_archive_key(
-        volumes[0].id, container.id, archive_name(utcnow() - timedelta(days=config.RETENTION_DAYS + 1)))),
-        store.identity, volumes[0].id, volumes[0].name, container.application_id)
+    taken = utcnow() - timedelta(days=config.RETENTION_DAYS + 1)
+    [selected_id] = add_backups(store.identity, taken, False, [store.get_full_path(volume_archive_key(
+        volumes[0].id, container.id, archive_name(taken)))], [volumes[0]], container)
+    Backup.update(status="succeeded").where(Backup.id == selected_id).execute()
+    selected = Backup.get_by_id(selected_id)
     volumes[1].backup_cron = "* * * * *"
     volumes[1].save()
     entered, release = asyncio.Event(), asyncio.Event()
@@ -618,7 +851,8 @@ class TestRestore:
 
   @pytest.mark.parametrize("setup, refusal", [
       ("running", "running"), ("runs though stopped", "running"), ("another store", "store_changed"),
-      ("backup in another store", "store_changed"), ("backup gone", "no_backup"), ("volume gone", "no_volumes")])
+      ("backup in another store", "store_changed"), ("backup gone", "no_backup"), ("backup deleted", "no_backup"),
+      ("volume gone", "no_volumes")])
   async def test_it_is_refused_with_the_container_untouched(self, manager, worker_host, container, volumes, archived, setup, refusal):
     store_id, backup = "s1", archived["data"]
     if setup == "running":
@@ -631,6 +865,8 @@ class TestRestore:
       Backup.update(storage_id="s0").where(Backup.id == backup.id).execute()
     elif setup == "backup gone":
       Backup.delete().where(Backup.id == backup.id).execute()
+    elif setup == "backup deleted":
+      Backup.update(deleted_at=utcnow()).where(Backup.id == backup.id).execute()
     else:
       Volume.delete().where(Volume.id == volumes[1].id).execute()
     before = worker_record(container)
@@ -702,6 +938,15 @@ class TestRestoreRequests:
   def test_a_backup_in_another_store_is_refused(self, manager, container, volumes, backup):
     Backup.update(storage_id="s0").where(Backup.id == backup.id).execute()
     with pytest.raises(Conflict, match="not in the configured store"):
+      manager.request_restore(container.id, backup.id, volumes[0].id)
+
+  def test_a_backup_not_completed_is_refused_and_a_deleted_one_not_found(self, manager, container, volumes, backup):
+    for status in ("queued", "running", "failed", "cancelled", "interrupted"):
+      Backup.update(status=status).where(Backup.id == backup.id).execute()
+      with pytest.raises(Conflict, match="Only a completed backup"):
+        manager.request_restore(container.id, backup.id, volumes[0].id)
+    Backup.update(status="succeeded", deleted_at=utcnow()).where(Backup.id == backup.id).execute()
+    with pytest.raises(LookupError):
       manager.request_restore(container.id, backup.id, volumes[0].id)
 
   def test_a_backup_or_volume_of_another_application_is_refused(self, manager, container, volumes, backup, project):

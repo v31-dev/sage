@@ -278,7 +278,7 @@ writers. The [flow diagrams](operations.md) show how scheduler, route and startu
 ## Platform Backup And Restore
 
 A platform backup is the configuration: the database without its history (container and worker events,
-notifications, tasks) and without the Backup rows, which mirror the store and are rebuilt from its listing. It is
+notifications, tasks) and without the Backup rows, whose completed backups are rebuilt from the store's listing. It is
 taken twice a day and from the Backups page, while other work goes on, and is encrypted into the configured S3 store.
 
 A restore puts a backup's configuration in place of the current one:

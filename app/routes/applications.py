@@ -47,7 +47,8 @@ def update_application(project: str, application: str, data: dict = Body(...)):
 
 @router.delete("/{application}", status_code=204)
 def delete_application(project: str, application: str):
-  commands.delete_application(find_application(project, application).id)
+  """The application deleted, and the deletion of its volumes' backups queued."""
+  Manager().request_application_deletion(find_application(project, application).id)
 
 
 @router.post("/{application}/deploy")

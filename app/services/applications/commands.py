@@ -1,6 +1,7 @@
 from services.applications.rules import apply_type, validate_backup_cron, validate_image, validate_repo, validate_volume_path
 from services.applications.updates import application_changed, container_changed, hosts_changed
-from services.db.models import Application, Container, Project, Volume, Worker
+from services.backups.catalog import UNFINISHED
+from services.db.models import Application, Backup, Container, Project, Volume, Worker
 from services.db.writes import get, merged, save_changes, trim, write
 from utils.errors import Conflict
 from values.names import derive_name
@@ -115,8 +116,11 @@ def patch_volume(volume_id: str, fields: dict) -> Volume:
 
 
 def delete_volume(volume_id: str):
+  """Deletes the volume; refused while one of its backups is queued or running."""
   with write():
     volume = get(Volume, Volume.id == volume_id)
+    if Backup.select().where((Backup.source_volume_id == volume_id) & Backup.status.in_(UNFINISHED)).exists():
+      raise Conflict("A volume with a backup being taken can't be deleted.")
     volume.delete_instance()
   application_changed(volume.application)
 

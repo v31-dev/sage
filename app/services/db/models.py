@@ -172,7 +172,18 @@ class Backup(BaseModel):
   # Not a foreign key: a backup outlives its volume.
   source_volume_id = CharField(null=True)
   source_volume_name = CharField(null=True)
+  # The container it was taken from, not a foreign key either; any container of the application can receive it.
+  container_id = CharField(null=True)
+  # Its worker as the backup was taken: the container may be gone.
+  worker_hostname = CharField(null=True)
   application = ForeignKeyField(Application, backref="backups", null=True, on_delete="CASCADE")
+  # One row per slot: the instant it was taken for, its schedule's when `automatic`.
+  slot_at = DateTimeField(null=True)
+  automatic = BooleanField(default=False)
+  status = ChoiceField(("queued", "running", "succeeded", "failed", "cancelled", "interrupted"), default="succeeded")
+  reason = CharField(null=True)
+  # Deleted by the user: hidden, and its slot stays taken.
+  deleted_at = DateTimeField(null=True)
 
 
 class Task(BaseModel):

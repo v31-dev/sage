@@ -26,7 +26,8 @@ async def test_a_trigger_makes_one_request_of_the_manager_with_arguments_it_take
 
 
 @pytest.mark.parametrize("trigger, wanted", [
-    (scheduler.start_work, "request_startup"), (scheduler.flush_metrics, "request_metrics_flush"),
+    (scheduler.start_work, "request_startup"), (scheduler.catch_up_backups, "request_backup_catch_up"),
+    (scheduler.flush_metrics, "request_metrics_flush"),
     (scheduler.schedule_application_backups, "request_automatic_backups"), (scheduler.cleanup, "request_cleanup")],
     ids=lambda value: getattr(value, "__name__", value))
 async def test_the_work_a_trigger_asks_for(manager, trigger, wanted):
@@ -37,6 +38,13 @@ async def test_the_work_a_trigger_asks_for(manager, trigger, wanted):
 async def test_the_automatic_backups_are_asked_for_the_minute_now(manager, clock):
   await scheduler.schedule_application_backups()
   assert manager.called("request_automatic_backups") == [((clock.current,), {})]
+
+
+async def test_the_platform_backup_is_asked_for_its_slot_now_and_the_catch_up_for_its_schedule(manager, clock):
+  await scheduler.backup_database()
+  await scheduler.catch_up_backups()
+  assert manager.called("request_platform_backup") == [((clock.current,), {})]
+  assert manager.called("request_backup_catch_up") == [((scheduler.PLATFORM_BACKUP_CRON,), {})]
 
 
 class TestRegistration:
@@ -57,16 +65,16 @@ class TestRunning:
     monkeypatch.setattr(scheduler, "_scheduler", fresh)
     return fresh
 
-  async def test_start_registers_every_job_and_requests_the_startup_work_once(self, fresh, manager):
+  async def test_start_registers_every_job_and_requests_the_startup_work_and_the_backup_catch_up_once(self, fresh, manager):
     scheduler.start()
     try:
       scheduled = {fn.__name__ for fn, _ in scheduler._JOBS}
       assert {job.id for job in fresh.get_jobs()} == scheduled | {f"{fn.__name__}_at_startup" for fn in scheduler._AT_STARTUP}
       assert fresh.running
       deadline = time.monotonic() + 5
-      while not manager.called("request_startup") and time.monotonic() < deadline:
+      while not manager.called("request_backup_catch_up") and time.monotonic() < deadline:
         await asyncio.sleep(0.01)
-      assert [name for name, _, _ in manager.calls if name != "dispatch_tick"] == ["request_startup"]
+      assert sorted(name for name, _, _ in manager.calls if name != "dispatch_tick") == ["request_backup_catch_up", "request_startup"]
     finally:
       scheduler.shutdown()
       await asyncio.sleep(0)
