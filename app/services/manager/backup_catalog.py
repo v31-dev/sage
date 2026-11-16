@@ -1,4 +1,4 @@
-"""The configured store's backup catalog: a backup's archive deleted after its row, the Backup table made to mirror the
+"""The configured store's backup catalog: a backup's archive deleted before its row, the Backup table made to mirror the
 store, and the backups past the retention period removed, with the requests that queue them. Each holds the store's
 scope, or a part of it, by its identity, and does nothing to another store: one configured since is never touched."""
 import logging
@@ -7,7 +7,7 @@ from functools import partial
 
 import config
 from services.backups.catalog import CatalogPlan, CatalogRow, reconcile_catalog
-from services.backups.commands import apply_catalog, remove_backup
+from services.backups.commands import apply_catalog
 from services.backups.keys import APPLICATIONS_PREFIX, PLATFORM_PREFIX, archive_scope, is_expired_backup_key, store_scope, taken_at
 from services.db.models import Backup, Volume
 from services.notification import Notifications
@@ -22,16 +22,17 @@ logger = logging.getLogger(__name__)
 
 class BackupCatalogMixin:
   def request_backup_deletion(self, backup_id: str) -> str:
-    """Deletes the backup's row now and queues the deletion of its archive from the store it is in. The task's id."""
-    backup = remove_backup(backup_id)
+    """Queues deletion of the backup's archive, then its catalog rows in that store. The task's id."""
+    backup = Backup.get_or_none(Backup.id == backup_id)
+    if backup is None:
+      raise LookupError("Backup not found.")
     return self.add_task(task=self.delete_archive, key=("delete_archive", backup.storage_id, backup.s3_path),
                          scopes={archive_scope(backup.storage_id, backup.s3_path)}, executor="common",
                          params={"s3_path": backup.s3_path, "storage_id": backup.storage_id},
                          labels={"Backup of": backup.source_volume_name if backup.type == "application" else "the platform"}).task_id
 
   async def delete_archive(self, s3_path: str, storage_id: str):
-    """Deletes the archive from the store it is in; refused when that is no longer the configured store, so an object
-    of the same key in another store is never touched."""
+    """Deletes the archive and then its catalog rows in that store; refused when the store is no longer configured."""
     session = configured_session(storage_id)
     if session is None:
       logger.error(f"The archive {s3_path} is in a store that is no longer the configured one; it was left there.")
@@ -41,6 +42,8 @@ class BackupCatalogMixin:
     except Exception as error:
       Notifications().notify(f"The backup taken at {taken_at(s3_path)} could not be deleted from S3: {error}", "error", "/backups")
       raise TaskFailed()
+    apply_catalog(CatalogPlan(deletes=[row.id for row in Backup.select(Backup.id).where(
+        (Backup.storage_id == storage_id) & (Backup.s3_path == s3_path))]))
     logger.info(f"Deleted the archive {s3_path}.")
 
   def request_backup_discovery(self) -> str | None:
@@ -55,8 +58,8 @@ class BackupCatalogMixin:
   async def discover_backups(self, storage_id: str):
     """Lists the platform backups and volume archives in the store, then reads the rows, and makes the table mirror the
     store: rows of another store, and of an object gone, are dropped; listed backups not recorded are added, a volume
-    archive only while its volume is configured. An archive whose deletion is queued or running is left out. Nothing
-    when the configured store is another by now, whose own discovery follows its save."""
+    archive only while its volume is configured. Nothing when the configured store is another by now, whose own
+    discovery follows its save."""
     session = configured_session(storage_id)
     if session is None:
       logger.info("The configured store is not the one this discovery was asked for; nothing to do.")
@@ -67,11 +70,8 @@ class BackupCatalogMixin:
     except Exception as error:
       logger.error(f"The backups in the store could not be listed: {error}")
       raise TaskFailed()
-    snapshot = self.task_snapshot()
-    deleting = {task["key"][2] for task in (*snapshot["running"], *snapshot["queued"])
-                if task["name"] == "delete_archive" and task["key"][1] == session.identity}
     plan = reconcile_catalog(
-        session.identity, session.target.path, platform_keys - deleting, volume_keys - deleting,
+        session.identity, session.target.path, platform_keys, volume_keys,
         [CatalogRow(row.id, row.s3_path, row.storage_id)
          for row in Backup.select(Backup.id, Backup.s3_path, Backup.storage_id)],
         {volume.id: (volume.application_id, volume.name) for volume in Volume.select(Volume.id, Volume.application, Volume.name)})

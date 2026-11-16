@@ -37,7 +37,7 @@ async function onClickDownload() {
 async function onConfirmDeleteBackup(backupId: string) {
   try {
     await deleteBackup(backupId)
-    toast.success('Backup deleted successfully')
+    toast.success('Backup deletion queued')
     await props.loadBackups()
   } catch (err) {
     toast.error(err instanceof Error ? err.message : 'Failed to delete backup')

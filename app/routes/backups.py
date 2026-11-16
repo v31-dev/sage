@@ -39,7 +39,7 @@ def download_backup(backup: str):
 
 @router.delete("/{backup}")
 def delete_backup(backup: str):
-  """The backup's row now, its archive by a task."""
+  """Queues deletion of the backup's archive and then its catalog row."""
   return {"task_id": Manager().request_backup_deletion(platform_backup(backup).id)}
 
 
