@@ -414,7 +414,7 @@ class TestCleanup:
     manager.request_cleanup()
     manager.request_cleanup()
     assert queued(manager) == [(("metrics_cleanup",), ["metrics"], "metrics", True), (("logs_cleanup",), [], "common", True),
-                               (("purge_history",), [], "common", True)]
+                               (("purge_history",), [], "common", True), (("safety_copies_cleanup",), [], "common", True)]
     assert manager.requested == ["request_backup_retention"] * 2
 
   async def test_the_tasks_run_while_other_work_holds_its_scopes(self, manager, cleaned, clock):

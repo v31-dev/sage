@@ -2,6 +2,7 @@ import logging
 import re
 import sqlite3
 from contextlib import closing
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from peewee import IntegrityError, sort_models
@@ -141,15 +142,31 @@ class Database(Base):
       copy.commit()
       copy.execute("VACUUM")
 
-  def install(self, path: Path):
-    """Replaces the live database with the platform backup at `path`: a safety copy of the live database first, then
-    the backup copied in page by page, its schema brought up to the models as at boot, a fresh state generation, and
-    the history and the Backup rows emptied (discovery rebuilds those). A failure copies the safety copy back and
-    raises; the safety copy is removed either way. Blocking: offload it, with nothing else writing meanwhile: the
-    platform restore runs it alone, in the queue's restoring state, with changes and the workers' reports refused."""
+  def install(self, path: Path, settings: dict[str, dict]):
+    """Replaces the live database with the platform backup at `path`. The backup file is made the restored state
+    first, in place: a fresh state generation, the sections in `settings` (key to values) kept over the backup's, and
+    the history and the Backup rows emptied (discovery rebuilds those). Then a safety copy of the live database, the
+    backup copied in, which SQLite commits whole or not at all, and its schema brought up to the models as at boot,
+    which every boot repeats. A failure copies the safety copy back and raises; the safety copy is removed either way.
+    Blocking: offload it, with nothing else writing meanwhile: the platform restore runs it alone, in the queue's
+    restoring state, with changes and the workers' reports refused."""
     with closing(sqlite3.connect(path)) as backup:
       if (result := backup.execute("PRAGMA integrity_check").fetchone()[0]) != "ok":
         raise ValueError(f"The backup is not a sound database: {result}.")
+      tables = {name for (name,) in backup.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+      with backup:
+        # A backup without the column gets a fresh one from schema reconciliation, which fills a new column with one
+        # value of its default.
+        if "state_generation" in {name for _, name, *_ in backup.execute(f'PRAGMA table_info("{Instance._meta.table_name}")')}:
+          backup.execute(f'UPDATE "{Instance._meta.table_name}" SET state_generation = ?', (new_id(),))
+        now = str(utcnow())
+        for key, values in settings.items():
+          backup.execute(f'INSERT INTO "{Setting._meta.table_name}" (key, value, created_at, updated_at) VALUES (?, ?, ?, ?) '
+                         "ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+                         (key, Setting.value.db_value(values), now, now))
+        for model in (*HISTORY, Backup):
+          if model._meta.table_name in tables:
+            backup.execute(f'DELETE FROM "{model._meta.table_name}"')
     safety = config.DB_PATH.with_name(f"{config.DB_PATH.name}.restore-{utcnow():%Y%m%d_%H%M%S}")
     with closing(sqlite3.connect(safety)) as copy:
       db.connection().backup(copy)
@@ -157,16 +174,21 @@ class Database(Base):
       with closing(sqlite3.connect(path)) as backup:
         backup.backup(db.connection())
       self.reconcile_schema()
-      with db.atomic():
-        Instance.update(state_generation=new_id()).execute()
-        for model in (*HISTORY, Backup):
-          model.delete().execute()
     except Exception:
       with closing(sqlite3.connect(safety)) as copy:
         copy.backup(db.connection())
       raise
     finally:
       safety.unlink(missing_ok=True)
+
+  def remove_safety_copies(self, days: int = config.RETENTION_DAYS):
+    """Removes the safety copies older than `days` beside the live database, which only an install killed part way
+    leaves."""
+    before = utcnow() - timedelta(days=days)
+    for path in config.DB_PATH.parent.glob(f"{config.DB_PATH.name}.restore-*"):
+      if datetime.fromtimestamp(path.stat().st_mtime, UTC).replace(tzinfo=None) < before:
+        path.unlink(missing_ok=True)
+        logger.info(f"Removed {path.name}, the safety copy of an interrupted restore.")
 
   def _sync_columns(self):
     """

@@ -89,14 +89,16 @@ class PlatformMixin:
     self.request_release_check()
 
   def request_cleanup(self):
-    """Requests the daily cleanup, each part a task of its own: the metrics, logs and history past their retention,
-    and the store's old backups."""
+    """Requests the daily cleanup, each part a task of its own: the metrics, logs, history and an interrupted restore's
+    safety copies past their retention, and the store's old backups."""
     self.add_task(task=Metrics().cleanup, key=("metrics_cleanup",), scopes={metrics_scope()}, executor="metrics", quiet=True,
                   on_conflict=OnConflict.REPLACE)
     self.add_task(task=Logs().cleanup, key=("logs_cleanup",), scopes=set(), executor="common", quiet=True,
                   on_conflict=OnConflict.REPLACE)
     self.add_task(task=purge_history, key=("purge_history",), scopes=set(), executor="common", quiet=True,
                   on_conflict=OnConflict.REPLACE)
+    self.add_task(task=Database().remove_safety_copies, key=("safety_copies_cleanup",), scopes=set(), executor="common",
+                  quiet=True, on_conflict=OnConflict.REPLACE)
     self.request_backup_retention()
 
   def request_metrics_flush(self):
@@ -175,10 +177,9 @@ class PlatformMixin:
         encrypted, plain = Path(directory) / "platform.db.enc", Path(directory) / "platform.db"
         await session.download_key(s3_path, str(encrypted), raw_path=True)
         await run_in_executor_with_context(decrypt_file, encrypted, plain)
-        await run_in_executor_with_context(Database().install, plain)
+        await run_in_executor_with_context(Database().install, plain, {"s3": store})
       restored = True
       Settings().load_all()
-      Settings().set("s3", store)
       for consumer, key in ((S3(), "s3"), (Notifications(), "notifications")):
         saved = Settings().snapshot(key)
         consumer.install(saved.values, saved.revision)

@@ -7,8 +7,8 @@ from playhouse.migrate import SqliteMigrator, migrate
 
 import config
 from services.db.database import MODELS, Database, SchemaRefused
-from services.db.models import (Application, Backup, BaseEvent, BaseModel, Container, ContainerEvent, Domain, Instance, Project, Volume, Worker,
-                                WorkerEvent)
+from services.db.models import (Application, Backup, BaseEvent, BaseModel, Container, ContainerEvent, Domain, Instance, Project, Setting, Volume,
+                                Worker, WorkerEvent)
 from services.db.models import db as database
 
 ORPHAN_DOMAIN = [
@@ -487,7 +487,7 @@ class TestPlatformCopies:
     other = Worker.create(hostname="w2", subdomain="blue")
     Container.create(application=application, worker=other)
     Notification.create(content="Added w2.")
-    Database().install(tmp_path / "snapshot.db")
+    Database().install(tmp_path / "snapshot.db", {})
     assert [worker.hostname for worker in Worker.select()] == ["w1"] and [c.id for c in Container.select()] == [live.id]
     assert [model.select().count() for model in (ContainerEvent, WorkerEvent, Notification, Task, Backup)] == [0] * 5
     assert Instance.get().state_generation != generation
@@ -499,7 +499,7 @@ class TestPlatformCopies:
     from services.db.models import Notification
     with contextlib.closing(sqlite3.connect(tmp_path / "old.db")) as copy:
       database.connection().backup(copy)
-    Database().install(tmp_path / "old.db")
+    Database().install(tmp_path / "old.db", {})
     assert (ContainerEvent.select().count(), Notification.select().count(), Backup.select().count()) == (0, 0, 0)
 
   def test_an_older_backup_gets_this_versions_schema(self, live, tmp_path):
@@ -508,8 +508,50 @@ class TestPlatformCopies:
     with contextlib.closing(sqlite3.connect(tmp_path / "snapshot.db")) as copy:
       copy.execute("ALTER TABLE domain DROP COLUMN pool")
       copy.commit()
-    Database().install(tmp_path / "snapshot.db")
+    Database().install(tmp_path / "snapshot.db", {})
     assert "pool" in columns(database, "domain")
+
+  def test_a_backup_from_before_the_state_generation_gets_a_fresh_one(self, live, tmp_path):
+    import sqlite3
+    Database().snapshot(tmp_path / "snapshot.db")
+    generation = Instance.get().state_generation
+    with contextlib.closing(sqlite3.connect(tmp_path / "snapshot.db")) as copy:
+      copy.execute("ALTER TABLE instance DROP COLUMN state_generation")
+      copy.commit()
+    Database().install(tmp_path / "snapshot.db", {})
+    assert Instance.get().state_generation not in (None, generation)
+
+  @pytest.mark.parametrize("saved", [True, False], ids=["the backup has the section", "the backup lacks it"])
+  def test_a_kept_section_replaces_the_backups(self, live, tmp_path, saved):
+    Setting.create(key="s3", value={"bucket": "old"})
+    Database().snapshot(tmp_path / "snapshot.db")
+    if not saved:
+      Setting.delete().execute()
+      Database().snapshot(tmp_path / "snapshot.db")
+    Database().install(tmp_path / "snapshot.db", {"s3": {"bucket": "current"}})
+    assert Setting.get(Setting.key == "s3").value == {"bucket": "current"}
+
+  def test_an_install_stopped_right_after_the_copy_leaves_a_complete_restore(self, live, tmp_path, monkeypatch):
+    from services.db.models import Notification
+    Setting.create(key="s3", value={"bucket": "old"})
+    Database().snapshot(tmp_path / "snapshot.db")
+    generation = Instance.get().state_generation
+    Worker.create(hostname="w2", subdomain="blue")
+    Setting.update(value={"bucket": "current"}).execute()
+
+    class Killed(BaseException):
+      pass
+
+    def kill():
+      raise Killed()
+
+    monkeypatch.setattr(Database(), "reconcile_schema", kill)
+    with pytest.raises(Killed):
+      Database().install(tmp_path / "snapshot.db", {"s3": {"bucket": "current"}})
+    assert [worker.hostname for worker in Worker.select()] == ["w1"]
+    assert Instance.get().state_generation != generation
+    assert Setting.get(Setting.key == "s3").value == {"bucket": "current"}
+    assert [model.select().count() for model in (ContainerEvent, WorkerEvent, Notification, Backup)] == [0] * 4
 
   @pytest.mark.parametrize("damage", ["not a database", "a damaged page"])
   def test_a_backup_that_is_not_a_sound_database_is_refused_and_nothing_changes(self, live, tmp_path, damage):
@@ -524,8 +566,23 @@ class TestPlatformCopies:
       path.write_bytes(bytes(data))
     before = counts(database)
     with pytest.raises(Exception):
-      Database().install(path)
+      Database().install(path, {})
     assert counts(database) == before
+
+  def test_safety_copies_go_once_past_their_retention_and_nothing_else_does(self, db):
+    import os
+    import time
+    folder, name = config.DB_PATH.parent, config.DB_PATH.name
+    old = [folder / f"{name}.restore-20261001_000000", folder / f"{name}.restore-20261001_000000-journal"]
+    recent = folder / f"{name}.restore-20261110_000000"
+    other = folder / "notes.restore-20261001_000000"
+    for path in (*old, recent, other):
+      path.write_bytes(b"copy")
+    for path in (*old, other):
+      os.utime(path, (time.time() - 15 * 86400,) * 2)
+    os.utime(recent, (time.time() - 13 * 86400,) * 2)
+    Database().remove_safety_copies(14)
+    assert [path.exists() for path in (*old, recent, other, config.DB_PATH)] == [False, False, True, True, True]
 
   def test_an_install_that_fails_part_way_puts_the_live_database_back(self, live, tmp_path, monkeypatch):
     Database().snapshot(tmp_path / "snapshot.db")
@@ -537,7 +594,7 @@ class TestPlatformCopies:
 
     monkeypatch.setattr(Database(), "reconcile_schema", refuse)
     with pytest.raises(SchemaRefused):
-      Database().install(tmp_path / "snapshot.db")
+      Database().install(tmp_path / "snapshot.db", {})
     assert sorted(worker.hostname for worker in Worker.select()) == ["w1", "w2"]
     assert (Instance.get().state_generation, ContainerEvent.select().count()) == (generation, 1)
     assert [path for path in config.DB_PATH.parent.iterdir() if ".restore-" in path.name] == []
