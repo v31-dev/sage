@@ -191,11 +191,11 @@ Implementation: [worker operations](../app/services/manager/workers.py),
 
 | Operation | Scopes · executor | Admission / history | Every initiating source | Model writes and other effects |
 | --- | --- | --- | --- | --- |
-| `observe_workers` | none · app | DEDUP / Q | Interval 30 s | No main-DB write. Asks every configured worker's SSH server (`Tailscale.observe_workers`), drops the setup outcome of a worker that stopped answering, tells the pages of the workers whose state changed (observed status changes are WorkerEvents), and requests `converge_worker` and `repair_worker_stack`. |
+| `observe_workers` | none · app | DEDUP / Q | Interval 30 s | No main-DB write. Asks every configured worker's SSH server (`Tailscale.observe_workers`), drops the setup outcome of a worker that stopped answering, tells the pages of the workers whose state changed (observed status changes are WorkerEvents), and requests `remove_worker` for the workers marked for removal, `converge_worker` and `repair_worker_stack` for the others. |
 | `converge_worker` | `worker:<host>` · app | DEDUP / Q, REPLACE for a subdomain change; force on its own key `("converge_worker", <host>, "force")` / H | `observe_workers` (not set up since the start or since it came back, a new address, a failed or refused setup after the retry time); a worker's subdomain change, after a convergence already running; force: the worker's resync (Resync workers queues it for every worker) | No main-DB write. Owner stamp; removes the routing files of Domains gone or bound to another worker; worker tunnel and `*.<subdomain>.int` record (Cloudflare), the stack's files, `compose up --wait` and restarts and the infra stamp when it differs or on force, else `compose up -d`; the setup outcome and applied address in `Workers`, and the proofs of its `certs` stamp; WorkerEvents. Requests `renew_certificates` when its own or the discovery certificate does not cover its names, else `distribute_certificates` when it did not apply the current ones; once set up, `reconcile_domains`. Forced (the worker's resync), then also a forced `distribute_certificates`, `apply_domain` for the Domains routed to it and a forced `publish_discovery` on it. |
 | `repair_worker_stack` | `worker:<host>:stack` · app | DEDUP / Q | `observe_workers`: set up but not ready for its stack, Traefik or a minute's silence, once per cooldown | No main-DB write. Re-checks the worker reachable and set up; `compose up -d` of the stack's services; a repair WorkerEvent when it started something. |
 | `add_worker` | `worker:<host>` · app | DEDUP / H | `request_add_worker`: the machine the tailnet lists by that hostname or Tailscale IP, not the manager's name; the command writes the row first | Looks at the worker, then the first convergence inline; WorkerEvents. A worker whose first setup fails is kept. |
-| `remove_worker` | `worker:<host>` · app | DEDUP / H | `request_remove_worker` (refused with containers or internal domains) | Deletes the Worker row through its command; stops the stack and removes Sage's home when it answers and is this Sage's; deletes its DNS records and tunnel; the sources forget it; WorkerEvents. |
+| `remove_worker` | `worker:<host>` · app | DEDUP / H | `request_remove_worker` (refused with containers or internal domains), whose command marks the row (`Worker.removing`) first; `observe_workers`, for each marked row whose SSH answer is known, `WORKER_SETUP_RETRY_SECONDS` after a failure (`request_removal`) | Stops the stack and removes Sage's home when it answers and is this Sage's; deletes its DNS records and tunnel; then deletes the Worker row through its command and the sources forget it; WorkerEvents. A Cloudflare failure keeps the row marked and fails. Nothing on a row not marked. |
 | `reboot_worker` | `worker:<host>` · app | DEDUP / H | `request_reboot` | No main-DB write but WorkerEvents. Boot id before, one reboot, the boot id again until a new one, inline convergence, readiness on a report after the new boot, within `WORKER_REBOOT_LIMIT_SECONDS`; application log markers. |
 | `refresh_worker_paths` | none · app | DEDUP / Q | Interval 60 s and startup | No main-DB write. Pings the reachable workers for their paths and tells the pages of the workers whose state changed. |
 | `list_tunnels` | none · common | DEDUP / Q | Every minute and startup | No main-DB write. Lists the account's tunnels in one call and keeps each one's health with when it was listed (`Cloudflare.tunnel_statuses`: none once not listed for `TUNNEL_LISTING_STALE_SECONDS`); then, failed or not, tells the info topic when the health known now changed and the pages of the workers whose state changed. |
@@ -282,7 +282,7 @@ separate facts.
 | Worker setup or offline transition | The setup outcome and applied address in `Workers`, no row write; remote convergence, which removes the routing files of Domains gone or bound elsewhere | After a setup, the Domain pass; publish discovery when the workers reachable and set up, or their addresses, change, its DNS membership with them |
 | Worker subdomain edit | Worker row | Convergence; apply its internal and TCP Domains, whose ends publish discovery; renewal |
 | Worker setup whose own or discovery certificate does not cover its names | None | Certificate renewal |
-| Worker removal | Deletes the Worker row | Certificate renewal, which retires its leaf |
+| Worker removal | Marks the Worker row, then the task deletes it | Certificate renewal, which retires its leaf |
 | Domain apply ends | `Domains` holds its outcome for the fingerprint applied | Apply again when the Domain was edited during it; publish discovery |
 | Domain pass ends | `Domains` holds what it saw of each Domain's route and DNS | Apply each Domain in error, drifted or not applied; publish discovery |
 
@@ -315,7 +315,8 @@ ordinary CRUD writer beyond the action routes already listed.
 | DELETE `/backups/{id}` | None | Queues `delete_archive` with its key and store; the task removes its rows after archive deletion |
 
 `<app collection>` is `/projects/{project}/applications`. The action routes (deploy, stop, delete, cancel, backup,
-restore, worker removal, reboot and resync) enqueue without writing their target rows in the route.
+restore, reboot and resync) enqueue without writing their target rows in the route; worker removal marks its row
+(`mark_removal`) first.
 Pause/resume change only queue memory. `POST /settings/{section}/test` validates/tests provided values against
 the provider without persisting them, as the task `test_<section>` (`request_test`): one per section, another
 answered 409 while it is queued or running, each call with the short check timeouts. Its test message bypasses the
@@ -409,7 +410,7 @@ writes above apply in addition to the listed fields.
 | --- | --- | --- | --- |
 | `Setting` | Settings PUT: merged `value` | Platform restore keeps the S3 value in use | `Settings.load_all` at boot and restore: row and field normalization |
 | `Instance` | None | Platform restore installs the backup's, with a fresh `state_generation` | Schema reconciliation creates it if absent |
-| `Worker` | Workers POST: the row; PUT: `subdomain` | `remove_worker`: deletes the row through its command | Reachability, setup and readiness are memory, not columns |
+| `Worker` | Workers POST: the row; PUT: `subdomain`; DELETE: `removing` | `remove_worker`: deletes the row through its command | Reachability, setup and readiness are memory, not columns |
 | `Project` | Project CRUD: configuration | None | `create_application` and `delete_application` recount `application_count` |
 | `Application` | Application CRUD: configuration | None | `attach_container` and `detach_container` recount `container_count`; no status column |
 | `Container` | Create placement (`attach_container`) | `delete_container`: deletes the row (`detach_container`) | Its lifecycle evidence is its record on the worker, held by `Containers`; no status column |

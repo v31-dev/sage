@@ -50,10 +50,11 @@ class WorkersMixin:
   def worker_states(self, hostnames: list[str] | None = None) -> dict[str, WorkerState]:
     """The state of each worker now (every configured one unless named), by hostname."""
     tasks = self._worker_tasks()
-    workers = Worker.select(Worker.hostname, Worker.subdomain)
+    workers = Worker.select(Worker.hostname, Worker.subdomain, Worker.removing)
     if hostnames is not None:
       workers = workers.where(Worker.hostname.in_(hostnames))
-    return {worker.hostname: worker_state(worker.hostname, worker.subdomain, frozenset(tasks.get(worker.hostname, ())))
+    return {worker.hostname: worker_state(worker.hostname, worker.subdomain, frozenset(tasks.get(worker.hostname, ())),
+                                          worker.removing)
             for worker in workers}
 
   def worker_list(self) -> list[dict]:
@@ -158,9 +159,10 @@ class WorkersMixin:
 
   async def observe_workers(self):
     """Asks every configured worker's SSH server, tells the pages of the workers whose state changed, then asks for the
-    convergence of each reachable worker not set up since the Manager started or since it came back, whose address
-    changed, or whose last setup failed or was refused WORKER_SETUP_RETRY_SECONDS ago; and for the repair of the stack of
-    a worker set up but not ready because of it. A look that fails tells the pages of the workers whose state changed
+    removal of each worker marked for it, once its SSH server's answer is known and WORKER_SETUP_RETRY_SECONDS after its
+    last removal failed; for the convergence of each other reachable worker not set up since the Manager started or
+    since it came back, whose address changed, or whose last setup failed or was refused WORKER_SETUP_RETRY_SECONDS ago;
+    and for the repair of the stack of a worker set up but not ready because of it. A look that fails tells the pages of the workers whose state changed
     and fails."""
     hostnames = [worker.hostname for worker in Worker.select(Worker.hostname)]
     try:
@@ -174,6 +176,12 @@ class WorkersMixin:
     self.worker_state.check()
     now = monotonic()
     for hostname, state in self.worker_state.last.items():
+      if state.removing:
+        failed_at = self.removal_failures.get(hostname)
+        if state.ssh in ("reachable", "unreachable") and (
+                failed_at is None or now - failed_at >= config.WORKER_SETUP_RETRY_SECONDS):
+          self.request_removal(hostname)
+        continue
       if not state.addressable:
         continue
       failed_at = self.setup_failures.get(hostname)
@@ -186,8 +194,9 @@ class WorkersMixin:
                  or now - self.stack_repairs[hostname] >= config.WORKER_STACK_REPAIR_COOLDOWN_SECONDS)):
         self.stack_repairs[hostname] = now
         self.request_stack_repair(hostname)
-    for hostname in self.setup_failures.keys() - set(hostnames):
-      self.setup_failures.pop(hostname, None)
+    for held in (self.setup_failures, self.removal_failures):
+      for hostname in held.keys() - set(hostnames):
+        held.pop(hostname, None)
 
   def request_convergence(self, hostname: str, force: bool = False, changed: bool = False) -> str:
     """Queues the convergence of the worker's stack with Sage; with `force` (the worker's resync), as a visible task
@@ -210,8 +219,8 @@ class WorkersMixin:
     whatever their stamps say. Another Sage's worker is refused and left alone."""
     worker = Worker.get_or_none(Worker.hostname == hostname)
     address = Tailscale().address(hostname)
-    if worker is None or not addressable(Tailscale().ssh(hostname), address):
-      logger.info(f"Worker {hostname} is not there to set up; nothing to do.")
+    if worker is None or worker.removing or not addressable(Tailscale().ssh(hostname), address):
+      logger.info(f"Worker {hostname} is not there to set up, or is being removed; nothing to do.")
       return
     home, cloudflare = config.WORKER_HOME_DIR, Cloudflare()
     try:
@@ -346,29 +355,25 @@ class WorkersMixin:
     Notifications().notify(f"Worker {hostname} added.", "success", f"/workers/{hostname}")
 
   def request_remove_worker(self, hostname: str) -> str:
-    """Queues the worker's removal; refused while it has containers or internal domains. The task's id."""
-    worker = Worker.get_or_none(Worker.hostname == hostname)
-    if worker is None:
-      raise LookupError("Worker not found.")
-    refusal = commands.removal_refusal(worker)
-    if refusal is not None:
-      raise Conflict(refusal)
+    """Marks the worker for removal and queues it; refused while it has containers or internal domains. The task's
+    id."""
+    commands.mark_removal(hostname)
+    return self.request_removal(hostname)
+
+  def request_removal(self, hostname: str) -> str:
+    """Queues the removal of a worker marked for it: the user's request, or observation's after a restart or a failure.
+    The task's id."""
     return self.add_task(task=self.remove_worker, key=("remove_worker", hostname), scopes={worker_scope(hostname)},
                          executor="app", params={"hostname": hostname}, labels={"Worker": hostname}).task_id
 
   async def remove_worker(self, hostname: str):
-    """Removes the worker from Sage: its row, then, when it answers and is this Sage's, its stack and Sage's files on
-    it; its DNS records and its tunnel; and what the sources hold of it. One that does not answer is removed from Sage
-    only, and the VM has to be cleaned up by hand."""
-    if Worker.get_or_none(Worker.hostname == hostname) is None:
+    """Removes the worker marked for removal: when it answers and is this Sage's, its stack and Sage's files on it;
+    then its DNS records and its tunnel; then its row and what the sources hold of it. One that does not answer is
+    removed from Sage only, and the VM has to be cleaned up by hand. A Cloudflare failure keeps it marked."""
+    worker = Worker.get_or_none(Worker.hostname == hostname)
+    if worker is None or not worker.removing:
       logger.info(f"Worker {hostname} is already removed; nothing to do.")
       return
-    try:
-      commands.remove_worker(hostname)
-    except Conflict as refusal:
-      record_worker_event(hostname, "remove", "rejected", reason={"refusal": str(refusal)})
-      Notifications().notify(f"Worker {hostname} was not removed: {refusal}", "error", f"/workers/{hostname}")
-      raise TaskFailed()
     record_worker_event(hostname, "remove", "admitted")
     home, cleaned, left = config.WORKER_HOME_DIR, False, []
     if await Tailscale().reachable(hostname):
@@ -383,18 +388,23 @@ class WorkersMixin:
     else:
       left.append("it does not answer: anything on the VM, including the VM itself, has to be removed by hand")
     cloudflare = Cloudflare()
-    await run_in_executor_with_context(cloudflare.connect)
-    await run_in_executor_with_context(cloudflare.sync_worker_records, hostname)
     try:
+      await run_in_executor_with_context(cloudflare.connect)
+      await run_in_executor_with_context(cloudflare.sync_worker_records, hostname)
       await run_in_executor_with_context(cloudflare.delete_tunnel, cloudflare.worker_tunnel_name(hostname))
     except Exception as error:
-      left.append(f"its Cloudflare tunnel could not be deleted ({error}): delete it by hand")
+      self.removal_failures[hostname] = monotonic()
+      record_worker_event(hostname, "remove", "failed", reason={"error": str(error)})
+      Notifications().notify(f"Worker {hostname} is not removed yet: its DNS record or tunnel could not be deleted "
+                             f"({error}). Sage tries again in a few minutes.", "error", f"/workers/{hostname}")
+      raise TaskFailed()
+    commands.remove_worker(hostname)
     Workers().forget(hostname)
     WorkerReports().forget(hostname)
     Metrics().forget(hostname)
     await Tailscale().forget(hostname)
-    self.setup_failures.pop(hostname, None)
-    self.stack_repairs.pop(hostname, None)
+    for held in (self.setup_failures, self.stack_repairs, self.removal_failures):
+      held.pop(hostname, None)
     record_worker_event(hostname, "remove", "succeeded", reason={"cleaned": cleaned})
     self.request_certificate_renewal()
     if left:
@@ -404,9 +414,12 @@ class WorkersMixin:
     self.worker_state.check()
 
   def request_reboot(self, hostname: str) -> str:
-    """Queues the worker's reboot. The task's id."""
-    if Worker.get_or_none(Worker.hostname == hostname) is None:
+    """Queues the worker's reboot; refused while it is being removed. The task's id."""
+    worker = Worker.get_or_none(Worker.hostname == hostname)
+    if worker is None:
       raise LookupError("Worker not found.")
+    if worker.removing:
+      raise Conflict("A worker being removed can't be restarted.")
     return self.add_task(task=self.reboot_worker, key=("reboot_worker", hostname), scopes={worker_scope(hostname)},
                          executor="app", params={"hostname": hostname}, labels={"Worker": hostname}).task_id
 
@@ -445,7 +458,7 @@ class WorkersMixin:
             pass
       received = WorkerReports().latest(hostname)
       reported = booted_at is not None and received is not None and received.arrived_at >= booted_at
-      outcome = reboot_outcome(baseline, boot, worker_state(hostname, worker.subdomain, frozenset()).view.ready and reported)
+      outcome = reboot_outcome(baseline, boot, worker_state(hostname, worker.subdomain, frozenset(), worker.removing).view.ready and reported)
       if outcome == "verified":
         break
     if outcome != "verified":

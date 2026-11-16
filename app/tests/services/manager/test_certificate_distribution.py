@@ -17,6 +17,7 @@ from services.manager.certificates import CertificatesMixin
 from services.manager.queue import SCOPES, QueueMixin
 from services.tailscale import Tailscale
 from services.updates import Updates
+from services.workers import commands
 from services.workers.state import Workers
 from tests.services.test_certs import write_certificate
 from utils.executor import active_executor
@@ -178,6 +179,15 @@ class TestRequests:
     await manager.renew_certificates()
     assert [key for key, _, _ in queued(manager)] == [("distribute_certificates", "w1"), ("distribute_certificates", "w2")]
     assert manager.checks == 1
+
+  async def test_a_renewal_retires_the_certificate_of_a_worker_being_removed_and_copies_none_to_it(
+          self, manager, hosts, workers, monkeypatch):
+    commands.mark_removal("w2")
+    retired = []
+    monkeypatch.setattr(Certs(), "ensure", lambda certificate: False)
+    monkeypatch.setattr(Certs(), "retire", lambda certificate: retired.append(certificate.fullchain_path.parent.name))
+    await manager.renew_certificates()
+    assert retired == ["w2"] and [key for key, _, _ in queued(manager)] == [("distribute_certificates", "w1")]
 
 
 class TestDistribution:

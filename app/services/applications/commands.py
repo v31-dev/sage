@@ -127,6 +127,8 @@ def attach_container(application_id: int, worker_hostname: str) -> Container:
     worker = Worker.get_or_none(Worker.hostname == worker_hostname)
     if worker is None:
       raise LookupError(f"Worker with hostname '{worker_hostname}' not found.")
+    if worker.removing:
+      raise Conflict(f"Worker '{worker_hostname}' is being removed, so it can't take containers.")
     if application.containers.where(Container.worker == worker).exists():
       raise Conflict(f"Container already exists on worker '{worker_hostname}'.")
     container = Container.create(application=application, worker=worker)

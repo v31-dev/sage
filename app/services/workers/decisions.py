@@ -1,5 +1,6 @@
 """A worker's status, decided from the facts its owners hold: whether its SSH server answers, whether its tunnel is
-connected, how its setup went, what its newest report says and which of its tasks are queued or running."""
+connected, how its setup went, what its newest report says, which of its tasks are queued or running, and whether its
+removal was asked for."""
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -30,13 +31,14 @@ class WorkerReport:
 class WorkerFacts:
   """`ssh` is unknown while the Manager itself is cut off from the tailnet; `setup` is None until a setup has run
   since the Manager started, and refused when another Sage owns the worker; `tunnel` is its tunnel's status, None while
-  it is not known."""
+  it is not known; `removing` is its row's removal mark."""
   ssh: str
   setup: str | None
   report: WorkerReport
   tasks: frozenset[str] = frozenset()
   seconds_since_start: float = 0
   tunnel: str | None = None
+  removing: bool = False
 
 
 @dataclass(frozen=True)
@@ -73,9 +75,11 @@ def connectivity(ssh: str, tunnel: str | None) -> str:
 
 
 def decide_worker(facts: WorkerFacts) -> WorkerView:
-  """The status, in precedence order: a task under way, how it answers (`connectivity`), how its setup went, then what
-  its reports say. A worker that has not reported yet is checking during REPORT_STARTUP_GRACE_SECONDS after the Manager
+  """The status, in precedence order: its removal, a task under way, how it answers (`connectivity`), how its setup
+  went, then what its reports say. A worker that has not reported yet is checking during REPORT_STARTUP_GRACE_SECONDS after the Manager
   starts and not ready after it: the grace never makes it ready."""
+  if facts.removing:
+    return WorkerView("removing")
   task = next((TASKS[name] for name in TASKS if name in facts.tasks), None)
   if task is not None:
     return WorkerView(task)
@@ -106,9 +110,10 @@ def decide_worker(facts: WorkerFacts) -> WorkerView:
   return WorkerView("online")
 
 
-def workable(ssh: str, setup: str | None) -> bool:
-  """Whether Sage can act on the worker: its SSH server answers and it was set up since the Manager started."""
-  return ssh == "reachable" and setup == "succeeded"
+def workable(ssh: str, setup: str | None, removing: bool = False) -> bool:
+  """Whether Sage can act on the worker: its SSH server answers, it was set up since the Manager started and its
+  removal was not asked for."""
+  return ssh == "reachable" and setup == "succeeded" and not removing
 
 
 def addressable(ssh: str, address: str | None) -> bool:
@@ -117,13 +122,14 @@ def addressable(ssh: str, address: str | None) -> bool:
 
 
 def discovery_member(ssh: str, tunnel: str | None, setup: str | None, address: str | None,
-                     seconds_since_start: float) -> bool | None:
+                     seconds_since_start: float, removing: bool = False) -> bool | None:
   """Whether `discovery.int.<domain>` points at the worker: yes while it is reachable, set up since the Manager started
-  and has an address; no once it is offline (`connectivity`) or its setup failed or was refused. None while that is
+  and has an address; no once its removal was asked for, it is offline (`connectivity`) or its setup failed or was
+  refused. None while that is
   left as it is: while the Manager is cut off from the tailnet or only the worker's tunnel answers, and otherwise (not
   observed, or not set up since the start) for UNKNOWN_HOLD_SECONDS after the Manager started, then no."""
   answers = connectivity(ssh, tunnel)
-  if answers == "offline" or setup in ("failed", "refused"):
+  if removing or answers == "offline" or setup in ("failed", "refused"):
     return False
   if workable(ssh, setup) and address:
     return True

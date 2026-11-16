@@ -60,7 +60,7 @@ class Manager(WorkersMixin, QueueMixin):
     self.queue_facts = self.workers_queue_facts()
     self.worker_state = self.workers_state_fact()
     self.tunnel_state = self.tunnels_fact()
-    self.setup_failures, self.stack_repairs = {}, {}
+    self.setup_failures, self.stack_repairs, self.removal_failures = {}, {}, {}
     self.discovered = 0
     self.task_queue = TaskQueue(SCOPES, {"app": self.pool, "common": self.pool}, record=lambda task, status: None,
                                 notify=self._queue_changed)

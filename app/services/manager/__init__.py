@@ -64,10 +64,11 @@ class Manager(
       self.container_state = self.containers_state_fact()
       self.worker_state = self.workers_state_fact()
       self.tunnel_state = self.tunnels_fact()
-      # When each worker's setup last failed or was refused, and when its stack was last started for being down, on
-      # this process's monotonic clock: how often they are tried again.
+      # When each worker's setup last failed or was refused, when its stack was last started for being down, and when
+      # its removal last failed, on this process's monotonic clock: how often they are tried again.
       self.setup_failures = {}
       self.stack_repairs = {}
+      self.removal_failures = {}
       # Each container recovering from an interrupted operation: the incident and when it was first seen, on this
       # process's monotonic clock, so a restart waits the old work's whole allowance again.
       self.recoveries = {}

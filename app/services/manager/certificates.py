@@ -48,12 +48,13 @@ class CertificatesMixin:
                   on_conflict=OnConflict.REPLACE)
 
   async def renew_certificates(self):
-    """Sets the names each worker's certificate must cover from the Worker rows; then, one certificate at a time,
-    retires what no longer covers its names, a removed worker's included, revoking its public leaf, and issues what is
+    """Sets the names each worker's certificate must cover from the Worker rows not marked for removal; then, one
+    certificate at a time, retires what no longer covers its names, a removed worker's included, revoking its public leaf, and issues what is
     missing or due, reloading the manager's certificate in place when it was issued. A retirement that fails holds
     back that certificate's issue only. Then each worker reachable and set up gets its copy brought up to date."""
     certs = Certs()
-    certs.set_workers({worker.hostname: worker.subdomain for worker in Worker.select(Worker.hostname, Worker.subdomain)})
+    certs.set_workers({worker.hostname: worker.subdomain
+                       for worker in Worker.select(Worker.hostname, Worker.subdomain).where(~Worker.removing)})
     failures = []
     for identity, certificate in (await run_in_executor_with_context(certs.stored)).items():
       try:

@@ -75,26 +75,29 @@ def every_report():
 def test_every_combination_of_facts_keeps_the_invariants():
   seen_statuses, seen_reasons = set(), set()
   task_sets = [frozenset(tasks) for size in range(4) for tasks in itertools.combinations(("remove_worker", "add_worker", "reboot_worker"), size)]
-  for ssh, tunnel, setup, report, tasks, since in itertools.product(SSH, TUNNELS, SETUPS, every_report(), task_sets, (0, LATE)):
-    given = WorkerFacts(ssh, setup, report, tasks, since, tunnel)
+  for ssh, tunnel, setup, report, tasks, since, removing in itertools.product(SSH, TUNNELS, SETUPS, every_report(), task_sets,
+                                                                              (0, LATE), (False, True)):
+    given = WorkerFacts(ssh, setup, report, tasks, since, tunnel, removing)
     view = decide_worker(given)
     seen_statuses.add(view.status)
     seen_reasons.add(view.reason)
 
     assert view.status in STATUSES and view.reason in REASONS, given
     assert (view.reason is None) == (view.status in ("removing", "adding", "rebooting", "online")), given
-    if tasks:
+    if removing:
+      assert view.status == "removing", given
+    elif tasks:
       expected = next(status for name, status in (("remove_worker", "removing"), ("add_worker", "adding"),
                                                   ("reboot_worker", "rebooting")) if name in tasks)
       assert view.status == expected, given
     elif ssh == "unreachable":
       assert view.status in ("offline", "not ready") and view.reason in ("unreachable", "ssh_unreachable", "tailnet_unreachable"), given
     if view.status == "online":
-      assert not tasks and ssh == "reachable" and setup == "succeeded", given
+      assert not tasks and not removing and ssh == "reachable" and setup == "succeeded", given
       assert report == WorkerReport("known", True), given
     if view.status == "offline":
-      assert not tasks and (ssh == "unreachable" and tunnel not in ("healthy", "degraded")
-                            or ssh == "unknown" and tunnel in ("down", "inactive")), given
+      assert not tasks and not removing and (ssh == "unreachable" and tunnel not in ("healthy", "degraded")
+                                             or ssh == "unknown" and tunnel in ("down", "inactive")), given
     if view.reason == "ssh_unreachable":
       assert tunnel is None, given
     if view.status == "checking" and view.reason == "unobserved" and ssh == "reachable" and setup == "succeeded":
@@ -178,6 +181,11 @@ def test_discovery_points_at_a_worker_reachable_and_set_up_and_leaves_one_not_kn
       held, after)
 
 
+def test_discovery_leaves_out_a_worker_being_removed_whatever_else_is_known():
+  assert {discovery_member(ssh, tunnel, setup, "100.64.0.2", since, removing=True)
+          for ssh, tunnel, setup, since in itertools.product(SSH, TUNNELS, SETUPS, (0, config.UNKNOWN_HOLD_SECONDS))} == {False}
+
+
 @pytest.mark.parametrize("ssh, connected, down, unknown", [
     ("reachable", "reachable", "reachable", "reachable"),
     ("unobserved", "unobserved", "unobserved", "unobserved"),
@@ -190,8 +198,9 @@ def test_a_worker_is_offline_only_when_neither_path_answers_or_its_ssh_server_do
       connected, connected, down, down, unknown]
 
 
-def test_sage_acts_only_on_a_worker_reachable_and_set_up_since_the_manager_started():
-  assert {(ssh, setup) for ssh, setup in itertools.product(SSH, SETUPS) if workable(ssh, setup)} == {("reachable", "succeeded")}
+def test_sage_acts_only_on_a_worker_reachable_set_up_since_the_manager_started_and_not_being_removed():
+  assert {(ssh, setup, removing) for ssh, setup, removing in itertools.product(SSH, SETUPS, (False, True))
+          if workable(ssh, setup, removing)} == {("reachable", "succeeded", False)}
 
 
 def test_a_worker_is_addressable_only_reachable_and_with_an_address():

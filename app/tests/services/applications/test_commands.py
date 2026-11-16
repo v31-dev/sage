@@ -225,6 +225,13 @@ class TestContainer:
       attach_container(application.id, worker.hostname)
     assert stored(application).container_count == 1
 
+  def test_a_worker_being_removed_is_refused(self, application, worker):
+    worker.removing = True
+    worker.save()
+    with pytest.raises(Conflict, match="Worker 'w1' is being removed, so it can't take containers."):
+      attach_container(application.id, worker.hostname)
+    assert stored(application).container_count == 0
+
   def test_a_missing_worker_is_not_found(self, application):
     with pytest.raises(LookupError, match="Worker with hostname 'nobody' not found."):
       attach_container(application.id, "nobody")

@@ -125,7 +125,8 @@ Each resource's own rules, on top of the root's working rules 9–13. The workfl
 ### Workers
 
 - `Workers` owns configured membership, infrastructure facts and writes, and the read model. Observed address,
-  reachability and path are source-owned memory; the Worker row holds hostname and subdomain. A worker's projection
+  reachability and path are source-owned memory; the Worker row holds hostname, subdomain and the removal mark,
+  which keeps the row until its removal has cleaned up and keeps every other workflow off it. A worker's projection
   reads certificate state and never changes desired identities or material.
 - Readiness needs a fresh coherent report and positive Traefik evidence; the startup grace never grants it alone.
 - A reboot succeeds only on a changed host boot id and a ready worker. A missed deadline stays a failed task; later

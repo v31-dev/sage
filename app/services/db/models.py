@@ -1,4 +1,4 @@
-from peewee import SQL, CharField, Check, DateTimeField, ForeignKeyField, IntegerField, Model, SqliteDatabase
+from peewee import SQL, BooleanField, CharField, Check, DateTimeField, ForeignKeyField, IntegerField, Model, SqliteDatabase
 from playhouse.sqlite_ext import AutoIncrementField
 
 from services.db.fields import (AlphaNumericField, ChoiceField, CleanCharField, EncryptedJSONField, EncryptedKeyValueField, JSONField, LabelField,
@@ -40,6 +40,8 @@ class Worker(BaseModel):
   hostname = CleanCharField(primary_key=True)
   # Its internal names are under `<subdomain>.int.<domain>`.
   subdomain = LabelField()
+  # Its removal was asked for: the row stays until the removal has cleaned up after it.
+  removing = BooleanField(default=False)
 
   class Meta:
     indexes = ((("subdomain",), True),)

@@ -77,7 +77,8 @@ class Manager(PlatformMixin, QueueMixin):
     self.pool = ThreadPoolExecutor(max_workers=1)
     self.queue_facts = []
     self.requested = []
-    self.setup_failures, self.stack_repairs, self.recoveries, self.orphans = {"w1": 1.0}, {"w1": 1.0}, {"c": 1}, {"o": 1}
+    self.setup_failures, self.stack_repairs, self.removal_failures = {"w1": 1.0}, {"w1": 1.0}, {"w1": 1.0}
+    self.recoveries, self.orphans = {"c": 1}, {"o": 1}
     self.task_queue = TaskQueue(SCOPES, {lane: self.pool for lane in ("platform", "app", "common", "metrics")},
                                 record=lambda task, status: None, notify=self._queue_changed)
 
@@ -281,7 +282,8 @@ class TestRestore:
     assert Notification.select().count() == 0 and Instance.get().state_generation != generation
     assert Settings().get("s3") == STORE_B and stores.installed[-1] == STORE_B
     assert (Containers().target("c"), Workers().setup("w1"), Domains().outcome("d1")) == (TargetRead("unobserved"), None, None)
-    assert (manager.setup_failures, manager.stack_repairs, manager.recoveries, manager.orphans) == ({}, {}, {}, {})
+    assert (manager.setup_failures, manager.stack_repairs, manager.removal_failures, manager.recoveries, manager.orphans) == (
+        {}, {}, {}, {}, {})
     assert manager.task_state() == "running" and manager.task_queue.snapshot()["queued"] == []
     assert manager.requested == STARTUP and manager.fetched == [True]
     assert ran == [2], "the task queued before the restore ran first, on the configuration it was queued against"

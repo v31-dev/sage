@@ -93,10 +93,11 @@ class WorkerState:
   path: str | None
   certificates: dict
   tunnel: str | None
+  removing: bool = False
 
   @property
   def workable(self) -> bool:
-    return workable(self.ssh, self.setup)
+    return workable(self.ssh, self.setup, self.removing)
 
   @property
   def addressable(self) -> bool:
@@ -104,8 +105,9 @@ class WorkerState:
 
 
 def is_workable(hostname: str) -> bool:
-  """Whether Sage can act on the worker now (`workable`)."""
-  return workable(Tailscale().ssh(hostname), Workers().setup(hostname))
+  """Whether Sage can act on the worker now (`workable`); not when it is no longer configured."""
+  worker = Worker.get_or_none(Worker.hostname == hostname)
+  return worker is not None and workable(Tailscale().ssh(hostname), Workers().setup(hostname), worker.removing)
 
 
 def is_addressable(hostname: str) -> bool:
@@ -113,17 +115,18 @@ def is_addressable(hostname: str) -> bool:
   return addressable(Tailscale().ssh(hostname), Tailscale().address(hostname))
 
 
-def worker_state(hostname: str, subdomain: str, tasks: frozenset[str]) -> WorkerState:
-  """The worker's state now, given its subdomain and the worker tasks queued or running on it."""
+def worker_state(hostname: str, subdomain: str, tasks: frozenset[str], removing: bool = False) -> WorkerState:
+  """The worker's state now, given its subdomain, the worker tasks queued or running on it and its removal mark."""
   now = utcnow()
   ssh, setup = Tailscale().ssh(hostname), Workers().setup(hostname)
   tunnel = Cloudflare().tunnel(Cloudflare().worker_tunnel_name(hostname))
   report = report_of(WorkerReports().latest(hostname), now)
-  view = decide_worker(WorkerFacts(ssh, setup, report, tasks, (now - WorkerReports().started).total_seconds(), tunnel))
+  view = decide_worker(WorkerFacts(ssh, setup, report, tasks, (now - WorkerReports().started).total_seconds(), tunnel,
+                                   removing))
   address = Tailscale().address(hostname)
   return WorkerState(view, ssh, setup, report, tasks, address, Tailscale().path(address) if address else None,
                      Certs().worker_state(hostname, subdomain, Workers().certificates(hostname), TEMPLATE_DIGEST),
-                     tunnel)
+                     tunnel, removing)
 
 
 def worker_payload(worker: Worker, state: WorkerState, tunnel_name: str, metrics: dict | None) -> dict:

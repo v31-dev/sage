@@ -16,7 +16,7 @@ from services.tailscale import Tailscale
 from services.worker_reports import ContainerReading, HostReading, Snapshot, WorkerReports
 from services.workers import commands
 from services.workers.rendering import InfraInputs, infra_fingerprint, worker_scope
-from services.workers.state import Workers
+from services.workers.state import Workers, is_workable
 from utils.executor import active_executor
 from utils.logging import TaskFailed
 from utils.queue import TaskQueue
@@ -124,6 +124,8 @@ class Provider:
     return f"tunnel-{name}"
 
   def sync_worker_records(self, hostname, subdomain=None, ip=None):
+    if subdomain is None and getattr(self, "keeps_records", False):
+      raise Exception("the zone is locked")
     self.records[hostname] = (subdomain, ip)
 
   def get_tunnel_token(self, tunnel_id=None):
@@ -154,7 +156,7 @@ class Manager(WorkersMixin, DomainsMixin, QueueMixin):
     self.pool = ThreadPoolExecutor(max_workers=2)
     self.queue_facts = self.workers_queue_facts()
     self.worker_state = self.workers_state_fact()
-    self.setup_failures, self.stack_repairs = {}, {}
+    self.setup_failures, self.stack_repairs, self.removal_failures = {}, {}, {}
     self.applied, self.reconciled, self.discovered, self.renewals, self.distributions = [], 0, 0, 0, []
     self.forced = []
     self.task_queue = TaskQueue(SCOPES, {"app": self.pool}, record=lambda task, status: None, notify=self._queue_changed)
@@ -574,6 +576,7 @@ class TestRemove:
     hosts.answering.add("w1")
     manager.setup_failures["w1"] = 1.0
     report()
+    commands.mark_removal("w1")
     await manager.remove_worker("w1")
     assert Worker.get_or_none(Worker.hostname == "w1") is None
     assert any(command.endswith(f"down --remove-orphans && rm -rf {HOME}") for command in hosts.commands)
@@ -585,6 +588,7 @@ class TestRemove:
   async def test_a_removal_renews_the_certificates_so_its_leaf_is_retired_and_forgets_what_it_applied(
           self, manager, hosts, provider, worker):
     Workers().record_certificates("w1", {"worker": "p1"})
+    commands.mark_removal("w1")
     await manager.remove_worker("w1")
     assert (manager.renewals, Workers().certificates("w1")) == (1, None)
 
@@ -592,6 +596,7 @@ class TestRemove:
     await manager.converge_worker("w1")
     hosts.answering.add("w1")
     before = manager.discovered
+    commands.mark_removal("w1")
     await manager.remove_worker("w1")
     assert manager.discovered == before + 1
 
@@ -603,35 +608,116 @@ class TestRemove:
     if trouble == "another Sage's":
       hosts.answering.add("w1")
       hosts.files[f"w1:{HOME}/revisions/owner"] = ("ffffffffffffffff other.test", 0o644)
+    commands.mark_removal("w1")
     await manager.remove_worker("w1")
     assert Worker.get_or_none(Worker.hostname == "w1") is None
     assert not any("rm -rf" in command for command in hosts.commands)
     assert notices() == [(*notice, WORKERS_PAGE)]
 
-  async def test_a_tunnel_cloudflare_will_not_delete_does_not_stop_the_removal(self, manager, hosts, provider, worker, notices):
+  @pytest.mark.parametrize("keeps", ["keeps_tunnels", "keeps_records"])
+  async def test_what_cloudflare_will_not_delete_keeps_the_worker_marked_and_known(self, manager, hosts, provider, worker, notices, keeps):
     await manager.converge_worker("w1")
-    provider.keeps_tunnels = True
-    await manager.remove_worker("w1")
-    assert Worker.get_or_none(Worker.hostname == "w1") is None and events()[-1] == ("remove", "succeeded")
-    [(level, content, _)] = notices()
-    assert (level, content.endswith("; its Cloudflare tunnel could not be deleted (the tunnel has connections): delete it by hand.")) == (
-        "warning", True)
+    hosts.answering.add("w1")
+    commands.mark_removal("w1")
+    setattr(provider, keeps, True)
+    with pytest.raises(TaskFailed):
+      await manager.remove_worker("w1")
+    assert Worker.get_by_id("w1").removing and events()[-1] == ("remove", "failed") and "w1" in manager.removal_failures
+    assert (hosts.forgotten, Workers().setup("w1"), manager.renewals) == ([], "succeeded", 0)
+    [(level, content, page)] = notices()
+    assert (level, content.startswith("Worker w1 is not removed yet"), page) == ("error", True, WORKER_PAGE)
 
-  def test_the_request_queues_a_visible_removal_holding_the_worker(self, manager, worker):
+  async def test_a_removal_tried_again_after_a_cloudflare_failure_ends_it(self, manager, hosts, provider, worker, notices):
+    await manager.converge_worker("w1")
+    hosts.answering.add("w1")
+    commands.mark_removal("w1")
+    provider.keeps_tunnels = True
+    with pytest.raises(TaskFailed):
+      await manager.remove_worker("w1")
+    provider.keeps_tunnels = False
+    await manager.remove_worker("w1")
+    assert Worker.get_or_none(Worker.hostname == "w1") is None and provider.tunnels == []
+    assert events()[-1] == ("remove", "succeeded") and notices()[-1] == ("success", "Worker w1 removed.", WORKERS_PAGE)
+
+  async def test_a_worker_not_marked_is_left_alone(self, manager, hosts, provider, worker, notices):
+    await manager.remove_worker("w1")
+    assert Worker.get_or_none(Worker.hostname == "w1") is not None and (events(), notices()) == ([], [])
+
+  def test_the_request_marks_the_worker_and_queues_a_visible_removal_holding_it(self, manager, worker):
     task_id = manager.request_remove_worker("w1")
+    assert Worker.get_by_id("w1").removing
     assert [(task["name"], task["key"], task["scopes"], task["task_id"], task["quiet"]) for task in manager.task_queue.snapshot()["queued"]] == [
         ("remove_worker", ["remove_worker", "w1"], [worker_scope("w1")], task_id, False)]
 
-  async def test_a_worker_with_a_container_is_refused_and_untouched(self, manager, hosts, worker, application, notices):
+  async def test_a_worker_with_a_container_is_refused_and_left_unmarked(self, manager, hosts, worker, application, notices):
     from services.db.models import Container
     Container.create(application=application, worker=worker)
     from utils.errors import Conflict
-    with pytest.raises(Conflict):
+    with pytest.raises(Conflict, match="A worker with containers can't be removed."):
       manager.request_remove_worker("w1")
+    assert not Worker.get_by_id("w1").removing and requested(manager) == [] and (events(), notices()) == ([], [])
+
+
+class TestBeingRemoved:
+  @pytest.mark.parametrize("found", ["reachable", "unreachable"])
+  async def test_observation_asks_for_its_removal_once_its_answer_is_known_and_neither_sets_it_up_nor_repairs_it(
+          self, manager, hosts, worker, monotonic, found):
+    hosts.found["w1"] = found
+    commands.mark_removal("w1")
+    await manager.observe_workers()
+    Workers().record_setup("w1", "succeeded", "100.64.0.2")
+    report(running=config.WORKER_STACK_SERVICES[1:])
+    await manager.observe_workers()
+    assert requested(manager) == [("remove_worker", ["remove_worker", "w1"], [worker_scope("w1")], False)]
+
+  @pytest.mark.parametrize("found", ["unobserved", "unknown"])
+  async def test_its_removal_waits_while_its_answer_is_not_known(self, manager, hosts, worker, monotonic, found):
+    hosts.found["w1"] = found
+    commands.mark_removal("w1")
+    await manager.observe_workers()
+    assert requested(manager) == []
+
+  async def test_a_failed_removal_is_asked_for_again_only_after_the_retry_time(self, manager, hosts, provider, worker, monotonic):
+    commands.mark_removal("w1")
+    provider.keeps_tunnels = True
     with pytest.raises(TaskFailed):
       await manager.remove_worker("w1")
-    assert Worker.get_or_none(Worker.hostname == "w1") is not None and events() == [("remove", "rejected")]
-    assert notices() == [("error", "Worker w1 was not removed: A worker with containers can't be removed.", WORKER_PAGE)]
+    monotonic.now += config.WORKER_SETUP_RETRY_SECONDS - 1
+    await manager.observe_workers()
+    assert requested(manager) == []
+    monotonic.now += 1
+    await manager.observe_workers()
+    assert [name for name, *_ in requested(manager)] == ["remove_worker"]
+
+  async def test_its_failure_time_goes_once_its_removal_ends_or_its_row_is_gone(self, manager, hosts, provider, worker, monotonic):
+    Worker.create(hostname="w2", subdomain="blue")
+    commands.mark_removal("w1")
+    manager.removal_failures.update({"w1": monotonic.now, "w2": monotonic.now})
+    await manager.remove_worker("w1")
+    Worker.delete().where(Worker.hostname == "w2").execute()
+    await manager.observe_workers()
+    assert manager.removal_failures == {}
+
+  async def test_its_setup_does_nothing(self, manager, hosts, worker):
+    commands.mark_removal("w1")
+    await manager.converge_worker("w1", force=True)
+    assert (hosts.commands, events()) == ([], [])
+
+  def test_its_status_is_removing_and_sage_does_not_act_on_it(self, manager, hosts, worker):
+    Workers().record_setup("w1", "succeeded", "100.64.0.2")
+    report()
+    commands.mark_removal("w1")
+    state = manager.worker_states()["w1"]
+    assert (state.view.status, state.workable, is_workable("w1")) == ("removing", False, False)
+
+  def test_a_restart_or_a_new_subdomain_is_refused(self, manager, worker):
+    from utils.errors import Conflict
+    commands.mark_removal("w1")
+    with pytest.raises(Conflict, match="A worker being removed can't be restarted."):
+      manager.request_reboot("w1")
+    with pytest.raises(Conflict, match="A worker being removed can't be changed."):
+      commands.set_worker_subdomain("w1", "blue")
+    assert (requested(manager), Worker.get_by_id("w1").subdomain) == ([], "red")
 
 
 @pytest.fixture

@@ -165,7 +165,7 @@ class TestReconcileSchema:
 
     Database().reconcile_schema()
 
-    assert columns(db, "worker") == {"hostname", "created_at", "updated_at", "subdomain"}
+    assert columns(db, "worker") == {"hostname", "created_at", "updated_at", "subdomain", "removing"}
     Worker.create(hostname="w1", subdomain="red")
     assert Worker.get_by_id("w1").subdomain == "red"
 

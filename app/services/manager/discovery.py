@@ -74,8 +74,8 @@ class DiscoveryMixin:
     members = {worker.hostname: discovery_member(Tailscale().ssh(worker.hostname),
                                                  cloudflare.tunnel(cloudflare.worker_tunnel_name(worker.hostname)),
                                                  Workers().setup(worker.hostname), Tailscale().address(worker.hostname),
-                                                 since_start)
-               for worker in Worker.select(Worker.hostname)}
+                                                 since_start, worker.removing)
+               for worker in Worker.select(Worker.hostname, Worker.removing)}
     try:
       await run_in_executor_with_context(cloudflare.connect)
       zone = await run_in_executor_with_context(cloudflare.get_dns_records)
