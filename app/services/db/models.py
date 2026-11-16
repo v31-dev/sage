@@ -78,6 +78,8 @@ class Container(BaseModel):
   id = CharField(primary_key=True, default=new_id)
   application = ForeignKeyField(Application, backref="containers", on_delete="RESTRICT")
   worker = ForeignKeyField(Worker, backref="containers")
+  # What the user asked of it that has not reached its outcome: a restart resumes it. Not its status.
+  intent = ChoiceField(("deploy", "stop", "delete"), null=True)
 
   class Meta:
     indexes = ((("application", "worker"), True),)

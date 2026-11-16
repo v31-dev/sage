@@ -471,6 +471,14 @@ class TestPlatformCopies:
         ("container_event", "worker_event", "notification", "task", "backup"), 0)
     assert ContainerEvent.select().count() == 1 and Backup.select().count() == 1
 
+  def test_a_snapshot_holds_no_containers_intent(self, live, tmp_path):
+    import sqlite3
+    Container.update(intent="deploy").execute()
+    Database().snapshot(tmp_path / "snapshot.db")
+    with contextlib.closing(sqlite3.connect(tmp_path / "snapshot.db")) as copy:
+      assert copy.execute("SELECT intent FROM container").fetchall() == [(None,)]
+    assert Container.get_by_id(live.id).intent == "deploy"
+
   def test_a_snapshot_is_compacted_with_no_room_left_by_what_it_left_out(self, live, tmp_path):
     import sqlite3
 

@@ -134,11 +134,13 @@ class Database(Base):
 
   def snapshot(self, path: Path):
     """Copies the live database to `path` as a platform backup holds it: its configuration, without the history or
-    the Backup rows (they mirror the store, whose discovery rebuilds them), compacted. Blocking: offload it."""
+    the Backup rows (they mirror the store, whose discovery rebuilds them) and without the containers' intents (a
+    restore stops every container until it is deployed again), compacted. Blocking: offload it."""
     with closing(sqlite3.connect(path)) as copy:
       db.connection().backup(copy)
       for model in (*HISTORY, Backup):
         copy.execute(f'DELETE FROM "{model._meta.table_name}"')
+      copy.execute(f'UPDATE "{Container._meta.table_name}" SET intent = NULL')
       copy.commit()
       copy.execute("VACUUM")
 

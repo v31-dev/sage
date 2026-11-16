@@ -486,6 +486,65 @@ def cleanups(manager):
           if task["name"] == "cleanup_orphan"]
 
 
+def intend(container, intent):
+  Container.update(intent=intent).where(Container.id == container.id).execute()
+
+
+def lifecycle_requests(manager):
+  return [(task["name"], task["key"][1]) for task in manager.task_queue.snapshot()["queued"] if task["key"][0] in ("lifecycle", "delete")]
+
+
+class TestResume:
+  async def test_a_request_cut_off_is_asked_again_as_the_users_once_its_worker_reports(self, manager, containers):
+    for container in containers:
+      await deployed(container)
+      intend(container, "stop")
+    report(containers[0])
+    await manager.observe_containers()
+    assert queued(manager) == [(("lifecycle", containers[0].id), False, [placement_scope("w1", containers[0].id)])]
+    assert lifecycle_requests(manager) == [("stop", containers[0].id)]
+    await manager.observe_containers()
+    assert lifecycle_requests(manager) == [("stop", containers[0].id)]
+
+  async def test_it_waits_for_the_recovery_of_an_operation_the_restart_cut_off(self, manager, containers):
+    container = containers[0]
+    place(container, TargetRecord(authority(container), operation=Operation("d9", "deploy", "executing", datetime(2026, 1, 1),
+                                                                            905, input_hash="a" * 64)))
+    await Containers().read(container)
+    report(container)
+    intend(container, "deploy")
+    await manager.observe_containers()
+    assert ("recover", container.id) in [key for key, _, _ in queued(manager)] and lifecycle_requests(manager) == []
+
+  async def test_a_request_asked_since_is_left_to_do_it(self, manager, containers):
+    container = containers[0]
+    await deployed(container)
+    report(container)
+    intend(container, "deploy")
+    manager.request_stop(container.id)
+    await manager.observe_containers()
+    manager.request_deploy(container.id, resume=True)
+    assert lifecycle_requests(manager) == [("stop", container.id)]
+    assert Container.get_by_id(container.id).intent == "stop"
+
+  def test_a_delete_asked_again_cancels_nothing(self, manager, containers):
+    container = containers[0]
+    manager.request_stop(container.id)
+    manager.request_delete(container.id, resume=True)
+    assert lifecycle_requests(manager) == [("stop", container.id), ("delete", container.id)]
+
+  async def test_a_deploy_that_can_no_longer_be_deployed_is_not_asked_and_its_intent_goes(self, manager, containers, notices):
+    container = containers[0]
+    await deployed(container)
+    report(container)
+    intend(container, "deploy")
+    Application.update(image="").execute()
+    await manager.observe_containers()
+    assert lifecycle_requests(manager) == [] and Container.get_by_id(container.id).intent is None
+    [(kind, content, _)] = notices()
+    assert (kind, content.startswith("The Deploy of Demo / Web on w1, cut off by a restart, was not done again")) == ("error", True)
+
+
 class TestOrphans:
   @pytest.mark.parametrize("labelled, found", [("ours", True), ("another Sage's", False), ("unlabelled", False)])
   async def test_a_reported_runtime_no_container_owns_is_an_orphan_when_it_is_labelled_as_this_sages(

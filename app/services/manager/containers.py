@@ -14,6 +14,7 @@ from services.applications.deploy_input import DeployConfig, capture_deploy_conf
 from services.applications.lookup import find_application
 from services.applications.payload import application_payload, application_summary, project_payload
 from services.applications.updates import container_changed
+from services.containers.commands import settle_intent
 from services.containers.decisions import PROGRESS, Runtime, correction
 from services.containers.placement import (LABEL_APPLICATION, labels_authority, parse_placements, placement_dir, placement_scope, placements_command,
                                            records_command, runtime_name, runtime_owner, volume_dir)
@@ -33,7 +34,7 @@ from utils.errors import Conflict
 from utils.logging import TaskFailed, task_id
 from utils.queue import Outcome
 
-from .lifecycle import NAMES, REQUESTS, mark
+from .lifecycle import INTENTS, NAMES, REQUESTS, mark
 
 logger = logging.getLogger(__name__)
 
@@ -158,7 +159,10 @@ class ContainersMixin:
     self.add_task(task=self.observe_containers, key=("observe_containers",), scopes=set(), executor="app", quiet=True)
 
   async def observe_containers(self):
-    """Tells the pages of the containers whose state changed, then asks for what reconciliation does about each."""
+    """Tells the pages of the containers whose state changed, then asks for what reconciliation does about each. A
+    container that needs nothing of it, on a worker that reports, with an intent and no lifecycle request queued or
+    running, has that request asked again: one a restart cut off. A Deploy whose inputs can no longer be deployed is
+    not, and its intent is cleared with a notice."""
     self.container_state.check()
     instance = Instance.get()
     containers = {container.id: container for container in
@@ -175,6 +179,17 @@ class ContainersMixin:
       if found is None or found.kind != "recover":
         self.recoveries.pop(container.id, None)
       if found is None:
+        if container.intent is not None and reporting[container.worker_id] and not any(
+                self.has_task((slot, container.id)) for slot in ("lifecycle", "delete")):
+          resume = {"deploy": self.request_deploy, "stop": self.request_stop, "delete": self.request_delete}[container.intent]
+          try:
+            resume(container.id, resume=True)
+            logger.info(f"Asked again for the {NAMES[container.intent]} of container {container.id}, cut off by a restart.")
+          except ValueError as refusal:
+            settle_intent(container.id, container.intent)
+            name, page = self.container_notice(container)
+            Notifications().notify(f"The {NAMES[container.intent]} of {name}, cut off by a restart, was not done again: "
+                                   f"{refusal}", "error", page)
         continue
       if found.kind == "read":
         self.request_record_read(container)
@@ -443,16 +458,19 @@ class ContainersMixin:
         queued[container_id] = (*queued.get(container_id, ()), QueuedRequest(task["name"], task["task_id"], cancellable))
     return live, queued
 
-  def request_deploy(self, container_id: str) -> str:
-    """Queues a Deploy of the container with its application's inputs as they are now; the task's id."""
+  def request_deploy(self, container_id: str, resume: bool = False) -> str:
+    """Queues a Deploy of the container with its application's inputs as they are now (`resume`: from its intent);
+    the task's id."""
     container = self.lifecycle_container(container_id)
     deploy = capture_deploy_config(container.application_id)
     deploy.check_deployable()
-    return self.admitted_task_id(self.queue_lifecycle(container, "deploy", self.deploy_container, {"deploy": deploy}))
+    return self.admitted_task_id(self.queue_lifecycle(container, "deploy", self.deploy_container, {"deploy": deploy},
+                                                      resume=resume))
 
-  def request_stop(self, container_id: str) -> str:
-    """Queues a Stop of the container; the task's id."""
-    return self.admitted_task_id(self.queue_lifecycle(self.lifecycle_container(container_id), "stop", self.stop_container, {}))
+  def request_stop(self, container_id: str, resume: bool = False) -> str:
+    """Queues a Stop of the container (`resume`: from its intent); the task's id."""
+    return self.admitted_task_id(self.queue_lifecycle(self.lifecycle_container(container_id), "stop", self.stop_container, {},
+                                                      resume=resume))
 
   def request_deploy_all(self, application_id: int) -> list[str]:
     """Queues a Deploy of each of the application's containers, all with its inputs as they are now; the ids of the
@@ -470,11 +488,11 @@ class ContainersMixin:
              for container in self.application_containers(application_id)]
     return [result.task_id for result in added if result.outcome == Outcome.ACCEPTED]
 
-  def request_delete(self, container_id: str, force: bool = False) -> str:
-    """Queues a Delete of the container, after cancelling its queued tasks; with `force`, a worker that can't be
-    reached is left as it is. The task's id."""
+  def request_delete(self, container_id: str, force: bool = False, resume: bool = False) -> str:
+    """Queues a Delete of the container, after cancelling its queued tasks (`resume`: from its intent, cancelling
+    nothing); with `force`, a worker that can't be reached is left as it is. The task's id."""
     return self.admitted_task_id(self.queue_lifecycle(
-        self.lifecycle_container(container_id), "delete", self.delete_container, {}, {"force": force}))
+        self.lifecycle_container(container_id), "delete", self.delete_container, {}, {"force": force}, resume=resume))
 
   def request_cancel(self, container_id: str, operation: str) -> str:
     """Cancels the container's queued `operation` (one of `REQUESTS`: deploy, stop, a manual backup, a volume restore or
@@ -484,6 +502,8 @@ class ContainersMixin:
     key = (REQUESTS[operation][0], container_id)
     cancelled = self.cancel_tasks(key, operation)
     if cancelled:
+      if operation in INTENTS:
+        settle_intent(container_id, operation)
       return cancelled[0]
     if self.has_task(key, running_only=True):
       raise Conflict(f"The {operation} of this container has already started.")

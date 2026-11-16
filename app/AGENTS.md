@@ -105,7 +105,9 @@ Each resource's own rules, on top of the root's working rules 9–13. The workfl
   observation remains, the headline is error, the runtime unknown or unreachable, and the last observation is kept,
   never taken as proof that the process stopped or still runs.
 - A Deploy whose worker is unavailable is refused without a stop, a restart or invalidating target proof. A Stop that
-  cannot reach its worker fails and needs an explicit retry; no deferred Stop intent is kept.
+  cannot reach its worker fails and needs an explicit retry; no deferred Stop intent is kept. A Deploy's, Stop's or
+  Delete's intent on the Container row (`Container.intent`) lasts until the request's outcome, success, failure or
+  refusal, and only a request a restart cut off is resumed; it is what was asked, never the container's status.
 - Once a manual lifecycle action has started, its failure calls for a best-effort stop and headline error, which a
   running observation does not erase. An unexpected exit or absence after a committed deployment is error, with no
   automatic restart.

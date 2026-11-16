@@ -611,6 +611,84 @@ class TestDeleteRequests:
     assert [entry["params"]["force"] for entry in manager.task_queue.snapshot()["queued"]] == [True]
 
 
+def intent(container):
+  return Container.get_by_id(container.id).intent
+
+
+class TestIntent:
+  def test_a_request_records_what_was_asked_and_a_later_one_replaces_it(self, manager, container):
+    manager.request_deploy(container.id)
+    assert intent(container) == "deploy"
+    manager.request_stop(container.id)
+    assert intent(container) == "stop"
+    manager.request_delete(container.id)
+    assert intent(container) == "delete"
+
+  async def test_a_request_the_queue_does_not_take_leaves_the_earlier_one(self, manager, container):
+    release = asyncio.Event()
+
+    async def holds(container_id, deploy):
+      await release.wait()
+
+    manager.deploy_container = holds
+    manager.request_deploy(container.id)
+    manager.task_queue.dispatch_tick()
+    await asyncio.sleep(0)
+    with pytest.raises(Conflict):
+      manager.request_stop(container.id)
+    assert intent(container) == "deploy"
+    release.set()
+    await manager.run()
+
+  async def test_a_deploy_that_succeeds_clears_it(self, manager, worker_host, container):
+    manager.request_deploy(container.id)
+    await manager.run()
+    assert worker_record(container).settled.result == "succeeded" and intent(container) is None
+
+  async def test_a_failed_or_refused_request_clears_it(self, manager, container):
+    async def fails(container_id):
+      raise TaskFailed()
+
+    manager.stop_container = fails
+    manager.request_stop(container.id)
+    await manager.run()
+    assert intent(container) is None
+
+  async def test_a_request_cut_off_by_the_shutdown_keeps_it(self, manager, container):
+    async def cut_off(container_id):
+      raise asyncio.CancelledError()
+
+    manager.stop_container = cut_off
+    manager.request_stop(container.id)
+    await manager.run()
+    assert intent(container) == "stop"
+
+  async def test_a_delete_asked_while_a_deploy_runs_keeps_its_own_once_the_deploy_ends(self, manager, container):
+    release, deleting = asyncio.Event(), asyncio.Event()
+
+    async def holds(container_id, deploy):
+      await release.wait()
+
+    async def deletes(container_id, force):
+      assert intent(container) == "delete"
+      deleting.set()
+
+    manager.deploy_container, manager.delete_container = holds, deletes
+    manager.request_deploy(container.id)
+    manager.task_queue.dispatch_tick()
+    await asyncio.sleep(0)
+    manager.request_delete(container.id)
+    release.set()
+    await manager.run()
+    await manager.run()
+    assert deleting.is_set() and intent(container) is None
+
+  def test_cancelling_the_queued_request_clears_it(self, manager, container):
+    manager.request_deploy(container.id)
+    manager.request_cancel(container.id, "deploy")
+    assert intent(container) is None
+
+
 class TestRecovery:
   async def test_containment_stops_it_and_keeps_the_record_recovering_with_the_old_works_allowance(
           self, manager, worker_host, container):

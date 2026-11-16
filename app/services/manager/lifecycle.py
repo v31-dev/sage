@@ -5,6 +5,7 @@ from dataclasses import replace
 from datetime import datetime, timedelta
 
 import config
+from services.containers import commands
 from services.containers.decisions import RUNNING, RuntimeReading, lifecycle_refusal
 from services.containers.placement import (LABEL_CONTAINER, LABEL_DEPLOYMENT, LABEL_GENERATION, LABEL_INSTANCE, labels_authority, placement_scope,
                                            runtime_name)
@@ -30,6 +31,8 @@ logger = logging.getLogger(__name__)
 REQUESTS = {"deploy": ("lifecycle", OnConflict.REVISE), "stop": ("lifecycle", OnConflict.REVISE),
             "backup_stopped": ("lifecycle", OnConflict.REVISE), "restore_stopped": ("lifecycle", OnConflict.REVISE),
             "delete": ("delete", OnConflict.REPLACE)}
+# The requests the container keeps as its intent until they reach their outcome, so a restart resumes them.
+INTENTS = ("deploy", "stop", "delete")
 
 REFUSALS = {
     "unreachable": "its worker can't be reached",
@@ -92,19 +95,39 @@ class LifecycleMixin:
     return containers
 
   def queue_lifecycle(self, container: Container, name: str, task, inputs: dict, params: dict | None = None,
-                      scopes: tuple[str, ...] = (), labels: dict[str, str] | None = None) -> Added:
+                      scopes: tuple[str, ...] = (), labels: dict[str, str] | None = None, resume: bool = False) -> Added:
     """Queues the request `name` on the container in its slot (`REQUESTS`); a Delete first cancels the container's
-    queued tasks, and any other request is refused while one runs or waits. The queue's answer."""
+    queued tasks, and any other request is refused while one runs or waits. One of `INTENTS` is recorded as the
+    container's intent first, put back as it was when the queue does not take it, and cleared at its outcome. A
+    request `resume`d from its intent replaces nothing and cancels nothing: one queued or running with its key does it
+    instead. The queue's answer."""
     slot, on_conflict = REQUESTS[name]
+    if resume:
+      on_conflict = OnConflict.DEDUP
     scope = placement_scope(container.worker_id, container.id)
-    if name == "delete":
+    if name == "delete" and not resume:
       self.cancel_tasks(scope=scope)
     elif self.has_task(("delete", container.id)):
       raise Conflict("This container is being deleted.")
-    return self.add_task(
+    if name in INTENTS:
+      previous, body = commands.record_intent(container.id, name), task
+
+      # Only an outcome clears it: a coroutine cancelled by the loop's shutdown leaves it for the restart to resume.
+      async def task(**arguments):
+        try:
+          await body(**arguments)
+        except Exception:
+          commands.settle_intent(container.id, name)
+          raise
+        commands.settle_intent(container.id, name)
+
+    added = self.add_task(
         task=task, key=(slot, container.id), name=name, scopes={scope, *scopes}, executor="app",
         params={"container_id": container.id, **(params or {})}, inputs=inputs,
         labels={**self.container_labels(container), **(labels or {})}, on_conflict=on_conflict)
+    if name in INTENTS and added.outcome != Outcome.ACCEPTED:
+      commands.settle_intent(container.id, name, previous)
+    return added
 
   @staticmethod
   def container_labels(container: Container) -> dict[str, str]:
