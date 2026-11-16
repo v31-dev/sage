@@ -442,11 +442,11 @@ class TestBackups:
     register(S3, SimpleNamespace(session=lambda: SimpleNamespace(identity="s1")))
     one = browser()
     one.subscribe("backups")
-    add_backups("s1", datetime.datetime(2026, 1, 2, 3, 4, 5), False, ["base/backups/platform/20260102_030405_4444444444444444.db.enc"])
+    add_backups("s1", datetime.datetime(2026, 1, 2, 3, 4, 5), False, ["base/backups/platform/20260102_030405_4444444444444444_0.2.0_1.db.enc"])
     event, message = one.next()
     assert (event, message["topic"]) == ("state", "backups")
     assert message["data"] == jsonable_encoder(platform_backups())
-    assert [backup["s3_path"] for backup in message["data"]] == ["base/backups/platform/20260102_030405_4444444444444444.db.enc"]
+    assert [backup["s3_path"] for backup in message["data"]] == ["base/backups/platform/20260102_030405_4444444444444444_0.2.0_1.db.enc"]
 
   def test_a_volumes_backup_written_is_pushed_to_that_volumes_list_only_and_a_store_change_to_every_one(
           self, browser, application, register):

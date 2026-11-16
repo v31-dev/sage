@@ -2,7 +2,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from services.backups.decisions import SlotRow, slot_due
+from services.backups.decisions import SlotRow, platform_restore_refusal, slot_due
 
 SLOT, STARTED = datetime(2026, 1, 2, 3, 0), datetime(2026, 1, 2, 9, 0)
 BUFFER = timedelta(minutes=5)
@@ -43,3 +43,12 @@ def test_another_slots_backup_of_a_schedule_never_holds_it():
 
 def test_a_backup_not_of_a_schedule_that_was_interrupted_neither_holds_it_nor_is_taken_again():
   assert due(row("interrupted", slot_at=SLOT - timedelta(minutes=2), automatic=False)) == (True, None)
+
+
+@pytest.mark.parametrize("key, refusal", [
+    ("base/backups/platform/20260102_030405_4444444444444444_0.3.0_4.db.enc", "A backup from a later version of Sage can't be restored."),
+    ("base/backups/platform/20260102_030405_4444444444444444_0.2.0_3.db.enc", None),
+    ("base/backups/platform/20260102_030405_4444444444444444_0.1.3_0.db.enc", None),
+], ids=["a later schema", "this one", "an earlier one"])
+def test_a_platform_backup_restores_unless_a_later_sage_took_it(key, refusal):
+  assert platform_restore_refusal(key, 3) == refusal

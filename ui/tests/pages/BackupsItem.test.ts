@@ -13,19 +13,22 @@ vi.mock('@/services/api', async importOriginal => ({
 
 // Confirmed as soon as it is clicked.
 const confirmation = {
-  props: ['triggerText', 'onConfirm'],
-  template: '<button @click="onConfirm()">{{ triggerText }}</button>',
+  props: ['triggerText', 'onConfirm', 'disabled'],
+  template: '<button :disabled="disabled" @click="onConfirm()">{{ triggerText }}</button>',
 }
 
 const backup = (fields: Partial<Backup> = {}) =>
   ({
     id: 'b1',
     type: 'platform',
-    s3_path: 'base/backups/platform/b1.db.enc',
+    s3_path: 'base/backups/platform/20260101_120000_4444444444444444_0.2.0_1.db.enc',
     automatic: true,
     status: 'succeeded',
     reason: null,
     created_at: '2026-01-01T12:00:00',
+    release: '0.2.0',
+    schema_version: 1,
+    restore_refusal: null,
     ...fields,
   }) as Backup
 
@@ -50,6 +53,24 @@ beforeEach(() => {
 describe('a platform backup', () => {
   it('that was taken can be downloaded, restored and deleted', () => {
     expect(buttons(mountItem().wrapper)).toEqual(['Download', 'Restore', 'Delete'])
+  })
+
+  it('names the release that took it', () => {
+    expect(mountItem().wrapper.text()).toContain('Sage 0.2.0')
+  })
+
+  it('that the manager would refuse to restore says why and cannot be restored', () => {
+    const { wrapper } = mountItem({
+      release: '9.0.0',
+      schema_version: 9,
+      restore_refusal: "A backup from a later version of Sage can't be restored.",
+    })
+    const restore = wrapper.findAll('button').find(button => button.text() === 'Restore')
+    expect(restore?.attributes('disabled')).toBeDefined()
+    expect(wrapper.find('[data-restore-refusal]').text()).toBe(
+      "A backup from a later version of Sage can't be restored."
+    )
+    expect(mountItem().wrapper.find('[data-restore-refusal]').exists()).toBe(false)
   })
 
   it('that was not taken says why and can only be deleted, at once', async () => {

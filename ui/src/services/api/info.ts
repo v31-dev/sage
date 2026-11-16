@@ -50,3 +50,28 @@ export const fetchRelease = () => request<Release>('GET', '/release')
 export const refreshRelease = () => request<void>('POST', '/release/refresh')
 
 export const fetchHomeSummary = () => request<HomeSummary>('GET', '/summary')
+
+// One file a migration run changed or refused: from its version towards `to`, with why it was started again empty or
+// refused (`detail`).
+export interface MigrationFile {
+  file: string
+  from: number
+  to: number
+  outcome: 'migrated' | 'recreated' | 'refused'
+  detail: string | null
+  at: string
+}
+
+// A migration run, at a start of Sage (`boot`) or a platform restore's install (`restore`), with the release that ran
+// it; refused when any of its files was, else recreated when one was started again empty.
+export interface MigrationRun {
+  run: string
+  trigger: 'boot' | 'restore'
+  release: string
+  at: string
+  outcome: MigrationFile['outcome']
+  files: MigrationFile[]
+}
+
+// The migration history, newest run first.
+export const fetchMigrations = () => request<MigrationRun[]>('GET', '/migrations')

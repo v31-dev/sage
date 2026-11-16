@@ -1,6 +1,6 @@
 """Where backups are kept in a store, under its base path: each archive named by when it was taken and its own opaque
-id, a platform backup's under the platform's prefix, a volume archive's under the opaque ids of its volume and of the
-placement it was taken from."""
+id, a platform backup's under the platform's prefix with the release and schema version that took it, a volume
+archive's under the opaque ids of its volume and of the placement it was taken from."""
 import hashlib
 import re
 from datetime import datetime
@@ -13,6 +13,7 @@ APPLICATIONS_PREFIX = "backups/applications"
 PLATFORM_BACKUP_SUFFIX = ".db.enc"
 VOLUME_ARCHIVE_SUFFIX = ".tar.gz.enc"
 ARCHIVE_NAME = rf"(\d{{8}}_\d{{6}})_{OPAQUE_ID}"
+PLATFORM_VERSIONS = r"_(\d+\.\d+\.\d+)_(\d+)"
 
 
 def store_scope(storage_id: str) -> str:
@@ -35,10 +36,22 @@ def archive_name(at: datetime) -> str:
   return f"{at.strftime(BACKUP_TIMESTAMP_FORMAT)}_{new_id()}"
 
 
+def platform_backup_key(name: str, release: str, schema: int) -> str:
+  """The key under the base path of the platform backup `name` (`archive_name`), taken by `release` at `schema`, its
+  database's `user_version`."""
+  return f"{PLATFORM_PREFIX}/{name}_{release}_{schema}{PLATFORM_BACKUP_SUFFIX}"
+
+
+def platform_versions(key: str) -> tuple[str, int] | None:
+  """The release and schema version that took the platform backup at `key`; None for any other key."""
+  match = re.fullmatch(rf"{ARCHIVE_NAME}{PLATFORM_VERSIONS}{re.escape(PLATFORM_BACKUP_SUFFIX)}", key.strip("/").split("/")[-1])
+  return (match[2], int(match[3])) if match else None
+
+
 def timestamp_from_key(key: str) -> str | None:
   """When the platform backup or volume archive at `key` was taken, as named; None for any other key."""
-  match = re.fullmatch(rf"{ARCHIVE_NAME}(?:{re.escape(PLATFORM_BACKUP_SUFFIX)}|{re.escape(VOLUME_ARCHIVE_SUFFIX)})",
-                       key.strip("/").split("/")[-1])
+  match = re.fullmatch(rf"{ARCHIVE_NAME}(?:{PLATFORM_VERSIONS}{re.escape(PLATFORM_BACKUP_SUFFIX)}|"
+                       rf"{re.escape(VOLUME_ARCHIVE_SUFFIX)})", key.strip("/").split("/")[-1])
   return match[1] if match else None
 
 

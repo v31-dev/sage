@@ -3,7 +3,8 @@ from datetime import datetime
 import pytest
 
 from services.backups.keys import (archive_name, archive_scope, archive_write_scope, is_expired_backup_key, is_expired_timestamp,
-                                   parse_volume_archive, store_scope, taken_at, timestamp_from_key, volume_archive_key)
+                                   parse_volume_archive, platform_backup_key, platform_versions, store_scope, taken_at, timestamp_from_key,
+                                   volume_archive_key)
 from utils.common import new_id
 from utils.queue import _scope_conflict
 
@@ -15,13 +16,13 @@ class TestArchiveName:
   def test_two_taken_in_the_same_second_differ_and_each_parses_to_that_second(self):
     names = {archive_name(datetime(2026, 1, 2, 3, 4, 5)) for _ in range(2)}
     assert len(names) == 2
-    assert {timestamp_from_key(f"backups/platform/{name}.db.enc") for name in names} == {"20260102_030405"}
+    assert {timestamp_from_key(f"backups/platform/{name}_0.2.0_1.db.enc") for name in names} == {"20260102_030405"}
 
 
 class TestTimestampFromKey:
   @pytest.mark.parametrize("key", [
-      f"backups/platform/{NAME}.db.enc",
-      f"/backups/platform/{NAME}.db.enc/",
+      f"backups/platform/{NAME}_0.2.0_1.db.enc",
+      f"/backups/platform/{NAME}_0.2.0_1.db.enc/",
       f"base/backups/applications/{VOLUME}/{CONTAINER}/{NAME}.tar.gz.enc",
   ])
   def test_finds_the_timestamp_in_an_archives_name(self, key):
@@ -30,8 +31,8 @@ class TestTimestampFromKey:
   @pytest.mark.parametrize("key", [
       "backups/platform/notes.txt",
       "backups/platform/20260102_030405.db.enc",
-      f"backups/platform/2026010_030405_{ARCHIVE}.db.enc",
-      f"backups/platform/20260102-030405_{ARCHIVE}.db.enc",
+      f"backups/platform/2026010_030405_{ARCHIVE}_0.2.0_1.db.enc",
+      f"backups/platform/20260102-030405_{ARCHIVE}_0.2.0_1.db.enc",
       "backups/platform/20260102_030405_ABCDEF0123456789.db.enc",
       f"backups/platform/{NAME}.db",
       NAME,
@@ -46,7 +47,7 @@ class TestTimestampFromKey:
 
 class TestTakenAt:
   def test_it_is_the_time_in_the_key_as_people_read_it_and_unknown_without_one(self):
-    assert (taken_at(f"base/backups/platform/{NAME}.db.enc"), taken_at("base/backups/platform/latest.db.enc")) == (
+    assert (taken_at(f"base/backups/platform/{NAME}_0.2.0_1.db.enc"), taken_at("base/backups/platform/latest.db.enc")) == (
         "2026-01-02 03:04 UTC", "an unknown time")
 
 
@@ -67,8 +68,8 @@ class TestIsExpired:
     assert is_expired_timestamp(timestamp, self.cutoff) is False
 
   @pytest.mark.parametrize("key, expired", [
-      (f"backups/platform/20260101_000000_{ARCHIVE}.db.enc", True),
-      (f"backups/platform/20260201_000000_{ARCHIVE}.db.enc", False),
+      (f"backups/platform/20260101_000000_{ARCHIVE}_0.2.0_1.db.enc", True),
+      (f"backups/platform/20260201_000000_{ARCHIVE}_0.2.0_1.db.enc", False),
       ("backups/platform/20260101_000000.db.enc", False),
       ("backups/platform/readme.txt", False),
   ])
@@ -105,3 +106,21 @@ def test_a_store_covers_its_archives_writes_and_each_is_apart_from_the_others_an
   assert not any(_scope_conflict(one, other) for index, one in enumerate(parts) for other in parts[index + 1:])
   assert not any(_scope_conflict(store_scope("sb"), part) for part in parts)
   assert archive_scope("sa", "base/backups/platform/a.db.enc") == archive_scope("sa", "base/backups/platform/a.db.enc")
+
+
+class TestPlatformVersions:
+  def test_a_platform_backups_key_names_the_release_and_schema_version_that_took_it(self):
+    key = platform_backup_key(NAME, "0.2.0", 3)
+    assert key == f"backups/platform/{NAME}_0.2.0_3.db.enc"
+    assert (platform_versions(f"base/{key}"), timestamp_from_key(f"base/{key}")) == (("0.2.0", 3), "20260102_030405")
+
+  @pytest.mark.parametrize("key", [
+      f"backups/platform/{NAME}.db.enc",
+      f"backups/platform/{NAME}_0.2_1.db.enc",
+      f"backups/platform/{NAME}_0.2.0_.db.enc",
+      "backups/platform/20260102_030405.db.enc",
+      volume_archive_key(VOLUME, CONTAINER, NAME),
+  ], ids=["without versions", "a short release", "no schema version", "0.1.3's form", "a volume archive"])
+  def test_any_other_key_has_none_and_is_no_platform_backup(self, key):
+    assert platform_versions(key) is None
+    assert key.endswith(".tar.gz.enc") or timestamp_from_key(key) is None

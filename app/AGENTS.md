@@ -286,22 +286,50 @@ Stop](../docs/backend.md#pause-and-stop).
 - Local Peewee and SQLite calls run inline. Heavy file I/O (bulk writes in a loop, backup and restore copies,
   encryption, large listings) is offloaded and written in one transaction (`db.atomic()`, `insert_many`).
 
-## Migrations And One-Off Changes
+## Migrations
 
-- No one-time migration, backfill or convergence code (DB rows, files, or external state such as Cloudflare records)
-  to bring existing installs in line with a change; the manual step goes in the summary or PR. New writes carry the new
-  desired state; reconciling what exists is a documented manual action.
-- The one automatic migration is schema evolution: missing columns are added at boot and columns no model has are
-  dropped (`Database`, `services/db/database.py`), in one transaction with foreign keys off. Anything beyond that is
-  a manual step unless the user says otherwise.
-- The upgrade is the release notes': what an existing install goes through on its way to a change (a record gone
-  before its replacement is written, a step to run first) never decides where code runs or in what order. Design for
-  the final state.
-- A schema change that existing data can refuse (a new unique index, say) stops the boot with one `[CRITICAL]` line
-  holding what is known of the failure and a link to the running version's release; the code prints no remediation,
-  so the release notes can correct it without a release. Changing an existing column's type, `NOT NULL`, primary key,
-  foreign key or `CHECK` (a new `ChoiceField` value included) is refused the same way on every existing database,
-  since SQLite can't alter them in place; name its manual step in the release notes.
+How an install moves between versions: [Migrations](../docs/development.md#migrations).
+
+- A change that an existing install can't take as it is ships with its automatic migration, in the same change:
+  the database's schema and rows, the side SQLite files, the files Sage keeps on workers and what it keeps in the store
+  and in Cloudflare. A user upgrades from any supported version to any later one by running the newer image.
+- The database's version is `PRAGMA user_version`: the number of the last migration step applied. The steps are one
+  ordered list (`services/db/migrations.py`); step N takes version N-1's schema to N's. Versions are schema versions,
+  not releases: a release ships no step or several.
+- The baseline is 0.1.3: a database at version 0 must have exactly 0.1.3's schema, compared by columns and indexes.
+  An empty database is a fresh install, created from the models at the latest version. Any other database at
+  version 0 is from before 0.1.3 and is refused, and so is a version above the latest (a downgrade, or a platform
+  backup of a newer Sage). Moving the baseline to a later release removes the steps and the convergence code that only
+  older installs need.
+- At boot and after a platform restore's install, the pending steps run in order and the runner
+  (`services/db/migrator.py`) then checks that the result equals the models, in one transaction with foreign keys
+  off, ending with the foreign key check. It adds and drops nothing: each step leaves exactly its version's schema, so
+  the next one can rely on it. Any failure rolls back the whole run, `user_version` included, and stops the boot with
+  one `[CRITICAL]` line linking the running version's release; the database is as it was, so the previous release
+  still runs on it.
+- A step is SQL against its own version's schema and never uses the models, which are the latest. It may name the
+  version it converts from, the one place a comment or a name refers to an earlier version.
+- A released step is fixed in place only while its result stays the same: a run that failed was rolled back and left
+  nothing, and the installs it ran on already hold that result. A step that succeeded with a wrong result is corrected
+  by a new step.
+- Each side SQLite file kind (`logs/<application>.db`, `logs/requests.db`, `logs/tasks.db`, the metrics shards)
+  carries its own `user_version`, baseline and step list in its package's `migrations.py` (`services/logs/`,
+  `services/metrics/`; `data.db`'s is `services/db/migrations.py`), under the same rules, and every existing file
+  is migrated at boot before serving. Its files are disposable: one that doesn't fit (version 0 without the baseline,
+  or a later version) is recreated empty, and a step may be `RECREATE` where its rows can't follow cleanly. A failing
+  step still stops the boot.
+- What Sage keeps on workers converges through worker setup: a format change changes its stamp, and an artifact an
+  older version left is removed by its owner's convergence, never by a step. What Sage keeps in the store and in
+  Cloudflare converges the same way, through its owner's pass. Such an artifact needs no conversion: one in a form this
+  version no longer reads (an S3 key, a file name, a record) may be dropped, left behind or removed as an orphan,
+  provided the release notes name what is dropped.
+- Every run that migrates, recreates or refuses a file appends it to the migration history
+  (`services/db/migration_log.py`, `data/migrations.log`), outside the databases so a refusal stays recorded; a
+  history that can't be written never fails the migration. Settings → Upgrade shows it.
+- The release notes carry a manual step only in an emergency the automatic migration can't solve. The boot then
+  prints no remediation, so the notes can be corrected without a release; the refusal of a pre-baseline database is
+  the exception, since its remedy (run 0.1.3 on it once) never changes.
+- Design for the final state: an install's way through the migration never decides where code runs or in what order.
 
 ## Testing
 
@@ -320,3 +348,7 @@ Stop](../docs/backend.md#pause-and-stop).
   verified" line in the docs is unfinished work.
 - Check a change to `app/templates/worker/vector/vector.yml` with the workers' Vector image instead of guessing at VRL
   ([Vector Config](../docs/development.md#vector-config)).
+- Migrations are tested from a 0.1.3 database with rows in every table: through every step it equals a fresh database
+  built from the models, and the rows come through, so a model change without its step fails. A pre-baseline database,
+  a newer version and a failing step are each refused with the database left unchanged. Each side file kind gets the
+  same tests.

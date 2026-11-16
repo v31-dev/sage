@@ -12,7 +12,8 @@ export type BackupState =
 
 // A backup in the configured store (`storage_id`): the platform's, or a volume's (`application`), with the volume's id
 // and the name it had when it was taken, and the container and worker it was taken from. One per slot: the
-// schedule's (`automatic`) or a request's.
+// schedule's (`automatic`) or a request's. A platform backup names the release and database version that took it,
+// and why it can't be restored, if it can't.
 export interface Backup {
   id: string
   type: 'platform' | 'application'
@@ -29,6 +30,9 @@ export interface Backup {
   reason: string | null
   created_at: string
   updated_at: string
+  release: string | null
+  schema_version: number | null
+  restore_refusal: string | null
 }
 
 export interface BackupStatus {

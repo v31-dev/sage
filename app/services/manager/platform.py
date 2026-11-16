@@ -11,10 +11,11 @@ from croniter import croniter
 import config
 from services.backups.catalog import CatalogPlan
 from services.backups.commands import add_backups, apply_catalog, cancel_queued_backups, requeue_backups, settle_backups
-from services.backups.decisions import SlotRow, slot_due
-from services.backups.keys import (BACKUP_TIMESTAMP_FORMAT, PLATFORM_BACKUP_SUFFIX, PLATFORM_PREFIX, archive_name, archive_write_scope, taken_at,
-                                   timestamp_from_key)
+from services.backups.decisions import SlotRow, platform_restore_refusal, slot_due
+from services.backups.keys import (BACKUP_TIMESTAMP_FORMAT, PLATFORM_BACKUP_SUFFIX, PLATFORM_PREFIX, archive_name, archive_write_scope,
+                                   platform_backup_key, taken_at, timestamp_from_key)
 from services.containers.targets import Containers
+from services.db import migrations
 from services.db.database import Database
 from services.db.models import Backup
 from services.domains.state import Domains
@@ -136,7 +137,7 @@ class PlatformMixin:
       if not is_due:
         return None
     backup_ids = [reused] if reused else add_backups(session.identity, slot or now, slot is not None, [
-        session.get_full_path(f"{PLATFORM_PREFIX}/{archive_name(now)}{PLATFORM_BACKUP_SUFFIX}")])
+        session.get_full_path(platform_backup_key(archive_name(now), config.VERSION, len(migrations.STEPS)))])
     added = self.add_task(task=settling(self.backup_platform), key=("backup_platform",),
                           scopes={archive_write_scope(session.identity, "platform")}, executor="platform",
                           params={"backup_ids": backup_ids, "storage_id": session.identity}, on_conflict=OnConflict.REPLACE)
@@ -192,6 +193,8 @@ class PlatformMixin:
       raise Conflict("Only a completed backup can be restored.")
     if backup.storage_id != session.identity:
       raise Conflict("This backup is not in the configured store.")
+    if refusal := platform_restore_refusal(backup.s3_path, len(migrations.STEPS)):
+      raise Conflict(refusal)
     added = self.add_restore(task=self.restore_platform, name="restore_platform", key=("restore_platform", backup.s3_path),
                              executor="platform", params={"s3_path": backup.s3_path, "storage_id": backup.storage_id})
     if added.outcome == Outcome.REFUSED:

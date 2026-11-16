@@ -66,3 +66,13 @@ def test_only_the_configured_stores_backups_are_listed_and_none_without_a_store(
   assert [item["id"] for item in (*platform_backups(), *volume_backups(volume.id))] == [backup.id for backup in here]
   store.identity = None
   assert platform_backups() == [] and volume_backups(volume.id) == []
+
+
+def test_a_platform_backup_shows_the_release_that_took_it_and_whether_it_restores(application):
+  from services.db import migrations
+  path = "base/backups/platform/20260102_030405_4444444444444444_{}_{}.db.enc"
+  ours = Backup.create(type="platform", storage_id="store-a", s3_path=path.format("0.2.0", len(migrations.STEPS)))
+  later = Backup.create(type="platform", storage_id="store-a", s3_path=path.format("9.0.0", len(migrations.STEPS) + 1))
+  shown = {backup["id"]: (backup["release"], backup["schema_version"], backup["restore_refusal"]) for backup in platform_backups()}
+  assert shown == {ours.id: ("0.2.0", len(migrations.STEPS), None),
+                   later.id: ("9.0.0", len(migrations.STEPS) + 1, "A backup from a later version of Sage can't be restored.")}

@@ -16,8 +16,8 @@ from scheduler import shutdown as shutdown_scheduler
 from scheduler import start as start_scheduler
 from services.certs import Certs
 from services.cloudflare import Cloudflare
-from services.db.database import SchemaRefused
 from services.db.encryption import initialize_encryption
+from services.db.migrator import SchemaRefused
 from services.manager import Manager
 from services.tailscale import Tailscale
 from utils.logging import setup_logger, unlogged_paths

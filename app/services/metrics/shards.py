@@ -1,6 +1,10 @@
 """A host's metrics file: its size, its minutes and its containers' minutes."""
 from peewee import CharField, CompositeKey, DateTimeField, FloatField, IntegerField, Model, SqliteDatabase
 
+from services.db.migrator import migrate, models_schema
+
+from . import migrations
+
 
 def open_shard(path: str) -> dict:
   """The host's file at `path`, created when missing: its database and its models by name."""
@@ -48,7 +52,11 @@ def open_shard(path: str) -> dict:
       primary_key = CompositeKey("name", "ts")
 
   db.connect(reuse_if_open=True)
-  db.create_tables([WorkerMeta, WorkerMetrics, ContainerMetrics], safe=True)
+  try:
+    migrate(db, migrations.BASELINE, migrations.STEPS, models_schema([WorkerMeta, WorkerMetrics, ContainerMetrics]), disposable=True)
+  except Exception:
+    db.close()
+    raise
   return {
       "db": db,
       "models": {

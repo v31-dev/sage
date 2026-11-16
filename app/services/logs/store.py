@@ -112,17 +112,29 @@ class StoreMixin:
     super().__init__()
     self.db_path = config.DATA_DIR
     os.makedirs(f"{self.db_path}/logs", exist_ok=True)
+    # Every file is migrated at boot, before serving, so a failing step stops the start.
+    for path in sorted(path for path in Path(self.db_path, "logs").glob("*.db") if path.is_file()):
+      self._open(path.stem).db.close()
     self._stores: dict[str, Store] = {}
     # When the size of each file, and of all together, was last looked at (monotonic seconds).
     self._checked: dict[str, float] = {}
     self._total_checked = float("-inf")
     self._trim_lock = threading.Lock()
 
+  def _open(self, name: str) -> Store:
+    """The file `name` of the logs directory, opened and migrated; closed again when its migration fails."""
+    db = open_db(Path(self.db_path) / "logs" / f"{name}.db")
+    try:
+      return self._schema(name)(db)
+    except Exception:
+      db.close()
+      raise
+
   def _store(self, name: str) -> Store:
     """The file `name` of the logs directory, opened once, with its schema."""
     with self.lock:
       if name not in self._stores:
-        self._stores[name] = self._schema(name)(open_db(Path(self.db_path) / "logs" / f"{name}.db"))
+        self._stores[name] = self._open(name)
     return self._stores[name]
 
   def _insert(self, name: str, rows: list) -> list[dict]:

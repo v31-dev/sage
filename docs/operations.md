@@ -220,7 +220,7 @@ Implementation: [platform operations](../app/services/manager/platform.py),
 | Operation | Scopes · executor | Admission / history | Every initiating source | Model writes and other effects |
 | --- | --- | --- | --- | --- |
 | `backup_platform` | `backup:store:<identity>:write:platform` · platform | REPLACE on `("backup_platform",)` / H | `request_platform_backup`: 00:00/12:00; POST `/backups`; nothing without a store | `Database.snapshot` (configuration only: history and Backup rows emptied, compacted), encrypted and uploaded at its platform Backup row's key, recorded queued by the request (`automatic` from the schedule; a queued one it replaces is cancelled) and settled by the task. Runs alongside other work. Refused when the store changed. |
-| `restore_platform` | none · platform | The queue's own entry (`TaskQueue.request_restore`), keyed `("restore_platform", <s3 path>)`, outside admission: refused unless running; from then on every other request is refused, the tasks queued before it finish, and it starts alone once nothing runs or waits / H | `request_platform_restore`: POST `/backups/{backup}/restore` (a platform backup of the configured store) | A pseudo restart: `Database.install` (the backup file given a fresh `state_generation`, the configured S3 settings and empty history and Backup rows; a safety copy; the backup copied in whole; schema reconciled; rollback on failure), the other consumers installed, the memory of the old configuration cleared; then `end_restore` and, on success, `request_startup`. The workers' reports are refused with 503 while restoring. |
+| `restore_platform` | none · platform | The queue's own entry (`TaskQueue.request_restore`), keyed `("restore_platform", <s3 path>)`, outside admission: refused unless running; from then on every other request is refused, the tasks queued before it finish, and it starts alone once nothing runs or waits / H | `request_platform_restore`: POST `/backups/{backup}/restore` (a platform backup of the configured store) | A pseudo restart: `Database.install` (the backup file given a fresh `state_generation`, the configured S3 settings and empty history and Backup rows; a safety copy; the backup copied in whole; its migration steps run and its schema checked; rollback on failure), the other consumers installed, the memory of the old configuration cleared; then `end_restore` and, on success, `request_startup`. The workers' reports are refused with 503 while restoring. |
 | `discover_backups` | `backup:store:<identity>` · common | REPLACE on `("discover_backups",)` / H | `request_backup_discovery`: startup; POST `/backups/discover`; PUT `/settings/s3`; successful restore; nothing without a store | Lists the store, then reads the rows, and makes the table mirror the store in one transaction (`reconcile_catalog`, `apply_catalog`): rows of another store and completed rows of a gone object dropped, rows an earlier run left queued or running settled by their object, listed backups no row records added, a volume archive only while its volume is configured (by its id). Archives awaiting deletion remain listed while present in the store. Nothing when the store changed since the request. |
 | `delete_archive` | `backup:store:<identity>:archive:<part>` · common | DEDUP on `("delete_archive", <identity>, <s3 path>)` / H | `request_backup_deletion`: DELETE `/backups/{backup}` (a platform backup) or `<app>/volumes/{volume}/backups/{backup}`, for a completed backup; its row remains while queued | Deletes exactly that key from the store the row named, then marks the rows for that store/key deleted (`mark_deleted`); refusal or failure leaves them unmarked. Refused when that is no longer the configured store, so another store's object of the same key is never touched. |
 | `delete_volume_archives` | `backup:store:<identity>` · common | DEDUP on `("delete_volume_archives", <identity>, <volume id>)` / H | `request_volume_archives_deletion`: DELETE of a volume or an application, for each deleted volume; nothing without a store | Deletes every object under `backups/applications/<volume id>/` in that store with one listing, then marks that volume's rows in it deleted (`mark_deleted`); a failure notifies and fails, its rows left. Holding the store, it waits for a backup still writing there. Nothing when the store changed. |
@@ -363,7 +363,7 @@ the Domain pass.
 flowchart TB
     entry["Entrypoint<br/>start userspace tailscaled"]
     key["Validate ENCRYPTION_KEY<br/>initialize the cipher"]
-    database["Temp folder emptied<br/>Database opens data.db<br/>reconcile schema<br/>create Instance if absent"]
+    database["Temp folder emptied<br/>Database opens data.db<br/>migration steps, schema check<br/>create Instance if absent"]
     services["Initialize services<br/>task-log capture, reports, Tailscale,<br/>Settings.load_all, S3 and notifications installed,<br/>Certs, metrics sampler"]
     notice["Notifications.notify<br/>startup Notification"]
     bootstrap["setup_domain before serving<br/>Cloudflare connect + manager certificate<br/>external files/DNS; no model write"]
@@ -375,14 +375,15 @@ flowchart TB
     linkStyle default stroke:#ef4444,stroke-width:3px
 ```
 
-Schema reconciliation creates missing tables, columns and indexes and drops undeclared ones in one transaction, and
-creates the persistent Instance identity when absent. Settings loading creates missing defined rows and fields and
+The migration steps bring the database from its `user_version` to the models, and the schema check compares the
+result with them, in one transaction that a failure rolls back whole; then the persistent Instance identity is created when
+absent. Settings loading creates missing defined rows and fields and
 removes undefined ones. This is synchronous boot work with no queue scope. Nothing dispatches until the scheduler
 starts, and the startup requests are not a promise that those operations finish in that order.
 
 Startup resets no container state, since none is stored in the database: the containers' observation reads each
 record from its worker, and reconciliation recovers interrupted operations from those records. A platform restore
-runs schema reconciliation and settings loading again (it runs alone), replaces every configuration row, clears the
+runs the migration steps, the schema check and settings loading again (it runs alone), replaces every configuration row, clears the
 in-memory owners of the old configuration and requests the same startup work. Certificates, metric shards and log
 shards are outside the platform backup.
 
@@ -410,13 +411,13 @@ Sources: [Telegraf route](../app/routes/telegraf.py), [Vector route](../app/rout
 ## Model writer index
 
 This is the reverse lookup: start with a model to find all its normal writers. **Platform restore can replace
-every row below**, and schema reconciliation can change every table. Shared timestamps and the implicit
+every row below**, and a migration step can change every table. Shared timestamps and the implicit
 writes above apply in addition to the listed fields.
 
 | Model | Direct route writer | Queued / shared writer | Other writer |
 | --- | --- | --- | --- |
 | `Setting` | Settings PUT: merged `value` | Platform restore keeps the S3 value in use | `Settings.load_all` at boot and restore: row and field normalization |
-| `Instance` | None | Platform restore installs the backup's, with a fresh `state_generation` | Schema reconciliation creates it if absent |
+| `Instance` | None | Platform restore installs the backup's, with a fresh `state_generation` | `Database.migrate` creates it if absent |
 | `Worker` | Workers POST: the row; PUT: `subdomain`; DELETE: `removing` | `remove_worker`: deletes the row through its command | Reachability, setup and readiness are memory, not columns |
 | `Project` | Project CRUD: configuration | None | `create_application` and `delete_application` recount `application_count` |
 | `Application` | Application CRUD: configuration | None | `attach_container` and `detach_container` recount `container_count`; no status column |

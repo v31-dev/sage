@@ -29,6 +29,7 @@ import {
 } from '@/services/api'
 import { useAppStore } from '@/stores/app'
 import { TONES } from '@/lib/tone'
+import MigrationHistoryButton from './MigrationHistoryButton.vue'
 
 const appStore = useAppStore()
 
@@ -233,6 +234,7 @@ onUnmounted(() => {
         <CardHeader>
           <CardTitle>How to upgrade</CardTitle>
           <CardDescription>Sage doesn't upgrade itself; you replace its container.</CardDescription>
+          <CardAction><MigrationHistoryButton /></CardAction>
         </CardHeader>
         <CardContent>
           <ol class="list-decimal space-y-1 pl-5 text-sm">

@@ -17,6 +17,7 @@ from services.certs import Certs
 from services.cloudflare import Cloudflare
 from services.containers.record import TargetRead
 from services.containers.targets import Containers
+from services.db import migrations
 from services.db.database import Database
 from services.db.models import Backup, ContainerEvent, Instance, Notification, Worker, db
 from services.domains.decisions import ApplyOutcome
@@ -140,7 +141,7 @@ def tables(path):
 
 async def take(manager, storage_id="sa"):
   """A platform backup recorded queued and then taken, as its request and the queue do; its row."""
-  [backup_id] = add_backups(storage_id, utcnow(), False, [f"base/backups/platform/{archive_name(utcnow())}.db.enc"])
+  [backup_id] = add_backups(storage_id, utcnow(), False, [f"base/backups/platform/{archive_name(utcnow())}_0.2.0_1.db.enc"])
   await settling(manager.backup_platform)(backup_ids=[backup_id], storage_id=storage_id)
   return Backup.get_by_id(backup_id)
 
@@ -156,6 +157,11 @@ class TestBackup:
         "platform", "sa", "queued", clock.current, False, True)
     stores.configured = None
     assert manager.request_platform_backup() is None and Backup.select().count() == 1
+
+  def test_its_key_names_this_release_and_the_databases_version(self, manager, stores, monkeypatch):
+    monkeypatch.setattr(config, "VERSION", "1.2.3")
+    manager.request_platform_backup()
+    assert Backup.get().s3_path.endswith(f"_1.2.3_{len(migrations.STEPS)}.db.enc")
 
   def test_the_schedules_backup_is_automatic(self, manager, stores):
     manager.request_platform_backup(utcnow())
@@ -293,8 +299,15 @@ class TestRestoreRequest:
     with pytest.raises(LookupError):
       manager.request_platform_restore(deleted.id)
 
+  def test_a_backup_a_later_sage_took_is_refused_before_anything_is_queued(self, manager, stores):
+    later = Backup.create(s3_path=f"base/backups/platform/20260101_030000_4444444444444444_9.0.0_{len(migrations.STEPS) + 1}.db.enc",
+                          storage_id="sa", type="platform")
+    with pytest.raises(Conflict, match="A backup from a later version of Sage can't be restored."):
+      manager.request_platform_restore(later.id)
+    assert manager.task_state() == "running" and manager.task_snapshot() == {"running": [], "queued": []}
+
   def test_it_waits_as_the_restore_and_names_its_backup_while_restoring(self, manager, stores):
-    backup = Backup.create(s3_path="base/backups/platform/20260101_030000_4444444444444444.db.enc", storage_id="sa", type="platform")
+    backup = Backup.create(s3_path="base/backups/platform/20260101_030000_4444444444444444_0.2.0_1.db.enc", storage_id="sa", type="platform")
     manager.request_platform_restore(backup.id)
     [task] = manager.task_queue.snapshot()["queued"]
     assert (task["name"], task["key"], task["scopes"], task["executor"], task["params"]) == (
@@ -303,12 +316,12 @@ class TestRestoreRequest:
 
   def test_the_backup_being_restored_is_the_one_its_key_names_whatever_its_params_say(self, manager, stores):
     manager.add_restore(task=manager.restore_platform, name="restore_platform", executor="platform",
-                        key=("restore_platform", "base/backups/platform/20260101_030000_4444444444444444.db.enc"),
-                        params={"s3_path": "base/backups/platform/20250101_030000_4444444444444444.db.enc", "storage_id": "sa"})
+                        key=("restore_platform", "base/backups/platform/20260101_030000_4444444444444444_0.2.0_1.db.enc"),
+                        params={"s3_path": "base/backups/platform/20250101_030000_4444444444444444_0.2.0_1.db.enc", "storage_id": "sa"})
     assert manager.restoring_from() == "2026-01-01T03:00:00"
 
   def test_every_other_request_is_refused_while_it_waits(self, manager, stores):
-    backup = Backup.create(s3_path="base/backups/platform/20260101_030000_4444444444444444.db.enc", storage_id="sa", type="platform")
+    backup = Backup.create(s3_path="base/backups/platform/20260101_030000_4444444444444444_0.2.0_1.db.enc", storage_id="sa", type="platform")
     manager.request_platform_restore(backup.id)
     assert manager.add_task(task=asyncio.sleep, key=("later",), scopes=set(), executor="app").outcome == Outcome.REFUSED
     with pytest.raises(Conflict, match="not running"):
@@ -401,7 +414,7 @@ class TestFacts:
     assert (manager.task_state(), manager.restoring_from()) == ("restoring", None)
 
   def test_a_restore_is_refused_while_sage_is_stopping(self, manager, stores):
-    backup = Backup.create(s3_path="base/backups/platform/20260101_030000_4444444444444444.db.enc", storage_id="sa", type="platform")
+    backup = Backup.create(s3_path="base/backups/platform/20260101_030000_4444444444444444_0.2.0_1.db.enc", storage_id="sa", type="platform")
     manager.stop_tasks()
     with pytest.raises(Conflict, match="not running"):
       manager.request_platform_restore(backup.id)

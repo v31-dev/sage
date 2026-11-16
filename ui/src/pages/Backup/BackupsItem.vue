@@ -70,9 +70,14 @@ async function onConfirmRestoreBackup(backupId: string) {
     <ItemContent>
       <ItemTitle>{{ formatDate(backup.created_at) }}</ItemTitle>
       <ItemDescription
-        >{{ backup.automatic ? 'Scheduled' : 'On request' }} · {{ backup.s3_path }}</ItemDescription
+        >{{ backup.automatic ? 'Scheduled' : 'On request' }}
+        <template v-if="backup.release">· Sage {{ backup.release }}</template> ·
+        {{ backup.s3_path }}</ItemDescription
       >
       <BackupState :backup="backup" />
+      <p v-if="backup.restore_refusal" class="text-sm text-muted-foreground" data-restore-refusal>
+        {{ backup.restore_refusal }}
+      </p>
     </ItemContent>
     <ItemActions v-if="finished" class="gap-2">
       <Button v-if="taken" variant="outline" @click="onClickDownload"><Download />Download</Button>
@@ -84,6 +89,7 @@ async function onConfirmRestoreBackup(backupId: string) {
         description="Restore Platform Backup"
         :icon="ArchiveRestore"
         destructive
+        :disabled="backup.restore_refusal !== null"
         :onConfirm="() => onConfirmRestoreBackup(backup.id)"
       />
       <ConfirmationButton

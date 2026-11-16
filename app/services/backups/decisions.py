@@ -1,8 +1,9 @@
-"""The backups' decisions: whether a schedule's slot is due."""
+"""The backups' decisions: whether a schedule's slot is due, and whether a platform backup can be restored."""
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from services.backups.catalog import UNFINISHED
+from services.backups.keys import platform_versions
 
 
 @dataclass(frozen=True)
@@ -27,3 +28,11 @@ def slot_due(rows: list[SlotRow], slot: datetime, started_at: datetime, buffer: 
          for row in near):
     return False, None
   return True, next((row.id for row in near if row.automatic and row.slot_at == slot), None)
+
+
+def platform_restore_refusal(s3_path: str, latest: int) -> str | None:
+  """Why the platform backup at `s3_path` can't be restored by a Sage whose database's latest version is `latest`: one
+  a later Sage took would be refused at its install. None when it can."""
+  if (versions := platform_versions(s3_path)) and versions[1] > latest:
+    return "A backup from a later version of Sage can't be restored."
+  return None

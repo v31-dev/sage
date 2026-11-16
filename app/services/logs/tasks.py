@@ -8,9 +8,11 @@ from functools import partial
 
 from peewee import CharField, Model, SqliteDatabase, TextField
 
+from services.db.migrator import migrate, models_schema
 from services.updates import UpdateFeed, Updates
 from utils.logging import task_id, task_lines
 
+from . import migrations
 from .store import Store, stored_time
 
 logger = logging.getLogger(__name__)
@@ -30,7 +32,7 @@ def task_lines_schema(db: SqliteDatabase) -> Store:
       database = db
       indexes = ((("task_id",), False), (("ts",), False))
 
-  db.create_tables([TaskLogs], safe=True)
+  migrate(db, migrations.TASKS_BASELINE, migrations.TASKS_STEPS, models_schema([TaskLogs]), disposable=True)
   return Store(db, TaskLogs)
 
 

@@ -5,8 +5,10 @@ from datetime import datetime
 from peewee import CharField, FloatField, IntegerField, Model, SqliteDatabase, TextField
 
 import config
+from services.db.migrator import migrate, models_schema
 from services.updates import UpdateFeed, Updates
 
+from . import migrations
 from .store import Store, contains, newest, stored_time
 
 REQUESTS = "requests"
@@ -32,7 +34,7 @@ def requests_schema(db: SqliteDatabase) -> Store:
       database = db
       indexes = ((("ts",), False),)
 
-  db.create_tables([Requests], safe=True)
+  migrate(db, migrations.REQUESTS_BASELINE, migrations.REQUESTS_STEPS, models_schema([Requests]), disposable=True)
   return Store(db, Requests)
 
 

@@ -1,11 +1,15 @@
 """The backups as their pages show them: the platform's, and each volume's, found by the volume's id; only those in the
 configured store, and none the user deleted."""
+from services.backups.decisions import platform_restore_refusal
+from services.backups.keys import platform_versions
+from services.db import migrations
 from services.db.models import Backup
 from services.s3 import S3
 from utils.errors import Conflict
 
 
 def backup_payload(backup: Backup) -> dict:
+  release, schema_version = platform_versions(backup.s3_path) or (None, None)
   return {
       "id": backup.id,
       "type": backup.type,
@@ -22,6 +26,9 @@ def backup_payload(backup: Backup) -> dict:
       "reason": backup.reason,
       "created_at": backup.created_at,
       "updated_at": backup.updated_at,
+      "release": release,
+      "schema_version": schema_version,
+      "restore_refusal": platform_restore_refusal(backup.s3_path, len(migrations.STEPS)) if backup.type == "platform" else None,
   }
 
 

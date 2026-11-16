@@ -1,5 +1,6 @@
 from fastapi import APIRouter
 
+from services.db.migration_log import migration_runs
 from services.manager import Manager
 from services.releases import Releases
 from utils.logging import NO_ACCESS_LOG
@@ -20,6 +21,11 @@ def get_release():
 @router.post("/release/refresh")
 def refresh_release():
   return {"task_id": Manager().request_release_check(quiet=False)}
+
+
+@router.get("/migrations")
+def get_migrations():
+  return migration_runs()
 
 
 @router.get("/summary")

@@ -55,6 +55,7 @@ const CALLS: Array<[string, () => Promise<unknown>, string, string, object, unkn
   ['fetchRelease', () => api.fetchRelease(), 'GET', '/api/release', {}, undefined],
   ['refreshRelease', () => api.refreshRelease(), 'POST', '/api/release/refresh', {}, undefined],
   ['fetchHomeSummary', () => api.fetchHomeSummary(), 'GET', '/api/summary', {}, undefined],
+  ['fetchMigrations', () => api.fetchMigrations(), 'GET', '/api/migrations', {}, undefined],
   ['fetchWorkers', () => api.fetchWorkers(), 'GET', '/api/workers/', {}, undefined],
   ['fetchWorker', () => api.fetchWorker('w1'), 'GET', '/api/workers/w1', {}, undefined],
   [

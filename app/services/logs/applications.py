@@ -7,15 +7,28 @@ from peewee import CharField, Model, SqliteDatabase, TextField
 from playhouse.sqlite_ext import FTS5Model, RowIDField, SearchField
 
 import config
+from services.db.migrator import migrate, models_schema
 from services.db.models import Application
 from services.updates import UpdateFeed, Updates
 from utils.common import utcnow
 from values.names import qualified_name
 
+from . import migrations
 from .store import Store, contains, newest, stored_time
 
 # The stream of the lines Sage writes into an application's logs: what it did to a container.
 MARKER_STREAM = "sage"
+
+
+# The index follows the lines as they are written and deleted.
+TRIGGERS = """
+CREATE TRIGGER containerlogs_ai AFTER INSERT ON containerlogs BEGIN
+  INSERT INTO containerlogsindex(rowid, message) VALUES (new.id, new.message);
+END;
+CREATE TRIGGER containerlogs_ad AFTER DELETE ON containerlogs BEGIN
+  INSERT INTO containerlogsindex(containerlogsindex, rowid, message) VALUES('delete', old.id, old.message);
+END;
+"""
 
 
 def application_schema(db: SqliteDatabase) -> Store:
@@ -38,24 +51,8 @@ def application_schema(db: SqliteDatabase) -> Store:
       database = db
       options = {"content": ContainerLogs, "content_rowid": "id", "tokenize": "trigram"}
 
-  db.create_tables([ContainerLogs, ContainerLogsIndex], safe=True)
-  # The index follows the lines as they are written and deleted.
-  db.execute_sql(
-      """
-      CREATE TRIGGER IF NOT EXISTS containerlogs_ai
-      AFTER INSERT ON containerlogs BEGIN
-        INSERT INTO containerlogsindex(rowid, message) VALUES (new.id, new.message);
-      END
-      """
-  )
-  db.execute_sql(
-      """
-      CREATE TRIGGER IF NOT EXISTS containerlogs_ad
-      AFTER DELETE ON containerlogs BEGIN
-        INSERT INTO containerlogsindex(containerlogsindex, rowid, message) VALUES('delete', old.id, old.message);
-      END
-      """
-  )
+  migrate(db, migrations.APPLICATION_BASELINE, migrations.APPLICATION_STEPS,
+          models_schema([ContainerLogs, ContainerLogsIndex]) + TRIGGERS, disposable=True)
   return Store(db, ContainerLogs, ContainerLogsIndex)
 
 

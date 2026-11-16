@@ -34,6 +34,9 @@ class Metrics(Base):
 
     self.db_path = config.DATA_DIR
     os.makedirs(f"{self.db_path}/metrics", exist_ok=True)
+    # Every file is migrated at boot, before serving, so a failing step stops the start.
+    for path in sorted(Path(self.db_path, "metrics").glob("*.db")):
+      open_shard(str(path))["db"].close()
 
     self._dbs = {"metrics": {}}
 

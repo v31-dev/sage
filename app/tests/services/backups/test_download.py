@@ -8,7 +8,7 @@ from services.db.models import Backup, Volume
 from services.s3 import S3
 from utils.errors import Conflict
 
-PLATFORM_KEY = "base/backups/platform/20260102_030405_4444444444444444.db.enc"
+PLATFORM_KEY = "base/backups/platform/20260102_030405_4444444444444444_0.2.0_1.db.enc"
 
 
 class Session:
@@ -37,7 +37,7 @@ def archive(volume, name="data"):
 
 class TestFilename:
   def test_a_platform_backup_keeps_its_file_name(self, db):
-    assert download_filename(Backup(type="platform", s3_path=PLATFORM_KEY)) == "20260102_030405_4444444444444444.db.enc"
+    assert download_filename(Backup(type="platform", s3_path=PLATFORM_KEY)) == "20260102_030405_4444444444444444_0.2.0_1.db.enc"
 
   def test_a_volume_archive_says_its_application_its_volume_now_and_its_time(self, volume):
     backup = archive(volume, name="old-name")
@@ -63,7 +63,7 @@ class TestLink:
     backup = Backup.create(type="platform", s3_path=PLATFORM_KEY, storage_id="s1")
     assert download_link(backup) == {"url": "https://store.example.test/link", "expires_in": config.BROWSER_LINK_SECONDS}
     assert store.links == [{"s3_path": PLATFORM_KEY, "expires_in": config.BROWSER_LINK_SECONDS, "raw_path": True,
-                            "filename": "20260102_030405_4444444444444444.db.enc"}]
+                            "filename": "20260102_030405_4444444444444444_0.2.0_1.db.enc"}]
 
   def test_a_backup_in_another_store_is_refused_and_one_whose_file_is_gone_not_found(self, register, db):
     store = Session(keys={PLATFORM_KEY})
@@ -71,7 +71,7 @@ class TestLink:
     with pytest.raises(Conflict):
       download_link(Backup.create(type="platform", s3_path=PLATFORM_KEY, storage_id="s2"))
     with pytest.raises(LookupError):
-      download_link(Backup.create(type="platform", s3_path="base/backups/platform/20260101_000000_4444444444444444.db.enc", storage_id="s1"))
+      download_link(Backup.create(type="platform", s3_path="base/backups/platform/20260101_000000_4444444444444444_0.2.0_1.db.enc", storage_id="s1"))
     assert store.links == []
 
   def test_a_backup_that_was_not_completed_is_refused_before_the_store_is_asked(self, register, db):

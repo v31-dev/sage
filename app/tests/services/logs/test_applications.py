@@ -74,16 +74,18 @@ class TestSearch:
     indexes = [row[1] for row in shard.db.execute_sql("PRAGMA index_list('containerlogs')").fetchall()]
     assert "containerlogs_ts" in indexes
 
-  def test_a_shard_made_before_the_index_gets_it_when_opened(self, logs):
+  def test_a_shard_from_before_the_baseline_starts_again_empty_with_its_index(self, logs):
     path = logs.db_path / "logs" / "old.db"
     old = sqlite3.connect(path)
     old.execute("CREATE TABLE containerlogs (id INTEGER PRIMARY KEY AUTOINCREMENT, hostname VARCHAR(255) NOT NULL, "
                 "ts VARCHAR(255) NOT NULL, stream VARCHAR(255) NOT NULL, message TEXT NOT NULL)")
+    old.execute("INSERT INTO containerlogs (hostname, ts, stream, message) VALUES ('w1', 't', 'stdout', 'old')")
     old.commit()
     old.close()
     shard = logs.application_store("old")
     indexes = [row[1] for row in shard.db.execute_sql("PRAGMA index_list('containerlogs')").fetchall()]
     assert "containerlogs_ts" in indexes
+    assert shard.db.execute_sql("SELECT count(*) FROM containerlogs").fetchone()[0] == 0
 
 
 class TestAfter:

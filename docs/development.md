@@ -248,6 +248,57 @@ The top-level `Dockerfile` builds:
 
 `VITE_LOAD_DELAY` (milliseconds, 300 when unset) makes `request` (`ui/src/lib/api.ts`) wait before every call, so that development simulates a slow network: the instant status updates after an action and the protection against a second click can be seen and tried. Raise it (for example `VITE_LOAD_DELAY=2000`) to test them harder, and set it to 0 to judge how responsive the UI really is. The production UI build and the UI tests set it to 0.
 
+## Migrations
+
+An install moves from any supported version to any later one by running the newer image on the same volume: the boot
+migrates what the older version left. The rules are in [app/AGENTS.md](../app/AGENTS.md#migrations).
+
+**Database.** `PRAGMA user_version` is the number of the last step applied, and the steps are one ordered list in
+`app/services/db/migrations.py`, run by the runner every SQLite file shares (`app/services/db/migrator.py`). A database at version 0 is the baseline, 0.1.3, and must have exactly its schema; an
+older one is refused, and running 0.1.3 on it once brings it to the baseline. A database at a version above the
+latest is refused too, so going back to an earlier release after an upgrade means restoring the backup taken before
+it. At boot every pending step runs in order, then the schema is checked against the models, all in one transaction:
+a failure anywhere leaves the database as it was, at its old version.
+
+To change the schema, add the next step: SQL that takes the previous version's schema to the new one and carries the
+rows across, written without the models (they describe only the latest version). A release can ship no step or
+several. The migration test builds a 0.1.3 database with rows in every table, runs every step and requires the result
+to equal a fresh database from the models, so a model change without its step fails the suite.
+
+**Fixing a released step.** A step that fails at boot was rolled back, so the install is still on its old version and
+the previous release runs on it. The fix goes out in a patch release, and the user upgrades to it straight from the
+version they are on: say 0.3 ships steps 2 and 3, step 3 fails on some data, and 0.3.1 fixes step 3 in place. An
+install on 0.2 (version 1) runs steps 2 and 3, as 0.3.1 has them, in one go, and the schema is checked once, after
+the last step. Fixing a step in place is right only while its result stays the same, since the installs it already
+ran on hold that result. A step that succeeded with a wrong result is corrected by a new step.
+
+**Side files.** Each kind of side SQLite file (`logs/<application>.db`, `logs/requests.db`, `logs/tasks.db`, the
+metrics shards) carries its own `user_version`, with its baseline and steps in its package's `migrations.py`
+(`services/logs/`, `services/metrics/`), under
+the same rules; `Logs` and `Metrics` migrate every existing file when they start, before Sage serves. They hold history
+only, so a file that doesn't fit (version 0 without the baseline, or a later version) is recreated empty, and a step
+can be `migrator.RECREATE`, which starts the file empty at the latest version, where a change can't carry the rows
+cleanly. A step that fails still stops the boot.
+
+**Workers, the store and Cloudflare.** What Sage keeps outside its databases converges through its owner: a format
+change on a worker changes its stamp, so worker setup rewrites it, and an artifact an older version left is removed by
+its owner's convergence. Nothing outside the databases is converted: an artifact in a form the new version no longer
+reads (an S3 key, a file name, a DNS record) may be dropped, left behind or removed as an orphan, and the release notes
+name what is dropped.
+
+**History.** Each run, at a boot or a platform restore's install, appends a JSON line to `data/migrations.log` for
+every file it migrated, started again empty or refused, with the release, the versions and why
+(`app/services/db/migration_log.py`). It is outside the databases, since a refused run rolls its database back, and it
+is kept whole. `GET /api/migrations` gives the runs, newest first, and Settings → Upgrade shows them in its Migration
+history dialog, so a refused upgrade is visible once the previous release runs again.
+
+**Release notes.** A manual upgrade step goes in the release notes only in an emergency the automatic migration can't
+solve; the boot's refusal links the release page, so its notes can be corrected without a new release.
+
+**Moving the baseline.** Raising the baseline to a later release removes the steps and convergence code that only
+older installs need; databases from before the new baseline are then refused, with the new baseline as their way
+forward.
+
 ## CI And Release Notes
 
 Current GitHub workflows:
