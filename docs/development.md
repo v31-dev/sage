@@ -296,7 +296,10 @@ is kept whole. A step can return the manual actions its change leaves, in order,
 worker, Cloudflare, the store, Sage), the exact command when there is one and why; the step builds them while it has
 both the old rows and the new ids, and the history keeps them with the file. `GET /api/migrations` gives the runs,
 newest first, and Settings → Upgrade shows them in its Migration
-history dialog, so a refused upgrade is visible once the previous release runs again.
+history dialog, so a refused upgrade is visible once the previous release runs again. The manager also keeps the
+latest run of its own start in memory (`MigrationRuns`), a boot's or a platform restore's, and `GET /api` carries it as
+`migration`: while it is there the Upgrade page shows a banner, and a run that left steps to do by hand opens the
+Upgrade page on it once in each browser.
 
 **Release notes.** A manual upgrade step goes in the release notes only in an emergency the automatic migration can't
 solve; the boot's refusal links the release page, so its notes can be corrected without a new release.

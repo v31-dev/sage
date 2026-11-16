@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import MarkdownIt from 'markdown-it'
 import DOMPurify from 'dompurify'
 import { Icon } from '@iconify/vue'
-import { CircleCheck, RefreshCw, TriangleAlert } from 'lucide-vue-next'
+import { CircleCheck, History, RefreshCw, TriangleAlert } from 'lucide-vue-next'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import {
@@ -32,6 +33,8 @@ import { TONES } from '@/lib/tone'
 import MigrationHistoryButton from './MigrationHistoryButton.vue'
 
 const appStore = useAppStore()
+const route = useRoute()
+const migration = computed(() => appStore.info?.migration ?? null)
 
 const updateAvailable = computed(() => {
   const info = appStore.info
@@ -163,6 +166,25 @@ onUnmounted(() => {
 <template>
   <main class="flex-1 px-2 sm:px-4 py-4 sm:py-4 relative">
     <div class="max-w-7xl mx-auto flex flex-col gap-6">
+      <Alert v-if="migration" data-migration>
+        <History />
+        <AlertTitle>
+          {{ migration.trigger === 'restore' ? 'The platform restore' : 'This start of Sage' }}
+          brought its data up to v{{ migration.release }}
+        </AlertTitle>
+        <AlertDescription class="flex flex-wrap items-center gap-3">
+          <template v-if="migration.actions"
+            >It left {{ migration.actions }} {{ migration.actions === 1 ? 'step' : 'steps' }} to do
+            by hand.</template
+          >
+          <template v-else>Nothing is left to do by hand.</template>
+          <MigrationHistoryButton
+            :run="migration.run"
+            :open="route.query.migration === migration.run"
+            label="Show the migration"
+          />
+        </AlertDescription>
+      </Alert>
       <Card>
         <CardHeader>
           <CardTitle class="flex items-center gap-2">

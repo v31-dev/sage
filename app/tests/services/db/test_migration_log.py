@@ -144,3 +144,20 @@ class TestRuns:
       log.write('{"run": "b", "trigger": "boot"}\n[1, 2]\n{"run": "c", "trig')
 
     assert [run["run"] for run in migration_runs()] == ["a"]
+
+
+class TestThisProcesssRuns:
+  def test_none_before_a_run_records(self, data_dir):
+    from services.db.migration_log import MigrationRuns
+    assert MigrationRuns().latest() is None
+
+  def test_the_latest_run_with_its_worst_outcome_and_every_action_it_left(self, data_dir, monkeypatch):
+    from services.db.migration_log import MigrationRuns
+    monkeypatch.setattr(config, "VERSION", "0.2.0")
+    record("boot", "boot", str(data_dir / "data.db"), 0, 1, "migrated", None, [{"where": "Sage"}, {"where": "Cloudflare"}])
+    record("boot", "boot", str(data_dir / "logs" / "tasks.db"), 0, 1, "recreated", "it is at version 5")
+    assert MigrationRuns().latest() == {"run": "boot", "trigger": "boot", "release": "0.2.0", "outcome": "recreated",
+                                        "actions": 2}
+    record("restore", "restore", str(data_dir / "data.db"), 1, 1, "migrated", None, [])
+    record("boot", "boot", str(data_dir / "logs" / "w1.db"), 0, 1, "recreated", "not sound")
+    assert MigrationRuns().latest()["run"] == "restore"

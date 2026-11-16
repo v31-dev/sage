@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { History } from 'lucide-vue-next'
 import { Button } from '@/components/ui/button'
 import {
@@ -38,6 +38,9 @@ import {
   type MigrationRun,
 } from '@/services/api'
 
+// `run` is the run to show first, the newest when it is not listed; with `open` the dialog opens on it at once.
+const props = defineProps<{ run?: string; open?: boolean; label?: string }>()
+
 const OUTCOMES: Record<MigrationFile['outcome'], { state: IndicatorState; label: string }> = {
   migrated: { state: 'ok', label: 'Updated' },
   recreated: { state: 'warning', label: 'Started again empty' },
@@ -71,7 +74,8 @@ async function load() {
     const answer = await fetchMigrations()
     if (load !== loads) return
     runs.value = answer
-    selected.value = answer[0]?.run ?? ''
+    selected.value =
+      answer.find(candidate => candidate.run === props.run)?.run ?? answer[0]?.run ?? ''
   } catch (err) {
     if (load !== loads) return
     error.value = err instanceof Error ? err.message : 'Failed to load the migration history'
@@ -79,12 +83,25 @@ async function load() {
     if (load === loads) loading.value = false
   }
 }
+
+watch(
+  () => props.open,
+  shown => {
+    if (shown) {
+      open.value = true
+      load()
+    }
+  },
+  { immediate: true }
+)
 </script>
 
 <template>
   <Dialog v-model:open="open">
     <DialogTrigger asChild>
-      <Button variant="outline" size="sm" @click="load"><History />Migration history</Button>
+      <Button variant="outline" size="sm" @click="load"
+        ><History />{{ props.label ?? 'Migration history' }}</Button
+      >
     </DialogTrigger>
     <DialogContent class="sm:max-w-4xl">
       <DialogHeader>

@@ -15,6 +15,11 @@ import { useAppStore } from '@/stores/app'
 import { followTopics } from '../helpers/topics'
 
 vi.mock('@/lib/updates', () => ({ watchState: vi.fn(), watchFeed: vi.fn() }))
+const route = { query: {} as Record<string, string> }
+vi.mock('vue-router', async importOriginal => ({
+  ...(await importOriginal<typeof import('vue-router')>()),
+  useRoute: () => route,
+}))
 vi.mock('@/services/api', async importOriginal => ({
   ...(await importOriginal<typeof import('@/services/api')>()),
   refreshRelease: vi.fn(),
@@ -49,10 +54,18 @@ function running(id: string, name = 'deploy'): QueueTask {
   }
 }
 
-async function mountPage(state: AppInfo['state'] = 'running', options: { pending?: boolean } = {}) {
+async function mountPage(
+  state: AppInfo['state'] = 'running',
+  options: { pending?: boolean; migration?: AppInfo['migration'] } = {}
+) {
   const topics = followTopics(options)
   const store = useAppStore()
-  store.info = { version: '1.0.0', latest_version: '1.2.3', state } as AppInfo
+  store.info = {
+    version: '1.0.0',
+    latest_version: '1.2.3',
+    state,
+    migration: options.migration ?? null,
+  } as AppInfo
   const wrapper = mount(Upgrade)
   await flushPromises()
   return { wrapper, topics }
@@ -293,5 +306,39 @@ describe('preparing to stop', () => {
 
     expect(wrapper.text()).toContain('Sage is running normally.')
     expect(wrapper.text()).not.toContain('Waiting for')
+  })
+})
+
+describe('after a migration in this start', () => {
+  const migration = {
+    run: 'r1',
+    trigger: 'boot' as const,
+    release: '0.2.0',
+    outcome: 'migrated' as const,
+    actions: 3,
+  }
+
+  afterEach(() => {
+    route.query = {}
+  })
+
+  it('a banner says what it did and how much is left to do by hand', async () => {
+    const { wrapper } = await mountPage('running', { migration })
+    const banner = wrapper.find('[data-migration]')
+    expect(banner.text()).toContain('This start of Sage brought its data up to v0.2.0')
+    expect(banner.text()).toContain('It left 3 steps to do by hand.')
+  })
+
+  it('a restore says so, and one that left nothing says that', async () => {
+    const { wrapper } = await mountPage('running', {
+      migration: { ...migration, trigger: 'restore', actions: 0 },
+    })
+    expect(wrapper.find('[data-migration]').text()).toContain('The platform restore brought')
+    expect(wrapper.find('[data-migration]').text()).toContain('Nothing is left to do by hand.')
+  })
+
+  it('without one there is no banner', async () => {
+    const { wrapper } = await mountPage()
+    expect(wrapper.find('[data-migration]').exists()).toBe(false)
   })
 })

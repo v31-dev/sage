@@ -64,6 +64,7 @@ function appInfo(overrides: Partial<AppInfo> = {}): AppInfo {
     start_time: '2026-10-24T10:00:00Z',
     state: 'running',
     restoring_from: null,
+    migration: null,
     settings: settings(),
     ...overrides,
   }

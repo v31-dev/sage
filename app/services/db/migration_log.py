@@ -6,12 +6,37 @@ import logging
 from pathlib import Path
 
 import config
+from services.base import Base
 from utils.common import new_id, utcnow
 
 logger = logging.getLogger(__name__)
 
 # This boot's run; a platform restore's install is a run of its own.
 BOOT = new_id()
+# A file's outcomes, the least to the most a run's overall outcome is: refused when a file was, else recreated when one
+# was, else migrated.
+OUTCOMES = ("migrated", "recreated", "refused")
+
+
+class MigrationRuns(Base):
+  """The runs this process recorded, as `GET /api` shows the latest of them: its id, trigger, release, overall outcome
+  and how many manual actions it left. Memory only: the next start has nothing new to show."""
+
+  def __init__(self):
+    super().__init__()
+    self.runs: dict[str, dict] = {}
+
+  def saw(self, run: str, trigger: str, outcome: str, actions: int):
+    with self.lock:
+      seen = self.runs.get(run, {"run": run, "trigger": trigger, "release": config.VERSION, "outcome": OUTCOMES[0],
+                                 "actions": 0})
+      self.runs[run] = {**seen, "outcome": max(seen["outcome"], outcome, key=OUTCOMES.index),
+                        "actions": seen["actions"] + actions}
+
+  def latest(self) -> dict | None:
+    """The run this process started last; None when it recorded none."""
+    with self.lock:
+      return next(reversed(self.runs.values()), None)
 
 
 def record(run: str, trigger: str, path: str, before: int | None, after: int | None, outcome: str, detail: str | None,
@@ -25,6 +50,7 @@ def record(run: str, trigger: str, path: str, before: int | None, after: int | N
     name = str(path)
   entry = {"run": run, "trigger": trigger, "at": utcnow().isoformat(), "release": config.VERSION, "file": name,
            "from": before, "to": after, "outcome": outcome, "detail": detail, "actions": actions or []}
+  MigrationRuns().saw(run, trigger, outcome, len(entry["actions"]))
   try:
     with open(config.DATA_DIR / "migrations.log", "a") as log:
       log.write(json.dumps(entry) + "\n")
@@ -33,8 +59,8 @@ def record(run: str, trigger: str, path: str, before: int | None, after: int | N
 
 
 def migration_runs() -> list[dict]:
-  """The runs in the history, newest first: each with its trigger, release, start, overall outcome (refused when a
-  file was, else recreated when one was, else migrated) and its files in the order they ran. A line that isn't a whole
+  """The runs in the history, newest first: each with its trigger, release, start, overall outcome (`OUTCOMES`) and its
+  files in the order they ran. A line that isn't a whole
   entry (a write cut off) is skipped."""
   runs: dict[str, dict] = {}
   try:
@@ -51,6 +77,5 @@ def migration_runs() -> list[dict]:
     except (ValueError, KeyError, TypeError):
       continue
   for run in runs.values():
-    outcomes = {file["outcome"] for file in run["files"]}
-    run["outcome"] = "refused" if "refused" in outcomes else "recreated" if "recreated" in outcomes else "migrated"
+    run["outcome"] = max((file["outcome"] for file in run["files"]), key=OUTCOMES.index)
   return sorted(runs.values(), key=lambda run: run["at"], reverse=True)

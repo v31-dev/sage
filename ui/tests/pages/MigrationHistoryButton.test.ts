@@ -164,6 +164,27 @@ describe('the migration history', () => {
     expect(wrapper.find('[data-actions]').exists()).toBe(false)
   })
 
+  it('opens on the run it is given, loading the history at once', async () => {
+    vi.mocked(fetchMigrations).mockResolvedValue(runs)
+    const wrapper = mount(MigrationHistoryButton, {
+      props: { run: 'a', open: true },
+      global: { stubs },
+    })
+    await flushPromises()
+    expect(fetchMigrations).toHaveBeenCalledTimes(1)
+    expect(wrapper.find('[data-select]').attributes('data-selected')).toBe('a')
+  })
+
+  it('opens on the newest when the run it is given is not listed', async () => {
+    vi.mocked(fetchMigrations).mockResolvedValue(runs)
+    const wrapper = mount(MigrationHistoryButton, {
+      props: { run: 'gone', open: true },
+      global: { stubs },
+    })
+    await flushPromises()
+    expect(wrapper.find('[data-select]').attributes('data-selected')).toBe('b')
+  })
+
   it('says so when there is none', async () => {
     vi.mocked(fetchMigrations).mockResolvedValue([])
     const wrapper = await opened()

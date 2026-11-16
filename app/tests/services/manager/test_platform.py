@@ -532,8 +532,14 @@ class TestInfo:
     info = shown.info()
     assert {key: value for key, value in info.items() if key != "settings"} == {
         "version": "1.0.0", "latest_version": "9.9.9", "domain": "example.test", "name": "manager", "ip": "100.64.0.1",
-        "start_time": "2026-01-01T09:00:00", "state": "running", "restoring_from": None}
+        "start_time": "2026-01-01T09:00:00", "state": "running", "restoring_from": None, "migration": None}
     assert set(info["settings"]) == {"tailscale", "cloudflare", "s3", "notifications"}
+
+  def test_it_shows_the_latest_migration_run_of_this_process(self, shown, data_dir):
+    from services.db.migration_log import record
+    record("r1", "boot", str(data_dir / "data.db"), 0, 1, "migrated", None, [{"where": "Sage", "command": None, "why": "x"}])
+    assert shown.info()["migration"] == {"run": "r1", "trigger": "boot", "release": config.VERSION, "outcome": "migrated",
+                                         "actions": 1}
 
   def test_it_reads_no_database(self, shown, monkeypatch):
     def refuse(*args, **kwargs):

@@ -17,6 +17,7 @@ from services.backups.keys import (BACKUP_TIMESTAMP_FORMAT, PLATFORM_BACKUP_SUFF
 from services.containers.targets import Containers
 from services.db import migrations
 from services.db.database import Database
+from services.db.migration_log import MigrationRuns
 from services.db.models import Backup
 from services.domains.state import Domains
 from services.history import purge_history
@@ -67,6 +68,7 @@ class PlatformMixin:
         "start_time": self.started_at.isoformat(),
         "state": self.task_state(),
         "restoring_from": self.restoring_from(),
+        "migration": MigrationRuns().latest(),
         "settings": settings,
     }
 

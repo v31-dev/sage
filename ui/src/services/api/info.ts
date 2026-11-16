@@ -14,7 +14,18 @@ export interface AppInfo {
   start_time: string
   state: 'running' | 'paused' | 'restoring' | 'stopping'
   restoring_from: string | null
+  // The latest migration run of this start of the manager, a boot's or a platform restore's, or none.
+  migration: MigrationRunSummary | null
   settings: SettingsStatus | null
+}
+
+// A migration run as the app info carries it: what it was, its overall outcome and how many manual actions it left.
+export interface MigrationRunSummary {
+  run: string
+  trigger: 'boot' | 'restore'
+  release: string
+  outcome: 'migrated' | 'recreated' | 'refused'
+  actions: number
 }
 
 export interface Release {
