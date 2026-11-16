@@ -356,7 +356,7 @@ the Domain pass.
 flowchart TB
     entry["Entrypoint<br/>start userspace tailscaled"]
     key["Validate ENCRYPTION_KEY<br/>initialize the cipher"]
-    database["Database opens data.db<br/>reconcile schema<br/>create Instance if absent"]
+    database["Temp folder emptied<br/>Database opens data.db<br/>reconcile schema<br/>create Instance if absent"]
     services["Initialize services<br/>task-log capture, reports, Tailscale,<br/>Settings.load_all, S3 and notifications installed,<br/>Certs, metrics sampler"]
     notice["Notifications.notify<br/>startup Notification"]
     bootstrap["setup_domain before serving<br/>Cloudflare connect + manager certificate<br/>external files/DNS; no model write"]

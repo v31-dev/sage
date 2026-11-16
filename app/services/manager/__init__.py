@@ -1,4 +1,5 @@
 import logging
+import shutil
 
 import config
 from services.base import Base
@@ -53,6 +54,9 @@ class Manager(
 
     try:
       logger.info("Running Manager setup...")
+
+      shutil.rmtree(config.TMP_DIR, ignore_errors=True)
+      config.TMP_DIR.mkdir(parents=True)
 
       self.version = config.VERSION
       self.started_at = utcnow()

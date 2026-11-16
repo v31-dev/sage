@@ -10,11 +10,13 @@ from types import SimpleNamespace
 
 import pytest
 
+import config
 from services.backups.keys import taken_at
 from services.certs import Certs
 from services.cloudflare import Cloudflare
 from services.containers.record import TargetRead
 from services.containers.targets import Containers
+from services.db.database import Database
 from services.db.models import Backup, ContainerEvent, Instance, Notification, Worker, db
 from services.domains.decisions import ApplyOutcome
 from services.domains.state import Domains
@@ -162,6 +164,12 @@ class TestBackup:
       await manager.backup_platform("sa")
     assert Backup.select().count() == 0
     assert manager.notices == [("The platform backup failed: AccessDenied", "error", "/backups")]
+
+  async def test_its_copies_are_made_in_the_managers_temp_folder_and_gone_after(self, manager, stores, monkeypatch):
+    snapshot, made = Database().snapshot, []
+    monkeypatch.setattr(Database(), "snapshot", lambda path: made.append(path) or snapshot(path))
+    await manager.backup_platform("sa")
+    assert [path.parent.parent for path in made] == [config.TMP_DIR] and list(config.TMP_DIR.iterdir()) == []
 
   async def test_two_taken_in_the_same_second_are_two_backups(self, manager, stores, clock):
     await manager.backup_platform("sa")

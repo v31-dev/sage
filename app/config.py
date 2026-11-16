@@ -4,6 +4,8 @@ from pathlib import Path
 
 DATA_DIR = Path("/app/data")
 DB_PATH = DATA_DIR / "data.db"
+# The manager's temporary files, emptied at boot.
+TMP_DIR = DATA_DIR / "tmp"
 STATIC_DIR = Path("/app/static")
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 WORKER_HOME_DIR = "/opt/sage"

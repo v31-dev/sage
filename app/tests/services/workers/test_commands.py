@@ -2,7 +2,7 @@ import pytest
 
 from services.db.models import Container, Domain, Worker, WorkerEvent
 from services.updates import UpdateSource
-from services.workers.commands import add_worker, remove_worker, set_worker_subdomain
+from services.workers.commands import add_worker, mark_removal, remove_worker, set_worker_subdomain
 from utils.errors import Conflict
 
 
@@ -95,17 +95,19 @@ class TestRemove:
     assert not Worker.select().exists()
     assert (WorkerEvent.get().worker_id, WorkerEvent.get().subject_id) == (None, "w1")
 
-  def test_a_worker_with_containers_is_refused(self, application, worker):
+  def test_a_worker_with_containers_is_refused_and_left_unmarked(self, application, worker):
     Container.create(application=application, worker=worker)
     with pytest.raises(Conflict, match="A worker with containers can't be removed."):
-      remove_worker("w1")
-    assert Worker.select().exists()
+      mark_removal("w1")
+    assert not Worker.get_by_id("w1").removing
 
   def test_a_worker_with_internal_domains_is_refused_even_unlinked(self, worker):
     Domain.create(name="shop", type="internal", port=80, namespace_worker=worker.hostname)
     with pytest.raises(Conflict, match="A worker with internal domains can't be removed."):
-      remove_worker("w1")
+      mark_removal("w1")
+    assert not Worker.get_by_id("w1").removing
 
-  def test_a_missing_worker_is_not_found(self, db):
+  @pytest.mark.parametrize("command", [mark_removal, remove_worker], ids=["marked", "deleted"])
+  def test_a_missing_worker_is_not_found(self, db, command):
     with pytest.raises(LookupError, match="Worker not found."):
-      remove_worker("nobody")
+      command("nobody")

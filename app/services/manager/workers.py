@@ -293,7 +293,7 @@ class WorkersMixin:
                   executor="app", params={"hostname": hostname}, labels={"Worker": hostname}, quiet=True)
 
   async def repair_worker_stack(self, hostname: str):
-    if Worker.get_or_none(Worker.hostname == hostname) is None or not is_workable(hostname):
+    if not is_workable(hostname):
       logger.info(f"Worker {hostname} is not there to repair; nothing to do.")
       return
     if await self._start_stack(hostname):
@@ -313,7 +313,7 @@ class WorkersMixin:
                       labels={"Worker": worker.hostname}, quiet=True)
 
   async def cleanup_worker_tmp(self, hostname: str):
-    if Worker.get_or_none(Worker.hostname == hostname) is None or not is_workable(hostname):
+    if not is_workable(hostname):
       logger.info(f"Worker {hostname} is not there to clean up; nothing to do.")
       return
     await Tailscale().exec_command(hostname, f"rm -rf {config.WORKER_TMP_DIR}", timeout=120)
@@ -369,7 +369,8 @@ class WorkersMixin:
   async def remove_worker(self, hostname: str):
     """Removes the worker marked for removal: when it answers and is this Sage's, its stack and Sage's files on it;
     then its DNS records and its tunnel; then its row and what the sources hold of it. One that does not answer is
-    removed from Sage only, and the VM has to be cleaned up by hand. A Cloudflare failure keeps it marked."""
+    removed from Sage only, and the VM has to be cleaned up by hand. A Cloudflare failure keeps it marked, and only
+    the first of a run of them is noticed."""
     worker = Worker.get_or_none(Worker.hostname == hostname)
     if worker is None or not worker.removing:
       logger.info(f"Worker {hostname} is already removed; nothing to do.")
@@ -393,10 +394,13 @@ class WorkersMixin:
       await run_in_executor_with_context(cloudflare.sync_worker_records, hostname)
       await run_in_executor_with_context(cloudflare.delete_tunnel, cloudflare.worker_tunnel_name(hostname))
     except Exception as error:
+      if hostname in self.removal_failures:
+        logger.error(f"Worker {hostname} is still not removed: its DNS record or tunnel could not be deleted ({error}).")
+      else:
+        record_worker_event(hostname, "remove", "failed", reason={"error": str(error)})
+        Notifications().notify(f"Worker {hostname} is not removed yet: its DNS record or tunnel could not be deleted "
+                               f"({error}). Sage tries again in a few minutes.", "error", f"/workers/{hostname}")
       self.removal_failures[hostname] = monotonic()
-      record_worker_event(hostname, "remove", "failed", reason={"error": str(error)})
-      Notifications().notify(f"Worker {hostname} is not removed yet: its DNS record or tunnel could not be deleted "
-                             f"({error}). Sage tries again in a few minutes.", "error", f"/workers/{hostname}")
       raise TaskFailed()
     commands.remove_worker(hostname)
     Workers().forget(hostname)

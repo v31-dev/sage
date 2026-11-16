@@ -69,9 +69,6 @@ def mark_removal(hostname: str):
 
 
 def remove_worker(hostname: str):
+  """Deletes the worker's row, once its removal (`mark_removal`) has cleaned up after it."""
   with write():
-    worker = get(Worker, Worker.hostname == hostname)
-    refusal = removal_refusal(worker)
-    if refusal is not None:
-      raise Conflict(refusal)
-    worker.delete_instance()
+    get(Worker, Worker.hostname == hostname).delete_instance()

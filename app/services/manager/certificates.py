@@ -90,7 +90,7 @@ class CertificatesMixin:
     then the other managed files removed, then its `certs` stamp with their proofs. A certificate not valid is not
     published. Nothing is written while the stamp, the files and the list are already what they should be, unless
     forced; nothing on a worker not reachable and set up."""
-    if Worker.get_or_none(Worker.hostname == hostname) is None or not is_workable(hostname):
+    if not is_workable(hostname):
       logger.info(f"Worker {hostname} is not there to copy certificates to; nothing to do.")
       return
     dynamic, managed = f"{config.WORKER_HOME_DIR}/traefik/dynamic/certs.yml", f"{config.WORKER_HOME_DIR}/traefik/certs/managed"

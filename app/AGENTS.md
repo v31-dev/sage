@@ -16,6 +16,8 @@ here and are not repeated. How the backend works (the queue's modes, each workfl
   place, so a reader never finds a partial file. Anything else temporary on a worker goes in that folder too: the
   daily cleanup removes it whole. A file with a secret in it goes with `mode=0o600` (a script `0o700`; the default
   is `0o644`): Tailscale SSH ignores the mode of a new directory, so the file's own mode is what keeps it private.
+- The manager's own temporary files go in `config.TMP_DIR`, never the system temp folder: the Manager empties it at
+  boot, before anything runs.
 
 ## Code Layout
 

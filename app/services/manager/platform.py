@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+import config
 from services.backups.commands import add_backup
 from services.backups.keys import (BACKUP_TIMESTAMP_FORMAT, PLATFORM_BACKUP_SUFFIX, PLATFORM_PREFIX, archive_name, archive_write_scope, taken_at,
                                    timestamp_from_key)
@@ -131,7 +132,7 @@ class PlatformMixin:
       raise TaskFailed()
     name = archive_name(utcnow())
     try:
-      with TemporaryDirectory() as directory:
+      with TemporaryDirectory(dir=config.TMP_DIR) as directory:
         plain, encrypted = Path(directory) / f"{name}.db", Path(directory) / f"{name}{PLATFORM_BACKUP_SUFFIX}"
         await run_in_executor_with_context(Database().snapshot, plain)
         await run_in_executor_with_context(encrypt_file, plain, encrypted)
@@ -174,7 +175,7 @@ class PlatformMixin:
       if session is None:
         raise Exception("the configured store is not the one this restore was asked for")
       store = Settings().get("s3")
-      with TemporaryDirectory() as directory:
+      with TemporaryDirectory(dir=config.TMP_DIR) as directory:
         encrypted, plain = Path(directory) / "platform.db.enc", Path(directory) / "platform.db"
         await session.download_key(s3_path, str(encrypted), raw_path=True)
         await run_in_executor_with_context(decrypt_file, encrypted, plain)

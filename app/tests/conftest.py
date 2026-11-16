@@ -136,6 +136,8 @@ def data_dir(tmp_path, monkeypatch):
   import config
   monkeypatch.setattr(config, "DATA_DIR", tmp_path)
   monkeypatch.setattr(config, "DB_PATH", tmp_path / "data.db")
+  monkeypatch.setattr(config, "TMP_DIR", tmp_path / "tmp")
+  config.TMP_DIR.mkdir()
   return tmp_path
 
 

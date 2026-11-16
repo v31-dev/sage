@@ -627,6 +627,16 @@ class TestRemove:
     [(level, content, page)] = notices()
     assert (level, content.startswith("Worker w1 is not removed yet"), page) == ("error", True, WORKER_PAGE)
 
+  async def test_only_the_first_of_a_run_of_failures_is_noticed(self, manager, hosts, provider, worker, notices, monotonic):
+    commands.mark_removal("w1")
+    provider.keeps_tunnels = True
+    for _ in range(2):
+      with pytest.raises(TaskFailed):
+        await manager.remove_worker("w1")
+      monotonic.now += 1
+    assert [event for event in events() if event[0] == "remove"] == [("remove", "admitted"), ("remove", "failed"), ("remove", "admitted")]
+    assert len(notices()) == 1 and manager.removal_failures["w1"] == monotonic.now - 1
+
   async def test_a_removal_tried_again_after_a_cloudflare_failure_ends_it(self, manager, hosts, provider, worker, notices):
     await manager.converge_worker("w1")
     hosts.answering.add("w1")

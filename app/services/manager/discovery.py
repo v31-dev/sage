@@ -41,7 +41,7 @@ class DiscoveryMixin:
     now (every one, forced), then removes those of services no Domain has. A name whose availability is not known yet
     keeps what the worker's file publishes for it (`discovery_services`). Nothing on a worker not reachable and set
     up."""
-    if Worker.get_or_none(Worker.hostname == hostname) is None or not is_workable(hostname):
+    if not is_workable(hostname):
       logger.info(f"Worker {hostname} is not there to publish discovery to; nothing to do.")
       return
     domains = list(Domain.select().where(Domain.service.is_null(False)))
