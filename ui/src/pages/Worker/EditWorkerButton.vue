@@ -61,7 +61,13 @@ async function onConfirm() {
 <template>
   <Dialog v-model:open="isOpen">
     <DialogTrigger asChild>
-      <Button size="sm" variant="outline" class="gap-2" @click="openDialog">
+      <Button
+        size="sm"
+        variant="outline"
+        class="gap-2"
+        :disabled="props.worker.view.status === 'removing'"
+        @click="openDialog"
+      >
         <Edit :size="16" />
         Edit
       </Button>

@@ -77,6 +77,15 @@ describe('the workers it offers', () => {
     expect(chosen(wrapper)).toBe('w1')
   })
 
+  it('leave out a worker being removed', async () => {
+    const { wrapper } = setup([worker('w1', 'removing'), worker('w2')])
+
+    await open(wrapper)
+
+    expect(offered(wrapper)).toEqual(['w2'])
+    expect(chosen(wrapper)).toBe('w2')
+  })
+
   it('are none when every worker holds one, or before the list has loaded', async () => {
     const full = setup([worker('w1')], ['w1'])
     await open(full.wrapper)
