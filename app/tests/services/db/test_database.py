@@ -162,8 +162,8 @@ class TestVersions:
       file.execute("ALTER TABLE task DROP COLUMN started_at")
       file.execute("ALTER TABLE task ADD COLUMN started_at DATETIME")
       file.commit()
-    with pytest.raises(Exception, match="its migration step 1 failed"):
-      Database()
+    Database()
+    assert version(database) == len(migrations.STEPS)
 
   def test_a_database_from_a_later_sage_is_refused_and_left_as_it_was(self, db):
     db.execute_sql(f"PRAGMA user_version = {len(migrations.STEPS) + 1}")
@@ -204,6 +204,14 @@ class TestVersions:
 
     assert (runs, version(db)) == ([1], len(migrations.STEPS))
     assert Project.get_by_id("demo").description == "Shop"
+
+
+def test_a_main_database_that_is_not_sound_stops_the_start_and_stays(data_dir):
+  config.DB_PATH.write_bytes(b"not a database at all" * 200)
+  with pytest.raises(Exception, match="file is not a database"):
+    Database()
+  database.close()
+  assert config.DB_PATH.read_bytes().startswith(b"not a database at all")
 
 
 class TestASchemaThatDiffersIsRefused:

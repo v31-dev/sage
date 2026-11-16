@@ -6,6 +6,7 @@ import logging
 import re
 import sqlite3
 from contextlib import closing
+from pathlib import Path
 
 from peewee import IntegrityError, Model, SqliteDatabase, sort_models
 
@@ -115,61 +116,89 @@ def built_schema(script: str) -> dict[str, dict]:
 def migrate(db: SqliteDatabase, baseline: str, steps: list, latest: str, disposable: bool = False,
             run: str = migration_log.BOOT, trigger: str = "boot"):
   """Brings the file `db` has open to the latest version, `len(steps)`, whose schema is `latest`, and checks it, all in
-  one transaction with foreign keys off, ending with the foreign key check. A step is a function of the database, or
+  one transaction with foreign keys off, ending with the foreign key check. A step is a function of the database that
+  may return the manual actions its change leaves (each `where` to run it, the exact `command` or None, and `why`), or
   RECREATE. An empty file is created at the latest version. A file at version 0 must have exactly the `baseline`
-  schema, and one above the latest is refused; a `disposable` file is recreated empty instead. Any failure rolls the
-  whole run back, `user_version` included, and raises `SchemaRefused`. A file it migrates, recreates or refuses goes in
-  the migration history under `run`, which `trigger` (boot, restore) started."""
+  schema, and one above the latest is refused. Any failure rolls the whole run back, `user_version` included, and
+  raises `SchemaRefused`; a `disposable` file is recreated empty instead, whether it doesn't fit or its migration
+  failed, so it never stops the boot. A file it migrates, recreates or refuses goes in the migration history under
+  `run`, which `trigger` (boot, restore) started, a migrated one with its steps' actions in order."""
   foreign_keys = db.execute_sql("PRAGMA foreign_keys").fetchone()[0]
   db.execute_sql("PRAGMA foreign_keys=OFF")
+  # Why a disposable file is started again empty after its migration failed.
+  failed = None
   try:
     # The pragma is ignored inside a transaction.
     if foreign_keys and db.execute_sql("PRAGMA foreign_keys").fetchone()[0]:
       raise RuntimeError("The schema step must not run inside a transaction: foreign keys can't be turned off.")
-    with db.atomic():
-      version = db.execute_sql("PRAGMA user_version").fetchone()[0]
-      found = describe(db.execute_sql)
-      unfit = None
-      if found and version > len(steps):
-        unfit = f"it is at version {version}, written by a later Sage; this version knows up to {len(steps)}."
-      elif found and version == 0 and (unlike := differences(found, built_schema(baseline), f"{BASELINE_RELEASE}'s")):
-        unfit = (f"it has no version and isn't {BASELINE_RELEASE}'s ({'; '.join(unlike)}). A database from before "
-                 f"{BASELINE_RELEASE} upgrades through it: run Sage {BASELINE_RELEASE} on it once, then this version.")
-      if unfit and not disposable:
-        raise SchemaRefused(db.database, unfit)
-      pending = [] if not found or unfit else list(enumerate(steps[version:], version + 1))
-      recreated = unfit or ("its migration starts it again" if RECREATE in [step for _, step in pending] else None)
-      if not found or recreated:
-        if recreated:
-          logger.warning(f"Recreating {db.database} empty: {recreated}")
-          # A virtual table's own tables go with it.
-          for (table,) in db.execute_sql("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE "
-                                         "'sqlite_%' ORDER BY sql NOT LIKE 'CREATE VIRTUAL TABLE%'").fetchall():
-            db.execute_sql(f'DROP TABLE IF EXISTS "{table}"')
-        for statement in statements(latest):
-          db.execute_sql(statement)
-        pending = []
-      for number, step in pending:
-        try:
-          step(db)
-        except Exception as e:
-          raise SchemaRefused(db.database, f"its migration step {number} failed ({e}).") from e
-      db.execute_sql(f"PRAGMA user_version = {len(steps)}")
-      if unlike := differences(describe(db.execute_sql), built_schema(latest)):
-        raise SchemaRefused(db.database, f"after its migration steps it differs from this version's: {'; '.join(unlike)}.")
-      if broken := db.execute_sql("PRAGMA foreign_key_check").fetchall():
-        raise IntegrityError("FOREIGN KEY check failed: " + ", ".join(
-            f"{table} row {row} points at a missing {parent}" for table, row, parent, _ in broken))
+    while True:
+      try:
+        with db.atomic():
+          version = db.execute_sql("PRAGMA user_version").fetchone()[0]
+          found = describe(db.execute_sql)
+          unfit = None
+          if found and version > len(steps):
+            unfit = f"it is at version {version}, written by a later Sage; this version knows up to {len(steps)}."
+          elif found and version == 0 and (unlike := differences(found, built_schema(baseline), f"{BASELINE_RELEASE}'s")):
+            unfit = (f"it has no version and isn't {BASELINE_RELEASE}'s ({'; '.join(unlike)}). A database from before "
+                     f"{BASELINE_RELEASE} upgrades through it: run Sage {BASELINE_RELEASE} on it once, then this version.")
+          if unfit and not disposable:
+            raise SchemaRefused(db.database, unfit)
+          pending = [] if not found or unfit or failed else list(enumerate(steps[version:], version + 1))
+          recreated = failed or unfit or (
+              "its migration starts it again" if RECREATE in [step for _, step in pending] else None)
+          if not found or recreated:
+            if recreated:
+              logger.warning(f"Recreating {db.database} empty: {recreated}")
+              # A virtual table's own tables go with it.
+              for (table,) in db.execute_sql("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE "
+                                             "'sqlite_%' ORDER BY sql NOT LIKE 'CREATE VIRTUAL TABLE%'").fetchall():
+                db.execute_sql(f'DROP TABLE IF EXISTS "{table}"')
+            for statement in statements(latest):
+              db.execute_sql(statement)
+            pending = []
+          actions = []
+          for number, step in pending:
+            try:
+              actions += step(db) or []
+            except Exception as e:
+              raise SchemaRefused(db.database, f"its migration step {number} failed ({e}).") from e
+          db.execute_sql(f"PRAGMA user_version = {len(steps)}")
+          if unlike := differences(describe(db.execute_sql), built_schema(latest)):
+            raise SchemaRefused(db.database,
+                                f"after its migration steps it differs from this version's: {'; '.join(unlike)}.")
+          if broken := db.execute_sql("PRAGMA foreign_key_check").fetchall():
+            raise IntegrityError("FOREIGN KEY check failed: " + ", ".join(
+                f"{table} row {row} points at a missing {parent}" for table, row, parent, _ in broken))
+        break
+      except (IntegrityError, SchemaRefused) as e:
+        refused = e if isinstance(e, SchemaRefused) else SchemaRefused(db.database, f"the data in it refuses the change ({e}).")
+        if not disposable or failed:
+          migration_log.record(run, trigger, db.database, version, len(steps), "refused", refused.reason)
+          if refused is e:
+            raise
+          raise refused from e
+        failed = f"its migration failed: {refused.reason}"
     if recreated:
       migration_log.record(run, trigger, db.database, version, len(steps), "recreated", recreated)
     elif found and version < len(steps):
       logger.info(f"Migrated {db.database} from version {version} to {len(steps)} (Sage {config.VERSION}).")
-      migration_log.record(run, trigger, db.database, version, len(steps), "migrated", None)
-  except (IntegrityError, SchemaRefused) as e:
-    refused = e if isinstance(e, SchemaRefused) else SchemaRefused(db.database, f"the data in it refuses the change ({e}).")
-    migration_log.record(run, trigger, db.database, version, len(steps), "refused", refused.reason)
-    if refused is e:
-      raise
-    raise refused from e
+      migration_log.record(run, trigger, db.database, version, len(steps), "migrated", None, actions)
   finally:
     db.execute_sql(f"PRAGMA foreign_keys={'ON' if foreign_keys else 'OFF'}")
+
+
+def unsound(error: Exception) -> bool:
+  """Whether `error` says the file isn't a sound SQLite database: not a database at all, or a damaged one."""
+  cause = error.__cause__ or error.__context__
+  return getattr(cause, "sqlite_errorcode", None) in (sqlite3.SQLITE_CORRUPT, sqlite3.SQLITE_NOTADB)
+
+
+def discard(path: Path, error: Exception):
+  """Removes the side file at `path` that isn't a sound database (`unsound`), its WAL files with it, so it opens again
+  empty, and records why in the migration history."""
+  for part in (path, path.with_name(f"{path.name}-wal"), path.with_name(f"{path.name}-shm")):
+    part.unlink(missing_ok=True)
+  logger.warning(f"Recreating {path} empty: it was not a sound database ({error}).")
+  migration_log.record(migration_log.BOOT, "boot", str(path), None, None, "recreated",
+                       f"it was not a sound database ({error}).")

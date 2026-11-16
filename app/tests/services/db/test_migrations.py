@@ -1,11 +1,12 @@
 import contextlib
+import json
 import logging
 import sqlite3
 
 import pytest
 from peewee import SqliteDatabase
 
-from services.db.migrator import RECREATE, SchemaRefused, built_schema, describe, migrate, statements
+from services.db.migrator import RECREATE, SchemaRefused, built_schema, describe, discard, migrate, statements, unsound
 from services.logs import applications
 from services.logs import migrations as log_migrations
 from services.logs import requests, tasks
@@ -59,7 +60,21 @@ class TestADisposableFile:
 
     assert state(file) == (built_schema(LATEST), 1, [])
 
-  def test_a_failing_step_still_stops_and_leaves_it_as_it_was(self, file):
+  def test_a_failing_step_starts_it_again_empty_instead_of_stopping(self, file, caplog):
+    file.execute_sql(BASELINE)
+    file.execute_sql("INSERT INTO note (text) VALUES ('gone')")
+
+    def failing(db):
+      renamed(db)
+      raise ValueError("broken")
+
+    with caplog.at_level(logging.WARNING, logger="services.db.migrator"):
+      migrate(file, BASELINE, [failing], LATEST, disposable=True)
+
+    assert state(file) == (built_schema(LATEST), 1, [])
+    assert "its migration failed: its migration step 1 failed (broken)." in caplog.text
+
+  def test_a_file_that_is_not_disposable_is_still_refused(self, file):
     file.execute_sql(BASELINE)
     file.execute_sql("INSERT INTO note (text) VALUES ('kept')")
     before = state(file)
@@ -69,7 +84,7 @@ class TestADisposableFile:
       raise ValueError("broken")
 
     with pytest.raises(SchemaRefused, match=r"its migration step 1 failed \(broken\)\."):
-      migrate(file, BASELINE, [failing], LATEST, disposable=True)
+      migrate(file, BASELINE, [failing], LATEST)
     assert state(file) == before
 
   def test_a_baseline_file_keeps_its_rows_through_the_steps(self, file):
@@ -212,18 +227,69 @@ class TestTheBootPass:
       assert migrated.execute("SELECT task_id, message FROM tasklogs").fetchall() == [("t1", "kept")]
     assert logs._stores == {}
 
-  def test_a_failing_step_stops_the_logs_from_starting(self, data_dir, monkeypatch):
+  def test_a_failing_step_starts_the_file_again_and_the_logs_start(self, data_dir, monkeypatch):
     from services.logs import Logs
     (data_dir / "logs").mkdir()
     with contextlib.closing(sqlite3.connect(data_dir / "logs" / "tasks.db")) as old:
       old.executescript(log_migrations.TASKS_BASELINE)
+      old.execute("INSERT INTO tasklogs (task_id, sub_task_id, ts, level, logger, message) VALUES ('t1', '', 't', 'INFO', 'l', 'gone')")
+      old.commit()
 
     def failing(db):
       raise ValueError("broken")
 
     monkeypatch.setattr(log_migrations, "TASKS_STEPS", [failing])
-    with pytest.raises(Exception, match="its migration step 1 failed"):
-      Logs()
+    Logs()
+
+    with contextlib.closing(sqlite3.connect(data_dir / "logs" / "tasks.db")) as recreated:
+      assert recreated.execute("SELECT count(*) FROM tasklogs").fetchone()[0] == 0
+      assert recreated.execute("PRAGMA user_version").fetchone()[0] == 1
+
+  @pytest.mark.parametrize("kind", ["logs", "metrics"])
+  def test_a_file_that_is_not_a_database_is_started_again_empty(self, data_dir, kind):
+    from services.logs import Logs
+    from services.metrics import Metrics
+    (data_dir / kind).mkdir()
+    path = data_dir / kind / ("tasks.db" if kind == "logs" else "w1.db")
+    path.write_bytes(b"not a database at all" * 200)
+    path.with_name(f"{path.name}-wal").write_bytes(b"stale")
+
+    Logs() if kind == "logs" else Metrics()
+
+    with contextlib.closing(sqlite3.connect(path)) as recreated:
+      assert recreated.execute("SELECT count(*) FROM sqlite_master WHERE type = 'table'").fetchone()[0] > 0
+    [entry] = [json.loads(line) for line in (data_dir / "migrations.log").read_text().splitlines()]
+    assert (entry["file"], entry["from"], entry["outcome"]) == (f"{kind}/{path.name}", None, "recreated")
+    assert entry["detail"] == "it was not a sound database (file is not a database)."
+
+  def test_a_file_that_is_not_sound_goes_with_its_wal_files_and_nothing_else(self, data_dir):
+    (data_dir / "logs").mkdir()
+    path = data_dir / "logs" / "tasks.db"
+    parts = [path, path.with_name("tasks.db-wal"), path.with_name("tasks.db-shm"), path.with_name("requests.db")]
+    for part in parts:
+      part.write_bytes(b"x")
+
+    discard(path, Exception("file is not a database"))
+
+    assert [part.exists() for part in parts] == [False, False, False, True]
+
+  def test_a_damaged_database_is_started_again_but_a_locked_one_is_not(self):
+    class Wrapped(Exception):
+      pass
+
+    def raised(code):
+      cause = sqlite3.DatabaseError("x")
+      cause.sqlite_errorcode = code
+      try:
+        try:
+          raise cause
+        except sqlite3.DatabaseError:
+          raise Wrapped("x")
+      except Wrapped as error:
+        return error
+
+    assert [unsound(raised(code)) for code in (sqlite3.SQLITE_CORRUPT, sqlite3.SQLITE_NOTADB, sqlite3.SQLITE_BUSY,
+                                               sqlite3.SQLITE_CANTOPEN)] == [True, True, False, False]
 
   def test_every_metrics_file_is_migrated_when_the_metrics_start(self, data_dir):
     from services.metrics import Metrics

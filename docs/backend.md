@@ -257,7 +257,8 @@ Main database:
   all of it back, `user_version` included, and raises `SchemaRefused`: the boot stops with one `[CRITICAL]` line
   naming what failed and linking the running version's release, and the database is as it was. The side SQLite
   files (logs, task logs, metrics shards) carry their own `user_version` and steps the same way and are migrated at
-  boot too; holding history only, one that doesn't fit is recreated empty. Each file a run migrates, recreates or
+  boot too; holding history only, one that doesn't fit, whose migration fails or that isn't a sound database is
+  recreated empty, so only `data.db`, migrated first, can stop the boot. Each file a run migrates, recreates or
   refuses is appended to the migration history, `data/migrations.log` (`GET /api/migrations`) How to write a step:
   [Migrations](development.md#migrations)
 

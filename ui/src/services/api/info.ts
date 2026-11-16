@@ -51,15 +51,24 @@ export const refreshRelease = () => request<void>('POST', '/release/refresh')
 
 export const fetchHomeSummary = () => request<HomeSummary>('GET', '/summary')
 
-// One file a migration run changed or refused: from its version towards `to`, with why it was started again empty or
-// refused (`detail`).
+// A manual action a migration left, in the order to take it: where to take it (a worker, Cloudflare, the store, Sage),
+// the exact command when there is one, and why.
+export interface MigrationAction {
+  where: string
+  command: string | null
+  why: string
+}
+
+// One file a migration run changed or refused: from its version towards `to` (none for a file that wasn't a sound
+// database), with why it was started again empty or refused (`detail`).
 export interface MigrationFile {
   file: string
-  from: number
-  to: number
+  from: number | null
+  to: number | null
   outcome: 'migrated' | 'recreated' | 'refused'
   detail: string | null
   at: string
+  actions: MigrationAction[]
 }
 
 // A migration run, at a start of Sage (`boot`) or a platform restore's install (`restore`), with the release that ran

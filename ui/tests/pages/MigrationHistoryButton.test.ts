@@ -21,6 +21,7 @@ const stubs = {
   SelectContent: inline,
   SelectValue: inline,
   SelectItem: { props: ['value'], template: '<div data-item :data-value="value"><slot /></div>' },
+  CodeBlock: { props: ['code'], template: '<pre data-code>{{ code }}</pre>' },
   Select: {
     props: ['modelValue'],
     emits: ['update:modelValue'],
@@ -43,6 +44,7 @@ const runs: MigrationRun[] = [
         outcome: 'refused',
         detail: 'its migration step 3 failed (x).',
         at: '2026-02-01T00:00:00',
+        actions: [],
       },
     ],
   },
@@ -60,6 +62,7 @@ const runs: MigrationRun[] = [
         outcome: 'migrated',
         detail: null,
         at: '2026-01-01T00:00:00',
+        actions: [],
       },
     ],
   },
@@ -101,6 +104,64 @@ describe('the migration history', () => {
     expect(items).toHaveLength(2)
     expect(items[0]).toContain('Sage 0.3.0 · At start · Refused')
     expect(items[1]).toContain('Sage 0.2.0 · Platform restore · Updated')
+  })
+
+  it('shows a file that was not a sound database without versions', async () => {
+    vi.mocked(fetchMigrations).mockResolvedValue([
+      {
+        ...runs[1]!,
+        outcome: 'recreated',
+        files: [
+          {
+            file: 'logs/tasks.db',
+            from: null,
+            to: null,
+            outcome: 'recreated',
+            detail: 'it was not a sound database (file is not a database).',
+            at: '2026-01-01T00:00:00',
+            actions: [],
+          },
+        ],
+      },
+    ])
+    const wrapper = await opened()
+    const [file] = wrapper.findAll('[data-file]')
+    expect(file!.text()).toContain('—')
+    expect(file!.text()).not.toContain('→')
+    expect(file!.text()).toContain('Started again empty')
+  })
+
+  it('lists what to do by hand in the order the run left it, with each command', async () => {
+    const run = runs[1]!
+    vi.mocked(fetchMigrations).mockResolvedValue([
+      {
+        ...run,
+        files: [
+          {
+            ...run.files[0]!,
+            actions: [
+              { where: 'worker w1', command: 'docker compose down', why: 'Stops shop-web.' },
+              { where: 'Sage', command: null, why: 'Add the public domain shop again.' },
+            ],
+          },
+        ],
+      },
+    ])
+    const wrapper = await opened()
+
+    const actions = wrapper.findAll('[data-action]')
+    expect(actions.map(action => action.text())).toEqual([
+      expect.stringContaining('worker w1: Stops shop-web.'),
+      expect.stringContaining('Sage: Add the public domain shop again.'),
+    ])
+    expect(actions[0]!.find('[data-code]').text()).toBe('docker compose down')
+    expect(actions[1]!.find('[data-code]').exists()).toBe(false)
+  })
+
+  it('shows no list for a run that left nothing to do', async () => {
+    vi.mocked(fetchMigrations).mockResolvedValue(runs)
+    const wrapper = await opened()
+    expect(wrapper.find('[data-actions]').exists()).toBe(false)
   })
 
   it('says so when there is none', async () => {

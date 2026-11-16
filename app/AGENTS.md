@@ -316,8 +316,9 @@ How an install moves between versions: [Migrations](../docs/development.md#migra
   carries its own `user_version`, baseline and step list in its package's `migrations.py` (`services/logs/`,
   `services/metrics/`; `data.db`'s is `services/db/migrations.py`), under the same rules, and every existing file
   is migrated at boot before serving. Its files are disposable: one that doesn't fit (version 0 without the baseline,
-  or a later version) is recreated empty, and a step may be `RECREATE` where its rows can't follow cleanly. A failing
-  step still stops the boot.
+  or a later version) is recreated empty, and a step may be `RECREATE` where its rows can't follow cleanly. One whose
+  migration fails, or that isn't a sound database, is recreated empty too, so a side file never stops the boot:
+  `data.db` migrates first and is the only file that can, before anything else has changed.
 - What Sage keeps on workers converges through worker setup: a format change changes its stamp, and an artifact an
   older version left is removed by its owner's convergence, never by a step. What Sage keeps in the store and in
   Cloudflare converges the same way, through its owner's pass. Such an artifact needs no conversion: one in a form this
@@ -326,6 +327,9 @@ How an install moves between versions: [Migrations](../docs/development.md#migra
 - Every run that migrates, recreates or refuses a file appends it to the migration history
   (`services/db/migration_log.py`, `data/migrations.log`), outside the databases so a refusal stays recorded; a
   history that can't be written never fails the migration. Settings → Upgrade shows it.
+- What a migration leaves outside the databases for the user to do (user data to move, an old runtime to stop,
+  records to delete) is returned by its step as actions, in order: where, the exact command when there is one, why.
+  The step builds them from the old rows and the new ids together, and the runner keeps them in the history entry.
 - The release notes carry a manual step only in an emergency the automatic migration can't solve. The boot then
   prints no remediation, so the notes can be corrected without a release; the refusal of a pre-baseline database is
   the exception, since its remedy (run 0.1.3 on it once) never changes.

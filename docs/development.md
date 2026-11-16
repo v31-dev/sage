@@ -278,7 +278,10 @@ metrics shards) carries its own `user_version`, with its baseline and steps in i
 the same rules; `Logs` and `Metrics` migrate every existing file when they start, before Sage serves. They hold history
 only, so a file that doesn't fit (version 0 without the baseline, or a later version) is recreated empty, and a step
 can be `migrator.RECREATE`, which starts the file empty at the latest version, where a change can't carry the rows
-cleanly. A step that fails still stops the boot.
+cleanly. A file whose migration fails is recreated empty too, and so is one that isn't a sound database (SQLite's
+"not a database" or "malformed"), with its WAL files, so a side file never stops the boot. `data.db` migrates first and
+is the only file that can stop it, before anything else has changed; files are migrated one at a time, since SQLite
+commits attached databases together only outside WAL mode.
 
 **Workers, the store and Cloudflare.** What Sage keeps outside its databases converges through its owner: a format
 change on a worker changes its stamp, so worker setup rewrites it, and an artifact an older version left is removed by
@@ -289,7 +292,10 @@ name what is dropped.
 **History.** Each run, at a boot or a platform restore's install, appends a JSON line to `data/migrations.log` for
 every file it migrated, started again empty or refused, with the release, the versions and why
 (`app/services/db/migration_log.py`). It is outside the databases, since a refused run rolls its database back, and it
-is kept whole. `GET /api/migrations` gives the runs, newest first, and Settings → Upgrade shows them in its Migration
+is kept whole. A step can return the manual actions its change leaves, in order, each with where to take it (a
+worker, Cloudflare, the store, Sage), the exact command when there is one and why; the step builds them while it has
+both the old rows and the new ids, and the history keeps them with the file. `GET /api/migrations` gives the runs,
+newest first, and Settings → Upgrade shows them in its Migration
 history dialog, so a refused upgrade is visible once the previous release runs again.
 
 **Release notes.** A manual upgrade step goes in the release notes only in an emergency the automatic migration can't

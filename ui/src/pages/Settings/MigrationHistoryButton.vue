@@ -28,6 +28,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
+import CodeBlock from '@/components/CodeBlock.vue'
 import StateIndicator from '@/components/StateIndicator.vue'
 import { formatDate } from '@/lib/utils'
 import {
@@ -56,6 +57,7 @@ const selected = ref('')
 let loads = 0
 
 const run = computed(() => runs.value.find(candidate => candidate.run === selected.value))
+const actions = computed(() => run.value?.files.flatMap(file => file.actions) ?? [])
 
 function label(candidate: MigrationRun) {
   return `${formatDate(candidate.at)} · Sage ${candidate.release} · ${TRIGGERS[candidate.trigger]} · ${OUTCOMES[candidate.outcome].label}`
@@ -122,7 +124,7 @@ async function load() {
             <TableBody>
               <TableRow v-for="file in run.files" :key="file.file + file.at" data-file>
                 <TableCell class="font-mono text-xs">{{ file.file }}</TableCell>
-                <TableCell>{{ file.from }} → {{ file.to }}</TableCell>
+                <TableCell>{{ file.from === null ? '—' : `${file.from} → ${file.to}` }}</TableCell>
                 <TableCell class="whitespace-normal">
                   <StateIndicator
                     :state="OUTCOMES[file.outcome].state"
@@ -136,6 +138,18 @@ async function load() {
               </TableRow>
             </TableBody>
           </Table>
+          <div v-if="actions.length" class="mt-4 space-y-3" data-actions>
+            <p class="text-sm font-medium">What to do by hand, in this order</p>
+            <ol class="list-decimal space-y-3 pl-5 text-sm">
+              <li v-for="(action, index) in actions" :key="index" data-action>
+                <p>
+                  <span class="font-medium">{{ action.where }}:</span>
+                  {{ action.why }}
+                </p>
+                <CodeBlock v-if="action.command" :code="action.command" class="mt-1" />
+              </li>
+            </ol>
+          </div>
         </div>
       </template>
       <DialogFooter>
