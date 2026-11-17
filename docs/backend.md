@@ -105,9 +105,9 @@ Most high-level backend behavior ultimately flows through this service, and almo
 - `services/manager/certificates.py`
   - the certificates' renewal and the setup of the manager's domain and certificate before serving (mixin)
 - `services/metrics/` (`peaks.py`, `sampler.py`, `series.py`, `shards.py`)
-  - metrics (workers' per-minute peaks from Telegraf's reports, written by the queue; the manager's own container in-process). A minute is written to its shard once it has ended; the queries add the minutes still in memory, so the latest reading is at most one report old and the `1m` view is the last two minutes
+  - metrics (workers' per-minute peaks from Telegraf's reports, written by the queue; the manager's own container in-process). A minute is written to its shard once it has ended; the queries add the minutes still in memory, so the latest reading is at most two reports old and the `1m` view is the last two minutes
 - `services/worker_reports.py`
-  - Telegraf's reports: parsing a batch into snapshots, and the newest snapshot of each worker in memory
+  - Telegraf's reports: parsing a batch into gathers, each worker's newest gather held until a later one arrives (Telegraf sends on a timer not aligned with its gathers, so a gather can come in two reports, joined here), the snapshots of the complete ones, and the newest snapshots of each worker in memory
 - `services/logs/`: the one `Logs()`, a mixin for each concept
   - `store.py`: the files of the logs directory, each opened once, their size limits, the retention and the orphan sweep, and the stored time (`stored_time`)
   - `applications.py`: each application's shard and its full-text search

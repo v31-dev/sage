@@ -5,10 +5,10 @@ from pathlib import Path
 
 import pytest
 
+from services import worker_reports
 from services.metrics import Metrics, metrics_scope
 from services.metrics.peaks import MinutePeaks
 from services.updates import UpdateSource
-from services.worker_reports import parse_batch
 from tests.services.metrics.test_peaks import MINUTE, container, host, snapshot
 from utils.queue import _scope_conflict
 
@@ -70,10 +70,22 @@ class TestFlushWorker:
     return list(store.get_metrics_db("w1")["models"][model].select().dicts())
 
   def ingest_the_recorded_batch(self, store, clock):
-    snapshots = parse_batch(BATCH)
+    snapshots = [worker_reports.snapshot(metrics) for _, metrics in sorted(worker_reports.parse_batch(BATCH).items())]
     store.ingest("w1", snapshots)
     clock.set(snapshots[0].at.replace(second=0) + timedelta(minutes=1, seconds=5))
     return snapshots
+
+  def test_a_gather_split_over_two_reports_writes_its_containers(self, store, clock):
+    (first, gather), (_, later) = sorted(worker_reports.parse_batch(BATCH).items())
+    stats = [m for m in gather if m["name"] in ("docker_container_cpu", "docker_container_mem", "docker_container_net")]
+    head = {"metrics": [m for m in gather if m not in stats]}
+    reports = worker_reports.WorkerReports()
+    snapshots = (reports.assemble("w1", worker_reports.parse_batch(head))
+                 + reports.assemble("w1", worker_reports.parse_batch({"metrics": stats + later})))
+    store.ingest("w1", snapshots)
+    clock.set(snapshots[0].at.replace(second=0) + timedelta(minutes=1, seconds=5))
+    store.flush_worker("w1")
+    assert {row["name"] for row in self.rows(store, "ContainerMetrics")} == {"web", "traefik"}
 
   def test_the_completed_minute_is_written_as_one_row_of_peaks(self, store, clock):
     snapshots = self.ingest_the_recorded_batch(store, clock)

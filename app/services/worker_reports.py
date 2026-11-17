@@ -168,12 +168,13 @@ def _containers(metrics) -> dict[str, ContainerReading]:
   return containers
 
 
-def parse_batch(batch) -> list[Snapshot]:
-  """The snapshots in a Telegraf batch (the JSON of the `http` output), oldest first. A batch
-  holds one snapshot when everything is live and several after an outage of the manager.
+def parse_batch(batch) -> dict[int, list[dict]]:
+  """The metrics of a Telegraf batch (the JSON of the `http` output) by gather. A batch holds one gather when
+  everything is live, several after an outage of the manager, and part of one when Telegraf sent it while the gather
+  ran.
 
-  The metrics of one gather carry timestamps a second or two apart (the Docker input takes a
-  while), so a snapshot is every metric in the same interval-sized bucket of the worker's clock.
+  The metrics of one gather carry timestamps a second or two apart (the Docker input takes a while), so a gather is
+  every metric in the same interval-sized bucket of the worker's clock, keyed by that bucket.
   Raises ValueError for a batch that is not Telegraf's JSON."""
   if not isinstance(batch, dict) or not isinstance(batch.get("metrics"), list):
     raise ValueError("expected an object with a list of metrics")
@@ -186,18 +187,18 @@ def parse_batch(batch) -> list[Snapshot]:
             or _integer(metric.get("timestamp")) is None):
       raise ValueError("a metric needs a name, tags, fields and a timestamp")
     buckets.setdefault(int(metric["timestamp"]) // bucket_ms, []).append(metric)
+  return buckets
 
-  snapshots = []
-  for bucket in sorted(buckets):
-    metrics = buckets[bucket]
-    check = next((m for m in metrics if m["name"] == "net_response"), None)
-    snapshots.append(Snapshot(
-        at=datetime.fromtimestamp(min(m["timestamp"] for m in metrics) / 1000, tz=timezone.utc).replace(tzinfo=None),
-        host=_host(metrics),
-        containers=_containers(metrics),
-        traefik_reachable=None if check is None else check["fields"].get("result_code") == 0,
-    ))
-  return snapshots
+
+def snapshot(metrics) -> Snapshot:
+  """The snapshot of one gather's metrics."""
+  check = next((m for m in metrics if m["name"] == "net_response"), None)
+  return Snapshot(
+      at=datetime.fromtimestamp(min(m["timestamp"] for m in metrics) / 1000, tz=timezone.utc).replace(tzinfo=None),
+      host=_host(metrics),
+      containers=_containers(metrics),
+      traefik_reachable=None if check is None else check["fields"].get("result_code") == 0,
+  )
 
 
 class WorkerReports(Base):
@@ -209,7 +210,24 @@ class WorkerReports(Base):
     super().__init__()
     self.started = utcnow()
     self._history: dict[str, deque[Received]] = {}
+    self._open: dict[str, tuple[datetime, int, list[dict]]] = {}
     self._unknown: set[str] = set()
+
+  def assemble(self, hostname: str, gathers: dict[int, list[dict]]) -> list[Snapshot]:
+    """The snapshots of the worker's gathers that are complete, oldest first. Telegraf sends on a timer that is not
+    aligned with its gathers, so one gather can arrive in two reports: the newest gather is held, with its arrival,
+    and joined with the rest of it a later report brings; it is complete once a later gather arrives. A held gather
+    whose arrival is no longer current is dropped."""
+    now = utcnow()
+    with self.lock:
+      held = self._open.pop(hostname, None)
+      if held is not None and is_current(held[0], now):
+        gathers = {**gathers, held[1]: held[2] + gathers.get(held[1], [])}
+      if not gathers:
+        return []
+      newest = max(gathers)
+      self._open[hostname] = (now, newest, gathers[newest])
+    return [snapshot(gathers[bucket]) for bucket in sorted(gathers) if bucket != newest]
 
   def accept(self, hostname: str, snapshots: list[Snapshot]) -> Arrival | None:
     """Keep the snapshots of the batch gathered after the newest one held, and say what the newest changed. A batch
@@ -278,3 +296,4 @@ class WorkerReports(Base):
   def forget(self, hostname: str):
     with self.lock:
       self._history.pop(hostname, None)
+      self._open.pop(hostname, None)

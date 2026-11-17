@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 import config
 from services.metrics import Metrics
-from services.worker_reports import WorkerReports, parse_batch
+from services.worker_reports import WorkerReports, parse_batch, snapshot
 
 BATCH = json.loads((Path(__file__).parent.parent / "data" / "telegraf_batch.json").read_text())
 URL = "/api/telegraf/report"
@@ -58,13 +58,17 @@ class TestReport:
     assert post(client, json.dumps(BATCH).encode(), encoding=None, chunked=False).status_code == 204
     assert WorkerReports().latest("w1") is not None
 
-  def test_a_batch_of_several_gathers_keeps_the_newest(self, client, worker, ingested):
+  def test_a_batch_of_several_gathers_keeps_each_but_the_newest_until_the_next_report(self, client, worker, ingested):
+    first, second = [snapshot(metrics) for _, metrics in sorted(parse_batch(BATCH).items())]
     post(client, json.dumps(BATCH).encode())
-    assert WorkerReports().latest("w1").snapshot.at == parse_batch(BATCH)[-1].at
+    assert WorkerReports().latest("w1").snapshot.at == first.at
+    post(client, json.dumps(later(BATCH)).encode())
+    assert WorkerReports().latest("w1").snapshot.at == second.at
 
-  def test_the_snapshots_go_to_the_metrics_under_the_workers_name(self, client, worker, ingested):
+  def test_the_complete_snapshots_go_to_the_metrics_under_the_workers_name(self, client, worker, ingested):
+    first, _ = [snapshot(metrics) for _, metrics in sorted(parse_batch(BATCH).items())]
     post(client, json.dumps(BATCH).encode())
-    assert ingested == [("w1", parse_batch(BATCH))]
+    assert ingested == [("w1", [first])]
 
   @pytest.mark.parametrize("state", ["paused", "stopping"])
   def test_a_report_is_taken_while_sage_is_paused_or_stopping(self, client, worker, ingested, manager, state):

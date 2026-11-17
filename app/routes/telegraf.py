@@ -32,11 +32,12 @@ async def telegraf_report(request: Request):
     raise HTTPException(status_code=404, detail="Unknown worker.")
 
   try:
-    snapshots = parse_batch(json.loads(body))
+    gathers = parse_batch(json.loads(body))
   except ValueError as e:
     logger.warning(f"Rejected a malformed report from {hostname}: {e}")
     raise HTTPException(status_code=400, detail="Malformed report.")
 
+  snapshots = WorkerReports().assemble(hostname, gathers)
   arrival = WorkerReports().accept(hostname, snapshots)
   if arrival is not None and arrival.resumed:
     logger.info(f"Receiving reports from {hostname}.")

@@ -5,9 +5,13 @@ from pathlib import Path
 import pytest
 
 import config
-from services.worker_reports import WorkerReports, container_started_at, is_current, parse_batch
+from services.worker_reports import WorkerReports, container_started_at, is_current, parse_batch, snapshot
 
 BATCH = json.loads((Path(__file__).parent.parent / "data" / "telegraf_batch.json").read_text())
+
+
+def snapshots(batch):
+  return [snapshot(metrics) for _, metrics in sorted(parse_batch(batch).items())]
 
 
 def metric(name, timestamp=1_000_000, tags=None, **fields):
@@ -21,18 +25,18 @@ def status(name, timestamp=1_000_000, **tags):
 
 class TestParseBatch:
   def test_two_gathers_make_two_snapshots_oldest_first(self):
-    first, second = parse_batch(BATCH)
+    first, second = snapshots(BATCH)
     assert second.at - first.at == timedelta(seconds=config.REPORT_INTERVAL_SECONDS)
 
   def test_one_snapshot_holds_metrics_stamped_seconds_apart(self):
     # The recorded gather is stamped over three seconds (the Docker input takes a while).
     stamps = {m["timestamp"] // 1000 for m in BATCH["metrics"]}
-    first = parse_batch(BATCH)[0]
-    assert len(stamps) == 6 and len(parse_batch(BATCH)) == 2
+    first = snapshots(BATCH)[0]
+    assert len(stamps) == 6 and len(snapshots(BATCH)) == 2
     assert {"web", "traefik", "old-job"} == set(first.containers)
 
   def test_host_reading(self):
-    host = parse_batch(BATCH)[0].host
+    host = snapshots(BATCH)[0].host
     assert host.cores == 16
     assert (host.mem_total, host.mem_used, host.mem_cached) == (30769758208, 17019699200, 18287808512)
     assert host.cpu_idle_percent == pytest.approx(89.2106, abs=1e-3)
@@ -41,7 +45,7 @@ class TestParseBatch:
     assert (host.net_rx_bytes, host.net_tx_bytes) == (54080713481, 869735831)
 
   def test_container_readings_join_the_measurements_by_name(self):
-    web = parse_batch(BATCH)[0].containers["web"]
+    web = snapshots(BATCH)[0].containers["web"]
     assert web.status == "running"
     assert web.labels == {"sage.instance": "aaaaaaaaaaaaaaaa", "sage.generation": "bbbbbbbbbbbbbbbb",
                           "sage.container": "0123456789abcdef", "sage.deployment": "d1", "sage.application": "demo-web"}
@@ -52,26 +56,26 @@ class TestParseBatch:
   def test_an_oom_kill_is_reported(self):
     killed = status("db")
     killed["fields"]["oomkilled"] = True
-    snapshot, = parse_batch({"metrics": [killed, status("web")]})
+    snapshot, = snapshots({"metrics": [killed, status("web")]})
     assert snapshot.containers["db"].oom_killed is True
     assert snapshot.containers["web"].oom_killed is False
 
   def test_a_container_that_stopped_carries_its_exit_and_finish(self):
-    old = parse_batch(BATCH)[0].containers["old-job"]
+    old = snapshots(BATCH)[0].containers["old-job"]
     assert old.status == "exited"
     assert old.finished_at is not None and old.started_at < old.finished_at
     assert old.labels == {}
 
   def test_the_traefik_check(self):
-    assert parse_batch(BATCH)[0].traefik_reachable is True
+    assert snapshots(BATCH)[0].traefik_reachable is True
 
   @pytest.mark.parametrize("result_code, expected", [(0, True), (2, False)])
   def test_traefik_is_reachable_only_when_the_check_succeeded(self, result_code, expected):
-    snapshot, = parse_batch({"metrics": [metric("net_response", result_code=result_code)]})
+    snapshot, = snapshots({"metrics": [metric("net_response", result_code=result_code)]})
     assert snapshot.traefik_reachable is expected
 
   def test_no_check_in_the_report_is_unknown_not_down(self):
-    snapshot, = parse_batch({"metrics": [metric("cpu", usage_idle=90)]})
+    snapshot, = snapshots({"metrics": [metric("cpu", usage_idle=90)]})
     assert snapshot.traefik_reachable is None
 
   def test_network_counters_are_summed_over_interfaces_without_the_protocol_totals(self):
@@ -80,11 +84,11 @@ class TestParseBatch:
         metric("net", tags={"interface": "ens4"}, bytes_recv=50, bytes_sent=5),
         metric("net", tags={"interface": "all"}, bytes_recv=9999, bytes_sent=9999),
     ]}
-    host = parse_batch(batch)[0].host
+    host = snapshots(batch)[0].host
     assert (host.net_rx_bytes, host.net_tx_bytes) == (150, 15)
 
   def test_a_measurement_that_is_missing_is_none(self):
-    host = parse_batch({"metrics": [metric("cpu", usage_idle=90)]})[0].host
+    host = snapshots({"metrics": [metric("cpu", usage_idle=90)]})[0].host
     assert host.cores is None and host.mem_total is None and host.net_rx_bytes is None
 
   def test_a_container_with_no_status_record_is_left_out(self):
@@ -92,15 +96,15 @@ class TestParseBatch:
         metric("docker_container_mem", tags={"container_name": "orphan"}, usage=5),
         status("web"),
     ]}
-    assert set(parse_batch(batch)[0].containers) == {"web"}
+    assert set(snapshots(batch)[0].containers) == {"web"}
 
   def test_a_gap_between_gathers_makes_separate_snapshots(self):
     interval_ms = config.REPORT_INTERVAL_SECONDS * 1000
     batch = {"metrics": [metric("cpu", 0, usage_idle=1), metric("cpu", 3 * interval_ms, usage_idle=2)]}
-    assert [s.host.cpu_idle_percent for s in parse_batch(batch)] == [1, 2]
+    assert [s.host.cpu_idle_percent for s in snapshots(batch)] == [1, 2]
 
-  def test_an_empty_batch_has_no_snapshots(self):
-    assert parse_batch({"metrics": []}) == []
+  def test_an_empty_batch_has_no_gathers(self):
+    assert parse_batch({"metrics": []}) == {}
 
   @pytest.mark.parametrize("batch", [
       [], "text", {}, {"metrics": "x"},
@@ -116,8 +120,48 @@ class TestParseBatch:
       parse_batch(batch)
 
 
+def gather_head(seconds):
+  return [metric("cpu", seconds * 1000, usage_idle=seconds), status("web", seconds * 1000 + 500)]
+
+
+def gather_tail(seconds):
+  return [metric("docker_container_mem", seconds * 1000 + 2000, {"container_name": "web"}, usage=5)]
+
+
+class TestAssemble:
+  def test_a_gather_split_over_two_reports_is_one_snapshot_with_its_status_and_stats(self):
+    reports = WorkerReports()
+    assert reports.assemble("w1", parse_batch({"metrics": gather_head(1000)})) == []
+    complete, = reports.assemble("w1", parse_batch({"metrics": gather_tail(1000) + gather_head(1010)}))
+    assert complete.host.cpu_idle_percent == 1000
+    assert (complete.containers["web"].status, complete.containers["web"].mem_bytes) == ("running", 5)
+
+  def test_the_newest_gather_waits_for_a_later_one(self):
+    reports = WorkerReports()
+    assert reports.assemble("w1", parse_batch({"metrics": gather_head(1000) + gather_tail(1000)})) == []
+    complete, = reports.assemble("w1", parse_batch({"metrics": gather_head(1010)}))
+    assert complete.containers["web"].mem_bytes == 5
+
+  def test_a_held_gather_whose_arrival_is_no_longer_current_is_dropped(self, clock):
+    reports = WorkerReports()
+    reports.assemble("w1", parse_batch({"metrics": gather_head(1000)}))
+    clock.advance(timedelta(seconds=config.REPORT_STALE_SECONDS + 1))
+    assert reports.assemble("w1", parse_batch({"metrics": gather_head(1100)})) == []
+
+  def test_each_worker_holds_its_own(self):
+    reports = WorkerReports()
+    reports.assemble("w1", parse_batch({"metrics": gather_head(1000)}))
+    assert reports.assemble("w2", parse_batch({"metrics": gather_head(1010)})) == []
+
+  def test_forget_drops_a_held_gather(self):
+    reports = WorkerReports()
+    reports.assemble("w1", parse_batch({"metrics": gather_head(1000)}))
+    reports.forget("w1")
+    assert reports.assemble("w1", parse_batch({"metrics": gather_head(1010)})) == []
+
+
 def snapshots_at(seconds):
-  return parse_batch({"metrics": [metric("cpu", seconds * 1000, usage_idle=seconds)]})
+  return snapshots({"metrics": [metric("cpu", seconds * 1000, usage_idle=seconds)]})
 
 
 class TestReports:
@@ -213,7 +257,7 @@ class TestReports:
 
 
 def with_containers(seconds, *readings):
-  host = parse_batch({"metrics": [metric("cpu", seconds * 1000, usage_idle=90)]})[0].host
+  host = snapshots({"metrics": [metric("cpu", seconds * 1000, usage_idle=90)]})[0].host
   from services.worker_reports import Snapshot
   base = snapshots_at(seconds)[0]
   return [Snapshot(at=base.at, host=host, containers={c.name: c for c in readings}, traefik_reachable=True)]
