@@ -474,3 +474,28 @@ class TestPlatformCopies:
     assert sorted(worker.hostname for worker in Worker.select()) == ["w1", "w2"]
     assert (Instance.get().state_generation, ContainerEvent.select().count()) == (generation, 1)
     assert [path for path in config.DB_PATH.parent.iterdir() if ".restore-" in path.name] == []
+
+
+def test_a_checkpoint_leaves_every_committed_change_in_the_file_alone_and_the_wal_empty(db, tmp_path):
+  Project.create(name="demo", label="Demo")
+  wal = config.DB_PATH.with_name(f"{config.DB_PATH.name}-wal")
+  assert wal.stat().st_size > 0
+
+  Database().checkpoint()
+
+  assert wal.stat().st_size == 0
+  copy = tmp_path / "copy.db"
+  copy.write_bytes(config.DB_PATH.read_bytes())
+  with contextlib.closing(sqlite3.connect(copy)) as file:
+    assert file.execute("SELECT name FROM project").fetchall() == [("demo",)]
+
+
+def test_a_checkpoint_another_connection_holds_up_is_logged_and_does_not_fail(db, caplog):
+  Project.create(name="demo", label="Demo")
+  db.execute_sql("PRAGMA busy_timeout = 50")
+  with contextlib.closing(sqlite3.connect(config.DB_PATH)) as reader:
+    reader.execute("BEGIN")
+    reader.execute("SELECT count(*) FROM project").fetchone()
+    with caplog.at_level(logging.WARNING, logger="services.db.database"):
+      Database().checkpoint()
+  assert "could not be emptied" in caplog.text

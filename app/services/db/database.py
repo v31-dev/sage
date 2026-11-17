@@ -105,3 +105,10 @@ class Database(Base):
       if datetime.fromtimestamp(path.stat().st_mtime, UTC).replace(tzinfo=None) < before:
         path.unlink(missing_ok=True)
         logger.info(f"Removed {path.name}, the safety copy of an interrupted restore.")
+
+  def checkpoint(self):
+    """Writes everything the WAL holds into the database file and empties the WAL, so the file alone holds every
+    committed change: what a stop does last. A checkpoint that can't finish (another connection busy) is logged."""
+    busy, _, _ = db.execute_sql("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+    if busy:
+      logger.warning("The database's WAL could not be emptied: another connection was busy.")

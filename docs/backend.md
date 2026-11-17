@@ -187,8 +187,10 @@ the `TaskQueue` (`QueueState`: `running`, `paused`, `restoring`, `stopping`), ex
   that is running finishes first.
 - **Stop signal** (`app/main.py`). The first SIGTERM/SIGINT shuts the scheduler down and
   stops the queue: queued tasks, and any added later (e.g. a follow-up queued by a
-  finishing task), are recorded as `cancelled`; running ones finish, then the API server
-  stops. There is no cap in Sage: the runtime's stop grace period bounds it. A second
+  finishing task), are recorded as `cancelled`; running ones finish, the database's WAL is
+  written into `data.db` and emptied (`Database.checkpoint`), so the file alone holds every
+  committed change, then the API server stops. The `-wal` and `-shm` files stay, the WAL
+  empty, since other threads' connections are open until the process exits. There is no cap in Sage: the runtime's stop grace period bounds it. A second
   signal stops right away. The ingest server (`api_ingest`) doesn't handle signals, so
   worker logs keep arriving until the process exits.
 

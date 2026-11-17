@@ -16,6 +16,7 @@ from scheduler import shutdown as shutdown_scheduler
 from scheduler import start as start_scheduler
 from services.certs import Certs
 from services.cloudflare import Cloudflare
+from services.db.database import Database
 from services.db.encryption import initialize_encryption
 from services.db.migrator import SchemaRefused
 from services.manager import Manager
@@ -94,6 +95,7 @@ class Server(uvicorn.Server):
       await asyncio.sleep(0.5)
     logger.info("Stopping: no tasks running.")
     await Tailscale().close()
+    Database().checkpoint()
     super().handle_exit(sig, None)
 
 
