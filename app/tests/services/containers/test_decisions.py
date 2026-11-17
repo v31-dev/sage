@@ -337,7 +337,7 @@ def test_every_combination_of_facts_gets_the_correction_its_rules_give():
 
 MAINTENANCE = {
     "a manual backup of a stopped container": ("backup_stopped", STOPPED_OK, APPLIED, RuntimeReading("absent"), None),
-    "a manual backup after a failure that left it stopped": ("backup_stopped", FAILED, APPLIED, RuntimeReading("exited"), None),
+    "a manual backup after a failure that left it stopped": ("backup_stopped", FAILED, APPLIED, RuntimeReading("exited"), "failed"),
     "a manual backup of a running container": ("backup_stopped", RUNNING_OK, APPLIED, RuntimeReading("running", "d1"), "running"),
     "a manual backup of one stopped by its record that runs": ("backup_stopped", STOPPED_OK, APPLIED, RuntimeReading("running", "d1"),
                                                                "running"),
@@ -354,6 +354,7 @@ MAINTENANCE = {
     "an automatic backup of one never deployed": ("backup_preserve", None, None, RuntimeReading("absent"), "not_deployed"),
     "a restore into a stopped container": ("restore_stopped", STOPPED_OK, APPLIED, RuntimeReading("absent"), None),
     "a restore into one never deployed": ("restore_stopped", None, None, RuntimeReading("absent"), None),
+    "a restore after a failure that left it stopped": ("restore_stopped", FAILED, APPLIED, RuntimeReading("exited"), "failed"),
     "a restore into a running container": ("restore_stopped", RUNNING_OK, APPLIED, RuntimeReading("running", "d1"), "running"),
     "a restore into one never deployed that runs": ("restore_stopped", None, None, RuntimeReading("running", "d1"), "running"),
 }
@@ -372,12 +373,14 @@ def test_every_combination_gets_the_backup_refusal_its_rules_give():
     result = maintenance_refusal(contract, settled, applied, reading)
     running = reading is not None and reading.state in RUNNING
     facts = (contract, settled, applied, reading)
-    if contract == "restore_stopped":
-      assert result == ("running" if running or (settled is not None and settled.runtime_goal == "running") else None), facts
+    if contract == "restore_stopped" and settled is None:
+      assert result == ("running" if running else None), facts
     elif settled is None:
       assert result == "not_deployed", facts
-    elif contract == "backup_stopped":
-      assert result == (None if settled.runtime_goal == "stopped" and not running else "running"), facts
+    elif contract != "backup_preserve" and (settled.runtime_goal == "running" or running):
+      assert result == "running", facts
+    elif contract != "backup_preserve":
+      assert result == ("failed" if settled.result == "failed" else None), facts
     elif settled.result == "failed":
       assert result == "failed", facts
     else:

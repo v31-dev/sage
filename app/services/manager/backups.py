@@ -15,9 +15,9 @@ from services.backups.decisions import SlotRow, slot_due
 from services.backups.keys import VOLUME_ARCHIVE_SUFFIX, archive_name, archive_scope, archive_write_scope, taken_at, volume_archive_key
 from services.containers.decisions import maintenance_refusal
 from services.containers.placement import placement_dir, placement_scope
-from services.containers.record import Authority, Baseline, Settled
+from services.containers.record import Baseline, Settled
 from services.containers.targets import Containers
-from services.db.models import Application, Backup, Container, Instance, Project, Volume
+from services.db.models import Application, Backup, Container, Project, Volume
 from services.history import record_container_event
 from services.notification import Notifications
 from services.s3 import S3, S3Session
@@ -163,7 +163,8 @@ class BackupsMixin:
 
   async def backup_container(self, container_id: str, backup_ids: list[str], storage_id: str):
     """Takes the backups of a stopped container's volumes into the store it was requested for, then commits it stopped
-    and succeeded. Refused while it runs, or once the configured store is another; an archive that fails fails it.
+    and succeeded. Refused while it runs, after a failed action, or once the configured store is another; an archive
+    that fails fails it.
     Its backups are cancelled when the container is gone."""
     session = configured_session(storage_id)
     backups = list(Backup.select().where(Backup.id.in_(backup_ids)))
@@ -242,9 +243,9 @@ class BackupsMixin:
 
   async def restore_container(self, container_id: str, backup_id: str, volume_id: str, storage_id: str):
     """Replaces the container's copy of the volume with the backup, read from the store it was requested for, and
-    commits the container stopped and succeeded. Refused while it runs, once the configured store is another, or when
-    the selected backup or the volume is gone; a failed restore leaves it stopped and in error,
-    the volume possibly part replaced, and a Deploy allowed."""
+    commits the container stopped and succeeded. Refused while it runs or after a failed action, once the configured
+    store is another, or when the selected backup or the volume is gone; a failed restore leaves it stopped and in
+    error, the volume possibly part replaced, and a Deploy or Stop allowed."""
     session = configured_session(storage_id)
     backup = Backup.get_or_none((Backup.id == backup_id) & Backup.deleted_at.is_null() & (Backup.status == "succeeded"))
 
@@ -291,15 +292,15 @@ class BackupsMixin:
                            f"{taken_at(backup.s3_path)}.", "success", page)
 
   def _request_refusal(self, contract: str, containers: list[Container]) -> str | None:
-    """The first refusal `maintenance_refusal` gives one of the containers, from its record and its runtime as held."""
-    instance, states = Instance.get(), self.container_states(containers)
+    """The first refusal one of the containers gives: `not_stopped` unless it is inactive (its record this Sage's, its
+    runtime current and stopped), then what `maintenance_refusal` gives from that record and runtime."""
+    states = self.container_states(containers)
     for container in containers:
       state = states[container.id]
+      if state.view.headline != "inactive":
+        return "not_stopped"
       record = state.target.record
-      kept = record if record is not None and record.authority == Authority(
-          instance.id, instance.state_generation, container.id) else None
-      refusal = maintenance_refusal(contract, kept.settled if kept else None, None,
-                                    state.runtime.reading if state.runtime.knowledge == "known" else None)
+      refusal = maintenance_refusal(contract, record.settled if record else None, None, state.runtime.reading)
       if refusal is not None:
         return refusal
     return None

@@ -24,6 +24,7 @@ from services.manager.lifecycle import REFUSALS
 from services.manager.queue import SCOPES
 from services.s3 import S3
 from services.tailscale import Tailscale
+from services.worker_reports import HostReading, Snapshot, WorkerReports
 from tests.services.manager.test_containers import PAGE, VERIFIED, Lifecycle, Worker, authority, deployed, events, place, worker_record
 from utils.archive import decrypt_file
 from utils.common import get_env, utcnow
@@ -190,6 +191,14 @@ def ids(volumes):
   return [volume.id for volume in volumes]
 
 
+async def never_deployed(container):
+  """The container's record read as absent and a current report from its worker listing no runtime of it."""
+  from services.containers.targets import Containers
+  await Containers().read(container)
+  WorkerReports().accept(container.worker_id, [
+      Snapshot(at=VERIFIED, host=HostReading(*([None] * 13)), containers={}, traefik_reachable=True)])
+
+
 def queued_backups(container, volumes, store_id="s1", automatic=False):
   """The container's backups of the volumes recorded queued, as their request does; their ids."""
   return add_backups(store_id, utcnow(), automatic, [f"base/{volume_archive_key(volume.id, container.id, archive_name(utcnow()))}"
@@ -218,7 +227,7 @@ def steps(worker_host):
   return log
 
 
-pytestmark = pytest.mark.usefixtures("thread_connections", "in_task")
+pytestmark = pytest.mark.usefixtures("thread_connections", "in_task", "clock")
 
 
 class TestManualBackup:
@@ -243,19 +252,15 @@ class TestManualBackup:
     await take(manager.backup_container, container, [volumes[1]])
     assert notices() == [("success", "Backup of logs from Demo / Web on w1 created.", PAGE)]
 
-  async def test_a_failure_after_a_stop_is_cleared_by_a_backup(self, manager, worker_host, container, volumes):
-    failed = stopped(container)
-    place(container, TargetRecord(failed.authority, failed.applied, Settled("d1", "stopped", "failed", VERIFIED, "pull"), failed.operation))
-    await take(manager.backup_container, container, volumes)
-    assert worker_record(container).settled.result == "succeeded"
-
   @pytest.mark.parametrize("setup, refusal", [
-      ("running", "running"), ("never deployed", "not_deployed"), ("another store", "store_changed"),
+      ("running", "running"), ("never deployed", "not_deployed"), ("failed", "failed"), ("another store", "store_changed"),
       ("no volumes", "no_volumes")])
   async def test_it_is_refused_with_the_container_untouched(self, manager, worker_host, container, volumes, setup, refusal):
     asked, store_id = volumes, "s1"
     if setup == "running":
       running(container, worker_host)
+    elif setup == "failed":
+      place(container, replace(stopped(container), settled=Settled("d1", "stopped", "failed", VERIFIED, "pull")))
     elif setup != "never deployed":
       place(container, stopped(container))
     if setup == "another store":
@@ -336,7 +341,7 @@ class TestManualRequests:
   async def test_it_is_refused_while_a_container_runs(self, manager, worker_host, container, others, volumes):
     await self.held(container, stopped(container))
     await self.held(others, deployed(others))
-    with pytest.raises(Conflict, match="it runs"):
+    with pytest.raises(Conflict, match="^A container of this application can't be backed up: it is not stopped.$"):
       manager.request_backup(container.application_id, ids(volumes))
     assert manager.task_queue.snapshot()["queued"] == []
 
@@ -350,10 +355,30 @@ class TestManualRequests:
     [backup_id] = add_backups(store.identity, utcnow(), False, [store.get_full_path(volume_archive_key(
         volumes[0].id, container.id, archive_name(utcnow())))], [volumes[0]], container)
     Backup.update(status="succeeded").where(Backup.id == backup_id).execute()
-    with pytest.raises(Conflict, match="^Restore refused: an earlier operation on it is still being recovered.$"):
+    with pytest.raises(Conflict, match="^This container can't receive a restore: it is not stopped.$"):
       manager.request_restore(others.id, backup_id, volumes[0].id)
     assert manager.task_queue.snapshot()["queued"] == []
     assert manager.request_restore(container.id, backup_id, volumes[0].id)
+
+  @pytest.mark.parametrize("setup", ["failed", "unreachable"])
+  async def test_backup_and_restore_are_refused_while_a_stopped_container_is_in_error(
+          self, manager, worker_host, store, container, volumes, setup):
+    from services.containers.targets import Containers
+    if setup == "failed":
+      await self.held(container, replace(stopped(container), settled=Settled("s0", "stopped", "failed", VERIFIED, "boom")))
+    else:
+      await self.held(container, stopped(container))
+      worker_host.reachable = False
+      await Containers().read(container)
+    assert manager.container_states([container])[container.id].view.headline == "error"
+    with pytest.raises(Conflict, match="^A container of this application can't be backed up: it is not stopped.$"):
+      manager.request_backup(container.application_id, ids(volumes))
+    [backup_id] = add_backups(store.identity, utcnow(), False, [store.get_full_path(volume_archive_key(
+        volumes[0].id, container.id, archive_name(utcnow())))], [volumes[0]], container)
+    Backup.update(status="succeeded").where(Backup.id == backup_id).execute()
+    with pytest.raises(Conflict, match="^This container can't receive a restore: it is not stopped.$"):
+      manager.request_restore(container.id, backup_id, volumes[0].id)
+    assert manager.task_queue.snapshot()["queued"] == []
 
   def test_it_is_refused_for_volumes_of_another_application(self, manager, container, volumes):
     with pytest.raises(ValueError):
@@ -525,6 +550,64 @@ class TestRetries:
     with pytest.raises(TaskFailed):
       await take(manager.backup_container, container, volumes)
     assert events(container) == [("backup_stopped", "rejected", {"refusal": "unreachable"})]
+
+
+class TestVolumeDeletion:
+  @pytest.fixture
+  def others(self, application, volumes):
+    from services.db.models import Worker as Host
+    return Container.create(application=application, worker=Host.create(hostname="w2", subdomain="blue"))
+
+  async def held(self, container, record):
+    from services.containers.targets import Containers
+    place(container, record)
+    await Containers().read(container)
+
+  def refused(self, manager, volume):
+    with pytest.raises(Conflict, match="^A volume can be deleted only while every container of its application is stopped.$"):
+      manager.request_volume_deletion(volume.id)
+    assert Volume.get_or_none(Volume.id == volume.id) is not None
+    assert not manager.has_task(("delete_volume_archives",))
+
+  @pytest.mark.parametrize("setup, headline", [
+      ("deployed", "active"), ("recovering", "recovering"), ("failed", "error"), ("unreachable", "error"),
+      ("never seen", "checking")])
+  async def test_it_is_refused_while_a_container_is_not_inactive(
+          self, manager, worker_host, container, others, volumes, setup, headline):
+    from services.containers.targets import Containers
+    await self.held(container, stopped(container))
+    if setup == "deployed":
+      await self.held(others, deployed(others))
+    elif setup == "recovering":
+      await self.held(others, replace(stopped(others), operation=Operation(
+          "d9", "deploy", "recovering", VERIFIED, 905, input_hash="a" * 64, outcome="interrupted")))
+    elif setup == "failed":
+      await self.held(others, replace(stopped(others), settled=Settled("s0", "stopped", "failed", VERIFIED, "boom")))
+    elif setup == "unreachable":
+      await self.held(others, stopped(others))
+      worker_host.reachable = False
+      await Containers().read(others)
+    else:
+      await Containers().read(others)
+    assert manager.container_states([others])[others.id].view.headline == headline
+    self.refused(manager, volumes[0])
+
+  @pytest.mark.parametrize("request_name", ["request_deploy", "request_stop"])
+  async def test_it_is_refused_while_a_request_of_a_container_waits(
+          self, manager, worker_host, container, others, volumes, request_name):
+    await self.held(container, stopped(container))
+    await self.held(others, stopped(others))
+    getattr(manager, request_name)(others.id)
+    self.refused(manager, volumes[0])
+
+  async def test_stopped_and_never_deployed_containers_let_it_go_with_its_archives(
+          self, manager, worker_host, container, others, volumes):
+    await self.held(container, stopped(container))
+    await never_deployed(others)
+    assert {state.view.headline for state in manager.container_states([container, others]).values()} == {"inactive"}
+    manager.request_volume_deletion(volumes[0].id)
+    assert Volume.get_or_none(Volume.id == volumes[0].id) is None
+    assert manager.has_task(("delete_volume_archives", "s1", volumes[0].id))
 
 
 class TestSettling:
@@ -835,6 +918,7 @@ class TestRestore:
       return []
 
     monkeypatch.setattr(worker_host, "sync_file", gated_sync)
+    await never_deployed(other)
     manager.request_restore(other.id, archived["data"].id, volumes[0].id)
     manager.task_queue.dispatch_tick()
     try:
@@ -866,13 +950,15 @@ class TestRestore:
     assert worker_host.runtime(other).startswith("running") and self.files(other, volumes[1]) == {"logs.txt": f"logs of {container.id}"}
 
   @pytest.mark.parametrize("setup, refusal", [
-      ("running", "running"), ("runs though stopped", "running"), ("another store", "store_changed"),
+      ("running", "running"), ("runs though stopped", "running"), ("failed", "failed"), ("another store", "store_changed"),
       ("backup in another store", "store_changed"), ("backup gone", "no_backup"), ("backup deleted", "no_backup"),
       ("volume gone", "no_volumes")])
   async def test_it_is_refused_with_the_container_untouched(self, manager, worker_host, container, volumes, archived, setup, refusal):
     store_id, backup = "s1", archived["data"]
     if setup == "running":
       running(container, worker_host)
+    elif setup == "failed":
+      place(container, replace(stopped(container), settled=Settled("d1", "stopped", "failed", VERIFIED, "pull")))
     elif setup == "runs though stopped":
       worker_host.run(container, "running d0")
     elif setup == "another store":
@@ -948,7 +1034,7 @@ class TestRestoreRequests:
     from services.containers.targets import Containers
     running(container, worker_host)
     await Containers().read(container)
-    with pytest.raises(Conflict, match="it runs"):
+    with pytest.raises(Conflict, match="^This container can't receive a restore: it is not stopped.$"):
       manager.request_restore(container.id, backup.id, volumes[0].id)
 
   def test_a_backup_in_another_store_is_refused(self, manager, container, volumes, backup):

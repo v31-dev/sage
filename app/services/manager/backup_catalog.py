@@ -56,8 +56,16 @@ class BackupCatalogMixin:
     logger.info(f"Deleted the archive {s3_path}.")
 
   def request_volume_deletion(self, volume_id: str):
-    """Deletes the volume (`delete_volume`), then queues the deletion of its archives in the configured store."""
+    """Deletes the volume (`delete_volume`), then queues the deletion of its archives in the configured store; refused
+    unless every container of its application is inactive with nothing queued on it, since a queued Deploy mounts the
+    volumes it was requested with."""
     volume = Volume.get_or_none(Volume.id == volume_id)
+    if volume is None:
+      raise LookupError("Volume not found.")
+    for container in Container.select().where(Container.application == volume.application_id):
+      state = self.container_states([container])[container.id]
+      if state.view.headline != "inactive" or state.queued:
+        raise Conflict("A volume can be deleted only while every container of its application is stopped.")
     delete_volume(volume_id)
     self.request_volume_archives_deletion([volume])
 

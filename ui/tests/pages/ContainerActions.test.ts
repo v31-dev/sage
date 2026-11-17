@@ -7,9 +7,11 @@ import DeleteContainerButton from '@/pages/Application/DeleteContainerButton.vue
 import DeployApplicationButton from '@/pages/Application/DeployApplicationButton.vue'
 import StopApplicationButton from '@/pages/Application/StopApplicationButton.vue'
 import VolumeBackupButton from '@/pages/Application/VolumeBackupButton.vue'
+import VolumeCard from '@/pages/Application/VolumeCard.vue'
 import {
   createVolumeBackup,
   deleteContainer,
+  deleteVolume,
   deployApplication,
   deployContainer,
   stopApplication,
@@ -29,6 +31,7 @@ vi.mock('@/services/api', async importOriginal => ({
   stopContainer: vi.fn(async () => ({ task_id: 't1' })),
   deleteContainer: vi.fn(async () => ({ task_id: 't1' })),
   createVolumeBackup: vi.fn(async () => ({ task_ids: [] })),
+  deleteVolume: vi.fn(async () => {}),
 }))
 
 // The confirmation dialog, confirmed at a click on its trigger.
@@ -243,5 +246,61 @@ describe('a volume backup', () => {
     })
 
     expect(wrapper.get('button').attributes('disabled')).toBeDefined()
+  })
+})
+
+describe('a volume delete', () => {
+  const volume = { name: 'data', path: '/data', backup_cron: null } as Volume
+
+  function mountCard(containers: Container[]) {
+    const loadApplication = vi.fn(async () => {})
+    const wrapper = mount(VolumeCard, {
+      props: { application: application(containers), volume, loadApplication },
+      global: {
+        stubs: {
+          ConfirmationButton: confirmation,
+          VolumeBackupButton: true,
+          VolumeRestoreDialog: true,
+        },
+      },
+    })
+    const button = wrapper.findAll('button').find(each => each.text() === 'Delete')!
+    return { wrapper, button, loadApplication }
+  }
+
+  it.each([
+    ['no containers', []],
+    ['every container stopped', [stopped('c1'), stopped('c2')]],
+  ])('with %s asks for the delete, then loads the page again', async (_name, containers) => {
+    const { wrapper, button, loadApplication } = mountCard(containers)
+
+    expect(wrapper.text()).not.toContain('Deleting a volume needs every container stopped.')
+    await button.trigger('click')
+    await flushPromises()
+
+    expect(deleteVolume).toHaveBeenCalledWith('demo', 'web', 'data')
+    expect(loadApplication).toHaveBeenCalledOnce()
+  })
+
+  it.each([
+    ['a container running', [stopped('c1'), container({ id: 'c2' })]],
+    [
+      'a container in error',
+      [
+        stopped('c1'),
+        stopped('c2', {
+          view: { headline: 'error', config: 'current', reason: 'unreachable', detail: null },
+        }),
+      ],
+    ],
+    [
+      'a stopped container with a Deploy waiting',
+      [stopped('c1', { queued: [{ operation: 'deploy', task_id: 't1', cancellable: true }] })],
+    ],
+  ])('is disabled with %s, and says why', (_name, containers) => {
+    const { wrapper, button } = mountCard(containers)
+
+    expect(button.attributes('disabled')).toBeDefined()
+    expect(wrapper.text()).toContain('Deleting a volume needs every container stopped.')
   })
 })

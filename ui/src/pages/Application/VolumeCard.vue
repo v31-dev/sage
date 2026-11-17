@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { toast } from 'vue-sonner'
 import { Edit, Trash } from 'lucide-vue-next'
 import {
@@ -38,6 +38,12 @@ interface Props {
 }
 
 const props = withDefaults(defineProps<Props>(), {})
+
+const deleteDisabled = computed(() =>
+  props.application.containers.some(
+    container => container.view.headline !== 'inactive' || container.queued.length > 0
+  )
+)
 
 const isEditVolumeDialogOpen = ref(false)
 const volume = ref({
@@ -113,6 +119,7 @@ async function onClickConfirmDelete() {
             :description="props.volume.name"
             :icon="Trash"
             destructive
+            :disabled="deleteDisabled"
             :onConfirm="onClickConfirmDelete"
           />
         </ButtonGroup>
@@ -131,6 +138,9 @@ async function onClickConfirmDelete() {
           {{ props.volume.backup_cron ? props.volume.backup_cron : 'N/A' }}
         </p>
       </div>
+      <p v-if="deleteDisabled" class="text-sm text-muted-foreground">
+        Deleting a volume needs every container stopped.
+      </p>
     </CardContent>
     <CardFooter class="border-t flex gap-2">
       <VolumeBackupButton

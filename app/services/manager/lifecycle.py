@@ -43,6 +43,7 @@ REFUSALS = {
     "store_changed": "the backup store is not the one it was requested for",
     "not_deployed": "it was never deployed",
     "running": "it runs, and it must be stopped first",
+    "not_stopped": "it is not stopped",
     "failed": "its last action failed",
     "unexpected_runtime": "its runtime is not what its last action left",
     "no_volumes": "none of the volumes asked for is configured",

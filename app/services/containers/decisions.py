@@ -74,18 +74,21 @@ def lifecycle_refusal(target: TargetRead, expected: Authority, contract: str) ->
 def maintenance_refusal(contract: str, settled: Settled | None, applied: Applied | None,
                         reading: RuntimeReading | None) -> str | None:
   """Why a backup or a volume restore may not begin on a container, from its last intentional outcome under this
-  Sage's current authority and its runtime (None when not known): a manual backup needs it stopped, and a restore too,
-  though one never deployed can receive data before its first Deploy; an automatic backup keeps the runtime it finds,
-  so it needs that outcome to have succeeded and the runtime to agree with it, running the deployment it applied."""
+  Sage's current authority and its runtime (None when not known): a manual backup needs it stopped by an outcome that
+  succeeded, and a restore too, though one never deployed can receive data before its first Deploy; an automatic
+  backup keeps the runtime it finds, so it needs that outcome to have succeeded and the runtime to agree with it,
+  running the deployment it applied."""
   running = reading is not None and reading.state in RUNNING
-  if contract == "restore_stopped":
-    return "running" if running or (settled is not None and settled.runtime_goal != "stopped") else None
+  if contract == "restore_stopped" and settled is None:
+    return "running" if running else None
   if settled is None:
     return "not_deployed"
-  if contract != "backup_preserve":
-    return "running" if settled.runtime_goal != "stopped" or running else None
+  if contract != "backup_preserve" and (settled.runtime_goal != "stopped" or running):
+    return "running"
   if settled.result != "succeeded":
     return "failed"
+  if contract != "backup_preserve":
+    return None
   if settled.runtime_goal == "running":
     agrees = running and applied is not None and reading.deployment_id == applied.deployment_id
   else:
