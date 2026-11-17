@@ -258,8 +258,9 @@ Main database:
   naming what failed and linking the running version's release, and the database is as it was. The side SQLite
   files (logs, task logs, metrics shards) carry their own `user_version` and steps the same way and are migrated at
   boot too; holding history only, one that doesn't fit, whose migration fails or that isn't a sound database is
-  recreated empty, so only `data.db`, migrated first, can stop the boot. Each file a run migrates, recreates or
-  refuses is appended to the migration history, `data/migrations.log` (`GET /api/migrations`) How to write a step:
+  recreated empty, so only `data.db`, migrated first, can stop the boot. What a run logs while it migrates,
+  recreates or refuses a file goes in its log, `data/migrations/migration-<run>.log` (`GET /api/migrations`). How to
+  write a step:
   [Migrations](development.md#migrations)
 
 A Domain row holds its configuration only. Its apply results and what was seen of its artifacts are memory, held by

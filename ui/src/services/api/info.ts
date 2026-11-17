@@ -62,35 +62,23 @@ export const refreshRelease = () => request<void>('POST', '/release/refresh')
 
 export const fetchHomeSummary = () => request<HomeSummary>('GET', '/summary')
 
-// A manual action a migration left, in the order to take it: where to take it (a worker, Cloudflare, the store, Sage),
-// the exact command when there is one, and why.
-export interface MigrationAction {
-  where: string
-  command: string | null
-  why: string
-}
-
-// One file a migration run changed or refused: from its version towards `to` (none for a file that wasn't a sound
-// database), with why it was started again empty or refused (`detail`).
-export interface MigrationFile {
-  file: string
-  from: number | null
-  to: number | null
-  outcome: 'migrated' | 'recreated' | 'refused'
-  detail: string | null
-  at: string
-  actions: MigrationAction[]
+// A line of a migration run's log: what it logged, or a manual action it left (CRITICAL, its command below it).
+export interface MigrationLogLine {
+  ts: string
+  level: string
+  message: string
 }
 
 // A migration run, at a start of Sage (`boot`) or a platform restore's install (`restore`), with the release that ran
-// it; refused when any of its files was, else recreated when one was started again empty.
+// it, whether a file was refused, how many manual actions it left and its log, the actions last.
 export interface MigrationRun {
   run: string
   trigger: 'boot' | 'restore'
   release: string
   at: string
-  outcome: MigrationFile['outcome']
-  files: MigrationFile[]
+  refused: boolean
+  actions: number
+  lines: MigrationLogLine[]
 }
 
 // The migration history, newest run first.

@@ -289,14 +289,18 @@ its owner's convergence. Nothing outside the databases is converted: an artifact
 reads (an S3 key, a file name, a DNS record) may be dropped, left behind or removed as an orphan, and the release notes
 name what is dropped.
 
-**History.** Each run, at a boot or a platform restore's install, appends a JSON line to `data/migrations.log` for
-every file it migrated, started again empty or refused, with the release, the versions and why
-(`app/services/db/migration_log.py`). It is outside the databases, since a refused run rolls its database back, and it
-is kept whole. A step can return the manual actions its change leaves, in order, each with where to take it (a
-worker, Cloudflare, the store, Sage), the exact command when there is one and why; the step builds them while it has
-both the old rows and the new ids, and the history keeps them with the file. `GET /api/migrations` gives the runs,
-newest first, and Settings → Upgrade shows them in its Migration
-history dialog, so a refused upgrade is visible once the previous release runs again. The manager also keeps the
+**History.** Each run, a boot's or a platform restore's install, has a log of its own,
+`data/migrations/migration-<run>.log` (`app/services/db/migration_log.py`): a first line naming the run, its trigger
+and release, then a JSON line for each line logged, kept whole. It is outside the databases, since a refused run rolls
+its database back. While a file migrates, the runner keeps every line its thread logs (time, level, message, at the
+configured `LOG_LEVEL`), so each file's versions and outcome are in the log itself ("Migrated [...] from version [0] to
+[1]", "Recreating [...] empty: ...", "Refused [...]: ...") and a step tells what it did by logging it, with ids and
+names in `[]`. A step can also return the manual actions its change leaves, each with where to take it (a worker,
+Cloudflare, the store, Sage), the exact command when there is one and why; the step builds them while it has both the
+old rows and the new ids, and they go in the log as CRITICAL lines, its command after a blank line. `GET
+/api/migrations` gives the runs, newest first, each with whether a file was refused, how many actions it left and its
+`lines`, the actions last. Settings → Upgrade shows them in its Migration logs dialog, a log like a task's, with a note
+above it when a run left steps to do by hand, so a refused upgrade is visible once the previous release runs again. The manager also keeps the
 latest run of its own start in memory (`MigrationRuns`), a boot's or a platform restore's, and `GET /api` carries it as
 `migration`: while it is there the Upgrade page shows a banner, and a run that left steps to do by hand opens the
 Upgrade page on it once in each browser.

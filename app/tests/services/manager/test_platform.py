@@ -537,7 +537,7 @@ class TestInfo:
 
   def test_it_shows_the_latest_migration_run_of_this_process(self, shown, data_dir):
     from services.db.migration_log import record
-    record("r1", "boot", str(data_dir / "data.db"), 0, 1, "migrated", None, [{"where": "Sage", "command": None, "why": "x"}])
+    record("r1", "boot", "migrated", [], [{"where": "Sage", "command": None, "why": "x"}])
     assert shown.info()["migration"] == {"run": "r1", "trigger": "boot", "release": config.VERSION, "outcome": "migrated",
                                          "actions": 1}
 

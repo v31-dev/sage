@@ -1,10 +1,14 @@
 """`data.db`'s migrations (`migrator.migrate`): its baseline and its steps."""
+import logging
+
 from peewee import SqliteDatabase
 
 import config
 from utils.common import get_env, new_id
 
 from . import migrator
+
+logger = logging.getLogger(__name__)
 
 # 0.1.3's `data.db`, as a fresh install of it creates it.
 BASELINE = """
@@ -129,26 +133,40 @@ def from_0_1_3(db: SqliteDatabase) -> list[dict]:
 
   instances, projects, applications = rows("instance"), rows("project"), rows("application")
   workers, volumes, containers, domains = rows("worker"), rows("volume"), rows("container"), rows("domain")
+  # 0.1.3 kept each application's runtime and volumes on a worker under its qualified name.
+  qualified = {row["id"]: f"{row['project_id']}-{row['name']}" for row in applications}
   stamp = ("created_at", "updated_at")
   new_volumes = [{**{key: row[key] for key in (*stamp, "name", "path", "backup_cron", "application_id")}, "id": new_id()}
                  for row in volumes]
   new_containers = [{**{key: row[key] for key in (*stamp, "application_id", "worker_id")}, "id": new_id(),
                      "intent": None} for row in containers]
+  new_workers = [{**{key: row[key] for key in ("hostname", *stamp)}, "subdomain": new_id(), "removing": 0}
+                 for row in workers]
   rebuild("instance", [{**{key: row[key] for key in ("id", *stamp)}, "state_generation": new_id()} for row in instances])
   rebuild("project", projects)
   rebuild("application", [{key: row[key] for key in (
       "id", *stamp, "project_id", "name", "label", "description", "type", "image", "repo", "path", "env", "args",
       "build_secrets", "command", "container_count")} for row in applications])
-  rebuild("worker", [{**{key: row[key] for key in ("hostname", *stamp)}, "subdomain": new_id(), "removing": 0}
-                     for row in workers])
+  rebuild("worker", new_workers)
   rebuild("volume", new_volumes)
   rebuild("container", new_containers)
+  logger.info(f"Kept [{len(instances)}] instance, [{len(projects)}] projects and [{len(applications)}] applications with "
+              "their ids.")
+  for row in new_workers:
+    logger.info(f"Worker [{row['hostname']}] has the subdomain [{row['subdomain']}].")
+  for old, row in zip(volumes, new_volumes):
+    logger.info(f"Volume [{row['name']}] of [{qualified[row['application_id']]}] is [{row['id']}], was [{old['id']}].")
+  for old, row in zip(containers, new_containers):
+    logger.info(f"Container of [{qualified[row['application_id']]}] on [{row['worker_id']}] is [{row['id']}], was "
+                f"[{old['id']}].")
   for table in ("domain", "backup", "notification", "task", "container_event", "worker_event"):
+    if table in db.get_tables() and (count := db.execute_sql(f'SELECT count(*) FROM "{table}"').fetchone()[0]):
+      logger.info(f"Emptied [{table}]: [{count}] rows.")
     rebuild(table, [])
+  if count := db.execute_sql('SELECT count(*) FROM "event"').fetchone()[0]:
+    logger.info(f"Dropped [event] with its [{count}] rows.")
   db.execute_sql('DROP TABLE "event"')
 
-  # 0.1.3 kept each application's runtime and volumes on a worker under its qualified name.
-  qualified = {row["id"]: f"{row['project_id']}-{row['name']}" for row in applications}
   home, domain = config.WORKER_HOME_DIR, get_env("DOMAIN")
   actions = []
   for hostname in sorted({row["worker_id"] for row in new_containers}):
@@ -156,32 +174,32 @@ def from_0_1_3(db: SqliteDatabase) -> list[dict]:
                     key=lambda row: qualified[row["application_id"]])
     for container in placed:
       old = f"{home}/applications/{qualified[container['application_id']]}"
-      actions.append({"where": f"worker {hostname}", "command": f'[ ! -f {old}/docker-compose.yml ] || docker compose '
+      actions.append({"where": f"Worker [{hostname}]", "command": f'[ ! -f {old}/docker-compose.yml ] || docker compose '
                       f'-f {old}/docker-compose.yml down',
-                      "why": f"Stops {qualified[container['application_id']]} as 0.1.3 ran it."})
+                      "why": f"stop [{qualified[container['application_id']]}] as 0.1.3 ran it."})
     for container in placed:
       old = f"{home}/applications/{qualified[container['application_id']]}"
       for volume in sorted((row for row in new_volumes if row["application_id"] == container["application_id"]),
                            key=lambda row: row["name"]):
         new = f"{home}/containers/{container['id']}/volumes/{volume['id']}"
-        actions.append({"where": f"worker {hostname}", "command": f"if [ -e {new} ]; then echo '{new} exists already'; "
+        actions.append({"where": f"Worker [{hostname}]", "command": f"if [ -e {new} ]; then echo '{new} exists already'; "
                         f"else mkdir -p {new.rsplit('/', 1)[0]} && mv {old}/volumes/{volume['name']} {new}; fi",
-                        "why": f"Moves the data of {qualified[container['application_id']]}'s volume {volume['name']} "
+                        "why": f"move the data of [{qualified[container['application_id']]}]'s volume [{volume['name']}] "
                         "to where this version keeps it, before the container is deployed."})
-    actions.append({"where": f"worker {hostname}", "command": f"rm -rf {home}/applications && rm -f " + " ".join(
+    actions.append({"where": f"Worker [{hostname}]", "command": f"rm -rf {home}/applications && rm -f " + " ".join(
         f"{home}/revisions/{qualified[row['application_id']]}" for row in placed),
-        "why": "Removes what 0.1.3 left of its applications, once every move above has succeeded."})
+        "why": "remove what 0.1.3 left of its applications, once every move above has succeeded."})
   actions.append({"where": "Cloudflare", "command": None,
-                  "why": f"Delete the DNS record *.{domain} and the tunnel {domain}-sage. 0.1.3 routed every public "
+                  "why": f"Delete the DNS record [*.{domain}] and the tunnel [{domain}-sage]. 0.1.3 routed every public "
                   "name through them; until they're gone, a name without its own record reaches the idle tunnel "
                   "and gets Cloudflare's error page."})
-  actions.append({"where": "the S3 store", "command": None,
-                  "why": "0.1.3's backups, under backups/platform/ and backups/applications/ without an id in their "
+  actions.append({"where": "S3 store", "command": None,
+                  "why": "0.1.3's backups, under [backups/platform/] and [backups/applications/] without an id in their "
                          "names, are no longer listed: keep them for a restore by hand, or delete them."})
   for row in sorted(domains, key=lambda row: (qualified[row["application_id"]], row["type"], row["name"])):
     actions.append({"where": "Sage", "command": None,
-                    "why": f"Add the {row['type']} domain {row['name']} (port {row['port']}) of "
-                    f"{qualified[row['application_id']]} again, linked to the container that serves it."})
+                    "why": f"Add the {row['type']} domain [{row['name']}] (port [{row['port']}]) of "
+                    f"[{qualified[row['application_id']]}] again, linked to the container that serves it."})
   return actions
 
 

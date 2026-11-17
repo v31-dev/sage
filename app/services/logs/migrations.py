@@ -1,5 +1,9 @@
 """The log files' migrations (`migrator.migrate`): each kind's baseline and steps."""
+import logging
+
 from peewee import SqliteDatabase
+
+logger = logging.getLogger(__name__)
 
 # 0.1.3's application shard (`logs/<project>-<app>.db`), as it created one; the full-text index makes its own tables.
 APPLICATION_BASELINE = """
@@ -41,6 +45,7 @@ def tasks_from_0_1_3(db: SqliteDatabase):
   db.execute_sql('DROP INDEX "tasklogs_task_id_sub_task_id"')
   db.execute_sql('ALTER TABLE "tasklogs" DROP COLUMN "sub_task_id"')
   db.execute_sql('CREATE INDEX "tasklogs_task_id" ON "tasklogs" ("task_id")')
+  logger.info("Dropped the column [sub_task_id] from [tasklogs].")
 
 
 TASKS_STEPS = [tasks_from_0_1_3]

@@ -1,9 +1,8 @@
-"""The migration history, `migrations.log` in the data directory: a JSON line for each SQLite file a migration run
-changed or refused, kept whole. It lives outside the databases, since a refused run rolls its database back and an
-earlier release reads the history of a later one it was reverted from."""
+"""The migration history: a log for each run in the data directory's `migrations/` folder (`migration-<run>.log`), a
+JSON line each, kept whole. It lives outside the databases, since a refused run rolls its database back and an earlier
+release reads the history of a later one it was reverted from."""
 import json
 import logging
-from pathlib import Path
 
 import config
 from services.base import Base
@@ -39,43 +38,46 @@ class MigrationRuns(Base):
       return next(reversed(self.runs.values()), None)
 
 
-def record(run: str, trigger: str, path: str, before: int | None, after: int | None, outcome: str, detail: str | None,
-           actions: list[dict] | None = None):
-  """Appends what a run did to the file at `path`: `outcome` is migrated, recreated or refused, from version `before`
-  towards `after` (None for a file that wasn't a sound database), with the manual `actions` its steps left. A history
-  that can't be written is a warning, never the migration's failure."""
+def record(run: str, trigger: str, outcome: str, lines: list[dict], actions: list[dict] | None = None):
+  """Appends to the run's log what it did to one file: the `lines` logged meanwhile (ts, level, message), then each
+  manual action its steps left (`where`, the `command` or None, `why`) as a CRITICAL line, its command after a blank
+  line; `outcome` (migrated, recreated or refused) counts towards the run's. A log that can't be written is a warning,
+  never the migration's failure."""
+  now = utcnow().isoformat()
+  entries = [*lines, *({"ts": now, "level": "CRITICAL", "action": True,
+                        "message": f"{action['where']} - Run command to {action['why']}\n\n{action['command']}"
+                        if action["command"] else f"{action['where']} - {action['why']}"} for action in actions or [])]
+  MigrationRuns().saw(run, trigger, outcome, len(actions or []))
+  folder = config.DATA_DIR / "migrations"
   try:
-    name = str(Path(path).relative_to(config.DATA_DIR))
-  except ValueError:
-    name = str(path)
-  entry = {"run": run, "trigger": trigger, "at": utcnow().isoformat(), "release": config.VERSION, "file": name,
-           "from": before, "to": after, "outcome": outcome, "detail": detail, "actions": actions or []}
-  MigrationRuns().saw(run, trigger, outcome, len(entry["actions"]))
-  try:
-    with open(config.DATA_DIR / "migrations.log", "a") as log:
-      log.write(json.dumps(entry) + "\n")
+    folder.mkdir(exist_ok=True)
+    path = folder / f"migration-{run}.log"
+    header = [] if path.exists() else [{"run": run, "trigger": trigger, "release": config.VERSION, "at": now}]
+    with open(path, "a") as log:
+      log.write("".join(json.dumps(entry) + "\n" for entry in (*header, *entries)))
   except OSError as error:
-    logger.warning(f"Could not write the migration history: {error}")
+    logger.warning(f"Could not write the migration log: {error}")
 
 
 def migration_runs() -> list[dict]:
-  """The runs in the history, newest first: each with its trigger, release, start, overall outcome (`OUTCOMES`) and its
-  files in the order they ran. A line that isn't a whole
-  entry (a write cut off) is skipped."""
-  runs: dict[str, dict] = {}
-  try:
-    lines = (config.DATA_DIR / "migrations.log").read_text().splitlines()
-  except FileNotFoundError:
-    return []
-  for line in lines:
-    try:
-      entry = json.loads(line)
-      run = runs.setdefault(entry["run"], {"run": entry["run"], "trigger": entry["trigger"], "release": entry["release"],
-                                           "at": entry["at"], "files": []})
-      run["files"].append({**{key: entry[key] for key in ("file", "from", "to", "outcome", "detail", "at")},
-                           "actions": entry.get("actions", [])})
-    except (ValueError, KeyError, TypeError):
+  """The runs' logs, newest first: each run's trigger, release, start, whether a file was refused, how many manual
+  actions it left, and its `lines` as a log shows them, the actions last. A log without its first line, or a line that
+  isn't whole (a write cut off), is skipped."""
+  runs = []
+  for path in (config.DATA_DIR / "migrations").glob("migration-*.log"):
+    entries = []
+    for line in path.read_text().splitlines():
+      try:
+        entries.append(json.loads(line))
+      except ValueError:
+        continue
+    if not entries or not isinstance(entries[0], dict) or not {"run", "trigger", "release", "at"} <= entries[0].keys():
       continue
-  for run in runs.values():
-    run["outcome"] = max((file["outcome"] for file in run["files"]), key=OUTCOMES.index)
-  return sorted(runs.values(), key=lambda run: run["at"], reverse=True)
+    lines = [entry for entry in entries[1:]
+             if isinstance(entry, dict) and {"ts", "level", "message"} <= entry.keys()]
+    actions = [line for line in lines if line.get("action")]
+    runs.append({**{key: entries[0][key] for key in ("run", "trigger", "release", "at")},
+                 "refused": any(line["level"] == "ERROR" for line in lines), "actions": len(actions),
+                 "lines": [{key: line[key] for key in ("ts", "level", "message")}
+                           for line in [*(line for line in lines if not line.get("action")), *actions]]})
+  return sorted(runs, key=lambda run: run["at"], reverse=True)

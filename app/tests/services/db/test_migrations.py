@@ -258,9 +258,10 @@ class TestTheBootPass:
 
     with contextlib.closing(sqlite3.connect(path)) as recreated:
       assert recreated.execute("SELECT count(*) FROM sqlite_master WHERE type = 'table'").fetchone()[0] > 0
-    [entry] = [json.loads(line) for line in (data_dir / "migrations.log").read_text().splitlines()]
-    assert (entry["file"], entry["from"], entry["outcome"]) == (f"{kind}/{path.name}", None, "recreated")
-    assert entry["detail"] == "it was not a sound database (file is not a database)."
+    from services.db.migration_log import migration_runs
+    [run] = migration_runs()
+    assert [(line["level"], line["message"]) for line in run["lines"]] == [
+        ("WARNING", f"Recreating [{path}] empty: it was not a sound database (file is not a database).")]
 
   def test_a_file_that_is_not_sound_goes_with_its_wal_files_and_nothing_else(self, data_dir):
     (data_dir / "logs").mkdir()

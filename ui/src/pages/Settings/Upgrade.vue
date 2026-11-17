@@ -30,7 +30,7 @@ import {
 } from '@/services/api'
 import { useAppStore } from '@/stores/app'
 import { TONES } from '@/lib/tone'
-import MigrationHistoryButton from './MigrationHistoryButton.vue'
+import MigrationLogsButton from './MigrationLogsButton.vue'
 
 const appStore = useAppStore()
 const route = useRoute()
@@ -178,10 +178,10 @@ onUnmounted(() => {
             by hand.</template
           >
           <template v-else>Nothing is left to do by hand.</template>
-          <MigrationHistoryButton
+          <MigrationLogsButton
             :run="migration.run"
             :open="route.query.migration === migration.run"
-            label="Show the migration"
+            label="Show the migration logs"
           />
         </AlertDescription>
       </Alert>
@@ -256,7 +256,7 @@ onUnmounted(() => {
         <CardHeader>
           <CardTitle>How to upgrade</CardTitle>
           <CardDescription>Sage doesn't upgrade itself; you replace its container.</CardDescription>
-          <CardAction><MigrationHistoryButton /></CardAction>
+          <CardAction><MigrationLogsButton /></CardAction>
         </CardHeader>
         <CardContent>
           <ol class="list-decimal space-y-1 pl-5 text-sm">

@@ -1,5 +1,6 @@
 import contextlib
 import json
+import logging
 import os
 import re
 import sqlite3
@@ -45,8 +46,9 @@ ROWS = [
 
 
 @pytest.fixture
-def migrated(data_dir, monkeypatch):
-  """A 0.1.3 database with rows in every table, after this version's boot."""
+def migrated(data_dir, monkeypatch, caplog):
+  """A 0.1.3 database with rows in every table, after this version's boot, logged at INFO as production is."""
+  caplog.set_level(logging.INFO)
   monkeypatch.setattr(encryption, "_cipher", None)
   encryption.initialize_encryption(os.environ["ENCRYPTION_KEY"])
   with contextlib.closing(sqlite3.connect(config.DB_PATH)) as file:
@@ -129,8 +131,17 @@ def test_a_failure_part_way_leaves_the_0_1_3_database_as_it_was(data_dir, monkey
     assert file.execute("PRAGMA user_version").fetchone()[0] == 0
 
 
-def actions():
-  return json.loads((config.DATA_DIR / "migrations.log").read_text().splitlines()[0])["actions"]
+def actions() -> list[dict]:
+  """The run's manual actions as its log ends with them: where, the command (after a blank line) and why."""
+  from services.db.migration_log import migration_runs
+  [run] = migration_runs()
+  found = []
+  for line in run["lines"]:
+    if line["level"] == "CRITICAL":
+      text, _, command = line["message"].partition("\n\n")
+      where, _, why = text.partition(" - ")
+      found.append({"where": where, "command": command or None, "why": why.removeprefix("Run command to ")})
+  return found
 
 
 def test_the_actions_go_worker_by_worker_then_cloudflare_the_store_and_the_domains(migrated):
@@ -138,31 +149,25 @@ def test_the_actions_go_worker_by_worker_then_cloudflare_the_store_and_the_domai
   volumes = {volume.name: volume.id for volume in Volume.select()}
   steps = [(action["where"], action["command"] or "", action["why"]) for action in actions()]
 
-  assert [where for where, _, _ in steps] == ["worker w1"] * 4 + ["worker w2"] * 4 + ["Cloudflare", "the S3 store"] + ["Sage"] * 2
+  assert [where for where, _, _ in steps] == ["Worker [w1]"] * 4 + ["Worker [w2]"] * 4 + ["Cloudflare", "S3 store"] + ["Sage"] * 2
   assert "docker compose -f /opt/sage/applications/shop-web/docker-compose.yml down" in steps[0][1]
   assert (f"mv /opt/sage/applications/shop-web/volumes/cache /opt/sage/containers/{web['w1']}/volumes/{volumes['cache']}"
           in steps[1][1])
   assert f"/opt/sage/containers/{web['w1']}/volumes/{volumes['data']}" in steps[2][1]
   assert steps[3][1] == "rm -rf /opt/sage/applications && rm -f /opt/sage/revisions/shop-web"
   assert f"/opt/sage/containers/{web['w2']}/volumes/{volumes['data']}" in steps[6][1]
-  assert steps[8][2] == ("Delete the DNS record *.example.test and the tunnel example.test-sage. 0.1.3 routed every "
+  assert steps[0][2] == "stop [shop-web] as 0.1.3 ran it."
+  assert steps[8][2] == ("Delete the DNS record [*.example.test] and the tunnel [example.test-sage]. 0.1.3 routed every "
                          "public name through them; until they're gone, a name without its own record reaches the idle "
                          "tunnel and gets Cloudflare's error page.")
   assert [why for where, _, why in steps if where == "Sage"] == [
-      "Add the internal domain web (port 8080) of shop-web again, linked to the container that serves it.",
-      "Add the public domain shop (port 80) of shop-web again, linked to the container that serves it."]
-
-
-def test_the_history_lists_them_with_the_run(migrated):
-  from services.db.migration_log import migration_runs
-  [run] = migration_runs()
-  [file] = run["files"]
-  assert (file["file"], file["outcome"], file["actions"]) == ("data.db", "migrated", actions())
+      "Add the internal domain [web] (port [8080]) of [shop-web] again, linked to the container that serves it.",
+      "Add the public domain [shop] (port [80]) of [shop-web] again, linked to the container that serves it."]
 
 
 def test_a_move_puts_the_data_in_its_new_place_and_never_over_data_already_there(migrated, tmp_path, monkeypatch):
   [move] = [action["command"] for action in actions()
-            if "/volumes/data " in (action["command"] or "") and action["where"] == "worker w2"]
+            if "/volumes/data " in (action["command"] or "") and action["where"] == "Worker [w2]"]
   old = tmp_path / "applications/shop-web/volumes/data"
   old.mkdir(parents=True)
   (old / "db.sqlite").write_text("kept")
@@ -177,3 +182,22 @@ def test_a_move_puts_the_data_in_its_new_place_and_never_over_data_already_there
   result = subprocess.run(["sh", "-c", command], capture_output=True, text=True)
   assert (result.stdout.strip(), (new / "db.sqlite").read_text(), (old / "db.sqlite").read_text()) == (
       f"{new} exists already", "kept", "second")
+
+
+def test_its_log_says_what_it_did_with_the_old_and_new_ids_then_what_to_do_by_hand(migrated):
+  from services.db.migration_log import migration_runs
+  [run] = migration_runs()
+  web = {container.worker_id: container.id for container in Container.select()}
+  lines = [(line["level"], line["message"]) for line in run["lines"]]
+  messages = [message for _, message in lines]
+  assert "Kept [1] instance, [1] projects and [2] applications with their ids." in messages
+  assert f"Container of [shop-web] on [w1] is [{web['w1']}], was [10]." in messages
+  assert "Emptied [domain]: [2] rows." in messages and "Dropped [event] with its [1] rows." in messages
+  assert any(message.startswith("Migrated [") and "from version [0] to [1]" in message for message in messages)
+  actions = [(level, message) for level, message in lines if level == "CRITICAL"]
+  assert actions[0] == ("CRITICAL", "Worker [w1] - Run command to stop [shop-web] as 0.1.3 ran it.\n\n"
+                                    "[ ! -f /opt/sage/applications/shop-web/docker-compose.yml ] || docker compose -f "
+                                    "/opt/sage/applications/shop-web/docker-compose.yml down")
+  assert actions[-1] == ("CRITICAL", "Sage - Add the public domain [shop] (port [80]) of [shop-web] again, linked to the "
+                                     "container that serves it.")
+  assert lines[-len(actions):] == actions

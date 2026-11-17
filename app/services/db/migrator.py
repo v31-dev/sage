@@ -3,14 +3,19 @@ last step applied; version 0 is the baseline, 0.1.3's schema. Step N takes versi
 that schema and never with the models, which describe only the latest one. A schema is given as its SQL. Each package
 that owns files keeps their baselines and steps in its `migrations.py`."""
 import logging
+import logging.handlers
 import re
 import sqlite3
+import sys
+import threading
 from contextlib import closing
+from datetime import UTC, datetime
 from pathlib import Path
 
 from peewee import IntegrityError, Model, SqliteDatabase, sort_models
 
 import config
+from utils.common import utcnow
 
 from . import migration_log
 
@@ -122,7 +127,18 @@ def migrate(db: SqliteDatabase, baseline: str, steps: list, latest: str, disposa
   schema, and one above the latest is refused. Any failure rolls the whole run back, `user_version` included, and
   raises `SchemaRefused`; a `disposable` file is recreated empty instead, whether it doesn't fit or its migration
   failed, so it never stops the boot. A file it migrates, recreates or refuses goes in the migration history under
-  `run`, which `trigger` (boot, restore) started, a migrated one with its steps' actions in order."""
+  `run`, which `trigger` (boot, restore) started, with every line this thread logged meanwhile and, migrated, its
+  steps' actions in order."""
+  # Only this thread's lines: other threads go on logging their own work meanwhile.
+  capture = logging.handlers.BufferingHandler(capacity=sys.maxsize)
+  owner = threading.get_ident()
+  capture.addFilter(lambda line: line.thread == owner)
+  logging.getLogger().addHandler(capture)
+
+  def captured() -> list[dict]:
+    return [{"ts": datetime.fromtimestamp(line.created, UTC).replace(tzinfo=None).isoformat(), "level": line.levelname,
+             "message": line.getMessage()} for line in capture.buffer]
+
   foreign_keys = db.execute_sql("PRAGMA foreign_keys").fetchone()[0]
   db.execute_sql("PRAGMA foreign_keys=OFF")
   # Why a disposable file is started again empty after its migration failed.
@@ -149,7 +165,7 @@ def migrate(db: SqliteDatabase, baseline: str, steps: list, latest: str, disposa
               "its migration starts it again" if RECREATE in [step for _, step in pending] else None)
           if not found or recreated:
             if recreated:
-              logger.warning(f"Recreating {db.database} empty: {recreated}")
+              logger.warning(f"Recreating [{db.database}] empty: {recreated}")
               # A virtual table's own tables go with it.
               for (table,) in db.execute_sql("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE "
                                              "'sqlite_%' ORDER BY sql NOT LIKE 'CREATE VIRTUAL TABLE%'").fetchall():
@@ -174,17 +190,19 @@ def migrate(db: SqliteDatabase, baseline: str, steps: list, latest: str, disposa
       except (IntegrityError, SchemaRefused) as e:
         refused = e if isinstance(e, SchemaRefused) else SchemaRefused(db.database, f"the data in it refuses the change ({e}).")
         if not disposable or failed:
-          migration_log.record(run, trigger, db.database, version, len(steps), "refused", refused.reason)
+          logger.error(f"Refused [{db.database}] at version [{version}]: {refused.reason}")
+          migration_log.record(run, trigger, "refused", captured())
           if refused is e:
             raise
           raise refused from e
         failed = f"its migration failed: {refused.reason}"
     if recreated:
-      migration_log.record(run, trigger, db.database, version, len(steps), "recreated", recreated)
+      migration_log.record(run, trigger, "recreated", captured())
     elif found and version < len(steps):
-      logger.info(f"Migrated {db.database} from version {version} to {len(steps)} (Sage {config.VERSION}).")
-      migration_log.record(run, trigger, db.database, version, len(steps), "migrated", None, actions)
+      logger.info(f"Migrated [{db.database}] from version [{version}] to [{len(steps)}] (Sage [{config.VERSION}]).")
+      migration_log.record(run, trigger, "migrated", captured(), actions)
   finally:
+    logging.getLogger().removeHandler(capture)
     db.execute_sql(f"PRAGMA foreign_keys={'ON' if foreign_keys else 'OFF'}")
 
 
@@ -199,6 +217,7 @@ def discard(path: Path, error: Exception):
   empty, and records why in the migration history."""
   for part in (path, path.with_name(f"{path.name}-wal"), path.with_name(f"{path.name}-shm")):
     part.unlink(missing_ok=True)
-  logger.warning(f"Recreating {path} empty: it was not a sound database ({error}).")
-  migration_log.record(migration_log.BOOT, "boot", str(path), None, None, "recreated",
-                       f"it was not a sound database ({error}).")
+  message = f"Recreating [{path}] empty: it was not a sound database ({error})."
+  logger.warning(message)
+  migration_log.record(migration_log.BOOT, "boot", "recreated",
+                       [{"ts": utcnow().isoformat(), "level": "WARNING", "message": message}])

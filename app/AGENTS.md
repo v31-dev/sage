@@ -324,12 +324,13 @@ How an install moves between versions: [Migrations](../docs/development.md#migra
   Cloudflare converges the same way, through its owner's pass. Such an artifact needs no conversion: one in a form this
   version no longer reads (an S3 key, a file name, a record) may be dropped, left behind or removed as an orphan,
   provided the release notes name what is dropped.
-- Every run that migrates, recreates or refuses a file appends it to the migration history
-  (`services/db/migration_log.py`, `data/migrations.log`), outside the databases so a refusal stays recorded; a
-  history that can't be written never fails the migration. Settings → Upgrade shows it.
+- Every run that migrates, recreates or refuses a file appends what it logged to its run's log
+  (`services/db/migration_log.py`, `data/migrations/migration-<run>.log`), outside the databases so a refusal stays
+  recorded; a log that can't be written never fails the migration. Settings → Upgrade shows it.
 - What a migration leaves outside the databases for the user to do (user data to move, an old runtime to stop,
   records to delete) is returned by its step as actions, in order: where, the exact command when there is one, why.
-  The step builds them from the old rows and the new ids together, and the runner keeps them in the history entry.
+  The step builds them from the old rows and the new ids together, and the runner appends them to the run's log.
+  A step reports what it did by logging it (ids and names in `[]`): the runner keeps each file's lines with it.
 - The release notes carry a manual step only in an emergency the automatic migration can't solve. The boot then
   prints no remediation, so the notes can be corrected without a release; the refusal of a pre-baseline database is
   the exception, since its remedy (run 0.1.3 on it once) never changes.
