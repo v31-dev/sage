@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { toast } from 'vue-sonner'
 import { Activity, RefreshCw, RotateCw, Trash } from 'lucide-vue-next'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { ButtonGroup } from '@/components/ui/button-group'
 import {
@@ -96,7 +97,6 @@ const stack = computed(() => {
       ? tunnel(details.tunnel_name, details.tunnel_status)
       : undefined,
   }
-  if (props.worker.report.knowledge !== 'known') return null
   return props.worker.report.stack.map(([name, status]) => ({
     container: { name, status },
     detail: carried[name],
@@ -258,7 +258,7 @@ async function onConfirmResync() {
 
       <div class="md:col-span-2 lg:col-span-7">
         <Label>Stack</Label>
-        <FieldGroup v-if="stack" class="mt-3 gap-5">
+        <FieldGroup v-if="stack.length" class="mt-3 gap-5">
           <SettingField
             v-for="{ container, detail } in stack"
             :key="container.name"
@@ -269,9 +269,11 @@ async function onConfirmResync() {
           >
             <div class="flex flex-col items-start gap-2">
               <StateIndicator
+                v-if="props.worker.report.knowledge === 'known'"
                 v-bind="{ ...appStore.infraIndicator(container), label: container.status }"
                 show-label
               />
+              <Badge v-else variant="outline">last seen {{ container.status }}</Badge>
               <InputGroup v-if="detail">
                 <InputGroupAddon v-if="detail.indicator">
                   <StateIndicator v-bind="detail.indicator" />
@@ -288,7 +290,7 @@ async function onConfirmResync() {
             </div>
           </SettingField>
         </FieldGroup>
-        <p v-else class="text-sm text-muted-foreground">No current report from the worker.</p>
+        <p v-else class="text-sm text-muted-foreground">Not reported yet.</p>
       </div>
     </CardContent>
 

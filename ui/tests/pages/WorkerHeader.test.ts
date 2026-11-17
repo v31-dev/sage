@@ -56,7 +56,11 @@ describe('the subdomain', () => {
 })
 
 describe('the stack', () => {
-  function stack(tunnelStatus: string | null, tunnel: Worker['tunnel'] = null) {
+  function mountStack(
+    tunnelStatus: string | null,
+    tunnel: Worker['tunnel'] = null,
+    knowledge: Worker['report']['knowledge'] = 'known'
+  ) {
     const store = useAppStore()
     store.info = {
       settings: {
@@ -67,22 +71,29 @@ describe('the stack', () => {
       tunnel,
       tunnel_name: 'sage-example.test-w1',
       report: {
-        knowledge: 'known',
-        traefik_reachable: true,
-        stack_down: ['cloudflared-discovery'],
-        stack: [
-          ['traefik', 'running'],
-          ['vector', 'running'],
-          ['cloudflared', 'running'],
-          ['cloudflared-discovery', 'restarting'],
-        ],
-        containers: 0,
+        knowledge,
+        traefik_reachable: knowledge === 'unobserved' ? null : true,
+        stack_down: knowledge === 'unobserved' ? [] : ['cloudflared-discovery'],
+        stack:
+          knowledge === 'unobserved'
+            ? []
+            : [
+                ['traefik', 'running'],
+                ['vector', 'running'],
+                ['cloudflared', 'running'],
+                ['cloudflared-discovery', 'restarting'],
+              ],
+        containers: knowledge === 'unobserved' ? null : 0,
       },
     })
-    const wrapper = mount(WorkerHeader, {
+    return mount(WorkerHeader, {
       props: { worker: current, workerMetrics, loadWorkerStatus: async () => {} },
       global: { stubs: { EditWorkerButton: true, ConfirmationButton: true, CopyButton: true } },
     })
+  }
+
+  function stack(...args: Parameters<typeof mountStack>) {
+    const wrapper = mountStack(...args)
     return Object.fromEntries(
       wrapper.findAll('[data-stack]').map(field => [
         field.get('label').text(),
@@ -109,6 +120,27 @@ describe('the stack', () => {
       value: 'sage-example.test · degraded',
     })
     expect(stack(null).cloudflared!.value).toBe('sage-example.test-w1')
+  })
+
+  it('keeps every container with its last seen state while the report is not current', () => {
+    const shown = stack('healthy', 'healthy', 'stale')
+    expect(Object.keys(shown)).toEqual([
+      'traefik',
+      'vector',
+      'cloudflared',
+      'cloudflared-discovery',
+    ])
+    expect(shown.traefik).toEqual({ state: 'last seen running', value: undefined })
+    expect(shown['cloudflared-discovery']).toEqual({
+      state: 'last seen restarting',
+      value: 'sage-example.test · healthy',
+    })
+  })
+
+  it('says the worker has not reported yet before its first report', () => {
+    const wrapper = mountStack(null, null, 'unobserved')
+    expect(wrapper.findAll('[data-stack]')).toHaveLength(0)
+    expect(wrapper.text()).toContain('Not reported yet.')
   })
 })
 
@@ -152,7 +184,6 @@ describe('certificates', () => {
       ...worker('eu1').report,
       knowledge: 'stale',
     })
-    expect(wrapper.text()).toContain('No current report from the worker.')
     expect(field('worker').text()).toContain(`Valid until ${formatDate(ownExpiry)}`)
     expect(field('worker').text()).not.toContain(formatDate(discoveryExpiry))
     expect(field('discovery').text()).toContain(`Valid until ${formatDate(discoveryExpiry)}`)
