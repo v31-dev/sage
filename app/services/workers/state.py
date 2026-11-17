@@ -10,6 +10,7 @@ from services.db.models import Worker
 from services.tailscale import Tailscale
 from services.worker_reports import WorkerReports
 from services.workers.decisions import WorkerFacts, WorkerReport, WorkerView, addressable, decide_worker, report_of, workable
+from services.workers.rendering import applications_memory_mb
 from utils.common import utcnow
 
 
@@ -147,6 +148,9 @@ def worker_payload(worker: Worker, state: WorkerState, tunnel_name: str, metrics
       "tunnel": state.tunnel,
       "tunnel_name": tunnel_name,
       "metrics": metrics,
+      "memory": None if metrics is None or metrics.get("mem_total_mb") is None else {
+          "total_mb": metrics["mem_total_mb"], "reserved_mb": config.WORKER_MEMORY_RESERVE_MB,
+          "applications_mb": applications_memory_mb(metrics["mem_total_mb"])},
       "created_at": worker.created_at,
       "updated_at": worker.updated_at,
   }

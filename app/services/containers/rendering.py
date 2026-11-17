@@ -35,6 +35,7 @@ def render_placement(deploy: DeployConfig, authority: Authority, deployment_id: 
   template = (config.TEMPLATES_DIR / "worker/application" / COMPOSE_TEMPLATES[deploy.type]).read_text()
   compose = Template(template).substitute(
       RUNTIME_NAME=runtime_name(authority.container_id),
+      APPLICATIONS_SLICE=config.APPLICATIONS_SLICE,
       INSTANCE_ID=authority.instance_id,
       STATE_GENERATION=authority.state_generation,
       CONTAINER_ID=authority.container_id,

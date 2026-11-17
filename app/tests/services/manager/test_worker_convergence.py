@@ -31,7 +31,7 @@ class Hosts:
 
   def __init__(self):
     self.found, self.addresses, self.files, self.fails = {}, {}, {}, None
-    self.running = set(config.WORKER_STACK_SERVICES)
+    self.running, self.mem_total_kb = set(config.WORKER_STACK_SERVICES), 979204
     self.answering, self.boots, self.commands, self.forgotten, self.on_boot = set(), [], [], [], None
     self.machines = {}
 
@@ -77,6 +77,8 @@ class Hosts:
       return 0, [f"{path[len(hostname) + 1:]}:{content}" for path, (content, _) in self.files.items() if path.startswith(prefix)]
     if command.startswith("stat -c %g"):
       return 0, ["998"]
+    if command.endswith(" /proc/meminfo"):
+      return 0, [str(self.mem_total_kb)]
     if command.startswith("grep -H -m1 "):
       prefix = f"{hostname}:{HOME}/traefik/dynamic/domain-"
       return 0, [f"{path[len(hostname) + 1:]}:{content.splitlines()[0]}" for path, (content, _) in self.files.items()
@@ -268,6 +270,16 @@ class TestConvergence:
     await manager.converge_worker("w1")
     assert hosts.stack("w1") == {} and Workers().setup("w1") == "succeeded"
     assert events() == [("infrastructure", "admitted"), ("infrastructure", "succeeded")]
+
+  @pytest.mark.parametrize("force, mem_total_kb, limit", [(False, 979204, "444M"), (True, 979204, "444M"),
+                                                          (False, 8 * 1024 * 1024, "7680M")])
+  async def test_every_setup_caps_the_applications_slice_at_the_workers_memory_less_the_reserve(
+          self, manager, hosts, worker, force, mem_total_kb, limit):
+    await manager.converge_worker("w1")
+    hosts.commands, hosts.mem_total_kb = [], mem_total_kb
+    await manager.converge_worker("w1", force=force)
+    assert [command for command in hosts.commands if command.startswith("systemctl ")] == [
+        f"systemctl set-property sage-apps.slice MemoryMax={limit}"]
 
   async def test_force_applies_whatever_the_stamp_says(self, manager, hosts, worker):
     await manager.converge_worker("w1")
@@ -594,7 +606,8 @@ class TestRemove:
     commands.mark_removal("w1")
     await manager.remove_worker("w1")
     assert Worker.get_or_none(Worker.hostname == "w1") is None
-    assert any(command.endswith(f"down --remove-orphans && rm -rf {HOME}") for command in hosts.commands)
+    assert any(command.endswith(f"down --remove-orphans && rm -rf {HOME} && systemctl revert sage-apps.slice")
+               for command in hosts.commands)
     assert (provider.records["w1"], provider.tunnels, hosts.forgotten) == ((None, None), [], ["w1"])
     assert (Workers().setup("w1"), WorkerReports().latest("w1"), manager.setup_failures) == (None, None, {})
     assert events()[-2:] == [("remove", "admitted"), ("remove", "succeeded")]

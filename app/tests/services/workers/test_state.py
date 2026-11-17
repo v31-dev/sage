@@ -144,3 +144,15 @@ def test_a_worker_is_its_configuration_and_its_decided_state_with_what_it_was_de
                                "stack": (("traefik", "running"), ("vector", "restarting")), "containers": 7}
   assert (payload["certificates"], payload["tunnel"], payload["tunnel_name"], payload["metrics"]) == (
       certificates, "healthy", "sage-example.test-w1", {"cpu_pct": 12.0})
+
+
+@pytest.mark.parametrize("metrics, memory", [
+    ({"cpu_pct": 12.0, "mem_total_mb": 956}, {"total_mb": 956, "reserved_mb": 512, "applications_mb": 444}),
+    ({"cpu_pct": 12.0, "mem_total_mb": None}, None),
+    (None, None),
+])
+def test_a_workers_memory_is_its_total_split_between_the_reserve_and_the_applications(db, metrics, memory):
+  worker = Worker.create(hostname="w1", subdomain="red")
+  state = WorkerState(WorkerView("online", None, None), "reachable", "succeeded", WorkerReport("known"), frozenset(),
+                      "100.64.0.2", "direct", {}, "healthy")
+  assert worker_payload(worker, state, "sage-example.test-w1", metrics)["memory"] == memory

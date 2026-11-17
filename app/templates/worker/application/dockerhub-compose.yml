@@ -5,6 +5,7 @@ services:
     image: ${IMAGE}
     pull_policy: always
     container_name: ${RUNTIME_NAME}
+    cgroup_parent: ${APPLICATIONS_SLICE}
     logging:
       driver: json-file
       options:

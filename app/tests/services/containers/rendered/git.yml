@@ -8,6 +8,7 @@ services:
       args: [ "VERSION=1.2", "QUOTED=x y" ]
       secrets: [ NPM_TOKEN, OTHER ]
     container_name: sage-2222222222222222
+    cgroup_parent: sage-apps.slice
     logging:
       driver: json-file
       options:

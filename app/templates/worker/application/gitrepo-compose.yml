@@ -8,6 +8,7 @@ services:
       args: [ ${BUILD_ARGS} ]
       secrets: [ ${BUILD_SECRETS} ]
     container_name: ${RUNTIME_NAME}
+    cgroup_parent: ${APPLICATIONS_SLICE}
     logging:
       driver: json-file
       options:

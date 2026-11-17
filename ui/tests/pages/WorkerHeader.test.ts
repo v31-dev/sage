@@ -55,6 +55,28 @@ describe('the subdomain', () => {
   })
 })
 
+describe('application memory', () => {
+  const memory = (current: Worker) =>
+    mount(WorkerHeader, {
+      props: { worker: current, workerMetrics, loadWorkerStatus: async () => {} },
+      global: { stubs: { EditWorkerButton: true, ConfirmationButton: true, CopyButton: true } },
+    })
+      .get('[data-application-memory]')
+      .text()
+
+  it("shows what the applications may use and the host and Sage's reserve", () => {
+    const text = memory(
+      worker('eu1', { memory: { total_mb: 956, reserved_mb: 512, applications_mb: 444 } })
+    )
+    expect(text).toContain('444 MB')
+    expect(text).toContain('512 MB kept for the host and Sage')
+  })
+
+  it('shows a dash before the worker has reported its memory', () => {
+    expect(memory(worker('eu1'))).toBe('Application Memory-')
+  })
+})
+
 describe('the stack', () => {
   function mountStack(
     tunnelStatus: string | null,

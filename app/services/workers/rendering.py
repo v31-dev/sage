@@ -43,6 +43,11 @@ class StackFile:
   mode: int
 
 
+def applications_memory_mb(total_mb: int) -> int:
+  """What the application containers on a worker with `total_mb` of memory may use together."""
+  return total_mb - config.WORKER_MEMORY_RESERVE_MB
+
+
 def infra_fingerprint(inputs: InfraInputs) -> str:
   """The fingerprint of everything the stack's files are rendered from, the templates included."""
   digest = hashlib.sha256(json.dumps(asdict(inputs), sort_keys=True).encode())

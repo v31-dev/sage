@@ -214,6 +214,17 @@ async function onConfirmResync() {
         <p class="text-sm text-muted-foreground">{{ props.workerMetrics.meta.mem_total_mb }} MB</p>
       </div>
 
+      <div data-application-memory>
+        <Label>Application Memory</Label>
+        <template v-if="props.worker.memory">
+          <p class="text-sm text-muted-foreground">{{ props.worker.memory.applications_mb }} MB</p>
+          <p class="text-xs text-muted-foreground">
+            {{ props.worker.memory.reserved_mb }} MB kept for the host and Sage
+          </p>
+        </template>
+        <p v-else class="text-sm text-muted-foreground">-</p>
+      </div>
+
       <div>
         <Label>Disk</Label>
         <p class="text-sm text-muted-foreground">{{ props.workerMetrics.meta.disk_total_gb }} GB</p>

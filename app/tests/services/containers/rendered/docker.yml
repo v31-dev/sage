@@ -5,6 +5,7 @@ services:
     image: nginx:1.27
     pull_policy: always
     container_name: sage-2222222222222222
+    cgroup_parent: sage-apps.slice
     logging:
       driver: json-file
       options:

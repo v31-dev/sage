@@ -64,6 +64,9 @@ export interface WorkerListItem {
   tunnel: TunnelStatus | null
   tunnel_name: string
   metrics: WorkerMinute | null
+  // Its memory from the newest metrics, split between the host and stack's reserve and what its applications may
+  // use together; null without a minute that carries its total.
+  memory: { total_mb: number; reserved_mb: number; applications_mb: number } | null
   created_at: string
   updated_at: string
 }

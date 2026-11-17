@@ -21,7 +21,7 @@ from services.updates import Fact, Updates, UpdateSource
 from services.worker_reports import WorkerReports
 from services.workers import commands
 from services.workers.decisions import TASKS, addressable, reboot_outcome, worker_claim_refusal, worker_owner
-from services.workers.rendering import InfraInputs, infra_fingerprint, render_infrastructure, stack_scope, worker_scope
+from services.workers.rendering import InfraInputs, applications_memory_mb, infra_fingerprint, render_infrastructure, stack_scope, worker_scope
 from services.workers.state import Workers, WorkerState, is_addressable, is_workable, worker_payload, worker_state
 from utils.common import get_env, utcnow
 from utils.errors import Conflict
@@ -263,6 +263,9 @@ class WorkersMixin:
         record_worker_event(hostname, "infrastructure", "succeeded")
       else:
         await self._start_stack(hostname)
+      _, total = await Tailscale().exec_command(hostname, "awk '/^MemTotal:/ {print $2}' /proc/meminfo", timeout=10)
+      await Tailscale().exec_command(hostname, f"systemctl set-property {config.APPLICATIONS_SLICE} "
+                                     f"MemoryMax={applications_memory_mb(int(total[-1]) // 1024)}M", timeout=30)
       certificates = Certs().worker_state(hostname, worker.subdomain, Workers().certificates(hostname), TEMPLATE_DIGEST).values()
       if not all(state["covered"] for state in certificates):
         self.request_certificate_renewal()
@@ -381,7 +384,8 @@ class WorkersMixin:
         owner = worker_owner(await Workers().read_revisions(hostname))
         if owner is not None and owner[0] == Instance.get().id:
           await Tailscale().exec_command(
-              hostname, f"docker compose -f {home}/docker-compose.yml down --remove-orphans && rm -rf {home}", timeout=120)
+              hostname, f"docker compose -f {home}/docker-compose.yml down --remove-orphans && rm -rf {home} "
+              f"&& systemctl revert {config.APPLICATIONS_SLICE}", timeout=120)
           cleaned = True
       except Exception as error:
         left.append(f"its stack could not be stopped ({error}): stop it and remove its files by hand")

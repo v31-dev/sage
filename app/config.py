@@ -104,6 +104,10 @@ WORKER_METRICS_STALE_SECONDS = 180
 # The services of the worker stack, which `docker compose up -d` starts and which are also the names
 # of their containers.
 WORKER_STACK_SERVICES = ("traefik", "vector", "telegraf", "cloudflared", "cloudflared-discovery")
+# The systemd slice every application container runs in, capped at the worker's memory less this reserve, which the
+# host and the stack keep.
+APPLICATIONS_SLICE = "sage-apps.slice"
+WORKER_MEMORY_RESERVE_MB = 512
 
 # The account's tunnels are listed every minute; a tunnel's health is not known once they have not been listed for
 # this long.
