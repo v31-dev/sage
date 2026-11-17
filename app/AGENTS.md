@@ -139,7 +139,8 @@ Each resource's own rules, on top of the root's working rules 9–13. The workfl
   other workers' work go on.
 - The one manual repair is a worker's resync: its forced setup, which then requests the forced copies of what else
   Sage keeps on it (certificates, its Domains' routes, discovery). Shared records are corrected by the scheduled
-  passes, so there is no platform-wide resync. A corrective action is defined by its owned effects and verified goal,
+  passes, so there is no platform-wide resync, and no action resyncs every worker: a resync disrupts its worker, and
+  each worker is independent of the others, so it is done one worker at a time. A corrective action is defined by its owned effects and verified goal,
   preserves other owners' evidence and uses the same operations as automatic convergence.
 - Adding a worker is an explicit user action, so it cleans up, where required, what an earlier worker of that hostname
   left.

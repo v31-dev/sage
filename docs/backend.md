@@ -590,8 +590,8 @@ checks them locally (`validate_section`: only the section's fields, text or noth
 them (`Settings().set`) and hands on to `settings_saved`, which installs the consumer from the saved snapshot, asks a
 saved store for its backup discovery and queues a visible check.
 
-A worker's resync is its forced setup (`converge_worker` with `force`, its own visible task; "Resync workers" queues
-it for every worker). It is the one manual repair, for what Sage keeps on the worker that looks right to its stamps
+A worker's resync is its forced setup (`converge_worker` with `force`, its own visible task), one worker at a time.
+It is the one manual repair, for what Sage keeps on the worker that looks right to its stamps
 and headers but is not: it writes the stack's files and restarts the stack whatever the `infra` stamp says, then
 requests a forced certificate distribution, the applies of the Domains routed to it (an apply always writes the
 routing file) and a forced discovery publication on it, and a renewal when its own or the discovery certificate does

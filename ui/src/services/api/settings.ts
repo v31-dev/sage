@@ -71,6 +71,3 @@ export interface SettingTestOutcome {
 export const pauseSage = () => request<{ state: AppInfo['state'] }>('POST', '/settings/pause')
 
 export const resumeSage = () => request<{ state: AppInfo['state'] }>('POST', '/settings/resume')
-
-export const resyncWorkers = () =>
-  request<{ task_ids: string[] }>('POST', '/settings/resync_workers')

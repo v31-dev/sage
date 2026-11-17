@@ -254,14 +254,6 @@ const CALLS: Array<[string, () => Promise<unknown>, string, string, object, unkn
   ['pauseSage', () => api.pauseSage(), 'POST', '/api/settings/pause', {}, undefined],
   ['resumeSage', () => api.resumeSage(), 'POST', '/api/settings/resume', {}, undefined],
   [
-    'resyncWorkers',
-    () => api.resyncWorkers(),
-    'POST',
-    '/api/settings/resync_workers',
-    {},
-    undefined,
-  ],
-  [
     'fetchWorkerMetrics, the hour by default',
     () => api.fetchWorkerMetrics('w1'),
     'GET',

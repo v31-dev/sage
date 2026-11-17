@@ -4,7 +4,6 @@ import { ExternalLink } from 'lucide-vue-next'
 import { Button } from '@/components/ui/button'
 import { useAppStore } from '@/stores/app'
 import SettingsSection from './SettingsSection.vue'
-import WorkersResyncSubCard from './WorkersResyncSubCard.vue'
 
 const appStore = useAppStore()
 
@@ -37,10 +36,6 @@ const fields = computed(() => [
         <ExternalLink />
         This manager in Tailscale
       </Button>
-    </template>
-
-    <template #after>
-      <WorkersResyncSubCard />
     </template>
   </SettingsSection>
 </template>

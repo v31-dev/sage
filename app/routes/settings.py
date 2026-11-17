@@ -1,6 +1,5 @@
 from fastapi import APIRouter, Body
 
-from services.db.models import Worker
 from services.manager import Manager
 from services.settings import Settings, setting_payload, validate_section
 
@@ -19,13 +18,6 @@ def pause():
 def resume():
   Manager().resume_tasks()
   return {"state": Manager().task_state()}
-
-
-@router.post("/resync_workers")
-def resync_workers():
-  """Each worker's resync, its forced setup."""
-  return {"task_ids": [Manager().request_convergence(worker.hostname, force=True)
-                       for worker in Worker.select(Worker.hostname).order_by(Worker.hostname)]}
 
 
 def candidate(section: str, data: dict) -> dict:

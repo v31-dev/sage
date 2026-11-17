@@ -1,6 +1,5 @@
 import pytest
 
-from services.db.models import Worker
 from services.settings import Settings
 from utils.errors import Conflict
 
@@ -61,10 +60,3 @@ class TestQueue:
     manager.state = "paused"
     assert client.post(f"{URL}/{path}").json() == {"state": "paused"}
     assert manager.called(request_name) == [((), {})]
-
-  def test_resync_workers_asks_for_each_workers_resync(self, client, manager, db):
-    for hostname in ("w2", "w1"):
-      Worker.create(hostname=hostname, subdomain=f"s{hostname}")
-    manager.answers["request_convergence"] = lambda hostname, force: f"task-{hostname}"
-    assert client.post(f"{URL}/resync_workers").json() == {"task_ids": ["task-w1", "task-w2"]}
-    assert manager.called("request_convergence") == [(("w1",), {"force": True}), (("w2",), {"force": True})]
