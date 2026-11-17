@@ -257,13 +257,24 @@ migrates what the older version left. The rules are in [app/AGENTS.md](../app/AG
 `app/services/db/migrations.py`, run by the runner every SQLite file shares (`app/services/db/migrator.py`). A database at version 0 is the baseline, 0.1.3, and must have exactly its schema; an
 older one is refused, and running 0.1.3 on it once brings it to the baseline. A database at a version above the
 latest is refused too, so going back to an earlier release after an upgrade means restoring the backup taken before
-it. At boot every pending step runs in order, then the schema is checked against the models, all in one transaction:
-a failure anywhere leaves the database as it was, at its old version.
+it, or putting back the copy below. At boot every pending step runs in order, then the schema is checked against the
+models, all in one transaction: a failure anywhere leaves the database as it was, at its old version. Before a boot
+runs a step, the runner copies the database beside it as `data.db.migration-<its version>` (0 is the baseline),
+replacing a copy of that name, and the run's log names it; a copy that can't be written stops the boot. Put back as
+`data.db`, a copy is the database as the release that wrote it left it. Several migrations leave several copies, and
+the daily cleanup removes those older than `config.MIGRATION_COPY_RETENTION_DAYS` (90). A platform restore takes
+none: its backup in the store is the copy.
 
 To change the schema, add the next step: SQL that takes the previous version's schema to the new one and carries the
 rows across, written without the models (they describe only the latest version). A release can ship no step or
 several. The migration test builds a 0.1.3 database with rows in every table, runs every step and requires the result
 to equal a fresh database from the models, so a model change without its step fails the suite.
+
+**During development.** A pull request adds at most one step, its schema version, whatever release it ships in: while
+the PR is open, each further schema change goes into that step, edited in place, since no install has run it yet. A
+local database that already ran an earlier draft of the step is refused at boot, its schema no longer matching the
+models; how to bring it back depends on the change, case by case (put back a copy from before it ran, or start the
+local data afresh).
 
 **Fixing a released step.** A step that fails at boot was rolled back, so the install is still on its old version and
 the previous release runs on it. The fix goes out in a patch release, and the user upgrades to it straight from the

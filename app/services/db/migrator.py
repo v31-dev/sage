@@ -4,6 +4,7 @@ that schema and never with the models, which describe only the latest one. A sch
 that owns files keeps their baselines and steps in its `migrations.py`."""
 import logging
 import logging.handlers
+import os
 import re
 import sqlite3
 import sys
@@ -119,12 +120,14 @@ def built_schema(script: str) -> dict[str, dict]:
 
 
 def migrate(db: SqliteDatabase, baseline: str, steps: list, latest: str, disposable: bool = False,
-            run: str = migration_log.BOOT, trigger: str = "boot"):
+            run: str = migration_log.BOOT, trigger: str = "boot", keep_copy: bool = False):
   """Brings the file `db` has open to the latest version, `len(steps)`, whose schema is `latest`, and checks it, all in
   one transaction with foreign keys off, ending with the foreign key check. A step is a function of the database that
   may return the manual actions its change leaves (each `where` to run it, the exact `command` or None, and `why`), or
   RECREATE. An empty file is created at the latest version. A file at version 0 must have exactly the `baseline`
-  schema, and one above the latest is refused. Any failure rolls the whole run back, `user_version` included, and
+  schema, and one above the latest is refused. With `keep_copy`, a file about to run its steps is first copied beside
+  itself as `<name>.migration-<its version>`, replacing a copy of that name; a copy that can't be written refuses
+  the migration. Any failure rolls the whole run back, `user_version` included, and
   raises `SchemaRefused`; a `disposable` file is recreated empty instead, whether it doesn't fit or its migration
   failed, so it never stops the boot. A file it migrates, recreates or refuses goes in the migration history under
   `run`, which `trigger` (boot, restore) started, with every line this thread logged meanwhile and, migrated, its
@@ -173,6 +176,18 @@ def migrate(db: SqliteDatabase, baseline: str, steps: list, latest: str, disposa
             for statement in statements(latest):
               db.execute_sql(statement)
             pending = []
+          if keep_copy and pending:
+            copy = Path(db.database).with_name(f"{Path(db.database).name}.migration-{version}")
+            written = config.TMP_DIR / copy.name
+            try:
+              with closing(sqlite3.connect(db.database)) as source, closing(sqlite3.connect(written)) as target:
+                source.backup(target)
+              os.replace(written, copy)
+            except (sqlite3.Error, OSError) as e:
+              raise SchemaRefused(db.database, f"its copy from before the migration could not be written ({e}).") from e
+            logger.info(f"Copied [{db.database}] to [{copy}] before migrating it: put it back to return to version "
+                        f"[{version}] with the release that wrote it. It is kept [{config.MIGRATION_COPY_RETENTION_DAYS}] "
+                        "days.")
           actions = []
           for number, step in pending:
             try:

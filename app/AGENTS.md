@@ -306,9 +306,14 @@ How an install moves between versions: [Migrations](../docs/development.md#migra
   off, ending with the foreign key check. It adds and drops nothing: each step leaves exactly its version's schema, so
   the next one can rely on it. Any failure rolls back the whole run, `user_version` included, and stops the boot with
   one `[CRITICAL]` line linking the running version's release; the database is as it was, so the previous release
-  still runs on it.
+  still runs on it. Before a boot's steps, the runner copies `data.db` to `data.db.migration-<its version>`, replacing
+  one of that name, and a copy it can't write stops the boot; the daily cleanup removes copies past
+  `MIGRATION_COPY_RETENTION_DAYS`. A restore takes none.
 - A step is SQL against its own version's schema and never uses the models, which are the latest. It may name the
   version it converts from, the one place a comment or a name refers to an earlier version.
+- A pull request adds at most one step, its schema version: a further schema change in the same PR edits that step
+  in place, and a later PR adds its own. A local database that already ran an earlier draft of the step is handled
+  case by case for the change at hand.
 - A released step is fixed in place only while its result stays the same: a run that failed was rolled back and left
   nothing, and the installs it ran on already hold that result. A step that succeeded with a wrong result is corrected
   by a new step.

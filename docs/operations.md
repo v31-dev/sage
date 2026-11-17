@@ -233,7 +233,7 @@ Implementation: [platform operations](../app/services/manager/platform.py),
 | `metrics_cleanup` → `Metrics.cleanup` | `metrics` · metrics | REPLACE on `("metrics_cleanup",)` / Q | `request_cleanup`: daily 04:00 | No main-DB write. Delete old metric rows and orphan host shards; read Worker rows to identify live hosts. |
 | `logs_cleanup` → `Logs.cleanup` | none · common | REPLACE on `("logs_cleanup",)` / Q | `request_cleanup`: daily 04:00 | No main-DB write. Delete old log/request/task-log lines and orphan application shards; trim size limits and optimize indexes. |
 | `purge_history` | none · common | REPLACE on `("purge_history",)` / Q | `request_cleanup`: daily 04:00 | Deletes the history (ContainerEvent, WorkerEvent, Notification and Task rows) older than `config.RETENTION_DAYS` (14). Holds no scope; one queued before a platform restore runs first, and none is queued while it waits or runs. |
-| `safety_copies_cleanup` → `Database.remove_safety_copies` | none · common | REPLACE on `("safety_copies_cleanup",)` / Q | `request_cleanup`: daily 04:00 | No main-DB write. Removes the `data.db.restore-*` files (and their journals) older than `config.RETENTION_DAYS` (14): safety copies that only an install killed part way leaves. |
+| `safety_copies_cleanup` → `Database.remove_safety_copies` | none · common | REPLACE on `("safety_copies_cleanup",)` / Q | `request_cleanup`: daily 04:00 | No main-DB write. Removes the `data.db.restore-*` files (and their journals) older than `config.RETENTION_DAYS` (14), safety copies that only an install killed part way leaves, and the `data.db.migration-*` copies a boot took before migrating older than `config.MIGRATION_COPY_RETENTION_DAYS` (90). |
 
 ## Follow-up flows
 

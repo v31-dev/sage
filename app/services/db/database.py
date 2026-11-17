@@ -43,8 +43,9 @@ class Database(Base):
   def migrate(self, run: str = migration_log.BOOT, trigger: str = "boot"):
     """Brings the database to this version's schema with its migration steps (`migrator.migrate`), at boot and
     after a platform restore's install, as `run` of the migration history, and gives the manager its identity if it has
-    none."""
-    migrator.migrate(db, migrations.BASELINE, migrations.STEPS, migrator.models_schema(MODELS), run=run, trigger=trigger)
+    none. A boot keeps a copy of the database from before its steps; a restore's is its backup in the store."""
+    migrator.migrate(db, migrations.BASELINE, migrations.STEPS, migrator.models_schema(MODELS), run=run, trigger=trigger,
+                     keep_copy=trigger == "boot")
     if not Instance.select().exists():
       Instance.create()
 
@@ -99,14 +100,17 @@ class Database(Base):
       safety.unlink(missing_ok=True)
     return run
 
-  def remove_safety_copies(self, days: int = config.RETENTION_DAYS):
-    """Removes the safety copies older than `days` beside the live database, which only an install killed part way
-    leaves."""
-    before = utcnow() - timedelta(days=days)
-    for path in config.DB_PATH.parent.glob(f"{config.DB_PATH.name}.restore-*"):
-      if datetime.fromtimestamp(path.stat().st_mtime, UTC).replace(tzinfo=None) < before:
-        path.unlink(missing_ok=True)
-        logger.info(f"Removed {path.name}, the safety copy of an interrupted restore.")
+  def remove_safety_copies(self):
+    """Removes the copies beside the live database past their retention: an interrupted restore's safety copies
+    (`RETENTION_DAYS`), which only an install killed part way leaves, and the copies a boot took before migrating
+    (`MIGRATION_COPY_RETENTION_DAYS`)."""
+    for pattern, days, kind in ((".restore-*", config.RETENTION_DAYS, "the safety copy of an interrupted restore"),
+                                (".migration-*", config.MIGRATION_COPY_RETENTION_DAYS, "the copy from before a migration")):
+      before = utcnow() - timedelta(days=days)
+      for path in config.DB_PATH.parent.glob(f"{config.DB_PATH.name}{pattern}"):
+        if datetime.fromtimestamp(path.stat().st_mtime, UTC).replace(tzinfo=None) < before:
+          path.unlink(missing_ok=True)
+          logger.info(f"Removed {path.name}, {kind}.")
 
   def checkpoint(self):
     """Writes everything the WAL holds into the database file and empties the WAL, so the file alone holds every

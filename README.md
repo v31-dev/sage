@@ -256,7 +256,8 @@ comes first because a paused Sage refuses changes and starts no tasks.
 The newer version migrates the data when it starts, from 0.1.3 or any later release; an older
 install runs 0.1.3 once first. If the migration fails, Sage stops and leaves the data as it was,
 so the previous version still runs on it, and Settings → Upgrade → Migration logs shows why. Once migrated, the data no longer opens in an earlier
-version: going back means restoring the backup.
+version: going back means restoring the backup, or putting back the copy of the database Sage
+took before migrating, `data.db.migration-<version>` in the data folder, kept 90 days.
 
 The repo's [`docker-compose.yml`](docker-compose.yml) and [`sample.env`](sample.env) are
 for local development; see [docs/development.md](docs/development.md).

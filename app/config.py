@@ -24,6 +24,8 @@ RELEASE_PAGE_URL = "https://github.com/v31-dev/sage/releases/tag/v{version}"
 # How long history is kept: logs, metrics, events, notifications, task history, restore
 # safety copies, and S3 platform and volume backups (the daily cleanup).
 RETENTION_DAYS = 14
+# How long the copy of `data.db` a boot takes before migrating it (`data.db.migration-<version>`) is kept.
+MIGRATION_COPY_RETENTION_DAYS = 90
 
 # The Socket.IO connection: the first change starts this wait, and the topics that depend on the changes made within it
 # are recomputed together once it ends.

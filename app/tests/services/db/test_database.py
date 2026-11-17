@@ -137,6 +137,11 @@ class TestVersions:
     Database()
     assert version(database) == len(migrations.STEPS)
 
+  def test_a_boot_that_migrates_keeps_a_copy_from_before(self, baseline):
+    before = file_schema(baseline)
+    Database()
+    assert file_schema(baseline.with_name("data.db.migration-0")) == before
+
   def test_a_database_from_before_the_baseline_is_refused_with_its_way_forward_and_left_as_it_was(self, baseline, monkeypatch):
     monkeypatch.setattr(config, "VERSION", "1.2.3")
     with contextlib.closing(sqlite3.connect(baseline)) as file:
@@ -385,6 +390,7 @@ class TestPlatformCopies:
 
     assert (Project.get().description, version(database)) == ("Shop", len(migrations.STEPS))
     assert {key: MigrationRuns().latest()[key] for key in ("run", "trigger")} == {"run": run, "trigger": "restore"}
+    assert list(config.DB_PATH.parent.glob("*.migration-*")) == []
 
   def test_a_backup_from_a_later_sage_is_refused_and_the_live_database_put_back(self, live, tmp_path):
     Database().snapshot(tmp_path / "snapshot.db")
@@ -447,20 +453,21 @@ class TestPlatformCopies:
       Database().install(path, {})
     assert counts(database) == before
 
-  def test_safety_copies_go_once_past_their_retention_and_nothing_else_does(self, db):
+  def test_safety_copies_go_once_past_their_retention_and_nothing_else_does(self, db, monkeypatch):
     import os
     import time
+    monkeypatch.setattr(config, "RETENTION_DAYS", 14)
+    monkeypatch.setattr(config, "MIGRATION_COPY_RETENTION_DAYS", 90)
     folder, name = config.DB_PATH.parent, config.DB_PATH.name
-    old = [folder / f"{name}.restore-20261001_000000", folder / f"{name}.restore-20261001_000000-journal"]
-    recent = folder / f"{name}.restore-20261110_000000"
-    other = folder / "notes.restore-20261001_000000"
-    for path in (*old, recent, other):
+    ages = {folder / f"{name}.restore-20261001_000000": 15, folder / f"{name}.restore-20261001_000000-journal": 15,
+            folder / f"{name}.restore-20261110_000000": 13, folder / "notes.restore-20261001_000000": 15,
+            folder / f"{name}.migration-0": 91, folder / f"{name}.migration-1": 89, folder / "notes.migration-0": 91}
+    for path, days in ages.items():
       path.write_bytes(b"copy")
-    for path in (*old, other):
-      os.utime(path, (time.time() - 15 * 86400,) * 2)
-    os.utime(recent, (time.time() - 13 * 86400,) * 2)
-    Database().remove_safety_copies(14)
-    assert [path.exists() for path in (*old, recent, other, config.DB_PATH)] == [False, False, True, True, True]
+      os.utime(path, (time.time() - days * 86400,) * 2)
+    Database().remove_safety_copies()
+    assert [path.name for path in ages if path.exists()] == [
+        f"{name}.restore-20261110_000000", "notes.restore-20261001_000000", f"{name}.migration-1", "notes.migration-0"]
 
   def test_an_install_that_fails_part_way_puts_the_live_database_back(self, live, tmp_path, monkeypatch):
     Database().snapshot(tmp_path / "snapshot.db")

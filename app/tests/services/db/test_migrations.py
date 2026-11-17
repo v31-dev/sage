@@ -96,6 +96,58 @@ class TestADisposableFile:
     assert state(file) == (built_schema(LATEST), 1, [(1, "kept")])
 
 
+class TestTheCopyBeforeAMigration:
+  def copy(self, file):
+    return file.database.with_name(f"{file.database.name}.migration-0")
+
+  def test_a_file_about_to_migrate_is_copied_as_it_was_and_the_log_names_the_copy(self, file, data_dir, caplog):
+    file.execute_sql(BASELINE)
+    file.execute_sql("INSERT INTO note (text) VALUES ('kept')")
+
+    with caplog.at_level(logging.INFO):
+      migrate(file, BASELINE, [renamed], LATEST, run="r1", keep_copy=True)
+
+    with contextlib.closing(SqliteDatabase(self.copy(file))) as copy:
+      assert state(copy) == (built_schema(BASELINE), 0, [(1, "kept")])
+    assert state(file) == (built_schema(LATEST), 1, [(1, "kept")])
+    log = (data_dir / "migrations" / "migration-r1.log").read_text()
+    assert f"Copied [{file.database}] to [{self.copy(file)}] before migrating it" in log
+
+  def test_a_copy_of_that_version_already_there_is_replaced(self, file):
+    file.execute_sql(BASELINE)
+    self.copy(file).write_bytes(b"an earlier copy")
+
+    migrate(file, BASELINE, [renamed], LATEST, keep_copy=True)
+
+    with contextlib.closing(SqliteDatabase(self.copy(file))) as copy:
+      assert state(copy)[:2] == (built_schema(BASELINE), 0)
+
+  @pytest.mark.parametrize("setup, version", [("", 0), (LATEST, 1), (LATEST, 0), (LATEST, 2)],
+                           ids=["new", "current", "from before the baseline", "from a later sage"])
+  def test_no_copy_is_taken_when_no_step_runs(self, file, setup, version):
+    if setup:
+      file.execute_sql(setup)
+    file.execute_sql(f"PRAGMA user_version = {version}")
+    with contextlib.suppress(SchemaRefused):
+      migrate(file, BASELINE, [renamed], LATEST, keep_copy=True)
+    assert list(file.database.parent.glob("*.migration-*")) == []
+
+  def test_without_it_no_copy_is_taken(self, file):
+    file.execute_sql(BASELINE)
+    migrate(file, BASELINE, [renamed], LATEST)
+    assert not self.copy(file).exists()
+
+  def test_a_copy_that_cannot_be_written_refuses_the_migration_and_leaves_the_file(self, file):
+    file.execute_sql(BASELINE)
+    file.execute_sql("INSERT INTO note (text) VALUES ('kept')")
+    (self.copy(file) / "in the way").mkdir(parents=True)
+    before = state(file)
+
+    with pytest.raises(SchemaRefused, match="its copy from before the migration could not be written"):
+      migrate(file, BASELINE, [renamed], LATEST, keep_copy=True)
+    assert state(file) == before
+
+
 class TestRecreate:
   LATER = 'CREATE TABLE "note" ("id" INTEGER NOT NULL PRIMARY KEY, "body" TEXT NOT NULL, "seen" INTEGER);'
 
