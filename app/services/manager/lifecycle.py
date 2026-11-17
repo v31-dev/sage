@@ -94,31 +94,35 @@ class LifecycleMixin:
     return container
 
   def application_containers(self, application_id: int) -> list[Container]:
-    """The application's containers, for a request on all of them: refused when it has none, while any of them has
-    a lifecycle request queued or running, or while Sage recovers any of them."""
+    """The application's containers, for a request on all of them: refused when it has none, or while any of them
+    refuses its own request (`request_refusal`)."""
     containers = list(Container.select(Container, Application, Project).join(Application).join(Project)
                       .where(Container.application == application_id).order_by(Container.worker))
     if not containers:
       raise ValueError("This application has no containers.")
-    if any(self.has_task((slot, container.id)) for container in containers for slot in ("lifecycle", "delete")):
-      raise Conflict("A container of this application has an operation in progress.")
-    refusal = self.recovery_refusal(containers)
-    if refusal is not None:
-      raise Conflict(f"A container of this application can't take this request: {REFUSALS[refusal]}.")
+    for container in containers:
+      refusal = self.request_refusal(container)
+      if refusal is not None:
+        raise Conflict(f"A container of this application can't take this request: {refusal}.")
     return containers
 
-  def recovery_refusal(self, containers: list[Container]) -> str | None:
-    """Why a request other than a Delete is refused while Sage recovers one of the containers (`interrupted` or
-    `invalid_record`, its state's reason), from their states now; None when none is recovering."""
-    states = self.container_states(containers)
-    return next((states[container.id].view.reason for container in containers
-                 if states[container.id].view.headline == "recovering"), None)
+  def request_refusal(self, container: Container) -> str | None:
+    """Why the container refuses a request other than a Delete now, in words: a Delete of it is queued or running,
+    one of its own operations runs (behind an automatic backup a request waits its turn), or Sage recovers it; None
+    when it takes one, replacing a request of its own still waiting."""
+    if self.has_task(("delete", container.id)):
+      return "it is being deleted"
+    if self.has_task(("lifecycle", container.id), running_only=True):
+      return "it already has an operation in progress"
+    view = self.container_states([container])[container.id].view
+    return REFUSALS[view.reason] if view.headline == "recovering" else None
 
   def queue_lifecycle(self, container: Container, name: str, task, inputs: dict, params: dict | None = None,
                       scopes: tuple[str, ...] = (), labels: dict[str, str] | None = None, resume: bool = False) -> Added:
     """Queues the request `name` on the container in its slot (`REQUESTS`); a Delete first cancels the container's
-    queued tasks, and any other request is refused while one runs or waits, or while Sage recovers the container. One of `INTENTS` is recorded as the
-    container's intent first, put back as it was when the queue does not take it, and cleared at its outcome. Once
+    queued tasks, and any other request is refused when the container refuses it (`request_refusal`), and replaces
+    one of its own still waiting. One of `INTENTS` is recorded as the container's intent first, put back as it was
+    when the queue does not take it, and cleared at its outcome. Once
     the queue takes it, a manual backup it replaced or cancelled is settled cancelled. A
     request `resume`d from its intent replaces nothing and cancels nothing: one queued or running with its key does it
     instead. The queue's answer."""
@@ -128,10 +132,8 @@ class LifecycleMixin:
     scope = placement_scope(container.worker_id, container.id)
     if name == "delete" and not resume:
       self.cancel_tasks(scope=scope)
-    elif self.has_task(("delete", container.id)):
-      raise Conflict("This container is being deleted.")
-    if name != "delete" and (refusal := self.recovery_refusal([container])) is not None:
-      raise Conflict(f"{NAMES[name]} refused: {REFUSALS[refusal]}.")
+    elif not resume and (refusal := self.request_refusal(container)) is not None:
+      raise Conflict(f"{NAMES[name]} refused: {refusal}.")
     if name in INTENTS:
       previous, body = commands.record_intent(container.id, name), task
 

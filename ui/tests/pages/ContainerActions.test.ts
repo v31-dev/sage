@@ -91,14 +91,20 @@ describe('Deploy', () => {
   it.each([
     ['no containers', [], true],
     ['every container refusing', [stopped('c1', { live: 'deploy' })], true],
-    ['one container taking it', [stopped('c1', { live: 'deploy' }), stopped('c2')], false],
+    [
+      'one container refusing and one taking it',
+      [stopped('c1', { live: 'deploy' }), stopped('c2')],
+      true,
+    ],
+    ['every container taking it', [stopped('c1'), stopped('c2')], false],
     ['an automatic backup running', [stopped('c1', { live: 'backup_preserve' })], false],
     [
-      'every container recovering',
+      'one container recovering and one taking it',
       [
         stopped('c1', {
           view: { headline: 'recovering', config: 'current', reason: 'interrupted', detail: null },
         }),
+        stopped('c2'),
       ],
       true,
     ],
@@ -160,6 +166,18 @@ describe('Stop', () => {
     const { wrapper } = mountButton(StopApplicationButton, {
       application: application([busy]),
       container: busy,
+    })
+
+    expect(wrapper.get('button').attributes('disabled')).toBeDefined()
+  })
+
+  it('of all is disabled while any container refuses it', () => {
+    const recovering = container({
+      id: 'c1',
+      view: { headline: 'recovering', config: 'current', reason: 'interrupted', detail: null },
+    })
+    const { wrapper } = mountButton(StopApplicationButton, {
+      application: application([recovering, container({ id: 'c2' })]),
     })
 
     expect(wrapper.get('button').attributes('disabled')).toBeDefined()

@@ -588,7 +588,7 @@ class TestDeleteRequests:
 
   def test_a_request_for_all_is_refused_while_a_container_is_being_deleted(self, manager, application, container, other):
     manager.request_delete(other.id)
-    with pytest.raises(Conflict, match="has an operation in progress"):
+    with pytest.raises(Conflict, match="^A container of this application can't take this request: it is being deleted.$"):
       manager.request_deploy_all(application.id)
 
   async def test_a_forced_delete_asked_while_a_delete_runs_waits_for_it(self, manager, container):
@@ -1035,12 +1035,28 @@ class TestRequestsForAll:
     assert len(set(tasks)) == 2 and set(given) == {container.id for container in containers}
     assert {deploy.image for deploy in given.values()} == {"nginx"}
 
-  def test_a_request_for_all_is_refused_while_any_container_has_one(self, manager, application, containers):
+  def test_a_request_for_all_replaces_a_containers_request_still_waiting(self, manager, application, containers):
     manager.request_stop(containers[1].id)
+    assert len(manager.request_deploy_all(application.id)) == 2
+    assert sorted((tuple(entry["key"]), entry["name"]) for entry in manager.task_queue.snapshot()["queued"]) == sorted(
+        (("lifecycle", container.id), "deploy") for container in containers)
+
+  async def test_a_request_for_all_is_refused_whole_while_a_containers_operation_runs(self, manager, application, containers):
+    release = asyncio.Event()
+
+    async def holds(container_id, deploy):
+      await release.wait()
+
+    manager.deploy_container = holds
+    manager.request_deploy(containers[1].id)
+    manager.task_queue.dispatch_tick()
+    await asyncio.sleep(0)
     for request in (manager.request_deploy_all, manager.request_stop_all):
-      with pytest.raises(Conflict, match="has an operation in progress"):
+      with pytest.raises(Conflict, match="^A container of this application can't take this request: it already has an operation"):
         request(application.id)
-    assert len(manager.task_queue.snapshot()["queued"]) == 1
+    assert manager.task_queue.snapshot()["queued"] == []
+    release.set()
+    await manager.run()
 
   def test_stop_all_stops_each_container(self, manager, application, containers):
     assert len(manager.request_stop_all(application.id)) == 2

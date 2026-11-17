@@ -22,7 +22,7 @@ const containers = computed(() =>
   props.container ? [props.container] : props.application.containers
 )
 const disabled = computed(
-  () => containers.value.length === 0 || containers.value.every(refusesRequests)
+  () => containers.value.length === 0 || containers.value.some(refusesRequests)
 )
 
 async function onConfirmStop() {

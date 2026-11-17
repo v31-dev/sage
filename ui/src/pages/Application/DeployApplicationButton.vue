@@ -27,7 +27,7 @@ const containers = computed(() =>
 )
 const disabled = computed(
   () =>
-    isRequesting.value || containers.value.length === 0 || containers.value.every(refusesRequests)
+    isRequesting.value || containers.value.length === 0 || containers.value.some(refusesRequests)
 )
 
 async function onClickDeploy() {
