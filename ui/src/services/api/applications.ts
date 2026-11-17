@@ -35,6 +35,7 @@ export type ContainerHeadline =
   | 'stopping'
   | 'backup'
   | 'restoring'
+  | 'recovering'
   | 'error'
   | 'checking'
 
@@ -134,11 +135,12 @@ export interface Container extends ContainerReference {
   updated_at: string
 }
 
-// Whether the container refuses a Deploy, Stop, backup or restore now: one of its own operations runs, or a Delete runs
-// or waits. An automatic backup running leaves a request to wait its turn behind it.
+// Whether the container refuses a Deploy, Stop, backup or restore now: one of its own operations runs, Sage recovers
+// it, or a Delete runs or waits. An automatic backup running leaves a request to wait its turn behind it.
 export function refusesRequests(container: Container): boolean {
   return (
     (container.live !== null && container.live !== 'backup_preserve') ||
+    container.view.headline === 'recovering' ||
     container.queued.some(request => request.operation === 'delete')
   )
 }

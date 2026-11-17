@@ -62,7 +62,7 @@ case "$1 $2 $4" in
     [ -e "$state/exits" ] && echo "exited|$labels" > "$state/runtime-$name"
     ;;
   inspect*)
-    [ -e "$state/runtime-$last" ] || { echo "Error: No such object: $last" >&2; exit 1; }
+    [ -e "$state/runtime-$last" ] || { echo; echo "Error: No such object: $last" >&2; exit 1; }
     cat "$state/runtime-$last"
     ;;
 esac
@@ -102,6 +102,9 @@ class Worker:
     status, deployment = state.split()
     (self.state / f"runtime-{runtime_name(container.id)}").write_text(
         "|".join([status, deployment, authority.instance_id, authority.state_generation, authority.container_id]) + "\n")
+
+  def ssh(self, hostname):
+    return "reachable" if self.reachable else "unreachable"
 
   def answer(self, what):
     if self.breaks_at is not None and self.breaks_at in what:
@@ -761,6 +764,43 @@ class TestRecovery:
       await manager.recover_container(container.id, "d9", final=False)
     assert worker_record(container) == unsettled(container)
     assert [(action, transition) for action, transition, _ in events(container)] == [("deploy", "recovery_failed")]
+
+
+class TestRequestsWhileRecovering:
+  @pytest.fixture
+  async def recovering(self, manager, worker_host, container):
+    place(container, unsettled(container))
+    await manager.recover_container(container.id, "d9", final=False)
+    return container
+
+  @pytest.fixture
+  def other(self, application):
+    from services.db.models import Worker
+    return Container.create(application=application, worker=Worker.create(hostname="w2", subdomain="blue"))
+
+  async def test_deploy_and_stop_are_refused_before_queueing_and_delete_is_admitted(self, manager, recovering):
+    with pytest.raises(Conflict, match="^Deploy refused: an earlier operation on it is still being recovered.$"):
+      manager.request_deploy(recovering.id)
+    with pytest.raises(Conflict, match="^Stop refused: an earlier operation on it is still being recovered.$"):
+      manager.request_stop(recovering.id)
+    assert (manager.task_queue.snapshot()["queued"], intent(recovering)) == ([], None)
+    assert manager.request_delete(recovering.id)
+
+  async def test_an_unreadable_record_refuses_them_with_its_reason(self, manager, worker_host, container):
+    place(container, "not a record\n")
+    await Containers().read(container)
+    with pytest.raises(Conflict, match="^Deploy refused: its record on the worker can't be read.$"):
+      manager.request_deploy(container.id)
+
+  async def test_once_the_recovery_settles_a_deploy_is_admitted(self, manager, worker_host, recovering):
+    await manager.recover_container(recovering.id, "d9", final=True)
+    assert manager.request_deploy(recovering.id)
+
+  async def test_deploy_all_and_stop_all_are_refused_whole(self, manager, recovering, other):
+    for request in (manager.request_deploy_all, manager.request_stop_all):
+      with pytest.raises(Conflict, match="^A container of this application can't take this request: an earlier operation"):
+        request(recovering.application_id)
+    assert manager.task_queue.snapshot()["queued"] == []
 
 
 class TestReset:

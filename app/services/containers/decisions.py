@@ -4,7 +4,7 @@ from dataclasses import dataclass, replace
 
 from services.containers.record import Applied, Authority, Settled, TargetRead
 
-HEADLINES = ("active", "inactive", "deploying", "stopping", "backup", "restoring", "error", "checking")
+HEADLINES = ("active", "inactive", "deploying", "stopping", "backup", "restoring", "recovering", "error", "checking")
 CONFIG = ("current", "dirty", "not_deployed", "unknown")
 KNOWLEDGE = ("unobserved", "known", "stale", "unreachable")
 PROGRESS = {"deploy": "deploying", "stop": "stopping", "delete": "stopping", "backup_stopped": "backup",
@@ -144,8 +144,9 @@ def correction(target: TargetRead, runtime: Runtime, live: str | None, expected:
 
 def decide_container(facts: ContainerFacts) -> ContainerView:
   """The headline and the configuration comparison. The headline is decided in precedence order: a record or a
-  current runtime of another authority (this Sage's before a restore, or another Sage's), a live operation's progress, a known failure, too little evidence, then the committed goal against the
-  current runtime."""
+  current runtime of another authority (this Sage's before a restore, or another Sage's), a live operation's progress,
+  a record Sage recovers before any other operation on it (unreadable, or an operation that never settled), a known
+  failure, too little evidence, then the committed goal against the current runtime."""
   record, runtime = facts.target.record, facts.runtime
   foreign = record is not None and record.authority != facts.expected
   others = [authority for authority in (record.authority if record is not None else None,
@@ -171,10 +172,10 @@ def decide_container(facts: ContainerFacts) -> ContainerView:
   if facts.live in PROGRESS:
     return view(PROGRESS[facts.live])
   if facts.target.kind == "invalid":
-    return view("error", "invalid_record")
+    return view("recovering", "invalid_record")
   operation = record.operation if record else None
   if operation is not None and operation.phase != "settled" and facts.live is None:
-    return view("checking", "backup_interrupted") if operation.contract == "backup_preserve" else view("error", "interrupted")
+    return view("checking", "backup_interrupted") if operation.contract == "backup_preserve" else view("recovering", "interrupted")
   settled = record.settled if record else None
   if settled is not None and settled.result == "failed":
     return view("error", "failed", settled.reason)

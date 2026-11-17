@@ -48,10 +48,13 @@ const namespaces = computed(() =>
     }))
 )
 
-// Each linked container's headline, from the containers the page holds.
-const headlines = computed(() =>
+// Each linked container's state, from the containers the page holds.
+const indicators = computed(() =>
   Object.fromEntries(
-    state.value.containers.map(container => [container.id, container.view.headline])
+    state.value.containers.map(container => [
+      container.id,
+      appStore.containerIndicator(container.view.headline, container.view.reason),
+    ])
   )
 )
 
@@ -176,8 +179,8 @@ onUnmounted(() => stop?.())
                       {{ domain.container.application.label }} · {{ domain.container.worker }}
                     </Badge>
                     <StateIndicator
-                      v-if="headlines[domain.container.id]"
-                      v-bind="appStore.containerIndicator(headlines[domain.container.id]!)"
+                      v-if="indicators[domain.container.id]"
+                      v-bind="indicators[domain.container.id]!"
                       show-label
                     />
                   </template>

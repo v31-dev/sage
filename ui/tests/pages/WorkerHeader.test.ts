@@ -1,4 +1,5 @@
 import { flushPromises, mount } from '@vue/test-utils'
+import StateIndicator from '@/components/StateIndicator.vue'
 import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { formatDate } from '@/lib/utils'
@@ -255,14 +256,18 @@ describe('the worker', () => {
     )
   })
 
-  it('says why it is not online', () => {
+  it('labels its state by why it is not online, and says why in the tooltip', () => {
     const { wrapper } = mountHeader(
       worker('eu1', {
         view: { status: 'offline', reason: 'ssh_unreachable', detail: null, ready: false },
       })
     )
+    const badge = wrapper
+      .findAllComponents(StateIndicator)
+      .find(indicator => indicator.props('tooltip'))!
 
-    expect(wrapper.get('[data-reason]').text()).toBe('Its SSH server does not answer.')
+    expect(badge.text()).toBe('SSH down')
+    expect(badge.props('tooltip')).toBe('Its SSH server does not answer.')
   })
 
   it('shows its address in the tailnet when the graphs have none', () => {

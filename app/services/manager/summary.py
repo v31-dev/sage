@@ -14,7 +14,7 @@ from utils.executor import NOTIFICATIONS_EXECUTOR, submit_with_context
 from utils.queue import OnConflict
 
 # A container's headlines while an operation on it is under way, which the daily message counts together.
-IN_PROGRESS = ("deploying", "stopping", "backup", "restoring")
+IN_PROGRESS = ("deploying", "stopping", "backup", "restoring", "recovering")
 
 
 def counts(values, vocabulary: tuple) -> dict:

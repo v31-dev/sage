@@ -4,6 +4,7 @@ import io
 import os
 import stat
 import tarfile
+from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -338,6 +339,21 @@ class TestManualRequests:
     with pytest.raises(Conflict, match="it runs"):
       manager.request_backup(container.application_id, ids(volumes))
     assert manager.task_queue.snapshot()["queued"] == []
+
+  async def test_backup_and_restore_are_refused_while_a_container_is_being_recovered(
+          self, manager, worker_host, store, container, others, volumes):
+    await self.held(container, stopped(container))
+    await self.held(others, replace(stopped(others), operation=Operation(
+        "d9", "deploy", "recovering", VERIFIED, 905, input_hash="a" * 64, outcome="interrupted")))
+    with pytest.raises(Conflict, match="^A container of this application can't take this request: an earlier operation"):
+      manager.request_backup(container.application_id, ids(volumes))
+    [backup_id] = add_backups(store.identity, utcnow(), False, [store.get_full_path(volume_archive_key(
+        volumes[0].id, container.id, archive_name(utcnow())))], [volumes[0]], container)
+    Backup.update(status="succeeded").where(Backup.id == backup_id).execute()
+    with pytest.raises(Conflict, match="^Restore refused: an earlier operation on it is still being recovered.$"):
+      manager.request_restore(others.id, backup_id, volumes[0].id)
+    assert manager.task_queue.snapshot()["queued"] == []
+    assert manager.request_restore(container.id, backup_id, volumes[0].id)
 
   def test_it_is_refused_for_volumes_of_another_application(self, manager, container, volumes):
     with pytest.raises(ValueError):

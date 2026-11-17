@@ -131,6 +131,23 @@ describe('the Domains page', () => {
     expect(wrapper.find('[data-reason]').exists()).toBe(false)
   })
 
+  it('labels the linked container’s state by its reason', async () => {
+    const failed = {
+      ...linkable(1, 'w1', 'red'),
+      view: {
+        headline: 'error' as const,
+        config: 'current' as const,
+        reason: 'failed',
+        detail: 'boom',
+      },
+    }
+    const wrapper = shown({ domains: [domain(1, {})], containers: [failed] })
+    await flushPromises()
+
+    expect(wrapper.get('[data-domain]').text()).toContain('failed')
+    expect(wrapper.get('[data-domain]').text()).not.toContain('boom')
+  })
+
   it('follows the domains topic and groups the domains by namespace, then service, then pool', async () => {
     const wrapper = shown({
       domains: [

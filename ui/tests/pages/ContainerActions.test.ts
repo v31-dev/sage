@@ -93,6 +93,15 @@ describe('Deploy', () => {
     ['every container refusing', [stopped('c1', { live: 'deploy' })], true],
     ['one container taking it', [stopped('c1', { live: 'deploy' }), stopped('c2')], false],
     ['an automatic backup running', [stopped('c1', { live: 'backup_preserve' })], false],
+    [
+      'every container recovering',
+      [
+        stopped('c1', {
+          view: { headline: 'recovering', config: 'current', reason: 'interrupted', detail: null },
+        }),
+      ],
+      true,
+    ],
   ])('of all with %s is disabled: %s', (_name, containers, disabled) => {
     const { wrapper } = mountButton(DeployApplicationButton, {
       application: application(containers),
@@ -139,8 +148,15 @@ describe('Stop', () => {
     ]).toEqual([1, 1])
   })
 
-  it('is disabled while the container refuses it', () => {
-    const busy = container({ live: 'stop' })
+  it.each([
+    ['its own operation runs', container({ live: 'stop' })],
+    [
+      'Sage recovers it',
+      container({
+        view: { headline: 'recovering', config: 'current', reason: 'interrupted', detail: null },
+      }),
+    ],
+  ])('is disabled while %s', (_name, busy) => {
     const { wrapper } = mountButton(StopApplicationButton, {
       application: application([busy]),
       container: busy,

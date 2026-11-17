@@ -47,8 +47,36 @@ const CONTAINER_INDICATORS: Record<ContainerHeadline, Indicator> = {
   stopping: { state: 'busy', label: 'stopping' },
   backup: { state: 'busy', label: 'backup' },
   restoring: { state: 'busy', label: 'restoring' },
+  recovering: { state: 'busy', label: 'recovering' },
   error: { state: 'error', label: 'error' },
   checking: { state: 'busy', label: 'checking' },
+}
+
+// A container's badge says what is wrong in a word or two, from the reason the manager gave.
+const CONTAINER_REASON_LABELS: Record<string, string> = {
+  failed: 'failed',
+  unreachable: 'unreachable',
+  unexpected_exit: 'exited',
+  unexpected_running: 'running when stopped',
+  unexpected_deployment: 'wrong deployment',
+  restored: 'from before restore',
+  authority: 'another Sage',
+  backup_interrupted: 'resuming',
+}
+
+// A worker's badge says what is wrong in a word or two, from the reason the manager gave.
+const WORKER_REASON_LABELS: Record<string, string> = {
+  unreachable: 'offline',
+  ssh_unreachable: 'SSH down',
+  tailnet_unreachable: 'tunnel only',
+  owned_elsewhere: 'another Sage',
+  setup_failed: 'setup failed',
+  not_reporting: 'no reports',
+  stack_down: 'stack down',
+  traefik_down: 'Traefik down',
+  traefik_unchecked: 'Traefik unchecked',
+  manager_offline: 'manager offline',
+  unobserved: 'checking',
 }
 
 // What each reason of a worker's state means; `detail` when the manager's detail reads as part of it.
@@ -147,12 +175,14 @@ export const useAppStore = defineStore('app', () => {
     }
   }
 
-  function containerIndicator(headline: ContainerHeadline): Indicator {
-    return CONTAINER_INDICATORS[headline]
+  function containerIndicator(headline: ContainerHeadline, reason?: string | null): Indicator {
+    const label = reason ? CONTAINER_REASON_LABELS[reason] : undefined
+    return label ? { ...CONTAINER_INDICATORS[headline], label } : CONTAINER_INDICATORS[headline]
   }
 
-  function workerIndicator(status: WorkerStatus): Indicator {
-    return WORKER_INDICATORS[status]
+  function workerIndicator(status: WorkerStatus, reason?: string | null): Indicator {
+    const label = reason ? WORKER_REASON_LABELS[reason] : undefined
+    return label ? { ...WORKER_INDICATORS[status], label } : WORKER_INDICATORS[status]
   }
 
   // Why the worker is in its state, for people; empty when it is online or busy with a task of its own.

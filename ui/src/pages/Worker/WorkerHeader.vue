@@ -131,7 +131,11 @@ async function onConfirmResync() {
     <CardHeader class="border-b flex flex-col gap-3 md:flex-row md:justify-between">
       <CardTitle>
         <SectionTitle :title="props.worker.hostname" :size="3">
-          <StateIndicator v-bind="appStore.workerIndicator(status)" show-label />
+          <StateIndicator
+            v-bind="appStore.workerIndicator(status, props.worker.view.reason)"
+            :tooltip="appStore.workerReason(props.worker.view)"
+            show-label
+          />
           <StateIndicator
             v-if="props.worker.path"
             class="ml-2"
@@ -184,13 +188,6 @@ async function onConfirmResync() {
         data-removal-refusal
       >
         {{ props.worker.removal_refusal }}
-      </p>
-      <p
-        v-if="appStore.workerReason(props.worker.view)"
-        class="text-sm text-muted-foreground md:col-span-2 lg:col-span-7"
-        data-reason
-      >
-        {{ appStore.workerReason(props.worker.view) }}
       </p>
 
       <div>

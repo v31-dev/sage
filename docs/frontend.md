@@ -135,7 +135,11 @@ class of its own. New states and new places use a tone; no `text-green-600`, `bg
 `components/StateIndicator.vue` draws a state with its own icon shape as well as a colour,
 so colour is never the only cue: `idle`, `busy`, `ok`, `warning` or `error`, each with a label
 that is also its accessible name. It is an icon, an icon with the label in a badge
-(`show-label`), or a small dot (`dot`, sized and placed by the caller). A place that has its
+(`show-label`), or a small dot (`dot`, sized and placed by the caller). A badge with a `tooltip` can be
+focused and says more there: a container's and a worker's badge is labelled by the reason the
+manager gave in a word or two (`containerIndicator(headline, reason)`,
+`workerIndicator(status, reason)`), with the reason in full in its tooltip; where only counts or a
+dot show the state (Home, the sidebar), the label is the plain state. A place that has its
 own states maps them to one of these in the app store (`sectionIndicator` for a settings
 section, `workersIndicator` for the Workers menu item, `applicationIndicator` for an
 application's counts, `containerIndicator`, `workerIndicator`, `certificateIndicator`, `tunnelIndicator`,

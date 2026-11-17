@@ -28,10 +28,15 @@ beforeEach(() => {
 })
 
 describe('the requests a container refuses', () => {
-  const container = (live: api.ContainerOperation | null, queued: api.ContainerOperation[] = []) =>
+  const container = (
+    live: api.ContainerOperation | null,
+    queued: api.ContainerOperation[] = [],
+    headline: api.ContainerHeadline = 'active'
+  ) =>
     ({
       live,
       queued: queued.map(operation => ({ operation, task_id: 't1', cancellable: true })),
+      view: { headline, config: 'current', reason: null, detail: null },
     }) as api.Container
 
   it.each([
@@ -42,6 +47,7 @@ describe('the requests a container refuses', () => {
     ['a restore runs', container('restore_stopped'), true],
     ['a Delete runs', container('delete'), true],
     ['a Delete waits', container(null, ['delete']), true],
+    ['Sage recovers it', container(null, [], 'recovering'), true],
   ])('when %s: %s', (_name, value, refused) => {
     expect(api.refusesRequests(value)).toBe(refused)
   })

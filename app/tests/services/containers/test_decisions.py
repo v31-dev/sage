@@ -58,7 +58,7 @@ SCENARIOS = {
         present(applied=APPLIED, settled=RUNNING_OK, operation=Operation("b1", "backup_preserve", "executing", AT, 0)), known("exited"), None,
         "h1", "checking", "current", "backup_interrupted"),
     "a deploy cut off by a restart": (present(applied=APPLIED, settled=RUNNING_OK, operation=Operation("d3", "deploy", "executing", AT, 0)),
-                                      known(), None, "h1", "error", "current", "interrupted"),
+                                      known(), None, "h1", "recovering", "current", "interrupted"),
     "a live operation that owns its unfinished record": (
         present(applied=APPLIED, settled=RUNNING_OK, operation=Operation("d3", "deploy", "executing", AT, 0)), known("exited"), "deploy", "h1",
         "deploying", "current", None),
@@ -75,7 +75,7 @@ SCENARIOS = {
                                                "current", None),
     "no record but its runtime runs": (TargetRead("absent"), known(deployment=None), None, "h1", "error", "not_deployed",
                                        "unexpected_running"),
-    "an unreadable record": (TargetRead("invalid"), known(), None, "h1", "error", "unknown", "invalid_record"),
+    "an unreadable record": (TargetRead("invalid"), known(), None, "h1", "recovering", "unknown", "invalid_record"),
     "a record from before a restore": (TargetRead("present", TargetRecord(RESTORED, APPLIED, RUNNING_OK)), known(), None, "h1",
                                        "error", "unknown", "restored"),
     "a live deploy over a record from before a restore": (TargetRead("present", TargetRecord(RESTORED, APPLIED, RUNNING_OK)), known(),
@@ -173,7 +173,10 @@ def test_every_combination_of_facts_keeps_the_invariants():
     unoccupied = decide(target, runtime)
     assert routable(ContainerFacts(OURS, target, runtime, live, "h1")) is (
         None if unoccupied.headline == "checking" or unoccupied.reason == "unreachable" else unoccupied.headline == "active"), facts
-    assert (view.reason is not None) == (view.headline == "error") or view.reason == "backup_interrupted", facts
+    assert (view.reason is not None) == (view.headline in ("error", "recovering")) or view.reason == "backup_interrupted", facts
+    recovers = not others and live not in PROGRESS and (
+        target.kind == "invalid" or (orphaned and record.operation.contract != "backup_preserve"))
+    assert (view.headline == "recovering") == recovers, facts
     if others:
       assert (view.headline, view.reason) == ("error", "authority" if FOREIGN in others else "restored"), facts
     elif live in PROGRESS:

@@ -281,10 +281,21 @@ describe('the indicators by status', () => {
     ['stopping', 'busy'],
     ['backup', 'busy'],
     ['restoring', 'busy'],
+    ['recovering', 'busy'],
     ['checking', 'busy'],
     ['inactive', 'idle'],
   ] as const)('containerIndicator: %s is %s', (headline, state) => {
     expect(useAppStore().containerIndicator(headline)).toEqual({ state, label: headline })
+  })
+
+  it.each([
+    ['error', 'failed', 'error', 'failed'],
+    ['error', 'unexpected_running', 'error', 'running when stopped'],
+    ['recovering', 'interrupted', 'busy', 'recovering'],
+    ['checking', 'backup_interrupted', 'busy', 'resuming'],
+    ['error', 'something_new', 'error', 'error'],
+  ] as const)('containerIndicator: %s for %s reads %s %s', (headline, reason, state, label) => {
+    expect(useAppStore().containerIndicator(headline, reason)).toEqual({ state, label })
   })
 
   it.each([
@@ -310,6 +321,15 @@ describe('the indicators by status', () => {
     ['removing', 'busy'],
   ] as const)('workerIndicator: %s is %s', (status, state) => {
     expect(useAppStore().workerIndicator(status)).toEqual({ state, label: status })
+  })
+
+  it.each([
+    ['offline', 'ssh_unreachable', 'error', 'SSH down'],
+    ['not ready', 'tailnet_unreachable', 'warning', 'tunnel only'],
+    ['checking', 'manager_offline', 'busy', 'manager offline'],
+    ['not ready', 'something_new', 'warning', 'not ready'],
+  ] as const)('workerIndicator: %s for %s reads %s %s', (status, reason, state, label) => {
+    expect(useAppStore().workerIndicator(status, reason)).toEqual({ state, label })
   })
 
   it.each([

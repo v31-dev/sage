@@ -52,7 +52,11 @@ function goToMetrics(hostname: string) {
     <CardHeader class="border-b">
       <CardTitle>
         <SectionTitle :title="props.worker.hostname">
-          <StateIndicator v-bind="appStore.workerIndicator(props.worker.view.status)" show-label />
+          <StateIndicator
+            v-bind="appStore.workerIndicator(props.worker.view.status, props.worker.view.reason)"
+            :tooltip="appStore.workerReason(props.worker.view)"
+            show-label
+          />
           <StateIndicator
             v-if="props.worker.path"
             class="ml-2"
@@ -64,14 +68,6 @@ function goToMetrics(hostname: string) {
     </CardHeader>
 
     <CardContent class="space-y-4">
-      <p
-        v-if="appStore.workerReason(props.worker.view)"
-        class="text-sm text-muted-foreground"
-        data-reason
-      >
-        {{ appStore.workerReason(props.worker.view) }}
-      </p>
-
       <div>
         <Label>IP</Label>
         <p class="text-sm text-muted-foreground font-mono break-all">

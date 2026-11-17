@@ -1,4 +1,5 @@
 import { flushPromises, mount } from '@vue/test-utils'
+import StateIndicator from '@/components/StateIndicator.vue'
 import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import Workers from '@/pages/Workers/index.vue'
@@ -159,16 +160,20 @@ describe('a worker card', () => {
     expect(text).toMatch(/Containers\s*0/)
   })
 
-  it('shows its address in the tailnet, and why it is not online', () => {
-    const text = mountCard(
+  it('shows its address in the tailnet, and labels its state by why it is not online', () => {
+    const wrapper = mountCard(
       worker('w1', {
         address: '100.64.0.9',
         view: { status: 'not ready', reason: 'stack_down', detail: 'vector', ready: false },
       })
-    ).text()
+    )
+    const badge = wrapper
+      .findAllComponents(StateIndicator)
+      .find(indicator => indicator.props('tooltip'))!
 
-    expect(text).toContain('100.64.0.9')
-    expect(text).toContain('Part of its stack is down: vector')
+    expect(wrapper.text()).toContain('100.64.0.9')
+    expect(badge.text()).toBe('stack down')
+    expect(badge.props('tooltip')).toBe('Part of its stack is down: vector')
   })
 
   // The newest minute of a worker with 4 cores, 8000 MB of memory and 100 GB of disk.

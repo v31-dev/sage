@@ -2,16 +2,19 @@
 import { computed, type Component } from 'vue'
 import { CircleCheck, CircleDashed, LoaderCircle, OctagonX, TriangleAlert } from 'lucide-vue-next'
 import { Badge } from '@/components/ui/badge'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { TONES, type Tone } from '@/lib/tone'
 import type { IndicatorState } from '@/services/api'
 
 // A state as an icon (default), an icon with its label in a badge (`showLabel`), or a small
-// dot (`dot`; the caller sizes and places it). The label is always the accessible name.
+// dot (`dot`; the caller sizes and places it). The label is always the accessible name. A badge
+// with a `tooltip` can be focused, and says more in its tooltip.
 const props = defineProps<{
   state: IndicatorState
   label: string
   showLabel?: boolean
   dot?: boolean
+  tooltip?: string
 }>()
 
 // Each state has its own icon shape as well as a colour, so colour is never the only cue.
@@ -34,6 +37,19 @@ const tone = computed(() => TONES[STATES[props.state].tone])
     :aria-label="label"
     :class="['inline-block shrink-0 rounded-full', tone.dot]"
   />
+  <TooltipProvider v-else-if="showLabel && tooltip">
+    <Tooltip>
+      <TooltipTrigger as-child>
+        <span tabindex="0" class="inline-flex" data-tooltip>
+          <Badge variant="outline" :class="tone.text">
+            <component :is="icon" :class="state === 'busy' && 'animate-spin'" />
+            {{ label }}
+          </Badge>
+        </span>
+      </TooltipTrigger>
+      <TooltipContent>{{ tooltip }}</TooltipContent>
+    </Tooltip>
+  </TooltipProvider>
   <Badge v-else-if="showLabel" variant="outline" :class="tone.text">
     <component :is="icon" :class="state === 'busy' && 'animate-spin'" />
     {{ label }}

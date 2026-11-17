@@ -39,7 +39,7 @@ describe('the state', () => {
     })
 
     expect(wrapper.text()).toContain('deploying')
-    expect(wrapper.find('[data-reason]').exists()).toBe(false)
+    expect(wrapper.find('[data-tooltip]').exists()).toBe(false)
   })
 
   it.each([
@@ -56,39 +56,71 @@ describe('the state', () => {
   })
 
   it.each([
-    ['failed', 'boom', 'The last operation failed: boom'],
-    ['unreachable', null, "Its worker can't be reached."],
-    ['unexpected_deployment', 'd9', 'It is running a deployment it was not deployed with.'],
-    ['something_new', null, 'something_new'],
-  ])('says why it is in error: %s', (reason, detail, shown) => {
-    const wrapper = mountStatus({ view: { headline: 'error', config: 'current', reason, detail } })
+    ['error', 'failed', 'boom', 'failed', 'The last operation failed: boom'],
+    ['error', 'unreachable', null, 'unreachable', "Its worker can't be reached."],
+    [
+      'error',
+      'unexpected_deployment',
+      'd9',
+      'wrong deployment',
+      'It is running a deployment it was not deployed with.',
+    ],
+    [
+      'recovering',
+      'interrupted',
+      null,
+      'recovering',
+      'An operation on it was interrupted. Sage is stopping it; other actions wait until then.',
+    ],
+    ['error', 'something_new', null, 'error', 'something_new'],
+  ] as const)(
+    'labels its badge by the reason %s/%s and gives it in full in the tooltip',
+    async (headline, reason, detail, label, tooltip) => {
+      const wrapper = mount(ContainerStatus, {
+        props: {
+          container: container({ view: { headline, config: 'current', reason, detail } }),
+          reload: vi.fn(async () => {}),
+        },
+        attachTo: document.body,
+      })
+      const trigger = wrapper.get('[data-tooltip]')
 
-    expect(wrapper.get('[data-reason]').text()).toBe(shown)
-  })
+      expect(trigger.text()).toBe(label)
+      await trigger.trigger('focus')
+      await wrapper.vm.$nextTick()
+      expect(document.body.querySelector('[role="tooltip"]')?.textContent?.trim()).toBe(tooltip)
+      wrapper.unmount()
+      document.body.innerHTML = ''
+    }
+  )
 })
 
 describe('the runtime', () => {
   it.each([
-    ['known', reading(), 'Docker: running'],
+    ['known', reading(), 'active', null],
     [
       'known',
       reading({ state: 'exited', exit_code: 137, oom_killed: true }),
-      'Docker: exited (exit code 137, out of memory)',
+      'error',
+      'Docker: exited (137, out of memory)',
     ],
-    ['known', reading({ state: 'absent' }), 'Docker: not on its worker'],
-    ['stale', reading(), 'Last seen running'],
-    [
-      'unreachable',
-      reading({ state: 'exited', exit_code: 0 }),
-      'Worker unreachable; last seen exited (exit code 0)',
-    ],
-    ['unreachable', null, "Its worker can't be reached; not seen yet"],
-    ['unobserved', null, 'Not seen on its worker yet'],
-  ] as const)('when it is %s says what was last read', (knowledge, read, shown) => {
-    const wrapper = mountStatus({ runtime: { knowledge, reading: read } })
+    ['known', reading({ state: 'absent' }), 'error', 'Docker: not on its worker'],
+    ['known', reading({ state: 'absent' }), 'recovering', null],
+    ['stale', reading(), 'checking', 'last seen running'],
+    ['unreachable', reading({ state: 'exited', exit_code: 0 }), 'error', 'last seen exited (0)'],
+    ['unreachable', null, 'error', 'not seen yet'],
+    ['unobserved', null, 'checking', 'not seen yet'],
+  ] as const)(
+    'when it is %s and the headline %s says Docker’s state only where the headline does not',
+    (knowledge, read, headline, shown) => {
+      const badge = mountStatus({
+        view: { headline, config: 'current', reason: null, detail: null },
+        runtime: { knowledge, reading: read },
+      }).find('[data-runtime]')
 
-    expect(wrapper.get('[data-runtime]').text()).toBe(shown)
-  })
+      expect(badge.exists() ? badge.text() : null).toBe(shown)
+    }
+  )
 
   it.each([
     ['healthy', 'health healthy'],
