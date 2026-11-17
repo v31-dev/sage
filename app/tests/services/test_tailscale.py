@@ -829,6 +829,17 @@ class TestObserveWorkers:
     answers.connected = True
     assert self.observe(tailscale, "a", "b") == {"a": "reachable", "b": "unreachable"}
 
+  def test_without_the_coordination_server_a_worker_that_answers_leaves_the_others_misses_their_own(self, tailscale, answers):
+    answers.up = {"a", "b"}
+    self.observe(tailscale, "a", "b")
+    answers.up, answers.connected = {"a"}, False
+    assert self.observe(tailscale, "a", "b") == {"a": "reachable", "b": "reachable"}
+    assert self.observe(tailscale, "a", "b") == {"a": "reachable", "b": "unreachable"}
+
+  def test_without_the_coordination_server_workers_the_tailnet_does_not_list_are_unknown(self, tailscale, answers):
+    answers.listed, answers.connected = {}, False
+    assert self.observe(tailscale, "a") == {"a": "unknown"}
+
   def fail(self, tailscale, *hostnames):
     with pytest.raises(Exception, match="timed out"):
       asyncio.run(tailscale.observe_workers(list(hostnames)))

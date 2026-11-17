@@ -2,7 +2,6 @@
 worker's stack with Sage and its repair; and adding, removing and rebooting a worker."""
 import asyncio
 import logging
-import re
 from time import monotonic
 
 from peewee import JOIN
@@ -486,12 +485,15 @@ class WorkersMixin:
     return lines[0].strip()
 
   async def _start_stack(self, hostname: str) -> bool:
-    """`docker compose up -d` for the worker's stack: it starts what is stopped and leaves what runs alone. True when it
-    started something."""
-    _, lines = await Tailscale().exec_command(
-        hostname, f"docker compose -f {config.WORKER_HOME_DIR}/docker-compose.yml up -d --quiet-pull "
-        f"{' '.join(config.WORKER_STACK_SERVICES)}", timeout=120)
-    return any(re.search(r"\b(Started|Starting|Created)\b", line) for line in lines)
+    """Recreates the services of the worker's stack that are not running and leaves those that run alone. True when
+    one was not running."""
+    compose = f"docker compose -f {config.WORKER_HOME_DIR}/docker-compose.yml"
+    _, lines = await Tailscale().exec_command(hostname, f"{compose} ps --services --status running", timeout=60)
+    # A container whose task containerd failed to clean up can't be started again, only replaced.
+    stopped = [service for service in config.WORKER_STACK_SERVICES if service not in {line.strip() for line in lines}]
+    if stopped:
+      await Tailscale().exec_command(hostname, f"{compose} up -d --force-recreate --quiet-pull {' '.join(stopped)}", timeout=120)
+    return bool(stopped)
 
   def request_worker_paths(self):
     """Queues the look at how each reachable worker is reached."""

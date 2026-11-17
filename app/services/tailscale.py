@@ -181,15 +181,17 @@ class Tailscale(Base):
   async def observe_workers(self, hostnames: list[str]):
     """Asks each worker's SSH server (`reachable`) and holds what it found, with each one's address in the tailnet:
     reachable at the first answer, unreachable once OFFLINE_AFTER_MISSED_CHECKS checks in a row have gone unanswered
-    or when the tailnet does not list it, as it was until then (`next_online`). While the manager's own node is cut
-    off from the tailnet a miss says nothing of the workers: every one is unknown, and what was found before and the
-    misses stay as they were. An observation that fails is a miss of the manager's own node: everything stays as it
-    was, and once OFFLINE_AFTER_MISSED_CHECKS in a row have failed the manager is cut off; the failure is raised."""
+    or when the tailnet does not list it, as it was until then (`next_online`). The manager's own node is cut off
+    when no worker answered and it is not connected to the coordination server: a miss then says nothing of the
+    workers, every one is unknown, and what was found before and the misses stay as they were. One worker's answer
+    shows the manager is in the tailnet, whatever the coordination server, so the others' misses are their own. An
+    observation that fails is a miss of the manager's own node: everything stays as it was, and once
+    OFFLINE_AFTER_MISSED_CHECKS in a row have failed the manager is cut off; the failure is raised."""
     try:
       addresses = {peer.hostname: peer.ip for peer in await run_in_executor_with_context(self.peers) if peer.hostname in hostnames}
       listed = [hostname for hostname in hostnames if hostname in addresses]
       answers = dict(zip(listed, await asyncio.gather(*(self.reachable(hostname) for hostname in listed))))
-      cut_off = not all(answers.values()) and not await run_in_executor_with_context(self.connected)
+      cut_off = bool(hostnames) and not any(answers.values()) and not await run_in_executor_with_context(self.connected)
     except Exception:
       with self.lock:
         self._connected, self._failures = next_online(self._connected, False, self._failures)

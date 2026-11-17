@@ -26,11 +26,12 @@ HOME = "/opt/sage"
 
 class Hosts:
   """The tailnet and the workers on it as convergence sees them: each worker's SSH fact and address, its files by path,
-  the commands run on it, a command that fails (`fails`, a part of it), and the machine's hostname by what names it
-  (`machines`)."""
+  the commands run on it, a command that fails (`fails`, a part of it), the stack's services that run (`running`), and
+  the machine's hostname by what names it (`machines`)."""
 
   def __init__(self):
-    self.found, self.addresses, self.files, self.fails, self.starts = {}, {}, {}, None, False
+    self.found, self.addresses, self.files, self.fails = {}, {}, {}, None
+    self.running = set(config.WORKER_STACK_SERVICES)
     self.answering, self.boots, self.commands, self.forgotten, self.on_boot = set(), [], [], [], None
     self.machines = {}
 
@@ -83,8 +84,10 @@ class Hosts:
     if command.startswith("rm -f "):
       for path in command[len("rm -f "):].split():
         self.files.pop(f"{hostname}:{path}", None)
-    if " up -d --quiet-pull " in command:
-      return 0, [" Container sage-traefik-1  Started"] if self.starts else []
+    if command.endswith(" ps --services --status running"):
+      return 0, ['time="2026-11-17T11:06:27Z" level=warning msg="a warning on stderr"', *sorted(self.running)]
+    if " up -d --force-recreate --quiet-pull " in command:
+      self.running |= set(command.split(" --quiet-pull ", 1)[1].split())
     return 0, []
 
   async def sync_file(self, hostname, src, dst, keys=None, formatter=None, timeout=120, mode=0o644):
@@ -418,13 +421,25 @@ class TestRoutesLeftBehind:
 
 
 class TestStackRepair:
-  @pytest.mark.parametrize("starts, recorded", [(True, [("repair", "succeeded")]), (False, [])])
-  async def test_a_repair_is_recorded_and_noticed_when_it_started_something(self, manager, hosts, worker, starts, recorded, notices):
+  @pytest.mark.parametrize("stopped, recorded", [({"telegraf"}, [("repair", "succeeded")]), (set(), [])])
+  async def test_a_repair_is_recorded_and_noticed_when_it_started_something(self, manager, hosts, worker, stopped, recorded, notices):
     Workers().record_setup("w1", "succeeded", "100.64.0.2")
-    hosts.starts = starts
+    hosts.running -= stopped
     await manager.repair_worker_stack("w1")
     assert events() == recorded
-    assert notices() == [("warning", "Worker w1: started the parts of its stack that were stopped.", WORKER_PAGE)] * starts
+    assert notices() == [("warning", "Worker w1: started the parts of its stack that were stopped.", WORKER_PAGE)] * bool(stopped)
+
+  async def test_a_repair_recreates_only_the_services_that_are_not_running(self, manager, hosts, worker):
+    Workers().record_setup("w1", "succeeded", "100.64.0.2")
+    hosts.running -= {"telegraf", "cloudflared"}
+    await manager.repair_worker_stack("w1")
+    assert [command.split(" --quiet-pull ", 1)[1] for command in hosts.commands if " up -d " in command] == ["telegraf cloudflared"]
+    assert hosts.running == set(config.WORKER_STACK_SERVICES)
+
+  async def test_a_repair_with_every_service_running_starts_nothing(self, manager, hosts, worker):
+    Workers().record_setup("w1", "succeeded", "100.64.0.2")
+    await manager.repair_worker_stack("w1")
+    assert not any(" up -d " in command for command in hosts.commands)
 
   @pytest.mark.parametrize("found, setup", [("unreachable", "succeeded"), ("reachable", None), ("reachable", "failed")])
   async def test_a_worker_no_longer_reachable_and_set_up_by_the_time_it_runs_is_left_alone(
