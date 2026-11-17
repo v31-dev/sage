@@ -86,8 +86,9 @@ class Manager(PlatformMixin, QueueMixin):
     self.requested = []
     self.setup_failures, self.stack_repairs, self.removal_failures = {"w1": 1.0}, {"w1": 1.0}, {"w1": 1.0}
     self.recoveries, self.orphans = {"c": 1}, {"o": 1}
-    self.task_queue = TaskQueue(SCOPES, names=TASK_NAMES | {"held", "later", "old"}, executors={lane: self.pool for lane in ("platform", "app", "common", "metrics")},
-                                record=lambda task, status: None, notify=self._queue_changed)
+    self.task_queue = TaskQueue(SCOPES, {lane: self.pool for lane in ("platform", "app", "common", "metrics")},
+                                record=lambda task, status: None, notify=self._queue_changed,
+                                names=TASK_NAMES | {"held", "later", "old"})
 
   def __getattr__(self, name):
     if name.startswith("request_"):

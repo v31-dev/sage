@@ -94,7 +94,8 @@ class Manager(DomainsMixin, QueueMixin):
     self.routable, self.ready, self.finished, self.discovered = {}, {}, [], 0
     self.started_at = utcnow()
     self.queue_facts = self.domains_queue_facts()
-    self.task_queue = TaskQueue(SCOPES, names=TASK_NAMES, executors={"app": self.pool}, record=lambda task, status: self.finished.append((task.name, status)),
+    self.task_queue = TaskQueue(SCOPES, names=TASK_NAMES, executors={"app": self.pool},
+                                record=lambda task, status: self.finished.append((task.name, status)),
                                 notify=self._queue_changed)
 
   def request_discovery(self):

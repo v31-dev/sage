@@ -99,7 +99,8 @@ class Manager(CertificatesMixin, QueueMixin):
     self.pool = ThreadPoolExecutor(max_workers=1)
     self.queue_facts = []
     self.worker_state = SimpleNamespace(check=lambda: None)
-    self.task_queue = TaskQueue(SCOPES, names=TASK_NAMES, executors={"platform": self.pool}, record=lambda task, status: None, notify=self._queue_changed)
+    self.task_queue = TaskQueue(SCOPES, names=TASK_NAMES, executors={"platform": self.pool},
+                                record=lambda task, status: None, notify=self._queue_changed)
 
 
 @pytest.fixture
