@@ -221,7 +221,7 @@ class PlatformMixin:
         encrypted, plain = Path(directory) / "platform.db.enc", Path(directory) / "platform.db"
         await session.download_key(s3_path, str(encrypted), raw_path=True)
         await run_in_executor_with_context(decrypt_file, encrypted, plain)
-        await run_in_executor_with_context(Database().install, plain, {"s3": store})
+        run = await run_in_executor_with_context(Database().install, plain, {"s3": store})
       restored = True
       Settings().load_all()
       for consumer, key in ((S3(), "s3"), (Notifications(), "notifications")):
@@ -240,3 +240,16 @@ class PlatformMixin:
       if restored:
         self.request_startup()
     Notifications().notify(f"Platform restored from the backup taken at {taken_at(s3_path)}.", "success", "/backups")
+    self.notify_migration(run)
+
+  def notify_migration(self, run: str):
+    """Tells of `run` of the migration history when this process recorded it: what it brought the data up to and how
+    many steps it left to do by hand, linking to its log."""
+    migration = MigrationRuns().latest()
+    if not migration or migration["run"] != run:
+      return
+    source = "The platform restore" if migration["trigger"] == "restore" else "This start of Sage"
+    left = (f" It left {migration['actions']} {'step' if migration['actions'] == 1 else 'steps'} to do by hand."
+            if migration["actions"] else "")
+    Notifications().notify(f"{source} brought its data up to v{migration['release']}.{left}",
+                           "warning" if migration["actions"] else "info", f"/upgrade?migration={run}")

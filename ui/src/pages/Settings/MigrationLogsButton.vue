@@ -27,7 +27,7 @@ import { formatDate, levelClass } from '@/lib/utils'
 import { fetchMigrations, type MigrationRun } from '@/services/api'
 
 // `run` is the run to show first, the newest when it is not listed; with `open` the dialog opens on it at once.
-const props = defineProps<{ run?: string; open?: boolean; label?: string }>()
+const props = defineProps<{ run?: string; open?: boolean }>()
 
 const TRIGGERS: Record<MigrationRun['trigger'], string> = {
   boot: 'At start',
@@ -81,11 +81,9 @@ watch(
 <template>
   <Dialog v-model:open="open">
     <DialogTrigger asChild>
-      <Button variant="outline" size="sm" @click="load"
-        ><History />{{ props.label ?? 'Migration logs' }}</Button
-      >
+      <Button variant="outline" size="sm" @click="load"><History />Migration logs</Button>
     </DialogTrigger>
-    <DialogContent class="sm:max-w-6xl">
+    <DialogContent class="flex flex-col sm:max-w-6xl">
       <DialogHeader>
         <DialogTitle>Migration logs</DialogTitle>
         <DialogDescription>
@@ -112,17 +110,15 @@ watch(
             </SelectContent>
           </Select>
         </Field>
-        <Alert v-if="run?.actions" data-actions-note>
+        <Alert v-if="run?.actions" variant="destructive" data-actions-note>
           <TriangleAlert />
           <AlertDescription>
-            This run left {{ run.actions }} {{ run.actions === 1 ? 'step' : 'steps' }} to do by
-            hand: they're at the end of the log, in red, in the order to take them.
+            This run left {{ run.actions }} {{ run.actions === 1 ? 'step' : 'steps' }} to do
+            manually, in the exact order shown. They're the lines marked CRITICAL at the end of the
+            log.
           </AlertDescription>
         </Alert>
-        <div
-          v-if="run"
-          class="max-h-[60vh] min-h-0 overflow-y-auto md:border md:rounded-lg md:bg-card"
-        >
+        <div v-if="run" class="min-h-0 flex-1 overflow-y-auto md:border md:rounded-lg md:bg-card">
           <!-- Desktop table (md+) -->
           <table class="hidden md:table w-full caption-bottom text-sm table-fixed">
             <TableHeader class="sticky top-0 z-10 bg-muted">

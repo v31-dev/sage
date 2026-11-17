@@ -29,7 +29,7 @@ const stubs = {
 }
 
 const ACTION =
-  'Worker [w1] - Run command to stop [shop-web] as 0.1.3 ran it.\n\ndocker compose -f /opt/sage/applications/shop-web/docker-compose.yml down'
+  'Worker [w1] - Run command to stop [shop-web].\n###\ndocker compose -f /opt/sage/applications/shop-web/docker-compose.yml down\n###'
 
 function migration(run: string, fields: Partial<MigrationRun> = {}): MigrationRun {
   return {
@@ -121,7 +121,7 @@ describe('the migration logs', () => {
     ])
     const wrapper = await opened()
     expect(wrapper.find('[data-actions-note]').text()).toBe(
-      "This run left 3 steps to do by hand: they're at the end of the log, in red, in the order to take them."
+      "This run left 3 steps to do manually, in the exact order shown. They're the lines marked CRITICAL at the end of the log."
     )
 
     vi.mocked(fetchMigrations).mockResolvedValue([migration('a', { actions: 0 })])

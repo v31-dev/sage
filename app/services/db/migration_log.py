@@ -40,12 +40,12 @@ class MigrationRuns(Base):
 
 def record(run: str, trigger: str, outcome: str, lines: list[dict], actions: list[dict] | None = None):
   """Appends to the run's log what it did to one file: the `lines` logged meanwhile (ts, level, message), then each
-  manual action its steps left (`where`, the `command` or None, `why`) as a CRITICAL line, its command after a blank
-  line; `outcome` (migrated, recreated or refused) counts towards the run's. A log that can't be written is a warning,
+  manual action its steps left (`where`, the `command` or None, `why`) as a CRITICAL line, its command between `###`
+  lines; `outcome` (migrated, recreated or refused) counts towards the run's. A log that can't be written is a warning,
   never the migration's failure."""
   now = utcnow().isoformat()
   entries = [*lines, *({"ts": now, "level": "CRITICAL", "action": True,
-                        "message": f"{action['where']} - Run command to {action['why']}\n\n{action['command']}"
+                        "message": f"{action['where']} - Run command to {action['why']}\n###\n{action['command']}\n###"
                         if action["command"] else f"{action['where']} - {action['why']}"} for action in actions or [])]
   MigrationRuns().saw(run, trigger, outcome, len(actions or []))
   folder = config.DATA_DIR / "migrations"

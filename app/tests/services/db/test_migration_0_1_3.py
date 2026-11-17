@@ -132,15 +132,16 @@ def test_a_failure_part_way_leaves_the_0_1_3_database_as_it_was(data_dir, monkey
 
 
 def actions() -> list[dict]:
-  """The run's manual actions as its log ends with them: where, the command (after a blank line) and why."""
+  """The run's manual actions as its log ends with them: where, the command (between `###` lines) and why."""
   from services.db.migration_log import migration_runs
   [run] = migration_runs()
   found = []
   for line in run["lines"]:
     if line["level"] == "CRITICAL":
-      text, _, command = line["message"].partition("\n\n")
+      text, _, command = line["message"].partition("\n###\n")
       where, _, why = text.partition(" - ")
-      found.append({"where": where, "command": command or None, "why": why.removeprefix("Run command to ")})
+      found.append({"where": where, "command": command.removesuffix("\n###") or None,
+                    "why": why.removeprefix("Run command to ")})
   return found
 
 
@@ -156,13 +157,14 @@ def test_the_actions_go_worker_by_worker_then_cloudflare_the_store_and_the_domai
   assert f"/opt/sage/containers/{web['w1']}/volumes/{volumes['data']}" in steps[2][1]
   assert steps[3][1] == "rm -rf /opt/sage/applications && rm -f /opt/sage/revisions/shop-web"
   assert f"/opt/sage/containers/{web['w2']}/volumes/{volumes['data']}" in steps[6][1]
-  assert steps[0][2] == "stop [shop-web] as 0.1.3 ran it."
-  assert steps[8][2] == ("Delete the DNS record [*.example.test] and the tunnel [example.test-sage]. 0.1.3 routed every "
-                         "public name through them; until they're gone, a name without its own record reaches the idle "
-                         "tunnel and gets Cloudflare's error page.")
+  assert steps[0][2] == "stop [shop-web], still running as 0.1.3 started it: this version doesn't manage 0.1.3's containers."
+  assert steps[8][2].startswith("Delete the DNS record [*.example.test] and the tunnel [example.test-sage], which 0.1.3 created.")
+  assert "neither the retention period nor deleting a volume removes them" in steps[9][2]
   assert [why for where, _, why in steps if where == "Sage"] == [
-      "Add the internal domain [web] (port [8080]) of [shop-web] again, linked to the container that serves it.",
-      "Add the public domain [shop] (port [80]) of [shop-web] again, linked to the container that serves it."]
+      "The internal domain [web] (port [8080]) of [shop-web] was removed by this upgrade. Add it again on the Domains "
+      "page, linked to the [shop-web] container that should serve it.",
+      "The public domain [shop] (port [80]) of [shop-web] was removed by this upgrade. Add it again on the Domains "
+      "page, linked to the [shop-web] container that should serve it."]
 
 
 def test_a_move_puts_the_data_in_its_new_place_and_never_over_data_already_there(migrated, tmp_path, monkeypatch):
@@ -190,14 +192,18 @@ def test_its_log_says_what_it_did_with_the_old_and_new_ids_then_what_to_do_by_ha
   web = {container.worker_id: container.id for container in Container.select()}
   lines = [(line["level"], line["message"]) for line in run["lines"]]
   messages = [message for _, message in lines]
-  assert "Kept [1] instance, [1] projects and [2] applications with their ids." in messages
-  assert f"Container of [shop-web] on [w1] is [{web['w1']}], was [10]." in messages
-  assert "Emptied [domain]: [2] rows." in messages and "Dropped [event] with its [1] rows." in messages
+  assert "Kept [1] instance, [1] projects and [2] applications unchanged, with their settings and ids." in messages
+  assert f"Container of [shop-web] on [w1] now has the id [{web['w1']}] (was [10])." in messages
+  assert ("WARNING", "Every container ([2]) now reads not deployed: this version runs containers from new places on the "
+          "workers and can't take over the ones 0.1.3 started. Deploy each again once the steps at the end of this log "
+          "are done.") in lines
+  assert any(message.startswith("Removed [2] domains: ") for message in messages)
+  assert "Removed [1] events: the history starts empty in this version." in messages
   assert any(message.startswith("Migrated [") and "from version [0] to [1]" in message for message in messages)
   actions = [(level, message) for level, message in lines if level == "CRITICAL"]
-  assert actions[0] == ("CRITICAL", "Worker [w1] - Run command to stop [shop-web] as 0.1.3 ran it.\n\n"
+  assert actions[0] == ("CRITICAL", "Worker [w1] - Run command to stop [shop-web], still running as 0.1.3 started it: "
+                                    "this version doesn't manage 0.1.3's containers.\n###\n"
                                     "[ ! -f /opt/sage/applications/shop-web/docker-compose.yml ] || docker compose -f "
-                                    "/opt/sage/applications/shop-web/docker-compose.yml down")
-  assert actions[-1] == ("CRITICAL", "Sage - Add the public domain [shop] (port [80]) of [shop-web] again, linked to the "
-                                     "container that serves it.")
+                                    "/opt/sage/applications/shop-web/docker-compose.yml down\n###")
+  assert actions[-1][1].startswith("Sage - The public domain [shop] (port [80]) of [shop-web] was removed by this upgrade.")
   assert lines[-len(actions):] == actions

@@ -60,8 +60,8 @@ class Database(Base):
       copy.commit()
       copy.execute("VACUUM")
 
-  def install(self, path: Path, settings: dict[str, dict]):
-    """Replaces the live database with the platform backup at `path`. The backup file is made the restored state
+  def install(self, path: Path, settings: dict[str, dict]) -> str:
+    """Replaces the live database with the platform backup at `path` and returns its migration's run id. The backup file is made the restored state
     first, in place: a fresh state generation, the sections in `settings` (key to values) kept over the backup's, and
     the history and the Backup rows emptied (discovery rebuilds those). Then a safety copy of the live database, the
     backup copied in, which SQLite commits whole or not at all, and migrated as at boot. A failure copies the safety copy back and raises; the safety copy is removed either way.
@@ -86,16 +86,18 @@ class Database(Base):
     safety = config.DB_PATH.with_name(f"{config.DB_PATH.name}.restore-{utcnow():%Y%m%d_%H%M%S}")
     with closing(sqlite3.connect(safety)) as copy:
       db.connection().backup(copy)
+    run = new_id()
     try:
       with closing(sqlite3.connect(path)) as backup:
         backup.backup(db.connection())
-      self.migrate(new_id(), "restore")
+      self.migrate(run, "restore")
     except Exception:
       with closing(sqlite3.connect(safety)) as copy:
         copy.backup(db.connection())
       raise
     finally:
       safety.unlink(missing_ok=True)
+    return run
 
   def remove_safety_copies(self, days: int = config.RETENTION_DAYS):
     """Removes the safety copies older than `days` beside the live database, which only an install killed part way

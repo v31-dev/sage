@@ -19,6 +19,7 @@ from services.containers.record import TargetRead
 from services.containers.targets import Containers
 from services.db import migrations
 from services.db.database import Database
+from services.db.migration_log import record
 from services.db.models import Backup, ContainerEvent, Instance, Notification, Worker, db
 from services.domains.decisions import ApplyOutcome
 from services.domains.state import Domains
@@ -395,6 +396,33 @@ class TestRestore:
     await manager.run()
     assert (ContainerEvent.select().count(), Notification.select().count(), Backup.select().count()) == (0, 0, 0)
 
+  async def test_one_with_nothing_to_migrate_does_not_tell_of_the_starts_migration_again(self, manager, stores, backup):
+    record("boot", "boot", "migrated", [], [{"where": "Sage", "command": None, "why": "x"}])
+    manager.request_platform_restore(backup.id)
+    await manager.run()
+    assert manager.notices[-1] == (f"Platform restored from the backup taken at {taken_at(backup.s3_path)}.", "success", "/backups")
+
+
+class TestMigrationNotice:
+  def test_a_run_that_left_steps_says_how_many_and_links_to_its_log(self, manager):
+    record("r1", "boot", "migrated", [], [{"where": "Sage", "command": None, "why": "x"}] * 3)
+    manager.notify_migration("r1")
+    assert manager.notices == [(f"This start of Sage brought its data up to v{config.VERSION}. It left 3 steps to do by hand.",
+                                "warning", "/upgrade?migration=r1")]
+
+  def test_a_restores_run_that_left_none_says_so(self, manager):
+    record("r1", "restore", "recreated", [])
+    manager.notify_migration("r1")
+    assert manager.notices == [(f"The platform restore brought its data up to v{config.VERSION}.", "info",
+                                "/upgrade?migration=r1")]
+
+  def test_a_run_this_process_did_not_record_last_is_not_told(self, manager):
+    record("r1", "boot", "migrated", [])
+    manager.notify_migration("r2")
+    record("r2", "restore", "migrated", [])
+    manager.notify_migration("r1")
+    assert manager.notices == []
+
 
 class TestFacts:
   async def test_the_backup_status_follows_a_running_platform_backup_and_a_discovery_queued(self, manager):
@@ -536,7 +564,6 @@ class TestInfo:
     assert set(info["settings"]) == {"tailscale", "cloudflare", "s3", "notifications"}
 
   def test_it_shows_the_latest_migration_run_of_this_process(self, shown, data_dir):
-    from services.db.migration_log import record
     record("r1", "boot", "migrated", [], [{"where": "Sage", "command": None, "why": "x"}])
     assert shown.info()["migration"] == {"run": "r1", "trigger": "boot", "release": config.VERSION, "outcome": "migrated",
                                          "actions": 1}

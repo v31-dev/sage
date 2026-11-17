@@ -7,6 +7,7 @@ import pytest
 import config
 from services.db import migrations
 from services.db.database import MODELS, Database
+from services.db.migration_log import MigrationRuns
 from services.db.migrator import SchemaRefused
 from services.db.models import Backup, BaseEvent, BaseModel, Container, ContainerEvent, Instance, Project, Setting, Worker, WorkerEvent
 from services.db.models import db as database
@@ -371,7 +372,7 @@ class TestPlatformCopies:
     Database().install(tmp_path / "old.db", {})
     assert (ContainerEvent.select().count(), Notification.select().count(), Backup.select().count()) == (0, 0, 0)
 
-  def test_an_older_backup_is_migrated(self, live, tmp_path, monkeypatch):
+  def test_an_older_backup_is_migrated_as_a_run_of_its_own(self, live, tmp_path, monkeypatch):
     Project.update(description="Shop").execute()
     Database().snapshot(tmp_path / "snapshot.db")
     with contextlib.closing(sqlite3.connect(tmp_path / "snapshot.db")) as copy:
@@ -380,9 +381,10 @@ class TestPlatformCopies:
     monkeypatch.setattr(migrations, "STEPS", [
         *migrations.STEPS, lambda db: db.execute_sql("ALTER TABLE project RENAME COLUMN summary TO description")])
 
-    Database().install(tmp_path / "snapshot.db", {})
+    run = Database().install(tmp_path / "snapshot.db", {})
 
     assert (Project.get().description, version(database)) == ("Shop", len(migrations.STEPS))
+    assert {key: MigrationRuns().latest()[key] for key in ("run", "trigger")} == {"run": run, "trigger": "restore"}
 
   def test_a_backup_from_a_later_sage_is_refused_and_the_live_database_put_back(self, live, tmp_path):
     Database().snapshot(tmp_path / "snapshot.db")

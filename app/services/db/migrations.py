@@ -150,21 +150,37 @@ def from_0_1_3(db: SqliteDatabase) -> list[dict]:
   rebuild("worker", new_workers)
   rebuild("volume", new_volumes)
   rebuild("container", new_containers)
-  logger.info(f"Kept [{len(instances)}] instance, [{len(projects)}] projects and [{len(applications)}] applications with "
-              "their ids.")
+  logger.info(f"Kept [{len(instances)}] instance, [{len(projects)}] projects and [{len(applications)}] applications "
+              "unchanged, with their settings and ids.")
   for row in new_workers:
-    logger.info(f"Worker [{row['hostname']}] has the subdomain [{row['subdomain']}].")
+    logger.info(f"Worker [{row['hostname']}] got the random subdomain [{row['subdomain']}]: this version gives each "
+                "worker a subdomain of its own for its internal domains. Rename it on the worker's page if you like.")
   for old, row in zip(volumes, new_volumes):
-    logger.info(f"Volume [{row['name']}] of [{qualified[row['application_id']]}] is [{row['id']}], was [{old['id']}].")
+    logger.info(f"Volume [{row['name']}] of [{qualified[row['application_id']]}] now has the id [{row['id']}] (was "
+                f"[{old['id']}]): this version keeps a volume's data on the worker under its id.")
   for old, row in zip(containers, new_containers):
-    logger.info(f"Container of [{qualified[row['application_id']]}] on [{row['worker_id']}] is [{row['id']}], was "
-                f"[{old['id']}].")
-  for table in ("domain", "backup", "notification", "task", "container_event", "worker_event"):
+    logger.info(f"Container of [{qualified[row['application_id']]}] on [{row['worker_id']}] now has the id [{row['id']}] "
+                f"(was [{old['id']}]).")
+  if containers:
+    logger.warning(f"Every container ([{len(containers)}]) now reads not deployed: this version runs containers from "
+                   "new places on the workers and can't take over the ones 0.1.3 started. Deploy each again once the "
+                   "steps at the end of this log are done.")
+  dropped = {
+      "domain": ("domains", "this version routes domains differently and can't convert 0.1.3's. Each is listed at the "
+                 "end of this log, to add again"),
+      "backup": ("backup list entries", "the list is rebuilt from the S3 store; 0.1.3's backups are not in it (see the "
+                 "end of this log)"),
+      "notification": ("notifications", "the history starts empty in this version"),
+      "task": ("task records", "the history starts empty in this version"),
+      "container_event": ("container events", "the history starts empty in this version"),
+      "worker_event": ("worker events", "the history starts empty in this version"),
+  }
+  for table, (rows_name, why) in dropped.items():
     if table in db.get_tables() and (count := db.execute_sql(f'SELECT count(*) FROM "{table}"').fetchone()[0]):
-      logger.info(f"Emptied [{table}]: [{count}] rows.")
+      logger.info(f"Removed [{count}] {rows_name}: {why}.")
     rebuild(table, [])
   if count := db.execute_sql('SELECT count(*) FROM "event"').fetchone()[0]:
-    logger.info(f"Dropped [event] with its [{count}] rows.")
+    logger.info(f"Removed [{count}] events: the history starts empty in this version.")
   db.execute_sql('DROP TABLE "event"')
 
   home, domain = config.WORKER_HOME_DIR, get_env("DOMAIN")
@@ -176,7 +192,8 @@ def from_0_1_3(db: SqliteDatabase) -> list[dict]:
       old = f"{home}/applications/{qualified[container['application_id']]}"
       actions.append({"where": f"Worker [{hostname}]", "command": f'[ ! -f {old}/docker-compose.yml ] || docker compose '
                       f'-f {old}/docker-compose.yml down',
-                      "why": f"stop [{qualified[container['application_id']]}] as 0.1.3 ran it."})
+                      "why": f"stop [{qualified[container['application_id']]}], still running as 0.1.3 started it: "
+                      "this version doesn't manage 0.1.3's containers."})
     for container in placed:
       old = f"{home}/applications/{qualified[container['application_id']]}"
       for volume in sorted((row for row in new_volumes if row["application_id"] == container["application_id"]),
@@ -185,21 +202,27 @@ def from_0_1_3(db: SqliteDatabase) -> list[dict]:
         actions.append({"where": f"Worker [{hostname}]", "command": f"if [ -e {new} ]; then echo '{new} exists already'; "
                         f"else mkdir -p {new.rsplit('/', 1)[0]} && mv {old}/volumes/{volume['name']} {new}; fi",
                         "why": f"move the data of [{qualified[container['application_id']]}]'s volume [{volume['name']}] "
-                        "to where this version keeps it, before the container is deployed."})
+                        f"to where this version keeps it. Do it before deploying [{qualified[container['application_id']]}] "
+                        "again: without it, the container starts with an empty volume."})
     actions.append({"where": f"Worker [{hostname}]", "command": f"rm -rf {home}/applications && rm -f " + " ".join(
         f"{home}/revisions/{qualified[row['application_id']]}" for row in placed),
-        "why": "remove what 0.1.3 left of its applications, once every move above has succeeded."})
+        "why": "delete what 0.1.3 left of its applications on this worker. Run it only once every move above has "
+        "succeeded: it deletes any volume data still in the old place."})
   actions.append({"where": "Cloudflare", "command": None,
-                  "why": f"Delete the DNS record [*.{domain}] and the tunnel [{domain}-sage]. 0.1.3 routed every public "
-                  "name through them; until they're gone, a name without its own record reaches the idle tunnel "
-                  "and gets Cloudflare's error page."})
+                  "why": f"Delete the DNS record [*.{domain}] and the tunnel [{domain}-sage], which 0.1.3 created. "
+                  "This version gives each public domain its own record on its own tunnel; until these are deleted, a "
+                  "name without its own record goes to the idle old tunnel and gets Cloudflare's error page."})
   actions.append({"where": "S3 store", "command": None,
-                  "why": "0.1.3's backups, under [backups/platform/] and [backups/applications/] without an id in their "
-                         "names, are no longer listed: keep them for a restore by hand, or delete them."})
+                  "why": "0.1.3's backups (under [backups/platform/] and [backups/applications/], named without an id) "
+                         "can't be used by this version: it names backups differently, so it doesn't list or restore "
+                         "them, and neither the retention period nor deleting a volume removes them. They stay in the "
+                         "store until you delete them. Once every application runs again, take new backups on the "
+                         "Backups page, then delete the old ones from the store."})
   for row in sorted(domains, key=lambda row: (qualified[row["application_id"]], row["type"], row["name"])):
     actions.append({"where": "Sage", "command": None,
-                    "why": f"Add the {row['type']} domain [{row['name']}] (port [{row['port']}]) of "
-                    f"[{qualified[row['application_id']]}] again, linked to the container that serves it."})
+                    "why": f"The {row['type']} domain [{row['name']}] (port [{row['port']}]) of "
+                    f"[{qualified[row['application_id']]}] was removed by this upgrade. Add it again on the Domains "
+                    f"page, linked to the [{qualified[row['application_id']]}] container that should serve it."})
   return actions
 
 

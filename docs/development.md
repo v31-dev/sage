@@ -297,13 +297,14 @@ configured `LOG_LEVEL`), so each file's versions and outcome are in the log itse
 [1]", "Recreating [...] empty: ...", "Refused [...]: ...") and a step tells what it did by logging it, with ids and
 names in `[]`. A step can also return the manual actions its change leaves, each with where to take it (a worker,
 Cloudflare, the store, Sage), the exact command when there is one and why; the step builds them while it has both the
-old rows and the new ids, and they go in the log as CRITICAL lines, its command after a blank line. `GET
+old rows and the new ids, and they go in the log as CRITICAL lines, its command between `###` lines. `GET
 /api/migrations` gives the runs, newest first, each with whether a file was refused, how many actions it left and its
 `lines`, the actions last. Settings → Upgrade shows them in its Migration logs dialog, a log like a task's, with a note
 above it when a run left steps to do by hand, so a refused upgrade is visible once the previous release runs again. The manager also keeps the
 latest run of its own start in memory (`MigrationRuns`), a boot's or a platform restore's, and `GET /api` carries it as
-`migration`: while it is there the Upgrade page shows a banner, and a run that left steps to do by hand opens the
-Upgrade page on it once in each browser.
+`migration`: a run that left steps to do by hand opens the Upgrade page on it once in each browser. Each such run is
+also a notification, sent once the Manager is set up or the restore is done, saying what it brought the data up to and
+how many steps it left, with a link to `/upgrade?migration=<run>`, which opens the Migration logs on that run.
 
 **Release notes.** A manual upgrade step goes in the release notes only in an emergency the automatic migration can't
 solve; the boot's refusal links the release page, so its notes can be corrected without a new release.

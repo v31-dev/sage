@@ -167,7 +167,7 @@ class TestRuns:
     assert (second["run"], second["at"], second["refused"], second["actions"]) == ("a", "2026-01-01T00:00:00", False, 2)
     assert messages(second) == [
         ("INFO", "Migrated [data.db]."), ("WARNING", "Recreating [tasks.db] empty."),
-        ("CRITICAL", "Worker [w1] - Run command to move [a].\n\nmv a b"), ("CRITICAL", "Sage - Add [shop] again.")]
+        ("CRITICAL", "Worker [w1] - Run command to move [a].\n###\nmv a b\n###"), ("CRITICAL", "Sage - Add [shop] again.")]
 
   def test_a_line_cut_off_or_a_log_without_its_first_line_is_skipped(self, data_dir):
     record("a", "boot", "migrated", [{"ts": "t", "level": "INFO", "message": "kept"}])

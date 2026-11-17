@@ -4,6 +4,7 @@ import shutil
 import config
 from services.base import Base
 from services.certs import Certs
+from services.db import migration_log
 from services.db.database import Database
 from services.logs import Logs
 from services.metrics import Metrics
@@ -95,6 +96,7 @@ class Manager(
       Certs()
       Metrics().start_sampler()
       Notifications().notify("Manager started.")
+      self.notify_migration(migration_log.BOOT)
     except Exception as e:
       raise Exception(f"Manager setup failed : {e}.")
 
