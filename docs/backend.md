@@ -95,7 +95,7 @@ Most high-level backend behavior ultimately flows through this service, and almo
 - `services/settings.py`
   - persistent settings state for S3 and notifications; every field is optional and set from the UI
 - `services/cloudflare.py`
-  - Cloudflare DNS and tunnel management, configured from env (`DOMAIN`, `CLOUDFLARE_API_TOKEN`); finds the domain's active zone and, from it, the account that holds it; connects at startup and again on use if that failed. `sync_dns_records` makes the records with each comment exactly a given set, from one list of the zone (the workers' `*.<subdomain>.int` records, the public names, discovery's)
+  - Cloudflare DNS and tunnel management, configured from env (`DOMAIN`, `CLOUDFLARE_API_TOKEN`); finds the domain's active zone and, from it, the account that holds it; connects at startup and again on use if that failed. `sync_dns_records` makes the records with each comment exactly a given set, from one list of the zone (the workers' `*.<subdomain>.int` records, the public names, discovery's). A record of another comment that Cloudflare won't keep beside one of them (`blocking_records`: a CNAME stands alone among A, AAAA and CNAME records at its name) refuses the whole sync before any change, naming that record: Sage never deletes a record it can't tell is its own
 - `services/certs.py`
   - owns manager, shared discovery and hostname-keyed worker certificate material, exact SAN/key validation,
     ACME DNS-01 issuance, retirement/revocation, startup retry and the manager's TLS reload; memory-only

@@ -8,6 +8,7 @@ import config
 from services.base import Base
 from services.tailscale import Tailscale
 from utils.common import dict_to_obj, get_env, utcnow
+from utils.errors import Conflict
 from utils.retry import retry
 
 logger = logging.getLogger(__name__)
@@ -15,6 +16,14 @@ logger = logging.getLogger(__name__)
 
 def dns_record_matches(record: dict, desired: dict) -> bool:
   return all(record.get(key) == value for key, value in desired.items())
+
+
+def blocking_records(zone: list[dict], name: str, type: str | None, comment: str) -> list[dict]:
+  """The records at `name` without that comment beside which Cloudflare refuses a record of `type`: a CNAME stands
+  alone among A, AAAA and CNAME records, while A and AAAA records share a name."""
+  blocked = ("A", "AAAA", "CNAME") if type == "CNAME" else ("CNAME",) if type in ("A", "AAAA") else ()
+  return [record for record in zone
+          if record["name"] == name and record.get("type") in blocked and record.get("comment") != comment]
 
 
 class CloudflareError(Exception):
@@ -186,9 +195,17 @@ class Cloudflare(Base):
   def sync_dns_records(self, records: dict[str, dict[str, str]], zone: list[dict] | None = None, **fields):
     """Make the zone's records with each comment exactly its set in `records` (comment to name to content), each with
     `fields` (type, proxied), from one list of the zone (`zone`, when it was listed already): those at another name
-    are deleted, the others created or corrected."""
+    are deleted, the others created or corrected. A record of another comment that Cloudflare would not keep beside one
+    of them (`blocking_records`) refuses the whole sync with `Conflict` before any change."""
     if zone is None:
       zone = self.get_dns_records()
+    for comment, wanted in records.items():
+      for name in wanted:
+        if blocked := blocking_records(zone, name, fields.get("type"), comment):
+          described = " and ".join(
+              f"{'an' if record['type'][0] == 'A' else 'a'} {record['type']} record "
+              + (f"(comment \"{record['comment']}\")" if record.get("comment") else "(no comment)") for record in blocked)
+          raise Conflict(f"{name} already has {described} that this Sage doesn't manage.")
     for comment, wanted in records.items():
       # Cloudflare matches a comment in any case, so the comparison is here.
       existing = [record for record in zone if record.get("comment") == comment]

@@ -6,8 +6,9 @@ import httpx
 import pytest
 
 import config
-from services.cloudflare import Cloudflare, CloudflareError
+from services.cloudflare import Cloudflare, CloudflareError, blocking_records
 from services.tailscale import Tailscale
+from utils.errors import Conflict
 
 ACCOUNT = "test-account"
 ZONE = "zone1"
@@ -596,6 +597,46 @@ class TestDnsRecords:
     connected.delete_dns_records("a.example.test")
 
     assert api.sent("DELETE") == []
+
+
+class TestBlockingRecords:
+  ZONE = [
+      {"id": "1", "name": "a.example.test", "type": "CNAME", "comment": "sage-domain-1"},
+      {"id": "2", "name": "b.example.test", "type": "A", "comment": "theirs"},
+      {"id": "3", "name": "c.example.test", "type": "AAAA"},
+      {"id": "4", "name": "d.example.test", "type": "TXT", "comment": "theirs"},
+      {"id": "5", "name": "e.example.test", "type": "CNAME", "comment": "theirs"},
+      {"id": "6", "name": "f.example.test", "type": "A", "comment": "sage-domain-2"},
+  ]
+
+  @pytest.mark.parametrize("name, type, comment, blocked", [
+      ("a.example.test", "CNAME", "sage-domain-1", []),
+      ("a.example.test", "CNAME", "sage-domain-2", ["1"]),
+      ("b.example.test", "CNAME", "sage-domain-1", ["2"]),
+      ("c.example.test", "CNAME", "sage-domain-1", ["3"]),
+      ("d.example.test", "CNAME", "sage-domain-1", []),
+      ("b.example.test", "A", "sage-domain-1", []),
+      ("c.example.test", "AAAA", "sage-domain-1", []),
+      ("e.example.test", "A", "sage-domain-1", ["5"]),
+      ("e.example.test", "AAAA", "sage-domain-1", ["5"]),
+      ("f.example.test", "CNAME", "sage-domain-2", []),
+      ("g.example.test", "CNAME", "sage-domain-1", []),
+      ("a.example.test", "TXT", "sage-domain-2", []),
+      ("a.example.test", None, "sage-domain-2", []),
+  ])
+  def test_a_record_of_another_comment_blocks_only_where_cloudflare_refuses_both(self, name, type, comment, blocked):
+    assert [record["id"] for record in blocking_records(self.ZONE, name, type, comment)] == blocked
+
+  def test_a_blocked_sync_is_refused_whole_naming_each_record(self, connected, api):
+    zone = [{"id": "1", "name": "a.example.test", "type": "CNAME", "comment": "sage-domain-old"},
+            {"id": "2", "name": "a.example.test", "type": "A"},
+            {"id": "3", "name": "b.example.test", "content": "t1", "comment": "sage-domain-new", "type": "CNAME"}]
+    message = 'a.example.test already has a CNAME record (comment "sage-domain-old") and an A record (no comment) that ' \
+              "this Sage doesn't manage."
+    with pytest.raises(Conflict) as refused:
+      connected.sync_dns_records({"sage-domain-new": {"a.example.test": "t1"}}, zone=zone, type="CNAME", proxied=True)
+    assert str(refused.value) == message
+    assert api.requests == []
 
 
 class TestCreateDnsRecord:
