@@ -25,18 +25,12 @@ logger = logging.getLogger(__name__)
 SETTING_SECTIONS = ("tailscale", "cloudflare", "s3", "notifications")
 
 
-def task(name: str, *intent: str) -> tuple[str, tuple[str, ...]]:
-  """A task whose run makes its section apply. With an intent, only a run whose key ends with it counts."""
-  return name, intent
-
-
-# While one of these is queued or running, its section shows as applying. A worker is set up at every return, so only
-# a forced setup (its resync) counts.
+# While a task of one of these names is queued or running, its section shows as applying.
 APPLYING_TASKS = {
-    "tailscale": (task("check_tailscale"), task("converge_worker", "force")),
-    "cloudflare": (task("check_cloudflare"), task("renew_certificates")),
-    "s3": (task("check_s3"),),
-    "notifications": (task("check_notifications"),),
+    "tailscale": ("check_tailscale",),
+    "cloudflare": ("check_cloudflare", "renew_certificates"),
+    "s3": ("check_s3",),
+    "notifications": ("check_notifications",),
 }
 
 
@@ -53,9 +47,7 @@ TESTED = {
 
 def _is_applying(queued: dict, key: str) -> bool:
   """Whether a queued or running task (as in task_snapshot) makes the section apply."""
-  return any(
-      queued["name"] == name and tuple(queued["key"][len(queued["key"]) - len(intent):]) == intent
-      for name, intent in APPLYING_TASKS[key])
+  return queued["name"] in APPLYING_TASKS[key]
 
 
 class SettingsMixin:

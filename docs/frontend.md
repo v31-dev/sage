@@ -178,8 +178,7 @@ drawn by `components/StateIndicator.vue` (see State Indicators).
 Cloudflare's certificate inventory comes from `info.settings.cloudflare.details.certificates`: manager,
 shared discovery, and hostname-owned worker entries. Each shows its desired names, local validity, expiry and
 maintenance error; removed owners with retained public leaves show pending retirement. This inventory describes
-the manager's material; worker pages independently show what is applied. A worker's resync, from its page, shows through the
-Tailscale settings indicator while it is queued or running.
+the manager's material; worker pages independently show what is applied.
 
 ## API Layer
 
