@@ -173,6 +173,21 @@ class TestHash:
     assert certificate.hash() != first
 
 
+class TestEnsure:
+  @pytest.mark.parametrize("expires_in, issued", [
+      (timedelta(days=config.RENEWAL_THRESHOLD_DAYS + 1), False),
+      (timedelta(days=config.RENEWAL_THRESHOLD_DAYS - 1), True),
+      (timedelta(hours=-1), True),
+  ])
+  def test_a_certificate_is_issued_only_when_it_is_not_valid_or_is_due(self, tmp_path, data_dir, monkeypatch, expires_in,
+                                                                       issued):
+    write_certificate(tmp_path, NAMES, expires_in)
+    certificate, certs, requested = Certificate(tmp_path, NAMES), Certs(), []
+    monkeypatch.setattr(certs, "issue", requested.append)
+    assert certs.ensure(certificate) is issued
+    assert requested == [certificate] * issued
+
+
 class TestACMEProfile:
   @pytest.mark.parametrize("meta", [{}, {"profiles": {}}, {"profiles": {"classic": "https://example.test/classic"}}])
   def test_an_unadvertised_profile_records_failure_without_replacing_material(self, tmp_path, data_dir, monkeypatch, meta):
