@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { useRouter } from 'vue-router'
 import { computed } from 'vue'
-import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Label } from '@/components/ui/label'
 
@@ -68,15 +67,19 @@ function goToMetrics(hostname: string) {
     </CardHeader>
 
     <CardContent class="space-y-4">
-      <div>
-        <Label>IP</Label>
-        <p class="text-sm text-muted-foreground font-mono break-all">
-          {{ props.worker.address ?? '-' }}
-        </p>
-      </div>
-
-      <div v-if="props.worker.subdomain" class="flex flex-wrap gap-2">
-        <Badge variant="secondary" class="font-mono">Subdomain {{ props.worker.subdomain }}</Badge>
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <Label>IP</Label>
+          <p class="text-sm text-muted-foreground font-mono break-all">
+            {{ props.worker.address ?? '-' }}
+          </p>
+        </div>
+        <div>
+          <Label>Subdomain</Label>
+          <p class="text-sm text-muted-foreground font-mono break-all" data-subdomain>
+            {{ props.worker.subdomain ?? '-' }}
+          </p>
+        </div>
       </div>
 
       <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">

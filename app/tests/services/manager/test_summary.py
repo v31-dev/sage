@@ -9,7 +9,7 @@ from services.db.models import Backup, Container, Notification
 from services.domains.decisions import STATUSES as DOMAIN_STATUSES
 from services.history import record_container_event
 from services.manager import summary as module
-from services.manager.queue import SCOPES, QueueMixin
+from services.manager.queue import SCOPES, TASK_NAMES, QueueMixin
 from services.manager.summary import SummaryMixin
 from services.notification import Notifications
 from services.settings import Settings
@@ -27,7 +27,7 @@ class Summarised(SummaryMixin, QueueMixin):
   def __init__(self):
     self.pool = ThreadPoolExecutor(max_workers=1)
     self.queue_facts = []
-    self.task_queue = TaskQueue(SCOPES, {"common": self.pool}, record=lambda task, status: None,
+    self.task_queue = TaskQueue(SCOPES, names=TASK_NAMES, executors={"common": self.pool}, record=lambda task, status: None,
                                 notify=self._queue_changed)
     self.workers, self.containers, self.domains = ("online",), ("active",), ("synced",)
 

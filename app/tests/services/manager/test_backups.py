@@ -21,7 +21,7 @@ from services.db.models import Backup, Container, Volume
 from services.manager.backup_catalog import BackupCatalogMixin
 from services.manager.backups import BackupsMixin, settling
 from services.manager.lifecycle import REFUSALS
-from services.manager.queue import SCOPES
+from services.manager.queue import SCOPES, TASK_NAMES
 from services.s3 import S3
 from services.tailscale import Tailscale
 from services.worker_reports import HostReading, Snapshot, WorkerReports
@@ -119,7 +119,7 @@ class Manager(BackupsMixin, BackupCatalogMixin, Lifecycle):
   def __init__(self):
     super().__init__()
     self.started_at = datetime(2000, 1, 1)
-    self.task_queue = TaskQueue(SCOPES, {"app": self.pool, "common": self.pool}, record=lambda task, status: None,
+    self.task_queue = TaskQueue(SCOPES, names=TASK_NAMES, executors={"app": self.pool, "common": self.pool}, record=lambda task, status: None,
                                 notify=self._queue_changed)
 
 

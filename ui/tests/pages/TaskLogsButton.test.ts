@@ -25,8 +25,8 @@ const task: QueueTask = {
   task_id: 't1',
   name: 'deploy_application',
   scopes: ['app:demo-web'],
-  params: { application_id: 3 },
-  labels: {},
+  params: { application_id: 3, volumes: ['v1', 'v2'] },
+  labels: { Application: 'shop / web' },
   executor: 'app',
   status: 'running',
   started_at: '2026-01-01T12:00:00',
@@ -34,19 +34,33 @@ const task: QueueTask = {
   quiet: false,
 }
 
-async function open() {
-  const wrapper = mount(TaskLogsButton, { props: { task }, global: { stubs } })
+async function open(shown: QueueTask = task) {
+  const wrapper = mount(TaskLogsButton, { props: { task: shown }, global: { stubs } })
   wrapper.findComponent(stubs.Dialog).vm.$emit('update:open', true)
   await flushPromises()
   return wrapper
 }
 
 describe('the task log dialog', () => {
-  it('is headed by the task id, and the name and params of the task', async () => {
+  it('is headed by the task id and name, with its labels and params side by side, a line each', async () => {
     const wrapper = await open()
+    const lines = (column: string) =>
+      wrapper
+        .get(`[data-${column}]`)
+        .findAll('div')
+        .map(line => line.text())
 
     expect(wrapper.text()).toContain('Task Logs (t1)')
-    expect(wrapper.text()).toContain('deploy_application {"application_id":3}')
+    expect(wrapper.text()).toContain('deploy_application')
+    expect(lines('labels')).toEqual(['Application: shop / web'])
+    expect(lines('params')).toEqual(['application_id: 3', 'volumes: ["v1","v2"]'])
+  })
+
+  it('shows a dash for a task with no labels or params', async () => {
+    const wrapper = await open({ ...task, labels: {}, params: {} })
+
+    expect(wrapper.get('[data-labels]').text()).toBe('Labels-')
+    expect(wrapper.get('[data-params]').text()).toBe('Params-')
   })
 
   it("shows all the task's lines", async () => {

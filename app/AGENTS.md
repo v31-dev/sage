@@ -229,8 +229,9 @@ Stop](../docs/backend.md#pause-and-stop).
   are its arguments; its executor is its capacity. Admission compares keys, never scopes: a task with another key on a
   conflicting scope defers a new one, never refuses it. A reader of the queue (a fact, a precondition, a payload) finds
   a subject's requests by key and a resource's holders by scope, takes the kind of work from the name, and never reads
-  identity from params. Scope roots are declared in `services/manager/queue.py` and lanes in `utils/executor.py`,
-  independently. `common` is single-thread and low priority, so nothing urgent goes there.
+  identity from params. Scope roots and every task's name (`TASK_NAMES`) are declared in
+  `services/manager/queue.py` and lanes in `utils/executor.py`, independently; the queue refuses a task outside them,
+  and a new task adds its name there. `common` is single-thread and low priority, so nothing urgent goes there.
 - Only the dispatcher starts tasks, on the loop. A queued task cannot start while its scopes conflict with a running
   task or with a task queued before it, either way (a parent before its child, a child before its parent); tasks that
   do not conflict start together. Nothing relies on when a queued task starts or on the order of tasks that do not

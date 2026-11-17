@@ -25,7 +25,7 @@ from .discovery import DiscoveryMixin
 from .domains import DomainsMixin
 from .lifecycle import LifecycleMixin
 from .platform import PlatformMixin
-from .queue import SCOPES, QueueMixin
+from .queue import SCOPES, TASK_NAMES, QueueMixin
 from .settings import SettingsMixin
 from .summary import SummaryMixin
 from .workers import WorkersMixin
@@ -81,7 +81,7 @@ class Manager(
       # it was first seen on the monotonic clock and its allowance.
       self.orphans = {}
 
-      self.task_queue = TaskQueue(scopes=SCOPES, executors=LANES, record=self._persist_task,
+      self.task_queue = TaskQueue(scopes=SCOPES, executors=LANES, names=TASK_NAMES, record=self._persist_task,
                                   notify=self._queue_changed)
 
       # Initialize all services

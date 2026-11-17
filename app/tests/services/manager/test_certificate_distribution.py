@@ -14,7 +14,7 @@ import config
 from services.certs import TEMPLATE_DIGEST, Certs
 from services.db.models import Worker
 from services.manager.certificates import CertificatesMixin
-from services.manager.queue import SCOPES, QueueMixin
+from services.manager.queue import SCOPES, TASK_NAMES, QueueMixin
 from services.tailscale import Tailscale
 from services.updates import Updates
 from services.workers import commands
@@ -71,7 +71,7 @@ class Manager(CertificatesMixin, QueueMixin):
     self.queue_facts = []
     self.checks = 0
     self.worker_state = SimpleNamespace(check=self.count_check)
-    self.task_queue = TaskQueue(SCOPES, {"platform": self.pool, "app": self.pool}, record=lambda task, status: None,
+    self.task_queue = TaskQueue(SCOPES, names=TASK_NAMES, executors={"platform": self.pool, "app": self.pool}, record=lambda task, status: None,
                                 notify=self._queue_changed)
 
   def count_check(self):

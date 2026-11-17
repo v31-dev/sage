@@ -19,7 +19,7 @@ from services.db.models import Application, Container, ContainerEvent, Domain, I
 from services.logs import Logs
 from services.manager.containers import ContainersMixin
 from services.manager.lifecycle import LifecycleMixin, mark
-from services.manager.queue import SCOPES, QueueMixin
+from services.manager.queue import SCOPES, TASK_NAMES, QueueMixin
 from services.tailscale import EX_TEMPFAIL, CommandError, Tailscale
 from utils.errors import Conflict
 from utils.logging import TaskFailed, task_id
@@ -139,7 +139,7 @@ class Lifecycle(ContainersMixin, LifecycleMixin, QueueMixin):
     self.recoveries = {}
     self.orphans = {}
     self.applied, self.reconciled = [], 0
-    self.task_queue = TaskQueue(SCOPES, {"app": self.pool}, record=lambda task, status: None, notify=self._queue_changed)
+    self.task_queue = TaskQueue(SCOPES, names=TASK_NAMES, executors={"app": self.pool}, record=lambda task, status: None, notify=self._queue_changed)
 
   def request_domain_applies(self, domain_ids):
     if ids := sorted(domain_ids):

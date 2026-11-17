@@ -12,7 +12,7 @@ from services.domains.config import DomainConfig, parse_route_listing
 from services.domains.decisions import ApplyOutcome, RouteObservation
 from services.domains.state import Domains
 from services.manager.domains import DomainsMixin
-from services.manager.queue import SCOPES, QueueMixin
+from services.manager.queue import SCOPES, TASK_NAMES, QueueMixin
 from services.tailscale import Tailscale
 from services.updates import UpdateSource
 from services.workers.state import Workers
@@ -94,7 +94,7 @@ class Manager(DomainsMixin, QueueMixin):
     self.routable, self.ready, self.finished, self.discovered = {}, {}, [], 0
     self.started_at = utcnow()
     self.queue_facts = self.domains_queue_facts()
-    self.task_queue = TaskQueue(SCOPES, {"app": self.pool}, record=lambda task, status: self.finished.append((task.name, status)),
+    self.task_queue = TaskQueue(SCOPES, names=TASK_NAMES, executors={"app": self.pool}, record=lambda task, status: self.finished.append((task.name, status)),
                                 notify=self._queue_changed)
 
   def request_discovery(self):

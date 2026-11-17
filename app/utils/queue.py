@@ -168,9 +168,11 @@ class TaskQueue:
 
   def __init__(self, scopes: frozenset[str], executors: dict[str, ThreadPoolExecutor],
                record: Callable[["QueuedTask", str], None] | None = None,
-               notify: Callable[[], None] | None = None):
+               notify: Callable[[], None] | None = None, names: frozenset[str] | None = None):
     self._scopes = scopes
     self._executors = executors
+    # The task names it takes, when declared.
+    self._names = names
     # Persistence hook called with (task, status) at each terminal state
     # (completed/failed/cancelled) so the owner can log tasks to a store.
     # Running tasks are not recorded -- they live in memory. Best-effort.
@@ -376,6 +378,8 @@ class TaskQueue:
         raise ValueError(f"Unknown scope root '{root}' (allowed: {sorted(self._scopes)})")
     if task.executor not in self._executors:
       raise ValueError(f"Unknown executor '{task.executor}' (allowed: {sorted(self._executors)})")
+    if self._names is not None and task.name not in self._names:
+      raise ValueError(f"Undeclared task name '{task.name}'")
     if task.params.keys() & task.inputs.keys():
       raise ValueError(f"An argument is both a param and an input: {sorted(task.params.keys() & task.inputs.keys())}")
     try:

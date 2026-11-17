@@ -55,7 +55,9 @@ const props = defineProps<{
         </div>
         <div class="col-span-2 space-y-1">
           <Label class="text-muted-foreground text-xs">Scopes</Label>
-          <p class="font-mono text-xs break-all">{{ props.task.scopes.join(', ') }}</p>
+          <p v-for="scope in props.task.scopes" :key="scope" class="font-mono text-xs break-all">
+            {{ scope }}
+          </p>
         </div>
         <div class="col-span-2 space-y-1">
           <Label class="text-muted-foreground text-xs">Params</Label>

@@ -10,7 +10,7 @@ from services.certs import Certs
 from services.cloudflare import Cloudflare
 from services.db.models import Container, Domain, Instance, Worker, WorkerEvent
 from services.manager.domains import DomainsMixin
-from services.manager.queue import SCOPES, QueueMixin
+from services.manager.queue import SCOPES, TASK_NAMES, QueueMixin
 from services.manager.workers import WorkersMixin
 from services.tailscale import Tailscale
 from services.worker_reports import ContainerReading, HostReading, Snapshot, WorkerReports
@@ -164,7 +164,7 @@ class Manager(WorkersMixin, DomainsMixin, QueueMixin):
     self.setup_failures, self.stack_repairs, self.removal_failures = {}, {}, {}
     self.applied, self.reconciled, self.discovered, self.renewals, self.distributions = [], 0, 0, 0, []
     self.forced = []
-    self.task_queue = TaskQueue(SCOPES, {"app": self.pool}, record=lambda task, status: None, notify=self._queue_changed)
+    self.task_queue = TaskQueue(SCOPES, names=TASK_NAMES, executors={"app": self.pool}, record=lambda task, status: None, notify=self._queue_changed)
 
   def request_domain_applies(self, domain_ids):
     if ids := sorted(domain_ids):

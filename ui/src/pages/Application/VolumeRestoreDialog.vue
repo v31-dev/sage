@@ -187,7 +187,7 @@ onUnmounted(() => stop?.())
     <DialogTrigger asChild>
       <Button size="sm" class="flex-1" variant="outline"> <ArchiveRestore />Restore </Button>
     </DialogTrigger>
-    <DialogContent class="sm:max-w-3xl">
+    <DialogContent class="flex flex-col sm:max-w-3xl">
       <DialogHeader>
         <DialogTitle>Backups of {{ props.volume.name }}</DialogTitle>
         <DialogDescription>
@@ -205,7 +205,7 @@ onUnmounted(() => stop?.())
       <div v-else-if="backups.length === 0" class="text-sm text-muted-foreground py-4">
         No backups of this volume yet.
       </div>
-      <ItemGroup v-else class="max-h-[60vh] overflow-y-auto gap-2">
+      <ItemGroup v-else class="min-h-0 flex-1 overflow-y-auto gap-2">
         <Collapsible
           v-for="backup in backups"
           :key="backup.id"

@@ -133,14 +133,16 @@ describe('a worker card', () => {
     return mount(WorkerCard, { props: { worker: listed } })
   }
 
-  it('shows the subdomain of the worker', () => {
-    const text = mountCard(worker('w1', { subdomain: 'eu1' })).text()
-    expect(text).toContain('Subdomain eu1')
+  it('shows the subdomain of the worker beside its IP', () => {
+    expect(
+      mountCard(worker('w1', { subdomain: 'eu1' }))
+        .get('[data-subdomain]')
+        .text()
+    ).toBe('eu1')
   })
 
-  it('shows neither for a worker that has none yet', () => {
-    const text = mountCard(worker('w1')).text()
-    expect(text).not.toContain('Subdomain')
+  it('shows a dash for a worker that has no subdomain yet', () => {
+    expect(mountCard(worker('w1')).get('[data-subdomain]').text()).toBe('-')
   })
 
   it('shows the container count of the worker', () => {

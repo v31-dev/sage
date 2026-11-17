@@ -13,7 +13,7 @@ import config
 from services.certs import Certs
 from services.cloudflare import Cloudflare, CloudflareError
 from services.manager import Manager
-from services.manager.queue import SCOPES, QueueMixin
+from services.manager.queue import SCOPES, TASK_NAMES, QueueMixin
 from services.manager.settings import APPLYING_TASKS, SETTING_SECTIONS, SettingsMixin, _is_applying
 from services.notification import ChannelCheckFailed, Notifications
 from services.s3 import S3
@@ -177,7 +177,7 @@ class Settled(SettingsMixin, QueueMixin):
   def __init__(self):
     self.pool = ThreadPoolExecutor(max_workers=1)
     self.queue_facts, self.requested = [], []
-    self.task_queue = TaskQueue(SCOPES, {"common": self.pool}, record=lambda task, status: None,
+    self.task_queue = TaskQueue(SCOPES, names=TASK_NAMES, executors={"common": self.pool}, record=lambda task, status: None,
                                 notify=self._queue_changed)
 
   def request_backup_discovery(self):

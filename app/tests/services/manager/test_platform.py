@@ -27,7 +27,7 @@ from services.logs import Logs
 from services.manager.backup_catalog import BackupCatalogMixin
 from services.manager.backups import settling
 from services.manager.platform import PlatformMixin
-from services.manager.queue import SCOPES, QueueMixin
+from services.manager.queue import SCOPES, TASK_NAMES, QueueMixin
 from services.manager.settings import SettingsMixin
 from services.metrics import Metrics
 from services.notification import Notifications
@@ -86,7 +86,7 @@ class Manager(PlatformMixin, QueueMixin):
     self.requested = []
     self.setup_failures, self.stack_repairs, self.removal_failures = {"w1": 1.0}, {"w1": 1.0}, {"w1": 1.0}
     self.recoveries, self.orphans = {"c": 1}, {"o": 1}
-    self.task_queue = TaskQueue(SCOPES, {lane: self.pool for lane in ("platform", "app", "common", "metrics")},
+    self.task_queue = TaskQueue(SCOPES, names=TASK_NAMES | {"held", "later", "old"}, executors={lane: self.pool for lane in ("platform", "app", "common", "metrics")},
                                 record=lambda task, status: None, notify=self._queue_changed)
 
   def __getattr__(self, name):
@@ -545,7 +545,7 @@ class TestInfo:
 
     def __init__(self):
       self.version, self.started_at = "1.0.0", datetime(2026, 1, 1, 9)
-      self.task_queue = TaskQueue(SCOPES, {}, record=lambda task, status: None)
+      self.task_queue = TaskQueue(SCOPES, names=TASK_NAMES | {"held", "later", "old"}, executors={}, record=lambda task, status: None)
 
   @pytest.fixture
   def shown(self, db, register):

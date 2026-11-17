@@ -11,7 +11,7 @@ from services.certs import Certs
 from services.cloudflare import Cloudflare, CloudflareError
 from services.containers.placement import runtime_name
 from services.db.models import Application, Container, Domain, Project, Worker, WorkerEvent
-from services.manager.queue import SCOPES, QueueMixin
+from services.manager.queue import SCOPES, TASK_NAMES, QueueMixin
 from services.manager.workers import WorkersMixin
 from services.metrics import Metrics
 from services.tailscale import Tailscale
@@ -62,7 +62,7 @@ class Manager(WorkersMixin, QueueMixin):
     self.tunnel_state = self.tunnels_fact()
     self.setup_failures, self.stack_repairs, self.removal_failures = {}, {}, {}
     self.discovered = 0
-    self.task_queue = TaskQueue(SCOPES, {"app": self.pool, "common": self.pool}, record=lambda task, status: None,
+    self.task_queue = TaskQueue(SCOPES, names=TASK_NAMES, executors={"app": self.pool, "common": self.pool}, record=lambda task, status: None,
                                 notify=self._queue_changed)
 
   def request_discovery(self):

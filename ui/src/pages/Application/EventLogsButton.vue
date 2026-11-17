@@ -69,7 +69,7 @@ function closeEventLogsDialog() {
         Event Logs
       </Button>
     </DialogTrigger>
-    <DialogContent class="sm:max-w-6xl">
+    <DialogContent class="flex flex-col sm:max-w-6xl">
       <DialogHeader>
         <DialogTitle>Event Logs</DialogTitle>
         <DialogDescription
@@ -78,7 +78,6 @@ function closeEventLogsDialog() {
       </DialogHeader>
       <FieldSet>
         <FieldGroup>
-          <Field />
           <Field>
             <FieldLabel for="event-select"> Select Event </FieldLabel>
             <Select v-model="selectedRun" :disabled="selectedRun === ''">
@@ -94,7 +93,7 @@ function closeEventLogsDialog() {
           </Field>
         </FieldGroup>
       </FieldSet>
-      <div class="flex flex-col max-h-[60vh]">
+      <div class="flex min-h-0 flex-1 flex-col">
         <TaskLogs
           v-if="selectedEvent?.task_id"
           :key="selectedEvent.task_id"

@@ -1,4 +1,5 @@
 import logging
+from collections.abc import Iterable
 from datetime import datetime, timedelta, timezone
 
 from peewee import SQL, NodeList
@@ -110,9 +111,10 @@ def task_history(name: str = "", scope: str = "", label: str = "", executor: str
   return {"tasks": list(newest.dicts()), "total": query.count()}
 
 
-def task_history_filters() -> dict:
-  """The choices of the history's filters: the names and executors stored, and the statuses."""
-  def stored(field):
-    return [value for (value,) in Task.select(field).distinct().order_by(field).tuples()]
+def task_history_filters(names: Iterable[str] = (), executors: Iterable[str] = ()) -> dict:
+  """The choices of the history's filters: the `names` and `executors` given with those stored, and the statuses."""
+  def stored(field, given):
+    return sorted({*given, *(value for (value,) in Task.select(field).distinct().tuples())})
 
-  return {"names": stored(Task.name), "executors": stored(Task.executor), "statuses": list(Task.status.choices)}
+  return {"names": stored(Task.name, names), "executors": stored(Task.executor, executors),
+          "statuses": list(Task.status.choices)}

@@ -127,17 +127,6 @@ class TestHistory:
     assert listed(client, to_ts="2026-01-01T12:10:00Z") == ["early"]
 
 
-class TestHistoryFilters:
-  def test_the_choices_are_the_names_and_executors_stored_and_the_statuses(self, client, db):
-    finished("t-1", name="sync_workers", executor="platform")
-    finished("t-2", name="deploy", executor="app")
-    finished("t-3", name="deploy", executor="app", status="failed")
-
-    assert client.get("/api/tasks/history/filters").json() == {
-        "names": ["deploy", "sync_workers"], "executors": ["app", "platform"],
-        "statuses": ["completed", "failed", "cancelled"]}
-
-
 def line(task_id, message):
   Logs().write_task_line({"task_id": task_id, "ts": "2026-01-01T12:00:00.000000Z", "level": "INFO",
                           "logger": "services.manager", "message": message})

@@ -16,7 +16,7 @@ from services.db.models import Application, Container, Domain, Instance, Project
 from services.history import record_container_event
 from services.manager.containers import ContainersMixin
 from services.manager.lifecycle import LifecycleMixin
-from services.manager.queue import SCOPES, QueueMixin
+from services.manager.queue import SCOPES, TASK_NAMES, QueueMixin
 from services.metrics import Metrics
 from services.tailscale import Tailscale
 from services.updates import UpdateSource
@@ -71,7 +71,7 @@ class Manager(ContainersMixin, LifecycleMixin, QueueMixin):
     self.recoveries = {}
     self.orphans = {}
     self.applied, self.discovered = [], 0
-    self.task_queue = TaskQueue(SCOPES, {"app": self.pool}, record=lambda task, status: None, notify=self._queue_changed)
+    self.task_queue = TaskQueue(SCOPES, names=TASK_NAMES | {"record_read"}, executors={"app": self.pool}, record=lambda task, status: None, notify=self._queue_changed)
 
   def request_domain_applies(self, domain_ids):
     if ids := sorted(domain_ids):

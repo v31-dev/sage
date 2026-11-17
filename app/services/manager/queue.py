@@ -1,12 +1,26 @@
 import logging
 
-from services.history import record_task
+from services.history import record_task, task_history_filters
 from services.updates import Fact, UpdateFeed, Updates, UpdateSource
+from utils.executor import LANES
 from utils.queue import Added
+
+from .lifecycle import REQUESTS
+from .settings import SETTING_SECTIONS
 
 logger = logging.getLogger(__name__)
 
 SCOPES = frozenset({"worker", "domain", "certificate", "backup", "discovery", "settings", "release", "metrics"})
+# Every task's name: a task of another name is refused, and the history's filter offers each.
+TASK_NAMES = frozenset({
+    *REQUESTS, "backup_preserve", "recover", "reset", "read_record", "list_records", "observe_containers", "cleanup_orphan",
+    "apply_domain", "reconcile_domains", "publish_discovery", "publish_discovery_dns",
+    "observe_workers", "converge_worker", "repair_worker_stack", "cleanup_worker_tmp", "add_worker", "remove_worker",
+    "reboot_worker", "refresh_worker_paths", "list_tunnels", "renew_certificates", "distribute_certificates",
+    "discover_backups", "prune_backups", "delete_archive", "delete_volume_archives", "backup_platform", "restore_platform",
+    "flush_metrics", "metrics_cleanup", "logs_cleanup", "purge_history", "safety_copies_cleanup", "refresh_latest_release",
+    "send_summary_notification", *(f"{kind}_{section}" for kind in ("check", "test") for section in SETTING_SECTIONS),
+})
 
 
 class QueueMixin:
@@ -14,6 +28,10 @@ class QueueMixin:
 
   def add_task(self, **params) -> Added:
     return self.task_queue.add_task(**params)
+
+  def task_history_filters(self) -> dict:
+    """The choices of the history's filters: every task name and executor lane, with those stored, and the statuses."""
+    return task_history_filters(TASK_NAMES, LANES)
 
   def cancel_tasks(self, key: tuple[str, ...] | None = None, name: str | None = None, scope: str | None = None) -> list[str]:
     return self.task_queue.cancel(key, name, scope)

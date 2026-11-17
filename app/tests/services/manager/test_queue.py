@@ -5,9 +5,10 @@ import pytest
 
 from services.db.models import Task
 from services.history import task_history
-from services.manager.queue import QueueMixin
+from services.manager.queue import TASK_NAMES, QueueMixin
 from services.updates import Fact, UpdateFeed, Updates, UpdateSource
 from tests.conftest import Signals
+from utils.executor import LANES
 from utils.queue import QueuedTask
 
 
@@ -77,6 +78,15 @@ class TestQueueFacts:
 def finished(**fields):
   return QueuedTask(**{"name": "deploy", "key": ("lifecycle", "c1"), "scopes": frozenset({"worker:w1:container:c1"}),
                        "task": lambda: None, "params": {"container_id": "c1"}, "executor": "app", "task_id": "t-1", **fields})
+
+
+class TestHistoryFilters:
+  def test_the_choices_are_every_declared_name_and_lane_with_those_stored_and_the_statuses(self, db, hub):
+    QueueMixin()._persist_task(finished(name="sync_workers", executor="retired"), "completed")
+    QueueMixin()._persist_task(finished(task_id="t-2"), "failed")
+    assert QueueMixin().task_history_filters() == {
+        "names": sorted({*TASK_NAMES, "sync_workers"}), "executors": sorted({*LANES, "retired"}),
+        "statuses": ["completed", "failed", "cancelled"]}
 
 
 class TestPersistTask:

@@ -14,7 +14,7 @@ from services.certs import Certs
 from services.cloudflare import Cloudflare, CloudflareError
 from services.db.models import Worker
 from services.manager.certificates import CertificatesMixin
-from services.manager.queue import SCOPES, QueueMixin
+from services.manager.queue import SCOPES, TASK_NAMES, QueueMixin
 from services.tailscale import Tailscale
 from services.updates import Updates
 from tests.services.test_certs import write_certificate
@@ -99,7 +99,7 @@ class Manager(CertificatesMixin, QueueMixin):
     self.pool = ThreadPoolExecutor(max_workers=1)
     self.queue_facts = []
     self.worker_state = SimpleNamespace(check=lambda: None)
-    self.task_queue = TaskQueue(SCOPES, {"platform": self.pool}, record=lambda task, status: None, notify=self._queue_changed)
+    self.task_queue = TaskQueue(SCOPES, names=TASK_NAMES, executors={"platform": self.pool}, record=lambda task, status: None, notify=self._queue_changed)
 
 
 @pytest.fixture

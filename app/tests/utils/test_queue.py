@@ -426,6 +426,15 @@ class TestAddTask:
     with pytest.raises(ValueError, match="Unknown executor"):
       lane.add(done, executor="nowhere")
 
+  def test_a_queue_with_declared_names_refuses_another_and_its_restore_too(self, lane):
+    queue = TaskQueue(ROOTS, {"app": lane.pool}, names=frozenset({"deploy"}))
+    queue.add_task(task=done, key=("deploy", "c1"), scopes={"worker:w1"}, executor="app")
+    with pytest.raises(ValueError, match="Undeclared task name 'stop'"):
+      queue.add_task(task=done, key=("stop", "c1"), scopes={"worker:w1"}, executor="app")
+    with pytest.raises(ValueError, match="Undeclared task name 'restore'"):
+      queue.request_restore(task=done, name="restore", key=("restore",), executor="app")
+    assert [task["name"] for task in queue.snapshot()["queued"]] == ["deploy"]
+
   @pytest.mark.parametrize("key", [(), ("",), ("deploy", 3), ("deploy", None)])
   def test_a_key_is_a_tuple_of_names(self, lane, key):
     with pytest.raises(ValueError, match="A task key is a tuple of names"):

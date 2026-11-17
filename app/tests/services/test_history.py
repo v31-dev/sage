@@ -143,3 +143,7 @@ class TestTaskHistory:
   def test_the_filters_offer_the_stored_names_and_executors(self, tasks):
     assert task_history_filters() == {"names": ["deploy"], "executors": ["app"],
                                       "statuses": ["completed", "failed", "cancelled"]}
+
+  def test_the_filters_offer_the_given_names_and_executors_with_the_stored_ones_once_each(self, tasks):
+    assert task_history_filters(["stop", "deploy"], {"platform": None, "app": None}) == {
+        "names": ["deploy", "stop"], "executors": ["app", "platform"], "statuses": ["completed", "failed", "cancelled"]}

@@ -13,7 +13,7 @@ from services.backups.commands import apply_catalog
 from services.backups.keys import BACKUP_TIMESTAMP_FORMAT, volume_archive_key
 from services.db.models import Backup, Volume
 from services.manager.backup_catalog import BackupCatalogMixin
-from services.manager.queue import SCOPES, QueueMixin
+from services.manager.queue import SCOPES, TASK_NAMES, QueueMixin
 from services.s3 import S3
 from services.updates import UpdateSource
 from utils.errors import Conflict
@@ -66,7 +66,7 @@ class Manager(BackupCatalogMixin, QueueMixin):
   def __init__(self):
     self.pool, self.started_at = ThreadPoolExecutor(max_workers=1), NOW
     self.queue_facts = []
-    self.task_queue = TaskQueue(SCOPES, {"common": self.pool}, record=lambda task, status: None, notify=self._queue_changed)
+    self.task_queue = TaskQueue(SCOPES, names=TASK_NAMES, executors={"common": self.pool}, record=lambda task, status: None, notify=self._queue_changed)
 
   async def run(self):
     for _ in range(500):

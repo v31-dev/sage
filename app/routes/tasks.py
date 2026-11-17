@@ -4,7 +4,7 @@ from typing import Annotated
 from fastapi import APIRouter, Query
 
 import config
-from services.history import task_history, task_history_filters
+from services.history import task_history
 from services.logs import Logs
 from services.manager import Manager
 from utils.logging import NO_ACCESS_LOG
@@ -28,7 +28,7 @@ def list_task_history(name: str = "", scope: str = "", label: str = "", executor
 
 @router.get("/history/filters")
 def list_task_history_filters():
-  return task_history_filters()
+  return Manager().task_history_filters()
 
 
 @router.get("/{task_id}/logs", openapi_extra=NO_ACCESS_LOG)  # what a task log dialog loads
