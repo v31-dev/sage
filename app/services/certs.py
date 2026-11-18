@@ -18,6 +18,7 @@ import config
 from services.base import Base
 from services.cloudflare import Cloudflare
 from services.updates import Fact, UpdateSource
+from services.workers.rendering import worker_scope
 from utils.common import get_env, utcnow
 from utils.retry import retry
 
@@ -29,7 +30,20 @@ def _aware_now():
   return utcnow().replace(tzinfo=timezone.utc)
 
 
+def certificate_scope(hostname: str | None = None) -> str:
+  """The queue's scope of the worker's certificate on the manager; without a hostname, of every certificate."""
+  return f"certificate:worker:{hostname}" if hostname else "certificate"
+
+
+def certificate_files_scope(hostname: str) -> str:
+  """The queue's scope of the certificate files on the worker."""
+  return f"{worker_scope(hostname)}:tls"
+
+
 CHALLENGE_COMMENT = "sage-acme-challenge"
+# The worker's certificates file's template digest, part of every applied proof: it ships in the image, so it is worked
+# out once.
+TEMPLATE_DIGEST = hashlib.sha256(b"certs.yml" + (config.TEMPLATES_DIR / "worker/traefik/certs.yml").read_bytes()).hexdigest()[:16]
 
 
 @dataclass(frozen=True)
@@ -138,17 +152,20 @@ class Certs(Base):
     self.tls_context = None
     self.changed = Fact(self.status, UpdateSource.CERTIFICATES)
 
+  def worker_names(self, subdomain: str | None) -> tuple[str, ...]:
+    return (f"*.{subdomain}.int.{self.domain}",) if subdomain else ()
+
   def set_workers(self, workers: dict[str, str | None]):
+    """The names each worker's certificate must cover, from its subdomain; set only by the maintenance operation. A
+    changed name leaves the chain where it is, obsolete, for `retire` to stash and revoke."""
     with self.lock:
       for hostname in self.workers.keys() | workers.keys():
         if Path(hostname).name != hostname or hostname in {".", ".."}:
           raise ValueError("Invalid worker hostname.")
-        names = (f"*.{workers[hostname]}.int.{self.domain}",) if workers.get(hostname) else ()
+        names = self.worker_names(workers.get(hostname))
         if hostname not in self.workers and not names:
           continue
         if hostname not in self.workers or self.workers[hostname].names != names:
-          if hostname in self.workers:
-            self.workers[hostname].stash()
           self.workers[hostname] = Certificate(self.directory / "workers" / hostname, names)
     self.changed.check()
 
@@ -174,21 +191,24 @@ class Certs(Base):
     return [{"id": identity, **{key: value for key, value in certificate.info().items() if key not in {"hash", "proof"}}}
             for identity, certificate in self.inventory().items()]
 
-  def is_current(self, identity: str, certificate: Certificate) -> bool:
-    return self.inventory().get(identity) is certificate
-
   def for_worker(self, hostname: str) -> dict[str, Certificate]:
     with self.lock:
       return {"discovery": self.discovery,
               **({"worker": self.workers[hostname]} if hostname in self.workers and self.workers[hostname].names else {})}
 
-  def worker_state(self, hostname: str, applied: dict | None, template: str) -> dict:
+  def worker_state(self, hostname: str, subdomain: str, applied: dict | None, template: str) -> dict:
+    """Each of the worker's certificates against the names its current `subdomain` needs: covered, and synced when
+    the worker applied it. After a subdomain change the wildcard is not covered until the maintenance operation
+    renews it."""
     certificates = self.for_worker(hostname)
+    wanted = {"worker": frozenset(self.worker_names(subdomain)), "discovery": frozenset(self.discovery.names)}
     result = {}
     for role in ("worker", "discovery"):
-      info = certificates[role].info(template) if role in certificates else None
-      synced = bool(info and info["valid"] and (applied or {}).get(role) == info["proof"])
-      result[role] = {"covered": bool(info and info["valid"]), "synced": synced,
+      certificate = certificates.get(role)
+      info = certificate.info(template) if certificate is not None else None
+      covered = bool(info and info["valid"] and certificate.material.covered == wanted[role])
+      synced = covered and (applied or {}).get(role) == info["proof"]
+      result[role] = {"covered": covered, "synced": synced,
                       "expiry": info["expiry"] if synced else None, "error": info["error"] if info else None}
     return result
 

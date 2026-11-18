@@ -34,10 +34,11 @@ const props = withDefaults(defineProps<Props>(), {})
 const appStore = useAppStore()
 
 const isAddContainerDialogOpen = ref(false)
-// The workers in the app store's list that hold no container of the application.
+// The workers in the app store's list that hold no container of the application and are not being removed.
 const availableWorkers = computed(() =>
   (appStore.workers ?? []).filter(
     worker =>
+      worker.view.status !== 'removing' &&
       !props.application.containers.some(container => container.worker.hostname === worker.hostname)
   )
 )

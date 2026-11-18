@@ -2,13 +2,12 @@ import { describe, expect, it, vi } from 'vitest'
 import Application from '@/pages/Application'
 import ApplicationLogs from '@/pages/ApplicationLogs.vue'
 import ApplicationMetrics from '@/pages/ApplicationMetrics.vue'
+import Applications from '@/pages/Applications'
 import Backup from '@/pages/Backup'
 import Domains from '@/pages/Domains'
 import CloudflareSettings from '@/pages/Settings/CloudflareSettings.vue'
 import Home from '@/pages/Home.vue'
 import NotificationsSettings from '@/pages/Settings/NotificationsSettings.vue'
-import Project from '@/pages/Project'
-import Projects from '@/pages/Projects.vue'
 import Requests from '@/pages/Requests.vue'
 import S3Settings from '@/pages/Settings/S3Settings.vue'
 import System from '@/pages/System.vue'
@@ -31,8 +30,8 @@ describe('the route table', () => {
     expect(new Set(names).size).toBe(names.length)
   })
 
-  it('gives every route a component', () => {
-    for (const route of routes) {
+  it('gives every route a component, or an address it sends on to', () => {
+    for (const route of routes.filter(route => !route.redirect)) {
       expect(route.components?.default, String(route.name)).toBeTruthy()
     }
   })
@@ -46,11 +45,10 @@ describe('the route table', () => {
 describe('resolving an address', () => {
   it.each([
     ['/', 'Home', {}],
-    ['/projects', 'Projects', {}],
-    ['/projects/demo', 'Project', { projectId: 'demo' }],
-    ['/projects/demo/web', 'Application', { projectId: 'demo', appId: 'web' }],
-    ['/projects/demo/web/logs', 'ApplicationLogs', { projectId: 'demo', appId: 'web' }],
-    ['/projects/demo/web/metrics', 'ApplicationMetrics', { projectId: 'demo', appId: 'web' }],
+    ['/applications', 'Applications', {}],
+    ['/applications/demo/web', 'Application', { projectId: 'demo', appId: 'web' }],
+    ['/applications/demo/web/logs', 'ApplicationLogs', { projectId: 'demo', appId: 'web' }],
+    ['/applications/demo/web/metrics', 'ApplicationMetrics', { projectId: 'demo', appId: 'web' }],
     ['/workers', 'Workers', {}],
     ['/workers/w1', 'Worker', { hostname: 'w1' }],
     ['/workers/w1/metrics', 'WorkerMetrics', { hostname: 'w1' }],
@@ -73,8 +71,7 @@ describe('resolving an address', () => {
 
   it.each([
     ['Home', Home],
-    ['Projects', Projects],
-    ['Project', Project],
+    ['Applications', Applications],
     ['Application', Application],
     ['ApplicationLogs', ApplicationLogs],
     ['ApplicationMetrics', ApplicationMetrics],
@@ -96,11 +93,17 @@ describe('resolving an address', () => {
   })
 
   it('has a route for each of those pages and no other', () => {
-    expect(router.getRoutes()).toHaveLength(19)
+    expect(router.getRoutes().filter(route => !route.redirect)).toHaveLength(18)
+  })
+
+  it('sends the address of a project on to the overview', async () => {
+    await router.push('/applications/demo')
+
+    expect(router.currentRoute.value.name).toBe('Applications')
   })
 
   it('does not mistake a longer address for a shorter page', () => {
-    expect(router.resolve('/projects/demo/web/logs').name).not.toBe('Application')
+    expect(router.resolve('/applications/demo/web/logs').name).not.toBe('Application')
     expect(router.resolve('/workers/w1/metrics').name).not.toBe('Worker')
   })
 
@@ -108,17 +111,19 @@ describe('resolving an address', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
 
     expect(router.resolve('/no/such/page').matched).toHaveLength(0)
-    expect(router.resolve('/projects/demo/web/logs/extra').matched).toHaveLength(0)
+    expect(router.resolve('/applications/demo/web/logs/extra').matched).toHaveLength(0)
 
     expect(warn).toHaveBeenCalledTimes(2)
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('"/no/such/page"'))
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('"/projects/demo/web/logs/extra"'))
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('"/applications/demo/web/logs/extra"')
+    )
   })
 
   it('builds the address of a page from its name and parameters', () => {
     expect(
       router.resolve({ name: 'Application', params: { projectId: 'demo', appId: 'web' } }).path
-    ).toBe('/projects/demo/web')
+    ).toBe('/applications/demo/web')
     expect(router.resolve({ name: 'WorkerMetrics', params: { hostname: 'w1' } }).path).toBe(
       '/workers/w1/metrics'
     )

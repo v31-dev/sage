@@ -11,7 +11,7 @@ import config
 from services.logs.tasks import _CaptureHandler
 from services.updates import UpdateFeed
 from utils.executor import run_in_executor_with_context
-from utils.logging import TaskFailed, sub_task_id, task_id
+from utils.logging import TaskFailed, task_id
 from utils.queue import TaskQueue
 
 from .builders import stamp, task_entries
@@ -29,8 +29,8 @@ class Tasks:
     self.pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="lane")
     self.queue = TaskQueue(frozenset(["app"]), {"app": self.pool}, record=lambda task, status: None, notify=lambda: None)
 
-  def add(self, task, scope="app:a", **kwargs):
-    return self.queue.add_task(task=task, scopes={scope}, executor="app", **kwargs)
+  def add(self, task, scope="app:a", key=None, **kwargs):
+    return self.queue.add_task(task=task, key=key or (task.__name__,), scopes={scope}, executor="app", **kwargs)
 
   async def run(self):
     self.queue.dispatch_tick()
@@ -41,8 +41,8 @@ class Tasks:
       entry = self.captured.get()
       self.logs.write_task_line(entry)
 
-  def messages(self, task_id, sub_task_id=""):
-    return [line["message"] for line in self.logs.query_task_logs(task_id, sub_task_id)["lines"]]
+  def messages(self, task_id):
+    return [line["message"] for line in self.logs.query_task_logs(task_id)["lines"]]
 
 
 @pytest.fixture
@@ -104,27 +104,11 @@ class TestTaskLines:
         log.info(f"{word} {index}")
         await asyncio.sleep(0)
 
-    tasks.add(chatty, scope="app:a", params={"word": "a"}, task_id="ta")
-    tasks.add(chatty, scope="app:b", params={"word": "b"}, task_id="tb")
+    tasks.add(chatty, scope="app:a", key=("chatty", "a"), params={"word": "a"}, task_id="ta")
+    tasks.add(chatty, scope="app:b", key=("chatty", "b"), params={"word": "b"}, task_id="tb")
     await tasks.run()
     for word in ("a", "b"):
       assert tasks.messages(f"t{word}") == ["chatty: started", *(f"{word} {index}" for index in range(5)), "chatty: completed"]
-
-  async def test_a_container_part_is_read_with_its_task_or_on_its_own(self, tasks):
-    async def deploy():
-      log.info("deploying two containers")
-      for part in ("p1", "p2"):
-        token = sub_task_id.set(part)
-        try:
-          log.info(f"container {part}")
-        finally:
-          sub_task_id.reset(token)
-
-    tasks.add(deploy, task_id="t1")
-    await tasks.run()
-    whole = ["deploy: started", "deploying two containers", "container p1", "container p2", "deploy: completed"]
-    assert tasks.messages("t1") == whole
-    assert tasks.messages("t1", "p2") == ["container p2"]
 
   async def test_a_quiet_task_that_succeeds_leaves_no_lines(self, tasks):
     async def sync():
@@ -143,6 +127,49 @@ class TestTaskLines:
     tasks.add(sync, task_id="q1", quiet=quiet)
     await tasks.run()
     assert tasks.messages("q1") == ["sync: started", "checking w1", "sync: failed"]
+
+  async def test_a_running_quiet_task_made_visible_keeps_its_lines_in_order(self, tasks):
+    reached, made_visible = asyncio.Event(), asyncio.Event()
+
+    async def sync():
+      log.info("before")
+      await run_in_executor_with_context(lambda: log.info("in a thread"))
+      reached.set()
+      await made_visible.wait()
+      log.info("after")
+
+    tasks.add(sync, task_id="q1", quiet=True)
+    tasks.queue.dispatch_tick()
+    await reached.wait()
+    assert tasks.captured.empty()
+    tasks.add(sync, task_id="v1")
+    made_visible.set()
+    await tasks.run()
+    assert tasks.messages("q1") == ["sync: started", "before", "in a thread", "after", "sync: completed"]
+    assert tasks.messages("v1") == []
+
+  async def test_threads_logging_while_the_task_is_made_visible_lose_no_line_and_keep_each_threads_order(
+          self, tasks, eager_threads):
+    halfway = threading.Barrier(5)
+
+    def chatter(number):
+      for index in range(1000):
+        if index == 500:
+          halfway.wait(timeout=5)
+        log.info(f"{number}:{index}")
+
+    async def sync():
+      await asyncio.gather(*(run_in_executor_with_context(chatter, number) for number in range(4)))
+
+    tasks.add(sync, task_id="q1", quiet=True)
+    tasks.queue.dispatch_tick()
+    await asyncio.get_running_loop().run_in_executor(None, halfway.wait, 5)
+    tasks.add(sync, task_id="v1")
+    await tasks.run()
+    lines = tasks.messages("q1")[1:-1]
+    assert len(lines) == 4000
+    for number in range(4):
+      assert [line for line in lines if line.startswith(f"{number}:")] == [f"{number}:{index}" for index in range(1000)]
 
   def test_a_line_that_cannot_be_written_is_a_warning_and_the_next_one_is_written(self, logs, monkeypatch, caplog):
     written = threading.Event()
@@ -188,13 +215,12 @@ class TestTaskLines:
 
 
 class TestFeeds:
-  def test_a_task_line_goes_to_its_tasks_feed_and_a_parts_line_to_its_parts_too(self, logs, published):
+  def test_a_task_line_goes_to_its_tasks_feed(self, logs, published):
     logs.write_task_line(task_entries(0, 1, task="t1")[0])
-    logs.write_task_line(task_entries(1, 1, task="t1", sub="c1")[0])
+    logs.write_task_line(task_entries(1, 1, task="t2")[0])
 
     assert [(feed, key, [row["ts"] for row in rows]) for feed, rows, key in published] == [
-        (UpdateFeed.TASK_LOGS, "t1", [stamp(0)]), (UpdateFeed.TASK_LOGS, "t1", [stamp(1)]),
-        (UpdateFeed.TASK_LOGS, "t1/c1", [stamp(1)])]
+        (UpdateFeed.TASK_LOGS, "t1", [stamp(0)]), (UpdateFeed.TASK_LOGS, "t2", [stamp(1)])]
 
   def test_a_published_task_line_is_the_line_its_route_returns(self, logs, published):
     logs.write_task_line(task_entries(0, 1)[0])

@@ -12,9 +12,10 @@ logger = logging.getLogger(__name__)
 class IntakeMixin:
   def ingest(self, hostname: str, body: bytes) -> int:
     """A push from a worker's Vector, one event a line: Traefik's access lines to the requests, and each application's
-    lines to its shard, one write per file. Traefik's own lines are dropped. Returns how many lines were skipped (not
-    an event, or of a container whose name cannot be a file); raises after the other writes when one fails."""
-    by_container: dict[str, list] = {}
+    lines (named by its `application`) to its shard, one write per file. Traefik's own lines are dropped. Returns how
+    many lines were skipped (not an event, or of an application whose name cannot be a file); raises after the other
+    writes when one fails."""
+    by_application: dict[str, list] = {}
     requests = []
     skipped = 0
     for line in body.splitlines():
@@ -29,14 +30,16 @@ class IntakeMixin:
       if container == TRAEFIK:
         if (request := access_line(hostname, message)) is not None:
           requests.append(request)
-      else:
-        by_container.setdefault(container, []).append(
+      elif isinstance(application := event.get("application"), str):
+        by_application.setdefault(application, []).append(
             {"hostname": hostname, "ts": ts, "stream": event.get("stream", ""), "message": message})
+      else:
+        skipped += 1
 
     failed = None
     writes = [(REQUESTS, requests, self.write_requests)] if requests else []
-    writes += [(container, rows, partial(self.write_application_lines, container))
-               for container, rows in by_container.items()]
+    writes += [(application, rows, partial(self.write_application_lines, application))
+               for application, rows in by_application.items()]
     for name, rows, write in writes:
       try:
         write(rows)

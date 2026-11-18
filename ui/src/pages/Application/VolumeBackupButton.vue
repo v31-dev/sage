@@ -1,50 +1,45 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { toast } from 'vue-sonner'
 import { CloudBackup } from 'lucide-vue-next'
 
 import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/ui/spinner'
-import { type Application, createVolumeBackup, type Volume } from '@/services/api'
-import { useAppStore } from '@/stores/app'
+import { type Application, createVolumeBackup, refusesRequests, type Volume } from '@/services/api'
 
-interface Props {
+// A backup of the volume from each of the application's containers, which must all be stopped; the page is loaded
+// again once they are queued.
+const props = defineProps<{
   application: Application
   volume: Volume
-}
+  loadApplication: () => Promise<void>
+}>()
 
-const props = withDefaults(defineProps<Props>(), {})
+const isRequesting = ref(false)
 
-const appStore = useAppStore()
-const isBackupInProgress = computed(() => {
-  return [appStore.applicationDeployStatus, props.application.status].includes('backup')
-})
-
-const backupButtonDisabled = computed(() => {
-  return [
-    appStore.applicationDeployStatus !== 'inactive',
-    props.application.status !== 'inactive',
-    props.application.container_count === 0,
-  ].includes(true)
-})
+const disabled = computed(
+  () =>
+    isRequesting.value ||
+    props.application.containers.length === 0 ||
+    props.application.containers.some(
+      container => container.view.headline !== 'inactive' || refusesRequests(container)
+    )
+)
 
 async function onClickCreateBackup() {
-  const previousStatus = props.application.status
-  appStore.updateApplicationDeployStatus(
-    'backup',
-    props.application.containers.map(container => container.worker.hostname)
-  )
-
+  isRequesting.value = true
   try {
     await createVolumeBackup(
       props.application.project.name,
       props.application.name,
       props.volume.name
     )
-    toast.success(`Backup initiated for volume ${props.volume.name}`)
+    toast.success(`Backup queued for volume ${props.volume.name}`)
+    await props.loadApplication()
   } catch (err) {
-    appStore.updateApplicationDeployStatus(previousStatus)
-    toast.error(err instanceof Error ? err.message : 'Failed to initiate volume backup')
+    toast.error(err instanceof Error ? err.message : 'Failed to back up the volume')
+  } finally {
+    isRequesting.value = false
   }
 }
 </script>
@@ -55,9 +50,9 @@ async function onClickCreateBackup() {
     class="flex-1"
     variant="outline"
     @click="onClickCreateBackup"
-    :disabled="backupButtonDisabled"
+    :disabled="disabled"
   >
-    <Spinner class="animate-spin" v-if="isBackupInProgress" />
-    <CloudBackup />Backup
+    <Spinner class="animate-spin" v-if="isRequesting" />
+    <CloudBackup v-else />Backup
   </Button>
 </template>

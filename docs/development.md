@@ -134,6 +134,9 @@ backend module is measured, including the ones no test imports; only `main.py` (
 Manager when imported) and the tests are left out. CI reports it in the job summary and uploads
 `coverage.xml` as an artifact; it doesn't fail a build on a coverage level.
 
+Every warning is an error (`filterwarnings` in `app/pyproject.toml`): a deprecation, a library's included, fails the
+test it is raised in.
+
 `-q` (quiet) only shortens pytest's own output to the dots and the summary line; `-v` lists each
 test by name.
 
@@ -163,13 +166,14 @@ folder and append cases to the copy:
 
 ```yaml
 tests:
-  - name: an application's line keeps only the stored fields
+  - name: an application's line keeps only the stored fields and names its application
     inputs:
       - insert_at: shipped
         type: log
         log_fields:
-          container_name: web
-          label."sage.deployed_at": "1"
+          container_name: sage-0123456789abcdef
+          label."sage.container": "0123456789abcdef"
+          label."sage.application": demo-web
           stream: stdout
           message: hello
           extra: dropped
@@ -178,9 +182,9 @@ tests:
         conditions:
           - type: vrl
             source: |
-              assert_eq!(.container_name, "web")
+              assert_eq!(.application, "demo-web")
               assert!(!exists(.extra))
-  - name: a container without the label is dropped
+  - name: a container without the container label is dropped
     inputs:
       - insert_at: shipped
         type: log
@@ -243,6 +247,82 @@ The top-level `Dockerfile` builds:
 2. the Python app image that serves the built frontend from `/app/static` and exposes it at `/` while leaving `/api` on the backend
 
 `VITE_LOAD_DELAY` (milliseconds, 300 when unset) makes `request` (`ui/src/lib/api.ts`) wait before every call, so that development simulates a slow network: the instant status updates after an action and the protection against a second click can be seen and tried. Raise it (for example `VITE_LOAD_DELAY=2000`) to test them harder, and set it to 0 to judge how responsive the UI really is. The production UI build and the UI tests set it to 0.
+
+## Migrations
+
+An install moves from any supported version to any later one by running the newer image on the same volume: the boot
+migrates what the older version left. The rules are in [app/AGENTS.md](../app/AGENTS.md#migrations).
+
+**Database.** `PRAGMA user_version` is the number of the last step applied, and the steps are one ordered list in
+`app/services/db/migrations.py`, run by the runner every SQLite file shares (`app/services/db/migrator.py`). A database at version 0 is the baseline, 0.1.3, and must have exactly its schema; an
+older one is refused, and running 0.1.3 on it once brings it to the baseline. A database at a version above the
+latest is refused too, so going back to an earlier release after an upgrade means restoring the backup taken before
+it, or putting back the copy below. At boot every pending step runs in order, then the schema is checked against the
+models, all in one transaction: a failure anywhere leaves the database as it was, at its old version. Before a boot
+runs a step, the runner copies the database beside it as `data.db.migration-<its version>` (0 is the baseline),
+replacing a copy of that name, and the run's log names it; a copy that can't be written stops the boot. Put back as
+`data.db`, a copy is the database as the release that wrote it left it. Several migrations leave several copies, and
+the daily cleanup removes those older than `config.MIGRATION_COPY_RETENTION_DAYS` (90). A platform restore takes
+none: its backup in the store is the copy.
+
+To change the schema, add the next step: SQL that takes the previous version's schema to the new one and carries the
+rows across, written without the models (they describe only the latest version). A release can ship no step or
+several. The migration test builds a 0.1.3 database with rows in every table, runs every step and requires the result
+to equal a fresh database from the models, so a model change without its step fails the suite.
+
+**During development.** A pull request adds at most one step, its schema version, whatever release it ships in: while
+the PR is open, each further schema change goes into that step, edited in place, since no install has run it yet. A
+local database that already ran an earlier draft of the step is refused at boot, its schema no longer matching the
+models; how to bring it back depends on the change, case by case (put back a copy from before it ran, or start the
+local data afresh).
+
+**Fixing a released step.** A step that fails at boot was rolled back, so the install is still on its old version and
+the previous release runs on it. The fix goes out in a patch release, and the user upgrades to it straight from the
+version they are on: say 0.3 ships steps 2 and 3, step 3 fails on some data, and 0.3.1 fixes step 3 in place. An
+install on 0.2 (version 1) runs steps 2 and 3, as 0.3.1 has them, in one go, and the schema is checked once, after
+the last step. Fixing a step in place is right only while its result stays the same, since the installs it already
+ran on hold that result. A step that succeeded with a wrong result is corrected by a new step.
+
+**Side files.** Each kind of side SQLite file (`logs/<application>.db`, `logs/requests.db`, `logs/tasks.db`, the
+metrics shards) carries its own `user_version`, with its baseline and steps in its package's `migrations.py`
+(`services/logs/`, `services/metrics/`), under
+the same rules; `Logs` and `Metrics` migrate every existing file when they start, before Sage serves. They hold history
+only, so a file that doesn't fit (version 0 without the baseline, or a later version) is recreated empty, and a step
+can be `migrator.RECREATE`, which starts the file empty at the latest version, where a change can't carry the rows
+cleanly. A file whose migration fails is recreated empty too, and so is one that isn't a sound database (SQLite's
+"not a database" or "malformed"), with its WAL files, so a side file never stops the boot. `data.db` migrates first and
+is the only file that can stop it, before anything else has changed; files are migrated one at a time, since SQLite
+commits attached databases together only outside WAL mode.
+
+**Workers, the store and Cloudflare.** What Sage keeps outside its databases converges through its owner: a format
+change on a worker changes its stamp, so worker setup rewrites it, and an artifact an older version left is removed by
+its owner's convergence. Nothing outside the databases is converted: an artifact in a form the new version no longer
+reads (an S3 key, a file name, a DNS record) may be dropped, left behind or removed as an orphan, and the release notes
+name what is dropped.
+
+**History.** Each run, a boot's or a platform restore's install, has a log of its own,
+`data/migrations/migration-<run>.log` (`app/services/db/migration_log.py`): a first line naming the run, its trigger
+and release, then a JSON line for each line logged, kept whole. It is outside the databases, since a refused run rolls
+its database back. While a file migrates, the runner keeps every line its thread logs (time, level, message, at the
+configured `LOG_LEVEL`), so each file's versions and outcome are in the log itself ("Migrated [...] from version [0] to
+[1]", "Recreating [...] empty: ...", "Refused [...]: ...") and a step tells what it did by logging it, with ids and
+names in `[]`. A step can also return the manual actions its change leaves, each with where to take it (a worker,
+Cloudflare, the store, Sage), the exact command when there is one and why; the step builds them while it has both the
+old rows and the new ids, and they go in the log as CRITICAL lines, its command between `###` lines. `GET
+/api/migrations` gives the runs, newest first, each with whether a file was refused, how many actions it left and its
+`lines`, the actions last. Settings → Upgrade shows them in its Migration logs dialog, a log like a task's, with a note
+above it when a run left steps to do by hand, so a refused upgrade is visible once the previous release runs again. The manager also keeps the
+latest run of its own start in memory (`MigrationRuns`), a boot's or a platform restore's, and `GET /api` carries it as
+`migration`: a run that left steps to do by hand opens the Upgrade page on it once in each browser. Each such run is
+also a notification, sent once the Manager is set up or the restore is done, saying what it brought the data up to and
+how many steps it left, with a link to `/upgrade?migration=<run>`, which opens the Migration logs on that run.
+
+**Release notes.** A manual upgrade step goes in the release notes only in an emergency the automatic migration can't
+solve; the boot's refusal links the release page, so its notes can be corrected without a new release.
+
+**Moving the baseline.** Raising the baseline to a later release removes the steps and convergence code that only
+older installs need; databases from before the new baseline are then refused, with the new baseline as their way
+forward.
 
 ## CI And Release Notes
 

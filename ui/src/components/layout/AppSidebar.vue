@@ -48,21 +48,24 @@ interface MenuInterface {
   url?: string
   icon?: any
   indicator?: Indicator
-  children?: MenuInterface[]
 }
 
-const menu = computed<MenuInterface[]>(() => [
+interface MenuGroup {
+  label?: string
+  items: MenuInterface[]
+}
+
+const menu = computed<MenuGroup[]>(() => [
   {
-    name: 'Home',
-    path: '/',
-    icon: Home,
-  },
-  {
-    name: 'Application',
-    children: [
+    items: [
       {
-        name: 'Projects',
-        path: '/projects',
+        name: 'Home',
+        path: '/',
+        icon: Home,
+      },
+      {
+        name: 'Applications',
+        path: '/applications',
         icon: Briefcase,
       },
       {
@@ -78,8 +81,8 @@ const menu = computed<MenuInterface[]>(() => [
     ],
   },
   {
-    name: 'Platform',
-    children: [
+    label: 'Platform',
+    items: [
       {
         name: 'Workers',
         path: '/workers',
@@ -104,8 +107,8 @@ const menu = computed<MenuInterface[]>(() => [
     ],
   },
   {
-    name: 'Settings',
-    children: [
+    label: 'Settings',
+    items: [
       {
         name: 'Tailscale',
         path: '/tailscale',
@@ -163,13 +166,10 @@ watch(
       </div>
     </SidebarHeader>
     <SidebarContent>
-      <SidebarGroup v-for="item in menu" :key="item.name">
-        <SidebarGroupLabel v-if="Array.isArray(item.children)">{{ item.name }}</SidebarGroupLabel>
+      <SidebarGroup v-for="group in menu" :key="group.label ?? ''">
+        <SidebarGroupLabel v-if="group.label">{{ group.label }}</SidebarGroupLabel>
         <SidebarMenu>
-          <SidebarMenuItem
-            v-for="child in Array.isArray(item.children) ? item.children : [item]"
-            :key="child.name || item.name"
-          >
+          <SidebarMenuItem v-for="child in group.items" :key="child.name">
             <SidebarMenuButton
               v-if="'path' in child"
               as-child

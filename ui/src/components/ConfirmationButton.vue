@@ -12,6 +12,7 @@ import {
 import { Button } from '@/components/ui/button'
 import { Field, FieldGroup, FieldSet, FieldError } from '@/components/ui/field'
 import { Spinner } from '@/components/ui/spinner'
+import IconButton from '@/components/IconButton.vue'
 import { type LucideIcon } from 'lucide-vue-next'
 
 interface Props {
@@ -22,6 +23,8 @@ interface Props {
   confirmText?: string
   destructive?: boolean
   icon?: LucideIcon
+  // Shows only the icon, with `triggerText` as its name and tooltip.
+  iconOnly?: boolean
   disabled?: boolean
   loading?: boolean
   triggerClass?: string
@@ -30,6 +33,7 @@ interface Props {
 
 const props = withDefaults(defineProps<Props>(), {
   destructive: false,
+  iconOnly: false,
   disabled: false,
   loading: false,
 })
@@ -64,7 +68,18 @@ async function onClickConfirm() {
 
 <template>
   <Dialog v-model:open="isDialogOpen">
-    <DialogTrigger asChild>
+    <DialogTrigger v-if="iconOnly && icon" asChild>
+      <IconButton
+        :icon="icon"
+        :label="triggerText"
+        :destructive="destructive"
+        :disabled="disabled"
+        :loading="loading"
+        :class="triggerClass"
+        @click="openDialog"
+      />
+    </DialogTrigger>
+    <DialogTrigger v-else asChild>
       <Button
         @click="openDialog"
         :variant="destructive ? 'destructive' : 'outline'"

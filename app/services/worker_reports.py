@@ -1,4 +1,5 @@
 import logging
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -8,15 +9,18 @@ from utils.common import utcnow
 
 logger = logging.getLogger(__name__)
 
+# Telegraf reports the container labels it includes as tags, beside tags of its own; Sage's labels share this prefix.
+LABEL_PREFIX = "sage."
+
 
 @dataclass(frozen=True)
 class ContainerReading:
-  """One container as Telegraf saw it. Times are nanoseconds since the epoch (the worker's
-  clock); `finished_at` is absent for a container that never stopped."""
+  """One container as Telegraf saw it, with the Sage labels it carries. Times are nanoseconds since the epoch (the
+  worker's clock); `finished_at` is absent for a container that never stopped."""
   name: str
   status: str
   image: str
-  deployed_at: str | None
+  labels: dict[str, str]
   exit_code: int | None
   oom_killed: bool
   started_at: int | None
@@ -78,13 +82,6 @@ def is_current(arrived_at: datetime, now: datetime) -> bool:
   return (now - arrived_at).total_seconds() <= config.REPORT_STALE_SECONDS
 
 
-def infra_of(received: Received) -> list[dict]:
-  """The state of each container of the worker's stack in a report ("missing" when the report does not list it)."""
-  containers = received.snapshot.containers
-  return [{"name": name, "status": containers[name].status if name in containers else "missing"}
-          for name in config.WORKER_STACK_SERVICES]
-
-
 def container_started_at(received: Received | None, container: str) -> int | None:
   """When the container last started, on the worker's clock (nanoseconds), from a report. None when there is no
   report or it does not list the container."""
@@ -93,7 +90,7 @@ def container_started_at(received: Received | None, container: str) -> int | Non
 
 
 def _fingerprint(container: ContainerReading):
-  return (container.status, container.started_at, container.deployed_at)
+  return (container.status, container.started_at, container.labels)
 
 
 def _number(value):
@@ -157,7 +154,7 @@ def _containers(metrics) -> dict[str, ContainerReading]:
         name=name,
         status=str(tags.get("container_status", "")),
         image=str(tags.get("container_image", "")),
-        deployed_at=tags.get("sage.deployed_at"),
+        labels={tag: value for tag, value in tags.items() if tag.startswith(LABEL_PREFIX)},
         exit_code=_integer(fields.get("exitcode")),
         oom_killed=fields.get("oomkilled") is True,
         started_at=_integer(fields.get("started_at")),
@@ -171,12 +168,13 @@ def _containers(metrics) -> dict[str, ContainerReading]:
   return containers
 
 
-def parse_batch(batch) -> list[Snapshot]:
-  """The snapshots in a Telegraf batch (the JSON of the `http` output), oldest first. A batch
-  holds one snapshot when everything is live and several after an outage of the manager.
+def parse_batch(batch) -> dict[int, list[dict]]:
+  """The metrics of a Telegraf batch (the JSON of the `http` output) by gather. A batch holds one gather when
+  everything is live, several after an outage of the manager, and part of one when Telegraf sent it while the gather
+  ran.
 
-  The metrics of one gather carry timestamps a second or two apart (the Docker input takes a
-  while), so a snapshot is every metric in the same interval-sized bucket of the worker's clock.
+  The metrics of one gather carry timestamps a second or two apart (the Docker input takes a while), so a gather is
+  every metric in the same interval-sized bucket of the worker's clock, keyed by that bucket.
   Raises ValueError for a batch that is not Telegraf's JSON."""
   if not isinstance(batch, dict) or not isinstance(batch.get("metrics"), list):
     raise ValueError("expected an object with a list of metrics")
@@ -189,44 +187,63 @@ def parse_batch(batch) -> list[Snapshot]:
             or _integer(metric.get("timestamp")) is None):
       raise ValueError("a metric needs a name, tags, fields and a timestamp")
     buckets.setdefault(int(metric["timestamp"]) // bucket_ms, []).append(metric)
+  return buckets
 
-  snapshots = []
-  for bucket in sorted(buckets):
-    metrics = buckets[bucket]
-    check = next((m for m in metrics if m["name"] == "net_response"), None)
-    snapshots.append(Snapshot(
-        at=datetime.fromtimestamp(min(m["timestamp"] for m in metrics) / 1000, tz=timezone.utc).replace(tzinfo=None),
-        host=_host(metrics),
-        containers=_containers(metrics),
-        traefik_reachable=None if check is None else check["fields"].get("result_code") == 0,
-    ))
-  return snapshots
+
+def snapshot(metrics) -> Snapshot:
+  """The snapshot of one gather's metrics."""
+  check = next((m for m in metrics if m["name"] == "net_response"), None)
+  return Snapshot(
+      at=datetime.fromtimestamp(min(m["timestamp"] for m in metrics) / 1000, tz=timezone.utc).replace(tzinfo=None),
+      host=_host(metrics),
+      containers=_containers(metrics),
+      traefik_reachable=None if check is None else check["fields"].get("result_code") == 0,
+  )
 
 
 class WorkerReports(Base):
-  """The newest snapshot Telegraf reported for each worker, in memory. The report route fills
-  it and decides nothing; the operation queue reads it. `started` is when the manager started: a worker
+  """The snapshots Telegraf reported for each worker, the newest REPORT_HISTORY_SIZE of them, in memory. The report
+  route fills it and decides nothing; the operation queue reads it. `started` is when the manager started: a worker
   that has not reported is given a grace after it."""
 
   def __init__(self):
     super().__init__()
     self.started = utcnow()
-    self._latest: dict[str, Received] = {}
+    self._history: dict[str, deque[Received]] = {}
+    self._open: dict[str, tuple[datetime, int, list[dict]]] = {}
     self._unknown: set[str] = set()
 
-  def accept(self, hostname: str, snapshots: list[Snapshot]) -> Arrival | None:
-    """Keep the newest snapshot of the batch and say what it changed. A batch that is older than what
-    is held (a replay arriving late) is ignored and gives None."""
-    if not snapshots:
-      return None
-    newest = snapshots[-1]
+  def assemble(self, hostname: str, gathers: dict[int, list[dict]]) -> list[Snapshot]:
+    """The snapshots of the worker's gathers that are complete, oldest first. Telegraf sends on a timer that is not
+    aligned with its gathers, so one gather can arrive in two reports: the newest gather is held, with its arrival,
+    and joined with the rest of it a later report brings; it is complete once a later gather arrives. A held gather
+    whose arrival is no longer current is dropped."""
     now = utcnow()
     with self.lock:
-      current = self._latest.get(hostname)
-      if current is not None and newest.at < current.snapshot.at:
+      held = self._open.pop(hostname, None)
+      if held is not None and is_current(held[0], now):
+        gathers = {**gathers, held[1]: held[2] + gathers.get(held[1], [])}
+      if not gathers:
+        return []
+      newest = max(gathers)
+      self._open[hostname] = (now, newest, gathers[newest])
+    return [snapshot(gathers[bucket]) for bucket in sorted(gathers) if bucket != newest]
+
+  def accept(self, hostname: str, snapshots: list[Snapshot]) -> Arrival | None:
+    """Keep the snapshots of the batch gathered after the newest one held, and say what the newest changed. A batch
+    with none (a replay arriving late, or the same snapshot again) is ignored and gives None, so a replay does not
+    make what is held look recently received."""
+    now = utcnow()
+    with self.lock:
+      held = self._history.get(hostname)
+      current = held[-1] if held else None
+      fresh = [snapshot for snapshot in snapshots if current is None or snapshot.at > current.snapshot.at]
+      if not fresh:
         return None
-      received = Received(now, newest)
-      self._latest[hostname] = received
+      held = self._history.setdefault(hostname, deque(maxlen=config.REPORT_HISTORY_SIZE))
+      held.extend(Received(now, snapshot) for snapshot in fresh)
+      received = held[-1]
+    newest = received.snapshot
     if current is None:
       changed = frozenset(newest.containers)
     else:
@@ -250,7 +267,13 @@ class WorkerReports(Base):
 
   def latest(self, hostname: str) -> Received | None:
     with self.lock:
-      return self._latest.get(hostname)
+      held = self._history.get(hostname)
+      return held[-1] if held else None
+
+  def history(self, hostname: str) -> list[Received]:
+    """The snapshots held for the worker, oldest first."""
+    with self.lock:
+      return list(self._history.get(hostname, ()))
 
   def current(self, hostname: str) -> Received | None:
     """The newest report, if it is recent enough to describe the worker now."""
@@ -258,16 +281,6 @@ class WorkerReports(Base):
     if received is None or not is_current(received.arrived_at, utcnow()):
       return None
     return received
-
-  def trusted(self, hostname: str, since: datetime) -> Snapshot | None:
-    """The newest snapshot, if it can be compared with rows last written at `since`: current, and
-    received at least REPORT_SETTLE_SECONDS after that write, so it cannot predate it."""
-    received = self.current(hostname)
-    if received is None:
-      return None
-    if (received.arrived_at - since).total_seconds() < config.REPORT_SETTLE_SECONDS:
-      return None
-    return received.snapshot
 
   def started_at(self, hostname: str, container: str, current: bool = True) -> int | None:
     """When the container last started, on the worker's clock (nanoseconds), from the current report or,
@@ -282,4 +295,5 @@ class WorkerReports(Base):
 
   def forget(self, hostname: str):
     with self.lock:
-      self._latest.pop(hostname, None)
+      self._history.pop(hostname, None)
+      self._open.pop(hostname, None)

@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { watchState } from '@/lib/updates'
 import Upgrade from '@/pages/Settings/Upgrade.vue'
 import {
+  fetchMigrations,
   fetchRelease,
   fetchTasks,
   refreshRelease,
@@ -15,9 +16,15 @@ import { useAppStore } from '@/stores/app'
 import { followTopics } from '../helpers/topics'
 
 vi.mock('@/lib/updates', () => ({ watchState: vi.fn(), watchFeed: vi.fn() }))
+const route = { query: {} as Record<string, string> }
+vi.mock('vue-router', async importOriginal => ({
+  ...(await importOriginal<typeof import('vue-router')>()),
+  useRoute: () => route,
+}))
 vi.mock('@/services/api', async importOriginal => ({
   ...(await importOriginal<typeof import('@/services/api')>()),
   refreshRelease: vi.fn(),
+  fetchMigrations: vi.fn(),
 }))
 
 const refresh = vi.mocked(refreshRelease)
@@ -40,6 +47,7 @@ function running(id: string, name = 'deploy'): QueueTask {
     name,
     scopes: [],
     params: {},
+    labels: {},
     executor: 'app',
     status: 'running',
     queued_at: '2026-01-01T12:00:00',
@@ -51,7 +59,12 @@ function running(id: string, name = 'deploy'): QueueTask {
 async function mountPage(state: AppInfo['state'] = 'running', options: { pending?: boolean } = {}) {
   const topics = followTopics(options)
   const store = useAppStore()
-  store.info = { version: '1.0.0', latest_version: '1.2.3', state } as AppInfo
+  store.info = {
+    version: '1.0.0',
+    latest_version: '1.2.3',
+    state,
+    migration: null,
+  } as AppInfo
   const wrapper = mount(Upgrade)
   await flushPromises()
   return { wrapper, topics }
@@ -253,6 +266,12 @@ describe('checking for updates', () => {
 })
 
 describe('preparing to stop', () => {
+  it('does not say it is safe until the queue is known', async () => {
+    const { wrapper } = await mountPage('paused', { pending: true })
+    expect(wrapper.text()).not.toContain('Safe to stop.')
+    expect(wrapper.text()).toContain('Loading tasks')
+  })
+
   it('waits for the running tasks, naming them', async () => {
     const { wrapper, topics } = await mountPage('paused')
 
@@ -284,7 +303,26 @@ describe('preparing to stop', () => {
     topics.topic('tasks').push({ running: [running('a')], queued: [] })
     await flushPromises()
 
-    expect(wrapper.text()).toContain('Sage is running normally.')
     expect(wrapper.text()).not.toContain('Waiting for')
+    expect(wrapper.text()).not.toContain('Safe to stop.')
+  })
+})
+
+describe('a link to a migration run', () => {
+  afterEach(() => {
+    route.query = {}
+  })
+
+  it('opens the migration logs on the run it names', async () => {
+    vi.mocked(fetchMigrations).mockResolvedValue([])
+    route.query = { migration: 'r1' }
+    await mountPage()
+    expect(fetchMigrations).toHaveBeenCalledOnce()
+  })
+
+  it('is needed for the logs to open by themselves', async () => {
+    vi.mocked(fetchMigrations).mockReset()
+    await mountPage()
+    expect(fetchMigrations).not.toHaveBeenCalled()
   })
 })

@@ -188,17 +188,17 @@ tailscale up --ssh --auth-key=tskey-auth-...   # a key tagged tag:sage-worker
 
 The tag is for the tailnet policy above, which lets the manager reach the machine; Sage does
 not read it. Add the machine on the Workers page by its hostname or Tailscale IP: Sage checks
-that it answers, then sets it up over SSH. In Sage a worker has a subdomain, given or
-random, which its internal names are under (`<name>.<subdomain>.int.<DOMAIN>`). A new
+that it answers, then sets it up over SSH. In Sage a worker has a subdomain, given when
+it is added, which its internal names are under (`<name>.<subdomain>.int.<DOMAIN>`). A new
 worker gets its own certificate and private key; changing its subdomain replaces only that
 certificate. Workers share a separate certificate for internal discovery. Certificates use
 45-day validity and renew with seven days remaining. The worker's page shows each certificate's
 status and applied expiry separately; Settings → Cloudflare shows the full inventory and any issuance or
 retirement errors. See [Certificate Lifecycle](docs/architecture.md#certificate-lifecycle) for cleanup and rate limits.
 Deleting a worker stops
-Sage's services on it and removes Sage's files from it, so delete its containers first; a
-worker with internal domains can't be deleted until they are moved or deleted. A worker that is offline is
-removed from Sage as it is, with its containers; its VM has to be deleted by hand.
+Sage's services on it and removes Sage's files from it. A worker with containers or internal domains can't be
+deleted: delete its containers and move or delete its domains first, even when it is offline. A worker that is
+offline is removed from Sage only; its VM has to be cleaned up by hand.
 
 A worker records which Sage manages it. Several Sages can share a tailnet when each has its own
 domain, S3 path and workers: a machine that another Sage manages is refused, and has to be
@@ -211,8 +211,9 @@ a laptop, a PaaS or a VM.
 
 ### Sizing
 
-The smallest recommended machine, for the manager and for each worker, is 1 GB of memory and
-1 core. Give a machine more as its applications and logs grow.
+Sage is meant for one domain with about 10 workers and 50 applications; another domain or
+landscape runs its own Sage. The smallest recommended machine, for the manager and for each
+worker, is 1 GB of memory and 1 core. Give a machine more as its applications and logs grow.
 
 ### First steps
 
@@ -231,7 +232,12 @@ The [client guide](docs/discovery.md) shows how to discover a backend service, p
 Sage lists the backups already in the S3 bucket and path when you save the S3 settings,
 at startup and from Discover backups on the Backups page. To recover onto a new volume,
 start with the original `ENCRYPTION_KEY`, set S3, then restore a platform backup; volume
-backups are listed once their application is back. Each backup can also be downloaded
+backups are listed once their application is back. A platform restore replaces the configuration
+with the backup's, keeps the S3 settings in use and starts the history empty. Containers are then
+stopped and show an error until they are deployed again, also when the workers kept serving while
+the manager was being recovered, and a container that isn't in the backup is removed from its worker
+with its volumes' data; see [Platform Backup And Restore](docs/architecture.md#platform-backup-and-restore).
+Each backup can also be downloaded
 from the Backups page (platform) or a volume's Restore dialog (volume): a link that works
 for a minute, straight from S3. The files are encrypted; Settings → S3 shows how to open one.
 
@@ -246,6 +252,12 @@ Sage doesn't upgrade itself. The version in the footer opens Settings → Upgrad
 release notes and the steps: take a backup, pause Sage and wait until it is safe to stop,
 then run the newer image against the same volume. Sage always starts unpaused. The backup
 comes first because a paused Sage refuses changes and starts no tasks.
+
+The newer version migrates the data when it starts, from 0.1.3 or any later release; an older
+install runs 0.1.3 once first. If the migration fails, Sage stops and leaves the data as it was,
+so the previous version still runs on it, and Settings → Upgrade → Migration logs shows why. Once migrated, the data no longer opens in an earlier
+version: going back means restoring the backup, or putting back the copy of the database Sage
+took before migrating, `data.db.migration-<version>` in the data folder, kept 90 days.
 
 The repo's [`docker-compose.yml`](docker-compose.yml) and [`sample.env`](sample.env) are
 for local development; see [docs/development.md](docs/development.md).

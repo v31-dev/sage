@@ -36,13 +36,14 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Spinner } from '@/components/ui/spinner'
+import IconButton from '@/components/IconButton.vue'
 import { useAppStore } from '@/stores/app'
-import { type Domain, type LinkableContainer, createDomain, updateDomain } from '@/services/api'
+import { type ContainerReference, type Domain, createDomain, updateDomain } from '@/services/api'
 
 // Creates a domain, or edits `domain`. The container comes first: it decides the worker, so the name's shape follows
 // it, and choosing another one clears the type.
 interface Props {
-  containers: LinkableContainer[]
+  containers: ContainerReference[]
   domains: Domain[]
   domain?: Domain
   reload: () => Promise<void>
@@ -117,7 +118,7 @@ function chooseContainer(value: unknown) {
   type.value = ''
 }
 
-function containerLabel(container: LinkableContainer) {
+function containerLabel(container: ContainerReference) {
   return `${container.application.label} (${container.application.project.label}) · ${container.worker.hostname}`
 }
 
@@ -155,12 +156,11 @@ async function onConfirm() {
 
 <template>
   <Dialog v-model:open="open">
-    <DialogTrigger as-child>
-      <Button v-if="props.domain" size="sm" variant="outline" class="gap-2" @click="openDialog">
-        <Edit />
-        Edit
-      </Button>
-      <Button v-else size="sm" class="gap-2" @click="openDialog">
+    <DialogTrigger v-if="props.domain" as-child>
+      <IconButton :icon="Edit" label="Edit" @click="openDialog" />
+    </DialogTrigger>
+    <DialogTrigger v-else as-child>
+      <Button size="sm" class="gap-2" @click="openDialog">
         <Plus />
         Add Domain
       </Button>

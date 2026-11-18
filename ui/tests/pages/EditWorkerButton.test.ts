@@ -20,7 +20,8 @@ const stubs = {
   DialogFooter: inline,
 }
 
-const worker = (subdomain: string | null) => ({ hostname: 'w1', subdomain }) as unknown as Worker
+const worker = (subdomain: string | null, status = 'online') =>
+  ({ hostname: 'w1', subdomain, view: { status } }) as unknown as Worker
 
 const loadWorkerStatus = vi.fn(async () => {})
 
@@ -31,7 +32,7 @@ async function open(current: Worker) {
   })
   await wrapper
     .findAll('button')
-    .find(button => button.text().includes('Edit'))!
+    .find(button => button.attributes('aria-label') === 'Edit')!
     .trigger('click')
   return wrapper
 }
@@ -50,6 +51,18 @@ beforeEach(() => {
 })
 
 describe('editing a worker', () => {
+  it('is not offered while the worker is being removed', () => {
+    const wrapper = mount(EditWorkerButton, {
+      props: { worker: worker('eu1', 'removing'), loadWorkerStatus },
+      global: { stubs },
+    })
+
+    const edit = wrapper
+      .findAll('button')
+      .find(button => button.attributes('aria-label') === 'Edit')!
+    expect(edit.attributes('disabled')).toBeDefined()
+  })
+
   it("opens with the worker's subdomain", async () => {
     const wrapper = await open(worker('eu1'))
 

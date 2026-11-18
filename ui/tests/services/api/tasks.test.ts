@@ -6,6 +6,7 @@ const task: FinishedTask = {
   name: 'deploy_application',
   scopes: ['app:demo-web', 'platform'],
   params: {},
+  labels: { Application: 'Shop / Web_100%', Worker: 'w1', Volume: 'Åpi' },
   executor: 'app',
   status: 'completed',
   started_at: '2026-01-01T12:00:00',
@@ -17,6 +18,14 @@ const task: FinishedTask = {
 describe('a pushed finished task, kept as the history route would return it', () => {
   it.each<[string, TaskHistoryQuery, boolean]>([
     ['no filter', {}, true],
+    ['a label substring in another case', { label: 'WEB' }, true],
+    ['another label', { label: 'w1' }, true],
+    ['a label key', { label: 'Application' }, false],
+    ['an absent label', { label: 'api' }, false],
+    ['a literal percent and underscore', { label: '_100%' }, true],
+    ['a literal wildcard', { label: 'Web*' }, false],
+    ['ASCII case within a Unicode label', { label: 'ÅPI' }, true],
+    ['another non-ASCII letter', { label: 'åpi' }, false],
     ['its name', { name: 'deploy_application' }, true],
     ['another name', { name: 'sync_workers' }, false],
     ['its executor and status', { executor: 'app', status: 'completed' }, true],

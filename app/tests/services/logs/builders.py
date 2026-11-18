@@ -20,15 +20,18 @@ def lines(first, count, host="w1", word="line"):
           for index in range(first, first + count)]
 
 
-def task_entries(first, count, task="t1", sub=""):
-  return [{"task_id": task, "sub_task_id": sub, "ts": stamp(index), "level": "INFO", "logger": "tests.task",
+def task_entries(first, count, task="t1"):
+  return [{"task_id": task, "ts": stamp(index), "level": "INFO", "logger": "tests.task",
            "message": f"step {index} of the task, pulling and starting the containers"}
           for index in range(first, first + count)]
 
 
-def event(container, message, index=0, stream="stdout"):
-  """A line as a worker's Vector pushes it."""
-  return {"container_name": container, "timestamp": stamp(index), "stream": stream, "message": message}
+def event(source, message, index=0, stream="stdout"):
+  """A line as a worker's Vector pushes it: Traefik's when `source` is traefik, else one of the application `source`
+  names, from its placement's container."""
+  container, application = ("traefik", None) if source == "traefik" else ("sage-0123456789abcdef", source)
+  return {"container_name": container, "application": application, "timestamp": stamp(index), "stream": stream,
+          "message": message}
 
 
 def access_line(index=0, **fields):

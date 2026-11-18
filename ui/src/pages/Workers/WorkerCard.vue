@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { useRouter } from 'vue-router'
 import { computed } from 'vue'
-import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Label } from '@/components/ui/label'
 
@@ -52,7 +51,11 @@ function goToMetrics(hostname: string) {
     <CardHeader class="border-b">
       <CardTitle>
         <SectionTitle :title="props.worker.hostname">
-          <StateIndicator v-bind="appStore.workerIndicator(props.worker.status)" show-label />
+          <StateIndicator
+            v-bind="appStore.workerIndicator(props.worker.view.status, props.worker.view.reason)"
+            :tooltip="appStore.workerReason(props.worker.view)"
+            show-label
+          />
           <StateIndicator
             v-if="props.worker.path"
             class="ml-2"
@@ -64,15 +67,19 @@ function goToMetrics(hostname: string) {
     </CardHeader>
 
     <CardContent class="space-y-4">
-      <div>
-        <Label>IP</Label>
-        <p class="text-sm text-muted-foreground font-mono break-all">
-          {{ props.worker.ip }}
-        </p>
-      </div>
-
-      <div v-if="props.worker.subdomain" class="flex flex-wrap gap-2">
-        <Badge variant="secondary" class="font-mono">Subdomain {{ props.worker.subdomain }}</Badge>
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <Label>IP</Label>
+          <p class="text-sm text-muted-foreground font-mono break-all">
+            {{ props.worker.address ?? '-' }}
+          </p>
+        </div>
+        <div>
+          <Label>Subdomain</Label>
+          <p class="text-sm text-muted-foreground font-mono break-all" data-subdomain>
+            {{ props.worker.subdomain ?? '-' }}
+          </p>
+        </div>
       </div>
 
       <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
@@ -128,7 +135,7 @@ function goToMetrics(hostname: string) {
       <div>
         <Label>Containers</Label>
         <p class="text-sm text-muted-foreground">
-          {{ props.worker.container_count ?? '-' }}
+          {{ props.worker.report.knowledge === 'known' ? props.worker.report.containers : '-' }}
         </p>
       </div>
     </CardContent>

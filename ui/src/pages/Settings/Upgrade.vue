@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import MarkdownIt from 'markdown-it'
 import DOMPurify from 'dompurify'
 import { Icon } from '@iconify/vue'
@@ -29,8 +30,14 @@ import {
 } from '@/services/api'
 import { useAppStore } from '@/stores/app'
 import { TONES } from '@/lib/tone'
+import MigrationLogsButton from './MigrationLogsButton.vue'
 
 const appStore = useAppStore()
+const route = useRoute()
+// The run a notification's link names opens the Migration logs at once.
+const migrationRun = computed(() =>
+  typeof route.query.migration === 'string' ? route.query.migration : undefined
+)
 
 const updateAvailable = computed(() => {
   const info = appStore.info
@@ -112,7 +119,7 @@ async function onRefresh() {
   }
 }
 
-// Pause / resume ("prepare to stop")
+// Pause / resume
 const queue = ref<QueueResponse | null>(null)
 const toggling = ref(false)
 const pauseError = ref('')
@@ -121,7 +128,9 @@ let stops: Array<() => void> = []
 const state = computed(() => appStore.info?.state ?? 'running')
 const running = computed(() => queue.value?.running ?? [])
 const queuedCount = computed(() => queue.value?.queued.length ?? 0)
-const safeToStop = computed(() => state.value === 'paused' && running.value.length === 0)
+const safeToStop = computed(
+  () => state.value === 'paused' && queue.value !== null && running.value.length === 0
+)
 
 async function onToggle() {
   toggling.value = true
@@ -160,6 +169,76 @@ onUnmounted(() => {
 <template>
   <main class="flex-1 px-2 sm:px-4 py-4 sm:py-4 relative">
     <div class="max-w-7xl mx-auto flex flex-col gap-6">
+      <Card>
+        <CardHeader>
+          <CardTitle>How to upgrade</CardTitle>
+          <CardDescription>Sage doesn't upgrade itself; you replace its container.</CardDescription>
+          <CardAction class="flex flex-wrap justify-end gap-2">
+            <MigrationLogsButton :run="migrationRun" :open="!!migrationRun" />
+            <Button
+              :variant="state === 'paused' ? 'default' : 'outline'"
+              size="sm"
+              :disabled="toggling || state === 'stopping'"
+              @click="onToggle"
+            >
+              <Spinner v-if="toggling" class="animate-spin" />
+              {{ state === 'paused' ? 'Resume' : 'Pause' }}
+            </Button>
+          </CardAction>
+        </CardHeader>
+        <CardContent class="space-y-3">
+          <Alert v-if="pauseError" variant="destructive">
+            <TriangleAlert />
+            <AlertDescription>{{ pauseError }}</AlertDescription>
+          </Alert>
+          <ol class="list-decimal space-y-1 pl-5 text-sm">
+            <li>
+              Take a backup on the
+              <RouterLink to="/backups" class="underline">Backups</RouterLink> page and wait for it
+              to appear in the list.
+            </li>
+            <li class="space-y-1">
+              <p>
+                Pause Sage and wait until it shows it's safe to stop. While paused, queued tasks
+                wait, running tasks finish, and changes are refused.
+              </p>
+              <p v-if="state === 'stopping'" class="text-muted-foreground">Sage is stopping.</p>
+              <template v-else-if="state === 'paused'">
+                <p v-if="safeToStop" class="flex items-center gap-2 font-medium">
+                  <CircleCheck :class="['h-4 w-4', TONES.success.text]" />
+                  Safe to stop.
+                  <span v-if="queuedCount" class="font-normal text-muted-foreground">
+                    {{ queuedCount }} queued task(s) will be cancelled when Sage stops.
+                  </span>
+                </p>
+                <p v-else-if="!queue" class="text-muted-foreground">Loading tasks…</p>
+                <div v-else class="space-y-1">
+                  <p class="flex items-center gap-2">
+                    <Spinner class="animate-spin" />
+                    Waiting for {{ running.length }} running task(s) to finish:
+                  </p>
+                  <ul class="list-disc pl-5 text-muted-foreground">
+                    <li v-for="task in running" :key="task.task_id">{{ task.name }}</li>
+                  </ul>
+                </div>
+              </template>
+            </li>
+            <li>Stop the Sage container.</li>
+            <li>
+              Change its image tag to the new version:
+              <code
+                >ghcr.io/v31-dev/sage:{{ appStore.info?.latest_version || '&lt;version&gt;' }}</code
+              >
+            </li>
+            <li>Start it again. Sage always starts unpaused.</li>
+          </ol>
+          <p class="text-sm text-muted-foreground">
+            Stopping without pausing is also safe: on a stop signal Sage lets running tasks finish
+            before it exits, as long as the container's stop grace period gives it time.
+          </p>
+        </CardContent>
+      </Card>
+
       <Card>
         <CardHeader>
           <CardTitle class="flex items-center gap-2">
@@ -224,82 +303,6 @@ onUnmounted(() => {
             </div>
             <div class="release-notes text-sm text-muted-foreground" v-html="renderedNotes" />
           </div>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>How to upgrade</CardTitle>
-          <CardDescription>Sage doesn't upgrade itself; you replace its container.</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <ol class="list-decimal space-y-1 pl-5 text-sm">
-            <li>
-              Take a backup on the
-              <RouterLink to="/backups" class="underline">Backups</RouterLink> page and wait for it
-              to appear in the list.
-            </li>
-            <li>Pause Sage (below) and wait until it shows it's safe to stop.</li>
-            <li>Stop the Sage container.</li>
-            <li>
-              Change its image tag to the new version:
-              <code
-                >ghcr.io/v31-dev/sage:{{ appStore.info?.latest_version || '&lt;version&gt;' }}</code
-              >
-            </li>
-            <li>Start it again. Sage always starts unpaused.</li>
-          </ol>
-          <p class="mt-3 text-sm text-muted-foreground">
-            Stopping without pausing is also safe: on a stop signal Sage lets running tasks finish
-            before it exits, as long as the container's stop grace period gives it time.
-          </p>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Prepare to stop</CardTitle>
-          <CardDescription>
-            While paused, queued tasks wait, running tasks finish, and changes are refused.
-          </CardDescription>
-          <CardAction>
-            <Button
-              :variant="state === 'paused' ? 'default' : 'outline'"
-              size="sm"
-              :disabled="toggling || state === 'stopping'"
-              @click="onToggle"
-            >
-              <Spinner v-if="toggling" class="animate-spin" />
-              {{ state === 'paused' ? 'Resume' : 'Pause' }}
-            </Button>
-          </CardAction>
-        </CardHeader>
-        <CardContent class="space-y-3 text-sm">
-          <Alert v-if="pauseError" variant="destructive">
-            <TriangleAlert />
-            <AlertDescription>{{ pauseError }}</AlertDescription>
-          </Alert>
-
-          <p v-if="state === 'running'" class="text-muted-foreground">Sage is running normally.</p>
-          <p v-else-if="state === 'stopping'" class="text-muted-foreground">Sage is stopping.</p>
-          <template v-else>
-            <p v-if="safeToStop" class="flex items-center gap-2 font-medium">
-              <CircleCheck :class="['h-4 w-4', TONES.success.text]" />
-              Safe to stop.
-              <span v-if="queuedCount" class="font-normal text-muted-foreground">
-                {{ queuedCount }} queued task(s) will be cancelled when Sage stops.
-              </span>
-            </p>
-            <div v-else class="space-y-1">
-              <p class="flex items-center gap-2">
-                <Spinner class="animate-spin" />
-                Waiting for {{ running.length }} running task(s) to finish:
-              </p>
-              <ul class="list-disc pl-5 text-muted-foreground">
-                <li v-for="task in running" :key="task.task_id">{{ task.name }}</li>
-              </ul>
-            </div>
-          </template>
         </CardContent>
       </Card>
     </div>

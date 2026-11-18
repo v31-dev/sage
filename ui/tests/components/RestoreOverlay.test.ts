@@ -26,6 +26,7 @@ function task(id: string, name: string): QueueTask {
     name,
     scopes: [],
     params: {},
+    labels: {},
     executor: 'platform',
     status: 'running',
     queued_at: '2026-01-01T12:00:00',
@@ -84,21 +85,31 @@ describe('while Sage is restoring', () => {
     await flushPromises()
 
     topics.topic('tasks').push({
-      running: [task('r', 'restore_database_from_s3'), task('a', 'deploy'), task('b', 'backup')],
+      running: [task('r', 'restore_platform'), task('a', 'deploy'), task('b', 'backup')],
       queued: [],
     })
     await flushPromises()
-    expect(wrapper.text()).toContain('Waiting for 2 running tasks to finish first.')
+    expect(wrapper.text()).toContain('Waiting for 2 tasks to finish first.')
 
     topics
       .topic('tasks')
-      .push({ running: [task('r', 'restore_database_from_s3'), task('a', 'deploy')], queued: [] })
+      .push({ running: [task('r', 'restore_platform'), task('a', 'deploy')], queued: [] })
     await flushPromises()
-    expect(wrapper.text()).toContain('Waiting for 1 running task to finish first.')
+    expect(wrapper.text()).toContain('Waiting for 1 task to finish first.')
 
-    topics.topic('tasks').push({ running: [task('r', 'restore_database_from_s3')], queued: [] })
+    topics.topic('tasks').push({ running: [task('r', 'restore_platform')], queued: [] })
     await flushPromises()
     expect(wrapper.text()).not.toContain('Waiting for')
+  })
+
+  it('counts queued work before the restore, excluding the queued restore itself', async () => {
+    const { wrapper, topics } = setup('restoring')
+    topics.topic('tasks').push({
+      running: [task('a', 'deploy')],
+      queued: [task('b', 'backup'), task('r', 'restore_platform')],
+    })
+    await flushPromises()
+    expect(wrapper.text()).toContain('Waiting for 2 tasks to finish first.')
   })
 
   it('follows the running tasks when a restore starts, and stops when it is over', async () => {

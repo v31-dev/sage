@@ -6,6 +6,8 @@ import pytest
 import yaml
 
 import config
+from services.containers.placement import LABEL_APPLICATION, LABEL_CONTAINER, LABELS
+from services.worker_reports import LABEL_PREFIX
 
 TEMPLATES = Path(__file__).parent.parent.parent / "templates" / "worker"
 
@@ -46,9 +48,10 @@ class TestVectorConfig:
     assert config_["transforms"]["shipped"]["inputs"] == ["container_logs"]
     assert vector_sink()["inputs"] == ["shipped"]
 
-  def test_it_drops_every_container_but_traefik_and_those_with_the_applications_label(self):
+  def test_it_drops_every_container_but_traefik_and_a_placements_and_names_its_application(self):
     source = vector_config()["transforms"]["shipped"]["source"]
-    assert '.container_name != "traefik" && !exists(.label."sage.deployed_at")' in source
+    assert f'.container_name != "traefik" && !exists(.label."{LABEL_CONTAINER}")' in source
+    assert f'"application": .label."{LABEL_APPLICATION}"' in source
 
   def test_its_batches_stay_well_within_what_the_intake_takes(self):
     assert vector_sink()["batch"]["max_bytes"] * 2 <= config.LOG_INTAKE_MAX_BYTES
@@ -77,9 +80,10 @@ class TestTelegrafConfig:
     mounts = [v.split(":")[1] for v in telegraf_service()["volumes"] if v.endswith("/telegraf:/etc/telegraf:ro")]
     assert disk["mount_points"] == ["/etc/telegraf"] and mounts == ["/etc/telegraf"]
 
-  def test_the_container_label_the_manager_compares_comes_through_as_a_tag(self):
+  def test_every_label_of_a_placement_comes_through_as_a_tag_the_reports_keep(self):
     (docker,) = telegraf_config()["inputs"]["docker"]
-    assert docker["docker_label_include"] == ["sage.deployed_at"]
+    assert docker["docker_label_include"] == list(LABELS)
+    assert all(label.startswith(LABEL_PREFIX) for label in LABELS)
 
 
 class TestTelegrafService:
@@ -140,9 +144,18 @@ class TestContainerLogs:
       assert definition["logging"] == {"driver": "json-file", "options": {"max-size": "10m", "max-file": "5"}}, container
 
   @pytest.mark.parametrize("name", COMPOSE_TEMPLATES)
-  def test_only_an_applications_container_has_the_label_vector_ships_it_by(self, name):
-    labelled = {"sage.deployed_at" in definition.get("labels", {}) for definition in compose_services(name).values()}
-    assert labelled == {name.startswith("application/")}
+  def test_only_an_applications_container_has_the_labels_and_it_has_all_of_them(self, name):
+    labelled = {tuple(definition.get("labels", {})) for definition in compose_services(name).values()}
+    assert labelled == ({tuple(LABELS)} if name.startswith("application/") else {()})
+
+
+@pytest.mark.parametrize("name", ["application/dockerhub-compose.yml", "application/gitrepo-compose.yml"])
+def test_a_placements_project_service_and_container_share_its_runtime_name(name):
+  text = (TEMPLATES / name).read_text().replace("${SECRETS_BLOCK}", "")
+  document = yaml.safe_load(re.sub(r"\$\{(\w+)\}", lambda m: "sage-0123456789abcdef" if m[1] == "RUNTIME_NAME" else "x", text))
+  assert document["name"] == "sage-0123456789abcdef"
+  assert {service: definition["container_name"] for service, definition in document["services"].items()} == {
+      "sage-0123456789abcdef": "sage-0123456789abcdef"}
 
   def test_the_stack_has_the_services_that_are_capped(self):
     assert set(compose_services("docker-compose.yml")) == set(config.WORKER_STACK_SERVICES)

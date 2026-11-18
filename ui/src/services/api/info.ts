@@ -1,6 +1,9 @@
 import { request } from '@/lib/api'
 import type { Notification } from './notifications'
 import type { SettingsStatus } from './settings'
+import type { WorkerStatus } from './workers'
+import type { ContainerHeadline } from './applications'
+import type { DomainStatus } from './domains'
 
 export interface AppInfo {
   version: string
@@ -11,7 +14,18 @@ export interface AppInfo {
   start_time: string
   state: 'running' | 'paused' | 'restoring' | 'stopping'
   restoring_from: string | null
+  // The latest migration run of this start of the manager, a boot's or a platform restore's, or none.
+  migration: MigrationRunSummary | null
   settings: SettingsStatus | null
+}
+
+// A migration run as the app info carries it: what it was, its overall outcome and how many manual actions it left.
+export interface MigrationRunSummary {
+  run: string
+  trigger: 'boot' | 'restore'
+  release: string
+  outcome: 'migrated' | 'recreated' | 'refused'
+  actions: number
 }
 
 export interface Release {
@@ -25,38 +39,14 @@ export interface Release {
 
 export interface HomeSummary {
   generated_at: string
-  workers_total: number
-  workers_online: number
-  workers_offline: number
-  projects_total: number
-  applications_total: number
-  applications_active: number
-  applications_inactive: number
-  applications_error: number
-  applications_deploying: number
-  applications_stopping: number
-  applications_backup: number
-  applications_restoring: number
-  deployments_last_24h: number
-  containers_total: number
-  containers_active: number
-  containers_inactive: number
-  containers_error: number
-  containers_deploying: number
-  containers_stopping: number
-  containers_backup: number
-  containers_restoring: number
-  domains_total: number
-  domains_active: number
-  domains_inactive: number
-  backups_total: number
-  backups_system: number
-  backups_application: number
-  backups_last_24h: number
-  latest_backup_at: string | null
-  critical_error_count_last_24h: number
-  critical_warning_count_last_24h: number
-  critical_events_last_24h: Notification[]
+  projects: number
+  applications: number
+  workers: Record<WorkerStatus | 'total', number>
+  containers: Record<ContainerHeadline | 'total', number>
+  domains: Record<DomainStatus | 'total', number>
+  deploys: { succeeded: number; failed: number }
+  backups: { platform: number; application: number; since: number; latest_at: string | null }
+  notices: { error: number; warning: number; events: Notification[] }
 }
 
 export const fetchAppInfo = () => request<AppInfo>('GET', '')
@@ -71,3 +61,25 @@ export const fetchRelease = () => request<Release>('GET', '/release')
 export const refreshRelease = () => request<void>('POST', '/release/refresh')
 
 export const fetchHomeSummary = () => request<HomeSummary>('GET', '/summary')
+
+// A line of a migration run's log: what it logged, or a manual action it left (CRITICAL, its command below it).
+export interface MigrationLogLine {
+  ts: string
+  level: string
+  message: string
+}
+
+// A migration run, at a start of Sage (`boot`) or a platform restore's install (`restore`), with the release that ran
+// it, whether a file was refused, how many manual actions it left and its log, the actions last.
+export interface MigrationRun {
+  run: string
+  trigger: 'boot' | 'restore'
+  release: string
+  at: string
+  refused: boolean
+  actions: number
+  lines: MigrationLogLine[]
+}
+
+// The migration history, newest run first.
+export const fetchMigrations = () => request<MigrationRun[]>('GET', '/migrations')

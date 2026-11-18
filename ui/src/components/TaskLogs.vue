@@ -1,37 +1,28 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue'
+import { nextTick, ref, watch } from 'vue'
 import { Card, CardContent } from '@/components/ui/card'
 import { Spinner } from '@/components/ui/spinner'
 import { TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { useFeedList } from '@/lib/feedList'
 import { formatDate, levelClass } from '@/lib/utils'
-import { fetchTaskLogs, type TaskLogLine, type TaskPart } from '@/services/api'
+import { fetchTaskLogs, type TaskLogLine } from '@/services/api'
 
-// Every line of a task, or of one container's part of it, oldest first, followed as they are written. All of a task's
-// lines show which of its `parts` each is from.
-const props = withDefaults(
-  defineProps<{ taskId: string; subTaskId?: string; parts?: TaskPart[] }>(),
-  { subTaskId: '', parts: () => [] }
-)
+// Every line of a task, oldest first, followed as they are written.
+const props = defineProps<{ taskId: string }>()
 
 const viewport = ref<HTMLElement | null>(null)
-
-const showParts = computed(() => !props.subTaskId && props.parts.length > 0)
-const partsById = computed(() => new Map(props.parts.map(part => [part.id, part])))
-
-const partLabel = (id: string) => (id ? (partsById.value.get(id)?.worker ?? id) : '')
 
 const {
   rows: lines,
   loading,
   error,
 } = useFeedList<TaskLogLine>({
-  topic: `task-logs:${props.subTaskId ? `${props.taskId}/${props.subTaskId}` : props.taskId}`,
+  topic: `task-logs:${props.taskId}`,
   order: (a, b) => a.id - b.id,
   newestFirst: false,
   key: line => line.id,
   load: async (_query, newest) => ({
-    rows: (await fetchTaskLogs(props.taskId, props.subTaskId, newest?.id ?? 0)).lines,
+    rows: (await fetchTaskLogs(props.taskId, newest?.id ?? 0)).lines,
   }),
 })
 
@@ -70,7 +61,6 @@ watch(
             <TableHead class="pl-4 text-xs w-40">Timestamp</TableHead>
             <TableHead class="text-xs w-20">Level</TableHead>
             <TableHead class="text-xs w-44">Logger</TableHead>
-            <TableHead v-if="showParts" class="text-xs w-36">Part</TableHead>
             <TableHead class="text-xs">Message</TableHead>
           </TableRow>
         </TableHeader>
@@ -88,13 +78,6 @@ watch(
             >
               {{ line.logger }}
             </TableCell>
-            <TableCell
-              v-if="showParts"
-              class="text-xs font-mono text-muted-foreground truncate"
-              :title="line.sub_task_id"
-            >
-              {{ partLabel(line.sub_task_id) }}
-            </TableCell>
             <TableCell class="text-xs">
               <pre class="font-mono break-all whitespace-pre-wrap">{{ line.message }}</pre>
             </TableCell>
@@ -110,7 +93,6 @@ watch(
               <span>{{ formatDate(line.ts) }}</span>
               <span :class="levelClass(line.level)">{{ line.level }}</span>
               <span class="truncate">{{ line.logger }}</span>
-              <span v-if="showParts && line.sub_task_id">{{ partLabel(line.sub_task_id) }}</span>
             </div>
             <pre class="font-mono break-all whitespace-pre-wrap leading-relaxed">{{
               line.message

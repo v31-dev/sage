@@ -4,7 +4,7 @@ import re
 import pytest
 from fastapi import APIRouter, FastAPI
 
-from utils.logging import NO_ACCESS_LOG, AccessLogFilter, TaskIdFilter, get_log_level, new_task_id, sub_task_id, task_id, unlogged_paths
+from utils.logging import NO_ACCESS_LOG, AccessLogFilter, TaskIdFilter, get_log_level, new_task_id, task_id, unlogged_paths
 
 
 def access_record(path, method="GET"):
@@ -31,7 +31,7 @@ class TestTheAppsUnloggedPaths:
       "/api/projects/demo/applications/web/logs",
       "/api/projects/demo/applications/web/logs?hostname=w1&search=a%20b",
       "/api/requests/",
-      "/api/tasks/abc12345/logs?sub_task_id=def67890",
+      "/api/tasks/abc12345/logs?after_id=42",
       "/api/workers/w1/metrics",
       "/api/workers/w1/metrics?period=1h",
       "/api/socket.io/?EIO=4&transport=polling",
@@ -100,16 +100,6 @@ class TestTaskIdFilter:
       assert record.task_id == "abc12345"
     finally:
       task_id.reset(token)
-
-  def test_a_container_part_shows_its_task_and_its_own_id(self):
-    tokens = task_id.set("abc12345"), sub_task_id.set("def67890")
-    try:
-      record = logging.makeLogRecord({"msg": "x"})
-      TaskIdFilter().filter(record)
-      assert record.task_id == "abc12345/def67890"
-    finally:
-      sub_task_id.reset(tokens[1])
-      task_id.reset(tokens[0])
 
   def test_is_empty_outside_a_task(self):
     record = logging.makeLogRecord({"msg": "x"})

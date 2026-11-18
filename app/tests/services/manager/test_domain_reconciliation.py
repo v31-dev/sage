@@ -1,385 +1,415 @@
-import asyncio
-from concurrent.futures import ThreadPoolExecutor
-from types import SimpleNamespace
-
 import pytest
 
-from services.cloudflare import dns_record_matches
-from services.db import Application, Container, Domain, Worker
-from services.domains import domain_artifact_name, domain_artifact_owner
-from services.manager.domains import DomainsMixin
-from services.manager.workers import WorkersMixin
-from services.updates import Updates, UpdateSource
-from tests.services.manager.test_domains import Cloudflare as LeafCloudflare
-from tests.services.manager.test_domains import Syncing
+import config
+from services.cloudflare import Cloudflare
+from services.db.models import Container, Domain, Worker
+from services.domains import commands
+from services.domains.config import DomainConfig
+from services.domains.decisions import ApplyOutcome, RouteObservation
+from services.domains.state import Domains
+from services.tailscale import Tailscale
+from services.workers.state import Workers
+from tests.services.manager.test_domain_apply import DYNAMIC, HOME, Hosts, Manager, Provider, fingerprint, queued, state
 from utils.executor import active_executor
+from utils.logging import TaskFailed
+
+GONE = "0123456789abcdef"
+
+MANAGER = "https://manager.core.example.test"
 
 
-class Cloudflare(LeafCloudflare):
-  domain = "example.test"
-  tunnel_id = "t0"
+class ListedHosts(Hosts):
+  """The workers as the pass sees them too: their routing files listed by first line, several removed in one command,
+  a listing that fails (`listing_fails`, a hostname) and `while_listing`, run once, as the first listing is taken."""
 
   def __init__(self):
     super().__init__()
-    self.zone = []
-    self.zone_error = None
-    self.tunnel_data = {"sage-example.test-w1": {"id": "t1"}, "sage-example.test-w2": {"id": "t2"}}
+    self.listing_fails, self.while_listing = None, None
 
-  def get_dns_records(self):
-    if self.zone_error:
-      raise self.zone_error
-    return self.zone.copy()
+  async def exec_command(self, hostname, command, timeout=300):
+    if command.startswith("grep -H -m1 "):
+      self.commands.append((hostname, "list"))
+      if self.while_listing:
+        while_listing, self.while_listing = self.while_listing, None
+        while_listing()
+      if hostname == self.listing_fails:
+        raise Exception(f"Error executing command on {hostname}: timed out")
+      return 0, [f"{path}:{content.splitlines()[0]}" for (host, path), content in sorted(self.files.items())
+                 if host == hostname and path.startswith(f"{DYNAMIC}/domain-")]
+    if command.startswith("rm -f ") and " " in command[len("rm -f "):]:
+      self.commands.append((hostname, command))
+      if self.fails and self.fails in command:
+        raise Exception(f"Error executing command on {hostname}: exit code 1")
+      for path in command[len("rm -f "):].split():
+        self.files.pop((hostname, path), None)
+      return 0, []
+    return await super().exec_command(hostname, command, timeout)
 
-  def tunnels(self):
-    return self.tunnel_data.copy()
+  def put(self, hostname, domain_id, fingerprint):
+    self.files[(hostname, f"{DYNAMIC}/domain-{domain_id}.yml")] = f"# sage-domain {domain_id} {fingerprint}\nhttp: {{}}\n"
+
+  def routes(self, hostname):
+    return sorted(path.rsplit("/", 1)[1] for host, path in self.files if host == hostname and "/domain-" in path)
+
+
+class Zone(Provider):
+  """Cloudflare as the pass lists it: the records apply wrote, as proxied CNAMEs, plus `others` as they are, and the
+  account's tunnels by name (`listed`); `listing_fails` names what can't be listed (`zone`, `tunnels`)."""
+
+  def __init__(self):
+    super().__init__()
+    del self.tunnels
+    self.listed, self.others, self.listing_fails = {}, [], ()
 
   def find_tunnel(self, name):
-    return self.tunnel_data.get(name)
+    return self.listed.get(name)
 
+  def get_dns_records(self, name=None):
+    if "zone" in self.listing_fails:
+      raise Exception("zone listing failed")
+    return [{"id": f"{comment}/{host}", "comment": comment, "name": host, "content": content, "type": "CNAME", "proxied": True}
+            for comment, names in self.zone.items() for host, content in names.items()] + [dict(record) for record in self.others]
 
-class Reconciling(Syncing):
-  sync_discovery = DomainsMixin.sync_discovery
-  read_worker_revisions = WorkersMixin.read_worker_revisions
-  write_worker_revision = WorkersMixin.write_worker_revision
+  def tunnels(self):
+    if "tunnels" in self.listing_fails:
+      raise Exception("tunnel listing failed")
+    return dict(self.listed)
 
-  def __init__(self, root, pool):
-    super().__init__(root, pool)
-    self.cloudflare = Cloudflare()
-
-  def reconcile(self, repair=True):
-    asyncio.run(self.sync_discovery(repair=repair))
+  def sync_dns_records(self, records, zone=None, **fields):
+    super().sync_dns_records(records, zone, **fields)
+    self.others = [record for record in self.others if record["comment"] not in records]
 
 
 @pytest.fixture
-def manager(tmp_path, db, thread_connections, register):
-  signals = []
-  register(Updates, SimpleNamespace(changed=lambda source, key=None: signals.append((source, key))))
-  Worker.create(hostname="w1", ip="100.64.0.2", subdomain="red")
-  Worker.create(hostname="w2", ip="100.64.0.3", subdomain="blue")
-  with ThreadPoolExecutor(max_workers=2) as pool:
-    token = active_executor.set(pool)
-    manager = Reconciling(tmp_path, pool)
-    manager.signals = signals
-    yield manager
-    manager.task_queue.stop()
-    active_executor.reset(token)
+def hosts(register):
+  return register(Tailscale, ListedHosts())
 
 
-def applied(manager, application, *, worker="w1", name="shop", type="internal", status="active"):
-  container, _ = Container.get_or_create(application=application, worker=worker, defaults={"status": status})
-  domain = Domain.create(name=name, type=type, port=80, container=container, service="shop")
-  manager.run(domain.id, application.id)
-  if type == "public":
-    manager.cloudflare.zone.append({"name": f"{name}.example.test", "content": f"t{worker[-1]}.cfargotunnel.com",
-                                    "comment": f"sage-domain-{domain.id}", "type": "CNAME", "proxied": True})
-  return Domain.get_by_id(domain.id)
+@pytest.fixture
+def provider(register):
+  provider = register(Cloudflare, Zone())
+  provider.listed = {"sage-example.test-w1": {"id": "t1"}, "sage-example.test-w2": {"id": "t2"}}
+  return provider
 
 
-def repairs(manager):
-  return [task["params"]["domain_id"] for task in manager.task_snapshot()["queued"] if task["name"] == "sync_domain"]
+@pytest.fixture
+def manager(hosts, provider, monkeypatch):
+  monkeypatch.setattr(config, "WORKER_HOME_DIR", HOME)
+  monkeypatch.setenv("DOMAIN", "example.test")
+  manager = Manager()
+  token = active_executor.set(manager.pool)
+  yield manager
+  active_executor.reset(token)
+  manager.pool.shutdown(wait=False, cancel_futures=True)
 
 
-class TestRecordRepair:
-  def test_an_exact_missing_file_repairs_only_its_record(self, manager, application):
-    missing = applied(manager, application)
-    other = applied(manager, application, name="other")
-    (manager.tailscale.home("w1") / f"traefik/dynamic/domain-{missing.id}.yml").unlink()
-    manager.signals.clear()
+@pytest.fixture
+def workers(db, hosts):
+  for hostname, subdomain in (("w1", "red"), ("w2", "blue")):
+    Worker.create(hostname=hostname, subdomain=subdomain)
+    hosts.found[hostname] = "reachable"
+    Workers().record_setup(hostname, "succeeded", "100.64.0.2")
 
-    manager.reconcile()
 
-    assert repairs(manager) == [missing.id]
-    assert Domain.get_by_id(missing.id).status == "pending"
-    assert Domain.get_by_id(other.id).status == "synced"
-    assert (UpdateSource.DOMAINS, None) in manager.signals
-    assert (UpdateSource.APPLICATION, "demo/web") in manager.signals
-    discovery = manager.tailscale.files("w1")["_discovery-internal-shop.yml"]
-    assert '"other.red.int.example.test";online' in discovery
-    assert '"shop.red.int.example.test";online=?0' in discovery
+@pytest.fixture
+def container(application, workers, manager):
+  container = Container.create(application=application, worker="w1")
+  manager.routable[container.id], manager.ready["w1"] = True, True
+  return container
 
-  @pytest.mark.parametrize("status", ["pending", "error"])
-  def test_unfinished_work_is_retried_without_losing_its_last_success(self, manager, application, status):
-    domain = applied(manager, application)
-    Domain.update(status=status, sync_error="DNS: unavailable").where(Domain.id == domain.id).execute()
 
-    manager.reconcile()
+@pytest.fixture
+def public(container):
+  return Domain.create(name="shop", type="public", port=8080, container=container)
 
-    stored = Domain.get_by_id(domain.id)
-    assert repairs(manager) == [domain.id]
-    assert (stored.status, stored.sync_error, stored.synced_hash, stored.synced_at) == (
-        "pending", None, domain.synced_hash, domain.synced_at)
 
-  def test_a_stale_success_fingerprint_retries_the_record(self, manager, application):
-    domain = applied(manager, application)
-    Domain.update(port=9000).where(Domain.id == domain.id).execute()
+@pytest.fixture
+def internal(container):
+  return Domain.create(name="api", type="internal", port=80, container=container, namespace_worker="w1")
 
-    manager.reconcile()
 
-    assert repairs(manager) == [domain.id]
-    assert Domain.get_by_id(domain.id).synced_hash == domain.synced_hash
+def conforming(hosts, provider, domain):
+  """Its route and DNS as its apply would leave them, as a restarted Manager finds them."""
+  snapshot = DomainConfig.capture(Domain.get_by_id(domain.id), "example.test")
+  hosts.files[("w1", f"{DYNAMIC}/{snapshot.filename}")] = snapshot.route()
+  provider.zone[snapshot.dns_comment] = snapshot.dns_records({"id": "t1"})
 
-  @pytest.mark.parametrize("change", ["missing", "content", "name", "type", "proxied", "extra"])
-  def test_dns_drift_invalidates_the_owned_record(self, manager, application, change):
-    domain = applied(manager, application, type="public")
-    if change == "missing":
-      manager.cloudflare.zone.clear()
-    elif change == "extra":
-      manager.cloudflare.zone.append({**manager.cloudflare.zone[0], "name": "extra.example.test"})
+
+def applies(manager):
+  return sorted(params["domain_id"] for key, _, params, _, _ in queued(manager) if key[0] == "apply_domain")
+
+
+def writes(hosts):
+  return [command for command in hosts.commands if command[1] != "list"]
+
+
+class TestRequest:
+  def test_the_pass_holds_every_domain_quietly(self, manager):
+    manager.request_domain_reconciliation()
+    assert queued(manager) == [(("reconcile_domains",), ["domain"], {}, {}, True)]
+
+  async def test_a_request_while_one_runs_gets_a_pass_after_it(self, manager, public, hosts):
+    seen = []
+
+    def again():
+      manager.request_domain_reconciliation()
+      manager.task_queue.dispatch_tick()
+      seen.append(tuple(len(tasks) for tasks in manager.task_queue.snapshot().values()))
+
+    hosts.while_listing = again
+    manager.request_domain_reconciliation()
+    await manager.run()
+    assert seen == [(1, 1)]
+    assert [command for command in hosts.commands if command == ("w1", "list")] == [("w1", "list")] * 2
+
+  async def test_an_apply_requested_while_it_runs_waits_for_it(self, manager, public, hosts):
+    seen = []
+
+    def apply():
+      manager.request_domain_applies([public.id])
+      manager.task_queue.dispatch_tick()
+      seen.append([task["name"] for task in manager.task_queue.snapshot()["running"]])
+
+    hosts.while_listing = apply
+    manager.request_domain_reconciliation()
+    await manager.run()
+    assert seen == [["reconcile_domains"]]
+    assert hosts.route("w1", public) == fingerprint(public)
+
+
+class TestEdit:
+  async def test_a_domain_moved_to_another_worker_is_routed_there_and_its_old_route_withdrawn(
+          self, manager, public, hosts, provider, application):
+    conforming(hosts, provider, public)
+    elsewhere = Container.create(application=application, worker="w2")
+    manager.routable[elsewhere.id], manager.ready["w2"] = True, True
+    commands.patch_domain(public.id, {"container": elsewhere.id})
+    manager.domain_edited(public.id)
+    await manager.run()
+    assert (hosts.routes("w1"), hosts.routes("w2")) == ([], [f"domain-{public.id}.yml"])
+    assert state(manager, public).view.status == "synced"
+
+  async def test_an_edit_in_place_rewrites_its_route_and_removes_nothing(self, manager, public, hosts, provider):
+    conforming(hosts, provider, public)
+    commands.patch_domain(public.id, {"port": 9090})
+    manager.domain_edited(public.id)
+    await manager.run()
+    assert hosts.route("w1", public) == fingerprint(public)
+    assert [command for command in writes(hosts) if "rm -f" in command[1]] == []
+
+
+class TestObservation:
+  async def test_after_a_restart_conforming_artifacts_show_it_synced_and_nothing_is_applied(
+          self, manager, public, internal, hosts, provider):
+    for domain in (public, internal):
+      conforming(hosts, provider, domain)
+    await manager.reconcile_domains()
+    assert {domain.id: state(manager, domain).view.status for domain in (public, internal)} == {
+        public.id: "synced", internal.id: "synced"}
+    assert (applies(manager), writes(hosts), provider.calls) == ([], [], [])
+    assert Domains().route(public.id, "w1") == RouteObservation("present", fingerprint(public))
+    assert Domains().dns_conforms(public.id, fingerprint(public)) is True
+
+  @pytest.mark.parametrize("route", ["missing", "older", "not its own"])
+  async def test_a_route_that_is_not_the_current_one_is_applied_again(self, manager, public, hosts, provider, route):
+    conforming(hosts, provider, public)
+    if route == "missing":
+      hosts.files.clear()
+    elif route == "older":
+      hosts.put("w1", public.id, "0" * 64)
     else:
-      manager.cloudflare.zone[0][change] = {"content": "wrong", "name": "wrong.example.test", "type": "A", "proxied": False}[change]
+      hosts.files[("w1", f"{DYNAMIC}/domain-{public.id}.yml")] = f"# sage-domain {GONE} {fingerprint(public)}\n"
+    await manager.reconcile_domains()
+    seen = {"missing": RouteObservation("absent"), "older": RouteObservation("present", "0" * 64),
+            "not its own": RouteObservation("present", None)}[route]
+    assert (Domains().route(public.id, "w1"), applies(manager)) == (seen, [public.id])
+    await manager.run()
+    assert hosts.route("w1", public) == fingerprint(public) and state(manager, public).view.status == "synced"
 
-    manager.reconcile()
+  async def test_a_stopped_containers_route_is_seen_and_its_apply_removes_it(self, manager, public, hosts, provider):
+    conforming(hosts, provider, public)
+    manager.routable[public.container_id] = False
+    await manager.reconcile_domains()
+    assert hosts.route("w1", public) == fingerprint(public) and applies(manager) == [public.id]
+    await manager.run()
+    assert hosts.route("w1", public) is None and state(manager, public).view.status == "synced"
 
-    assert repairs(manager) == [domain.id]
-    assert Domain.get_by_id(domain.id).status == "pending"
-    assert '"shop.example.test";online=?0' in manager.tailscale.files("w1")["_discovery-public-shop.yml"]
+  async def test_while_its_container_is_not_known_its_route_is_neither_judged_nor_applied(self, manager, public, hosts, provider):
+    conforming(hosts, provider, public)
+    hosts.put("w1", public.id, "0" * 64)
+    manager.routable[public.container_id] = None
+    await manager.reconcile_domains()
+    assert (state(manager, public).view.reason, applies(manager), writes(hosts)) == ("eligibility_unknown", [], [])
 
-  def test_the_matching_dns_configuration_needs_no_record_repair(self, manager, application):
-    domain = applied(manager, application, type="public")
+  @pytest.mark.parametrize("record", [
+      {"name": "shop.example.test", "content": "t2.cfargotunnel.com", "type": "CNAME", "proxied": True},
+      {"name": "shop.example.test", "content": "t1.cfargotunnel.com", "type": "CNAME", "proxied": False},
+      {"name": "shop.example.test", "content": "100.64.0.2", "type": "A", "proxied": False},
+      {"name": "old.example.test", "content": "t1.cfargotunnel.com", "type": "CNAME", "proxied": True},
+      None])
+  async def test_dns_records_that_are_not_what_its_configuration_gives_are_applied_again(
+          self, manager, public, hosts, provider, record):
+    conforming(hosts, provider, public)
+    comment = f"sage-domain-{public.id}"
+    provider.zone.pop(comment)
+    if record is not None:
+      provider.others.append({"id": "r1", "comment": comment, **record})
+    await manager.reconcile_domains()
+    assert Domains().dns_conforms(public.id, fingerprint(public)) is False and applies(manager) == [public.id]
+    await manager.run()
+    assert provider.get_dns_records() == [{"id": f"{comment}/shop.example.test", "comment": comment, "name": "shop.example.test",
+                                           "content": "t1.cfargotunnel.com", "type": "CNAME", "proxied": True}]
 
-    manager.reconcile()
+  async def test_a_public_name_whose_worker_has_no_tunnel_does_not_conform(self, manager, public, hosts, provider):
+    conforming(hosts, provider, public)
+    provider.listed = {}
+    await manager.reconcile_domains()
+    assert Domains().dns_conforms(public.id, fingerprint(public)) is False and applies(manager) == [public.id]
 
-    assert repairs(manager) == []
-    assert Domain.get_by_id(domain.id).status == "synced"
+  async def test_an_unlinked_public_domain_is_applied_once_since_no_route_of_it_can_be_seen(self, manager, public, hosts, provider):
+    Domain.update(container=None).where(Domain.id == public.id).execute()
+    provider.zone[f"sage-domain-{public.id}"] = {}
+    await manager.reconcile_domains()
+    assert applies(manager) == [public.id]
+    await manager.run()
+    await manager.reconcile_domains()
+    assert (state(manager, public).view.status, applies(manager)) == ("synced", [])
 
-  @pytest.mark.parametrize("owner", ["container", "application"])
-  def test_transient_busy_status_does_not_invalidate_proof_or_reap_a_possible_working_copy(self, manager, application, owner):
-    domain = applied(manager, application)
-    manager.tailscale.place("w2", f"domain-{domain.id}.yml")
-    if owner == "container":
-      Container.update(status="deploying").where(Container.id == domain.container_id).execute()
-    else:
-      Application.update(status="restoring").where(Application.id == application.id).execute()
+  async def test_a_failed_apply_is_tried_again_by_the_pass(self, manager, public, hosts, provider):
+    conforming(hosts, provider, public)
+    hosts.found["w1"] = "unreachable"
+    Domains().record_outcome(public, ApplyOutcome(fingerprint(public), False, "dns", "rate limited"))
+    assert state(manager, public).view.status == "error"
+    await manager.reconcile_domains()
+    assert applies(manager) == [public.id]
 
-    manager.reconcile()
+  async def test_an_apply_queued_already_is_not_requested_again(self, manager, public, hosts, provider):
+    manager.request_domain_applies([public.id])
+    [before] = manager.task_queue.snapshot()["queued"]
+    await manager.reconcile_domains()
+    assert [task["task_id"] for task in manager.task_queue.snapshot()["queued"]] == [before["task_id"]]
 
-    assert repairs(manager) == []
-    assert Domain.get_by_id(domain.id).status == "synced"
-    assert f"domain-{domain.id}.yml" in manager.tailscale.files("w2")
+  @pytest.mark.parametrize("found, setup", [("unreachable", "succeeded"), ("unknown", "succeeded"), ("reachable", None),
+                                            ("reachable", "refused"), ("reachable", "failed")])
+  async def test_a_worker_not_reachable_and_set_up_is_not_looked_at(self, manager, public, hosts, provider, found, setup):
+    conforming(hosts, provider, public)
+    hosts.put("w1", GONE, "0" * 64)
+    Domains().record_route(public, "w1", RouteObservation("present", fingerprint(public)))
+    hosts.found["w1"] = found
+    Workers().record_setup("w1", setup)
+    await manager.reconcile_domains()
+    assert [command for command in hosts.commands if command[0] == "w1"] == []
+    assert hosts.routes("w1") == sorted([f"domain-{public.id}.yml", f"domain-{GONE}.yml"])
+    assert Domains().route(public.id, "w1") == RouteObservation("unreachable")
 
-  def test_a_stopped_target_with_a_route_requests_its_record_operation(self, manager, application):
-    domain = applied(manager, application, status="inactive")
-    manager.tailscale.place("w1", f"domain-{domain.id}.yml")
+  async def test_a_failed_listing_fails_the_pass_after_the_rest_of_it(self, manager, public, hosts, provider, application, notices):
+    moved = Domain.create(name="moved", type="public", port=80,
+                          container=Container.create(application=application, worker="w2"))
+    hosts.put("w2", GONE, "0" * 64)
+    hosts.listing_fails = "w1"
+    with pytest.raises(TaskFailed):
+      await manager.reconcile_domains()
+    assert Domains().route(public.id, "w1") == RouteObservation("unreachable")
+    [(level, content, link)] = notices()
+    assert (level, content.startswith("The domains could not all be checked: the routing files on w1 could not be listed"), link) == (
+        "error", True, f"{MANAGER}/domains")
+    assert (hosts.routes("w2"), Domains().route(moved.id, "w2")) == ([], RouteObservation("absent"))
+    assert applies(manager) == sorted([public.id, moved.id])
 
-    manager.reconcile()
+  @pytest.mark.parametrize("failing", ["zone", "tunnels"])
+  async def test_without_the_zone_or_the_tunnels_dns_is_not_judged_and_the_pass_fails(
+          self, manager, public, hosts, provider, failing):
+    conforming(hosts, provider, public)
+    Domains().record_dns(public, fingerprint(public), True)
+    provider.zone[f"sage-domain-{public.id}"] = {}
+    provider.listing_fails = (failing,)
+    with pytest.raises(TaskFailed):
+      await manager.reconcile_domains()
+    assert Domains().dns_conforms(public.id, fingerprint(public)) is True
+    assert (state(manager, public).view.status, applies(manager)) == ("synced", [])
 
-    assert repairs(manager) == [domain.id]
-    assert f"domain-{domain.id}.yml" in manager.tailscale.files("w1")
+  async def test_each_pass_republishes_discovery_failed_ones_included(self, manager, public, hosts, provider):
+    await manager.reconcile_domains()
+    hosts.listing_fails = "w1"
+    with pytest.raises(TaskFailed):
+      await manager.reconcile_domains()
+    assert manager.discovered == 2
+
+  async def test_the_facts_held_of_domains_gone_are_dropped(self, manager, public, hosts, provider):
+    gone = Domain.create(name="gone", type="public", port=80, container=public.container)
+    for domain in (public, gone):
+      Domains().record_outcome(domain, ApplyOutcome("f1", True))
+    Domain.delete().where(Domain.id == gone.id).execute()
+    await manager.reconcile_domains()
+    assert (Domains().outcome(gone.id), Domains().outcome(public.id)) == (None, ApplyOutcome("f1", True))
 
 
 class TestCleanup:
-  def test_only_exact_orphan_file_identities_are_reaped(self, manager):
-    for name in ["domain-42.yml", "config.yml", "certs.yml", "domain-042.yml", "their-domain-42.yml"]:
-      manager.tailscale.place("w1", name)
+  async def test_routes_of_domains_gone_or_bound_to_another_worker_are_removed_in_one_command(
+          self, manager, public, hosts, provider, application):
+    moved = Domain.create(name="moved", type="public", port=80,
+                          container=Container.create(application=application, worker="w2"))
+    for hostname, domain_id in (("w1", public.id), ("w1", moved.id), ("w1", GONE), ("w2", moved.id)):
+      hosts.put(hostname, domain_id, "0" * 64)
+    await manager.reconcile_domains()
+    assert (hosts.routes("w1"), hosts.routes("w2")) == ([f"domain-{public.id}.yml"], [f"domain-{moved.id}.yml"])
+    assert writes(hosts) == [("w1", "rm -f " + " ".join(f"{DYNAMIC}/domain-{domain_id}.yml" for domain_id in sorted((moved.id, GONE))))]
 
-    manager.reconcile()
+  async def test_an_unlinked_public_domains_route_goes_and_an_unlinked_internal_one_stays_for_its_apply(
+          self, manager, public, internal, hosts, provider):
+    Domain.update(container=None).where(Domain.id.in_([public.id, internal.id])).execute()
+    for domain in (public, internal):
+      hosts.put("w1", domain.id, "0" * 64)
+    await manager.reconcile_domains()
+    assert hosts.routes("w1") == [f"domain-{internal.id}.yml"]
+    assert applies(manager) == sorted([public.id, internal.id])
 
-    assert set(manager.tailscale.files("w1")) == {"config.yml", "certs.yml", "domain-042.yml", "their-domain-42.yml"}
+  async def test_a_route_is_never_removed_for_its_containers_state(self, manager, public, hosts, provider):
+    conforming(hosts, provider, public)
+    manager.routable[public.container_id] = False
+    await manager.reconcile_domains()
+    assert writes(hosts) == [] and hosts.routes("w1") == [f"domain-{public.id}.yml"]
 
-  def test_an_owner_created_during_inventory_is_visible_to_orphan_cleanup(self, manager, application, monkeypatch):
-    manager.tailscale.place("w1", "domain-42.yml")
-    original = manager.tailscale.exec_command
-    created = False
+  async def test_a_domain_created_while_the_workers_are_listed_is_not_taken_for_one_gone(self, manager, public, hosts, provider):
+    created = []
 
-    async def listing(hostname, command, **kwargs):
-      nonlocal created
-      result = await original(hostname, command, **kwargs)
-      if not created and "-printf" in command:
-        created = True
-        container = Container.create(application=application, worker="w1", status="active")
-        Domain.create(id=42, name="shop", type="internal", port=80, container=container)
-      return result
-    monkeypatch.setattr(manager.tailscale, "exec_command", listing)
+    def create():
+      created.append(Domain.create(name="new", type="public", port=80, container=public.container))
+      hosts.put("w1", created[0].id, "0" * 64)
 
-    manager.reconcile(repair=False)
+    hosts.while_listing = create
+    await manager.reconcile_domains()
+    assert f"domain-{created[0].id}.yml" in hosts.routes("w1")
 
-    assert Domain.get_by_id(42).status == "pending"
-    assert "domain-42.yml" in manager.tailscale.files("w1")
+  async def test_a_removal_that_fails_on_one_worker_fails_the_pass_and_the_others_go_on(self, manager, public, hosts, provider):
+    for hostname in ("w1", "w2"):
+      hosts.put(hostname, GONE, "0" * 64)
+      hosts.put(hostname, "fedcba9876543210", "0" * 64)
+    original = hosts.exec_command
 
-  @pytest.mark.parametrize("status", ["pending", "error"])
-  def test_a_failed_or_pending_move_keeps_the_previous_workers_copy(self, manager, application, status):
-    domain = applied(manager, application)
-    target = Container.create(application=application, worker="w2", status="active")
-    Domain.update(container=target, worker="w2", status=status).where(Domain.id == domain.id).execute()
+    async def exec_command(hostname, command, timeout=300):
+      if hostname == "w1" and command.startswith("rm -f "):
+        raise Exception("Error executing command on w1: exit code 1")
+      return await original(hostname, command, timeout)
 
-    manager.reconcile()
+    hosts.exec_command = exec_command
+    with pytest.raises(TaskFailed):
+      await manager.reconcile_domains()
+    assert (len(hosts.routes("w1")), hosts.routes("w2")) == (2, [])
 
-    assert repairs(manager) == [domain.id]
-    assert f"domain-{domain.id}.yml" in manager.tailscale.files("w1")
+  async def test_the_dns_records_of_domains_gone_are_removed_and_no_others(self, manager, public, hosts, provider):
+    conforming(hosts, provider, public)
+    provider.zone[f"sage-domain-{GONE}"] = {"gone.example.test": "t1.cfargotunnel.com"}
+    provider.others = [{"id": "w", "comment": "sage-worker-w1", "name": "*.red.int.example.test", "content": "100.64.0.2",
+                        "type": "A", "proxied": False},
+                       {"id": "u", "comment": None, "name": "www.example.test", "content": "example.org", "type": "CNAME",
+                        "proxied": True}]
+    await manager.reconcile_domains()
+    assert provider.calls == [({f"sage-domain-{GONE}": {}}, {})]
+    assert (provider.zone[f"sage-domain-{GONE}"], len(provider.others)) == ({}, 2)
 
-  def test_a_missing_replacement_keeps_the_old_copy_until_record_repair(self, manager, application):
-    domain = applied(manager, application, worker="w2")
-    (manager.tailscale.home("w2") / f"traefik/dynamic/domain-{domain.id}.yml").unlink()
-    manager.tailscale.place("w1", f"domain-{domain.id}.yml")
-
-    manager.reconcile()
-
-    assert repairs(manager) == [domain.id]
-    assert f"domain-{domain.id}.yml" in manager.tailscale.files("w1")
-
-  def test_an_offline_former_workers_artifact_is_reaped_when_it_returns(self, manager, application):
-    domain = applied(manager, application)
-    target = Container.create(application=application, worker="w2", status="active")
-    Domain.update(container=target, worker="w2", status="pending").where(Domain.id == domain.id).execute()
-    manager.online.remove("w1")
-    manager.run(domain.id, application.id)
-    manager.reconcile(repair=False)
-    assert f"domain-{domain.id}.yml" in manager.tailscale.files("w1")
-    assert Domain.get_by_id(domain.id).status == "synced"
-
-    manager.online.add("w1")
-    manager.reconcile()
-
-    assert f"domain-{domain.id}.yml" not in manager.tailscale.files("w1")
-    assert f"domain-{domain.id}.yml" in manager.tailscale.files("w2")
-    assert repairs(manager) == []
-
-  def test_a_synced_unlinked_record_has_no_files_on_returning_workers(self, manager, application):
-    domain = applied(manager, application)
-    manager.online.remove("w1")
-    Domain.update(container=None, status="pending").where(Domain.id == domain.id).execute()
-    manager.run(domain.id, None)
-    manager.online.add("w1")
-
-    manager.reconcile()
-
-    assert Domain.get_by_id(domain.id).status == "synced"
-    assert f"domain-{domain.id}.yml" not in manager.tailscale.files("w1")
-    assert repairs(manager) == []
-
-
-class TestDiscovery:
-  def test_matching_files_and_stamp_are_not_rewritten(self, manager, application):
-    applied(manager, application)
-    manager.reconcile()
-    paths = [path for path in manager.tailscale.root.rglob("*") if path.is_file()]
-    before = {path: path.stat().st_mtime_ns for path in paths}
-
-    manager.reconcile()
-
-    assert {path: path.stat().st_mtime_ns for path in paths} == before
-    assert repairs(manager) == []
-
-  def test_a_matching_stamp_cannot_hide_a_missing_discovery_file(self, manager, application):
-    applied(manager, application)
-    manager.reconcile()
-    path = manager.tailscale.home("w1") / "traefik/dynamic/_discovery-internal-shop.yml"
-    path.unlink()
-
-    manager.reconcile()
-
-    assert "shop.red.int.example.test" in path.read_text()
-
-  def test_removed_members_are_rewritten_and_obsolete_service_files_are_removed(self, manager, application):
-    domain = applied(manager, application)
-    manager.reconcile()
-    Domain.update(service="new").where(Domain.id == domain.id).execute()
-
-    manager.reconcile()
-
-    files = manager.tailscale.files("w1")
-    assert "_discovery-internal-shop.yml" not in files
-    assert "shop.red.int.example.test" in files["_discovery-internal-new.yml"]
-
-  def test_one_workers_failed_discovery_write_does_not_poison_domain_proof_or_other_workers(self, manager, application, monkeypatch):
-    domain = applied(manager, application)
-    original = manager.tailscale.sync_file
-
-    async def write(hostname, source, destination, *args, **kwargs):
-      if hostname == "w1" and "_discovery-" in destination:
-        raise OSError("unavailable")
-      return await original(hostname, source, destination, *args, **kwargs)
-    monkeypatch.setattr(manager.tailscale, "sync_file", write)
-
-    with pytest.raises(RuntimeError, match="w1 cleanup/discovery: unavailable"):
-      manager.reconcile()
-
-    stored = Domain.get_by_id(domain.id)
-    assert (stored.status, stored.synced_hash, stored.synced_at) == ("synced", domain.synced_hash, domain.synced_at)
-    assert "_discovery-internal-shop.yml" in manager.tailscale.files("w2")
-    assert not (manager.tailscale.home("w1") / "revisions/discovery").exists()
-
-  def test_an_unknown_file_inventory_is_not_misread_as_missing_artifacts(self, manager, application, monkeypatch):
-    first = applied(manager, application)
-    second = applied(manager, application, worker="w2")
-    (manager.tailscale.home("w2") / f"traefik/dynamic/domain-{second.id}.yml").unlink()
-    original = manager.tailscale.exec_command
-
-    async def listing(hostname, command, **kwargs):
-      if hostname == "w1" and "-printf" in command:
-        raise OSError("unavailable")
-      return await original(hostname, command, **kwargs)
-    monkeypatch.setattr(manager.tailscale, "exec_command", listing)
-
-    with pytest.raises(RuntimeError, match="w1 files: unavailable"):
-      manager.reconcile()
-
-    assert repairs(manager) == [second.id]
-    assert Domain.get_by_id(first.id).status == "synced"
-
-  def test_a_failed_dns_inventory_still_allows_local_orphan_cleanup(self, manager):
-    manager.tailscale.place("w1", "domain-42.yml")
-    manager.cloudflare.zone_error = OSError("unavailable")
-
-    with pytest.raises(RuntimeError, match="DNS inventory: unavailable"):
-      manager.reconcile()
-
-    assert manager.tailscale.files("w1") == {}
-
-
-class TestParentRequests:
-  @pytest.mark.parametrize("full_first", [True, False])
-  def test_a_child_followup_cannot_displace_a_full_repair_request(self, manager, full_first):
-    for repair in [full_first, not full_first]:
-      manager.request_discovery_sync(repair=repair)
-
-    (task,) = manager.task_snapshot()["queued"]
-    assert task["name"] == "sync_discovery" and task["params"] == {"repair": True}
-
-  @pytest.mark.parametrize("failure", ["DNS", "offline"])
-  def test_a_failed_or_offline_child_does_not_form_an_immediate_retry_loop(self, manager, application, failure):
-    container = Container.create(application=application, worker="w1", status="active")
-    domain = Domain.create(name="shop", type="internal", port=80, container=container, service="shop")
-    if failure == "DNS":
-      manager.cloudflare.failure = OSError("unavailable")
-    else:
-      manager.online.remove("w1")
-    manager.request_discovery_sync()
-
-    async def drain():
-      for _ in range(1000):
-        if not manager.task_snapshot()["queued"] and not manager.task_snapshot()["running"]:
-          return
-        manager.dispatch_tick()
-        await asyncio.sleep(0.001)
-      pytest.fail("Domain work did not drain")
-    asyncio.run(drain())
-
-    assert Domain.get_by_id(domain.id).status == ("error" if failure == "DNS" else "pending")
-    assert not manager.task_snapshot()["queued"]
-
-
-@pytest.mark.parametrize("actual, desired, matches", [
-    ({"content": "target", "proxied": True}, {"content": "target", "proxied": True}, True),
-    ({"content": "target", "proxied": False}, {"content": "target", "proxied": True}, False),
-    ({"content": "target"}, {"content": "target", "proxied": True}, False),
-    ({"content": "target", "other": 1}, {"content": "target"}, True),
-])
-def test_dns_matching_checks_requested_fields_only(actual, desired, matches):
-  assert dns_record_matches(actual, desired) is matches
-
-
-@pytest.mark.parametrize("kind, value, owner", [
-    ("file", "domain-42.yml", 42), ("dns", "sage-domain-42", 42),
-    ("file", "domain-042.yml", None), ("dns", "sage-domain-042", None),
-    ("file", "domain-0.yml", None), ("dns", "sage-domain--1", None),
-    ("file", "their-domain-42.yml", None), ("dns", "SAGE-DOMAIN-42", None),
-    ("file", "certs.yml", None), ("dns", "sage-worker-w1", None),
-    ("file", "sage-domain-42", None), ("dns", "domain-42.yml", None),
-    ("file", "domain-42.yml.old", None), ("dns", "sage-domain-42-other", None),
-    ("file", "domain-42.yml\n", None), ("dns", "sage-domain-42\n", None),
-])
-def test_artifact_identity_names_only_its_exact_record_owner(kind, value, owner):
-  assert domain_artifact_owner(kind, value) == owner
-  if owner is not None:
-    assert domain_artifact_name(kind, owner) == value
+  async def test_a_failed_dns_removal_fails_the_pass(self, manager, public, hosts, provider):
+    provider.zone[f"sage-domain-{GONE}"] = {"gone.example.test": "t1.cfargotunnel.com"}
+    provider.fails = "rate limited"
+    with pytest.raises(TaskFailed):
+      await manager.reconcile_domains()

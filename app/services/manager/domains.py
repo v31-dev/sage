@@ -1,306 +1,243 @@
+"""Each Domain's apply, which brings its routing file and DNS records in line with its configuration, and the pass
+over every Domain's artifacts, which sees what they are, removes those left behind and requests the applies they call
+for; the requests that queue them, and each Domain's state, with what tells its pages that it changed."""
 import asyncio
-import json
 import logging
-import shlex
+from datetime import datetime
 
 import config
-from services.cloudflare import dns_record_matches
-from services.db import APPLICATION_BUSY_STATUSES, Application, Container, Domain, db
-from services.domains import ROUTING_TEMPLATES, DomainConfig, domain_artifact_owner, domains_changed
-from services.updates import Fact, Updates, UpdateSource
-from utils.common import get_env, utcnow
+from services.cloudflare import Cloudflare, dns_record_matches
+from services.containers.state import container_reference
+from services.db.models import Application, Container, Domain, Project, Worker
+from services.domains.config import (DomainConfig, domain_artifact_name, domain_artifact_owner, domain_scope, host_scope, parse_route_listing,
+                                     route_scope, routes_command)
+from services.domains.decisions import ApplyOutcome, RouteObservation, route_goal
+from services.domains.state import Domains, DomainState, domain_payload, domain_state
+from services.domains.updates import domain_changed
+from services.notification import Notifications
+from services.tailscale import Tailscale
+from services.updates import Fact
+from services.workers.state import is_workable
+from utils.common import get_env
 from utils.executor import run_in_executor_with_context
+from utils.logging import TaskFailed
 from utils.queue import OnConflict
-
-from ._common import DISCOVERY_TEMPLATES, DOMAIN_ROUTING_TEMPLATES, app_dir, content_hash
-from .application import application_changed
 
 logger = logging.getLogger(__name__)
 
-
-def domain_changed(domain: Domain, previous_container=None):
-  domains_changed()
-  for application in {container.application for container in (domain.container, previous_container) if container}:
-    application_changed(application)
-  for hostname in {container.worker_id for container in (domain.container, previous_container) if container}:
-    Updates().changed(UpdateSource.WORKER_CONTAINERS, hostname)
+# What a notice calls each part of a Domain's apply.
+APPLY_PARTS = {"route": "its route", "dns": "its DNS records"}
 
 
-def save_domain(domain: Domain):
-  if domain.dirty_fields:
-    domain.save()
-    domain_changed(domain)
+def capture(domain: Domain) -> DomainConfig:
+  return DomainConfig.capture(domain, get_env("DOMAIN"))
 
 
 class DomainsMixin:
-  def domain_config(self, domain: Domain) -> DomainConfig:
-    return DomainConfig.capture(domain, get_env("DOMAIN"), DOMAIN_ROUTING_TEMPLATES)
+  def domain_states(self, domains) -> dict[str, DomainState]:
+    """The state of each of `domains` now, by id, their containers' and workers' states worked out once."""
+    configs = {domain.id: capture(domain) for domain in domains}
+    containers = self.container_states(Container.select().where(
+        Container.id.in_({snapshot.container_id for snapshot in configs.values()} - {None})))
+    workers = self.worker_states(list({snapshot.worker for snapshot in configs.values()} - {None}))
+    applying = self._applying_domains()
+    return {domain_id: domain_state(snapshot, containers[snapshot.container_id].routable if snapshot.container_id else None,
+                                    workers[snapshot.worker].view.ready if snapshot.worker else None, applying.get(domain_id))
+            for domain_id, snapshot in configs.items()}
 
-  def domain_tasks_busy(self) -> frozenset:
-    snapshot = self.task_snapshot()
-    return frozenset((task["params"]["domain_id"], task["params"]["application_id"])
-                     for task in (*snapshot["running"], *snapshot["queued"]) if task["name"] == "sync_domain")
+  def domain_payloads(self, domains) -> list[dict]:
+    """The payload of each of `domains`, in their order."""
+    domains = list(domains)
+    states = self.domain_states(domains)
+    return [domain_payload(domain, states[domain.id], get_env("DOMAIN")) for domain in domains]
+
+  def domains_page(self) -> dict:
+    """Every domain's payload, by type and name, and every container one can be linked to, by application and worker,
+    with its state."""
+    containers = list(Container.select(Container, Application, Project, Worker).join(Application).join(Project)
+                      .switch(Container).join(Worker).order_by(Project.name, Application.name, Container.worker))
+    states = self.container_states(containers)
+    return {"domains": self.domain_payloads(Domain.select().order_by(Domain.type, Domain.name)),
+            "containers": [container_reference(container, states[container.id]) for container in containers]}
 
   def domains_queue_facts(self) -> list[Fact]:
+    """The applies queued or running: a domain whose apply is queued, starts or ends is shown again."""
     previous = frozenset()
 
     def changed(current):
       nonlocal previous
       affected = current ^ previous
-      applications = {application for _, application in affected if application is not None}
       previous = current
-      for application in Application.select().where(Application.id.in_(applications)):
-        application_changed(application)
-      hostnames = {container.worker_id for container in Container.select(Container.worker).join(Domain).where(
-          Domain.id.in_({domain_id for domain_id, _ in affected}))}
-      for hostname in hostnames:
-        Updates().changed(UpdateSource.WORKER_CONTAINERS, hostname)
+      for domain in Domain.select().where(Domain.id.in_(affected)):
+        domain_changed(domain)
 
-    return [Fact(self.domain_tasks_busy, UpdateSource.DOMAINS, on_change=changed)]
+    return [Fact(lambda: frozenset(self._applying_domains()), on_change=changed)]
 
-  def domain_status(self, domain: Domain) -> str:
-    return "syncing" if self.has_task(self.sync_domain, {"domain_id": domain.id}) else domain.status
+  def request_domain_applies(self, domain_ids):
+    """Queues the apply of each of the domains as it is configured now, holding the domain, its full name, and its
+    route on the worker it goes to. A running apply is not interrupted: the latest request waits for it."""
+    for domain in Domain.select().where(Domain.id.in_(list(domain_ids))):
+      snapshot = capture(domain)
+      scopes = {domain_scope(domain.id)}
+      if snapshot.host is not None:
+        scopes.add(host_scope(snapshot.host))
+      if snapshot.worker is not None:
+        scopes.add(route_scope(snapshot.worker, domain.id))
+      self.add_task(task=self.apply_domain, key=("apply_domain", domain.id), scopes=scopes, executor="app",
+                    params={"domain_id": domain.id, "worker": snapshot.worker, "host": snapshot.host},
+                    labels={"Domain": snapshot.host or domain.name}, on_conflict=OnConflict.REPLACE, quiet=True)
 
-  def request_domain_sync(self, domain: Domain):
-    with db.atomic():
-      domain = Domain.get_or_none(Domain.id == domain.id)
-      if domain is None:
-        return
-      if domain.status != "pending" or domain.sync_error is not None:
-        domain.status = "pending"
-        domain.sync_error = None
-        save_domain(domain)
-      snapshot = self.domain_config(domain)
-    scopes = {f"domain:{snapshot.domain_id}"}
-    if snapshot.application is not None:
-      scopes.add(f"app:{snapshot.application}")
-    self.add_task(
-        task=self.sync_domain, scopes=scopes, executor="app", on_conflict=OnConflict.REPLACE, quiet=True,
-        params={"domain_id": snapshot.domain_id, "application_id": snapshot.application_id},
-    )
-
-  def request_domain_syncs(self, domains):
-    for domain in domains:
-      self.request_domain_sync(domain)
-
-  async def sync_domain(self, domain_id: int, application_id: int | None):
-    with db.atomic():
-      domain = Domain.get_or_none(Domain.id == domain_id)
-      if domain is None:
-        logger.info(f"Domain {domain_id} deleted before sync; nothing to do.")
-        return
-      snapshot = self.domain_config(domain)
-      if snapshot.application_id != application_id:
-        self.request_domain_sync(domain)
-        return
-      if domain.container and domain.container.status in APPLICATION_BUSY_STATUSES:
-        self.request_application_status_sync(domain.container.application)
-        return
-
-    error = None
-    pending = snapshot.container_id is not None and not self.is_worker_online(snapshot.worker)
-    phase = "Traefik"
+  async def apply_domain(self, domain_id: str, worker: str | None, host: str | None):
+    """Writes the domain's routing file on its worker while its container can be routed to and removes it once it
+    can't or the domain is unlinked, leaving it alone while that is not known or the worker isn't reachable and set up;
+    then makes its DNS records what its configuration gives. Holds the outcome for the fingerprint it applied, a
+    success only when the route was applied too. An edit during the apply queues another; discovery, whose
+    availability follows the outcome, is published again."""
+    domain = Domain.get_or_none(Domain.id == domain_id)
+    if domain is None:
+      Domains().forget(domain_id)
+      logger.info(f"Domain {domain_id} was deleted before its apply; nothing to do.")
+      return
+    snapshot = capture(domain)
+    if (snapshot.worker, snapshot.host) != (worker, host):
+      self.request_domain_applies([domain_id])
+      return
+    fingerprint = snapshot.content_hash
+    eligible = None
+    if snapshot.container_id is not None:
+      eligible = self.container_states([domain.container])[snapshot.container_id].routable
+    goal = route_goal(snapshot.container_id is not None, eligible)
+    routed = worker is None or (goal is not None and is_workable(worker))
+    phase, failure = "route", None
     try:
-      if not pending:
-        dynamic = f"{self.worker_home_dir}/traefik/dynamic"
-        if snapshot.active:
-          await self.tailscale.sync_file(
-              snapshot.worker, app_dir / f"templates/worker/traefik/{ROUTING_TEMPLATES[snapshot.type]}",
-              f"{dynamic}/{snapshot.filename}", {
-                  "ID": snapshot.domain_id, "HOST": snapshot.host, "SERVICE": snapshot.application, "PORT": snapshot.port,
-                  "CORS_ORIGINS": json.dumps(snapshot.cors_origins),
-              })
+      if worker is not None and routed:
+        path = f"{config.WORKER_HOME_DIR}/traefik/dynamic/{snapshot.filename}"
+        if goal == "present":
+          await Tailscale().sync_file(worker, config.TEMPLATES_DIR / "worker/file", path, {"CONTENT": snapshot.route()})
+          Domains().record_route(domain, worker, RouteObservation("present", fingerprint))
         else:
-          workers = [snapshot.worker] if snapshot.container_id is not None else [w.hostname for w in self.online_workers()]
-          for worker in workers:
-            await self.tailscale.exec_command(worker, f"rm -f {dynamic}/{snapshot.filename}")
-
-        phase = "DNS"
-        await run_in_executor_with_context(self.cloudflare.connect)
-        tunnel = None
-        if snapshot.type == "public" and snapshot.container_id is not None:
-          tunnel = await run_in_executor_with_context(
-              self.cloudflare.find_tunnel, self.cloudflare.worker_tunnel_name(snapshot.worker))
-        await run_in_executor_with_context(
-            self.cloudflare.sync_dns_records, {snapshot.dns_comment: snapshot.dns_records(tunnel)}, type="CNAME", proxied=True)
-    except Exception as failure:
-      error = failure
-      logger.error(f"Domain {domain_id} sync failed at {phase}: {failure}")
-
-    repeat = False
-    with db.atomic():
-      domain = Domain.get_or_none(Domain.id == domain_id)
-      if domain is not None:
-        repeat = self.domain_config(domain).content_hash != snapshot.content_hash
-        status = "pending" if repeat or pending else "error" if error else "synced"
-        message = f"{phase}: {error}" if error and not repeat else None
-        if domain.status != status or domain.sync_error != message or status == "synced":
-          domain.status = status
-          domain.sync_error = message
-          if status == "synced":
-            domain.synced_hash = snapshot.content_hash
-            domain.synced_at = utcnow()
-          save_domain(domain)
-    if repeat:
-      self.request_domain_sync(domain)
-    self.request_discovery_sync(repair=False)
-    if error:
-      self.notify(f"Domain {snapshot.host or domain_id} sync failed at {phase}: {error}", "error", "/domains")
-      raise error
-
-  def request_discovery_sync(self, repair: bool = True):
-    # A child holds its domain scope: its DEDUP follow-up cannot meet a running parent or replace a queued full scan.
-    self.add_task(
-        task=self.sync_discovery, scopes={"domain"}, executor="app", params={"repair": repair},
-        on_conflict=OnConflict.REPLACE if repair else OnConflict.DEDUP, quiet=True,
-    )
-
-  def discovery_services(self, domains=None, ready=None) -> list:
-    """Services as `[namespace, service, [[host, pool, online], ...]]` from configured records."""
-    if ready is None:
-      ready = self.ready_workers()
-    services = {}
-    for domain in Domain.select() if domains is None else domains:
-      if domain.service is None:
-        continue
-      snapshot = self.domain_config(domain)
-      if snapshot.host is None:
-        continue
-      online = (snapshot.active and snapshot.worker in ready and domain.status == "synced"
-                and domain.synced_hash == snapshot.content_hash)
-      namespace = "public" if domain.type == "public" else "internal"
-      services.setdefault((namespace, domain.service), []).append([snapshot.host, domain.pool, online])
-    return [[namespace, service, sorted(names, key=lambda name: name[0])]
-            for (namespace, service), names in sorted(services.items())]
-
-  def discovery_hash(self, services: list) -> str:
-    return content_hash({"templates": DISCOVERY_TEMPLATES, "domain": self.cloudflare.domain, "services": services,
-                         "cache_seconds": config.DISCOVERY_CACHE_SECONDS})
-
-  async def sync_discovery(self, repair: bool = True):
-    workers = self.online_workers()
-    dynamic = f"{self.worker_home_dir}/traefik/dynamic"
-    failures = []
-    zone, tunnels = None, None
-    try:
-      await run_in_executor_with_context(self.cloudflare.connect)
-      if repair:
-        zone, tunnels = await asyncio.gather(
-            run_in_executor_with_context(self.cloudflare.get_dns_records),
-            run_in_executor_with_context(self.cloudflare.tunnels), return_exceptions=True)
-      else:
-        zone, = await asyncio.gather(run_in_executor_with_context(self.cloudflare.get_dns_records), return_exceptions=True)
-      if isinstance(zone, Exception):
-        failures.append(f"DNS inventory: {zone}")
-        zone = None
-      if isinstance(tunnels, Exception):
-        failures.append(f"Tunnel inventory: {tunnels}")
-        tunnels = None
+          await Tailscale().exec_command(worker, f"rm -f {path}", timeout=30)
+          Domains().record_route(domain, worker, RouteObservation("absent"))
+      phase = "dns"
+      cloudflare = Cloudflare()
+      await run_in_executor_with_context(cloudflare.connect)
+      tunnel = None
+      if snapshot.type == "public" and snapshot.container_id is not None:
+        tunnel = await run_in_executor_with_context(cloudflare.find_tunnel, cloudflare.worker_tunnel_name(worker))
+      await run_in_executor_with_context(cloudflare.sync_dns_records, {snapshot.dns_comment: snapshot.dns_records(tunnel)},
+                                         type="CNAME", proxied=True)
+      Domains().record_dns(domain, fingerprint, True)
     except Exception as error:
-      failures.append(f"Cloudflare: {error}")
+      failure = str(error) or type(error).__name__
+      Domains().record_outcome(domain, ApplyOutcome(fingerprint, False, phase, failure))
+    else:
+      if routed:
+        Domains().record_outcome(domain, ApplyOutcome(fingerprint, True))
 
-    listings = await asyncio.gather(*[
-        self.tailscale.exec_command(
-            worker.hostname, f"if [ -d {dynamic} ]; then find {dynamic} -maxdepth 1 -type f -printf '%f\\n'; fi", timeout=30)
-        for worker in workers], return_exceptions=True)
-    revisions = await asyncio.gather(*[self.read_worker_revisions(worker.hostname, timeout=30) for worker in workers], return_exceptions=True)
-    files, stamps = {}, {}
-    for worker, listing, revision in zip(workers, listings, revisions):
+    current = Domain.get_or_none(Domain.id == domain_id)
+    if current is None:
+      Domains().forget(domain_id)
+    elif capture(current).content_hash != fingerprint:
+      self.request_domain_applies([domain_id])
+    self.request_discovery()
+    if failure is not None:
+      Notifications().notify(f"Domain {snapshot.host or domain.name}: {APPLY_PARTS[phase]} could not be applied: {failure}", "error",
+                             "/domains")
+      raise TaskFailed()
+    if not routed:
+      logger.info(f"Domain {snapshot.host or domain.name}: DNS applied; its route waits for "
+                  + ("its container's state to be known." if goal is None else f"worker {worker}."))
+
+  def domain_edited(self, domain_id: str):
+    """After the domain's edit (its command): it is applied as it is configured now, and the pass withdraws what the edit
+    left behind, such as its route on the worker it was on."""
+    self.request_domain_applies([domain_id])
+    self.request_domain_reconciliation()
+
+  def request_domain_reconciliation(self):
+    """Queues the pass over every Domain's artifacts. A request while one runs gets a pass of its own after it, so a
+    change that pass did not see is not missed."""
+    self.add_task(task=self.reconcile_domains, key=("reconcile_domains",), scopes={domain_scope()}, executor="app",
+                  on_conflict=OnConflict.REPLACE, quiet=True)
+
+  async def reconcile_domains(self):
+    """Lists the routing files on every worker reachable and set up, the zone and the tunnels; removes the routing files
+    of Domains gone or bound to another worker, and the DNS records of Domains gone; holds what it saw of each Domain's
+    route and DNS; then requests the apply of each Domain in error, drifted or not applied, and discovery's
+    publication. Holding every Domain, it never crosses an apply; it lists before it reads the rows, so a Domain
+    created meanwhile is never taken for one gone."""
+    hostnames = [worker.hostname for worker in Worker.select(Worker.hostname) if is_workable(worker.hostname)]
+    cloudflare, failures = Cloudflare(), []
+    zone, tunnels, *listings = await asyncio.gather(
+        run_in_executor_with_context(cloudflare.get_dns_records), run_in_executor_with_context(cloudflare.tunnels),
+        *(Tailscale().exec_command(hostname, routes_command(f"{config.WORKER_HOME_DIR}/traefik/dynamic"), timeout=30)
+          for hostname in hostnames), return_exceptions=True)
+    for name, listed in (("the DNS zone", zone), ("the tunnels", tunnels)):
+      if isinstance(listed, Exception):
+        failures.append(f"{name} could not be listed: {listed}")
+    routes = {}
+    for hostname, listing in zip(hostnames, listings):
       if isinstance(listing, Exception):
-        failures.append(f"{worker.hostname} files: {listing}")
+        failures.append(f"the routing files on {hostname} could not be listed: {listing}")
       else:
-        files[worker.hostname] = set(listing[1])
-      if isinstance(revision, Exception):
-        failures.append(f"{worker.hostname} revisions: {revision}")
-      else:
-        stamps[worker.hostname] = revision
+        routes[hostname] = parse_route_listing(listing[1])
 
-    # Inventory precedes owners: instant creates must be visible before an artifact is classified as orphaned.
-    with db.atomic():
-      ready = self.ready_workers()
-      domains = {domain.id: domain for domain in Domain.select()}
-      configs = {domain.id: self.domain_config(domain) for domain in domains.values()}
-      busy = {domain.id for domain in domains.values() if domain.container and (
-          domain.container.status in APPLICATION_BUSY_STATUSES or domain.container.application.status in APPLICATION_BUSY_STATUSES)}
-
-    if repair:
-      for domain in domains.values():
-        if domain.id in busy:
-          continue
-        snapshot = configs[domain.id]
-        drift = domain.status != "synced" or domain.synced_hash != snapshot.content_hash
-        if snapshot.container_id is not None and snapshot.worker in files:
-          drift |= (snapshot.filename in files[snapshot.worker]) != snapshot.active
-        if zone is not None and (tunnels is not None or snapshot.type != "public" or snapshot.container_id is None):
-          records = [record for record in zone if record.get("comment") == snapshot.dns_comment]
-          try:
-            wanted = snapshot.dns_records((tunnels or {}).get(self.cloudflare.worker_tunnel_name(snapshot.worker)))
-            drift |= len(records) != len(wanted) or any(
-                record["name"] not in wanted or not dns_record_matches(record, {
-                    "content": wanted[record["name"]], "type": "CNAME", "proxied": True}) for record in records)
-          except ValueError:
-            drift = True
-        if drift:
-          self.request_domain_sync(domain)
-          domain.status = "pending"
-
-    confirmed = {domain.id for domain in domains.values() if domain.id not in busy and domain.status == "synced"
-                 and domain.synced_hash == configs[domain.id].content_hash and (not configs[domain.id].active or
-                 configs[domain.id].filename in files.get(configs[domain.id].worker, set()))}
-    services = self.discovery_services(domains.values(), ready=ready)
-    stamp = self.discovery_hash(services)
-    expected = {f"_discovery-{namespace}-{service}.yml" for namespace, service, _ in services}
-    hosts = {"public": f"discovery.{self.cloudflare.domain}", "internal": f"discovery.int.{self.cloudflare.domain}"}
-    for worker in workers:
-      if worker.hostname not in files:
-        continue
-      obsolete = []
-      for name in files[worker.hostname]:
-        domain_id = domain_artifact_owner("file", name)
-        if domain_id is None:
-          continue
-        if domain_id not in domains or (domain_id in confirmed and (
-                configs[domain_id].container_id is None or not configs[domain_id].active or configs[domain_id].worker != worker.hostname)):
-          obsolete.append(name)
+    domains = {domain.id: domain for domain in Domain.select()}
+    configs = {domain_id: capture(domain) for domain_id, domain in domains.items()}
+    removals = await asyncio.gather(*(self.remove_obsolete_routes(hostname, listed, configs)
+                                      for hostname, listed in routes.items()), return_exceptions=True)
+    failures += [f"the routing files on {hostname} could not be removed: {error}"
+                 for hostname, error in zip(routes, removals) if isinstance(error, Exception)]
+    if not isinstance(zone, Exception):
+      orphaned = {record["comment"] for record in zone
+                  if (owner := domain_artifact_owner("dns", record.get("comment") or "")) and owner not in configs}
       try:
-        if obsolete:
-          await self.tailscale.exec_command(
-              worker.hostname, "rm -f " + " ".join(shlex.quote(f"{dynamic}/{name}") for name in sorted(obsolete)))
-        actual = {name for name in files[worker.hostname] if name.startswith("_discovery-") and name.endswith(".yml")}
-        if actual == expected and stamps.get(worker.hostname, {}).get("discovery") == stamp:
-          continue
-        for namespace, service, names in services:
-          await self.tailscale.sync_file(
-              worker.hostname, app_dir / f"templates/worker/traefik/discovery_{namespace}.yml",
-              f"{dynamic}/_discovery-{namespace}-{service}.yml", {
-                  "SERVICE": service, "HOST": hosts[namespace], "CACHE_SECONDS": config.DISCOVERY_CACHE_SECONDS,
-                  "ENDPOINTS": ", ".join(f'"{host}"' + (f';pool="{pool}"' if pool else "")
-                                         + (";online" if online else ";online=?0") for host, pool, online in names),
-              })
-        stale = actual - expected
-        if stale:
-          await self.tailscale.exec_command(
-              worker.hostname, "rm -f " + " ".join(shlex.quote(f"{dynamic}/{name}") for name in sorted(stale)))
-        await self.write_worker_revision(worker.hostname, "discovery", stamp)
+        if orphaned:
+          await run_in_executor_with_context(cloudflare.sync_dns_records, dict.fromkeys(orphaned, {}), zone=zone)
       except Exception as error:
-        failures.append(f"{worker.hostname} cleanup/discovery: {error}")
+        failures.append(f"the DNS records of deleted domains could not be removed: {error}")
 
-    if zone is not None:
-      orphaned = {record["comment"]: {} for record in zone
-                  if (domain_id := domain_artifact_owner("dns", record.get("comment") or "")) is not None
-                  and domain_id not in domains}
-      discovery = {record["comment"]: {} for record in zone if (record.get("comment") or "").startswith("sage-discovery-")}
-      for worker in workers:
-        discovery[f"sage-discovery-{worker.hostname}"] = {f"discovery.int.{self.cloudflare.domain}": worker.ip}
-      try:
-        await run_in_executor_with_context(self.cloudflare.sync_dns_records, {
-            **orphaned, "sage-tunnel": {f"discovery.{self.cloudflare.domain}": f"{self.cloudflare.tunnel_id}.cfargotunnel.com"},
-        }, zone=zone, type="CNAME", proxied=True)
-        await run_in_executor_with_context(self.cloudflare.sync_dns_records, discovery, zone=zone, type="A", proxied=False)
-      except Exception as error:
-        failures.append(f"Discovery DNS/cleanup: {error}")
+    for domain_id, snapshot in configs.items():
+      domain = domains[domain_id]
+      if snapshot.worker is not None:
+        listed = routes.get(snapshot.worker)
+        Domains().record_route(domain, snapshot.worker, RouteObservation("unreachable") if listed is None else
+                               RouteObservation("present", listed[domain_id]) if domain_id in listed else RouteObservation("absent"))
+      if not isinstance(zone, Exception) and not isinstance(tunnels, Exception):
+        records = [record for record in zone if record.get("comment") == snapshot.dns_comment]
+        try:
+          wanted = snapshot.dns_records(tunnels.get(cloudflare.worker_tunnel_name(snapshot.worker)))
+        except ValueError:
+          conforms = False
+        else:
+          conforms = len(records) == len(wanted) and all(
+              record["name"] in wanted and dns_record_matches(record, {"content": wanted[record["name"]], "type": "CNAME", "proxied": True})
+              for record in records)
+        Domains().record_dns(domain, snapshot.content_hash, conforms)
+    Domains().retain(configs.keys())
+    self.request_domain_applies(domain_id for domain_id, state in self.domain_states(domains.values()).items()
+                                if state.view.status == "error" or state.view.reason in ("drifted", "not_applied"))
+    self.request_discovery()
     if failures:
-      message = "Domain reconciliation failed: " + "; ".join(failures)
-      self.notify(message, "error", "/domains")
-      raise RuntimeError(message)
-    logger.info(f"Domains reconciled; discovery synced: {len(services)} service(s).")
+      Notifications().notify("The domains could not all be checked: " + "; ".join(failures), "error", "/domains")
+      raise TaskFailed()
+    logger.info(f"Domains reconciled on {len(routes)} worker(s).")
+
+  async def remove_obsolete_routes(self, hostname: str, listed, configs: dict[str, DomainConfig]):
+    """Removes, in one command, the routing files on the worker among `listed` (Domain ids) whose Domain is gone or
+    goes to another worker; never for its container's state, which is its apply's."""
+    obsolete = sorted(domain_id for domain_id in listed if domain_id not in configs or configs[domain_id].worker != hostname)
+    if obsolete:
+      await Tailscale().exec_command(hostname, "rm -f " + " ".join(
+          f"{config.WORKER_HOME_DIR}/traefik/dynamic/{domain_artifact_name('file', domain_id)}" for domain_id in obsolete), timeout=30)
+      logger.info(f"Removed the routing files of {len(obsolete)} domain(s) gone or moved from {hostname}.")
+
+  def _applying_domains(self) -> dict[str, datetime]:
+    """The domains with an apply queued or running, each with when the oldest of them was queued."""
+    snapshot = self.task_snapshot()
+    applying = {}
+    for task in (*snapshot["running"], *snapshot["queued"]):
+      if task["name"] == "apply_domain":
+        domain_id = task["key"][1]
+        applying[domain_id] = min(applying.get(domain_id, task["queued_at"]), task["queued_at"])
+    return applying

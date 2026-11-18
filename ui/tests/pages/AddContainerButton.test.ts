@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import AddContainerButton from '@/pages/Application/AddContainerButton.vue'
 import { createContainer, type Application, type WorkerListItem } from '@/services/api'
 import { useAppStore } from '@/stores/app'
+import { worker } from '../helpers/workers'
 
 vi.mock('vue-sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
 vi.mock('@/services/api', async importOriginal => ({
@@ -31,8 +32,6 @@ const stubs = {
   SelectItem: { props: ['value'], template: '<div data-option>{{ value }}</div>' },
   SelectValue: { props: ['placeholder'], template: '<span>{{ placeholder }}</span>' },
 }
-
-const worker = (hostname: string) => ({ hostname, status: 'online' }) as WorkerListItem
 
 const application = (hostnames: string[]) =>
   ({
@@ -76,6 +75,15 @@ describe('the workers it offers', () => {
 
     expect(offered(wrapper)).toEqual(['w1', 'w3'])
     expect(chosen(wrapper)).toBe('w1')
+  })
+
+  it('leave out a worker being removed', async () => {
+    const { wrapper } = setup([worker('w1', 'removing'), worker('w2')])
+
+    await open(wrapper)
+
+    expect(offered(wrapper)).toEqual(['w2'])
+    expect(chosen(wrapper)).toBe('w2')
   })
 
   it('are none when every worker holds one, or before the list has loaded', async () => {

@@ -94,11 +94,7 @@ async function onClickAddVolumeConfirm() {
           </Field>
           <Field>
             <FieldLabel for="volume-path"> Path </FieldLabel>
-            <Input
-              id="volume-path"
-              v-model="volume.path"
-              placeholder="e.g. /var/lib/postgresql/data"
-            />
+            <Input id="volume-path" v-model="volume.path" placeholder="e.g. /var/lib/postgresql" />
           </Field>
           <Field>
             <FieldLabel for="volume-backup-cron"> Backup Schedule (optional) </FieldLabel>

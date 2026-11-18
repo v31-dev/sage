@@ -5,9 +5,13 @@ from pathlib import Path
 import pytest
 
 import config
-from services.worker_reports import WorkerReports, container_started_at, infra_of, is_current, parse_batch
+from services.worker_reports import WorkerReports, container_started_at, is_current, parse_batch, snapshot
 
 BATCH = json.loads((Path(__file__).parent.parent / "data" / "telegraf_batch.json").read_text())
+
+
+def snapshots(batch):
+  return [snapshot(metrics) for _, metrics in sorted(parse_batch(batch).items())]
 
 
 def metric(name, timestamp=1_000_000, tags=None, **fields):
@@ -21,18 +25,18 @@ def status(name, timestamp=1_000_000, **tags):
 
 class TestParseBatch:
   def test_two_gathers_make_two_snapshots_oldest_first(self):
-    first, second = parse_batch(BATCH)
+    first, second = snapshots(BATCH)
     assert second.at - first.at == timedelta(seconds=config.REPORT_INTERVAL_SECONDS)
 
   def test_one_snapshot_holds_metrics_stamped_seconds_apart(self):
     # The recorded gather is stamped over three seconds (the Docker input takes a while).
     stamps = {m["timestamp"] // 1000 for m in BATCH["metrics"]}
-    first = parse_batch(BATCH)[0]
-    assert len(stamps) == 6 and len(parse_batch(BATCH)) == 2
+    first = snapshots(BATCH)[0]
+    assert len(stamps) == 6 and len(snapshots(BATCH)) == 2
     assert {"web", "traefik", "old-job"} == set(first.containers)
 
   def test_host_reading(self):
-    host = parse_batch(BATCH)[0].host
+    host = snapshots(BATCH)[0].host
     assert host.cores == 16
     assert (host.mem_total, host.mem_used, host.mem_cached) == (30769758208, 17019699200, 18287808512)
     assert host.cpu_idle_percent == pytest.approx(89.2106, abs=1e-3)
@@ -41,9 +45,10 @@ class TestParseBatch:
     assert (host.net_rx_bytes, host.net_tx_bytes) == (54080713481, 869735831)
 
   def test_container_readings_join_the_measurements_by_name(self):
-    web = parse_batch(BATCH)[0].containers["web"]
+    web = snapshots(BATCH)[0].containers["web"]
     assert web.status == "running"
-    assert web.deployed_at == "2026-10-24T23:08:35.718155"
+    assert web.labels == {"sage.instance": "aaaaaaaaaaaaaaaa", "sage.generation": "bbbbbbbbbbbbbbbb",
+                          "sage.container": "0123456789abcdef", "sage.deployment": "d1", "sage.application": "demo-web"}
     assert web.health == "healthy"
     assert web.exit_code == 0 and web.oom_killed is False
     assert web.mem_bytes is not None and web.cpu_percent is not None
@@ -51,26 +56,26 @@ class TestParseBatch:
   def test_an_oom_kill_is_reported(self):
     killed = status("db")
     killed["fields"]["oomkilled"] = True
-    snapshot, = parse_batch({"metrics": [killed, status("web")]})
+    snapshot, = snapshots({"metrics": [killed, status("web")]})
     assert snapshot.containers["db"].oom_killed is True
     assert snapshot.containers["web"].oom_killed is False
 
   def test_a_container_that_stopped_carries_its_exit_and_finish(self):
-    old = parse_batch(BATCH)[0].containers["old-job"]
+    old = snapshots(BATCH)[0].containers["old-job"]
     assert old.status == "exited"
     assert old.finished_at is not None and old.started_at < old.finished_at
-    assert old.deployed_at is None
+    assert old.labels == {}
 
   def test_the_traefik_check(self):
-    assert parse_batch(BATCH)[0].traefik_reachable is True
+    assert snapshots(BATCH)[0].traefik_reachable is True
 
   @pytest.mark.parametrize("result_code, expected", [(0, True), (2, False)])
   def test_traefik_is_reachable_only_when_the_check_succeeded(self, result_code, expected):
-    snapshot, = parse_batch({"metrics": [metric("net_response", result_code=result_code)]})
+    snapshot, = snapshots({"metrics": [metric("net_response", result_code=result_code)]})
     assert snapshot.traefik_reachable is expected
 
   def test_no_check_in_the_report_is_unknown_not_down(self):
-    snapshot, = parse_batch({"metrics": [metric("cpu", usage_idle=90)]})
+    snapshot, = snapshots({"metrics": [metric("cpu", usage_idle=90)]})
     assert snapshot.traefik_reachable is None
 
   def test_network_counters_are_summed_over_interfaces_without_the_protocol_totals(self):
@@ -79,11 +84,11 @@ class TestParseBatch:
         metric("net", tags={"interface": "ens4"}, bytes_recv=50, bytes_sent=5),
         metric("net", tags={"interface": "all"}, bytes_recv=9999, bytes_sent=9999),
     ]}
-    host = parse_batch(batch)[0].host
+    host = snapshots(batch)[0].host
     assert (host.net_rx_bytes, host.net_tx_bytes) == (150, 15)
 
   def test_a_measurement_that_is_missing_is_none(self):
-    host = parse_batch({"metrics": [metric("cpu", usage_idle=90)]})[0].host
+    host = snapshots({"metrics": [metric("cpu", usage_idle=90)]})[0].host
     assert host.cores is None and host.mem_total is None and host.net_rx_bytes is None
 
   def test_a_container_with_no_status_record_is_left_out(self):
@@ -91,15 +96,15 @@ class TestParseBatch:
         metric("docker_container_mem", tags={"container_name": "orphan"}, usage=5),
         status("web"),
     ]}
-    assert set(parse_batch(batch)[0].containers) == {"web"}
+    assert set(snapshots(batch)[0].containers) == {"web"}
 
   def test_a_gap_between_gathers_makes_separate_snapshots(self):
     interval_ms = config.REPORT_INTERVAL_SECONDS * 1000
     batch = {"metrics": [metric("cpu", 0, usage_idle=1), metric("cpu", 3 * interval_ms, usage_idle=2)]}
-    assert [s.host.cpu_idle_percent for s in parse_batch(batch)] == [1, 2]
+    assert [s.host.cpu_idle_percent for s in snapshots(batch)] == [1, 2]
 
-  def test_an_empty_batch_has_no_snapshots(self):
-    assert parse_batch({"metrics": []}) == []
+  def test_an_empty_batch_has_no_gathers(self):
+    assert parse_batch({"metrics": []}) == {}
 
   @pytest.mark.parametrize("batch", [
       [], "text", {}, {"metrics": "x"},
@@ -115,8 +120,48 @@ class TestParseBatch:
       parse_batch(batch)
 
 
+def gather_head(seconds):
+  return [metric("cpu", seconds * 1000, usage_idle=seconds), status("web", seconds * 1000 + 500)]
+
+
+def gather_tail(seconds):
+  return [metric("docker_container_mem", seconds * 1000 + 2000, {"container_name": "web"}, usage=5)]
+
+
+class TestAssemble:
+  def test_a_gather_split_over_two_reports_is_one_snapshot_with_its_status_and_stats(self):
+    reports = WorkerReports()
+    assert reports.assemble("w1", parse_batch({"metrics": gather_head(1000)})) == []
+    complete, = reports.assemble("w1", parse_batch({"metrics": gather_tail(1000) + gather_head(1010)}))
+    assert complete.host.cpu_idle_percent == 1000
+    assert (complete.containers["web"].status, complete.containers["web"].mem_bytes) == ("running", 5)
+
+  def test_the_newest_gather_waits_for_a_later_one(self):
+    reports = WorkerReports()
+    assert reports.assemble("w1", parse_batch({"metrics": gather_head(1000) + gather_tail(1000)})) == []
+    complete, = reports.assemble("w1", parse_batch({"metrics": gather_head(1010)}))
+    assert complete.containers["web"].mem_bytes == 5
+
+  def test_a_held_gather_whose_arrival_is_no_longer_current_is_dropped(self, clock):
+    reports = WorkerReports()
+    reports.assemble("w1", parse_batch({"metrics": gather_head(1000)}))
+    clock.advance(timedelta(seconds=config.REPORT_STALE_SECONDS + 1))
+    assert reports.assemble("w1", parse_batch({"metrics": gather_head(1100)})) == []
+
+  def test_each_worker_holds_its_own(self):
+    reports = WorkerReports()
+    reports.assemble("w1", parse_batch({"metrics": gather_head(1000)}))
+    assert reports.assemble("w2", parse_batch({"metrics": gather_head(1010)})) == []
+
+  def test_forget_drops_a_held_gather(self):
+    reports = WorkerReports()
+    reports.assemble("w1", parse_batch({"metrics": gather_head(1000)}))
+    reports.forget("w1")
+    assert reports.assemble("w1", parse_batch({"metrics": gather_head(1010)})) == []
+
+
 def snapshots_at(seconds):
-  return parse_batch({"metrics": [metric("cpu", seconds * 1000, usage_idle=seconds)]})
+  return snapshots({"metrics": [metric("cpu", seconds * 1000, usage_idle=seconds)]})
 
 
 class TestReports:
@@ -142,6 +187,26 @@ class TestReports:
     received = reports.latest("w1")
     assert received.snapshot.host.cpu_idle_percent == 30
     assert received.arrived_at == datetime(2026, 1, 1, 12, 0, 0)
+
+  def test_a_replay_of_the_held_snapshot_is_ignored_and_leaves_its_arrival(self, clock):
+    reports = WorkerReports()
+    reports.accept("w1", snapshots_at(30))
+    clock.advance(timedelta(seconds=25))
+    assert reports.accept("w1", snapshots_at(30)) is None
+    assert reports.latest("w1").arrived_at == datetime(2026, 1, 1, 12, 0, 0)
+
+  def test_it_keeps_the_newest_snapshots_up_to_the_history_size_oldest_first(self, monkeypatch):
+    monkeypatch.setattr(config, "REPORT_HISTORY_SIZE", 3)
+    reports = WorkerReports()
+    for seconds in (10, 20, 30, 40):
+      reports.accept("w1", snapshots_at(seconds))
+    assert [received.snapshot.host.cpu_idle_percent for received in reports.history("w1")] == [20, 30, 40]
+
+  def test_a_batch_adds_each_snapshot_newer_than_the_newest_held(self):
+    reports = WorkerReports()
+    reports.accept("w1", snapshots_at(20))
+    reports.accept("w1", snapshots_at(10) + snapshots_at(20) + snapshots_at(30) + snapshots_at(40))
+    assert [received.snapshot.host.cpu_idle_percent for received in reports.history("w1")] == [20, 30, 40]
 
   def test_each_worker_has_its_own(self):
     reports = WorkerReports()
@@ -170,6 +235,7 @@ class TestReports:
     reports.forget("w1")
     reports.forget("never-seen")
     assert reports.latest("w1") is None
+    assert reports.history("w1") == []
 
   def test_an_unknown_name_is_first_only_once(self):
     reports = WorkerReports()
@@ -191,15 +257,15 @@ class TestReports:
 
 
 def with_containers(seconds, *readings):
-  host = parse_batch({"metrics": [metric("cpu", seconds * 1000, usage_idle=90)]})[0].host
+  host = snapshots({"metrics": [metric("cpu", seconds * 1000, usage_idle=90)]})[0].host
   from services.worker_reports import Snapshot
   base = snapshots_at(seconds)[0]
   return [Snapshot(at=base.at, host=host, containers={c.name: c for c in readings}, traefik_reachable=True)]
 
 
-def reading(name, status="running", started_at=1, deployed_at="stamp"):
+def reading(name, status="running", started_at=1, deployment="d1"):
   from services.worker_reports import ContainerReading
-  return ContainerReading(name=name, status=status, image="img", deployed_at=deployed_at, exit_code=0, oom_killed=False,
+  return ContainerReading(name=name, status=status, image="img", labels={"sage.deployment": deployment}, exit_code=0, oom_killed=False,
                           started_at=started_at, finished_at=None, health=None, cpu_percent=None, mem_bytes=None,
                           net_rx_bytes=None, net_tx_bytes=None)
 
@@ -217,7 +283,7 @@ class TestWhatChanged:
   @pytest.mark.parametrize("after", [
       reading("web", status="restarting"),
       reading("web", started_at=2),
-      reading("web", deployed_at="newer"),
+      reading("web", deployment="d2"),
   ])
   def test_a_new_state_start_or_version_changes_the_container(self, after):
     reports = WorkerReports()
@@ -238,7 +304,7 @@ class TestArrival:
     assert reports.accept("w1", snapshots_at(20)).received is reports.latest("w1")
 
 
-class TestCurrentAndTrusted:
+class TestCurrent:
   def test_a_report_is_current_for_the_stale_window(self, clock):
     reports = WorkerReports()
     reports.accept("w1", snapshots_at(10))
@@ -249,27 +315,6 @@ class TestCurrentAndTrusted:
 
   def test_a_worker_that_never_reported_has_no_current_report(self):
     assert WorkerReports().current("w1") is None
-
-  def test_a_snapshot_counts_only_if_it_arrived_after_the_last_write_and_the_settle_time(self, clock):
-    reports = WorkerReports()
-    wrote = clock.current
-    clock.advance(timedelta(seconds=config.REPORT_SETTLE_SECONDS - 1))
-    reports.accept("w1", snapshots_at(10))
-    assert reports.trusted("w1", wrote) is None
-
-  def test_a_snapshot_that_arrived_after_the_settle_time_counts(self, clock):
-    reports = WorkerReports()
-    wrote = clock.current
-    clock.advance(timedelta(seconds=config.REPORT_SETTLE_SECONDS))
-    reports.accept("w1", snapshots_at(10))
-    assert reports.trusted("w1", wrote) is not None
-
-  def test_a_snapshot_that_is_no_longer_current_does_not_count(self, clock):
-    reports = WorkerReports()
-    wrote = clock.current - timedelta(minutes=5)
-    reports.accept("w1", snapshots_at(10))
-    clock.advance(timedelta(seconds=config.REPORT_STALE_SECONDS + 1))
-    assert reports.trusted("w1", wrote) is None
 
   def test_the_seconds_since_the_last_report_or_since_the_start(self, clock):
     reports = WorkerReports()
@@ -296,19 +341,6 @@ class TestContainerStartedAt:
     received = WorkerReports().accept("w1", with_containers(10, reading("web"))).received
     assert container_started_at(None, "telegraf") is None
     assert container_started_at(received, "telegraf") is None
-
-
-class TestInfra:
-  def test_each_container_of_the_stack_has_its_state_and_a_missing_one_says_so(self):
-    received = WorkerReports().accept("w1", with_containers(10, reading("traefik"), reading("vector", status="restarting"),
-                                                            reading("telegraf"), reading("web"))).received
-    assert infra_of(received) == [
-        {"name": "traefik", "status": "running"},
-        {"name": "vector", "status": "restarting"},
-        {"name": "telegraf", "status": "running"},
-        {"name": "cloudflared", "status": "missing"},
-        {"name": "cloudflared-discovery", "status": "missing"},
-    ]
 
 
 class TestStartedAt:

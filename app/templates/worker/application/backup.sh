@@ -1,22 +1,21 @@
 #!/bin/sh
 set -eu
 
-APP_ROOT="${WORKER_HOME_DIR}/applications"
-APP_NAME="${APP_NAME}"
-APP_DIR="$APP_ROOT/$APP_NAME"
-VOLUME_NAME="${VOLUME_NAME}"
-VOLUME_DIR="$APP_DIR/volumes/$VOLUME_NAME"
-TMP_DIR="$(mktemp -d)"
+PLACEMENT_DIR="${PLACEMENT_DIR}"
+VOLUME_ID="${VOLUME_ID}"
+VOLUME_DIR="$PLACEMENT_DIR/volumes/$VOLUME_ID"
+RUN_DIR="${RUN_DIR}"
+# Tailscale SSH ignores a new folder's mode, so the secrets go in one that mktemp makes private.
+TMP_DIR="$(mktemp -d "$RUN_DIR/work.XXXXXX")"
 
 cleanup() {
-  rm -rf "$TMP_DIR"
-  rm -f "$0"
+  rm -rf "$RUN_DIR"
 }
 
 trap cleanup EXIT
 
-if [ ! -d "$APP_DIR" ]; then
-  echo "Application directory not found: $APP_DIR" >&2
+if [ ! -d "$PLACEMENT_DIR" ]; then
+  echo "Container directory not found: $PLACEMENT_DIR" >&2
   exit 1
 fi
 
@@ -49,7 +48,7 @@ cat <<'__SAGE_UPLOAD_URL__' > "$UPLOAD_CONFIG_PATH"
 url = "${UPLOAD_URL}"
 __SAGE_UPLOAD_URL__
 
-tar -C "$APP_DIR/volumes" -czf "$ARCHIVE_PATH" "$VOLUME_NAME"
+tar -C "$PLACEMENT_DIR/volumes" -czf "$ARCHIVE_PATH" "$VOLUME_ID"
 
 openssl enc -aes-256-cbc -pbkdf2 -salt \
   -in "$ARCHIVE_PATH" \
@@ -66,6 +65,7 @@ openssl dgst -sha256 -mac HMAC -macopt hexkey:"$MAC_KEY" -binary \
   -out "$TMP_DIR/mac" "$ENCRYPTED_PATH"
 cat "$TMP_DIR/mac" >> "$ENCRYPTED_PATH"
 
+# Exit 75 (EX_TEMPFAIL) where trying again can work: no answer, or a server error.
 HTTP_STATUS="$(
   curl \
     --silent \
@@ -76,10 +76,15 @@ HTTP_STATUS="$(
     --header "Content-Type: application/octet-stream" \
     --upload-file "$ENCRYPTED_PATH" \
     --config "$UPLOAD_CONFIG_PATH"
-)"
+)" || { echo "Upload failed: no answer from the store" >&2; exit 75; }
 
 case "$HTTP_STATUS" in
   2*)
+    ;;
+  5*)
+    echo "Upload failed with status $HTTP_STATUS" >&2
+    cat "$TMP_DIR/upload_response" >&2 || true
+    exit 75
     ;;
   *)
     echo "Upload failed with status $HTTP_STATUS" >&2

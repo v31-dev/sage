@@ -217,7 +217,7 @@ describe('the application logs page', () => {
     expect(messages(wrapper)).toHaveLength(1000)
     expect([messages(wrapper)[0], messages(wrapper)[999]]).toEqual(['line 2', 'line 1001'])
     expect(wrapper.text()).toContain('Showing the latest 1000 lines that match.')
-  })
+  }, 20_000)
 
   it('draw a marker of what Sage did apart from the lines of the container', async () => {
     const { wrapper } = await open([

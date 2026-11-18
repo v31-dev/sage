@@ -1,21 +1,23 @@
 import logging
-import re
-
-from peewee import IntegrityError, sort_models
-from playhouse.migrate import SqliteMigrator, migrate
+import sqlite3
+from contextlib import closing
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import config
 from services.base import Base
+from utils.common import new_id, utcnow
 
-from .models import Application, Backup, Container, Domain, Event, Instance, Notification, Project, Setting, Task, Volume, Worker, db
+from . import migration_log, migrations, migrator
+from .models import (Application, Backup, Container, ContainerEvent, Domain, Instance, Notification, Project, Setting, Task, Volume, Worker,
+                     WorkerEvent, db)
 
 logger = logging.getLogger(__name__)
 
-MODELS = [Setting, Instance, Project, Application, Volume, Domain, Worker, Container, Event, Notification, Backup, Task]
-
-
-class SchemaRefused(Exception):
-  """The data in the database refuses this version's schema."""
+MODELS = [Setting, Instance, Project, Application, Volume, Domain, Worker, Container, ContainerEvent, WorkerEvent, Notification,
+          Backup, Task]
+# What happened rather than what is configured: never in a platform backup, and emptied by a restore.
+HISTORY = (ContainerEvent, WorkerEvent, Notification, Task)
 
 
 class Database(Base):
@@ -34,87 +36,85 @@ class Database(Base):
     )
     db.connect(reuse_if_open=True)
 
-    self.reconcile_schema()
+    self.migrate()
 
     logger.info("Connected to database.")
 
-  def reconcile_schema(self):
-    """
-    Bring the live database schema up to the current models: create missing
-    tables, add missing columns and drop those no model has, and drop the indexes
-    no model declares before creating the missing ones (a create skips a name that
-    exists, so a changed index comes under a new name). Idempotent and safe to call any time the
-    on-disk schema may lag the models -- at startup, or after a restore swaps in
-    an older database snapshot. Also gives the manager its identity if it has none.
-
-    The step is SQLite's procedure for schema changes: foreign keys off, every
-    change in one transaction, a foreign key check, commit. Adding a NOT NULL
-    column rebuilds its table, and with foreign keys on, dropping the old table
-    would delete or block the rows that reference it. Data that refuses the
-    schema (an index, or the foreign key check) rolls the whole step back and
-    raises `SchemaRefused`, whose message links the running version's release,
-    where the fix is.
-    """
-    db.execute_sql("PRAGMA foreign_keys=OFF")
-    try:
-      # The pragma is ignored inside a transaction.
-      if db.execute_sql("PRAGMA foreign_keys").fetchone()[0]:
-        raise RuntimeError("The schema step must not run inside a transaction: foreign keys can't be turned off.")
-      with db.atomic():
-        # Indexes last: an index on a column not added yet would be built on the string of its name (SQLite reads a
-        # double-quoted name it doesn't know as a literal).
-        for model in sort_models(MODELS):
-          model._schema.create_table(safe=True)
-        self._sync_columns()
-        declared = {index._name for model in MODELS for index in model._meta.fields_to_index()}
-        for model in MODELS:
-          for index in db.get_indexes(model._meta.table_name):
-            if index.name not in declared and not index.name.startswith("sqlite_autoindex_"):
-              logger.info(f"Dropping index {index.name}, which no model declares.")
-              db.execute_sql(f'DROP INDEX "{index.name}"')
-        for model in MODELS:
-          model._schema.create_indexes(safe=True)
-        if broken := db.execute_sql("PRAGMA foreign_key_check").fetchall():
-          raise IntegrityError("FOREIGN KEY check failed: " + ", ".join(
-              f"{table} row {row} points at a missing {parent}" for table, row, parent, _ in broken))
-    except IntegrityError as e:
-      refused_index = ""
-      if named := re.search(r"index '([^']+)'", str(e)):
-        for model in MODELS:
-          for index in model._meta.fields_to_index():
-            sql = db.get_sql_context().sql(index).query()[0]
-            if f'"{named[1]}"' in sql:
-              refused_index = f" The refused index: {sql}."
-      raise SchemaRefused(
-          f"Sage {config.VERSION} can't update the schema of {config.DB_PATH}: the data in it refuses the change "
-          f"({e}).{refused_index} The database was left as it was. "
-          f"How to fix it: {config.RELEASE_PAGE_URL.format(version=config.VERSION)}") from e
-    finally:
-      db.execute_sql("PRAGMA foreign_keys=ON")
+  def migrate(self, run: str = migration_log.BOOT, trigger: str = "boot"):
+    """Brings the database to this version's schema with its migration steps (`migrator.migrate`), at boot and
+    after a platform restore's install, as `run` of the migration history, and gives the manager its identity if it has
+    none. A boot keeps a copy of the database from before its steps; a restore's is its backup in the store."""
+    migrator.migrate(db, migrations.BASELINE, migrations.STEPS, migrator.models_schema(MODELS), run=run, trigger=trigger,
+                     keep_copy=trigger == "boot")
     if not Instance.select().exists():
       Instance.create()
 
-  def _sync_columns(self):
-    """
-    Add any model field that is missing from its table as a new column, and drop any
-    column that no model field has any more.
+  def snapshot(self, path: Path):
+    """Copies the live database to `path` as a platform backup holds it: its configuration, without the history or
+    the Backup rows (they mirror the store, whose discovery rebuilds them) and without the containers' intents (a
+    restore stops every container until it is deployed again), compacted. Blocking: offload it."""
+    with closing(sqlite3.connect(path)) as copy:
+      db.connection().backup(copy)
+      for model in (*HISTORY, Backup):
+        copy.execute(f'DELETE FROM "{model._meta.table_name}"')
+      copy.execute(f'UPDATE "{Container._meta.table_name}" SET intent = NULL')
+      copy.commit()
+      copy.execute("VACUUM")
 
-    This is a dynamic, model-driven sync derived from the field definitions
-    themselves, not hand-written per-column steps. Anything that cannot be
-    applied (e.g. a not-null column without a default on a populated table)
-    raises and crashes startup, which is the intended outcome.
-    """
-    migrator = SqliteMigrator(db)
-    for model in MODELS:
-      table = model._meta.table_name
-      existing = {column.name for column in db.get_columns(table)}
-      wanted = {field.column_name for field in model._meta.sorted_fields}
-      for field in model._meta.sorted_fields:
-        if field.column_name in existing:
-          continue
-        logger.info(f"Adding missing column {table}.{field.column_name}.")
-        migrate(migrator.add_column(table, field.column_name, field))
-      for column in sorted(existing - wanted):
-        logger.info(f"Dropping column {table}.{column}, which no model has.")
-        # A rebuild of the table: SQLite's own DROP COLUMN refuses a column in a foreign key or an index.
-        migrate(migrator.drop_column(table, column, legacy=True))
+  def install(self, path: Path, settings: dict[str, dict]) -> str:
+    """Replaces the live database with the platform backup at `path` and returns its migration's run id. The backup file is made the restored state
+    first, in place: a fresh state generation, the sections in `settings` (key to values) kept over the backup's, and
+    the history and the Backup rows emptied (discovery rebuilds those). Then a safety copy of the live database, the
+    backup copied in, which SQLite commits whole or not at all, and migrated as at boot. A failure copies the safety copy back and raises; the safety copy is removed either way.
+    Blocking: offload it, with nothing else writing meanwhile: the platform restore runs it alone, in the queue's
+    restoring state, with changes and the workers' reports refused."""
+    with closing(sqlite3.connect(path)) as backup:
+      if (result := backup.execute("PRAGMA integrity_check").fetchone()[0]) != "ok":
+        raise ValueError(f"The backup is not a sound database: {result}.")
+      tables = {name for (name,) in backup.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+      with backup:
+        # A backup without the column gets a fresh one from the migration step that adds it.
+        if "state_generation" in {name for _, name, *_ in backup.execute(f'PRAGMA table_info("{Instance._meta.table_name}")')}:
+          backup.execute(f'UPDATE "{Instance._meta.table_name}" SET state_generation = ?', (new_id(),))
+        now = str(utcnow())
+        for key, values in settings.items():
+          backup.execute(f'INSERT INTO "{Setting._meta.table_name}" (key, value, created_at, updated_at) VALUES (?, ?, ?, ?) '
+                         "ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+                         (key, Setting.value.db_value(values), now, now))
+        for model in (*HISTORY, Backup):
+          if model._meta.table_name in tables:
+            backup.execute(f'DELETE FROM "{model._meta.table_name}"')
+    safety = config.DB_PATH.with_name(f"{config.DB_PATH.name}.restore-{utcnow():%Y%m%d_%H%M%S}")
+    with closing(sqlite3.connect(safety)) as copy:
+      db.connection().backup(copy)
+    run = new_id()
+    try:
+      with closing(sqlite3.connect(path)) as backup:
+        backup.backup(db.connection())
+      self.migrate(run, "restore")
+    except Exception:
+      with closing(sqlite3.connect(safety)) as copy:
+        copy.backup(db.connection())
+      raise
+    finally:
+      safety.unlink(missing_ok=True)
+    return run
+
+  def remove_safety_copies(self):
+    """Removes the copies beside the live database past their retention: an interrupted restore's safety copies
+    (`RETENTION_DAYS`), which only an install killed part way leaves, and the copies a boot took before migrating
+    (`MIGRATION_COPY_RETENTION_DAYS`)."""
+    for pattern, days, kind in ((".restore-*", config.RETENTION_DAYS, "the safety copy of an interrupted restore"),
+                                (".migration-*", config.MIGRATION_COPY_RETENTION_DAYS, "the copy from before a migration")):
+      before = utcnow() - timedelta(days=days)
+      for path in config.DB_PATH.parent.glob(f"{config.DB_PATH.name}{pattern}"):
+        if datetime.fromtimestamp(path.stat().st_mtime, UTC).replace(tzinfo=None) < before:
+          path.unlink(missing_ok=True)
+          logger.info(f"Removed {path.name}, {kind}.")
+
+  def checkpoint(self):
+    """Writes everything the WAL holds into the database file and empties the WAL, so the file alone holds every
+    committed change: what a stop does last. A checkpoint that can't finish (another connection busy) is logged."""
+    busy, _, _ = db.execute_sql("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+    if busy:
+      logger.warning("The database's WAL could not be emptied: another connection was busy.")

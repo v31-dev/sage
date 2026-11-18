@@ -33,9 +33,16 @@ export interface WorkerMeta {
   ip: string
 }
 
+// A container's series, by the name people know it by: an application's, or a stack service's own.
+export interface ContainerSeries {
+  name: string
+  label: string
+  points: ContainerMetricsPoint[]
+}
+
 export interface WorkerMetricsResponse {
   host: MetricsPoint[]
-  containers: Record<string, ContainerMetricsPoint[]>
+  containers: ContainerSeries[]
   meta: WorkerMeta
 }
 
@@ -57,6 +64,7 @@ export const fetchWorkerMetrics = (hostname: string, period: MetricsPeriod = '1h
 
 // The metrics of each container of an application, by worker.
 export interface ApplicationContainerMetrics {
+  container: string
   hostname: string
   metrics: ContainerMetricsPoint[]
 }

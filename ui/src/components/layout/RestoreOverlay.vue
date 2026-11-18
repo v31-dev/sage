@@ -17,14 +17,16 @@ const appStore = useAppStore()
 const restoring = computed(() => appStore.info?.state === 'restoring')
 const restoringFrom = computed(() => appStore.info?.restoring_from)
 
-// The restore itself is among the running tasks; it is not what the restore waits for.
+// The restore waits for both running and queued work ahead of it.
 const waitingFor = ref(0)
 
 function showWaitingFor(tasks: QueueResponse) {
-  waitingFor.value = tasks.running.filter(task => task.name !== 'restore_database_from_s3').length
+  waitingFor.value = [...tasks.running, ...tasks.queued].filter(
+    task => task.name !== 'restore_platform'
+  ).length
 }
 
-// The state is held by the manager, so a refreshed page shows the same overlay. The running
+// The state is held by the manager, so a refreshed page shows the same overlay. The
 // tasks are followed only while restoring.
 let stopTasks: (() => void) | undefined
 watch(
@@ -61,8 +63,7 @@ onUnmounted(() => stopTasks?.())
           <template v-else>Restoring a backup.</template>
           Sage is blocked until it finishes, and this page reloads when it is done.
           <template v-if="waitingFor > 0">
-            Waiting for {{ waitingFor }} running {{ waitingFor === 1 ? 'task' : 'tasks' }} to finish
-            first.
+            Waiting for {{ waitingFor }} {{ waitingFor === 1 ? 'task' : 'tasks' }} to finish first.
           </template>
         </AlertDialogDescription>
       </AlertDialogHeader>

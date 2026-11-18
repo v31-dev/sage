@@ -15,7 +15,6 @@ import StateIndicator from '@/components/StateIndicator.vue'
 import { formatDate } from '@/lib/utils'
 import { useAppStore } from '@/stores/app'
 import SettingsSection from './SettingsSection.vue'
-import TraefikResyncSubCard from './TraefikResyncSubCard.vue'
 
 const appStore = useAppStore()
 const details = computed(() => appStore.info?.settings?.cloudflare.details ?? null)
@@ -127,7 +126,6 @@ const fields = computed(() => [
           </FieldSet>
         </CardContent>
       </Card>
-      <TraefikResyncSubCard />
     </template>
   </SettingsSection>
 </template>

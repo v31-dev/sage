@@ -15,7 +15,7 @@ import asyncssh
 
 import config
 from services.base import Base
-from utils.common import dict_to_obj, get_env
+from utils.common import dict_to_obj, fill, get_env
 from utils.executor import run_in_executor_with_context
 
 logger = logging.getLogger(__name__)
@@ -45,6 +45,19 @@ def ping_path(output: str) -> str | None:
   return "direct" if re.fullmatch(r"[0-9a-fA-F.:\[\]]+:\d+", via) else "relay"
 
 
+# sysexits.h: a temporary failure, which a worker script exits with when trying again can work.
+EX_TEMPFAIL = 75
+
+
+class CommandError(Exception):
+  """A worker could not be reached, or a command on it failed; `transient` when trying again can work: the connection
+  failed, or the command exited with `EX_TEMPFAIL`."""
+
+  def __init__(self, message: str, transient: bool = False):
+    super().__init__(message)
+    self.transient = transient
+
+
 class Tailscale(Base):
   def __init__(self):
     super().__init__()
@@ -56,6 +69,13 @@ class Tailscale(Base):
     self._misses: dict[str, int] = {}
     # How each peer (by Tailscale IP) was reached at the last `refresh_paths`.
     self._paths: dict[str, str] = {}
+    # What the last `observe_workers` found of each worker: its SSH server's answer and its address in the tailnet.
+    self._ssh: dict[str, str] = {}
+    self._addresses: dict[str, str] = {}
+    # Whether the manager's own node was connected to the tailnet (None until known), and the observations failed in a
+    # row since it was last known.
+    self._connected: bool | None = None
+    self._failures = 0
 
   async def _get_conn(self, hostname):
     """Return a live pooled SSH connection to `hostname`, connecting if needed."""
@@ -103,14 +123,14 @@ class Tailscale(Base):
         connection.close()
     await asyncio.gather(*(connection.wait_closed() for connection in connections), return_exceptions=True)
 
-  def status(self):
+  def status(self, timeout: float = 10):
     try:
       result = subprocess.run(
           ["tailscale", "status", "--json"],
-          capture_output=True, text=True, timeout=10,
+          capture_output=True, text=True, timeout=timeout,
       )
     except subprocess.TimeoutExpired:
-      raise Exception("Tailscale status timed out after 10s (tailscaled unresponsive?).")
+      raise Exception(f"Tailscale status timed out after {timeout:g}s (tailscaled unresponsive?).")
     if result.returncode != 0:
       raise Exception(f"Tailscale status failed: {result.stderr.strip()}")
     return json.loads(result.stdout)
@@ -158,19 +178,58 @@ class Tailscale(Base):
     paths = await asyncio.gather(*(self.ping(ip) for ip in ips))
     self._paths = {ip: path for ip, path in zip(ips, paths) if path}
 
-  async def online_states(self, peers: dict[str, bool | None]) -> dict[str, bool | None]:
-    """Whether each worker ({hostname: online now, None if not known}) is online: its SSH server answers
-    (`reachable`). The state lags by one missed check (see `next_online`). When the manager's own node is cut
-    off from the tailnet a miss says nothing about the workers, so their states are left as they are."""
-    results = await asyncio.gather(*(self.reachable(hostname) for hostname in peers))
-    if not all(results) and not await run_in_executor_with_context(self.connected):
-      logger.warning("The manager is not connected to the tailnet; worker states are left as they are.")
-      return dict(peers)
-    states, misses = {}, {}
-    for (hostname, online), answered in zip(peers.items(), results):
-      states[hostname], misses[hostname] = next_online(online, answered, self._misses.get(hostname, 0))
-    self._misses = misses
-    return states
+  async def observe_workers(self, hostnames: list[str]):
+    """Asks each worker's SSH server (`reachable`) and holds what it found, with each one's address in the tailnet:
+    reachable at the first answer, unreachable once OFFLINE_AFTER_MISSED_CHECKS checks in a row have gone unanswered
+    or when the tailnet does not list it, as it was until then (`next_online`). The manager's own node is cut off
+    when no worker answered and it is not connected to the coordination server: a miss then says nothing of the
+    workers, every one is unknown, and what was found before and the misses stay as they were. One worker's answer
+    shows the manager is in the tailnet, whatever the coordination server, so the others' misses are their own. An
+    observation that fails is a miss of the manager's own node: everything stays as it was, and once
+    OFFLINE_AFTER_MISSED_CHECKS in a row have failed the manager is cut off; the failure is raised."""
+    try:
+      addresses = {peer.hostname: peer.ip for peer in await run_in_executor_with_context(self.peers) if peer.hostname in hostnames}
+      listed = [hostname for hostname in hostnames if hostname in addresses]
+      answers = dict(zip(listed, await asyncio.gather(*(self.reachable(hostname) for hostname in listed))))
+      cut_off = bool(hostnames) and not any(answers.values()) and not await run_in_executor_with_context(self.connected)
+    except Exception:
+      with self.lock:
+        self._connected, self._failures = next_online(self._connected, False, self._failures)
+      raise
+    if cut_off:
+      logger.warning("The manager is not connected to the tailnet; nothing is known of the workers.")
+    with self.lock:
+      self._addresses, self._connected, self._failures = addresses, not cut_off, 0
+      if cut_off:
+        return
+      states, misses = {}, {}
+      for hostname in hostnames:
+        if hostname not in answers:
+          states[hostname] = "unreachable"
+          continue
+        was = {"reachable": True, "unreachable": False}.get(self._ssh.get(hostname))
+        online, misses[hostname] = next_online(was, answers[hostname], self._misses.get(hostname, 0))
+        states[hostname] = {True: "reachable", False: "unreachable", None: "unobserved"}[online]
+      self._ssh, self._misses = states, misses
+
+  async def observe_worker(self, hostname: str):
+    """Asks one worker's SSH server now, as a workflow on it needs before it goes on: reachable when it answered, with its
+    address; otherwise as it was, its misses left to `observe_workers`."""
+    peer = next((peer for peer in await run_in_executor_with_context(self.peers) if peer.hostname == hostname), None)
+    if peer is not None and await self.reachable(hostname):
+      with self.lock:
+        self._ssh[hostname], self._addresses[hostname], self._misses[hostname] = "reachable", peer.ip, 0
+
+  def ssh(self, hostname: str) -> str:
+    """What the last observation found of the worker's SSH server: reachable, unreachable, unknown (the manager was
+    cut off) or unobserved."""
+    with self.lock:
+      return "unknown" if self._connected is False else self._ssh.get(hostname, "unobserved")
+
+  def address(self, hostname: str) -> str | None:
+    """The worker's address in the tailnet at the last observation; None when it was not listed."""
+    with self.lock:
+      return self._addresses.get(hostname)
 
   def ip(self):
     if not getattr(self, "_ip", ""):
@@ -188,18 +247,19 @@ class Tailscale(Base):
       logger.info(f"Tailscale IP address: {self._ip}")
     return self._ip
 
-  def peers(self):
-    """Every machine of the tailnet that has an address, as objects with hostname and ip."""
+  def peers(self, timeout: float = 10):
+    """Every machine of the tailnet that has an address, as objects with hostname and ip; the hostname in lowercase,
+    as Sage names a worker (`tailscale nc` resolves a name in any case)."""
     return [
-        dict_to_obj({"hostname": peer["HostName"], "ip": peer["TailscaleIPs"][0]})
-        for peer in self.status().get("Peer", {}).values()
+        dict_to_obj({"hostname": peer["HostName"].lower(), "ip": peer["TailscaleIPs"][0]})
+        for peer in self.status(timeout).get("Peer", {}).values()
         if peer.get("TailscaleIPs")
     ]
 
   def find_peer(self, query: str):
     """The machine with that hostname (any case) or Tailscale IP, or None."""
     query = query.strip().lower()
-    return next((peer for peer in self.peers() if query in (peer.hostname.lower(), peer.ip)), None)
+    return next((peer for peer in self.peers() if query in (peer.hostname, peer.ip)), None)
 
   async def _start_command(self, hostname, command):
     """Open a channel on a pooled connection and start `command` on it. A stale pooled
@@ -209,20 +269,20 @@ class Tailscale(Base):
       try:
         conn = await self._get_conn(hostname)
       except (OSError, asyncssh.Error) as e:
-        raise Exception(f"Error connecting to {hostname}: {e}")
+        raise CommandError(f"Error connecting to {hostname}: {e}", transient=True)
       try:
         # stderr is merged into stdout so a failed command's output is captured
         return await conn.create_process(command, stderr=asyncssh.STDOUT, errors="replace")
       except (OSError, asyncssh.Error) as e:
         await self._evict(hostname)
         if attempt == 1:
-          raise Exception(f"Error executing command on {hostname}: {e}")
+          raise CommandError(f"Error executing command on {hostname}: {e}", transient=True)
 
   async def exec_command(self, hostname, command, timeout=300):
     """
     Execute a command on a worker over the Tailscale SSH server via asyncssh,
     reusing a pooled connection. Each output line is logged as it arrives. Returns
-    (exit_status, output_lines); raises on timeout or non-zero exit.
+    (exit_status, output_lines); raises on timeout, and `CommandError` on a failed connection or a non-zero exit.
 
     The worker stops the command at `timeout` (GNU or uutils `timeout`, run through the
     session's own shell): Tailscale SSH ignores signals and a closed channel, so nothing the
@@ -252,7 +312,7 @@ class Tailscale(Base):
       raise Exception(f"Command on {hostname} timed out after {timeout}s: {command}")
     except (OSError, asyncssh.Error) as e:
       await self._evict(hostname)  # connection likely dead
-      raise Exception(f"Error executing command on {hostname}: {e}")
+      raise CommandError(f"Error executing command on {hostname}: {e}", transient=True)
     finally:
       process.close()
 
@@ -262,9 +322,9 @@ class Tailscale(Base):
       raise Exception(f"Command on {hostname} timed out after {timeout}s: {command}")
     if status != 0:
       tail = "\n".join(output_lines[-10:])
-      raise Exception(
-          f"Error executing command on {hostname}: exit code {status}"
-          + (f"\n{tail}" if tail else ""))
+      raise CommandError(
+          f"Error executing command on {hostname}: exit code {status}" + (f"\n{tail}" if tail else ""),
+          transient=status == EX_TEMPFAIL)
 
     logger.info(f"Successfully executed command on {hostname}.")
     return (status, output_lines)
@@ -279,8 +339,9 @@ class Tailscale(Base):
     directories are created.
 
     The file is created with `mode` (secrets 0o600, scripts 0o700) under a temporary
-    name beside `dst` and renamed over it: a reader finds the whole old file or the
-    whole new one, and `dst` takes `mode` even when an earlier copy had another one.
+    name in the worker's temp folder (`WORKER_TMP_DIR`, on the same filesystem as every
+    `dst`) and renamed over it: a reader finds the whole old file or the whole new one,
+    and `dst` takes `mode` even when an earlier copy had another one.
 
     `timeout` caps the whole connect+transfer so a wedged sync can't hold a
     task's scope forever.
@@ -292,8 +353,7 @@ class Tailscale(Base):
       with open(src, "r") as f:
         content = f.read()
       if keys:
-        for key, value in keys.items():
-          content = content.replace("${" + key + "}", str(value))
+        content = fill(content, keys)
       if formatter:
         content = formatter(content)
       data = content.encode()
@@ -304,9 +364,10 @@ class Tailscale(Base):
 
     async def _upload(conn):
       async with conn.start_sftp_client() as sftp:
-        if remote_dir:
-          await sftp.makedirs(remote_dir, exist_ok=True)
-        temporary = posixpath.join(remote_dir, f".{posixpath.basename(dst)}.{secrets.token_hex(4)}.tmp")
+        for directory in (remote_dir, config.WORKER_TMP_DIR):
+          if directory:
+            await sftp.makedirs(directory, exist_ok=True)
+        temporary = posixpath.join(config.WORKER_TMP_DIR, f"{posixpath.basename(dst)}.{secrets.token_hex(4)}.tmp")
         try:
           async with sftp.open(temporary, "wb", asyncssh.SFTPAttrs(permissions=mode)) as remote_file:
             await remote_file.write(data)
@@ -321,7 +382,7 @@ class Tailscale(Base):
       try:
         conn = await self._get_conn(hostname)
       except (OSError, asyncssh.Error) as e:
-        raise Exception(f"Error connecting to {hostname}: {e}")
+        raise CommandError(f"Error connecting to {hostname}: {e}", transient=True)
       try:
         await asyncio.wait_for(_upload(conn), timeout)
         break
@@ -330,5 +391,5 @@ class Tailscale(Base):
       except (OSError, asyncssh.Error) as e:
         await self._evict(hostname)  # connection likely dead; retry once fresh
         if attempt == 1:
-          raise Exception(f"Error syncing file to {hostname}: {e}")
+          raise CommandError(f"Error syncing file to {hostname}: {e}", transient=True)
     logger.info(f"Successfully synced file to {hostname}: {dst}.")

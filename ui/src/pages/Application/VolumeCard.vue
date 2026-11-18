@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { toast } from 'vue-sonner'
 import { Edit, Trash } from 'lucide-vue-next'
 import {
@@ -22,12 +22,12 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Field, FieldGroup, FieldLabel, FieldSet, FieldError } from '@/components/ui/field'
 import { Spinner } from '@/components/ui/spinner'
-import { ButtonGroup } from '@/components/ui/button-group'
 import { Label } from '@/components/ui/label'
 
 import { type Volume, type Application, deleteVolume, updateVolume } from '@/services/api'
 import SectionTitle from '@/components/SectionTitle.vue'
 import ConfirmationButton from '@/components/ConfirmationButton.vue'
+import IconButton from '@/components/IconButton.vue'
 import VolumeBackupButton from './VolumeBackupButton.vue'
 import VolumeRestoreDialog from './VolumeRestoreDialog.vue'
 
@@ -38,6 +38,12 @@ interface Props {
 }
 
 const props = withDefaults(defineProps<Props>(), {})
+
+const deleteDisabled = computed(() =>
+  props.application.containers.some(
+    container => container.view.headline !== 'inactive' || container.queued.length > 0
+  )
+)
 
 const isEditVolumeDialogOpen = ref(false)
 const volume = ref({
@@ -101,21 +107,20 @@ async function onClickConfirmDelete() {
         <SectionTitle :title="props.volume.name" />
       </CardTitle>
       <CardAction>
-        <ButtonGroup class="space-x-1">
-          <Button size="sm" variant="outline" @click="openEditVolumeDialog" class="gap-2">
-            <Edit />
-            Edit
-          </Button>
+        <div class="flex items-center gap-1">
+          <IconButton :icon="Edit" label="Edit" @click="openEditVolumeDialog" />
           <ConfirmationButton
             triggerText="Delete"
             title="Delete Volume"
-            body="Are you sure you want to delete this volume? This action cannot be undone."
+            body="The volume and all its backups are deleted. This can't be undone."
             :description="props.volume.name"
             :icon="Trash"
+            icon-only
             destructive
+            :disabled="deleteDisabled"
             :onConfirm="onClickConfirmDelete"
           />
-        </ButtonGroup>
+        </div>
       </CardAction>
     </CardHeader>
     <CardContent class="space-y-4">
@@ -131,10 +136,21 @@ async function onClickConfirmDelete() {
           {{ props.volume.backup_cron ? props.volume.backup_cron : 'N/A' }}
         </p>
       </div>
+      <p v-if="deleteDisabled" class="text-sm text-muted-foreground">
+        Deleting a volume needs every container stopped.
+      </p>
     </CardContent>
     <CardFooter class="border-t flex gap-2">
-      <VolumeBackupButton :application="props.application" :volume="props.volume" />
-      <VolumeRestoreDialog :application="props.application" :volume="props.volume" />
+      <VolumeBackupButton
+        :application="props.application"
+        :volume="props.volume"
+        :loadApplication="props.loadApplication"
+      />
+      <VolumeRestoreDialog
+        :application="props.application"
+        :volume="props.volume"
+        :loadApplication="props.loadApplication"
+      />
     </CardFooter>
   </Card>
 

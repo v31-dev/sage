@@ -32,12 +32,14 @@ import CopyButton from '@/components/CopyButton.vue'
 import CustomInput from '@/components/CustomInput.vue'
 import StateIndicator from '@/components/StateIndicator.vue'
 import SettingField from '@/components/SettingField.vue'
+import { watchFeed } from '@/lib/updates'
 import {
   fetchSetting,
   testSetting,
   updateSetting,
   type Setting,
   type SettingSection,
+  type SettingTestOutcome,
 } from '@/services/api'
 import { useAppStore } from '@/stores/app'
 
@@ -103,7 +105,8 @@ const values = ref<SettingValues>(valuesFrom(null))
 const saved = ref<SettingValues>(valuesFrom(null))
 const isLoading = ref(editable.value)
 const saving = ref(false)
-const testing = ref(false)
+const requesting = ref(false)
+const testing = computed(() => requesting.value || Boolean(status.value?.testing))
 const error = ref('')
 const dirty = computed(() => keys.value.some(key => values.value[key] !== saved.value[key]))
 
@@ -156,16 +159,21 @@ async function save() {
 }
 
 async function test() {
-  testing.value = true
+  requesting.value = true
   error.value = ''
   try {
-    const result = await testSetting(props.section, outgoingValue.value)
-    toast.success(result.message)
+    await testSetting(props.section, outgoingValue.value)
+    appStore.setSettingTesting(props.section)
   } catch (err) {
     error.value = errorMessage(err, `${props.title} test failed`)
   } finally {
-    testing.value = false
+    requesting.value = false
   }
+}
+
+function showOutcome(outcome: SettingTestOutcome) {
+  if (outcome.ok) toast.success(outcome.message)
+  else error.value = outcome.message
 }
 
 function reset() {
@@ -194,12 +202,22 @@ function onBeforeUnload(event: BeforeUnloadEvent) {
   if (dirty.value) event.preventDefault()
 }
 
+let stopOutcomes: (() => void) | null = null
+
 onMounted(() => {
   if (!editable.value) return
   load()
   window.addEventListener('beforeunload', onBeforeUnload)
+  stopOutcomes = watchFeed<SettingTestOutcome>(
+    `setting-tests:${props.section}`,
+    async () => [],
+    rows => rows.forEach(showOutcome)
+  ).stop
 })
-onUnmounted(() => window.removeEventListener('beforeunload', onBeforeUnload))
+onUnmounted(() => {
+  window.removeEventListener('beforeunload', onBeforeUnload)
+  stopOutcomes?.()
+})
 </script>
 
 <template>

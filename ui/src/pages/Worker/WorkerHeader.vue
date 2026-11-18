@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { toast } from 'vue-sonner'
-import { Activity, RotateCw, Trash } from 'lucide-vue-next'
+import { Activity, RefreshCw, RotateCw, Trash } from 'lucide-vue-next'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { ButtonGroup } from '@/components/ui/button-group'
 import {
   Card,
   CardAction,
@@ -24,11 +24,11 @@ import { formatDate } from '@/lib/utils'
 import {
   deleteWorker,
   rebootWorker,
+  resyncWorker,
   type Indicator,
   type TunnelStatus,
   type Worker,
   type WorkerMetricsResponse,
-  type WorkerStatus,
 } from '@/services/api'
 import SectionTitle from '@/components/SectionTitle.vue'
 import StateIndicator from '@/components/StateIndicator.vue'
@@ -46,19 +46,12 @@ const appStore = useAppStore()
 
 const props = withDefaults(defineProps<Props>(), {})
 
-// Shown from the moment Restart is confirmed (undone if the manager refuses) until the next push replaces `worker`
-// with the manager's answer.
-const requested = ref<WorkerStatus | null>(null)
-watch(
-  () => props.worker,
-  () => (requested.value = null)
-)
-const status = computed(() => requested.value ?? props.worker.status)
+const status = computed(() => props.worker.view.status)
 const restartable = computed(() => status.value === 'online' || status.value === 'not ready')
 const deleteBody = computed(() =>
   status.value === 'offline'
-    ? 'This worker is offline, so Sage cannot clean it up. It is removed from Sage together with its containers; delete the VM yourself if it is not deleted already.'
-    : 'Are you sure you want to delete this worker? Sage stops its services and removes its files from the VM; the VM itself is not deleted. Delete its containers first.'
+    ? 'This worker is offline, so Sage cannot clean it up: it is removed from Sage only, and its VM has to be cleaned up by hand.'
+    : 'Are you sure you want to delete this worker? Sage stops its services and removes its files from the VM; the VM itself is not deleted.'
 )
 
 const STACK_DESCRIPTIONS: Record<string, string> = {
@@ -80,13 +73,13 @@ const certificates = computed(() => [
     id: 'worker',
     label: 'Worker certificate',
     description: "For this worker's internal and TCP names.",
-    state: props.worker.certificate,
+    state: props.worker.certificates.worker,
   },
   {
     id: 'discovery',
     label: 'Discovery certificate',
     description: 'For internal discovery, shared by all workers.',
-    state: props.worker.discovery_certificate,
+    state: props.worker.certificates.discovery,
   },
 ])
 
@@ -103,9 +96,9 @@ const stack = computed(() => {
       ? tunnel(details.tunnel_name, details.tunnel_status)
       : undefined,
   }
-  return (props.worker.infra ?? []).map(container => ({
-    container,
-    detail: carried[container.name],
+  return props.worker.report.stack.map(([name, status]) => ({
+    container: { name, status },
+    detail: carried[name],
   }))
 })
 
@@ -120,23 +113,28 @@ async function onConfirmDelete() {
 }
 
 async function onConfirmRestart() {
-  requested.value = 'rebooting'
-  try {
-    await rebootWorker(props.worker.hostname)
-  } catch (err) {
-    requested.value = null
-    throw err
-  }
-  toast.success(`Worker ${props.worker.hostname} reboot triggered`)
+  await rebootWorker(props.worker.hostname)
+  toast.success(`Worker ${props.worker.hostname} reboot queued`)
+  await props.loadWorkerStatus()
+}
+
+async function onConfirmResync() {
+  await resyncWorker(props.worker.hostname)
+  toast.success(`Worker ${props.worker.hostname} resync queued`)
+  await props.loadWorkerStatus()
 }
 </script>
 
 <template>
   <Card>
-    <CardHeader class="border-b flex flex-col gap-3 md:flex-row md:justify-between">
+    <CardHeader class="border-b">
       <CardTitle>
         <SectionTitle :title="props.worker.hostname" :size="3">
-          <StateIndicator v-bind="appStore.workerIndicator(status)" show-label />
+          <StateIndicator
+            v-bind="appStore.workerIndicator(status, props.worker.view.reason)"
+            :tooltip="appStore.workerReason(props.worker.view)"
+            show-label
+          />
           <StateIndicator
             v-if="props.worker.path"
             class="ml-2"
@@ -146,36 +144,38 @@ async function onConfirmRestart() {
         </SectionTitle>
       </CardTitle>
       <CardAction>
-        <ButtonGroup class="space-x-1">
+        <div class="flex items-center gap-1">
           <EditWorkerButton :worker="props.worker" :loadWorkerStatus="props.loadWorkerStatus" />
-          <ConfirmationButton
-            triggerText="Restart"
-            title="Restart Worker"
-            body="Are you sure you want to restart this worker? It will reboot and briefly go offline."
-            :description="props.worker.hostname"
-            :icon="RotateCw"
-            :disabled="!restartable"
-            :onConfirm="onConfirmRestart"
-          />
           <ConfirmationButton
             triggerText="Delete"
             title="Delete Worker"
             :body="deleteBody"
             :description="props.worker.hostname"
             :icon="Trash"
+            icon-only
             destructive
-            :disabled="status === 'removing' || status === 'adding'"
+            :disabled="
+              status === 'removing' || status === 'adding' || props.worker.removal_refusal !== null
+            "
             :onConfirm="onConfirmDelete"
           />
-        </ButtonGroup>
+        </div>
       </CardAction>
     </CardHeader>
 
     <CardContent class="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-7">
+      <p
+        v-if="props.worker.removal_refusal"
+        class="text-sm text-muted-foreground md:col-span-2 lg:col-span-7"
+        data-removal-refusal
+      >
+        {{ props.worker.removal_refusal }}
+      </p>
+
       <div>
         <Label>IP</Label>
         <p class="text-sm text-muted-foreground font-mono break-all">
-          {{ props.workerMetrics.meta.ip || props.worker.ip }}
+          {{ props.workerMetrics.meta.ip || props.worker.address || '-' }}
         </p>
       </div>
 
@@ -194,6 +194,17 @@ async function onConfirmRestart() {
       <div>
         <Label>Memory</Label>
         <p class="text-sm text-muted-foreground">{{ props.workerMetrics.meta.mem_total_mb }} MB</p>
+      </div>
+
+      <div data-application-memory>
+        <Label>Application Memory</Label>
+        <template v-if="props.worker.memory">
+          <p class="text-sm text-muted-foreground">{{ props.worker.memory.applications_mb }} MB</p>
+          <p class="text-xs text-muted-foreground">
+            {{ props.worker.memory.reserved_mb }} MB kept for the host and Sage
+          </p>
+        </template>
+        <p v-else class="text-sm text-muted-foreground">-</p>
       </div>
 
       <div>
@@ -217,27 +228,22 @@ async function onConfirmRestart() {
             :id="`certificate-${certificate.id}`"
             :label="certificate.label"
             :description="certificate.description"
-            :error="certificate.state?.error ?? undefined"
+            :error="certificate.state.error ?? undefined"
             :data-certificate="certificate.id"
           >
             <div class="flex flex-col items-start gap-2">
-              <template v-if="certificate.state">
-                <StateIndicator
-                  v-bind="appStore.certificateIndicator(certificate.state)"
-                  show-label
-                />
-                <p
-                  v-if="
-                    certificate.state.covered &&
-                    certificate.state.synced &&
-                    certificate.state.expiry
-                  "
-                  class="text-sm text-muted-foreground"
-                >
-                  Valid until {{ formatDate(certificate.state.expiry) }}
-                </p>
-              </template>
-              <p v-else class="text-sm text-muted-foreground">No certificate status yet.</p>
+              <StateIndicator
+                v-bind="appStore.certificateIndicator(certificate.state)"
+                show-label
+              />
+              <p
+                v-if="
+                  certificate.state.covered && certificate.state.synced && certificate.state.expiry
+                "
+                class="text-sm text-muted-foreground"
+              >
+                Valid until {{ formatDate(certificate.state.expiry) }}
+              </p>
             </div>
           </SettingField>
         </FieldGroup>
@@ -245,7 +251,7 @@ async function onConfirmRestart() {
 
       <div class="md:col-span-2 lg:col-span-7">
         <Label>Stack</Label>
-        <FieldGroup v-if="props.worker.infra" class="mt-3 gap-5">
+        <FieldGroup v-if="stack.length" class="mt-3 gap-5">
           <SettingField
             v-for="{ container, detail } in stack"
             :key="container.name"
@@ -256,9 +262,11 @@ async function onConfirmRestart() {
           >
             <div class="flex flex-col items-start gap-2">
               <StateIndicator
+                v-if="props.worker.report.knowledge === 'known'"
                 v-bind="{ ...appStore.infraIndicator(container), label: container.status }"
                 show-label
               />
+              <Badge v-else variant="outline">last seen {{ container.status }}</Badge>
               <InputGroup v-if="detail">
                 <InputGroupAddon v-if="detail.indicator">
                   <StateIndicator v-bind="detail.indicator" />
@@ -275,16 +283,38 @@ async function onConfirmRestart() {
             </div>
           </SettingField>
         </FieldGroup>
-        <p v-else class="text-sm text-muted-foreground">No current report from the worker.</p>
+        <p v-else class="text-sm text-muted-foreground">Not reported yet.</p>
       </div>
     </CardContent>
 
-    <CardFooter class="border-t flex flex-col md:flex-row justify-end items-center gap-2 md:gap-0">
-      <ButtonGroup class="space-x-1 w-full md:w-auto flex">
-        <Button size="sm" class="flex-1 md:flex-initial" variant="outline" @click="goToMetrics">
-          <Activity />Metrics
-        </Button>
-      </ButtonGroup>
+    <CardFooter
+      class="border-t flex flex-col md:flex-row justify-between items-center gap-2 md:gap-0"
+    >
+      <div class="flex w-full gap-1 md:w-auto">
+        <ConfirmationButton
+          triggerText="Resync"
+          title="Resync Worker"
+          body="Sage writes again everything it keeps on this worker, its certificates, routes and discovery included, and restarts its stack."
+          :description="props.worker.hostname"
+          :icon="RefreshCw"
+          :disabled="status === 'removing' || status === 'adding'"
+          triggerClass="flex-1 md:flex-initial"
+          :onConfirm="onConfirmResync"
+        />
+        <ConfirmationButton
+          triggerText="Restart"
+          title="Restart Worker"
+          body="Are you sure you want to restart this worker? It will reboot and briefly go offline."
+          :description="props.worker.hostname"
+          :icon="RotateCw"
+          :disabled="!restartable"
+          triggerClass="flex-1 md:flex-initial"
+          :onConfirm="onConfirmRestart"
+        />
+      </div>
+      <Button size="sm" class="w-full md:w-auto" variant="outline" @click="goToMetrics">
+        <Activity />Metrics
+      </Button>
     </CardFooter>
   </Card>
 </template>
