@@ -393,14 +393,17 @@ class TestCertificateInventory:
     assert not current.is_valid() and not current.key_path.exists()
     assert [path.read_bytes() for path in current.retired_directory.glob("*.pem")] == [public]
 
-  def test_removed_workers_are_found_on_disk_without_adopting_a_broad_certificate(self, catalog):
+  def test_removed_workers_are_found_on_disk_and_a_shared_certificate_beside_them_is_no_workers(self, catalog):
     orphan = Certificate(catalog.directory / "workers" / "gone", ["*.gone.int.example.test"])
     write_certificate(orphan.fullchain_path.parent, orphan.names)
     write_certificate(catalog.directory / "workers", ["*.int.example.test"])
-    inventory = catalog.stored()
+    restarted = Certs.__new__(Certs)
+    Certs.__init__(restarted)
+    inventory = restarted.stored()
     assert inventory["worker:gone"].names == ()
     assert inventory["worker:gone"].obsolete()
-    assert set(inventory) == {"manager", "discovery", "worker:gone"}
+    assert set(inventory) == {"manager", "discovery", "shared", "worker:gone"}
+    assert inventory["shared"].names == () and inventory["shared"].obsolete()
 
   def test_a_rename_while_the_ca_is_answering_retains_the_result_for_revocation(self, catalog, tmp_path, monkeypatch):
     catalog.set_workers({"w1": "red"})
@@ -499,6 +502,57 @@ class TestRetirement:
     monkeypatch.setattr(catalog, "acme_client", lambda: pytest.fail("expired certificate contacted CA"))
     catalog.retire(catalog.workers["w1"])
     assert "w1" not in catalog.workers
+
+
+class TestSharedWorkerCertificate:
+  def started(self):
+    certs = Certs.__new__(Certs)
+    Certs.__init__(certs)
+    return certs
+
+  def test_none_is_listed_without_its_files(self, catalog):
+    assert catalog.shared is None and "shared" not in catalog.inventory()
+
+  def test_its_key_goes_its_leaf_is_revoked_and_it_leaves_the_inventory_and_the_workers_alone(self, catalog, monkeypatch):
+    workers = catalog.directory / "workers"
+    workers.mkdir()
+    leaf = write_certificate(workers, ["*.int.example.test"])
+    catalog.set_workers({"w1": "red"})
+    write_certificate(catalog.workers["w1"].fullchain_path.parent, catalog.workers["w1"].names)
+    certs = self.started()
+    certs.set_workers({"w1": "red"})
+    assert [entry["id"] for entry in certs.status()] == ["manager", "discovery", "shared", "worker:w1"]
+    revoked = []
+    monkeypatch.setattr(certs, "acme_client", lambda: (SimpleNamespace(revoke=lambda cert, reason: revoked.append(cert)), None))
+
+    certs.retire(certs.stored()["shared"])
+    assert [cert.serial_number for cert in revoked] == [leaf.serial_number]
+    assert not (workers / "fullchain.pem").exists() and not (workers / "key.pem").exists()
+    assert not (certs.directory / "shared-retired").exists()
+    assert certs.shared is None and set(certs.stored()) == {"manager", "discovery", "worker:w1"}
+    assert certs.workers["w1"].is_valid()
+
+  def test_a_failed_revocation_keeps_only_its_leaf_and_lists_it_again_after_a_restart(self, catalog, monkeypatch):
+    workers = catalog.directory / "workers"
+    workers.mkdir()
+    write_certificate(workers, ["*.int.example.test"])
+    certs = self.started()
+
+    def fail(*args):
+      raise RuntimeError("CA unavailable")
+
+    monkeypatch.setattr(certs, "acme_client", lambda: (SimpleNamespace(revoke=fail), None))
+    with pytest.raises(RuntimeError, match="CA unavailable"):
+      certs.retire(certs.shared)
+    assert not (workers / "fullchain.pem").exists() and not (workers / "key.pem").exists()
+    assert len(list((certs.directory / "shared-retired").glob("*.pem"))) == 1
+    assert "CA unavailable" in certs.status()[2]["error"]
+
+    restarted = self.started()
+    assert "shared" in restarted.stored()
+    monkeypatch.setattr(restarted, "acme_client", lambda: (SimpleNamespace(revoke=lambda cert, reason: None), None))
+    restarted.retire(restarted.shared)
+    assert restarted.shared is None and not (restarted.directory / "shared-retired").exists()
 
 
 @pytest.mark.parametrize("hostname", ["..", "a/b", "."])

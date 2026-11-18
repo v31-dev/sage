@@ -527,7 +527,10 @@ when the certificate is invalid or due; a failed renewal leaves its current PEM 
 under `certs/workers/<hostname>`. Exact SAN equality and a matching private key are required. A rename/removal
 moves the public leaf into that owner's `retired/` directory and deletes its private key. Public leaves remain
 until revocation succeeds, `alreadyRevoked` is returned, or they expire; startup/daily/on-demand maintenance finds
-removed owners on disk. A revocation failure blocks that owner's replacement and reports an error, while the pass
+removed owners on disk. A certificate shared by every worker, `certs/workers/{fullchain,key}.pem` beside the workers'
+folders, is used by none: found at start, it is listed as `shared` with no names, so the renewal retires it like a
+removed owner's, its leaf kept in `certs/shared-retired/` (every folder in `certs/workers` is read as a worker's), and
+it leaves the inventory once retired. A revocation failure blocks that owner's replacement and reports an error, while the pass
 continues with independent owners. A certificate returned after its owner changes is retained for revocation.
 
 Renewal (`renew_certificates`, under `certificate`) sets the worker names from the Worker rows, then takes one
