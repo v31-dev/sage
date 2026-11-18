@@ -87,6 +87,11 @@ worker's setup creates; Traefik takes forwarded headers (the client's address) f
 at each setup, so an application or a tailnet device can't set them. Traefik reads its routes from files and has no
 Docker socket, and each tunnel's metrics server listens on its own loopback. Every image is pinned to an exact release.
 
+Every service of the stack runs with all its capabilities dropped (Traefik keeps `NET_BIND_SERVICE` for its ports),
+`no-new-privileges` and a read-only root filesystem; Telegraf and the tunnels run as non-root users. Traefik and Vector
+stay root, which without its other capabilities reads only files root owns: Sage writes the certificates' keys and
+Vector's buffer folder as root, so they keep working; a key owned by another user would not be served.
+
 `vector` and `telegraf` run with a 128 MiB memory limit, swap included: their executables are large, and the kernel keeps the pages it has read in the container's memory, which on a small worker the applications could use.
 
 Applications themselves are also deployed onto workers as Docker workloads.

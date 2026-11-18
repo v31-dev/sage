@@ -87,6 +87,26 @@ class TestTelegrafConfig:
     assert all(label.startswith(LABEL_PREFIX) for label in LABELS)
 
 
+class TestLeastPrivilege:
+  @pytest.mark.parametrize("name", ["traefik", "cloudflared", "cloudflared-discovery", "vector", "telegraf"])
+  def test_every_service_drops_its_capabilities_gains_no_privileges_and_has_a_read_only_root(self, name):
+    definition = service(name)
+    assert definition["cap_drop"] == ["ALL"]
+    assert "no-new-privileges:true" in definition["security_opt"]
+    assert definition["read_only"] is True
+    assert not definition.get("privileged")
+
+  def test_only_traefik_keeps_a_capability_the_one_to_bind_its_ports(self):
+    stack = yaml.safe_load((TEMPLATES / "docker-compose.yml").read_text())["services"]
+    assert {name: definition["cap_add"] for name, definition in stack.items() if "cap_add" in definition} == {
+        "traefik": ["NET_BIND_SERVICE"]}
+
+  def test_traefik_reads_its_configuration_and_vector_writes_only_its_buffer(self):
+    assert service("traefik")["volumes"] == ["${SAGE_HOME}/traefik:/etc/traefik:ro"]
+    assert [volume for volume in service("vector")["volumes"] if not volume.endswith(":ro")] == [
+        "${SAGE_HOME}/vector/buffer:/var/lib/vector"]
+
+
 class TestTelegrafService:
   def test_it_has_the_least_privilege_the_probe_found_enough(self):
     service = telegraf_service()
