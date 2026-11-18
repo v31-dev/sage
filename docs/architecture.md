@@ -43,6 +43,12 @@ WebSocket, with a 403 or close code 1008:
 
 A request with neither header is not a browser's and passes (curl, the workers).
 
+The manager also sends a static security policy of its own on everything its main server answers (`MANAGER_HEADERS`,
+`app/api.py`): a CSP that loads scripts, styles, images, fonts and connections from its own origin only (inline styles
+allowed, which its charts and Vue insert), no framing (`frame-ancestors 'none'`, `X-Frame-Options: DENY`), `nosniff`,
+HSTS, `Referrer-Policy: no-referrer` and every powerful browser feature off. The UI's icons are bundled
+(`lucide-vue-next`), so it fetches nothing from another origin.
+
 In userspace mode the container has no route into the tailnet, so outbound traffic goes
 through `tailscaled`: SSH to workers uses asyncssh's `proxy_command` with
 `tailscale nc <worker> 22`. For HTTP the workers reach the manager (the reports and logs on
