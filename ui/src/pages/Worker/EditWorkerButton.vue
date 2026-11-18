@@ -22,6 +22,7 @@ import {
 } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Spinner } from '@/components/ui/spinner'
+import IconButton from '@/components/IconButton.vue'
 import { type Worker, updateWorker } from '@/services/api'
 
 interface Props {
@@ -61,16 +62,12 @@ async function onConfirm() {
 <template>
   <Dialog v-model:open="isOpen">
     <DialogTrigger asChild>
-      <Button
-        size="sm"
-        variant="outline"
-        class="gap-2"
+      <IconButton
+        :icon="Edit"
+        label="Edit"
         :disabled="props.worker.view.status === 'removing'"
         @click="openDialog"
-      >
-        <Edit :size="16" />
-        Edit
-      </Button>
+      />
     </DialogTrigger>
     <DialogContent class="sm:max-w-[500px]">
       <DialogHeader>

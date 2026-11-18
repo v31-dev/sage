@@ -32,7 +32,7 @@ async function open(current: Worker) {
   })
   await wrapper
     .findAll('button')
-    .find(button => button.text().includes('Edit'))!
+    .find(button => button.attributes('aria-label') === 'Edit')!
     .trigger('click')
   return wrapper
 }
@@ -57,7 +57,9 @@ describe('editing a worker', () => {
       global: { stubs },
     })
 
-    const edit = wrapper.findAll('button').find(button => button.text().includes('Edit'))!
+    const edit = wrapper
+      .findAll('button')
+      .find(button => button.attributes('aria-label') === 'Edit')!
     expect(edit.attributes('disabled')).toBeDefined()
   })
 

@@ -297,6 +297,38 @@ describe('the worker', () => {
     expect(wrapper.find('[data-removal-refusal]').exists()).toBe(false)
   })
 
+  it('shows Edit and Delete as icons in the header, and Resync, Restart and Metrics in the footer', () => {
+    const actions = (current: Worker, slot: string) =>
+      mount(WorkerHeader, {
+        props: { worker: current, workerMetrics, loadWorkerStatus: async () => {} },
+      })
+        .get(`[data-slot=${slot}]`)
+        .findAll('button')
+        .map(button => [button.text(), button.attributes('aria-label'), button.element.disabled])
+    const removing = worker('eu1', {
+      view: { status: 'removing', reason: null, detail: null, ready: false },
+    })
+
+    expect(actions(worker('eu1'), 'card-action')).toEqual([
+      ['', 'Edit', false],
+      ['', 'Delete', false],
+    ])
+    expect(actions(removing, 'card-action')).toEqual([
+      ['', 'Edit', true],
+      ['', 'Delete', true],
+    ])
+    expect(actions(worker('eu1'), 'card-footer')).toEqual([
+      ['Resync', undefined, false],
+      ['Restart', undefined, false],
+      ['Metrics', undefined, false],
+    ])
+    expect(actions(removing, 'card-footer')).toEqual([
+      ['Resync', undefined, true],
+      ['Restart', undefined, true],
+      ['Metrics', undefined, false],
+    ])
+  })
+
   it('says that an offline worker is removed from Sage only', () => {
     const { wrapper } = mountHeader(
       worker('eu1', {

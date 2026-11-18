@@ -5,7 +5,6 @@ import { toast } from 'vue-sonner'
 import { Activity, RefreshCw, RotateCw, Trash } from 'lucide-vue-next'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { ButtonGroup } from '@/components/ui/button-group'
 import {
   Card,
   CardAction,
@@ -145,39 +144,22 @@ async function onConfirmResync() {
         </SectionTitle>
       </CardTitle>
       <CardAction>
-        <ButtonGroup class="space-x-1">
+        <div class="flex items-center gap-1">
           <EditWorkerButton :worker="props.worker" :loadWorkerStatus="props.loadWorkerStatus" />
-          <ConfirmationButton
-            triggerText="Resync"
-            title="Resync Worker"
-            body="Sage writes again everything it keeps on this worker, its certificates, routes and discovery included, and restarts its stack."
-            :description="props.worker.hostname"
-            :icon="RefreshCw"
-            :disabled="status === 'removing' || status === 'adding'"
-            :onConfirm="onConfirmResync"
-          />
-          <ConfirmationButton
-            triggerText="Restart"
-            title="Restart Worker"
-            body="Are you sure you want to restart this worker? It will reboot and briefly go offline."
-            :description="props.worker.hostname"
-            :icon="RotateCw"
-            :disabled="!restartable"
-            :onConfirm="onConfirmRestart"
-          />
           <ConfirmationButton
             triggerText="Delete"
             title="Delete Worker"
             :body="deleteBody"
             :description="props.worker.hostname"
             :icon="Trash"
+            icon-only
             destructive
             :disabled="
               status === 'removing' || status === 'adding' || props.worker.removal_refusal !== null
             "
             :onConfirm="onConfirmDelete"
           />
-        </ButtonGroup>
+        </div>
       </CardAction>
     </CardHeader>
 
@@ -305,12 +287,34 @@ async function onConfirmResync() {
       </div>
     </CardContent>
 
-    <CardFooter class="border-t flex flex-col md:flex-row justify-end items-center gap-2 md:gap-0">
-      <ButtonGroup class="space-x-1 w-full md:w-auto flex">
-        <Button size="sm" class="flex-1 md:flex-initial" variant="outline" @click="goToMetrics">
-          <Activity />Metrics
-        </Button>
-      </ButtonGroup>
+    <CardFooter
+      class="border-t flex flex-col md:flex-row justify-between items-center gap-2 md:gap-0"
+    >
+      <div class="flex w-full gap-1 md:w-auto">
+        <ConfirmationButton
+          triggerText="Resync"
+          title="Resync Worker"
+          body="Sage writes again everything it keeps on this worker, its certificates, routes and discovery included, and restarts its stack."
+          :description="props.worker.hostname"
+          :icon="RefreshCw"
+          :disabled="status === 'removing' || status === 'adding'"
+          triggerClass="flex-1 md:flex-initial"
+          :onConfirm="onConfirmResync"
+        />
+        <ConfirmationButton
+          triggerText="Restart"
+          title="Restart Worker"
+          body="Are you sure you want to restart this worker? It will reboot and briefly go offline."
+          :description="props.worker.hostname"
+          :icon="RotateCw"
+          :disabled="!restartable"
+          triggerClass="flex-1 md:flex-initial"
+          :onConfirm="onConfirmRestart"
+        />
+      </div>
+      <Button size="sm" class="w-full md:w-auto" variant="outline" @click="goToMetrics">
+        <Activity />Metrics
+      </Button>
     </CardFooter>
   </Card>
 </template>
