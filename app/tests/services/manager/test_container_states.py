@@ -701,3 +701,13 @@ class TestPayloads:
     assert [(item["name"], item["active_count"]) for item in page["applications"]] == [("api", 0), ("web", 1)]
     with pytest.raises(LookupError):
       manager.project_page("nothing")
+
+  async def test_the_projects_pages_are_every_project_by_name_each_with_only_its_own_applications(
+          self, manager, containers, application, worker):
+    panel = Application.create(project=Project.create(name="admin", label="Admin"), name="panel", label="Panel")
+    Container.create(application=panel, worker=worker)
+    Project.create(name="zeta", label="Zeta")
+    await deployed(containers[0])
+    report(containers[0])
+    assert [(page["name"], [(item["name"], item["active_count"]) for item in page["applications"]])
+            for page in manager.project_pages()] == [("admin", [("panel", 0)]), ("demo", [("web", 1)]), ("zeta", [])]

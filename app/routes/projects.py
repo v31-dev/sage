@@ -2,7 +2,7 @@ from fastapi import APIRouter, Body
 
 from routes.applications import router as applications_router
 from services.applications import commands
-from services.applications.payload import project_list, project_payload
+from services.applications.payload import project_payload
 from services.manager import Manager
 
 router = APIRouter()
@@ -10,7 +10,7 @@ router = APIRouter()
 
 @router.get("/")
 def list_projects():
-  return project_list()
+  return Manager().project_pages()
 
 
 @router.post("/")

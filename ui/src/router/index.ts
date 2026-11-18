@@ -1,7 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import Home from '@/pages/Home.vue'
-import Projects from '@/pages/Projects.vue'
-import Project from '@/pages/Project'
+import Applications from '@/pages/Applications'
 import Domains from '@/pages/Domains'
 import System from '@/pages/System.vue'
 import Application from '@/pages/Application'
@@ -21,12 +20,16 @@ import Tasks from '@/pages/Tasks'
 
 const routes = [
   { path: '/', name: 'Home', component: Home },
-  { path: '/projects', name: 'Projects', component: Projects },
-  { path: '/projects/:projectId', name: 'Project', component: Project },
-  { path: '/projects/:projectId/:appId', name: 'Application', component: Application },
-  { path: '/projects/:projectId/:appId/logs', name: 'ApplicationLogs', component: ApplicationLogs },
+  { path: '/applications', name: 'Applications', component: Applications },
+  { path: '/applications/:projectId', name: 'Project', redirect: '/applications' },
+  { path: '/applications/:projectId/:appId', name: 'Application', component: Application },
   {
-    path: '/projects/:projectId/:appId/metrics',
+    path: '/applications/:projectId/:appId/logs',
+    name: 'ApplicationLogs',
+    component: ApplicationLogs,
+  },
+  {
+    path: '/applications/:projectId/:appId/metrics',
     name: 'ApplicationMetrics',
     component: ApplicationMetrics,
   },

@@ -36,17 +36,17 @@ const router = useRouter()
 const props = withDefaults(defineProps<Props>(), {})
 
 function onClickLogs() {
-  router.push(`/projects/${props.application.project.name}/${props.application.name}/logs`)
+  router.push(`/applications/${props.application.project.name}/${props.application.name}/logs`)
 }
 
 function onClickMetrics() {
-  router.push(`/projects/${props.application.project.name}/${props.application.name}/metrics`)
+  router.push(`/applications/${props.application.project.name}/${props.application.name}/metrics`)
 }
 
 async function onConfirmDelete() {
   await deleteApplication(props.application.project.name, props.application.name)
   toast.success(`Application ${props.application.name} deleted successfully`)
-  router.push(`/projects/${props.application.project.name}`)
+  router.push('/applications')
 }
 
 const repoURL = computed(() => {

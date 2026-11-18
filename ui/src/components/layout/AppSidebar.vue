@@ -61,8 +61,8 @@ const menu = computed<MenuInterface[]>(() => [
     name: 'Application',
     children: [
       {
-        name: 'Projects',
-        path: '/projects',
+        name: 'Applications',
+        path: '/applications',
         icon: Briefcase,
       },
       {

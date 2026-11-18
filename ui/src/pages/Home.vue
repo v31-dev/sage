@@ -243,7 +243,7 @@ onUnmounted(() => {
             </RouterLink>
 
             <!-- Projects & Apps -->
-            <RouterLink to="/projects" class="block">
+            <RouterLink to="/applications" class="block">
               <Card class="h-full gap-4 transition-colors hover:border-primary/40">
                 <CardHeader class="flex flex-row items-center justify-between">
                   <CardTitle class="text-sm font-medium text-muted-foreground"

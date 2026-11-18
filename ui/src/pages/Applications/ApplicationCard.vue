@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { useRouter } from 'vue-router'
-import { Badge } from '@/components/ui/badge'
-import { Card, CardHeader, CardTitle, CardContent, CardAction } from '@/components/ui/card'
+import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card'
 
 import { type ApplicationSummary, type Project } from '@/services/api'
 import SectionTitle from '@/components/SectionTitle.vue'
@@ -20,7 +19,7 @@ const appStore = useAppStore()
 const props = withDefaults(defineProps<Props>(), {})
 
 function goToApplication(application: ApplicationSummary) {
-  router.push(`/projects/${props.project.name}/${application.name}`)
+  router.push(`/applications/${props.project.name}/${application.name}`)
 }
 </script>
 
@@ -35,11 +34,6 @@ function goToApplication(application: ApplicationSummary) {
           <StateIndicator v-bind="appStore.applicationIndicator(props.application)" show-label />
         </SectionTitle>
       </CardTitle>
-      <CardAction>
-        <Badge class="h-5 min-w-5 rounded-full px-1 font-mono tabular-nums">
-          {{ props.application.container_count }}
-        </Badge>
-      </CardAction>
     </CardHeader>
     <CardContent class="overflow-hidden">
       <h3 class="text-sm font-medium text-muted-foreground mb-2">

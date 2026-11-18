@@ -79,7 +79,7 @@ async function loadApplication() {
 }
 
 function goBack() {
-  router.push(`/projects/${projectName}`)
+  router.push('/applications')
 }
 </script>
 
@@ -184,7 +184,7 @@ function goBack() {
       <Card v-else-if="isNotFound">
         <CardContent class="flex flex-col items-center justify-center py-12">
           <p class="text-muted-foreground text-lg mb-4">Application {{ appName }} not found</p>
-          <Button size="sm" @click="goBack" variant="outline"> Back to Project </Button>
+          <Button size="sm" @click="goBack" variant="outline"> Back to Applications </Button>
         </CardContent>
       </Card>
     </div>

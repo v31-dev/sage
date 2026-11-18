@@ -19,7 +19,7 @@ import { createApplication, type Project } from '@/services/api'
 
 interface Props {
   project: Project
-  loadProject: () => Promise<void>
+  loadProjects: () => Promise<void>
 }
 
 const props = withDefaults(defineProps<Props>(), {})
@@ -54,7 +54,7 @@ async function onClickCreateAppConfirm() {
     })
     isCreateAppDialogOpen.value = false
     toast.success(`Application ${createAppFormData.value.label} created successfully`)
-    await props.loadProject()
+    await props.loadProjects()
   } catch (err) {
     createAppDialogErrorMessage.value =
       err instanceof Error ? err.message : 'Failed to create application'

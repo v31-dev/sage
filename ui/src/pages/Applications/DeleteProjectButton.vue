@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import { useRouter } from 'vue-router'
 import { Trash } from 'lucide-vue-next'
 import { toast } from 'vue-sonner'
 
@@ -8,16 +7,15 @@ import { deleteProject, type Project } from '@/services/api'
 
 interface Props {
   project: Project
+  loadProjects: () => Promise<void>
 }
 
 const props = withDefaults(defineProps<Props>(), {})
 
-const router = useRouter()
-
 async function onConfirmDelete() {
   await deleteProject(props.project.name)
   toast.success(`Project ${props.project.name} deleted successfully`)
-  router.push('/projects')
+  await props.loadProjects()
 }
 </script>
 
@@ -29,6 +27,7 @@ async function onConfirmDelete() {
     :description="props.project.name"
     :icon="Trash"
     destructive
+    :disabled="props.project.application_count > 0"
     :onConfirm="onConfirmDelete"
   />
 </template>

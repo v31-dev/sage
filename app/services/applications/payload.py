@@ -15,11 +15,6 @@ def project_payload(project: Project) -> dict:
   }
 
 
-def project_list() -> list[dict]:
-  """Every project's payload, by name."""
-  return [project_payload(project) for project in Project.select().order_by(Project.name)]
-
-
 def application_summary(application: Application, active_count: int) -> dict:
   """The application as a list of applications shows it: what it runs, and how many of its containers are active: an
   application has no state of its own."""

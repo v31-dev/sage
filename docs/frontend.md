@@ -70,11 +70,10 @@ The indicator at the top left of the sidebar (`components/layout/SocketStatus.vu
 Routes in `ui/src/router/index.ts` currently cover:
 
 - `/`
-- `/projects`
-- `/projects/:projectId`
-- `/projects/:projectId/:appId`
-- `/projects/:projectId/:appId/logs`
-- `/projects/:projectId/:appId/metrics`
+- `/applications` (every project as a card holding its applications; `/applications/:projectId` leads here)
+- `/applications/:projectId/:appId`
+- `/applications/:projectId/:appId/logs`
+- `/applications/:projectId/:appId/metrics`
 - `/requests`
 - `/system`
 - `/workers`
@@ -86,7 +85,7 @@ Routes in `ui/src/router/index.ts` currently cover:
 ## Main Feature Areas
 
 - Home dashboard for platform posture, recent activity, and critical events
-- Projects and applications
+- Applications overview: each project with its applications, and their active counts
 - Application containers, domains, and volumes
 - Application logs and metrics
 - Worker inventory and worker metrics

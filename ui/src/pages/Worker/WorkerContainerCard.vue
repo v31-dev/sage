@@ -21,6 +21,9 @@ interface Props {
 const props = withDefaults(defineProps<Props>(), {})
 
 const showForceDelete = computed(() => props.worker.view.status === 'offline')
+const applicationLabel = computed(
+  () => `${props.container.application.project.label} / ${props.container.application.label}`
+)
 
 async function onConfirmForceDelete() {
   await deleteContainer(
@@ -64,23 +67,11 @@ async function onConfirmForceDelete() {
     <CardFooter class="border-t flex-col space-y-4">
       <Button as-child variant="outline" size="sm" class="w-full min-w-0">
         <RouterLink
-          :to="`/projects/${props.container.application.project.name}`"
+          :to="`/applications/${props.container.application.project.name}/${props.container.application.name}`"
           class="w-full min-w-0"
-          :title="`Project: ${props.container.application.project.label}`"
+          :title="`Application: ${applicationLabel}`"
         >
-          <span class="block truncate"
-            >Project: {{ props.container.application.project.label }}</span
-          ><ArrowRight />
-        </RouterLink>
-      </Button>
-
-      <Button as-child variant="outline" size="sm" class="w-full min-w-0">
-        <RouterLink
-          :to="`/projects/${props.container.application.project.name}/${props.container.application.name}`"
-          class="w-full min-w-0"
-          :title="`Application: ${props.container.application.label}`"
-        >
-          <span class="block truncate">Application: {{ props.container.application.label }}</span
+          <span class="block truncate">Application: {{ applicationLabel }}</span
           ><ArrowRight />
         </RouterLink>
       </Button>

@@ -1,8 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
 import { Plus } from 'lucide-vue-next'
-import { Card, CardContent, CardHeader, CardTitle, CardAction } from '@/components/ui/card'
+import { Card, CardHeader, CardAction } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -16,13 +15,11 @@ import { Field, FieldError, FieldGroup, FieldLabel, FieldSet } from '@/component
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Spinner } from '@/components/ui/spinner'
-import { Badge } from '@/components/ui/badge'
 
-import { createProject, fetchProjects, type Project } from '@/services/api'
-import CardDescription from '@/components/ui/card/CardDescription.vue'
+import { createProject, fetchProjects, type ProjectPage } from '@/services/api'
+import ProjectCard from './ProjectCard.vue'
 
-const router = useRouter()
-const projects = ref<Project[]>([])
+const projects = ref<ProjectPage[]>([])
 const isLoading = ref(true)
 const isDialogOpen = ref(false)
 const isSubmitting = ref(false)
@@ -38,10 +35,13 @@ onMounted(async () => {
   await loadProjects()
 })
 
+let lastLoad = 0
+
 async function loadProjects() {
+  const load = ++lastLoad
   try {
-    isLoading.value = true
-    projects.value = await fetchProjects()
+    const next = await fetchProjects()
+    if (load === lastLoad) projects.value = next
   } catch (err) {
     console.error('Failed to load projects:', err)
   } finally {
@@ -77,10 +77,6 @@ async function handleCreateProject() {
     isSubmitting.value = false
   }
 }
-
-function goToProject(projectName: string) {
-  router.push(`/projects/${projectName}`)
-}
 </script>
 
 <template>
@@ -90,7 +86,7 @@ function goToProject(projectName: string) {
       <div v-if="isLoading" class="absolute inset-0 z-50 flex items-center justify-center">
         <div class="flex flex-col items-center gap-4">
           <Spinner />
-          <p class="text-sm text-muted-foreground">Loading projects...</p>
+          <p class="text-sm text-muted-foreground">Loading applications...</p>
         </div>
       </div>
 
@@ -149,30 +145,12 @@ function goToProject(projectName: string) {
           </CardHeader>
         </Card>
 
-        <!-- Projects Grid -->
-        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          <Card
-            v-for="project in projects"
-            :key="project.name"
-            class="cursor-pointer hover:shadow-lg transition-shadow flex flex-col min-h-[150px] max-h-[150px]"
-            @click="goToProject(project.name)"
-          >
-            <CardHeader>
-              <CardTitle class="line-clamp-2">{{ project.label }}</CardTitle>
-              <CardDescription>{{ project.name }}</CardDescription>
-              <CardAction>
-                <Badge class="h-5 min-w-5 rounded-full px-1 font-mono tabular-nums">
-                  {{ project.application_count }}
-                </Badge>
-              </CardAction>
-            </CardHeader>
-            <CardContent class="overflow-hidden">
-              <h3 class="text-sm font-medium text-muted-foreground mb-2">
-                {{ project.description }}
-              </h3>
-            </CardContent>
-          </Card>
-        </div>
+        <ProjectCard
+          v-for="project in projects"
+          :key="project.name"
+          :project="project"
+          :loadProjects="loadProjects"
+        />
       </div>
     </div>
   </main>

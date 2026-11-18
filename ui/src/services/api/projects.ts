@@ -17,7 +17,7 @@ export interface ProjectPage extends Project {
   applications: ApplicationSummary[]
 }
 
-export const fetchProjects = () => request<Project[]>('GET', '/projects/')
+export const fetchProjects = () => request<ProjectPage[]>('GET', '/projects/')
 
 export const fetchProject = (name: string) => request<ProjectPage>('GET', `/projects/${name}`)
 

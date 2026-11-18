@@ -22,7 +22,7 @@ import FieldLabelHelp from '@/components/FieldLabelHelp.vue'
 
 interface Props {
   project: Project
-  loadProject: () => Promise<void>
+  loadProjects: () => Promise<void>
 }
 
 const props = withDefaults(defineProps<Props>(), {})
@@ -59,7 +59,7 @@ async function handleUpdateProject() {
     })
     isEditDialogOpen.value = false
     toast.success('Project updated successfully')
-    await props.loadProject()
+    await props.loadProjects()
   } catch (err) {
     editDialogErrorMessage.value = err instanceof Error ? err.message : 'Failed to update project'
   } finally {

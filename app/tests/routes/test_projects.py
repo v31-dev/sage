@@ -7,10 +7,10 @@ URL = "/api/projects"
 
 
 class TestList:
-  def test_every_project_by_name(self, client, db):
-    Project.create(name="web", label="Web")
-    Project.create(name="api", label="Api")
-    assert [row["name"] for row in client.get(f"{URL}/").json()] == ["api", "web"]
+  def test_it_is_the_managers_pages_of_every_project(self, client, manager):
+    manager.answers["project_pages"] = [{"name": "demo", "applications": []}]
+    assert client.get(f"{URL}/").json() == [{"name": "demo", "applications": []}]
+    assert manager.called("project_pages") == [((), {})]
 
 
 class TestCreate:
