@@ -127,7 +127,7 @@ async function onConfirmResync() {
 
 <template>
   <Card>
-    <CardHeader class="border-b flex flex-col gap-3 md:flex-row md:justify-between">
+    <CardHeader class="border-b">
       <CardTitle>
         <SectionTitle :title="props.worker.hostname" :size="3">
           <StateIndicator

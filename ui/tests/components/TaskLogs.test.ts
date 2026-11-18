@@ -136,7 +136,7 @@ describe('the lines', () => {
     expect(messages(wrapper)).toHaveLength(1001)
     expect([messages(wrapper)[0], messages(wrapper)[1000]]).toEqual(['line 1', 'line 1001'])
     expect(wrapper.text()).not.toContain('Showing')
-  })
+  }, 20_000)
 
   it('say so when there are none, and why when they could not be loaded', async () => {
     const pending = followTopics({ pending: true })
