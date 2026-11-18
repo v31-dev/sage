@@ -33,6 +33,7 @@ async function onConfirmDeleteContainer() {
     body="Are you sure you want to delete this container? This action cannot be undone."
     :description="`Worker: ${props.container.worker.hostname}`"
     :icon="Trash"
+    icon-only
     destructive
     :disabled="deleting"
     :onConfirm="onConfirmDeleteContainer"

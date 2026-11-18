@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { ArrowRight, ExternalLink } from 'lucide-vue-next'
+import { ArrowRight } from 'lucide-vue-next'
 import {
   Card,
   CardHeader,
@@ -13,8 +13,6 @@ import { RouterLink } from 'vue-router'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 
-import { ButtonGroup } from '@/components/ui/button-group'
-
 import { useAppStore } from '@/stores/app'
 import EventLogsButton from './EventLogsButton.vue'
 import DeleteContainerButton from './DeleteContainerButton.vue'
@@ -22,7 +20,7 @@ import DeployApplicationButton from './DeployApplicationButton.vue'
 import StopApplicationButton from './StopApplicationButton.vue'
 import { type Application, type Container, type Domain } from '@/services/api'
 import ContainerStatus from '@/components/ContainerStatus.vue'
-import CopyButton from '@/components/CopyButton.vue'
+import DomainAddress from '@/components/DomainAddress.vue'
 import StateIndicator from '@/components/StateIndicator.vue'
 
 interface Props {
@@ -66,7 +64,7 @@ const workerIndicator = computed(() => {
       </CardAction>
     </CardHeader>
     <CardFooter class="flex-col space-y-4">
-      <ButtonGroup class="w-full space-x-1 flex">
+      <div class="grid w-full grid-cols-2 gap-1">
         <DeployApplicationButton
           :application="props.application"
           :container="props.container"
@@ -77,7 +75,7 @@ const workerIndicator = computed(() => {
           :container="props.container"
           :loadApplication="props.loadApplication"
         />
-      </ButtonGroup>
+      </div>
       <EventLogsButton :container="props.container" class="w-full min-w-0" />
       <Button as-child variant="outline" size="sm" class="w-full min-w-0">
         <RouterLink
@@ -98,24 +96,7 @@ const workerIndicator = computed(() => {
     </CardFooter>
     <CardContent v-if="props.container.domains.length" class="border-t pt-6 space-y-4">
       <div v-for="domain in props.container.domains" :key="domain.id" class="space-y-2" data-domain>
-        <div class="flex items-center gap-2">
-          <Button
-            v-if="domain.type === 'tcp' || !domain.address"
-            size="sm"
-            variant="outline"
-            class="min-w-0 flex-1"
-            disabled
-          >
-            <span class="truncate">{{ domain.address ?? domain.name }}</span>
-          </Button>
-          <Button v-else size="sm" variant="outline" class="min-w-0 flex-1" as-child>
-            <a :href="domain.address" target="_blank">
-              <ExternalLink />
-              <span class="truncate">{{ domain.address }}</span>
-            </a>
-          </Button>
-          <CopyButton v-if="domain.address" :text="domain.address" />
-        </div>
+        <DomainAddress :domain="domain" />
         <div class="flex flex-wrap items-center gap-2">
           <StateIndicator
             v-if="domain.type !== 'public' && pendingCertificate"

@@ -16,7 +16,7 @@ import {
 } from '@/components/ui/card'
 import { Spinner } from '@/components/ui/spinner'
 import ConfirmationButton from '@/components/ConfirmationButton.vue'
-import CopyButton from '@/components/CopyButton.vue'
+import DomainAddress from '@/components/DomainAddress.vue'
 import StateIndicator from '@/components/StateIndicator.vue'
 import { watchState } from '@/lib/updates'
 import { type Domain, type DomainsResponse, deleteDomain, fetchDomains } from '@/services/api'
@@ -213,21 +213,7 @@ onUnmounted(() => stop?.())
                 </p>
               </CardContent>
               <CardFooter class="gap-1 border-t py-2 pr-3 [.border-t]:pt-2">
-                <a
-                  v-if="domain.type !== 'tcp' && domain.address"
-                  :href="domain.address"
-                  target="_blank"
-                  rel="noreferrer"
-                  class="flex min-w-0 items-center gap-1.5 text-sm underline-offset-4 hover:underline"
-                  data-address
-                >
-                  <ExternalLink class="size-4 shrink-0" />
-                  <span class="break-all">{{ domain.address }}</span>
-                </a>
-                <span v-else class="min-w-0 break-all font-mono text-sm" data-address>
-                  {{ domain.address ?? domain.name }}
-                </span>
-                <CopyButton v-if="domain.address" :text="domain.address" />
+                <DomainAddress :domain="domain" />
                 <div class="ml-auto flex shrink-0 items-center gap-1">
                   <DomainDialog
                     :containers="state.containers"

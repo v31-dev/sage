@@ -2,6 +2,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it } from 'vitest'
 import ContainerCard from '@/pages/Application/ContainerCard.vue'
+import CopyButton from '@/components/CopyButton.vue'
 import type { Application, Domain, DomainStatus, WorkerStatus } from '@/services/api'
 import { container } from '../helpers/containers'
 import { worker } from '../helpers/workers'
@@ -131,11 +132,37 @@ describe('the domains linked to the container', () => {
     expect(wrapper.get('[data-domain]').text()).toContain('syncing')
   })
 
-  it('links to the address and shows its type, service and pool', () => {
+  it("shows the card's Delete as an icon", () => {
+    const wrapper = mount(ContainerCard, {
+      props: {
+        application: {} as Application,
+        container: container({ worker: { hostname: 'w1', subdomain: 'red' } }),
+        loadApplication: async () => {},
+      },
+      global: {
+        stubs: {
+          DeployApplicationButton: true,
+          StopApplicationButton: true,
+          EventLogsButton: true,
+          RouterLink: { template: '<a><slot /></a>' },
+        },
+      },
+    })
+
+    expect(
+      wrapper
+        .get('[data-slot=card-action]')
+        .findAll('button')
+        .map(button => [button.text(), button.attributes('aria-label')])
+    ).toEqual([['', 'Delete']])
+  })
+
+  it('links to the address, copies it, and shows its type, service and pool', () => {
     const wrapper = mountCard('w1', [domain({ service: 'shop', pool: 'eu' })])
     const row = wrapper.get('[data-domain]')
 
     expect(row.get('a').attributes('href')).toBe('https://shop.example.test')
+    expect(row.getComponent(CopyButton).props('text')).toBe('https://shop.example.test')
     expect(row.text()).toContain('synced')
     expect(row.text()).toContain('Public')
     expect(row.text()).toContain('Service shop')
