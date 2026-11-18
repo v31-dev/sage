@@ -54,6 +54,7 @@ async function onConfirmForceDelete() {
           body="Are you sure you want to delete this container? This action cannot be undone."
           :description="`Force delete ${props.container.application.label} from offline worker ${props.worker.hostname}. Remote cleanup on the worker will be skipped.`"
           :icon="Trash"
+          icon-only
           destructive
           :onConfirm="onConfirmForceDelete"
         />
