@@ -16,6 +16,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { toast } from 'vue-sonner'
 import { Spinner } from '@/components/ui/spinner'
 import { createApplication, type Project } from '@/services/api'
+import IconButton from '@/components/IconButton.vue'
 
 interface Props {
   project: Project
@@ -67,10 +68,7 @@ async function onClickCreateAppConfirm() {
 <template>
   <Dialog v-model:open="isCreateAppDialogOpen">
     <DialogTrigger asChild>
-      <Button size="sm" @click="openCreateAppDialog" class="gap-2">
-        <Plus :size="20" />
-        New Application
-      </Button>
+      <IconButton :icon="Plus" label="New Application" @click="openCreateAppDialog" />
     </DialogTrigger>
     <DialogContent class="sm:max-w-[600px]">
       <DialogHeader>

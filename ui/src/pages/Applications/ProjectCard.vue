@@ -7,7 +7,6 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card'
-import { ButtonGroup } from '@/components/ui/button-group'
 
 import { type ProjectPage } from '@/services/api'
 import SectionTitle from '@/components/SectionTitle.vue'
@@ -32,11 +31,11 @@ const props = withDefaults(defineProps<Props>(), {})
         {{ props.project.description }}
       </CardDescription>
       <CardAction>
-        <ButtonGroup class="space-x-1">
+        <div class="flex items-center gap-1">
           <AddApplicationButton :project="props.project" :loadProjects="props.loadProjects" />
           <EditProjectButton :project="props.project" :loadProjects="props.loadProjects" />
           <DeleteProjectButton :project="props.project" :loadProjects="props.loadProjects" />
-        </ButtonGroup>
+        </div>
       </CardAction>
     </CardHeader>
     <CardContent>

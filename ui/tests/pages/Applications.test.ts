@@ -49,7 +49,7 @@ function mountPage() {
 }
 
 function deleteButton(card: ReturnType<ReturnType<typeof mountPage>['findComponent']>) {
-  return card.findAll('button').find(button => button.text() === 'Delete')!
+  return card.findAll('button').find(button => button.attributes('aria-label') === 'Delete')!
 }
 
 beforeEach(() => {
@@ -78,6 +78,20 @@ it('allows deleting only a project with no applications', async () => {
 
   expect(deleteButton(shop).attributes('disabled')).toBeDefined()
   expect(deleteButton(empty).attributes('disabled')).toBeUndefined()
+})
+
+it("shows a project's New Application, Edit and Delete as icons, in that order", async () => {
+  const wrapper = mountPage()
+  await flushPromises()
+  const header = wrapper.findAllComponents(ProjectCard)[0]!.get('[data-slot=card-action]')
+
+  expect(
+    header.findAll('button').map(button => [button.text(), button.attributes('aria-label')])
+  ).toEqual([
+    ['', 'New Application'],
+    ['', 'Edit'],
+    ['', 'Delete'],
+  ])
 })
 
 it('keeps the newer list when an older reload answers after it', async () => {

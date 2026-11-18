@@ -19,6 +19,7 @@ import { Spinner } from '@/components/ui/spinner'
 import { type Project, updateProject } from '@/services/api'
 import CustomInput from '@/components/CustomInput.vue'
 import FieldLabelHelp from '@/components/FieldLabelHelp.vue'
+import IconButton from '@/components/IconButton.vue'
 
 interface Props {
   project: Project
@@ -71,10 +72,7 @@ async function handleUpdateProject() {
 <template>
   <Dialog v-model:open="isEditDialogOpen">
     <DialogTrigger asChild>
-      <Button size="sm" variant="outline" @click="openEditDialog">
-        <Edit />
-        Edit
-      </Button>
+      <IconButton :icon="Edit" label="Edit" @click="openEditDialog" />
     </DialogTrigger>
     <DialogContent class="sm:max-w-[600px]">
       <DialogHeader>

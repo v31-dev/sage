@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { Plus } from 'lucide-vue-next'
-import { Card, CardHeader, CardAction } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -92,58 +91,50 @@ async function handleCreateProject() {
 
       <!-- Content -->
       <div v-else class="space-y-6">
-        <Card>
-          <CardHeader>
-            <CardAction>
-              <Dialog v-model:open="isDialogOpen">
-                <DialogTrigger asChild>
-                  <Button size="sm" @click="openDialog" class="gap-2">
-                    <Plus :size="20" />
-                    New Project
-                  </Button>
-                </DialogTrigger>
-                <DialogContent class="sm:max-w-[425px]">
-                  <DialogHeader class="pb-6">
-                    <DialogTitle>Create New Project</DialogTitle>
-                  </DialogHeader>
-                  <FieldSet>
-                    <FieldGroup>
-                      <Field>
-                        <FieldLabel for="label"> Project Label </FieldLabel>
-                        <Input id="label" v-model="formData.label" />
-                      </Field>
-                      <Field>
-                        <FieldLabel for="description"> Description (optional) </FieldLabel>
-                        <Textarea
-                          id="description"
-                          v-model="formData.description"
-                          class="resize-none"
-                        />
-                      </Field>
-                      <Field>
-                        <FieldError v-if="errorMessage">{{ errorMessage }}</FieldError>
-                      </Field>
-                    </FieldGroup>
-                  </FieldSet>
-                  <DialogFooter>
-                    <Button
-                      size="sm"
-                      type="button"
-                      variant="outline"
-                      @click="isDialogOpen = false"
-                      :disabled="isSubmitting"
-                    >
-                      Cancel
-                    </Button>
-                    <Button size="sm" @click="handleCreateProject" :disabled="isSubmitting">
-                      {{ isSubmitting ? 'Creating...' : 'Create Project' }}
-                    </Button>
-                  </DialogFooter>
-                </DialogContent>
-              </Dialog>
-            </CardAction>
-          </CardHeader>
-        </Card>
+        <div class="flex justify-end">
+          <Dialog v-model:open="isDialogOpen">
+            <DialogTrigger asChild>
+              <Button size="sm" @click="openDialog" class="gap-2">
+                <Plus :size="20" />
+                New Project
+              </Button>
+            </DialogTrigger>
+            <DialogContent class="sm:max-w-[425px]">
+              <DialogHeader class="pb-6">
+                <DialogTitle>Create New Project</DialogTitle>
+              </DialogHeader>
+              <FieldSet>
+                <FieldGroup>
+                  <Field>
+                    <FieldLabel for="label"> Project Label </FieldLabel>
+                    <Input id="label" v-model="formData.label" />
+                  </Field>
+                  <Field>
+                    <FieldLabel for="description"> Description (optional) </FieldLabel>
+                    <Textarea id="description" v-model="formData.description" class="resize-none" />
+                  </Field>
+                  <Field>
+                    <FieldError v-if="errorMessage">{{ errorMessage }}</FieldError>
+                  </Field>
+                </FieldGroup>
+              </FieldSet>
+              <DialogFooter>
+                <Button
+                  size="sm"
+                  type="button"
+                  variant="outline"
+                  @click="isDialogOpen = false"
+                  :disabled="isSubmitting"
+                >
+                  Cancel
+                </Button>
+                <Button size="sm" @click="handleCreateProject" :disabled="isSubmitting">
+                  {{ isSubmitting ? 'Creating...' : 'Create Project' }}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+        </div>
 
         <ProjectCard
           v-for="project in projects"

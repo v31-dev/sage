@@ -26,6 +26,7 @@ async function onConfirmDelete() {
     body="Are you sure you want to delete this project? This action cannot be undone."
     :description="props.project.name"
     :icon="Trash"
+    icon-only
     destructive
     :disabled="props.project.application_count > 0"
     :onConfirm="onConfirmDelete"
