@@ -81,6 +81,12 @@ The worker stack currently includes:
 - `cloudflared`, running the worker's own tunnel
 - `cloudflared-discovery`, a replica of the platform's tunnel, which every worker runs
 
+The edge: Traefik answers on the worker's tailnet address on `:443` (internal names) and `:8443` (TCP names) only. The
+two tunnels reach its `web` entry point over the edge network (`sage_edge`), which only they and Traefik join and the
+worker's setup creates; Traefik takes forwarded headers (the client's address) from that network's subnet alone, read
+at each setup, so an application or a tailnet device can't set them. Traefik reads its routes from files and has no
+Docker socket, and each tunnel's metrics server listens on its own loopback. Every image is pinned to an exact release.
+
 `vector` and `telegraf` run with a 128 MiB memory limit, swap included: their executables are large, and the kernel keeps the pages it has read in the container's memory, which on a small worker the applications could use.
 
 Applications themselves are also deployed onto workers as Docker workloads.

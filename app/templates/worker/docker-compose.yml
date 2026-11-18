@@ -15,38 +15,45 @@ services:
     logging: *logging
     restart: unless-stopped
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
       - ${SAGE_HOME}/traefik:/etc/traefik
     dns:
       - 100.100.100.100
       - 1.1.1.1
       - 8.8.8.8
     ports:
-      - ${TS_IP}:80:80
       - ${TS_IP}:443:443
       - ${TS_IP}:8443:8443
+    networks:
+      - default
+      - edge
     command:
       - "--configFile=/etc/traefik/traefik.yml"
 
   # The worker's own tunnel.
   cloudflared:
-    image: cloudflare/cloudflared:latest
+    image: cloudflare/cloudflared:2026.11.1
     container_name: cloudflared
     logging: *logging
     restart: unless-stopped
     environment:
       - TUNNEL_TOKEN=${TUNNEL_TOKEN}
-    command: tunnel --no-autoupdate run
+    networks:
+      - edge
+    # Its metrics server can't be turned off; on loopback, nothing outside the container reaches it.
+    command: tunnel --no-autoupdate --metrics 127.0.0.1:20241 run
 
   # The platform's tunnel, shared by every worker.
   cloudflared-discovery:
-    image: cloudflare/cloudflared:latest
+    image: cloudflare/cloudflared:2026.11.1
     container_name: cloudflared-discovery
     logging: *logging
     restart: unless-stopped
     environment:
       - TUNNEL_TOKEN=${DISCOVERY_TUNNEL_TOKEN}
-    command: tunnel --no-autoupdate run
+    networks:
+      - edge
+    # Its metrics server can't be turned off; on loopback, nothing outside the container reaches it.
+    command: tunnel --no-autoupdate --metrics 127.0.0.1:20241 run
 
   vector:
     image: timberio/vector:0.54.0-alpine
@@ -93,3 +100,7 @@ services:
 networks:
   default:
     name: sage_default
+  # Created by the worker's setup, which reads its subnet into Traefik's trust; never an application's.
+  edge:
+    name: sage_edge
+    external: true

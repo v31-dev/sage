@@ -16,7 +16,7 @@ from services.manager.workers import WorkersMixin
 from services.tailscale import Tailscale
 from services.worker_reports import ContainerReading, HostReading, Snapshot, WorkerReports
 from services.workers import commands
-from services.workers.rendering import InfraInputs, infra_fingerprint, worker_scope
+from services.workers.rendering import InfraInputs, infra_fingerprint, remove_edge_network_command, worker_scope
 from services.workers.state import Workers, is_workable
 from utils.executor import active_executor
 from utils.logging import TaskFailed
@@ -33,6 +33,7 @@ class Hosts:
   def __init__(self):
     self.found, self.addresses, self.files, self.fails = {}, {}, {}, None
     self.running, self.mem_total_kb = set(config.WORKER_STACK_SERVICES), 979204
+    self.edge_subnets, self.edge_network = ["172.22.0.0/16"], True
     self.answering, self.boots, self.commands, self.forgotten, self.on_boot = set(), [], [], [], None
     self.machines = {}
 
@@ -78,6 +79,9 @@ class Hosts:
       return 0, [f"{path[len(hostname) + 1:]}:{content}" for path, (content, _) in self.files.items() if path.startswith(prefix)]
     if command.startswith("stat -c %g"):
       return 0, ["998"]
+    if command.startswith("docker network inspect sage_edge >/dev/null 2>&1 || "):
+      created, self.edge_network = not self.edge_network, True
+      return 0, ["created"] * created + list(self.edge_subnets)
     if command.endswith(" /proc/meminfo"):
       return 0, [str(self.mem_total_kb)]
     if command.startswith("grep -H -m1 "):
@@ -237,9 +241,10 @@ def monotonic(monkeypatch):
   return clock
 
 
-def fingerprint(address="100.64.0.2"):
+def fingerprint(address="100.64.0.2", edge_subnets=("172.22.0.0/16",)):
   return infra_fingerprint(InfraInputs("w1", address, "100.64.0.1", "example.test", "tunnel-platform",
-                                       "tunnel-sage-example.test-w1", config.VERSION, config.REPORT_INTERVAL_SECONDS))
+                                       "tunnel-sage-example.test-w1", config.VERSION, config.REPORT_INTERVAL_SECONDS,
+                                       edge_subnets))
 
 
 def events():
@@ -350,6 +355,21 @@ class TestConvergence:
     hosts.addresses["w1"] = "100.64.0.9"
     await manager.converge_worker("w1")
     assert hosts.stamp("w1", "infra") == fingerprint("100.64.0.9") and "TS_IP=100.64.0.9" in hosts.stack("w1")[".env"][0]
+
+  async def test_traefik_trusts_the_edge_networks_subnet_and_a_new_one_applies_again(self, manager, hosts, worker):
+    await manager.converge_worker("w1")
+    assert 'trustedIPs: ["172.22.0.0/16"]' in hosts.stack("w1")["traefik/traefik.yml"][0]
+    hosts.files = {path: file for path, file in hosts.files.items() if "/revisions/" in path}
+    hosts.edge_subnets = ['time="2026-11-18T10:00:00Z" level=warning msg="a warning on stderr"', "172.25.0.0/16"]
+    await manager.converge_worker("w1")
+    assert hosts.stamp("w1", "infra") == fingerprint(edge_subnets=("172.25.0.0/16",))
+    assert 'trustedIPs: ["172.25.0.0/16"]' in hosts.stack("w1")["traefik/traefik.yml"][0]
+
+  async def test_a_worker_without_an_edge_subnet_is_not_set_up(self, manager, hosts, worker):
+    hosts.edge_subnets = []
+    with pytest.raises(TaskFailed):
+      await manager.converge_worker("w1")
+    assert (Workers().setup("w1"), hosts.stamp("w1", "infra"), hosts.stack("w1")) == ("failed", None, {})
 
   async def test_another_sages_worker_is_refused_and_left_as_it_is(self, manager, hosts, provider, worker):
     hosts.files[f"w1:{HOME}/revisions/owner"] = ("ffffffffffffffff other.test", 0o644)
@@ -475,6 +495,21 @@ class TestStackRepair:
     await manager.repair_worker_stack("w1")
     assert [command.split(" --quiet-pull ", 1)[1] for command in hosts.commands if " up -d " in command] == ["telegraf cloudflared"]
     assert hosts.running == set(config.WORKER_STACK_SERVICES)
+
+  async def test_a_repair_that_had_to_create_the_edge_network_starts_the_stack_then_asks_for_the_workers_setup(
+          self, manager, hosts, worker):
+    Workers().record_setup("w1", "succeeded", "100.64.0.2")
+    hosts.running -= {"traefik", "cloudflared", "cloudflared-discovery"}
+    hosts.edge_network = False
+    await manager.repair_worker_stack("w1")
+    assert hosts.edge_network and hosts.running == set(config.WORKER_STACK_SERVICES)
+    assert requested(manager) == [("converge_worker", ["converge_worker", "w1"], ["worker:w1"], True)]
+
+  async def test_a_repair_whose_edge_network_is_there_asks_for_no_setup(self, manager, hosts, worker):
+    Workers().record_setup("w1", "succeeded", "100.64.0.2")
+    hosts.running -= {"traefik"}
+    await manager.repair_worker_stack("w1")
+    assert requested(manager) == []
 
   async def test_a_repair_with_every_service_running_starts_nothing(self, manager, hosts, worker):
     Workers().record_setup("w1", "succeeded", "100.64.0.2")
@@ -634,7 +669,8 @@ class TestRemove:
     commands.mark_removal("w1")
     await manager.remove_worker("w1")
     assert Worker.get_or_none(Worker.hostname == "w1") is None
-    assert any(command.endswith(f"down --remove-orphans && rm -rf {HOME} && systemctl revert sage-apps.slice")
+    assert any(command.endswith(f"down --remove-orphans && {remove_edge_network_command()} && rm -rf {HOME} "
+                                "&& systemctl revert sage-apps.slice")
                for command in hosts.commands)
     assert (provider.records["w1"], provider.tunnels, hosts.forgotten) == ((None, None), [], ["w1"])
     assert (Workers().setup("w1"), WorkerReports().latest("w1"), manager.setup_failures) == (None, None, {})

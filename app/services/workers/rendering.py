@@ -17,6 +17,25 @@ def stack_scope(hostname: str) -> str:
   return f"{worker_scope(hostname)}:stack"
 
 
+# The network of the stack's tunnels and Traefik, named in the Compose template.
+EDGE_NETWORK = "sage_edge"
+# The line `edge_network_command` prints when it had to create the network.
+EDGE_NETWORK_CREATED = "created"
+
+
+def edge_network_command() -> str:
+  """Creates the edge network when it is missing, saying `EDGE_NETWORK_CREATED` then, and lists its subnets, one a line,
+  for `decisions.edge_subnets`."""
+  return (f"docker network inspect {EDGE_NETWORK} >/dev/null 2>&1 || "
+          f"{{ docker network create {EDGE_NETWORK} >/dev/null && echo {EDGE_NETWORK_CREATED}; }}; "
+          f"docker network inspect -f '{{{{range .IPAM.Config}}}}{{{{println .Subnet}}}}{{{{end}}}}' {EDGE_NETWORK}")
+
+
+def remove_edge_network_command() -> str:
+  """Removes the edge network if it is there."""
+  return f"(! docker network inspect {EDGE_NETWORK} >/dev/null 2>&1 || docker network rm {EDGE_NETWORK} >/dev/null)"
+
+
 # The folders of the stack's Traefik that only Sage writes into, under the worker's home.
 TRAEFIK_FOLDERS = ("traefik/dynamic", "traefik/certs")
 
@@ -43,6 +62,7 @@ class InfraInputs:
   worker_tunnel: str
   version: str
   report_interval: int
+  edge_subnets: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -78,7 +98,8 @@ def render_infrastructure(inputs: InfraInputs, tunnel_token: str, discovery_tunn
       StackFile(".env", fill(template("worker.env"), {
           "SAGE_HOME": home, "TS_IP": inputs.address, "TS_HOSTNAME": inputs.hostname, "TUNNEL_TOKEN": tunnel_token,
           "DISCOVERY_TUNNEL_TOKEN": discovery_tunnel_token, "DOCKER_GID": docker_gid}), 0o600),
-      StackFile("traefik/traefik.yml", template("traefik/traefik.yml"), 0o644),
+      StackFile("traefik/traefik.yml", fill(template("traefik/traefik.yml"),
+                                            {"EDGE_SUBNETS": json.dumps(list(inputs.edge_subnets))}), 0o644),
       StackFile("traefik/dynamic/config.yml", fill(template("traefik/config.yml"),
                                                    {"DOMAIN": inputs.domain, "HOSTNAME": inputs.hostname}), 0o644),
       StackFile("vector/config/vector.yml", fill(template("vector/vector.yml"),

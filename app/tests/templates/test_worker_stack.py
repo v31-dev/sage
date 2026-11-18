@@ -8,6 +8,7 @@ import yaml
 import config
 from services.containers.placement import LABEL_APPLICATION, LABEL_CONTAINER, LABELS
 from services.worker_reports import LABEL_PREFIX
+from services.workers.rendering import EDGE_NETWORK
 
 TEMPLATES = Path(__file__).parent.parent.parent / "templates" / "worker"
 
@@ -122,6 +123,34 @@ class TestTunnels:
     assert service("cloudflared-discovery")["environment"] == ["TUNNEL_TOKEN=${DISCOVERY_TUNNEL_TOKEN}"]
     env = (TEMPLATES / "worker.env").read_text().splitlines()
     assert {"TUNNEL_TOKEN=${TUNNEL_TOKEN}", "DISCOVERY_TUNNEL_TOKEN=${DISCOVERY_TUNNEL_TOKEN}"} <= set(env)
+
+  @pytest.mark.parametrize("name", ["cloudflared", "cloudflared-discovery"])
+  def test_each_serves_its_metrics_on_its_own_loopback_only(self, name):
+    assert service(name)["command"].split()[:4] == ["tunnel", "--no-autoupdate", "--metrics", "127.0.0.1:20241"]
+
+
+class TestTheEdge:
+  def test_every_service_runs_an_exact_release(self):
+    stack = yaml.safe_load((TEMPLATES / "docker-compose.yml").read_text())["services"]
+    for name, definition in stack.items():
+      _, _, tag = definition["image"].rpartition(":")
+      assert re.fullmatch(r"v?\d+(\.\d+)+(-alpine)?", tag), f"{name} runs {definition['image']}"
+
+  def test_traefik_reads_its_routes_from_files_only_and_has_no_docker_socket(self):
+    static = yaml.safe_load((TEMPLATES / "traefik" / "traefik.yml").read_text())
+    assert list(static["providers"]) == ["file"]
+    assert not any("docker.sock" in volume for volume in service("traefik")["volumes"])
+
+  def test_only_traefik_and_the_tunnels_are_on_the_edge_network_which_the_setup_creates(self):
+    stack = yaml.safe_load((TEMPLATES / "docker-compose.yml").read_text())
+    assert stack["networks"]["edge"] == {"name": EDGE_NETWORK, "external": True}
+    assert service("traefik")["networks"] == ["default", "edge"]
+    assert {name for name, definition in stack["services"].items() if "edge" in definition.get("networks", [])} == {
+        "traefik", "cloudflared", "cloudflared-discovery"}
+    assert service("cloudflared")["networks"] == service("cloudflared-discovery")["networks"] == ["edge"]
+
+  def test_traefik_publishes_only_the_internal_names_ports_on_the_tailnet(self):
+    assert service("traefik")["ports"] == ["${TS_IP}:443:443", "${TS_IP}:8443:8443"]
 
 
 COMPOSE_TEMPLATES = ["docker-compose.yml", "application/dockerhub-compose.yml", "application/gitrepo-compose.yml"]

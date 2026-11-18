@@ -5,6 +5,7 @@ from dataclasses import fields, replace
 from pathlib import Path
 
 import pytest
+import yaml
 
 import config
 from services.tailscale import Tailscale
@@ -13,7 +14,8 @@ from services.workers.state import Workers
 from utils.queue import _scope_conflict
 
 INPUTS = InfraInputs(hostname="w1", address="100.64.0.2", manager_address="100.64.0.1", domain="example.test",
-                     platform_tunnel="tunnel-platform", worker_tunnel="tunnel-w1", version="1.2.3", report_interval=10)
+                     platform_tunnel="tunnel-platform", worker_tunnel="tunnel-w1", version="1.2.3", report_interval=10,
+                     edge_subnets=("172.22.0.0/16", "fd00:22::/64"))
 
 
 def render():
@@ -50,6 +52,11 @@ class TestRendering:
     files = render()
     assert "http://100.64.0.1:9101/api/vector/logs" in files["vector/config/vector.yml"].content
     assert "http://100.64.0.1:9101/api/telegraf/report" in files["telegraf/telegraf.conf"].content
+
+  def test_traefik_takes_forwarded_headers_from_the_edge_networks_subnets_only(self):
+    static = yaml.safe_load(render()["traefik/traefik.yml"].content)
+    assert static["entryPoints"]["web"]["forwardedHeaders"] == {"trustedIPs": ["172.22.0.0/16", "fd00:22::/64"]}
+    assert all("forwardedHeaders" not in entry for name, entry in static["entryPoints"].items() if name != "web")
 
   def test_traefiks_dynamic_config_names_the_domain(self):
     assert "*.example.test" in render()["traefik/dynamic/config.yml"].content

@@ -1,6 +1,7 @@
 """A worker's status, decided from the facts its owners hold: whether its SSH server answers, whether its tunnel is
 connected, how its setup went, what its newest report says, which of its tasks are queued or running, and whether its
 removal was asked for."""
+import ipaddress
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -163,6 +164,20 @@ def stray_traefik_files(listing: list[str]) -> list[str]:
     return folder == dynamic and not (name in ("config.yml", "certs.yml") or domain_artifact_owner("file", name)
                                       or (name.startswith(discovery.PREFIX) and name.endswith(discovery.SUFFIX)))
   return sorted(path for path in (line.strip() for line in listing) if stray(path))
+
+
+def edge_subnets(listing: list[str]) -> tuple[str, ...]:
+  """The edge network's subnets from `rendering.edge_network_command`'s listing, in order; any other line (Docker's
+  warnings) is left out. Raises when there is none."""
+  subnets = []
+  for line in listing:
+    try:
+      subnets.append(str(ipaddress.ip_network(line.strip())))
+    except ValueError:
+      continue
+  if not subnets:
+    raise ValueError("Docker listed no subnet for the edge network.")
+  return tuple(subnets)
 
 
 def worker_owner(revisions: dict) -> tuple[str, str] | None:

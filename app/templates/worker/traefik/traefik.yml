@@ -6,8 +6,6 @@ ping:
   manualRouting: true
 
 providers:
-  docker:
-    exposedByDefault: false
   file:
     directory: /etc/traefik/dynamic
     watch: true
@@ -16,11 +14,8 @@ entryPoints:
   web:
     address: :80
     forwardedHeaders:
-      # Trust the internal Docker network so Traefik processes the headers
-      trustedIPs:
-        - "127.0.0.1/32"
-        - "172.16.0.0/12" # Cover all default Docker bridge ranges
-        - "100.64.0.0/10" # Trust Tailscale range if you're hitting via TS
+      # The tunnels' network, which only they and Traefik join: the client address they forward is taken from them alone.
+      trustedIPs: ${EDGE_SUBNETS}
   # Internal HTTPS client entry via Tailscale (the *.int domains); TLS terminated here.
   websecure:
     address: :443

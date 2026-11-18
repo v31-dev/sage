@@ -7,8 +7,8 @@ import pytest
 import config
 from services.worker_reports import ContainerReading, Received, Snapshot
 from services.workers.decisions import (SETUPS, SSH, STATUSES, TUNNELS, WorkerFacts, WorkerReport, addressable, connectivity, decide_worker,
-                                        discovery_member, reboot_outcome, report_of, stray_traefik_files, workable, worker_claim_refusal,
-                                        worker_owner)
+                                        discovery_member, edge_subnets, reboot_outcome, report_of, stray_traefik_files, workable,
+                                        worker_claim_refusal, worker_owner)
 from services.workers.rendering import traefik_files_command
 
 GOOD = WorkerReport("known", True)
@@ -209,6 +209,18 @@ def test_sage_acts_only_on_a_worker_reachable_set_up_since_the_manager_started_a
 def test_a_worker_is_addressable_only_reachable_and_with_an_address():
   assert {(ssh, address) for ssh, address in itertools.product(SSH, (None, "100.64.0.2")) if addressable(ssh, address)} == {
       ("reachable", "100.64.0.2")}
+
+
+class TestEdgeSubnets:
+  def test_each_subnet_is_kept_in_order_and_other_lines_are_left_out(self):
+    listing = ["172.22.0.0/16", 'time="2026-11-18T10:00:00Z" level=warning msg="a warning"', "", " fd00:22::/64 "]
+    assert edge_subnets(listing) == ("172.22.0.0/16", "fd00:22::/64")
+
+  @pytest.mark.parametrize("listing", [[], [""], ["Error: No such network: sage_edge"], ["172.22.0.1/16"]],
+                           ids=["empty", "blank", "an-error", "an-address-not-a-network"])
+  def test_a_listing_without_a_subnet_is_refused(self, listing):
+    with pytest.raises(ValueError):
+      edge_subnets(listing)
 
 
 class TestWorkerOwner:

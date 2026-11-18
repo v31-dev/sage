@@ -21,9 +21,9 @@ from services.tailscale import Tailscale
 from services.updates import Fact, Updates, UpdateSource
 from services.worker_reports import WorkerReports
 from services.workers import commands
-from services.workers.decisions import TASKS, addressable, reboot_outcome, stray_traefik_files, worker_claim_refusal, worker_owner
-from services.workers.rendering import (InfraInputs, applications_memory_mb, infra_fingerprint, render_infrastructure, stack_scope,
-                                        traefik_files_command, worker_scope)
+from services.workers.decisions import TASKS, addressable, edge_subnets, reboot_outcome, stray_traefik_files, worker_claim_refusal, worker_owner
+from services.workers.rendering import (EDGE_NETWORK_CREATED, InfraInputs, applications_memory_mb, edge_network_command, infra_fingerprint,
+                                        remove_edge_network_command, render_infrastructure, stack_scope, traefik_files_command, worker_scope)
 from services.workers.state import Workers, WorkerState, is_addressable, is_workable, worker_payload, worker_state
 from utils.common import get_env, utcnow
 from utils.errors import Conflict
@@ -243,8 +243,9 @@ class WorkersMixin:
       await self.remove_obsolete_routes(hostname, parse_route_listing(lines), {domain.id: capture(domain) for domain in Domain.select()})
       tunnel = await run_in_executor_with_context(cloudflare.create_tunnel, cloudflare.worker_tunnel_name(hostname))
       await run_in_executor_with_context(cloudflare.sync_worker_records, hostname, worker.subdomain, address)
+      _, networks = await Tailscale().exec_command(hostname, edge_network_command(), timeout=30)
       inputs = InfraInputs(hostname, address, Tailscale().ip(), cloudflare.domain, cloudflare.tunnel_id, tunnel, config.VERSION,
-                           config.REPORT_INTERVAL_SECONDS)
+                           config.REPORT_INTERVAL_SECONDS, edge_subnets(networks))
       fingerprint = infra_fingerprint(inputs)
       if force or revisions.get("infra") != fingerprint:
         record_worker_event(hostname, "infrastructure", "admitted", reason={"force": force})
@@ -305,12 +306,17 @@ class WorkersMixin:
     if not is_workable(hostname):
       logger.info(f"Worker {hostname} is not there to repair; nothing to do.")
       return
+    _, networks = await Tailscale().exec_command(hostname, edge_network_command(), timeout=30)
     if await self._start_stack(hostname):
       record_worker_event(hostname, "repair", "succeeded", reason={"started": "stack"})
       Notifications().notify(f"Worker {hostname}: started the parts of its stack that were stopped.", "warning",
                              f"/workers/{hostname}")
     else:
       logger.warning(f"Worker {hostname}'s stack was not ready, but starting it changed nothing.")
+    # Its new subnet is what Traefik must trust: the worker's setup writes that.
+    if EDGE_NETWORK_CREATED in {line.strip() for line in networks}:
+      logger.info(f"Worker {hostname}'s edge network was missing and is created again; its setup follows.")
+      self.request_convergence(hostname)
 
   def request_worker_tmp_cleanup(self):
     """Queues, for each worker reachable and set up, the removal of its temp folder (`WORKER_TMP_DIR`). It holds the
@@ -391,7 +397,8 @@ class WorkersMixin:
         owner = worker_owner(await Workers().read_revisions(hostname))
         if owner is not None and owner[0] == Instance.get().id:
           await Tailscale().exec_command(
-              hostname, f"docker compose -f {home}/docker-compose.yml down --remove-orphans && rm -rf {home} "
+              hostname, f"docker compose -f {home}/docker-compose.yml down --remove-orphans && {remove_edge_network_command()} "
+              f"&& rm -rf {home} "
               f"&& systemctl revert {config.APPLICATIONS_SLICE}", timeout=120)
           cleaned = True
       except Exception as error:
