@@ -2,6 +2,8 @@ import inspect
 
 from services.manager import Manager
 
+MANAGER_IP = "100.64.0.9"
+
 
 class ManagerStandIn:
   """The Manager as the routes reach it. A call is checked against the real method's signature and recorded as

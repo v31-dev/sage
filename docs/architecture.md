@@ -35,7 +35,9 @@ WebSocket, with a 403 or close code 1008:
   no `Sec-Fetch-Site`, its `Origin` is exactly `https://<TS_NAME>.core.<DOMAIN>`. A link followed from another site
   (a notification's, say), a GET loading a whole tab, opens the page; a frame, a fetch, an image, a form and a
   WebSocket from another site, the customer's own names under `<DOMAIN>` included, are refused.
-- The ingest server (`:9001`) takes no browser request at all: only the workers' Telegraf and Vector call it.
+- The ingest server (`:9001`) takes no browser request at all: only the workers' Telegraf and Vector call it. It also
+  answers only at the manager's tailnet IP, the address their configurations name, with a 421 for any other host, so
+  a page whose name was made to resolve to the manager (DNS rebinding) gets nothing.
 
 A request with neither header is not a browser's and passes (curl, the workers).
 
