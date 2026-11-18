@@ -46,6 +46,13 @@ it('shows independent certificate names, expiries and maintenance errors', () =>
               error: null,
             },
             {
+              id: 'shared',
+              names: [],
+              valid: false,
+              expiry: null,
+              error: null,
+            },
+            {
               id: 'worker:gone',
               names: [],
               valid: false,
@@ -63,10 +70,11 @@ it('shows independent certificate names, expiries and maintenance errors', () =>
   expect(text).toContain('Manager certificate')
   expect(text).toContain('Discovery certificate')
   expect(text).toContain('Worker w1')
+  expect(text).toContain('Shared worker certificate')
   expect(text).toContain('*.red.int.example.test')
   expect(text).toContain('discovery.int.example.test: not ready')
   expect(text).toContain('CA unavailable')
   expect(text).toContain('Pending retirement')
   expect(text).toContain('Revocation failed')
-  expect(wrapper.findAll('[data-certificate-names]')).toHaveLength(4)
+  expect(wrapper.findAll('[data-certificate-names]')).toHaveLength(5)
 })

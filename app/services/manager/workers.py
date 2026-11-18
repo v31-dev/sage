@@ -2,6 +2,7 @@
 worker's stack with Sage and its repair; and adding, removing and rebooting a worker."""
 import asyncio
 import logging
+import shlex
 from time import monotonic
 
 from peewee import JOIN
@@ -20,8 +21,9 @@ from services.tailscale import Tailscale
 from services.updates import Fact, Updates, UpdateSource
 from services.worker_reports import WorkerReports
 from services.workers import commands
-from services.workers.decisions import TASKS, addressable, reboot_outcome, worker_claim_refusal, worker_owner
-from services.workers.rendering import InfraInputs, applications_memory_mb, infra_fingerprint, render_infrastructure, stack_scope, worker_scope
+from services.workers.decisions import TASKS, addressable, reboot_outcome, stray_traefik_files, worker_claim_refusal, worker_owner
+from services.workers.rendering import (InfraInputs, applications_memory_mb, infra_fingerprint, render_infrastructure, stack_scope,
+                                        traefik_files_command, worker_scope)
 from services.workers.state import Workers, WorkerState, is_addressable, is_workable, worker_payload, worker_state
 from utils.common import get_env, utcnow
 from utils.errors import Conflict
@@ -252,6 +254,11 @@ class WorkersMixin:
         for file in render_infrastructure(inputs, tunnel_token, discovery_token, group[-1].strip(), home):
           await Tailscale().sync_file(hostname, config.TEMPLATES_DIR / "worker/file", f"{home}/{file.path}",
                                       {"CONTENT": file.content}, mode=file.mode)
+        _, listing = await Tailscale().exec_command(hostname, traefik_files_command(home), timeout=30)
+        if stray := stray_traefik_files(listing):
+          await Tailscale().exec_command(hostname, "rm -rf -- " + " ".join(shlex.quote(f"{home}/{path}") for path in stray),
+                                         timeout=30)
+          logger.info(f"Removed from {hostname} what this version doesn't write in Traefik's folders: {', '.join(stray)}.")
         compose = f"docker compose -f {home}/docker-compose.yml"
         await Tailscale().exec_command(
             hostname, f"{compose} up -d --wait --remove-orphans --quiet-pull --quiet-build {' '.join(config.WORKER_STACK_SERVICES)}",

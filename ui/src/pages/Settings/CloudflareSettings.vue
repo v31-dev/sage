@@ -33,6 +33,7 @@ function expiry(value: string | null | undefined) {
 const certificateLabels: Record<string, string> = {
   manager: 'Manager certificate',
   discovery: 'Discovery certificate',
+  shared: 'Shared worker certificate',
 }
 
 const tunnelUrl = computed(() =>

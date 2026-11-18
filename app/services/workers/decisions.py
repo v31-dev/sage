@@ -5,7 +5,10 @@ from dataclasses import dataclass
 from datetime import datetime
 
 import config
+from services.domains import discovery
+from services.domains.config import domain_artifact_owner
 from services.worker_reports import Received, is_current
+from services.workers.rendering import TRAEFIK_FOLDERS
 
 STATUSES = ("removing", "adding", "rebooting", "checking", "offline", "not ready", "online")
 SSH = ("unobserved", "reachable", "unreachable", "unknown")
@@ -145,6 +148,21 @@ def reboot_outcome(baseline_boot_id: str, boot_id: str | None, ready: bool | Non
   if boot_id == baseline_boot_id:
     return "old_boot"
   return "verified" if ready is True else "not_ready"
+
+
+def stray_traefik_files(listing: list[str]) -> list[str]:
+  """The entries of a listing of `TRAEFIK_FOLDERS` (`rendering.traefik_files_command`) in none of the forms this
+  version writes there: the stack's `config.yml`, the certificates' `certs.yml` and `managed` folder, the Domains'
+  routing files and the discovery files. What an older version left, removed when the stack is written."""
+  dynamic, certs = TRAEFIK_FOLDERS
+
+  def stray(path: str) -> bool:
+    folder, _, name = path.rpartition("/")
+    if folder == certs:
+      return name != "managed"
+    return folder == dynamic and not (name in ("config.yml", "certs.yml") or domain_artifact_owner("file", name)
+                                      or (name.startswith(discovery.PREFIX) and name.endswith(discovery.SUFFIX)))
+  return sorted(path for path in (line.strip() for line in listing) if stray(path))
 
 
 def worker_owner(revisions: dict) -> tuple[str, str] | None:

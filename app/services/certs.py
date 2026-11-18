@@ -57,12 +57,12 @@ class CertificateMaterial:
 class Certificate:
   """One issued certificate: the names it must cover and its PEM files."""
 
-  def __init__(self, directory: Path, names: list[str]):
+  def __init__(self, directory: Path, names: list[str], retired_directory: Path | None = None):
     directory.mkdir(parents=True, exist_ok=True)
     self.names = tuple(names)
     self.fullchain_path = directory / "fullchain.pem"
     self.key_path = directory / "key.pem"
-    self.retired_directory = directory / "retired"
+    self.retired_directory = retired_directory or directory / "retired"
     # The latest issuance or retirement failure.
     self.error = None
     self.material = CertificateMaterial()
@@ -145,6 +145,11 @@ class Certs(Base):
     self.manager = Certificate(self.directory / "manager", [Cloudflare().manager_hostname])
     self.discovery = Certificate(self.directory / "discovery", [f"discovery.int.{self.domain}"])
     self.workers: dict[str, Certificate] = {}
+    # A certificate shared by every worker, beside the workers' own folders, is used by none: with no names, the renewal
+    # retires it. Its retired leaf is kept apart, since every folder in `workers` is a worker's.
+    shared, shared_retired = self.directory / "workers", self.directory / "shared-retired"
+    self.shared = (Certificate(shared, (), shared_retired) if (shared / "fullchain.pem").exists()
+                   or (shared / "key.pem").exists() or any(shared_retired.glob("*.pem")) else None)
 
     # The uvicorn :443 SSLContext, set by main once the server is built. Holding
     # the reference lets renewal swap the cert in place (new handshakes get the
@@ -171,7 +176,7 @@ class Certs(Base):
 
   def inventory(self) -> dict[str, Certificate]:
     with self.lock:
-      return {"manager": self.manager, "discovery": self.discovery,
+      return {"manager": self.manager, "discovery": self.discovery, **({"shared": self.shared} if self.shared else {}),
               **{f"worker:{hostname}": certificate for hostname, certificate in sorted(self.workers.items())}}
 
   def stored(self) -> dict[str, Certificate]:
@@ -180,7 +185,7 @@ class Certs(Base):
         for directory in (self.directory / "workers").iterdir():
           if directory.is_dir() and not directory.is_symlink() and directory.name not in self.workers:
             self.workers[directory.name] = Certificate(directory, ())
-      certificates = {"manager": self.manager, "discovery": self.discovery,
+      certificates = {"manager": self.manager, "discovery": self.discovery, **({"shared": self.shared} if self.shared else {}),
                       **{f"worker:{hostname}": certificate for hostname, certificate in sorted(self.workers.items())}}
       for certificate in certificates.values():
         certificate.load()
@@ -266,6 +271,8 @@ class Certs(Base):
             if not current.names and current.fullchain_path == certificate.fullchain_path:
               current.fullchain_path.parent.rmdir()
               del self.workers[hostname]
+          if certificate is self.shared:
+            self.shared = None
       self.changed.check()
     except Exception as error:
       certificate.error = str(error)

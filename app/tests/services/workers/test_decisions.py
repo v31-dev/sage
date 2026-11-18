@@ -1,4 +1,5 @@
 import itertools
+import subprocess
 from datetime import datetime, timedelta
 
 import pytest
@@ -6,7 +7,9 @@ import pytest
 import config
 from services.worker_reports import ContainerReading, Received, Snapshot
 from services.workers.decisions import (SETUPS, SSH, STATUSES, TUNNELS, WorkerFacts, WorkerReport, addressable, connectivity, decide_worker,
-                                        discovery_member, reboot_outcome, report_of, workable, worker_claim_refusal, worker_owner)
+                                        discovery_member, reboot_outcome, report_of, stray_traefik_files, workable, worker_claim_refusal,
+                                        worker_owner)
+from services.workers.rendering import traefik_files_command
 
 GOOD = WorkerReport("known", True)
 LATE = config.REPORT_STARTUP_GRACE_SECONDS + 1
@@ -235,3 +238,30 @@ class TestWorkerClaimRefusal:
 
   def test_a_worker_of_another_sage_with_no_domain_is_still_refused(self):
     assert "unknown domain" in worker_claim_refusal({"owner": "other"}, "me")
+
+
+def test_what_an_older_version_left_in_traefiks_folders_is_stray_and_nothing_this_version_writes(tmp_path):
+  dynamic, certs = tmp_path / "traefik/dynamic", tmp_path / "traefik/certs"
+  (certs / "managed").mkdir(parents=True)
+  dynamic.mkdir()
+  (tmp_path / "traefik/traefik.yml").write_text("")
+  current = ["config.yml", "certs.yml", "domain-0123456789abcdef.yml", "_discovery-public-api.yml",
+             "_discovery-internal-api.yml"]
+  old = ["shop-web-public-shop.yml", "shop-web-internal-web-eu.yml", "domain-shop.yml", "notes.txt"]
+  for name in (*current, *old):
+    (dynamic / name).write_text("")
+  for name in ("fullchain.pem", "key.pem", "managed/worker-0123456789abcdef.pem"):
+    (certs / name).write_text("")
+  (dynamic / "old-folder").mkdir()
+
+  listing = subprocess.run(["sh", "-c", traefik_files_command(str(tmp_path))], capture_output=True, text=True,
+                           check=True).stdout.splitlines()
+  assert stray_traefik_files(listing) == sorted(
+      [*(f"traefik/dynamic/{name}" for name in (*old, "old-folder")), "traefik/certs/fullchain.pem", "traefik/certs/key.pem"])
+
+
+def test_a_worker_without_traefiks_folders_lists_nothing_and_a_line_outside_them_is_never_stray(tmp_path):
+  listing = subprocess.run(["sh", "-c", traefik_files_command(str(tmp_path / "missing"))], capture_output=True, text=True,
+                           check=True).stdout.splitlines()
+  assert listing == []
+  assert stray_traefik_files(["traefik/traefik.yml", "traefik", "..", "", "traefik/certs/managed"]) == []
