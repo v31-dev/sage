@@ -241,9 +241,13 @@ describe('the Domains page', () => {
     await flushPromises()
 
     const [pooled, plain] = wrapper.findAll('[data-domain]')
-    expect(pooled!.getComponent('[data-application]').props('to')).toBe('/applications/demo/web')
+    expect(pooled!.getComponent<typeof RouterLinkStub>('[data-application]').props('to')).toBe(
+      '/applications/demo/web'
+    )
     expect(pooled!.get('[data-application]').text()).toBe('Demo / Web')
-    expect(pooled!.getComponent('[data-worker]').props('to')).toBe('/workers/w1')
+    expect(pooled!.getComponent<typeof RouterLinkStub>('[data-worker]').props('to')).toBe(
+      '/workers/w1'
+    )
     expect(pooled!.get('[data-pool]').text()).toBe('eu')
     expect(plain!.find('[data-pool]').exists()).toBe(false)
   })
@@ -256,7 +260,9 @@ describe('the Domains page', () => {
     await flushPromises()
 
     expect(wrapper.find('[data-application]').exists()).toBe(false)
-    expect(wrapper.getComponent('[data-worker]').props('to')).toBe('/workers/w2')
+    expect(wrapper.getComponent<typeof RouterLinkStub>('[data-worker]').props('to')).toBe(
+      '/workers/w2'
+    )
   })
 
   it('opens an HTTP address and shows a TCP one as text', async () => {

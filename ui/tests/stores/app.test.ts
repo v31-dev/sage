@@ -45,7 +45,14 @@ function onWorkers() {
 }
 
 function settings(state: SettingState = 'ok'): SettingsStatus {
-  const section = { state, message: null, task_id: null, checked_at: null, details: null }
+  const section = {
+    state,
+    message: null,
+    task_id: null,
+    checked_at: null,
+    details: null,
+    testing: false,
+  }
   return {
     tailscale: { ...section, channels: null },
     cloudflare: { ...section, channels: null },
