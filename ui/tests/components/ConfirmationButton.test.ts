@@ -3,7 +3,9 @@ import { describe, expect, it, vi } from 'vitest'
 import { Trash } from 'lucide-vue-next'
 import ConfirmationButton from '@/components/ConfirmationButton.vue'
 
-function mountButton(props: { iconOnly?: boolean; destructive?: boolean } = {}) {
+function mountButton(
+  props: { iconOnly?: boolean; destructive?: boolean; disabled?: boolean } = {}
+) {
   return mount(ConfirmationButton, {
     props: {
       triggerText: 'Delete',
@@ -43,6 +45,15 @@ describe('ConfirmationButton', () => {
       button => button.textContent?.trim() === 'Delete'
     )
     expect(confirm).toBeDefined()
+    wrapper.unmount()
+  })
+
+  it('opens nothing from a disabled icon', async () => {
+    const wrapper = mountButton({ iconOnly: true, destructive: true, disabled: true })
+    await wrapper.get('[data-icon-button]').trigger('click')
+    await wrapper.get('button').trigger('click')
+    await flushPromises()
+    expect(document.body.querySelector('[role=dialog]')).toBeNull()
     wrapper.unmount()
   })
 

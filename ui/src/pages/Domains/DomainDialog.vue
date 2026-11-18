@@ -36,7 +36,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Spinner } from '@/components/ui/spinner'
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
+import IconButton from '@/components/IconButton.vue'
 import { useAppStore } from '@/stores/app'
 import { type ContainerReference, type Domain, createDomain, updateDomain } from '@/services/api'
 
@@ -156,18 +156,9 @@ async function onConfirm() {
 
 <template>
   <Dialog v-model:open="open">
-    <TooltipProvider v-if="props.domain">
-      <Tooltip>
-        <TooltipTrigger as-child>
-          <DialogTrigger as-child>
-            <Button size="icon-sm" variant="ghost" aria-label="Edit" @click="openDialog">
-              <Edit />
-            </Button>
-          </DialogTrigger>
-        </TooltipTrigger>
-        <TooltipContent>Edit</TooltipContent>
-      </Tooltip>
-    </TooltipProvider>
+    <DialogTrigger v-if="props.domain" as-child>
+      <IconButton :icon="Edit" label="Edit" @click="openDialog" />
+    </DialogTrigger>
     <DialogTrigger v-else as-child>
       <Button size="sm" class="gap-2" @click="openDialog">
         <Plus />

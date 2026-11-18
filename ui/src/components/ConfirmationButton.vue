@@ -12,7 +12,7 @@ import {
 import { Button } from '@/components/ui/button'
 import { Field, FieldGroup, FieldSet, FieldError } from '@/components/ui/field'
 import { Spinner } from '@/components/ui/spinner'
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
+import IconButton from '@/components/IconButton.vue'
 import { type LucideIcon } from 'lucide-vue-next'
 
 interface Props {
@@ -68,26 +68,17 @@ async function onClickConfirm() {
 
 <template>
   <Dialog v-model:open="isDialogOpen">
-    <TooltipProvider v-if="iconOnly">
-      <Tooltip>
-        <TooltipTrigger as-child>
-          <DialogTrigger asChild>
-            <Button
-              @click="openDialog"
-              variant="ghost"
-              size="icon-sm"
-              :disabled="disabled"
-              :aria-label="triggerText"
-              :class="[destructive && 'text-destructive hover:text-destructive', triggerClass]"
-            >
-              <Spinner class="animate-spin" v-if="loading" />
-              <component :is="icon" v-else-if="icon" />
-            </Button>
-          </DialogTrigger>
-        </TooltipTrigger>
-        <TooltipContent>{{ triggerText }}</TooltipContent>
-      </Tooltip>
-    </TooltipProvider>
+    <DialogTrigger v-if="iconOnly && icon" asChild>
+      <IconButton
+        :icon="icon"
+        :label="triggerText"
+        :destructive="destructive"
+        :disabled="disabled"
+        :loading="loading"
+        :class="triggerClass"
+        @click="openDialog"
+      />
+    </DialogTrigger>
     <DialogTrigger v-else asChild>
       <Button
         @click="openDialog"
