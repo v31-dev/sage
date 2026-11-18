@@ -1,5 +1,6 @@
 """Locations, endpoints, timings and the running version, shared by the backend. Modules read a value as `config.NAME`
 where it is used, never `from config import NAME`, so a test can override one attribute."""
+import os
 from pathlib import Path
 
 DATA_DIR = Path("/app/data")
@@ -20,6 +21,19 @@ ACME_DIRECTORY = "https://acme-v02.api.letsencrypt.org/directory"
 ACME_PROFILE = "tlsserver"
 LATEST_RELEASE_URL = "https://api.github.com/repos/v31-dev/sage/releases/latest"
 RELEASE_PAGE_URL = "https://github.com/v31-dev/sage/releases/tag/v{version}"
+
+# The manager's servers listen on loopback only: tailscaled (userspace networking) delivers the tailnet's connections
+# there, and nothing on the container's own network reaches them.
+LISTEN_HOST = "127.0.0.1"
+HTTPS_PORT = 443
+HTTP_PORT = 80
+# The workers' Telegraf and Vector configurations name this port too.
+INGEST_PORT = 9001
+# Development's plain-HTTP API, behind the dev Traefik in the same network namespace.
+DEV_API_PORT = 9000
+# The one server on the container's own network, for a platform's health probe and Docker's HEALTHCHECK: it answers only
+# that the process runs.
+HEALTHCHECK_PORT = int(os.getenv("HEALTHCHECK_PORT") or 8080)
 
 # How long history is kept: logs, metrics, events, notifications, task history, restore
 # safety copies, and S3 platform and volume backups (the daily cleanup).

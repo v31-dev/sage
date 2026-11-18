@@ -18,8 +18,6 @@ services:
       - CLOUDFLARE_API_TOKEN=${CLOUDFLARE_API_TOKEN:?Set CLOUDFLARE_API_TOKEN}
       - DOMAIN=${DOMAIN:?Set DOMAIN to the dev Cloudflare domain}
       - ENV=development
-      # The dev Traefik owns :80/:443 and routes /api here.
-      - PORT=9000
     volumes:
       - ${SAGE_DATA:?Set SAGE_DATA to the host directory for the manager's data}:/app/data
     # Fail fast in dev: a failed init (e.g. ACME) should stop, not restart-loop

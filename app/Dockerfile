@@ -26,14 +26,11 @@ RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
 
 COPY . /app
 
-ENV PORT=80
-ENV INGEST_PORT=9001
 ENV PYTHONUNBUFFERED=1
 ENV MALLOC_ARENA_MAX=2
 
-EXPOSE 80
-EXPOSE 443
-EXPOSE 9001
+# The health probe, the one port served on the container's own network.
+EXPOSE 8080
 
 ENTRYPOINT ["/app/entrypoint.sh"]
 CMD ["python", "main.py"]

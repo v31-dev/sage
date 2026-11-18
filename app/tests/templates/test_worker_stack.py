@@ -40,7 +40,7 @@ class TestVectorConfig:
 
   def test_it_posts_to_the_log_route_with_the_workers_name(self):
     sink = vector_sink()
-    assert sink["uri"].endswith(":9001/api/vector/logs")
+    assert sink["uri"] == "http://${IP}:${INGEST_PORT}/api/vector/logs"
     assert sink["request"]["headers"]["X-Node-Name"] == "${HOSTNAME}"
 
   def test_it_ships_the_containers_through_the_transform_that_picks_them(self):
@@ -67,7 +67,7 @@ class TestTelegrafConfig:
 
   def test_it_pushes_gzip_json_to_the_report_route_with_the_workers_name(self):
     output, = telegraf_config()["outputs"]["http"]
-    assert output["url"].endswith(":9001/api/telegraf/report")
+    assert output["url"] == "http://x:x/api/telegraf/report"
     assert output["data_format"] == "json" and output["content_encoding"] == "gzip"
     assert output["headers"]["X-Node-Name"] == "x"
 

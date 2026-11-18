@@ -85,6 +85,13 @@ It needs:
   running tasks (a deploy, a backup) finish before it exits. Docker's default is 10 seconds
   before it kills the container.
 
+Optional:
+
+- `HEALTHCHECK_PORT` — the port of its health check, `GET /health`, the one thing it serves on
+  the container's own network (default `8080`). Point a platform's health check there; it
+  answers from the first second, while the first start's setup can take minutes. The image's
+  Docker health check uses it too.
+
 `.env`:
 
 ```bash

@@ -15,10 +15,11 @@ def access_record(path, method="GET"):
 
 @pytest.fixture(scope="module")
 def apps_filter():
-  """The access log's filter as Sage sets it up: its two apps' marked routes, and the Socket.IO path."""
+  """The access log's filter as Sage sets it up: its three apps' marked routes, and the Socket.IO path."""
   from api import SOCKET_IO_PATH, app
+  from api_health import app as health
   from api_ingest import app as ingest
-  return AccessLogFilter(unlogged_paths([app, ingest], [SOCKET_IO_PATH]))
+  return AccessLogFilter(unlogged_paths([app, ingest, health], [SOCKET_IO_PATH]))
 
 
 class TestTheAppsUnloggedPaths:
@@ -27,6 +28,7 @@ class TestTheAppsUnloggedPaths:
       "/api",
       "/api?ts=1",
       "/api/vector/logs",
+      "/health",
       "/api/telegraf/report",
       "/api/projects/demo/applications/web/logs",
       "/api/projects/demo/applications/web/logs?hostname=w1&search=a%20b",

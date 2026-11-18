@@ -39,12 +39,13 @@ After compaction, reread the relevant `docs/` page before continuing.
 | Path | Purpose |
 | --- | --- |
 | `app/entrypoint.sh` | Container entrypoint: starts the manager's userspace `tailscaled`, then the manager process |
-| `app/main.py` | Starts the main API, vector ingestion API, and APScheduler scheduler |
+| `app/main.py` | Starts the health check first, then the main API, vector ingestion API, and APScheduler scheduler |
 | `app/config.py` | Locations, endpoints and timings; read as `config.NAME` where used so tests can override them |
 | `app/tests/` | Backend unit tests (`pytest` from `app/`); `conftest.py` provides the `data_dir`, `db` and `register` fixtures |
 | `ui/tests/` | UI unit tests (`npm test` from `ui/`, Vitest and happy-dom), in the layout of `ui/src/`; `ui/vitest.config.ts` holds the config |
 | `app/api.py` | Main FastAPI application |
 | `app/api_ingest.py` | Worker ingestion FastAPI application: Telegraf reports and Vector logs |
+| `app/api_health.py` | Health check FastAPI application, the one server on the container's own network |
 | `app/routes/` | API route handlers |
 | `app/services/` | Singleton service layer |
 | `app/services/manager/` | Manager singleton (mixins): the operation orchestrator |

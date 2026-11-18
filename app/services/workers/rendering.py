@@ -82,8 +82,9 @@ def render_infrastructure(inputs: InfraInputs, tunnel_token: str, discovery_tunn
       StackFile("traefik/dynamic/config.yml", fill(template("traefik/config.yml"),
                                                    {"DOMAIN": inputs.domain, "HOSTNAME": inputs.hostname}), 0o644),
       StackFile("vector/config/vector.yml", fill(template("vector/vector.yml"),
-                                                 {"IP": inputs.manager_address, "HOSTNAME": inputs.hostname}), 0o644),
+                                                 {"IP": inputs.manager_address, "INGEST_PORT": config.INGEST_PORT,
+                                                  "HOSTNAME": inputs.hostname}), 0o644),
       StackFile("telegraf/telegraf.conf", fill(template("telegraf/telegraf.conf"), {
-          "IP": inputs.manager_address, "HOSTNAME": inputs.hostname, "TS_IP": inputs.address,
-          "INTERVAL": inputs.report_interval}), 0o644),
+          "IP": inputs.manager_address, "INGEST_PORT": config.INGEST_PORT, "HOSTNAME": inputs.hostname,
+          "TS_IP": inputs.address, "INTERVAL": inputs.report_interval}), 0o644),
   )

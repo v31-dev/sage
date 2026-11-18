@@ -11,6 +11,7 @@ import config
 from api import SOCKET_IO_PATH
 from api import app as app_fastapi
 from api import app_asgi, app_redirect
+from api_health import app as app_fastapi_health
 from api_ingest import app as app_fastapi_ingest
 from scheduler import shutdown as shutdown_scheduler
 from scheduler import start as start_scheduler
@@ -21,10 +22,11 @@ from services.db.encryption import initialize_encryption
 from services.db.migrator import SchemaRefused
 from services.manager import Manager
 from services.tailscale import Tailscale
+from utils.executor import LANES, run_in_executor_with_context
 from utils.logging import setup_logger, unlogged_paths
 
 # The access log leaves out what is asked every few seconds or more: the routes marked so, and Socket.IO's polling.
-setup_logger(unlogged_paths([app_fastapi, app_fastapi_ingest], [SOCKET_IO_PATH]))
+setup_logger(unlogged_paths([app_fastapi, app_fastapi_ingest, app_fastapi_health], [SOCKET_IO_PATH]))
 
 logger = logging.getLogger(__name__)
 
@@ -38,38 +40,6 @@ def caused_by(error: BaseException | None, kind: type) -> BaseException | None:
   return None
 
 
-try:
-  initialize_encryption(os.getenv("ENCRYPTION_KEY"))
-except ValueError as e:
-  logger.critical(str(e))
-  sys.exit(1)
-
-
-try:
-  manager = Manager()
-except Exception as e:
-  if caused_by(e, InvalidToken):
-    # The settings, written on the first boot, don't decrypt: the key was changed since.
-    logger.critical(
-        "ENCRYPTION_KEY is not the key this data was written with. Set the original key, or "
-        "wipe the volume to start over with this one.")
-  elif refused := caused_by(e, SchemaRefused):
-    logger.critical(str(refused))
-  else:
-    logger.critical(f"Error during startup: {e}", exc_info=True)
-  sys.exit(1)
-
-# Cloudflare is part of the platform: Sage serves only once its domain is set up.
-try:
-  manager.setup_domain()
-except Exception as e:
-  logger.critical(
-      f"Could not set up {Cloudflare().manager_hostname}: {e}. Check CLOUDFLARE_API_TOKEN "
-      "and DOMAIN.", exc_info=True)
-  sys.exit(1)
-
-
-# Start the FastAPI server and the scheduler
 class Server(uvicorn.Server):
   draining = False
 
@@ -87,11 +57,11 @@ class Server(uvicorn.Server):
     loop.call_soon_threadsafe(loop.create_task, self.drain(sig))
 
   async def drain(self, sig: int):
-    manager.stop_tasks()
-    running = manager.task_snapshot()["running"]
+    Manager().stop_tasks()
+    running = Manager().task_snapshot()["running"]
     if running:
       logger.info(f"Stopping: waiting for {len(running)} running task(s) to finish.")
-    while manager.task_snapshot()["running"]:
+    while Manager().task_snapshot()["running"]:
       await asyncio.sleep(0.5)
     logger.info("Stopping: no tasks running.")
     await Tailscale().close()
@@ -108,6 +78,45 @@ class BackgroundServer(uvicorn.Server):
 
 
 async def main():
+  # A platform's health probe is answered from the start, while the setup below can take minutes on a first start.
+  health_server = BackgroundServer(config=uvicorn.Config(
+      app_fastapi_health, host="0.0.0.0", port=config.HEALTHCHECK_PORT, workers=1, loop="asyncio", log_config=None))
+  health = asyncio.create_task(health_server.serve())
+  while not health_server.started:
+    if health.done():
+      health.result()
+    await asyncio.sleep(0.05)
+
+  try:
+    initialize_encryption(os.getenv("ENCRYPTION_KEY"))
+  except ValueError as e:
+    logger.critical(str(e))
+    sys.exit(1)
+
+  try:
+    Manager()
+  except Exception as e:
+    if caused_by(e, InvalidToken):
+      # The settings, written on the first boot, don't decrypt: the key was changed since.
+      logger.critical(
+          "ENCRYPTION_KEY is not the key this data was written with. Set the original key, or "
+          "wipe the volume to start over with this one.")
+    elif refused := caused_by(e, SchemaRefused):
+      logger.critical(str(refused))
+    else:
+      logger.critical(f"Error during startup: {e}", exc_info=True)
+    sys.exit(1)
+
+  # Cloudflare is part of the platform: Sage serves only once its domain is set up. Nothing else uses the platform
+  # lane before the scheduler starts.
+  try:
+    await run_in_executor_with_context(Manager().setup_domain, executor=LANES["platform"])
+  except Exception as e:
+    logger.critical(
+        f"Could not set up {Cloudflare().manager_hostname}: {e}. Check CLOUDFLARE_API_TOKEN "
+        "and DOMAIN.", exc_info=True)
+    sys.exit(1)
+
   # Start the cron/interval scheduler on this running loop. Startup work that touches
   # the network (release check, certificate renewal, backup discovery) is queued from
   # here, so it runs while the servers below are already serving.
@@ -119,8 +128,8 @@ async def main():
   ingest_server = BackgroundServer(
       config=uvicorn.Config(
           app_fastapi_ingest,
-          host="0.0.0.0",
-          port=int(os.getenv("INGEST_PORT", 9001)),
+          host=config.LISTEN_HOST,
+          port=config.INGEST_PORT,
           workers=1,
           loop="asyncio",
           log_config=None,
@@ -131,14 +140,14 @@ async def main():
   if os.getenv("ENV") == "development":
     # The dev Traefik terminates TLS for the manager's address and proxies here.
     servers = [Server(config=uvicorn.Config(
-        app_asgi, host="0.0.0.0", port=int(os.getenv("PORT", 9000)), workers=1, loop="asyncio",
+        app_asgi, host=config.LISTEN_HOST, port=config.DEV_API_PORT, workers=1, loop="asyncio",
         log_config=None))]
   else:
     # The UI and API only at https://<TS_NAME>.core.<DOMAIN>; plain HTTP redirects there.
     api_config = uvicorn.Config(
         app_asgi,
-        host="0.0.0.0",
-        port=int(os.getenv("HTTPS_PORT", 443)),
+        host=config.LISTEN_HOST,
+        port=config.HTTPS_PORT,
         workers=1,
         loop="asyncio",
         log_config=None,
@@ -150,13 +159,13 @@ async def main():
     servers = [
         Server(api_config),
         BackgroundServer(config=uvicorn.Config(
-            app_redirect, host="0.0.0.0", port=int(os.getenv("PORT", 80)), workers=1, loop="asyncio",
+            app_redirect, host=config.LISTEN_HOST, port=config.HTTP_PORT, workers=1, loop="asyncio",
             log_config=None)),
     ]
 
   tasks = [asyncio.create_task(server.serve()) for server in (*servers, ingest_server)]
 
-  await asyncio.wait(tasks)
+  await asyncio.wait([*tasks, health])
 
 
 if __name__ == "__main__":

@@ -22,7 +22,9 @@ node — `tailscaled` in userspace networking mode, state under `/app/data/tails
 then starts the manager process. Tailnet connections to the node's IP are delivered to
 the same port on `127.0.0.1` inside the container, so `:443`, `:80` and `:9001` need no published
 ports — and anything listening there is reachable from the tailnet wherever the tailnet
-policy allows.
+policy allows. The manager's servers listen on `127.0.0.1` only (`config.LISTEN_HOST`), so nothing on the
+container's own network (another container beside it, a platform's private network) reaches them, and the tailnet
+policy stays the only way in. The health check is the exception: it answers only that the process runs.
 
 ### Requests From Other Sites
 
@@ -48,15 +50,17 @@ through `tailscaled`: SSH to workers uses asyncssh's `proxy_command` with
 
 The manager process starts these concurrent services from `app/main.py`:
 
-1. Main FastAPI API and UI on port `443`, serving TLS with the manager's own certificate; port `80` only
+1. The health check (`app/api_health.py`), `GET /health` on `0.0.0.0:<HEALTHCHECK_PORT>` (default `8080`), the one
+   server on the container's own network, started first so a platform's probe is answered during the setup below
+2. Main FastAPI API and UI on port `443`, serving TLS with the manager's own certificate; port `80` only
    redirects there (in development, plain HTTP on `9000` behind the dev Traefik)
-2. Ingestion FastAPI API on port `9001` (receives workers' Telegraf reports and Vector log shipments)
-3. APScheduler (cron/interval) scheduler
+3. Ingestion FastAPI API on port `9001` (receives workers' Telegraf reports and Vector log shipments)
+4. APScheduler (cron/interval) scheduler
 
 Startup is service-driven:
 
 - `Manager()` initializes the platform services.
-- Before serving, startup sets up the domain (`Manager.setup_domain`): connect to Cloudflare (zone, tunnel, the manager's record) and get the manager's certificate, retrying a failure that clears by itself (a network error, HTTP 5xx or 429) after 1, 4 and 16 minutes and then exiting; any other failure, such as a rejected token, and a rate limit exit at once, and a still-valid certificate lets startup continue. Other startup work that touches the network (release check, worker and discovery certificates, S3 backup discovery, settings checks, each reachable worker's setup, by its stamps) runs as queued tasks once the servers are up. S3 and notifications are optional.
+- Before serving, with only the health check up, startup sets up the domain (`Manager.setup_domain`, on the `platform` lane): connect to Cloudflare (zone, tunnel, the manager's record) and get the manager's certificate, retrying a failure that clears by itself (a network error, HTTP 5xx or 429) after 1, 4 and 16 minutes and then exiting; any other failure, such as a rejected token, and a rate limit exit at once, and a still-valid certificate lets startup continue. Other startup work that touches the network (release check, worker and discovery certificates, S3 backup discovery, settings checks, each reachable worker's setup, by its stamps) runs as queued tasks once the servers are up. S3 and notifications are optional.
 - If service initialization fails, the process exits.
 
 ## Worker Runtime

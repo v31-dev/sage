@@ -45,6 +45,12 @@ class TestRendering:
     assert 'address = "100.64.0.2:443"' in telegraf and 'interval = "10s"' in telegraf
     assert 'X-Node-Name = "w1"' in telegraf
 
+  def test_the_collectors_send_to_the_port_the_manager_listens_on(self, monkeypatch):
+    monkeypatch.setattr(config, "INGEST_PORT", 9101)
+    files = render()
+    assert "http://100.64.0.1:9101/api/vector/logs" in files["vector/config/vector.yml"].content
+    assert "http://100.64.0.1:9101/api/telegraf/report" in files["telegraf/telegraf.conf"].content
+
   def test_traefiks_dynamic_config_names_the_domain(self):
     assert "*.example.test" in render()["traefik/dynamic/config.yml"].content
 
