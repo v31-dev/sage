@@ -87,6 +87,12 @@ class TestFlushWorker:
     store.flush_worker("w1")
     assert {row["name"] for row in self.rows(store, "ContainerMetrics")} == {"web", "traefik"}
 
+  def test_a_replay_of_an_hour_writes_every_minute(self, store, clock):
+    store.ingest("w1", [snapshot(seconds, host(), container()) for seconds in range(-3540, 10, 10)])
+    clock.set(MINUTE + timedelta(minutes=1, seconds=5))
+    store.flush_worker("w1")
+    assert (len(self.rows(store, "WorkerMetrics")), len(self.rows(store, "ContainerMetrics"))) == (60, 60)
+
   def test_the_completed_minute_is_written_as_one_row_of_peaks(self, store, clock):
     snapshots = self.ingest_the_recorded_batch(store, clock)
     store.flush_worker("w1")

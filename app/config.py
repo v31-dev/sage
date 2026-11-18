@@ -90,6 +90,9 @@ LOG_INTAKE_MAX_BYTES = 8 * 1024 * 1024
 REPORT_STALE_SECONDS = 30
 # The snapshots kept for each worker, newest last.
 REPORT_HISTORY_SIZE = 5
+# Readings are held in memory this long before they are written, so a replay of a worker's Telegraf buffer after the
+# manager was away (10,000 metrics: about an hour at a worker's fewest metrics a gather) keeps every minute of it.
+METRICS_HELD_MINUTES = 60
 # After the manager starts, a worker that has not reported yet is not called not ready for this long.
 REPORT_STARTUP_GRACE_SECONDS = 60
 # A fact not known yet holds back the others for this long at most: a discovery name still not known is offline after it.

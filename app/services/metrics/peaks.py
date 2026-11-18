@@ -16,16 +16,16 @@ class MinutePeaks:
   A reading that is not a peak (a total, a core count) keeps its latest value. Not thread-safe:
   the caller holds a lock."""
 
-  def __init__(self, keep: timedelta = timedelta(minutes=10)):
-    self._keep = keep
+  def __init__(self, keep: timedelta | None = None):
+    self._keep = keep if keep is not None else timedelta(minutes=config.METRICS_HELD_MINUTES)
     self._minutes: dict[datetime, dict] = {}
 
   def __len__(self):
     return len(self._minutes)
 
   def fold(self, minute: datetime, peaks: dict, latest: dict | None = None):
-    # Completed minutes are drained every minute, so this normally holds one or two;
-    # bound it in case the flush ever stalls.
+    # Completed minutes are drained every minute, so this normally holds one or two, and a replay's
+    # worth after the manager was away; bound it in case the flush ever stalls.
     for stale in [m for m in self._minutes if m < minute - self._keep]:
       del self._minutes[stale]
     entry = self._minutes.setdefault(minute, {})
