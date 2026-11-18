@@ -268,6 +268,23 @@ describe('a volume delete', () => {
     return { wrapper, button, loadApplication }
   }
 
+  it("shows the card's Edit and Delete as icons", () => {
+    const wrapper = mount(VolumeCard, {
+      props: { application: application([]), volume, loadApplication: vi.fn(async () => {}) },
+      global: { stubs: { VolumeBackupButton: true, VolumeRestoreDialog: true } },
+    })
+
+    expect(
+      wrapper
+        .get('[data-slot=card-action]')
+        .findAll('button')
+        .map(button => [button.text(), button.attributes('aria-label')])
+    ).toEqual([
+      ['', 'Edit'],
+      ['', 'Delete'],
+    ])
+  })
+
   it.each([
     ['no containers', []],
     ['every container stopped', [stopped('c1'), stopped('c2')]],

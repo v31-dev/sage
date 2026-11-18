@@ -22,12 +22,12 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Field, FieldGroup, FieldLabel, FieldSet, FieldError } from '@/components/ui/field'
 import { Spinner } from '@/components/ui/spinner'
-import { ButtonGroup } from '@/components/ui/button-group'
 import { Label } from '@/components/ui/label'
 
 import { type Volume, type Application, deleteVolume, updateVolume } from '@/services/api'
 import SectionTitle from '@/components/SectionTitle.vue'
 import ConfirmationButton from '@/components/ConfirmationButton.vue'
+import IconButton from '@/components/IconButton.vue'
 import VolumeBackupButton from './VolumeBackupButton.vue'
 import VolumeRestoreDialog from './VolumeRestoreDialog.vue'
 
@@ -107,22 +107,20 @@ async function onClickConfirmDelete() {
         <SectionTitle :title="props.volume.name" />
       </CardTitle>
       <CardAction>
-        <ButtonGroup class="space-x-1">
-          <Button size="sm" variant="outline" @click="openEditVolumeDialog" class="gap-2">
-            <Edit />
-            Edit
-          </Button>
+        <div class="flex items-center gap-1">
+          <IconButton :icon="Edit" label="Edit" @click="openEditVolumeDialog" />
           <ConfirmationButton
             triggerText="Delete"
             title="Delete Volume"
             body="The volume and all its backups are deleted. This can't be undone."
             :description="props.volume.name"
             :icon="Trash"
+            icon-only
             destructive
             :disabled="deleteDisabled"
             :onConfirm="onClickConfirmDelete"
           />
-        </ButtonGroup>
+        </div>
       </CardAction>
     </CardHeader>
     <CardContent class="space-y-4">
