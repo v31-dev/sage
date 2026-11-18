@@ -58,7 +58,7 @@ services:
   # Serves https://<TS_NAME>.core.<DOMAIN> with the manager's certificate:
   # /api to the manager, everything else (incl. the HMR WebSocket) to Vite.
   traefik:
-    image: traefik:v3.6.7
+    image: traefik:v3.7.19
     container_name: sage-dev-traefik
     network_mode: service:sage
     environment:
