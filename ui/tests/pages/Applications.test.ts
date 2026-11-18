@@ -76,8 +76,8 @@ it('allows deleting only a project with no applications', async () => {
   await flushPromises()
   const [shop, empty] = wrapper.findAllComponents(ProjectCard)
 
-  expect(deleteButton(shop).attributes('disabled')).toBeDefined()
-  expect(deleteButton(empty).attributes('disabled')).toBeUndefined()
+  expect(deleteButton(shop!).attributes('disabled')).toBeDefined()
+  expect(deleteButton(empty!).attributes('disabled')).toBeUndefined()
 })
 
 it("shows a project's New Application, Edit and Delete as icons, in that order", async () => {

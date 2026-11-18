@@ -62,11 +62,11 @@ describe('the task table', () => {
   })
 
   it("shows a finished task's status as an icon left of its id", () => {
-    const task = table(finished, 'finished').findAll('td')[0].get('div')
+    const task = table(finished, 'finished').get('td').get('div')
     const [icon, id] = task.element.children
-    expect(icon.getAttribute('role')).toBe('img')
-    expect(icon.getAttribute('aria-label')).toBe('completed')
-    expect(id.tagName.toLowerCase()).toBe('task-logs-button-stub')
+    expect(icon!.getAttribute('role')).toBe('img')
+    expect(icon!.getAttribute('aria-label')).toBe('completed')
+    expect(id!.tagName.toLowerCase()).toBe('task-logs-button-stub')
     expect(task.text()).toBe('')
   })
 
@@ -90,17 +90,15 @@ describe('the task table', () => {
       ...finished,
       finished_at: new Date(Date.parse(`${at(1)}Z`) + seconds * 1000).toISOString(),
     }
-    expect(taskTimes(ran, 'finished').at(-1)).toEqual({
-      label: 'Ran',
-      value: shown,
-      duration: true,
-    })
+    expect(taskTimes(ran, 'finished').slice(-1)).toEqual([
+      { label: 'Ran', value: shown, duration: true },
+    ])
   })
 
   it('gives a running task how long it waited, and no run time', () => {
     const times = taskTimes({ ...queued, started_at: at(3) }, 'running')
     expect(times.map(time => time.label)).toEqual(['Queued', 'Started', 'Waited'])
-    expect(times.at(-1)!.value).toBe('3:00 mins')
+    expect(times[2]!.value).toBe('3:00 mins')
   })
 
   it("shows a running task's two dates in its row, without its wait", () => {
@@ -119,7 +117,7 @@ describe('the task table', () => {
     const wrapper = table(queued, 'queued')
     expect(pairs(queued, 'queued', 'times')).toEqual([['Queued', formatDate(at(0))]])
     expect(wrapper.find('[data-durations]').exists()).toBe(false)
-    expect(wrapper.findAll('td')[0].text()).toBe('')
+    expect(wrapper.get('td').text()).toBe('')
   })
 
   it('shows each label with its value beside it', () => {

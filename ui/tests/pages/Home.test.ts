@@ -33,6 +33,7 @@ const summary: HomeSummary = {
     stopping: 0,
     backup: 0,
     restoring: 0,
+    recovering: 0,
   },
   domains: { total: 4, synced: 1, pending: 1, syncing: 1, error: 1 },
   deploys: { succeeded: 4, failed: 2 },
