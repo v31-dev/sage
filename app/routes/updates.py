@@ -34,19 +34,10 @@ TOPICS = {
     UpdateFeed.SETTING_TESTS: Feed(parameterised=True),
 }
 
-SCHEMES = {"http": "http", "https": "https", "ws": "http", "wss": "https"}
-
-
-def same_origin(origin: str, environ: dict) -> bool:
-  """Whether the origin of a page is the manager's own: the scheme the request arrived with (a WebSocket's `ws` and
-  `wss` are the page's `http` and `https`) and the host it was sent to."""
-  scheme = SCHEMES.get(environ["asgi.scope"]["scheme"])
-  return scheme is not None and origin == f"{scheme}://{environ.get('HTTP_HOST', '')}"
-
-
+# Other sites' pages are refused in front of it (`RefuseOtherSites`); `[]` turns its own origin check and CORS headers off.
 sio = socketio.AsyncServer(
     async_mode="asgi",
-    cors_allowed_origins=same_origin,
+    cors_allowed_origins=[],
     ping_interval=config.UPDATES_PING_INTERVAL_SECONDS,
     ping_timeout=config.UPDATES_PING_TIMEOUT_SECONDS,
 )

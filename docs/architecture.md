@@ -24,6 +24,21 @@ the same port on `127.0.0.1` inside the container, so `:443`, `:80` and `:9001` 
 ports — and anything listening there is reachable from the tailnet wherever the tailnet
 policy allows.
 
+### Requests From Other Sites
+
+A device the tailnet policy allows also carries, in its browser, the requests of any page it opens. Both servers
+refuse what another site's page sends (`RefuseOtherSites`, `app/utils/api.py`), by any method, over HTTP or a
+WebSocket, with a 403 or close code 1008:
+
+- The main server (UI, API, Socket.IO) takes a browser request only from its own pages: the browser's
+  `Sec-Fetch-Site` is `same-origin`, or `none` for an address the user typed or bookmarked; from a browser that sends
+  no `Sec-Fetch-Site`, its `Origin` is exactly `https://<TS_NAME>.core.<DOMAIN>`. A link followed from another site
+  (a notification's, say), a GET loading a whole tab, opens the page; a frame, a fetch, an image, a form and a
+  WebSocket from another site, the customer's own names under `<DOMAIN>` included, are refused.
+- The ingest server (`:9001`) takes no browser request at all: only the workers' Telegraf and Vector call it.
+
+A request with neither header is not a browser's and passes (curl, the workers).
+
 In userspace mode the container has no route into the tailnet, so outbound traffic goes
 through `tailscaled`: SSH to workers uses asyncssh's `proxy_command` with
 `tailscale nc <worker> 22`. For HTTP the workers reach the manager (the reports and logs on

@@ -58,6 +58,13 @@ class TestReport:
     assert post(client, json.dumps(BATCH).encode(), encoding=None, chunked=False).status_code == 204
     assert WorkerReports().latest("w1") is not None
 
+  def test_a_report_a_browser_sends_is_refused_and_not_kept(self, client, worker, ingested):
+    response = client.post(URL, content=json.dumps(BATCH).encode(),
+                           headers={"X-Node-Name": "w1", "Sec-Fetch-Site": "same-origin", "Origin": "http://rebound.example:9001"})
+    assert response.status_code == 403
+    assert WorkerReports().latest("w1") is None
+    assert ingested == []
+
   def test_a_batch_of_several_gathers_keeps_each_but_the_newest_until_the_next_report(self, client, worker, ingested):
     first, second = [snapshot(metrics) for _, metrics in sorted(parse_batch(BATCH).items())]
     post(client, json.dumps(BATCH).encode())

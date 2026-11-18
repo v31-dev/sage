@@ -23,10 +23,11 @@ from socketio.exceptions import ConnectionError as SocketConnectionError
 import config
 import services.updates as updates_module
 from api import build_asgi_app
-from routes.updates import TOPICS, same_origin, sio
+from routes.updates import TOPICS, sio
 from services.backups.commands import add_backups
 from services.backups.payload import platform_backups
 from services.backups.updates import store_changed
+from services.cloudflare import Cloudflare
 from services.db.models import Notification, Volume
 from services.notification import list_notifications
 from services.releases import Releases
@@ -34,7 +35,8 @@ from services.s3 import S3
 from services.updates import Feed, Topic, UpdateFeed, Updates, UpdateSource, UpdateTopic
 
 BOTH = ["polling", "websocket"]
-SAME_ORIGIN = object()
+MANAGER = "manager.core.example.test"
+SAME_ORIGIN = f"https://{MANAGER}"
 NO_ORIGIN = None
 REFUSED = (SocketConnectionError, EngineConnectionError)
 
@@ -76,7 +78,12 @@ def serve(app, monkeypatch, **options):
 
 
 @pytest.fixture
-def served(manager, thread_connections, monkeypatch):
+def cloudflare(register):
+  return register(Cloudflare, SimpleNamespace(manager_hostname=MANAGER))
+
+
+@pytest.fixture
+def served(manager, cloudflare, thread_connections, monkeypatch):
   """The app as the servers serve it, on a free port: the Socket.IO server in front of the API."""
   port, stop = serve(build_asgi_app(False), monkeypatch)
   yield port
@@ -84,7 +91,7 @@ def served(manager, thread_connections, monkeypatch):
 
 
 @pytest.fixture
-def served_over_tls(manager, thread_connections, monkeypatch, tmp_path):
+def served_over_tls(manager, cloudflare, thread_connections, monkeypatch, tmp_path):
   """The same, with TLS of its own as in production, where no proxy is in front."""
   key = ec.generate_private_key(ec.SECP256R1())
   name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "127.0.0.1")])
@@ -114,7 +121,7 @@ class Browser:
     self.received = queue.Queue()
     headers = dict(headers or {})
     if origin is not NO_ORIGIN:
-      headers["Origin"] = f"{scheme}://127.0.0.1:{port}" if origin is SAME_ORIGIN else origin
+      headers["Origin"] = origin
     self.session = requests.Session()
     self.session.verify = ca or True
     self.client = socketio.Client(reconnection=False, http_session=self.session,
@@ -286,7 +293,7 @@ class TestOverEachTransport:
 
 class TestHandshake:
   @pytest.mark.parametrize("transports", [["polling"], ["websocket"]], ids=["long-polling", "websocket"])
-  @pytest.mark.parametrize("origin", ["http://evil.example", "https://127.0.0.1", "null"])
+  @pytest.mark.parametrize("origin", ["http://evil.example", "https://127.0.0.1", f"http://{MANAGER}", "null"])
   def test_a_page_of_another_origin_is_refused(self, served, transports, origin):
     with pytest.raises(REFUSED):
       Browser(served, transports, origin)
@@ -303,26 +310,18 @@ class TestHandshake:
     assert one.client.connected
     one.close()
 
-  @pytest.mark.parametrize("transports, forwarded", [(["polling"], "https"), (["websocket"], "wss")],
-                           ids=["long-polling", "websocket"])
-  def test_a_page_behind_a_proxy_is_accepted_when_the_proxy_says_how_it_was_reached(self, served, transports, forwarded):
-    """Traefik says `https` for an ordinary request and `wss` for a WebSocket handshake."""
-    one = Browser(served, transports, f"https://127.0.0.1:{served}", {"X-Forwarded-Proto": forwarded})
-    assert one.client.connected
-    one.close()
+  @pytest.mark.parametrize("transports", [["polling"], ["websocket"]], ids=["long-polling", "websocket"])
+  def test_a_page_another_site_opens_is_refused_whatever_origin_it_gives(self, served, transports):
+    with pytest.raises(REFUSED):
+      Browser(served, transports, SAME_ORIGIN, {"Sec-Fetch-Site": "cross-site"})
 
-  def test_the_upgrade_behind_a_proxy_reaches_a_websocket(self, served, state):
-    one = Browser(served, BOTH, f"https://127.0.0.1:{served}", {"X-Forwarded-Proto": "https"})
+  def test_the_upgrade_reaches_a_websocket(self, served, state):
+    one = Browser(served, BOTH, SAME_ORIGIN)
     deadline = time.monotonic() + 5
     while one.client.transport() != "websocket" and time.monotonic() < deadline:
       time.sleep(0.05)
     assert one.client.transport() == "websocket"
     one.close()
-
-  @pytest.mark.parametrize("transports", [["polling"], ["websocket"]], ids=["long-polling", "websocket"])
-  def test_a_page_of_a_secure_origin_is_refused_when_nothing_says_it_was_reached_securely(self, served, transports):
-    with pytest.raises(REFUSED):
-      Browser(served, transports, f"https://127.0.0.1:{served}")
 
 
 class TestHandshakeWithTls:
@@ -343,42 +342,10 @@ class TestHandshakeWithTls:
     one.close()
 
   @pytest.mark.parametrize("transports", [["polling"], ["websocket"]], ids=["long-polling", "websocket"])
-  @pytest.mark.parametrize("origin", ["https://evil.example", "http://127.0.0.1", "null"])
+  @pytest.mark.parametrize("origin", ["https://evil.example", f"http://{MANAGER}", "null"])
   def test_a_page_of_another_origin_is_refused(self, served_over_tls, transports, origin):
     with pytest.raises(REFUSED):
       Browser(served_over_tls.port, transports, origin, ca=served_over_tls.ca)
-
-  @pytest.mark.parametrize("transports", [["polling"], ["websocket"]], ids=["long-polling", "websocket"])
-  def test_the_same_host_over_plain_http_is_refused(self, served_over_tls, transports):
-    with pytest.raises(REFUSED):
-      Browser(served_over_tls.port, transports, f"http://127.0.0.1:{served_over_tls.port}", ca=served_over_tls.ca)
-
-
-class TestSameOrigin:
-  def environ(self, scheme, host="manager.example"):
-    return {"asgi.scope": {"scheme": scheme}, "HTTP_HOST": host}
-
-  @pytest.mark.parametrize("scheme, origin", [("http", "http://manager.example"), ("https", "https://manager.example"),
-                                              ("ws", "http://manager.example"), ("wss", "https://manager.example")])
-  def test_the_page_of_the_scheme_and_host_the_request_came_with_is_the_same_origin(self, scheme, origin):
-    assert same_origin(origin, self.environ(scheme)) is True
-
-  @pytest.mark.parametrize("scheme, origin", [("https", "http://manager.example"), ("wss", "http://manager.example"),
-                                              ("http", "https://manager.example"), ("ws", "https://manager.example"),
-                                              ("https", "https://other.example"), ("https", "https://manager.example:8443"),
-                                              ("https", "null"), ("https", "")])
-  def test_any_other_origin_is_not(self, scheme, origin):
-    assert same_origin(origin, self.environ(scheme)) is False
-
-  def test_the_port_of_the_host_counts(self):
-    assert same_origin("https://manager.example:8443", self.environ("https", "manager.example:8443")) is True
-    assert same_origin("https://manager.example", self.environ("https", "manager.example:8443")) is False
-
-  def test_a_request_without_a_host_has_no_same_origin(self):
-    assert same_origin("https://manager.example", {"asgi.scope": {"scheme": "https"}}) is False
-
-  def test_a_scheme_that_is_not_known_has_no_same_origin(self):
-    assert same_origin("ftp://manager.example", self.environ("ftp")) is False
 
 
 class TestWhilePaused:

@@ -148,7 +148,9 @@ IP, so it only works from the tailnet. Plain `http://<TS_NAME>` redirects to it.
 **Sage has no login or access control of its own.** Anyone who can reach the manager over
 the tailnet can use the UI and API, including reading the stored S3 keys and Discord
 webhook. The tailnet policy is the only gate: restrict who can reach the manager,
-and never expose it outside the tailnet (no published ports, no public URL).
+and never expose it outside the tailnet (no published ports, no public URL). The
+manager refuses requests that another site's page sends through the browser of a tailnet
+device ([Requests From Other Sites](docs/architecture.md#requests-from-other-sites)).
 
 In the tailnet policy, give the manager and the workers their own tags (the examples use
 `tag:sage` and `tag:sage-worker`) and allow the traffic Sage uses. Anything not allowed is

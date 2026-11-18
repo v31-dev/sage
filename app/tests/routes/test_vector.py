@@ -31,6 +31,12 @@ class TestIntake:
     assert response.status_code == 204
     assert stored() == ["one", "two"]
 
+  def test_lines_a_browser_sends_are_refused_and_not_stored(self, client):
+    response = client.post(URL, content=body("forged"), headers={"X-Node-Name": "w1", "Origin": "http://rebound.example:9001"})
+
+    assert response.status_code == 403
+    assert stored() == []
+
   def test_it_is_decoded_and_written_on_the_logs_thread_not_the_event_loop(self, client, monkeypatch):
     threads = []
     ingest = Logs.ingest
