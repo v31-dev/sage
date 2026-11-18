@@ -24,6 +24,7 @@ import {
 } from '@/components/ui/select'
 import CustomInput from '@/components/CustomInput.vue'
 import FieldLabelHelp from '@/components/FieldLabelHelp.vue'
+import IconButton from '@/components/IconButton.vue'
 
 import { type Application, updateApplication } from '@/services/api'
 import { Edit } from 'lucide-vue-next'
@@ -107,7 +108,7 @@ async function handleUpdateApplication() {
 <template>
   <Dialog v-model:open="isEditDialogOpen">
     <DialogTrigger asChild>
-      <Button @click="openEditDialog" variant="outline" size="sm"> <Edit />Edit </Button>
+      <IconButton :icon="Edit" label="Edit" @click="openEditDialog" />
     </DialogTrigger>
     <DialogContent class="sm:max-w-[600px]">
       <DialogHeader>

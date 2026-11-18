@@ -32,7 +32,7 @@ function deleteButton(containerCount: number) {
       },
     },
   })
-  return wrapper.findAll('button').find(button => button.text() === 'Delete')!
+  return wrapper.findAll('button').find(button => button.attributes('aria-label') === 'Delete')!
 }
 
 beforeEach(() => setActivePinia(createPinia()))
@@ -40,4 +40,21 @@ beforeEach(() => setActivePinia(createPinia()))
 it('allows deleting only an application with no containers', () => {
   expect(deleteButton(1).attributes('disabled')).toBeDefined()
   expect(deleteButton(0).attributes('disabled')).toBeUndefined()
+})
+
+it("shows the header's Edit and Delete as icons", () => {
+  const wrapper = mount(ApplicationHeader, {
+    props: { application: application(0), loadApplication: async () => {} },
+    global: { stubs: { DeployApplicationButton: true, StopApplicationButton: true } },
+  })
+
+  expect(
+    wrapper
+      .get('[data-slot=card-action]')
+      .findAll('button')
+      .map(button => [button.text(), button.attributes('aria-label')])
+  ).toEqual([
+    ['', 'Edit'],
+    ['', 'Delete'],
+  ])
 })

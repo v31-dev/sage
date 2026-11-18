@@ -12,7 +12,6 @@ import {
   CardFooter,
 } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
-import { ButtonGroup } from '@/components/ui/button-group'
 import { Label } from '@/components/ui/label'
 import { Icon } from '@iconify/vue'
 
@@ -78,7 +77,7 @@ const repoURL = computed(() => {
         </SectionTitle>
       </CardTitle>
       <CardAction>
-        <ButtonGroup class="space-x-1">
+        <div class="flex items-center gap-1">
           <EditApplicationButton
             :application="props.application"
             :loadApplication="props.loadApplication"
@@ -89,11 +88,12 @@ const repoURL = computed(() => {
             body="The application, its volumes and all their backups are deleted. This can't be undone."
             :description="props.application.name"
             :icon="Trash"
+            icon-only
             destructive
             :disabled="props.application.container_count > 0"
             :onConfirm="onConfirmDelete"
           />
-        </ButtonGroup>
+        </div>
       </CardAction>
     </CardHeader>
     <CardContent class="space-y-4">
@@ -147,7 +147,7 @@ const repoURL = computed(() => {
     <CardFooter
       class="border-t flex flex-col md:flex-row justify-between items-center gap-2 md:gap-0"
     >
-      <ButtonGroup class="space-x-1 w-full md:w-auto flex">
+      <div class="flex w-full gap-1 md:w-auto">
         <DeployApplicationButton
           :application="props.application"
           :loadApplication="props.loadApplication"
@@ -156,15 +156,15 @@ const repoURL = computed(() => {
           :application="props.application"
           :loadApplication="props.loadApplication"
         />
-      </ButtonGroup>
-      <ButtonGroup class="space-x-1 w-full md:w-auto flex">
+      </div>
+      <div class="flex w-full gap-1 md:w-auto">
         <Button size="sm" class="flex-1 md:flex-initial" variant="outline" @click="onClickLogs">
           <Logs />Logs
         </Button>
         <Button size="sm" class="flex-1 md:flex-initial" variant="outline" @click="onClickMetrics">
           <Activity />Metrics
         </Button>
-      </ButtonGroup>
+      </div>
     </CardFooter>
   </Card>
 </template>
