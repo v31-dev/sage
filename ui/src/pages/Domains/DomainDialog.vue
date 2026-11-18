@@ -36,6 +36,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Spinner } from '@/components/ui/spinner'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { useAppStore } from '@/stores/app'
 import { type ContainerReference, type Domain, createDomain, updateDomain } from '@/services/api'
 
@@ -155,12 +156,20 @@ async function onConfirm() {
 
 <template>
   <Dialog v-model:open="open">
-    <DialogTrigger as-child>
-      <Button v-if="props.domain" size="sm" variant="outline" class="gap-2" @click="openDialog">
-        <Edit />
-        Edit
-      </Button>
-      <Button v-else size="sm" class="gap-2" @click="openDialog">
+    <TooltipProvider v-if="props.domain">
+      <Tooltip>
+        <TooltipTrigger as-child>
+          <DialogTrigger as-child>
+            <Button size="icon-sm" variant="ghost" aria-label="Edit" @click="openDialog">
+              <Edit />
+            </Button>
+          </DialogTrigger>
+        </TooltipTrigger>
+        <TooltipContent>Edit</TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+    <DialogTrigger v-else as-child>
+      <Button size="sm" class="gap-2" @click="openDialog">
         <Plus />
         Add Domain
       </Button>

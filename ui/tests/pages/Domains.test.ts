@@ -1,4 +1,4 @@
-import { flushPromises, mount } from '@vue/test-utils'
+import { flushPromises, mount, RouterLinkStub } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import Domains from '@/pages/Domains'
@@ -70,7 +70,14 @@ describe('the Domains page', () => {
   function shown(state: DomainsResponse) {
     const topics = followTopics()
     const wrapper = mount(Domains, {
-      global: { stubs: { DomainDialog: true, ConfirmationButton: true, CopyButton: true } },
+      global: {
+        stubs: {
+          DomainDialog: true,
+          ConfirmationButton: true,
+          CopyButton: true,
+          RouterLink: RouterLinkStub,
+        },
+      },
     })
     topics.topic('domains').push(state)
     return wrapper
@@ -79,7 +86,14 @@ describe('the Domains page', () => {
   it('updates the record sync state from the domains topic and retains the container state', async () => {
     const topics = followTopics()
     const wrapper = mount(Domains, {
-      global: { stubs: { DomainDialog: true, ConfirmationButton: true, CopyButton: true } },
+      global: {
+        stubs: {
+          DomainDialog: true,
+          ConfirmationButton: true,
+          CopyButton: true,
+          RouterLink: RouterLinkStub,
+        },
+      },
     })
     topics.topic('domains').push({
       domains: [domain(1, { status: 'syncing' })],
@@ -148,7 +162,7 @@ describe('the Domains page', () => {
     expect(wrapper.get('[data-domain]').text()).not.toContain('boom')
   })
 
-  it('follows the domains topic and groups the domains by namespace, then service, then pool', async () => {
+  it('follows the domains topic and gives each namespace and service its own group', async () => {
     const wrapper = shown({
       domains: [
         domain(1, {
@@ -166,6 +180,12 @@ describe('the Domains page', () => {
         }),
         domain(3, { name: 'c', host: 'c.example.test', address: 'https://c.example.test' }),
         domain(4, {
+          name: 'e',
+          host: 'e.example.test',
+          address: 'https://e.example.test',
+          service: 'blog',
+        }),
+        domain(5, {
           name: 'd',
           type: 'tcp',
           host: 'd.red.int.example.test',
@@ -178,39 +198,87 @@ describe('the Domains page', () => {
     await flushPromises()
 
     const layout = wrapper
-      .findAll('[data-namespace]')
-      .map(namespace => [
-        namespace.get('[data-slot=card-title]').text(),
-        namespace
-          .findAll('[data-service]')
-          .map(service => [
-            service.get('h3').text(),
-            service
-              .findAll('[data-pool]')
-              .map(pool => [
-                pool.get('p').text(),
-                pool
-                  .findAll('[data-domain]')
-                  .map(row => row.element.children[0]!.textContent!.trim()),
-              ]),
-          ]),
+      .findAll('[data-group]')
+      .map(group => [
+        group.get('[data-slot=card-title]').text(),
+        group.findAll('[data-domain]').map(card => card.get('[data-host]').text()),
       ])
     expect(layout).toEqual([
-      [
-        'Public',
-        [
-          [
-            'Service shop',
-            [
-              ['Pool eu', ['https://b.example.test']],
-              ['No pool', ['https://a.example.test']],
-            ],
-          ],
-          ['No service', [['No pool', ['https://c.example.test']]]],
-        ],
-      ],
-      ['Internal', [['Service shop', [['No pool', ['d.red.int.example.test:8443']]]]]],
+      ['Public · Service blog', ['e.example.test']],
+      ['Public · Service shop', ['b.example.test', 'a.example.test']],
+      ['Public · No service', ['c.example.test']],
+      ['Internal · Service shop', ['d.red.int.example.test']],
     ])
+  })
+
+  it("links a named service to its namespace's discovery, and says one without a service is not listed", async () => {
+    const wrapper = shown({
+      domains: [
+        domain(1, { service: 'shop' }),
+        domain(2, { type: 'internal', service: 'shop' }),
+        domain(3, {}),
+      ],
+      containers: [],
+    })
+    await flushPromises()
+
+    const groups = wrapper.findAll('[data-group]')
+    expect(
+      groups.map(group => group.findAll('[data-discovery]').map(link => link.attributes('href')))
+    ).toEqual([
+      ['https://discovery.example.test/?service=shop'],
+      [],
+      ['https://discovery.int.example.test/?service=shop'],
+    ])
+    expect(groups[1]!.text()).toContain('Not listed at discovery')
+  })
+
+  it('links a domain to its application and worker pages, and shows its pool only when it has one', async () => {
+    const wrapper = shown({
+      domains: [domain(1, { pool: 'eu' }), domain(2, {})],
+      containers: [linkable(1, 'w1', 'red')],
+    })
+    await flushPromises()
+
+    const [pooled, plain] = wrapper.findAll('[data-domain]')
+    expect(pooled!.getComponent('[data-application]').props('to')).toBe('/applications/demo/web')
+    expect(pooled!.get('[data-application]').text()).toBe('Demo / Web')
+    expect(pooled!.getComponent('[data-worker]').props('to')).toBe('/workers/w1')
+    expect(pooled!.get('[data-pool]').text()).toBe('eu')
+    expect(plain!.find('[data-pool]').exists()).toBe(false)
+  })
+
+  it('links an unlinked internal domain to the worker it kept', async () => {
+    const wrapper = shown({
+      domains: [domain(1, { type: 'internal', container: null, worker: 'w2' })],
+      containers: [],
+    })
+    await flushPromises()
+
+    expect(wrapper.find('[data-application]').exists()).toBe(false)
+    expect(wrapper.getComponent('[data-worker]').props('to')).toBe('/workers/w2')
+  })
+
+  it('opens an HTTP address and shows a TCP one as text', async () => {
+    const wrapper = shown({
+      domains: [
+        domain(1, {}),
+        domain(2, {
+          type: 'tcp',
+          host: 'd.red.int.example.test',
+          address: 'd.red.int.example.test:8443',
+        }),
+      ],
+      containers: [],
+    })
+    await flushPromises()
+
+    const addresses = wrapper.findAll('[data-address]')
+    expect(addresses.map(address => [address.element.tagName, address.text()])).toEqual([
+      ['A', 'https://shop.example.test'],
+      ['SPAN', 'd.red.int.example.test:8443'],
+    ])
+    expect(addresses[0]!.attributes('href')).toBe('https://shop.example.test')
   })
 
   it('says a domain whose container is gone is not linked', async () => {
@@ -247,7 +315,9 @@ describe('the domain dialog', () => {
     })
     await wrapper
       .findAll('button')
-      .find(button => /Add Domain|Edit/.test(button.text()))!
+      .find(
+        button => button.text().includes('Add Domain') || button.attributes('aria-label') === 'Edit'
+      )!
       .trigger('click')
     return wrapper
   }
