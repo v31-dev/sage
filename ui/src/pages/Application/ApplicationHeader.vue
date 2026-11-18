@@ -90,6 +90,7 @@ const repoURL = computed(() => {
             :description="props.application.name"
             :icon="Trash"
             destructive
+            :disabled="props.application.container_count > 0"
             :onConfirm="onConfirmDelete"
           />
         </ButtonGroup>
