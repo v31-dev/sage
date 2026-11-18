@@ -34,8 +34,6 @@
     "vue-sonner": "^2.0.9"
   },
   "devDependencies": {
-    "@iconify-json/radix-icons": "^1.2.6",
-    "@iconify/vue": "^5.0.0",
     "@types/markdown-it": "^14.1.2",
     "@types/node": "^24.12.0",
     "@vitejs/plugin-vue": "^6.0.2",

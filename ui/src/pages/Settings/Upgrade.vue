@@ -3,8 +3,7 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import MarkdownIt from 'markdown-it'
 import DOMPurify from 'dompurify'
-import { Icon } from '@iconify/vue'
-import { CircleCheck, RefreshCw, TriangleAlert } from 'lucide-vue-next'
+import { CircleArrowUp, CircleCheck, RefreshCw, TriangleAlert } from 'lucide-vue-next'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import {
@@ -242,12 +241,7 @@ onUnmounted(() => {
       <Card>
         <CardHeader>
           <CardTitle class="flex items-center gap-2">
-            <Icon
-              :icon="
-                updateAvailable ? 'mdi:arrow-up-bold-circle-outline' : 'mdi:check-circle-outline'
-              "
-              class="h-4 w-4"
-            />
+            <component :is="updateAvailable ? CircleArrowUp : CircleCheck" class="h-4 w-4" />
             {{ updateAvailable ? 'Update available' : 'Sage is up to date' }}
           </CardTitle>
           <CardDescription>

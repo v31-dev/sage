@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { Separator } from '@/components/ui/separator'
 import { SidebarTrigger } from '@/components/ui/sidebar'
-import { Icon } from '@iconify/vue'
+import { Moon, Sun } from 'lucide-vue-next'
 import { useColorMode } from '@vueuse/core'
 import { computed } from 'vue'
 import { useRoute } from 'vue-router'
@@ -54,12 +54,10 @@ const breadcrumbs = computed(() => {
     <div class="ml-auto flex items-center gap-2">
       <NotificationsList />
       <Button variant="ghost" size="icon" @click="mode = mode === 'light' ? 'dark' : 'light'">
-        <Icon
-          icon="radix-icons:moon"
+        <Moon
           class="h-[1rem] w-[1rem] rotate-0 scale-100 transition-all dark:-rotate-90 dark:scale-0"
         />
-        <Icon
-          icon="radix-icons:sun"
+        <Sun
           class="absolute h-[1rem] w-[1rem] rotate-90 scale-0 transition-all dark:rotate-0 dark:scale-100"
         />
       </Button>

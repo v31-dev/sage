@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { toast } from 'vue-sonner'
-import { Logs, Activity, Trash } from 'lucide-vue-next'
+import { Logs, Activity, Trash, Github } from 'lucide-vue-next'
 import {
   Card,
   CardAction,
@@ -13,7 +13,6 @@ import {
 } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
-import { Icon } from '@iconify/vue'
 
 import DeployApplicationButton from './DeployApplicationButton.vue'
 import StopApplicationButton from './StopApplicationButton.vue'
@@ -124,7 +123,7 @@ const repoURL = computed(() => {
             target="_blank"
             class="text-muted-foreground hover:text-foreground transition-colors"
           >
-            <Icon icon="mdi:github" class="w-4 h-4" />
+            <Github class="w-4 h-4" />
           </a>
         </div>
         <p class="text-sm text-muted-foreground">

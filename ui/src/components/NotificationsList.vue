@@ -10,7 +10,7 @@ import {
   ItemTitle,
 } from '@/components/ui/item'
 import { Spinner } from '@/components/ui/spinner'
-import { Icon } from '@iconify/vue'
+import { Bell, ChevronRight, CircleCheck, CircleX, Info, TriangleAlert } from 'lucide-vue-next'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 
 import { fetchNotifications, type Notification } from '@/services/api'
@@ -31,10 +31,10 @@ const lastSeenId = ref(Number(localStorage.getItem(LAST_SEEN_KEY)) || 0)
 const unreadNotifications = computed(() => (notifications.value[0]?.id ?? 0) > lastSeenId.value)
 
 const typeConfig = {
-  info: { icon: 'radix-icons:info-circled', color: TONES.info.soft },
-  success: { icon: 'radix-icons:check-circled', color: TONES.success.soft },
-  warning: { icon: 'radix-icons:exclamation-triangle', color: TONES.warning.soft },
-  error: { icon: 'radix-icons:cross-circled', color: TONES.error.soft },
+  info: { icon: Info, color: TONES.info.soft },
+  success: { icon: CircleCheck, color: TONES.success.soft },
+  warning: { icon: TriangleAlert, color: TONES.warning.soft },
+  error: { icon: CircleX, color: TONES.error.soft },
 }
 
 function markSeen() {
@@ -99,7 +99,7 @@ onUnmounted(() => stop?.())
   <Popover>
     <PopoverTrigger as-child>
       <Button variant="ghost" size="icon" class="relative" @click="markSeen">
-        <Icon icon="radix-icons:bell" class="h-[1rem] w-[1rem]" />
+        <Bell class="h-[1rem] w-[1rem]" />
         <span
           v-if="unreadNotifications"
           role="img"
@@ -139,8 +139,8 @@ onUnmounted(() => stop?.())
                   typeConfig[notification.type as keyof typeof typeConfig]?.color,
                 ]"
               >
-                <Icon
-                  :icon="typeConfig[notification.type as keyof typeof typeConfig]?.icon"
+                <component
+                  :is="typeConfig[notification.type as keyof typeof typeConfig]?.icon"
                   class="size-5 text-current"
                 />
               </div>
@@ -150,7 +150,7 @@ onUnmounted(() => stop?.())
               <ItemDescription>{{ formatDateStringAgo(notification.created_at) }}</ItemDescription>
             </ItemContent>
             <ItemActions v-if="notification.link">
-              <Icon icon="radix-icons:chevron-right" class="size-4" />
+              <ChevronRight class="size-4" />
             </ItemActions>
           </Item>
 
