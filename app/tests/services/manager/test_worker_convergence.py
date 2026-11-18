@@ -1,4 +1,5 @@
 import asyncio
+import shlex
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from types import SimpleNamespace
@@ -86,6 +87,14 @@ class Hosts:
     if command.startswith("rm -f "):
       for path in command[len("rm -f "):].split():
         self.files.pop(f"{hostname}:{path}", None)
+    if command.startswith(f"cd {HOME} && find "):
+      under = [path.split(f"{hostname}:{HOME}/", 1)[1] for path in self.files if path.startswith(f"{hostname}:{HOME}/")]
+      return 0, sorted({"/".join(path.split("/")[:3]) for path in under
+                        if path.startswith(("traefik/dynamic/", "traefik/certs/"))})
+    if command.startswith("rm -rf -- "):
+      for path in shlex.split(command)[3:]:
+        for name in [name for name in self.files if name == f"{hostname}:{path}" or name.startswith(f"{hostname}:{path}/")]:
+          del self.files[name]
     if command.endswith(" ps --services --status running"):
       return 0, ['time="2026-11-17T11:06:27Z" level=warning msg="a warning on stderr"', *sorted(self.running)]
     if " up -d --force-recreate --quiet-pull " in command:
@@ -270,6 +279,25 @@ class TestConvergence:
     await manager.converge_worker("w1")
     assert hosts.stack("w1") == {} and Workers().setup("w1") == "succeeded"
     assert events() == [("infrastructure", "admitted"), ("infrastructure", "succeeded")]
+
+  async def test_writing_the_stack_removes_what_an_older_version_left_in_traefiks_folders_before_it_starts(
+          self, manager, hosts, worker):
+    kept = ["traefik/dynamic/_discovery-internal-api.yml", "traefik/dynamic/_discovery-public-api.yml",
+            "traefik/dynamic/certs.yml", "traefik/certs/managed/worker-0123456789abcdef.pem"]
+    old = ["traefik/dynamic/shop-web-public-shop.yml", "traefik/certs/fullchain.pem", "traefik/certs/key.pem"]
+    for path in (*kept, *old):
+      hosts.files[f"w1:{HOME}/{path}"] = ("", 0o644)
+    await manager.converge_worker("w1")
+    assert set(kept) <= set(hosts.stack("w1")) and not set(old) & set(hosts.stack("w1"))
+    removal = next(index for index, command in enumerate(hosts.commands) if command.startswith("rm -rf -- "))
+    assert removal < next(index for index, command in enumerate(hosts.commands) if " up -d " in command)
+
+  async def test_a_worker_whose_stamp_matches_keeps_what_is_in_traefiks_folders(self, manager, hosts, worker):
+    await manager.converge_worker("w1")
+    hosts.files[f"w1:{HOME}/traefik/dynamic/shop-web-public-shop.yml"] = ("", 0o644)
+    await manager.converge_worker("w1")
+    assert "traefik/dynamic/shop-web-public-shop.yml" in hosts.stack("w1")
+    assert not any(command.startswith("rm -rf -- ") for command in hosts.commands)
 
   @pytest.mark.parametrize("force, mem_total_kb, limit", [(False, 979204, "444M"), (True, 979204, "444M"),
                                                           (False, 8 * 1024 * 1024, "7680M")])

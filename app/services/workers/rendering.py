@@ -17,6 +17,15 @@ def stack_scope(hostname: str) -> str:
   return f"{worker_scope(hostname)}:stack"
 
 
+# The folders of the stack's Traefik that only Sage writes into, under the worker's home.
+TRAEFIK_FOLDERS = ("traefik/dynamic", "traefik/certs")
+
+
+def traefik_files_command(home: str) -> str:
+  """Lists every entry of `TRAEFIK_FOLDERS`, as `<folder>/<name>`, for `decisions.stray_traefik_files`."""
+  return f"cd {home} && find {' '.join(TRAEFIK_FOLDERS)} -mindepth 1 -maxdepth 1 2>/dev/null; true"
+
+
 # The templates the stack's files come from, under the worker templates.
 INFRA_TEMPLATES = ("docker-compose.yml", "worker.env", "traefik/traefik.yml", "traefik/config.yml", "vector/vector.yml",
                    "telegraf/telegraf.conf")

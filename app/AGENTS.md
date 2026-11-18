@@ -156,7 +156,8 @@ Each resource's own rules, on top of the root's working rules 9–13. The workfl
   an edit during it queues another.
 - The Domain pass and worker setup remove a routing file only by binding (its Domain gone or bound to another worker),
   never for its container's state; a route left behind is withdrawn by requesting the pass. The pass never awaits the
-  applies it requests, and a failed pass leaves a Domain's successful apply proof alone.
+  applies it requests, and a failed pass leaves a Domain's successful apply proof alone. A file in Traefik's folders in
+  none of the forms this version writes there is an older version's, removed when worker setup writes the stack.
 - A failed apply does not retry itself: its end requests discovery only, and the passes retry. A failed saved edit
   withdraws outdated owned routing where reachable and reports pending or error, leaving the container's runtime
   alone; it checks against the current configuration first, keeps artifacts already correct, and never takes unknown
