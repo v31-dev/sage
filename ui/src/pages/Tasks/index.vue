@@ -39,9 +39,9 @@ const queueSections = computed(() => [
 ])
 
 const dropdowns = computed<FilterDropdown[]>(() => [
+  { key: 'status', label: 'Status', any: 'Any status', options: choices.value.statuses },
   { key: 'name', label: 'Name', any: 'Any name', options: choices.value.names },
   { key: 'executor', label: 'Executor', any: 'Any executor', options: choices.value.executors },
-  { key: 'status', label: 'Status', any: 'Any status', options: choices.value.statuses },
 ])
 
 const fields: FilterField[] = [

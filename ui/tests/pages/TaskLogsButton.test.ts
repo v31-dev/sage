@@ -1,5 +1,7 @@
 import { flushPromises, mount } from '@vue/test-utils'
-import { describe, expect, it } from 'vitest'
+import { createPinia, setActivePinia } from 'pinia'
+import { beforeEach, describe, expect, it } from 'vitest'
+import { formatDate } from '@/lib/utils'
 import TaskLogsButton from '@/pages/Tasks/TaskLogsButton.vue'
 import { type QueueTask } from '@/services/api'
 
@@ -29,38 +31,71 @@ const task: QueueTask = {
   labels: { Application: 'shop / web' },
   executor: 'app',
   status: 'running',
-  started_at: '2026-01-01T12:00:00',
+  started_at: '2026-01-01T12:00:05',
   queued_at: '2026-01-01T12:00:00',
   quiet: false,
 }
 
 async function open(shown: QueueTask = task) {
-  const wrapper = mount(TaskLogsButton, { props: { task: shown }, global: { stubs } })
+  const wrapper = mount(TaskLogsButton, {
+    props: { task: shown, section: 'running' },
+    global: { stubs },
+  })
   wrapper.findComponent(stubs.Dialog).vm.$emit('update:open', true)
   await flushPromises()
   return wrapper
 }
 
 describe('the task log dialog', () => {
-  it('is headed by the task id and name, with its labels and params side by side, a line each', async () => {
-    const wrapper = await open()
-    const lines = (column: string) =>
-      wrapper
-        .get(`[data-${column}]`)
-        .findAll('div')
-        .map(line => line.text())
+  beforeEach(() => setActivePinia(createPinia()))
 
-    expect(wrapper.text()).toContain('Task Logs (t1)')
+  it('is headed by the task name and status, with its id and labels below', async () => {
+    const wrapper = await open()
+
     expect(wrapper.text()).toContain('deploy_application')
-    expect(lines('labels')).toEqual(['Application: shop / web'])
-    expect(lines('params')).toEqual(['application_id: 3', 'volumes: ["v1","v2"]'])
+    expect(wrapper.text()).toContain('running')
+    expect(wrapper.get('[data-subjects]').text().replace(/\s+/g, ' ')).toBe(
+      't1 · Application: shop / web'
+    )
   })
 
-  it('shows a dash for a task with no labels or params', async () => {
+  it('sums up the executor, times, scopes and params above the logs', async () => {
+    const wrapper = await open({ ...task, scopes: ['app', 'app:demo-web'] })
+    const scopes = wrapper
+      .get('[data-scopes]')
+      .findAll('div')
+      .map(line => line.text())
+    const params = wrapper
+      .get('[data-params]')
+      .findAll('dt')
+      .map(dt => [dt.text(), dt.element.nextElementSibling!.textContent!.trim()])
+
+    expect(wrapper.get('[data-executor]').text()).toBe('app')
+    expect(wrapper.findAll('[data-time]').map(time => time.text())).toEqual([
+      formatDate(task.queued_at),
+      formatDate(task.started_at!),
+      '5 secs',
+    ])
+    expect(scopes).toEqual(['app', 'app:demo-web'])
+    expect(params).toEqual([
+      ['application_id', '3'],
+      ['volumes', '["v1","v2"]'],
+    ])
+  })
+
+  it('leaves out the labels and params a task does not have', async () => {
     const wrapper = await open({ ...task, labels: {}, params: {} })
 
-    expect(wrapper.get('[data-labels]').text()).toBe('Labels-')
-    expect(wrapper.get('[data-params]').text()).toBe('Params-')
+    expect(wrapper.get('[data-subjects]').text()).toBe('t1')
+    expect(wrapper.find('[data-scopes]').exists()).toBe(true)
+    expect(wrapper.find('[data-params]').exists()).toBe(false)
+  })
+
+  it('leaves out the scopes when a task has none', async () => {
+    const wrapper = await open({ ...task, scopes: [] })
+
+    expect(wrapper.find('[data-scopes]').exists()).toBe(false)
+    expect(wrapper.find('[data-params]').exists()).toBe(true)
   })
 
   it("shows all the task's lines", async () => {

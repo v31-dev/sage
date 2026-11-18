@@ -101,7 +101,7 @@ const shown = (wrapper: Page) => tables(wrapper)[2]
 
 const lastQuery = () => vi.mocked(fetchTaskHistory).mock.lastCall![0]
 
-// The dropdowns, in the order of the page: name, executor, status.
+// The dropdowns, in the order of the page: status, name, executor.
 async function choose(wrapper: Page, index: number, value: string) {
   wrapper.findAllComponents(select)[index]!.vm.$emit('update:modelValue', value)
   await flushPromises()
@@ -181,7 +181,7 @@ describe('loading', () => {
     expect(wrapper.text()).not.toContain('Loading tasks...')
   })
 
-  it('offers the names, executors and statuses stored, after a choice of any', async () => {
+  it('offers the statuses, names and executors stored, after a choice of any', async () => {
     const { wrapper } = await mountPage()
 
     const options = wrapper
@@ -189,9 +189,9 @@ describe('loading', () => {
       .map(found => found.findAll('[data-option]').map(each => each.text()))
 
     expect(options).toEqual([
+      ['any', 'completed', 'failed', 'cancelled'],
       ['any', 'deploy', 'sync_workers'],
       ['any', 'app', 'platform'],
-      ['any', 'completed', 'failed', 'cancelled'],
     ])
   })
 })
@@ -238,10 +238,10 @@ describe('the finished tasks', () => {
   it('are loaded again with each filter chosen or committed', async () => {
     const { wrapper } = await mountPage(page([], 120))
 
-    await choose(wrapper, 0, 'deploy')
+    await choose(wrapper, 1, 'deploy')
     expect(lastQuery()).toMatchObject({ name: 'deploy', limit: 100 })
-    await choose(wrapper, 1, 'platform')
-    await choose(wrapper, 2, 'failed')
+    await choose(wrapper, 0, 'failed')
+    await choose(wrapper, 2, 'platform')
     await commit(wrapper, 'task-scope', ' app:demo-web ')
     await commit(wrapper, 'task-label', ' web ')
     await commit(wrapper, 'task-from', '2026-01-01T12:00')
@@ -266,8 +266,8 @@ describe('the finished tasks', () => {
       .mockImplementationOnce(() => new Promise(resolve => (answerFirst = resolve)))
       .mockResolvedValueOnce(page([finished('newer')]))
 
-    await choose(wrapper, 0, 'deploy')
-    await choose(wrapper, 0, 'sync_workers')
+    await choose(wrapper, 1, 'deploy')
+    await choose(wrapper, 1, 'sync_workers')
     answerFirst(page([finished('older')]))
     await flushPromises()
 
@@ -314,9 +314,9 @@ describe('what the manager pushes', () => {
     ['queued after the window', { created_at: '2026-01-01T13:30:01' }],
   ])('is left out when it has %s', async (_case, fields) => {
     const { wrapper, history } = await mountPage()
-    await choose(wrapper, 0, 'deploy')
-    await choose(wrapper, 1, 'app')
-    await choose(wrapper, 2, 'completed')
+    await choose(wrapper, 1, 'deploy')
+    await choose(wrapper, 0, 'completed')
+    await choose(wrapper, 2, 'app')
     await commit(wrapper, 'task-scope', 'app:demo-web')
     await commit(wrapper, 'task-from', '2026-01-01T12:00')
     await commit(wrapper, 'task-to', '2026-01-01T13:30')
@@ -377,7 +377,7 @@ describe('what the manager pushes', () => {
       () => new Promise(resolve => (answer = resolve))
     )
 
-    await choose(wrapper, 0, 'deploy')
+    await choose(wrapper, 1, 'deploy')
     history.push([finished('pushed', { finished_at: at(30) })])
     answer(page([finished('loaded', { finished_at: at(20) })], 1))
     await flushPromises()
