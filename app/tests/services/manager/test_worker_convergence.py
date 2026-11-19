@@ -314,6 +314,14 @@ class TestConvergence:
     assert [command for command in hosts.commands if command.startswith("systemctl ")] == [
         f"systemctl set-property sage-apps.slice MemoryMax={limit}"]
 
+  @pytest.mark.parametrize("force", [False, True])
+  async def test_every_setup_turns_off_tailscales_masquerade_of_what_it_forwards(self, manager, hosts, worker, force):
+    await manager.converge_worker("w1")
+    hosts.commands = []
+    await manager.converge_worker("w1", force=force)
+    assert [command for command in hosts.commands if command.startswith("tailscale ")] == [
+        "tailscale set --snat-subnet-routes=false"]
+
   async def test_force_applies_whatever_the_stamp_says(self, manager, hosts, worker):
     await manager.converge_worker("w1")
     hosts.files = {path: file for path, file in hosts.files.items() if "/revisions/" in path}
@@ -670,7 +678,7 @@ class TestRemove:
     await manager.remove_worker("w1")
     assert Worker.get_or_none(Worker.hostname == "w1") is None
     assert any(command.endswith(f"down --remove-orphans && {remove_edge_network_command()} && rm -rf {HOME} "
-                                "&& systemctl revert sage-apps.slice")
+                                "&& systemctl revert sage-apps.slice && tailscale set --snat-subnet-routes=true")
                for command in hosts.commands)
     assert (provider.records["w1"], provider.tunnels, hosts.forgotten) == ((None, None), [], ["w1"])
     assert (Workers().setup("w1"), WorkerReports().latest("w1"), manager.setup_failures) == (None, None, {})

@@ -196,8 +196,11 @@ tailscale up --ssh --auth-key=tskey-auth-...   # a key tagged tag:sage-worker
 ```
 
 The tag is for the tailnet policy above, which lets the manager reach the machine; Sage does
-not read it. Add the machine on the Workers page by its hostname or Tailscale IP: Sage checks
-that it answers, then sets it up over SSH. In Sage a worker has a subdomain, given when
+not read it. Sage turns off Tailscale's source NAT on its workers
+(`--snat-subnet-routes=false`), so applications see their tailnet clients' addresses
+([Client Address](docs/architecture.md#client-address)); a later
+`tailscale up` on a worker has to name that flag too. Add the machine on the Workers page by
+its hostname or Tailscale IP: Sage checks that it answers, then sets it up over SSH. In Sage a worker has a subdomain, given when
 it is added, which its internal names are under (`<name>.<subdomain>.int.<DOMAIN>`). A new
 worker gets its own certificate and private key; changing its subdomain replaces only that
 certificate. Workers share a separate certificate for internal discovery. Certificates use

@@ -274,6 +274,9 @@ class WorkersMixin:
       _, total = await Tailscale().exec_command(hostname, "awk '/^MemTotal:/ {print $2}' /proc/meminfo", timeout=10)
       await Tailscale().exec_command(hostname, f"systemctl set-property {config.APPLICATIONS_SLICE} "
                                      f"MemoryMax={applications_memory_mb(int(total[-1]) // 1024)}M", timeout=30)
+      # Tailscale masquerades what it forwards from the tailnet, so Traefik would see the bridge's address as every
+      # internal client.
+      await Tailscale().exec_command(hostname, "tailscale set --snat-subnet-routes=false", timeout=30)
       certificates = Certs().worker_state(hostname, worker.subdomain, Workers().certificates(hostname), TEMPLATE_DIGEST).values()
       if not all(state["covered"] for state in certificates):
         self.request_certificate_renewal()
@@ -399,7 +402,7 @@ class WorkersMixin:
           await Tailscale().exec_command(
               hostname, f"docker compose -f {home}/docker-compose.yml down --remove-orphans && {remove_edge_network_command()} "
               f"&& rm -rf {home} "
-              f"&& systemctl revert {config.APPLICATIONS_SLICE}", timeout=120)
+              f"&& systemctl revert {config.APPLICATIONS_SLICE} && tailscale set --snat-subnet-routes=true", timeout=120)
           cleaned = True
       except Exception as error:
         left.append(f"its stack could not be stopped ({error}): stop it and remove its files by hand")

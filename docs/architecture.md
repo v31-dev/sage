@@ -255,6 +255,32 @@ openssl s_client -connect <name>.<subdomain>.int.<domain>:8443 -servername <name
 For access between containers on one worker, use the Docker DNS name (the container's `qualified_name`) on
 `sage_default`.
 
+### Client Address
+
+An application's connection always comes from Traefik, so it finds its client's address in the headers Traefik
+sends. On a public name the request comes through Cloudflare and the worker's tunnel; on an internal name it comes
+straight from the tailnet, and Traefik replaces any `X-Forwarded-*` or `X-Real-Ip` the client sent.
+
+| Header | Public name | Internal name |
+| --- | --- | --- |
+| `X-Forwarded-For` | the client as Cloudflare saw it, then the tunnel's address | the client's tailnet address |
+| `X-Real-Ip` | the tunnel's address | the client's tailnet address |
+| `CF-Connecting-IP` | the client as Cloudflare saw it | not set by Sage; passed on if the client sends it |
+
+On a public name, a client that sends its own `X-Forwarded-For` keeps it: Cloudflare adds the client's address after
+it. Sage turns off Tailscale's source NAT on its workers so that internal names see the tailnet address; an
+application calling an internal name on its own worker still arrives from the Docker bridge's gateway address.
+
+To read the right address on both kinds of name, an application trusts Docker's private range (`172.16.0.0/12`) as
+its proxies and reads `X-Forwarded-For` from the right: it skips the tunnel and takes the address Cloudflare added on a
+public name, or the one address on an internal name, and a client can't choose it. For Pocket ID that is
+`TRUST_PROXY=172.16.0.0/12`. Two settings look right but aren't:
+
+- Trusting every address (Pocket ID's `TRUST_PROXY=true`) takes the leftmost `X-Forwarded-For`, which a public client
+  can set.
+- Trusting `CF-Connecting-IP` (Pocket ID's `TRUSTED_PLATFORM=CF-Connecting-IP`) is right on public names only: an
+  internal name has no such header unless the client sends one, and any tailnet client can.
+
 ### Allowed Origins
 
 Each HTTP Domain has an optional **Allowed origins** field, one origin per line. Blank allows its own current
