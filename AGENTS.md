@@ -80,6 +80,7 @@ After compaction, reread the relevant `docs/` page before continuing.
 11. The DB owns configured resource membership. Reconcile orphaned artifacts through their resource owner after establishing Sage ownership and the absence of a configured owner; remote leftovers do not recreate deleted configuration.
 12. Application owns shared configuration and container membership; each Container owns its lifecycle, status and target evidence. Application views show counts such as active/total, with no application status. Deploy all/Stop all dispatch independent container operations, admitted exactly when every container would admit its own request (else refused whole, in the API and the UI); Deploy all shares one frozen input snapshot. Configuration drift marks the affected container dirty and does not by itself stop it.
 13. Zero downtime is not a requirement. After preconditions pass, container deployment stops its target before build/pull/apply and proceeds only after stop is confirmed. Failure reports error and does not automatically restore or roll back to an older deployment.
+14. Breaking changes don't constrain a design: existing installs are the automatic migration's and the release notes' concern, and the dev instance isn't started until a logical unit of work is done, so states between steps need not run.
 
 ## Build And Verify
 
