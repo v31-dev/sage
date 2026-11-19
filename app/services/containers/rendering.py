@@ -1,4 +1,5 @@
 """The files a deployment writes into its placement, rendered from its frozen deploy inputs."""
+import hashlib
 import json
 import shlex
 from dataclasses import dataclass
@@ -13,6 +14,10 @@ from services.containers.record import Authority
 from values.key_values import parse_multiline_kv
 
 COMPOSE_TEMPLATES = {"docker": "dockerhub-compose.yml", "git": "gitrepo-compose.yml"}
+# The Compose templates' digest, part of every deployment's hash: they ship in the image, so it is worked out once.
+COMPOSE_DIGEST = hashlib.sha256(b"".join(
+    name.encode() + (config.TEMPLATES_DIR / "worker/application" / name).read_bytes()
+    for name in sorted(COMPOSE_TEMPLATES.values()))).hexdigest()[:16]
 
 
 @dataclass(frozen=True)
@@ -20,6 +25,11 @@ class PlacementFile:
   path: str  # relative to the placement directory
   content: str
   mode: int
+
+
+def deployment_hash(deploy: DeployConfig) -> str:
+  """What a deployment of `deploy` applies: its inputs and the Compose templates."""
+  return hashlib.sha256(f"{deploy.content_hash}:{COMPOSE_DIGEST}".encode()).hexdigest()
 
 
 def render_placement(deploy: DeployConfig, authority: Authority, deployment_id: str, worker: str,

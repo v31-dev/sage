@@ -14,6 +14,7 @@ import config
 from services.applications.deploy_input import capture_deploy_config
 from services.containers.placement import placement_dir, record_path, runtime_name
 from services.containers.record import Applied, Authority, Operation, Recovery, Settled, TargetRead, TargetRecord, decode_record, encode_record
+from services.containers.rendering import deployment_hash
 from services.containers.targets import Containers
 from services.db.models import Application, Container, ContainerEvent, Domain, Instance, Volume
 from services.logs import Logs
@@ -235,7 +236,7 @@ class TestDeploy:
     assert (record.authority, operation.contract, operation.phase, operation.outcome) == (
         authority(container), "deploy", "settled", "succeeded")
     assert record.applied.deployment_id == operation.id
-    assert record.applied.config_hash == capture_deploy_config(container.application_id).content_hash
+    assert record.applied.config_hash == deployment_hash(capture_deploy_config(container.application_id))
     assert (record.settled.operation_id, record.settled.runtime_goal, record.settled.result) == (operation.id, "running", "succeeded")
     assert operation.verified_on_worker_at == VERIFIED and operation.effect_bound_seconds == 905
     assert worker_host.runtime(container) == f"running {operation.id}"

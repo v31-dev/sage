@@ -21,6 +21,10 @@ services:
       sage.deployment: "${DEPLOYMENT_ID}"
       sage.application: "${APPLICATION}"
     restart: unless-stopped
+    cap_drop:
+      - NET_RAW
+    security_opt:
+      - no-new-privileges:true
     command: ${COMMAND}
     volumes: [ ${VOLUMES} ]
     env_file: .env

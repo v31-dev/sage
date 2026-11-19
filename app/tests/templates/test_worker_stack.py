@@ -208,6 +208,15 @@ class TestContainerLogs:
     assert labelled == ({tuple(LABELS)} if name.startswith("application/") else {()})
 
 
+class TestApplicationPrivileges:
+  @pytest.mark.parametrize("name", ["application/dockerhub-compose.yml", "application/gitrepo-compose.yml"])
+  def test_an_application_gains_no_privileges_and_opens_no_raw_sockets(self, name):
+    [definition] = compose_services(name).values()
+    assert definition["cap_drop"] == ["NET_RAW"]
+    assert definition["security_opt"] == ["no-new-privileges:true"]
+    assert "cap_add" not in definition and not definition.get("privileged")
+
+
 @pytest.mark.parametrize("name", ["application/dockerhub-compose.yml", "application/gitrepo-compose.yml"])
 def test_a_placements_project_service_and_container_share_its_runtime_name(name):
   text = (TEMPLATES / name).read_text().replace("${SECRETS_BLOCK}", "")

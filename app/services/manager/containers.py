@@ -20,7 +20,7 @@ from services.containers.decisions import PROGRESS, Runtime, correction
 from services.containers.placement import (LABEL_APPLICATION, labels_authority, parse_placements, placement_dir, placement_scope, placements_command,
                                            records_command, runtime_name, runtime_owner, volume_dir)
 from services.containers.record import Applied, Authority, Operation, Recovery, Settled, TargetRead, TargetRecord, parse_record_listing
-from services.containers.rendering import render_placement
+from services.containers.rendering import deployment_hash, render_placement
 from services.containers.state import ContainerState, QueuedRequest, container_payload, container_state
 from services.containers.targets import Containers
 from services.db.models import Application, Container, ContainerEvent, Domain, Instance, Project, Volume, Worker
@@ -57,7 +57,7 @@ class ContainersMixin:
     for container in containers:
       if container.application_id not in hashes:
         try:
-          hashes[container.application_id] = capture_deploy_config(container.application_id).content_hash
+          hashes[container.application_id] = deployment_hash(capture_deploy_config(container.application_id))
         except LookupError:
           hashes[container.application_id] = None
       states[container.id] = container_state(container, instance, live.get(container.id), queued.get(container.id, ()),
@@ -525,7 +525,7 @@ class ContainersMixin:
 
   async def deploy_container(self, container_id: str, deploy: DeployConfig):
     """Stops the container, writes the deployment's files, starts it and verifies it runs this deployment."""
-    begun = await self.begin_lifecycle(container_id, "deploy", deploy.content_hash)
+    begun = await self.begin_lifecycle(container_id, "deploy", deployment_hash(deploy))
     if begun is None:
       return
     container, record = begun
@@ -561,7 +561,7 @@ class ContainersMixin:
         raise Exception(f"The container runs deployment {reading.deployment_id}, not {operation.id}.")
       now = utcnow()
       await Containers().write(container, replace(
-          record, applied=Applied(operation.id, deploy.content_hash, now),
+          record, applied=Applied(operation.id, deployment_hash(deploy), now),
           settled=Settled(operation.id, "running", "succeeded", now),
           operation=replace(operation, phase="settled", outcome="succeeded", finished_at=now,
                             verified_on_worker_at=verified_at)))

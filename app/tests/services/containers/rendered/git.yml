@@ -21,6 +21,10 @@ services:
       sage.deployment: "5555555555555e55"
       sage.application: "shop-api"
     restart: unless-stopped
+    cap_drop:
+      - NET_RAW
+    security_opt:
+      - no-new-privileges:true
     command: 
     volumes: [  ]
     env_file: .env

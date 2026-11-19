@@ -1,12 +1,15 @@
+import dataclasses
+import re
 from pathlib import Path
 
 import pytest
 import yaml
 
 from services.applications.deploy_input import DeployConfig
+from services.containers import rendering
 from services.containers.placement import LABELS
 from services.containers.record import Authority
-from services.containers.rendering import render_placement
+from services.containers.rendering import deployment_hash, render_placement
 
 RENDERED = Path(__file__).parent / "rendered"
 # Ids that YAML 1.2, which Compose reads, takes for numbers unless they are quoted.
@@ -26,6 +29,15 @@ GIT = DeployConfig(
 
 def render(deploy):
   return {file.path: (file.content, file.mode) for file in render_placement(deploy, AUTHORITY, DEPLOYMENT, "w1", "/opt/sage")}
+
+
+def test_a_deployments_hash_follows_its_inputs_and_the_compose_templates(monkeypatch):
+  before = deployment_hash(DOCKER)
+  assert re.fullmatch("[0-9a-f]{64}", before)
+  assert deployment_hash(dataclasses.replace(DOCKER, qualified_name="other-name")) == before
+  assert deployment_hash(dataclasses.replace(DOCKER, image="nginx:1.28")) != before
+  monkeypatch.setattr(rendering, "COMPOSE_DIGEST", "changed")
+  assert deployment_hash(DOCKER) != before
 
 
 def test_a_docker_deployment_is_its_env_file_and_its_compose_file():

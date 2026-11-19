@@ -98,6 +98,11 @@ Every service of the stack runs with all its capabilities dropped (Traefik keeps
 stay root, which without its other capabilities reads only files root owns: Sage writes the certificates' keys and
 Vector's buffer folder as root, so they keep working; a key owned by another user would not be served.
 
+Every application container runs with `no-new-privileges`, so a setuid binary such as `sudo` gains nothing (an
+entrypoint that starts as root and drops to a user, with `gosu` or `su-exec`, still works), and without `NET_RAW`, so it
+opens no raw sockets: no crafted packets or ARP spoofing on the network it shares, no `tcpdump`. `ping` still works,
+through the unprivileged ICMP sockets Docker allows.
+
 `vector` and `telegraf` run with a 128 MiB memory limit, swap included: their executables are large, and the kernel keeps the pages it has read in the container's memory, which on a small worker the applications could use.
 
 Applications themselves are also deployed onto workers as Docker workloads.
