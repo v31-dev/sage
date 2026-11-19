@@ -1,6 +1,6 @@
 from services.applications.payload import application_payload, application_summary, project_payload
 from services.db.models import Project, Volume
-from values.headers import SECURITY_HEADERS
+from values.headers import APPLICATION_OWN_HEADERS, SECURITY_HEADERS
 
 
 def container(headline):
@@ -19,9 +19,10 @@ def test_an_application_is_its_configuration_volumes_and_containers_with_how_man
 
 
 def test_an_application_carries_the_default_response_headers_and_its_changes(application):
-  application.response_headers = {"X-App": "v1"}
+  application.response_headers = {"Content-Security-Policy": None, "X-App": "v1"}
   payload = application_payload(application, [], [])
-  assert payload["response_headers"] == {"defaults": SECURITY_HEADERS, "changes": {"X-App": "v1"}}
+  assert payload["response_headers"] == {"defaults": SECURITY_HEADERS, "changes": {"Content-Security-Policy": None, "X-App": "v1"},
+                                         "own_allowed": list(APPLICATION_OWN_HEADERS)}
   application.response_headers = None
   assert application_payload(application, [], [])["response_headers"]["changes"] == {}
 

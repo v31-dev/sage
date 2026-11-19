@@ -16,7 +16,9 @@ import {
 } from '@/components/ui/dialog'
 import { Field, FieldError, FieldGroup, FieldLabel, FieldSet } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
 import { Spinner } from '@/components/ui/spinner'
+import { Switch } from '@/components/ui/switch'
 import {
   Table,
   TableBody,
@@ -39,28 +41,31 @@ const props = defineProps<{
 const STATES = {
   default: 'Default',
   changed: 'Changed',
+  own: "Application's own",
   added: 'Added',
 } as const
 
-// What each header sends: Sage's default, a change of it, or a header of the application's own.
+// What each header sends: Sage's default, a change of it, the application's own, or a header it adds.
 const rows = computed(() => {
   const { defaults, changes } = props.application.response_headers
   return [
-    ...Object.entries(defaults).map(([name, value]) =>
-      name in changes
-        ? { name, value: changes[name]!, state: 'changed' as const }
-        : { name, value, state: 'default' as const }
-    ),
+    ...Object.entries(defaults).map(([name, value]) => {
+      if (!(name in changes)) return { name, value, state: 'default' as const }
+      const change = changes[name]
+      return change === null
+        ? { name, value: 'Sent by the application', state: 'own' as const }
+        : { name, value: change!, state: 'changed' as const }
+    }),
     ...Object.entries(changes)
       .filter(([name]) => !(name in defaults))
-      .map(([name, value]) => ({ name, value, state: 'added' as const })),
+      .map(([name, value]) => ({ name, value: value ?? '', state: 'added' as const })),
   ]
 })
 
 const isOpen = ref(false)
 const isSaving = ref(false)
 const errorMessage = ref('')
-const defaultsForm = ref<{ name: string; value: string }[]>([])
+const defaultsForm = ref<{ name: string; value: string; own: boolean }[]>([])
 const ownForm = ref<{ name: string; value: string }[]>([])
 
 function open() {
@@ -68,26 +73,31 @@ function open() {
   defaultsForm.value = Object.entries(defaults).map(([name, value]) => ({
     name,
     value: changes[name] ?? value,
+    own: changes[name] === null,
   }))
   ownForm.value = Object.entries(changes)
     .filter(([name]) => !(name in defaults))
-    .map(([name, value]) => ({ name, value }))
+    .map(([name, value]) => ({ name, value: value ?? '' }))
   errorMessage.value = ''
   isOpen.value = true
 }
 
-function reset(row: { name: string; value: string }) {
+const mayBeOwn = (name: string) => props.application.response_headers.own_allowed.includes(name)
+
+function reset(row: { name: string; value: string; own: boolean }) {
   row.value = props.application.response_headers.defaults[row.name]!
+  row.own = false
 }
 
-const isDefault = (row: { name: string; value: string }) =>
-  row.value.trim() === props.application.response_headers.defaults[row.name]
+const isDefault = (row: { name: string; value: string; own: boolean }) =>
+  !row.own && row.value.trim() === props.application.response_headers.defaults[row.name]
 
-// A header left blank sends its default.
+// A header left blank sends its default; one the application sends itself is saved as null.
 async function save() {
-  const changes: Record<string, string> = {}
+  const changes: Record<string, string | null> = {}
   for (const row of defaultsForm.value) {
-    if (row.value.trim() && !isDefault(row)) changes[row.name] = row.value
+    if (row.own) changes[row.name] = null
+    else if (row.value.trim() && !isDefault(row)) changes[row.name] = row.value
   }
   for (const row of ownForm.value) {
     if (row.name.trim() || row.value.trim()) changes[row.name.trim()] = row.value
@@ -133,7 +143,12 @@ async function save() {
             <FieldGroup>
               <Field v-for="row in defaultsForm" :key="row.name" :data-header="row.name">
                 <FieldLabel :for="`header-${row.name}`">{{ row.name }}</FieldLabel>
+                <div v-if="mayBeOwn(row.name)" class="flex items-center gap-2">
+                  <Switch :id="`header-${row.name}-own`" v-model="row.own" />
+                  <Label :for="`header-${row.name}-own`">The application sends its own</Label>
+                </div>
                 <Textarea
+                  v-if="!row.own"
                   :id="`header-${row.name}`"
                   v-model="row.value"
                   rows="2"

@@ -211,6 +211,16 @@ class TestRoute:
     assert http["middlewares"][f"domain_{linked.id}_headers"]["headers"]["customResponseHeaders"][
         "Content-Security-Policy"] == value
 
+  def test_a_csp_the_application_sends_itself_is_not_named_by_its_route(self, linked, application):
+    before = DomainConfig.capture(linked, "example.test", "templates")
+    application.response_headers = {"Content-Security-Policy": None}
+    application.save()
+    snapshot = DomainConfig.capture(Domain.get_by_id(linked.id), "example.test", "templates")
+    sent = yaml.safe_load(snapshot.route())["http"]["middlewares"][f"domain_{linked.id}_headers"]["headers"][
+        "customResponseHeaders"]
+    assert "Content-Security-Policy" not in sent and sent["X-Frame-Options"] == "DENY"
+    assert snapshot.content_hash != before.content_hash
+
   def test_a_tcp_route_sends_its_name_to_the_containers_runtime(self, red, worker):
     domain = Domain.create(name="db", type="tcp", port=5432, container=red, namespace_worker=worker.hostname)
     tcp = yaml.safe_load(DomainConfig.capture(domain, "example.test").route())["tcp"]

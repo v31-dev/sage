@@ -2,7 +2,7 @@ import pytest
 
 from services.applications.rules import (MAX_RESPONSE_HEADERS, apply_type, response_headers, validate_backup_cron, validate_image, validate_repo,
                                          validate_response_headers, validate_volume_path)
-from values.headers import SECURITY_HEADERS
+from values.headers import APPLICATION_OWN_HEADERS, SECURITY_HEADERS
 
 
 @pytest.mark.parametrize("image", ["nginx", "nginx:1.27", "ghcr.io/org/app:v1.2", "registry.test:5000/app@sha256:abc123", "a_b-c.d", None, ""])
@@ -112,6 +112,10 @@ class TestResponseHeaders:
   def test_what_holds_no_change_is_dropped(self, headers):
     assert validate_response_headers(headers) is None
 
+  @pytest.mark.parametrize("name", ["Content-Security-Policy", "content-security-policy"])
+  def test_a_null_csp_is_sent_by_the_application_itself(self, name):
+    assert validate_response_headers({name: None, "Permissions-Policy": None}) == {"Content-Security-Policy": None}
+
   def test_a_dropped_header_leaves_the_others(self):
     assert validate_response_headers({"Set-Cookie": "a=b", "Referrer-Policy": None, "X-App": "v1",
                                       "X-Frame-Options": "SAMEORIGIN"}) == {"X-App": "v1", "X-Frame-Options": "SAMEORIGIN"}
@@ -138,6 +142,11 @@ class TestResponseHeaders:
   def test_the_defaults_go_with_the_changes_over_them(self):
     sent = response_headers({"Content-Security-Policy": "default-src *", "X-App": "v1"})
     assert sent == {**SECURITY_HEADERS, "Content-Security-Policy": "default-src *", "X-App": "v1"}
+
+  def test_a_header_the_application_sends_itself_is_left_out(self):
+    sent = response_headers({"Content-Security-Policy": None, "X-App": "v1"})
+    assert "Content-Security-Policy" not in sent and sent == {**{name: value for name, value in SECURITY_HEADERS.items()
+                                                                 if name not in APPLICATION_OWN_HEADERS}, "X-App": "v1"}
 
   def test_without_changes_every_default_is_sent(self):
     assert response_headers(None) == SECURITY_HEADERS

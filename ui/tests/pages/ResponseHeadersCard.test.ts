@@ -26,16 +26,16 @@ const DEFAULTS = {
   'Permissions-Policy': 'camera=()',
 }
 
-const application = (changes: Record<string, string> = {}) =>
+const application = (changes: Record<string, string | null> = {}) =>
   ({
     name: 'web',
     project: { name: 'demo', label: 'Demo' },
-    response_headers: { defaults: DEFAULTS, changes },
+    response_headers: { defaults: DEFAULTS, changes, own_allowed: ['Content-Security-Policy'] },
   }) as unknown as Application
 
 const loadApplication = vi.fn(async () => {})
 
-function setup(changes: Record<string, string> = {}) {
+function setup(changes: Record<string, string | null> = {}) {
   return mount(ResponseHeadersCard, {
     props: { application: application(changes), loadApplication },
     global: { stubs },
@@ -146,6 +146,40 @@ describe('the response headers', () => {
     await save(wrapper)
 
     expect(sent()).toEqual({ response_headers: { 'X-App-Version': '1.4.2' } })
+  })
+
+  it('show a header the application sends itself', () => {
+    const wrapper = setup({ 'Content-Security-Policy': null })
+
+    const row = wrapper.get('[data-row="Content-Security-Policy"]').text()
+    expect(row).toContain('Sent by the application')
+    expect(row).toContain("Application's own")
+    expect(row).not.toContain("default-src 'self'")
+  })
+
+  it('let only the headers allowed be the application’s own, saved as null', async () => {
+    const wrapper = setup()
+    await open(wrapper)
+    expect(wrapper.find('[data-header="X-Frame-Options"] [role="switch"]').exists()).toBe(false)
+    const csp = wrapper.get('[data-header="Content-Security-Policy"]')
+    await csp.get('[role="switch"]').trigger('click')
+    expect(csp.find('textarea').exists()).toBe(false)
+    await save(wrapper)
+
+    expect(sent()).toEqual({ response_headers: { 'Content-Security-Policy': null } })
+  })
+
+  it('open with the application’s own on, and reset it to the default', async () => {
+    const wrapper = setup({ 'Content-Security-Policy': null, 'X-App': 'v1' })
+    await open(wrapper)
+    const csp = wrapper.get('[data-header="Content-Security-Policy"]')
+    expect(csp.get('[role="switch"]').attributes('aria-checked')).toBe('true')
+    await button(wrapper, 'Reset to default', csp).trigger('click')
+    expect(csp.get('[role="switch"]').attributes('aria-checked')).toBe('false')
+    expect((csp.get('textarea').element as HTMLTextAreaElement).value).toBe("default-src 'self'")
+    await save(wrapper)
+
+    expect(sent()).toEqual({ response_headers: { 'X-App': 'v1' } })
   })
 
   it('show the manager’s refusal and stay open', async () => {

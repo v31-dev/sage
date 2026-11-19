@@ -213,6 +213,11 @@ class TestVolume:
     commands.patch_application(application.id, {"label": "Web 2"})
     assert stored(application).response_headers == {"Referrer-Policy": "same-origin", "X-App": "v1"}
 
+  def test_a_csp_the_application_sends_itself_is_stored_and_its_echo_changes_nothing(self, application):
+    commands.patch_application(application.id, {"response_headers": {"Content-Security-Policy": None}})
+    assert stored(application).response_headers == {"Content-Security-Policy": None}
+    assert commands.patch_application(application.id, {"response_headers": {"Content-Security-Policy": None}}) == set()
+
   def test_it_returns_the_fields_it_changed(self, application):
     assert commands.patch_application(application.id, {"response_headers": {"X-App": "v1"}}) == {"response_headers"}
     assert commands.patch_application(application.id, {"label": "Web 2", "response_headers": {

@@ -2,7 +2,7 @@ import re
 
 from croniter import croniter
 
-from values.headers import SECURITY_HEADERS
+from values.headers import APPLICATION_OWN_HEADERS, SECURITY_HEADERS
 
 MAX_RESPONSE_HEADERS = 50
 MAX_HEADER_VALUE_LENGTH = 4096
@@ -50,9 +50,10 @@ def validate_backup_cron(expression: str | None) -> str | None:
 
 
 def validate_response_headers(headers: dict | None) -> dict | None:
-  """The application's changes to its response headers: a security header's new value, spelled as Sage spells it, and
-  its own `X-` headers. What holds no change is dropped: another name, a value that is null, blank, not text or the
-  default. None when there are none."""
+  """The application's changes to its response headers: a security header's new value, spelled as Sage spells it, or
+  null for one of `APPLICATION_OWN_HEADERS` the application sends itself, and its own `X-` headers. What holds no
+  change is dropped: another name, a value that is null (for any other header), blank, not text or the default. None
+  when there are none."""
   if headers is None:
     return None
   if not isinstance(headers, dict):
@@ -71,6 +72,9 @@ def validate_response_headers(headers: dict | None) -> dict | None:
     if name.lower() in seen:
       raise ValueError(f"Header {name} is given twice.")
     seen.add(name.lower())
+    if value is None and known in APPLICATION_OWN_HEADERS:
+      changes[known] = None
+      continue
     if not isinstance(value, str) or not value.strip():
       continue
     if len(value) > MAX_HEADER_VALUE_LENGTH or CONTROL_CHARACTERS.search(value):
@@ -83,5 +87,6 @@ def validate_response_headers(headers: dict | None) -> dict | None:
 
 
 def response_headers(changes: dict | None) -> dict[str, str]:
-  """What the application's HTTP names send: Sage's security headers with the application's changes over them."""
-  return {**SECURITY_HEADERS, **(changes or {})}
+  """What the application's HTTP names send: Sage's security headers with the application's changes over them, less
+  those the application sends itself."""
+  return {name: value for name, value in {**SECURITY_HEADERS, **(changes or {})}.items() if value is not None}
