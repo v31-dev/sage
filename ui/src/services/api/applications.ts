@@ -23,6 +23,7 @@ export interface Application extends ApplicationSummary {
   args: string | null
   build_secrets: string | null
   command: string | null
+  response_headers: { defaults: Record<string, string>; changes: Record<string, string> }
   project: { name: string; label: string }
   volumes: Volume[]
   containers: Container[]

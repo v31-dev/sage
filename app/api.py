@@ -27,6 +27,7 @@ from services.manager import Manager
 from services.updates import Updates
 from utils.api import RefuseOtherSites
 from utils.errors import Conflict
+from values.headers import SECURITY_HEADERS
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, redirect_slashes=False)
 
@@ -56,24 +57,10 @@ async def refuse_changes_unless_running(request: Request, call_next):
   return response
 
 
-# The manager's own policy: its UI loads only from its own origin; its charts and Vue insert style elements.
-MANAGER_HEADERS = {
-    "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
-                               "img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; "
-                               "base-uri 'self'; form-action 'self'; frame-ancestors 'none'",
-    "X-Frame-Options": "DENY",
-    "X-Content-Type-Options": "nosniff",
-    "Strict-Transport-Security": "max-age=63072000",
-    "Referrer-Policy": "no-referrer",
-    "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=(), usb=(), serial=(), bluetooth=(), "
-                          "midi=(), display-capture=()",
-}
-
-
 @app.middleware("http")
 async def send_the_managers_headers(request: Request, call_next):
   response = await call_next(request)
-  response.headers.update(MANAGER_HEADERS)
+  response.headers.update(SECURITY_HEADERS)
   return response
 
 

@@ -9,8 +9,8 @@ import config
 from services.cloudflare import Cloudflare, dns_record_matches
 from services.containers.state import container_reference
 from services.db.models import Application, Container, Domain, Project, Worker
-from services.domains.config import (DomainConfig, domain_artifact_name, domain_artifact_owner, domain_scope, host_scope, parse_route_listing,
-                                     route_scope, routes_command)
+from services.domains.config import (ROUTE_FIELDS, DomainConfig, domain_artifact_name, domain_artifact_owner, domain_scope, host_scope,
+                                     parse_route_listing, route_scope, routes_command)
 from services.domains.decisions import ApplyOutcome, RouteObservation, route_goal
 from services.domains.state import Domains, DomainState, domain_payload, domain_state
 from services.domains.updates import domain_changed
@@ -153,6 +153,14 @@ class DomainsMixin:
     left behind, such as its route on the worker it was on."""
     self.request_domain_applies([domain_id])
     self.request_domain_reconciliation()
+
+  def application_edited(self, application_id: int, changed: set[str]):
+    """After an application's edit changed these fields (its command): the Domains of its containers are applied as
+    they are configured now when one of them is part of their routes."""
+    if not changed & ROUTE_FIELDS:
+      return
+    self.request_domain_applies(domain.id for domain in Domain.select(Domain.id).join(Container).where(
+        Container.application == application_id))
 
   def request_domain_reconciliation(self):
     """Queues the pass over every Domain's artifacts. A request while one runs gets a pass of its own after it, so a

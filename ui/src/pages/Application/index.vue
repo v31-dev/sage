@@ -13,6 +13,7 @@ import AddContainerButton from './AddContainerButton.vue'
 import ContainerCard from './ContainerCard.vue'
 import AddVolumeButton from './AddVolumeButton.vue'
 import VolumeCard from './VolumeCard.vue'
+import ResponseHeadersCard from './ResponseHeadersCard.vue'
 import SectionTitle from '@/components/SectionTitle.vue'
 
 const route = useRoute()
@@ -178,6 +179,9 @@ function goBack() {
             />
           </div>
         </div>
+
+        <!-- Response Headers -->
+        <ResponseHeadersCard :application="application" :loadApplication="loadApplication" />
       </div>
 
       <!-- Error/Not Found State -->

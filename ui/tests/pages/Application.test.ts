@@ -46,6 +46,7 @@ const stubs = {
   ApplicationHeader: header,
   AddContainerButton: true,
   AddVolumeButton: true,
+  ResponseHeadersCard: true,
   SectionTitle: true,
   ContainerCard: list('data-container', 'view.headline'),
   VolumeCard: list('data-volume', 'name'),

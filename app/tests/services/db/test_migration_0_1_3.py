@@ -80,6 +80,7 @@ def test_applications_keep_their_ids_and_values_and_new_ones_follow_the_highest(
   web, api = Application.get_by_id(3), Application.get_by_id(7)
   assert (web.name, web.type, web.image, web.env, web.container_count) == ("web", "docker", "nginx", "A=1\nB=2", 2)
   assert (api.type, api.repo, api.description, api.command) == ("git", "https://git.test/api", "The API", "serve")
+  assert web.response_headers is None and api.response_headers is None
   assert Application.create(project="shop", name="new", label="New", image="nginx").id == 8
 
 
@@ -199,7 +200,9 @@ def test_its_log_says_what_it_did_with_the_old_and_new_ids_then_what_to_do_by_ha
           "are done.") in lines
   assert any(message.startswith("Removed [2] domains: ") for message in messages)
   assert "Removed [1] events: the history starts empty in this version." in messages
-  assert any(message.startswith("Migrated [") and "from version [0] to [1]" in message for message in messages)
+  assert any(message.startswith("Migrated [") and f"from version [0] to [{len(migrations.STEPS)}]" in message
+             for message in messages)
+  assert "Applications get their response headers: none is changed, so every application sends the defaults." in messages
   actions = [(level, message) for level, message in lines if level == "CRITICAL"]
   assert actions[0] == ("CRITICAL", "Worker [w1] - Run command to stop [shop-web], still running as 0.1.3 started it: "
                                     "this version doesn't manage 0.1.3's containers.\n###\n"

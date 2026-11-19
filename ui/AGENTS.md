@@ -2,7 +2,7 @@
 
 Rules for the Vue frontend. Read the root [../AGENTS.md](../AGENTS.md) first for the architecture and repo-wide rules; this file is UI-specific.
 
-- The manager's CSP allows its own origin only (`MANAGER_HEADERS` in `app/api.py`): icons come from `lucide-vue-next`, bundled, and nothing loads from another origin at run time (no icon APIs, CDNs, web fonts or remote images).
+- The manager's CSP allows its own origin only (`SECURITY_HEADERS` in `app/values/headers.py`, the applications' default too): icons come from `lucide-vue-next`, bundled, and nothing loads from another origin at run time (no icon APIs, CDNs, web fonts or remote images).
 - Build from the existing component library (shadcn-vue under `ui/src/components/ui`, add more of its components as needed) rather than hand-rolled HTML and CSS. Don't add a new UI framework or library for one small component.
 - UI text is written for people: a short summary of what will happen or what a state means, not commands, file names or protocol details (those belong in the docs).
 - A refusal says what isn't allowed, plainly: no consequences and no remedies.

@@ -1,6 +1,8 @@
 import pytest
 
-from services.applications.rules import apply_type, validate_backup_cron, validate_image, validate_repo, validate_volume_path
+from services.applications.rules import (MAX_RESPONSE_HEADERS, apply_type, response_headers, validate_backup_cron, validate_image, validate_repo,
+                                         validate_response_headers, validate_volume_path)
+from values.headers import SECURITY_HEADERS
 
 
 @pytest.mark.parametrize("image", ["nginx", "nginx:1.27", "ghcr.io/org/app:v1.2", "registry.test:5000/app@sha256:abc123", "a_b-c.d", None, ""])
@@ -90,3 +92,52 @@ def test_a_five_part_cron_is_kept(expression):
 def test_any_other_backup_cron_is_refused(expression, message):
   with pytest.raises(ValueError, match=message):
     validate_backup_cron(expression)
+
+
+class TestResponseHeaders:
+  def test_a_default_is_changed_spelled_as_sage_spells_it_and_trimmed(self):
+    assert validate_response_headers({"content-security-policy": " default-src 'self' https://cdn.test "}) == {
+        "Content-Security-Policy": "default-src 'self' https://cdn.test"}
+
+  @pytest.mark.parametrize("name", ["X-Request-Source", "x-app-version"])
+  def test_an_x_header_is_the_applications_own(self, name):
+    assert validate_response_headers({name: "v1"}) == {name: "v1"}
+
+  @pytest.mark.parametrize("headers", [
+      None, {}, {"Set-Cookie": "a=b"}, {"Access-Control-Allow-Origin": "*"}, {"": "v"}, {"Bad Name": "v"},
+      {"Permissions-Policy": None}, {"X-A": None}, {"X-A": "   "}, {"X-A": 3}, {"X-A": {"nested": "v"}},
+      {"x-frame-options": " DENY "}, {"defaults": dict(SECURITY_HEADERS), "changes": {"X-A": "v"}},
+  ], ids=["none", "empty", "another-header", "a-cors-header", "empty-name", "another-name-with-a-space", "a-null-default",
+          "a-null-x", "blank", "a-number", "an-object", "the-default", "the-payload-echoed"])
+  def test_what_holds_no_change_is_dropped(self, headers):
+    assert validate_response_headers(headers) is None
+
+  def test_a_dropped_header_leaves_the_others(self):
+    assert validate_response_headers({"Set-Cookie": "a=b", "Referrer-Policy": None, "X-App": "v1",
+                                      "X-Frame-Options": "SAMEORIGIN"}) == {"X-App": "v1", "X-Frame-Options": "SAMEORIGIN"}
+
+  @pytest.mark.parametrize("headers, message", [
+      (["X-A"], "must be an object"),
+      ({"X-Bad Name": "v"}, "Invalid header name"),
+      ({"X-A": "one\r\nSet-Cookie: a=b"}, "one line"),
+      ({"X-A": "a\x00b"}, "one line"),
+      ({"Content-Security-Policy": "v" * 4097}, "one line"),
+      ({"x-frame-options": "DENY", "X-Frame-Options": "SAMEORIGIN"}, "given twice"),
+      ({"X-App": None, "x-app": "b"}, "given twice"),
+      ({f"X-H{n}": "v" for n in range(MAX_RESPONSE_HEADERS + 1)}, "at most"),
+  ], ids=["not-a-map", "an-x-name-with-a-space", "a-line-break", "a-nul", "too-long", "a-default-twice", "an-x-twice",
+          "too-many"])
+  def test_a_header_sage_cannot_send_is_refused(self, headers, message):
+    with pytest.raises(ValueError, match=message):
+      validate_response_headers(headers)
+
+  def test_as_many_headers_as_allowed_are_kept_past_dropped_ones(self):
+    headers = {"Set-Cookie": "a=b", **{f"X-H{n}": "v" for n in range(MAX_RESPONSE_HEADERS)}}
+    assert len(validate_response_headers(headers)) == MAX_RESPONSE_HEADERS
+
+  def test_the_defaults_go_with_the_changes_over_them(self):
+    sent = response_headers({"Content-Security-Policy": "default-src *", "X-App": "v1"})
+    assert sent == {**SECURITY_HEADERS, "Content-Security-Policy": "default-src *", "X-App": "v1"}
+
+  def test_without_changes_every_default_is_sent(self):
+    assert response_headers(None) == SECURITY_HEADERS

@@ -3,6 +3,7 @@ from dataclasses import FrozenInstanceError
 import pytest
 import yaml
 
+from services.applications.rules import response_headers
 from services.db.models import Container, Domain, Worker
 from services.domains.config import (ROUTING_DIGEST, DomainConfig, address, allowed_origins, domain_artifact_name, domain_artifact_owner,
                                      domain_scope, host, host_scope, parse_route_listing, route_scope, validate_port)
@@ -130,6 +131,15 @@ class TestDomainConfig:
     snapshot = DomainConfig.capture(linked, "example.test", "templates")
     assert (snapshot.worker, snapshot.container_id) == ("w1", linked.container_id)
 
+  def test_its_applications_response_headers_change_the_fingerprint_and_a_tcp_domain_has_none(self, linked, red, worker,
+                                                                                              application):
+    before = DomainConfig.capture(linked, "example.test", "templates")
+    application.response_headers = {"X-App": "v1"}
+    application.save()
+    assert before.content_hash != DomainConfig.capture(Domain.get_by_id(linked.id), "example.test", "templates").content_hash
+    tcp = Domain.create(name="db", type="tcp", port=5432, container=red, namespace_worker=worker.hostname)
+    assert DomainConfig.capture(tcp, "example.test").headers == ()
+
   def test_renaming_its_containers_application_does_not_change_the_fingerprint(self, linked, application):
     before = DomainConfig.capture(linked, "example.test", "templates")
     application.name, application.label = "store", "Store"
@@ -180,6 +190,26 @@ class TestRoute:
         {"url": f"http://sage-{linked.container_id}:8080"}]
     assert http["middlewares"][f"domain_{linked.id}_cors"]["headers"]["accessControlAllowOriginList"] == [
         "https://a.test", "https://b.test"]
+
+  @pytest.mark.parametrize("type", ["public", "internal"])
+  def test_an_http_route_sends_the_applications_headers_before_its_origins(self, red, worker, application, type):
+    application.response_headers = {"Content-Security-Policy": "default-src *", "X-App": "v1"}
+    application.save()
+    domain = Domain.create(name="shop", type=type, port=8080, container=red,
+                           namespace_worker=None if type == "public" else worker.hostname)
+    http = yaml.safe_load(DomainConfig.capture(domain, "example.test").route())["http"]
+    middlewares = http["routers"][f"domain_{domain.id}"]["middlewares"]
+    assert middlewares.index(f"domain_{domain.id}_headers") < middlewares.index(f"domain_{domain.id}_cors")
+    assert http["middlewares"][f"domain_{domain.id}_headers"]["headers"]["customResponseHeaders"] == response_headers(
+        application.response_headers)
+
+  def test_a_header_value_with_quotes_and_a_colon_reaches_the_route_as_it_was(self, linked, application):
+    value = """default-src 'self'; img-src "data:" https://tiles.test/a:b\\c"""
+    application.response_headers = {"Content-Security-Policy": value}
+    application.save()
+    http = yaml.safe_load(DomainConfig.capture(Domain.get_by_id(linked.id), "example.test").route())["http"]
+    assert http["middlewares"][f"domain_{linked.id}_headers"]["headers"]["customResponseHeaders"][
+        "Content-Security-Policy"] == value
 
   def test_a_tcp_route_sends_its_name_to_the_containers_runtime(self, red, worker):
     domain = Domain.create(name="db", type="tcp", port=5432, container=red, namespace_worker=worker.hostname)

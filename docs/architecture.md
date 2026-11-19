@@ -43,11 +43,11 @@ WebSocket, with a 403 or close code 1008:
 
 A request with neither header is not a browser's and passes (curl, the workers).
 
-The manager also sends a static security policy of its own on everything its main server answers (`MANAGER_HEADERS`,
-`app/api.py`): a CSP that loads scripts, styles, images, fonts and connections from its own origin only (inline styles
-allowed, which its charts and Vue insert), no framing (`frame-ancestors 'none'`, `X-Frame-Options: DENY`), `nosniff`,
-HSTS, `Referrer-Policy: no-referrer` and every powerful browser feature off. The UI's icons are bundled
-(`lucide-vue-next`), so it fetches nothing from another origin.
+The manager also sends Sage's strict security headers on everything its main server answers (`SECURITY_HEADERS`,
+`app/values/headers.py`), the same ones every application sends by default: a CSP that loads scripts, styles, images,
+fonts and connections from its own origin only (inline styles allowed, which its charts and Vue insert), no framing
+(`frame-ancestors 'none'`, `X-Frame-Options: DENY`), `nosniff`, HSTS, `Referrer-Policy: no-referrer` and every powerful
+browser feature off. The UI's icons are bundled (`lucide-vue-next`), so it fetches nothing from another origin.
 
 In userspace mode the container has no route into the tailnet, so outbound traffic goes
 through `tailscaled`: SSH to workers uses asyncssh's `proxy_command` with
@@ -264,8 +264,23 @@ requires updating each backend's list manually. A blank field follows its own Do
 
 Traefik applies this list to the application's HTTP responses and handles credentialless preflight requests.
 Requests may use methods and headers including Authorization; the browser can read the response only when its
-Origin matches. The form configures origins only; application response headers and cookies have no Sage editor.
+Origin matches. The form configures origins only; the security headers are the application's (below), and cookies
+have no Sage editor.
 TCP has no HTTP CORS policy. CORS changes apply through the Domain's sync, without a container deployment.
+
+### Response Headers
+
+Every HTTP name of an application sends its **response headers**: Sage's strict defaults (`SECURITY_HEADERS`,
+`app/values/headers.py`, the manager's own), with the application's changes over them. The defaults grant nothing a page
+doesn't ask for but inline styles: a CSP loading only from the name's own origin, no framing, `nosniff`, HSTS,
+`Referrer-Policy: no-referrer` and every powerful browser feature off. The application page lists what each header sends
+and edits them, a reset putting one header back to its default. An application that needs more (images from a map's tile
+servers, the visitor's location) changes that header. It can also add headers of its own, named `X-…`. A change holds
+only header names and values: another name, or a value that is empty or the default, is dropped without an error, so a
+security header always sends at least its default; a header Sage can't send (an `X-` name that isn't a header token, a
+value over one line or too long, a name given twice) is refused. Sage's headers replace the application's own ones of
+the same name. They are part of each Domain's route and its fingerprint, so an edit that changes them applies its
+Domains, and a changed default reaches every Domain through the Domain pass. TCP names send none.
 
 Discovery remains readable from any origin. A Domain's `HEAD /ping` latency probe also allows any origin, exposes
 timing and is not cached; GET `/ping` reaches the application under its configured origins. The probe measures the

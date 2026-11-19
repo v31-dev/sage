@@ -56,7 +56,7 @@ After compaction, reread the relevant `docs/` page before continuing.
 | `app/services/history.py` | Container and worker event append, task parts and history retention |
 | `app/services/backups/` | Backup key policy (archives by volume and placement id), the catalog's reconciliation with the configured store, Backup row commands, download links and the backups' payload |
 | `app/services/containers/` | Container target record (types, codec, listing), placement names and labels, deployment rendering, the `Containers` owner of each placement's last record read, the runtime read from reports, the state and payload a page shows, and the pure status decision |
-| `app/values/` | Pure name, origin and multiline key/value rules |
+| `app/values/` | Pure name, origin, security header and multiline key/value rules |
 | `app/scheduler.py` | APScheduler cron/interval triggers that enqueue operations |
 | `app/utils/queue.py` | In-memory operation queue (scopes + single-dispatcher) |
 | `app/utils/executor.py` | Thread-pool lanes + context-preserving offload helpers |

@@ -70,11 +70,11 @@ here and are not repeated. How the backend works (the queue's modes, each workfl
   `KeyError` or `IndexError` stays a 500).
 - A page's payload is built by its resource's `*_payload` function from the state a Manager reader decides; REST and
   the topics share those readers, and a missing resource is a `LookupError`.
-- Storage fields belong to `services/db/fields.py`, encryption to `services/db/encryption.py`, name and origin rules
-  to `values/names.py`, key/value rules to `values/key_values.py`; scalar rules are shared, not repeated in routes and
-  models. Importing a value or codec initializes no encryption and never exits the process: bootstrap validates and
-  initializes the key before encrypted storage is used. The DB package initializer loads no models or signals;
-  schemas and initialization are imported from their owning modules.
+- Storage fields belong to `services/db/fields.py`, encryption to `services/db/encryption.py`, name and origin rules to
+  `values/names.py`, key/value rules to `values/key_values.py`, Sage's strict security headers to `values/headers.py`;
+  scalar rules are shared, not repeated in routes and models. Importing a value or codec initializes no encryption and
+  never exits the process: bootstrap validates and initializes the key before encrypted storage is used. The DB package
+  initializer loads no models or signals; schemas and initialization are imported from their owning modules.
 - Everything Sage writes outside its database (worker files, markers, DNS record comments, archives) is named by the
   id of the resource that owns it, with no instance prefix, number or mutable name: an opaque random id (stable across
   renames and recreation, distinct between Sages), or for a worker its hostname, the Worker's primary key and unique

@@ -1,5 +1,6 @@
 from services.applications.payload import application_payload, application_summary, project_payload
 from services.db.models import Project, Volume
+from values.headers import SECURITY_HEADERS
 
 
 def container(headline):
@@ -15,6 +16,14 @@ def test_an_application_is_its_configuration_volumes_and_containers_with_how_man
   assert [(item["id"], item["name"], item["path"], item["backup_cron"]) for item in payload["volumes"]] == [
       (volume.id, "data", "/data", "0 3 * * *")]
   assert (payload["containers"], payload["active_count"]) == (containers, 2)
+
+
+def test_an_application_carries_the_default_response_headers_and_its_changes(application):
+  application.response_headers = {"X-App": "v1"}
+  payload = application_payload(application, [], [])
+  assert payload["response_headers"] == {"defaults": SECURITY_HEADERS, "changes": {"X-App": "v1"}}
+  application.response_headers = None
+  assert application_payload(application, [], [])["response_headers"]["changes"] == {}
 
 
 def test_an_application_without_containers_has_none_active(application):

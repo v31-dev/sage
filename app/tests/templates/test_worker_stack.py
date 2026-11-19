@@ -87,6 +87,16 @@ class TestTelegrafConfig:
     assert all(label.startswith(LABEL_PREFIX) for label in LABELS)
 
 
+class TestApplicationHeaders:
+  @pytest.mark.parametrize("name", ["service_public.yml", "service_internal.yml"])
+  def test_an_http_route_sends_the_applications_headers_from_a_middleware_of_its_own(self, name):
+    text = (TEMPLATES / "traefik" / name).read_text()
+    assert "- domain_${ID}_headers" in text and "customResponseHeaders: ${HEADERS}" in text
+
+  def test_no_template_sends_headers_of_sages_own_on_an_applications_routes(self):
+    assert not any("security-headers" in path.read_text() for path in (TEMPLATES / "traefik").glob("*.yml"))
+
+
 class TestLeastPrivilege:
   @pytest.mark.parametrize("name", ["traefik", "cloudflared", "cloudflared-discovery", "vector", "telegraf"])
   def test_every_service_drops_its_capabilities_gains_no_privileges_and_has_a_read_only_root(self, name):

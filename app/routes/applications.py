@@ -41,7 +41,9 @@ def get_application_logs(project: str, application: str, hostname: str = "", sea
 
 @router.put("/{application}")
 def update_application(project: str, application: str, data: dict = Body(...)):
-  commands.patch_application(find_application(project, application).id, data)
+  application_id = find_application(project, application).id
+  if changed := commands.patch_application(application_id, data):
+    Manager().application_edited(application_id, changed)
   return Manager().application_page(project, application)
 
 

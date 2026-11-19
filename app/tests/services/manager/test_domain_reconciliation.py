@@ -1,8 +1,9 @@
 import pytest
 
 import config
+from services.applications import commands as application_commands
 from services.cloudflare import Cloudflare
-from services.db.models import Container, Domain, Worker
+from services.db.models import Application, Container, Domain, Worker
 from services.domains import commands
 from services.domains.config import DomainConfig
 from services.domains.decisions import ApplyOutcome, RouteObservation
@@ -196,6 +197,28 @@ class TestEdit:
     await manager.run()
     assert hosts.route("w1", public) == fingerprint(public)
     assert [command for command in writes(hosts) if "rm -f" in command[1]] == []
+
+
+class TestApplicationEdit:
+  async def test_its_headers_reach_the_routes_of_its_domains_and_no_other(self, manager, public, internal, application,
+                                                                          hosts, provider):
+    other_application = Application.create(project=application.project, name="api", label="API", image="nginx")
+    other = Domain.create(name="other", type="public", port=80,
+                          container=Container.create(application=other_application, worker="w1"))
+    manager.routable[other.container_id] = True
+    for domain in (public, internal, other):
+      conforming(hosts, provider, domain)
+    manager.application_edited(application.id, application_commands.patch_application(
+        application.id, {"label": "Web 2", "image": "redis"}))
+    assert applies(manager) == []
+    manager.application_edited(application.id, application_commands.patch_application(
+        application.id, {"response_headers": {"X-App": "v1"}}))
+    assert applies(manager) == sorted([public.id, internal.id])
+    await manager.run()
+    for domain in (public, internal):
+      assert hosts.route("w1", domain) == fingerprint(domain)
+      assert '"X-App": "v1"' in hosts.files[("w1", f"{DYNAMIC}/domain-{domain.id}.yml")]
+    assert '"X-App"' not in hosts.files[("w1", f"{DYNAMIC}/domain-{other.id}.yml")]
 
 
 class TestObservation:

@@ -3,7 +3,7 @@ import { FieldLabel } from '@/components/ui/field'
 import FieldHelp from '@/components/FieldHelp.vue'
 
 // A field's label with its help beside it, not inside the input.
-defineProps<{ for: string; help: string }>()
+defineProps<{ for?: string; help: string }>()
 </script>
 
 <template>

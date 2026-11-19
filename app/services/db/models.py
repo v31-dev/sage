@@ -69,6 +69,7 @@ class Application(BaseModel):
   build_secrets = EncryptedKeyValueField(null=True)
   command = CharField(null=True)
   container_count = IntegerField(default=0, constraints=[Check("container_count >= 0")])
+  response_headers = JSONField(null=True)
 
   class Meta:
     indexes = ((("project", "name"), True),)

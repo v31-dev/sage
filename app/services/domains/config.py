@@ -4,6 +4,7 @@ import re
 from dataclasses import asdict, dataclass
 
 import config
+from services.applications.rules import response_headers
 from services.containers.placement import runtime_name
 from services.db.models import Domain
 from services.workers.rendering import worker_scope
@@ -22,6 +23,8 @@ ARTIFACTS = {"file": ("domain-", ".yml"), "dns": ("sage-domain-", "")}
 # The first line of a routing file, naming the domain and the fingerprint it was rendered from.
 ROUTE_HEADER = "# sage-domain"
 RESERVED_DOMAIN_NAMES = {"core", "int", "discovery"}
+# The fields of a Domain's application that its route carries (`DomainConfig.capture`).
+ROUTE_FIELDS = {"response_headers"}
 
 
 def domain_scope(domain_id: str | None = None) -> str:
@@ -108,6 +111,7 @@ class DomainConfig:
   worker: str | None
   container_id: str | None
   cors_origins: tuple[str, ...]
+  headers: tuple[tuple[str, str], ...]
   templates: str
 
   @classmethod
@@ -116,7 +120,10 @@ class DomainConfig:
     return cls(
         domain_id=domain.id, type=domain.type, host=host(domain, base_domain), port=domain.port,
         worker=container.worker_id if container else domain.namespace_worker_id, container_id=domain.container_id,
-        cors_origins=allowed_origins(domain, base_domain), templates=templates,
+        cors_origins=allowed_origins(domain, base_domain),
+        headers=tuple(sorted(response_headers(container.application.response_headers).items()))
+        if container and domain.type != "tcp" else (),
+        templates=templates,
     )
 
   @property
@@ -137,7 +144,7 @@ class DomainConfig:
     template = (config.TEMPLATES_DIR / "worker/traefik" / ROUTING_TEMPLATES[self.type]).read_text()
     return fill(template, {"ID": self.domain_id, "FINGERPRINT": self.content_hash, "HOST": self.host,
                            "SERVICE": runtime_name(self.container_id), "PORT": self.port,
-                           "CORS_ORIGINS": json.dumps(list(self.cors_origins))})
+                           "CORS_ORIGINS": json.dumps(list(self.cors_origins)), "HEADERS": json.dumps(dict(self.headers))})
 
   def dns_records(self, tunnel: dict | None) -> dict[str, str]:
     if self.type != "public" or self.container_id is None:

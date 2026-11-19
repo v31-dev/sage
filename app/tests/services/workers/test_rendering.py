@@ -58,8 +58,9 @@ class TestRendering:
     assert static["entryPoints"]["web"]["forwardedHeaders"] == {"trustedIPs": ["172.22.0.0/16", "fd00:22::/64"]}
     assert all("forwardedHeaders" not in entry for name, entry in static["entryPoints"].items() if name != "web")
 
-  def test_traefiks_dynamic_config_names_the_domain(self):
-    assert "*.example.test" in render()["traefik/dynamic/config.yml"].content
+  def test_traefiks_dynamic_config_sends_no_header_of_its_own_on_an_applications_routes(self):
+    middlewares = yaml.safe_load(render()["traefik/dynamic/config.yml"].content)["http"]["middlewares"]
+    assert sorted(middlewares) == ["probe", "tailscale-only"]
 
   def test_no_placeholder_of_sages_is_left_in_a_filled_file(self):
     for path, file in render().items():

@@ -226,4 +226,12 @@ def from_0_1_3(db: SqliteDatabase) -> list[dict]:
   return actions
 
 
-STEPS = [from_0_1_3]
+def from_0_2_0(db: SqliteDatabase) -> list[dict]:
+  """0.2.0's database: every application gets its response headers' changes, none yet, so each sends Sage's
+  defaults."""
+  db.execute_sql('ALTER TABLE "application" ADD COLUMN "response_headers" TEXT')
+  logger.info("Applications get their response headers: none is changed, so every application sends the defaults.")
+  return []
+
+
+STEPS = [from_0_1_3, from_0_2_0]
