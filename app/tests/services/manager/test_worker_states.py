@@ -219,8 +219,9 @@ class TestPublication:
 
   async def test_a_worker_whose_readiness_changed_shows_the_domains_routed_to_it_again(
           self, manager, tailnet, workers, application, signals):
-    Domain.create(name="shop", type="public", port=80, container=Container.create(application=application, worker="w2"))
-    Domain.create(name="api", type="internal", port=80, namespace_worker="w2")
+    on_w2 = Container.create(application=application, worker="w2")
+    Domain.create(name="shop", type="public", port=80, container=on_w2)
+    Domain.create(name="api", type="internal", port=80, container=on_w2, namespace_worker="w2")
     Domain.create(name="other", type="internal", port=80, container=Container.create(application=application, worker="w1"),
                   namespace_worker="w1")
     tailnet.answers = {"w1": "reachable", "w2": "reachable"}
@@ -232,8 +233,7 @@ class TestPublication:
     await manager.observe_workers()
     assert signals[:2] == pages("w2")
     assert sorted(signals[2:]) == sorted([(UpdateSource.DOMAINS, None), (UpdateSource.APPLICATION, "demo/web"),
-                                          (UpdateSource.WORKER_CONTAINERS, "w2"), (UpdateSource.DOMAINS, None),
-                                          (UpdateSource.WORKER_CONTAINERS, "w2")])
+                                          (UpdateSource.WORKER_CONTAINERS, "w2")] * 2)
 
   async def test_a_change_of_its_certificates_shows_its_worker_again(self, manager, tailnet, workers, signals, certificates):
     await manager.observe_workers()
@@ -450,9 +450,6 @@ class TestPayloads:
 
   def test_a_workers_page_says_why_it_cant_be_removed_now(self, manager, workers, metrics, application):
     assert manager.worker_page("w1")["removal_refusal"] is None
-    domain = Domain.create(name="db", type="internal", port=5432, namespace_worker="w1")
-    assert manager.worker_page("w1")["removal_refusal"] == "A worker with internal domains can't be removed."
-    domain.delete_instance()
     Container.create(application=application, worker="w1")
     assert manager.worker_page("w1")["removal_refusal"] == "A worker with containers can't be removed."
 

@@ -102,14 +102,13 @@ def allowed_origins(domain: Domain, base_domain: str) -> tuple[str, ...]:
 
 @dataclass(frozen=True)
 class DomainConfig:
-  """What a domain's routing and DNS are rendered from. `worker` is where its route goes: its container's, or for an
-  unlinked internal or TCP domain its namespace worker; none for an unlinked public one."""
+  """What a domain's routing and DNS are rendered from. `worker` is where its route goes, its container's."""
   domain_id: str
   type: str
   host: str | None
   port: int
-  worker: str | None
-  container_id: str | None
+  worker: str
+  container_id: str
   cors_origins: tuple[str, ...]
   headers: tuple[tuple[str, str], ...]
   templates: str
@@ -119,10 +118,9 @@ class DomainConfig:
     container = domain.container
     return cls(
         domain_id=domain.id, type=domain.type, host=host(domain, base_domain), port=domain.port,
-        worker=container.worker_id if container else domain.namespace_worker_id, container_id=domain.container_id,
-        cors_origins=allowed_origins(domain, base_domain),
+        worker=container.worker_id, container_id=domain.container_id, cors_origins=allowed_origins(domain, base_domain),
         headers=tuple(sorted(response_headers(container.application.response_headers).items()))
-        if container and domain.type != "tcp" else (),
+        if domain.type != "tcp" else (),
         templates=templates,
     )
 
@@ -139,15 +137,15 @@ class DomainConfig:
     return domain_artifact_name("dns", self.domain_id)
 
   def route(self) -> str:
-    """The routing file of a linked domain, to its container's runtime on the worker's network. Its first line names
-    the domain and this fingerprint."""
+    """The routing file, to its container's runtime on the worker's network. Its first line names the domain and this
+    fingerprint."""
     template = (config.TEMPLATES_DIR / "worker/traefik" / ROUTING_TEMPLATES[self.type]).read_text()
     return fill(template, {"ID": self.domain_id, "FINGERPRINT": self.content_hash, "HOST": self.host,
                            "SERVICE": runtime_name(self.container_id), "PORT": self.port,
                            "CORS_ORIGINS": json.dumps(list(self.cors_origins)), "HEADERS": json.dumps(dict(self.headers))})
 
   def dns_records(self, tunnel: dict | None) -> dict[str, str]:
-    if self.type != "public" or self.container_id is None:
+    if self.type != "public":
       return {}
     if tunnel is None:
       raise ValueError(f"Worker {self.worker} has no tunnel.")

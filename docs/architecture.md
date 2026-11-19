@@ -145,8 +145,8 @@ Current traffic and naming patterns are driven by Cloudflare, Traefik, and Tails
   `discovery.int.<domain>?service=<service>` for internal and TCP ones (tailnet only, an A record per worker reachable and set up).
   The answer is an RFC 9651 list in `Sage-Endpoints`, for example
   `"a.example.test";pool="eu";online, "b.example.test";pool="eu";online=?0`, to HEAD, GET or OPTIONS.
-  `;online` means available; `;online=?0` means offline. Every service-assigned name stays listed, including unlinked
-  names and pending or failed syncs. An available name needs an active container, its worker's cached ready status,
+  `;online` means available; `;online=?0` means offline. Every service-assigned name stays listed, including pending
+  or failed syncs. An available name needs an active container, its worker's cached ready status,
   and a successful Domain sync for its current configuration. This is last-known state, derived when discovery
   config is generated; discovery performs no live health checks. The names follow the Domains at once; a name whose
   state is not known yet (after the manager starts, or while its Domain is being applied) keeps the availability it was
@@ -218,10 +218,9 @@ linked to, and optionally a service and a pool:
   TLS (e.g. `rediss://`, libpq `sslmode=require`); Traefik handles Postgres STARTTLS (Traefik 3.x), so no
   `sslnegotiation=direct` or sidecar is needed.
 
-Deleting a container unlinks its domains: they stay, listed on the Domains page, with no routing, and an internal one
-keeps its worker, so it keeps its name. Linking it to a container on another worker moves an internal name there (its
-subdomain in the name follows), so moving an application to another worker keeps its public names. A worker that has
-internal domains, linked or not, can't be removed. A public name is one level under `<domain>`, because Cloudflare's
+A domain belongs to the container it was added on: it stays on that container's worker and is deleted with it.
+Moving a name to another container is deleting it and adding it there: a public name can be added again as it was,
+and an internal one takes the new worker's subdomain. A public name is one level under `<domain>`, because Cloudflare's
 free edge certificate covers only first-level names, and it keeps its record while its container is stopped, so it
 doesn't come and go with deploys; Traefik answers it while the container is active.
 

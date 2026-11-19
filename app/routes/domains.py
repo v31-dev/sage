@@ -21,7 +21,7 @@ def create_domain(data: dict = Body(...)):
 
 @router.put("/{domain}")
 def update_domain(domain: str, data: dict = Body(...)):
-  """Changes what is sent; `container` relinks it."""
+  """Changes what is sent; its container stays."""
   edited = commands.patch_domain(domain, data)
   Manager().domain_edited(edited.id)
   return Manager().domain_payloads([edited])[0]

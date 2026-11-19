@@ -208,8 +208,8 @@ certificate. Workers share a separate certificate for internal discovery. Certif
 status and applied expiry separately; Settings → Cloudflare shows the full inventory and any issuance or
 retirement errors. See [Certificate Lifecycle](docs/architecture.md#certificate-lifecycle) for cleanup and rate limits.
 Deleting a worker stops
-Sage's services on it and removes Sage's files from it. A worker with containers or internal domains can't be
-deleted: delete its containers and move or delete its domains first, even when it is offline. A worker that is
+Sage's services on it and removes Sage's files from it. A worker with containers can't be deleted: delete its
+containers first, which deletes their domains, even when it is offline. A worker that is
 offline is removed from Sage only; its VM has to be cleaned up by hand.
 
 A worker records which Sage manages it. Several Sages can share a tailnet when each has its own

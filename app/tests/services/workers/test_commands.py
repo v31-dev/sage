@@ -101,12 +101,6 @@ class TestRemove:
       mark_removal("w1")
     assert not Worker.get_by_id("w1").removing
 
-  def test_a_worker_with_internal_domains_is_refused_even_unlinked(self, worker):
-    Domain.create(name="shop", type="internal", port=80, namespace_worker=worker.hostname)
-    with pytest.raises(Conflict, match="A worker with internal domains can't be removed."):
-      mark_removal("w1")
-    assert not Worker.get_by_id("w1").removing
-
   @pytest.mark.parametrize("command", [mark_removal, remove_worker], ids=["marked", "deleted"])
   def test_a_missing_worker_is_not_found(self, db, command):
     with pytest.raises(LookupError, match="Worker not found."):

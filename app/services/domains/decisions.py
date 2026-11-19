@@ -29,7 +29,6 @@ class DomainFacts:
   """`eligible` is its container's `routable`, None while that is not known; `dns_conforms` is None when the zone was
   not compared; `syncing_since` is when the oldest of its applies queued or running was queued, None without one."""
   fingerprint: str
-  linked: bool
   eligible: bool | None
   worker_ready: bool | None
   route: RouteObservation
@@ -46,10 +45,10 @@ class DomainView:
   error: str | None = None
 
 
-def route_goal(linked: bool, eligible: bool | None) -> str | None:
-  """Whether the routing file should be on the worker: present for a linked domain whose container can be routed,
-  absent for an unlinked one or one whose container cannot, None while that is not known, which removes nothing."""
-  if not linked or eligible is False:
+def route_goal(eligible: bool | None) -> str | None:
+  """Whether the routing file should be on the worker: present while its container can be routed, absent once it
+  cannot, None while that is not known, which removes nothing."""
+  if eligible is False:
     return "absent"
   return "present" if eligible else None
 
@@ -58,7 +57,7 @@ def decide_domain(facts: DomainFacts) -> DomainView:
   """Whether its artifacts conform, and its status: syncing while a sync is under way; synced when they conform, or
   when the last apply of this fingerprint succeeded and nothing seen since contradicts it; error when that apply
   failed; otherwise pending, with why."""
-  goal, route = route_goal(facts.linked, facts.eligible), facts.route
+  goal, route = route_goal(facts.eligible), facts.route
   if goal is None or route.kind in ("unobserved", "unreachable"):
     route_conforms = None
   elif goal == "present":
@@ -77,7 +76,7 @@ def decide_domain(facts: DomainFacts) -> DomainView:
     return DomainView("error", conforms, outcome.phase, outcome.error)
   if conforms is False:
     return DomainView("pending", conforms, "drifted")
-  if facts.linked and facts.worker_ready is False:
+  if facts.worker_ready is False:
     return DomainView("pending", conforms, "worker_not_ready")
   if goal is None:
     return DomainView("pending", conforms, "eligibility_unknown")

@@ -1,6 +1,6 @@
 import pytest
 
-from services.db.models import Container, Domain, Worker
+from services.db.models import Container, Domain
 
 URL = "/api/domains"
 
@@ -52,13 +52,8 @@ class TestEdit:
     assert Domain.get_by_id(domain.id).port == 9090
     assert manager.called("domain_edited") == [((domain.id,), {})]
 
-  def test_another_container_relinks_it(self, client, domain, application, manager, payloads):
-    other = Container.create(application=application, worker=Worker.create(hostname="w2", subdomain="blue"))
-    client.put(f"{URL}/{domain.id}", json={"container": other.id})
-    assert Domain.get_by_id(domain.id).container_id == other.id
-
   @pytest.mark.parametrize("target, body, status", [
-      ("missing", {"port": 9090}, 404), ("own", {"container": "c0000000000000000"}, 404),
+      ("missing", {"port": 9090}, 404), ("own", {"container": "c0000000000000000"}, 400),
       ("own", {"port": "often"}, 400), ("own", {"name": "taken"}, 409)])
   def test_what_the_command_refuses_is_its_status_and_asks_for_nothing(self, client, domain, container, manager,
                                                                        payloads, target, body, status):

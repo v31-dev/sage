@@ -16,9 +16,9 @@ TEMPLATES = Path(__file__).parent.parent.parent.parent / "templates" / "worker" 
 REASONS = {None, "drifted", "worker_not_ready", "eligibility_unknown", "not_applied", "Traefik", "DNS"}
 
 
-def facts(linked=True, eligible=True, worker_ready=True, route=RouteObservation("present", NOW_HASH), dns=True, outcome=None,
+def facts(eligible=True, worker_ready=True, route=RouteObservation("present", NOW_HASH), dns=True, outcome=None,
           syncing_since=None):
-  return DomainFacts(NOW_HASH, linked, eligible, worker_ready, route, dns, outcome, syncing_since)
+  return DomainFacts(NOW_HASH, eligible, worker_ready, route, dns, outcome, syncing_since)
 
 
 APPLIED = RouteObservation("present", NOW_HASH)
@@ -34,7 +34,6 @@ SCENARIOS = {
     "routable but its file missing": (facts(route=ABSENT), "pending", False, "drifted"),
     "its container stopped and the file gone": (facts(eligible=False, route=ABSENT), "synced", True, None),
     "its container stopped and the file still there": (facts(eligible=False), "pending", False, "drifted"),
-    "unlinked and the file gone": (facts(linked=False, eligible=None, worker_ready=None, route=ABSENT), "synced", True, None),
     "eligibility not known and a file present": (facts(eligible=None), "pending", None, "eligibility_unknown"),
     "the apply of this configuration failed at DNS": (facts(route=ABSENT, dns=False, outcome=FAILED_DNS), "error", False, "DNS"),
     "an older configuration failed, this one not applied yet": (
@@ -61,10 +60,9 @@ def test_an_error_says_why():
   assert decide_domain(facts(route=ABSENT, outcome=FAILED_DNS)).error == "Cloudflare: unavailable"
 
 
-@pytest.mark.parametrize("linked, eligible, goal", [
-    (True, True, "present"), (True, False, "absent"), (True, None, None), (False, None, "absent"), (False, True, "absent")])
-def test_the_route_goal_removes_nothing_while_eligibility_is_unknown(linked, eligible, goal):
-  assert route_goal(linked, eligible) == goal
+@pytest.mark.parametrize("eligible, goal", [(True, "present"), (False, "absent"), (None, None)])
+def test_the_route_goal_removes_nothing_while_eligibility_is_unknown(eligible, goal):
+  assert route_goal(eligible) == goal
 
 
 def every_route():
@@ -74,7 +72,7 @@ def every_route():
 
 def expected_conformance(given):
   """Conformance worked out on its own: the file must match the goal, and DNS must match, three-valued."""
-  wanted = None if given.linked and given.eligible is None else (given.linked and given.eligible is True)
+  wanted = None if given.eligible is None else given.eligible
   route = given.route
   if wanted is None or route.kind in ("unobserved", "unreachable"):
     routed = None
@@ -93,9 +91,9 @@ def test_every_combination_of_facts_keeps_the_invariants():
           OLD_HASH, False, "Traefik", "x"), ApplyOutcome(
           OLD_HASH, True)]
   seen_statuses, seen_reasons = set(), set()
-  for linked, eligible, ready, route, dns, outcome, syncing in itertools.product(
-          (True, False), (True, False, None), (True, False, None), every_route(), (True, False, None), outcomes, (None, QUEUED)):
-    given = DomainFacts(NOW_HASH, linked, eligible, ready, route, dns, outcome, syncing)
+  for eligible, ready, route, dns, outcome, syncing in itertools.product(
+          (True, False, None), (True, False, None), every_route(), (True, False, None), outcomes, (None, QUEUED)):
+    given = DomainFacts(NOW_HASH, eligible, ready, route, dns, outcome, syncing)
     view = decide_domain(given)
     seen_statuses.add(view.status)
     seen_reasons.add(view.reason)
@@ -110,9 +108,9 @@ def test_every_combination_of_facts_keeps_the_invariants():
       assert current is not None and not current.succeeded and view.conforms is not True, given
     if view.conforms is True:
       assert view.status in ("syncing", "synced"), given
-    if linked and eligible is None:
+    if eligible is None:
       assert view.conforms is not True, given
-    without_old = decide_domain(DomainFacts(NOW_HASH, linked, eligible, ready, route, dns, current, syncing))
+    without_old = decide_domain(DomainFacts(NOW_HASH, eligible, ready, route, dns, current, syncing))
     assert without_old == view, given
 
   assert seen_statuses == set(STATUSES)

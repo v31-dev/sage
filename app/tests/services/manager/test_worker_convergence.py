@@ -334,8 +334,7 @@ class TestConvergence:
     hosts.files[f"w1:{HOME}/revisions/certs"] = ('{"discovery": "p2", "worker": "old"}', 0o644)
     here = Container.create(application=application, worker="w1")
     routed = sorted(Domain.create(name=name, type=type, port=80, container=container, namespace_worker=namespace).id
-                    for name, type, container, namespace in (("shop", "public", here, None), ("api", "internal", here, "w1"),
-                                                             ("old", "internal", None, "w1")))
+                    for name, type, container, namespace in (("shop", "public", here, None), ("api", "internal", here, "w1")))
     Worker.create(hostname="w2", subdomain="blue")
     Domain.create(name="other", type="public", port=80, container=Container.create(application=application, worker="w2"))
     await manager.converge_worker("w1", force=True)
@@ -458,15 +457,6 @@ class TestRoutesLeftBehind:
     here, _, _ = routed
     await manager.converge_worker("w1")
     assert self.left(hosts) == [f"domain-{here.id}.yml"]
-
-  async def test_unlinked_public_domains_routes_go_and_an_unlinked_internal_one_stays_on_its_namespace_worker(
-          self, manager, hosts, routed, worker):
-    here, moved, _ = routed
-    Domain.update(container=None).where(Domain.id == here.id).execute()
-    internal = Domain.create(name="db", type="tcp", port=5432, namespace_worker=worker)
-    hosts.files[f"w1:{HOME}/traefik/dynamic/domain-{internal.id}.yml"] = (f"# sage-domain {internal.id} {'0' * 64}\n", 0o644)
-    await manager.converge_worker("w1")
-    assert self.left(hosts) == [f"domain-{internal.id}.yml"]
 
   async def test_they_are_removed_before_the_stack_starts_in_one_command(self, manager, hosts, routed):
     _, moved, gone = routed
@@ -939,9 +929,10 @@ class TestSubdomain:
   def test_the_internal_and_tcp_domains_under_it_are_applied_again(self, manager, worker, application):
     on_it = Container.create(application=application, worker="w1")
     under = sorted(Domain.create(name=name, type=type, port=80, container=container, namespace_worker="w1").id
-                   for name, type, container in (("api", "internal", on_it), ("db", "tcp", on_it), ("old", "internal", None)))
+                   for name, type, container in (("api", "internal", on_it), ("db", "tcp", on_it)))
     Domain.create(name="shop", type="public", port=80, container=on_it)
     Worker.create(hostname="w2", subdomain="blue")
-    Domain.create(name="api", type="internal", port=80, namespace_worker="w2")
+    Domain.create(name="api", type="internal", port=80, container=Container.create(application=application, worker="w2"),
+                  namespace_worker="w2")
     manager.worker_subdomain_changed("w1")
     assert manager.applied == [under]

@@ -276,18 +276,19 @@ class TestContainer:
     with pytest.raises(LookupError, match="Worker with hostname 'nobody' not found."):
       attach_container(application.id, "nobody")
 
-  def test_detaching_uncounts_it_unlinks_its_domains_and_keeps_its_events(self, application, worker, signals):
+  def test_detaching_uncounts_it_deletes_its_domains_and_keeps_its_events(self, application, worker, signals):
     container = attach_container(application.id, worker.hostname)
+    other = attach_container(application.id, Worker.create(hostname="w2", subdomain="blue").hostname)
     linked = Domain.create(name="shop", type="public", port=80, container=container)
-    Domain.create(name="other", type="public", port=80)
+    kept = Domain.create(name="other", type="public", port=80, container=other)
     ContainerEvent.create(container=container, subject_id=container.id, action="deploy", transition="succeeded",
                           application_name="demo-web", worker_hostname="w1")
     signals.clear()
 
     assert detach_container(container.id) == [linked.id]
 
-    assert stored(application).container_count == 0
-    assert stored(linked).container_id is None
+    assert stored(application).container_count == 1
+    assert [domain.id for domain in Domain.select()] == [kept.id]
     assert ContainerEvent.get().container_id is None
     assert signals == [(UpdateSource.APPLICATION, "demo/web"), (UpdateSource.WORKER_CONTAINERS, "w1"),
                        (UpdateSource.DOMAINS, None)]

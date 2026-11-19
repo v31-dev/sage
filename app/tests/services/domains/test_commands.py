@@ -2,7 +2,7 @@ import pytest
 
 from services.db.models import Application, Container, Domain, Worker
 from services.domains.commands import create_domain, delete_domain, patch_domain
-from services.domains.config import allowed_origins, host
+from services.domains.config import allowed_origins
 from services.updates import UpdateSource
 from utils.errors import Conflict
 
@@ -87,22 +87,6 @@ class TestCreate:
 
 
 class TestPatch:
-  def test_a_relink_moves_an_internal_name_to_the_new_containers_worker(self, red, blue):
-    domain = shop(red)
-
-    patch_domain(domain.id, {"container": blue.id})
-
-    assert (stored(domain).container_id, stored(domain).namespace_worker_id) == (blue.id, "w2")
-    assert host(stored(domain), "example.test") == "shop.blue.int.example.test"
-
-  def test_a_later_patch_of_another_field_keeps_a_relink_a_stale_view_did_not_have(self, red, blue):
-    domain = shop(red)
-    stale = Domain.get_by_id(domain.id)
-    patch_domain(domain.id, {"container": blue.id})
-
-    patch_domain(stale.id, {"service": "shop"})
-
-    assert (stored(domain).container_id, stored(domain).namespace_worker_id, stored(domain).service) == (blue.id, "w2", "shop")
 
   def test_a_patch_of_another_field_leaves_the_stored_namespace_as_it_is(self, red, blue):
     domain = shop(red)
@@ -111,29 +95,6 @@ class TestPatch:
     patch_domain(domain.id, {"port": 81})
 
     assert stored(domain).namespace_worker_id == "w2"
-
-  def test_an_unlinked_internal_domain_keeps_its_namespace_and_can_still_be_edited(self, red):
-    domain = shop(red)
-    red.delete_instance()
-
-    patch_domain(domain.id, {"name": "store", "port": 81})
-
-    assert (stored(domain).container_id, stored(domain).namespace_worker_id, stored(domain).name) == (None, "w1", "store")
-
-  def test_an_unlinked_internal_domain_switched_to_tcp_keeps_its_namespace(self, red):
-    domain = shop(red)
-    red.delete_instance()
-
-    patch_domain(domain.id, {"type": "tcp"})
-
-    assert (stored(domain).type, stored(domain).namespace_worker_id) == ("tcp", "w1")
-
-  def test_an_unlinked_public_domain_cannot_become_internal(self, red):
-    domain = shop(red, type="public")
-    red.delete_instance()
-
-    with pytest.raises(ValueError, match="An internal or TCP domain without a container is not allowed."):
-      patch_domain(domain.id, {"type": "internal"})
 
   def test_a_domain_saved_again_is_not_refused_by_itself(self, red):
     domain = shop(red, type="tcp")
@@ -170,28 +131,17 @@ class TestPatch:
 
     assert stored(api).cors_origins == ["https://app.example.test"]
 
-  def test_a_relink_tells_both_applications_and_both_workers(self, red, blue, signals):
-    domain = shop(red)
-    signals.clear()
-
-    patch_domain(domain.id, {"container": blue.id})
-
-    assert set(signals) == {(UpdateSource.DOMAINS, None), (UpdateSource.APPLICATION, "demo/web"),
-                            (UpdateSource.APPLICATION, "demo/api"), (UpdateSource.WORKER_CONTAINERS, "w1"),
-                            (UpdateSource.WORKER_CONTAINERS, "w2")}
-
   def test_a_patch_that_changes_nothing_says_nothing(self, red, signals):
     domain = shop(red, service="shop")
     signals.clear()
 
-    patch_domain(domain.id, {"name": " shop ", "service": "shop", "container": red.id})
+    patch_domain(domain.id, {"name": " shop ", "service": "shop"})
 
     assert signals == []
 
   @pytest.mark.parametrize("fields, error, message", [
       ({"port": 70000}, ValueError, "must be a number from 1 to 65535"),
-      ({"container": "0123456789abcdef"}, LookupError, "Container not found."),
-      ({"container": None}, LookupError, "Container not found."),
+      ({"container": "0123456789abcdef"}, ValueError, "Unknown fields: container."),
       ({"name": None}, ValueError, "name is required."),
       ({"namespace_worker": "w2"}, ValueError, "Unknown fields: namespace_worker."),
   ])
@@ -208,20 +158,6 @@ class TestPatch:
   def test_a_missing_domain_is_not_found(self, db):
     with pytest.raises(LookupError, match="Domain not found."):
       patch_domain("0123456789abcdef", {"port": 81})
-
-
-def test_deleting_an_unlinked_internal_domain_tells_its_namespace_workers_page(red, signals):
-  domain = Domain.create(name="db", type="internal", port=5432, namespace_worker=red.worker)
-  delete_domain(domain.id)
-  assert set(signals) == {(UpdateSource.DOMAINS, None), (UpdateSource.WORKER_CONTAINERS, "w1")}
-
-
-def test_relinking_an_unlinked_internal_domain_tells_the_worker_it_leaves(red, blue, signals):
-  domain = Domain.create(name="db", type="internal", port=5432, namespace_worker=red.worker)
-  patch_domain(domain.id, {"container": blue.id})
-  assert stored(domain).namespace_worker_id == "w2"
-  assert set(signals) == {(UpdateSource.DOMAINS, None), (UpdateSource.APPLICATION, "demo/api"),
-                          (UpdateSource.WORKER_CONTAINERS, "w1"), (UpdateSource.WORKER_CONTAINERS, "w2")}
 
 
 def test_deleting_a_domain_tells_the_pages_it_was_on(red, signals):

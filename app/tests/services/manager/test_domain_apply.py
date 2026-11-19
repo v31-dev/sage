@@ -195,12 +195,6 @@ class TestRequests:
     [(_, scopes, params, labels, _)] = queued(manager)
     assert "domain:host:api.red.int.example.test" in scopes and params["host"] == "api.red.int.example.test"
 
-  def test_an_unlinked_public_domain_holds_no_worker(self, manager, public):
-    Domain.update(container=None).where(Domain.id == public.id).execute()
-    manager.request_domain_applies([public.id])
-    [(_, scopes, params, _, _)] = queued(manager)
-    assert scopes == sorted({f"domain:{public.id}", "domain:host:shop.example.test"}) and params["worker"] is None
-
   def test_the_latest_of_requests_waiting_is_the_one_kept(self, manager, public):
     manager.request_domain_applies([public.id])
     Domain.update(name="store").where(Domain.id == public.id).execute()
@@ -270,22 +264,6 @@ class TestApply:
     view = (await applied(manager, internal)).view
     assert hosts.route("w1", internal) == fingerprint(internal)
     assert provider.zone == {f"sage-domain-{internal.id}": {}}
-    assert view.status == "synced"
-
-  async def test_an_unlinked_internal_domain_loses_its_route_on_its_namespace_worker(self, manager, internal, hosts):
-    await applied(manager, internal)
-    Domain.update(container=None).where(Domain.id == internal.id).execute()
-    view = (await applied(manager, internal)).view
-    assert hosts.route("w1", internal) is None
-    assert view.status == "synced"
-
-  async def test_an_unlinked_public_domain_loses_its_name_and_touches_no_worker(self, manager, public, hosts, provider):
-    await applied(manager, public)
-    hosts.commands.clear()
-    Domain.update(container=None).where(Domain.id == public.id).execute()
-    view = (await applied(manager, public)).view
-    assert hosts.commands == []
-    assert provider.zone == {f"sage-domain-{public.id}": {}}
     assert view.status == "synced"
 
   async def test_a_failed_route_write_is_the_routes_error_and_dns_is_not_touched(self, manager, public, hosts, provider, notices):

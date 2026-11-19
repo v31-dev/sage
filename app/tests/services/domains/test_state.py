@@ -64,8 +64,7 @@ class TestDomainState:
     Domains().record_dns(domain, snapshot.content_hash, True)
     state = domain_state(snapshot, True, True, None)
     assert (state.view.status, state.view.conforms) == ("synced", True)
-    assert (state.facts.route, state.facts.dns_conforms, state.facts.linked) == (
-        RouteObservation("present", snapshot.content_hash), True, True)
+    assert (state.facts.route, state.facts.dns_conforms) == (RouteObservation("present", snapshot.content_hash), True)
 
   def test_an_outcome_of_an_older_fingerprint_does_not_count(self, domain, snapshot):
     Domains().record_outcome(domain, ApplyOutcome("older", False, "dns", "timeout"))
@@ -95,10 +94,3 @@ class TestPayload:
         "name": "web", "label": "Web", "project": {"name": "demo", "label": "Demo"}}}
     assert payload["view"] == {"status": state.view.status, "conforms": state.view.conforms, "reason": state.view.reason,
                                "error": state.view.error}
-
-  @pytest.mark.parametrize("kind, address", [("internal", "https://db.red.int.example.test"),
-                                             ("tcp", "db.red.int.example.test:8443")])
-  def test_an_unlinked_one_is_reached_on_its_namespace_worker(self, worker, kind, address):
-    domain = Domain.create(name="db", type=kind, port=5432, namespace_worker=worker)
-    payload = domain_payload(domain, domain_state(DomainConfig.capture(domain, "example.test"), None, True, None), "example.test")
-    assert (payload["address"], payload["worker"], payload["container"]) == (address, "w1", None)

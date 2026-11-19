@@ -146,13 +146,6 @@ class TestDomainConfig:
     application.save()
     assert before.content_hash == DomainConfig.capture(Domain.get_by_id(linked.id), "example.test", "templates").content_hash
 
-  def test_an_unlinked_domain_routes_to_its_namespace_worker_or_nowhere(self, linked, red, worker):
-    internal = Domain.create(name="api", type="internal", port=80, namespace_worker=worker.hostname)
-    assert DomainConfig.capture(internal, "example.test", "templates").worker == "w1"
-    linked.container = None
-    linked.save()
-    assert DomainConfig.capture(linked, "example.test", "templates").worker is None
-
   def test_the_templates_are_part_of_the_fingerprint_by_default(self, linked):
     assert DomainConfig.capture(linked, "example.test").templates == ROUTING_DIGEST
 
@@ -162,12 +155,10 @@ class TestDomainConfig:
     with pytest.raises(ValueError, match="Worker w1 has no tunnel."):
       snapshot.dns_records(None)
 
-  def test_an_internal_or_unlinked_domain_has_no_dns_records(self, linked, worker):
+  def test_an_internal_domain_has_no_dns_records(self, linked, worker):
     internal = Domain.create(name="api", type="internal", port=80, container=linked.container_id,
                              namespace_worker=worker.hostname)
-    unlinked = Domain.create(name="old", type="public", port=80)
-    for domain in (internal, unlinked):
-      assert DomainConfig.capture(domain, "example.test", "templates").dns_records(None) == {}
+    assert DomainConfig.capture(internal, "example.test", "templates").dns_records(None) == {}
 
 
 class TestRoute:

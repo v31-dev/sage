@@ -84,7 +84,7 @@ def domain_state(config: DomainConfig, eligible: bool | None, worker_ready: bool
   """The domain's state now, given its configuration, whether its container can be routed to, whether its worker is
   ready and when an apply of it queued or running was queued."""
   fingerprint = config.content_hash
-  facts = DomainFacts(fingerprint, config.container_id is not None, eligible, worker_ready,
+  facts = DomainFacts(fingerprint, eligible, worker_ready,
                       Domains().route(config.domain_id, config.worker), Domains().dns_conforms(config.domain_id, fingerprint),
                       Domains().outcome(config.domain_id), syncing_since)
   return DomainState(decide_domain(facts), config, facts)
@@ -92,9 +92,9 @@ def domain_state(config: DomainConfig, eligible: bool | None, worker_ready: bool
 
 def domain_payload(domain: Domain, state: DomainState, base_domain: str) -> dict:
   """The domain as its pages show it: its configuration, its full name and how it is reached, the worker its route goes
-  to, the container it is linked to (none once that is deleted) with its application, and its decided state."""
+  to, its container with its application, and its decided state."""
   container = domain.container
-  application = container.application if container else None
+  application = container.application
   return {
       "id": domain.id,
       "name": domain.name,
@@ -106,7 +106,7 @@ def domain_payload(domain: Domain, state: DomainState, base_domain: str) -> dict
       "host": state.config.host,
       "address": address(domain, base_domain),
       "worker": state.config.worker,
-      "container": container and {
+      "container": {
           "id": container.id,
           "worker": container.worker_id,
           "application": {

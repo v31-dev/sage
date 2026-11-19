@@ -38,11 +38,11 @@ class DomainsMixin:
     """The state of each of `domains` now, by id, their containers' and workers' states worked out once."""
     configs = {domain.id: capture(domain) for domain in domains}
     containers = self.container_states(Container.select().where(
-        Container.id.in_({snapshot.container_id for snapshot in configs.values()} - {None})))
-    workers = self.worker_states(list({snapshot.worker for snapshot in configs.values()} - {None}))
+        Container.id.in_({snapshot.container_id for snapshot in configs.values()})))
+    workers = self.worker_states(list({snapshot.worker for snapshot in configs.values()}))
     applying = self._applying_domains()
-    return {domain_id: domain_state(snapshot, containers[snapshot.container_id].routable if snapshot.container_id else None,
-                                    workers[snapshot.worker].view.ready if snapshot.worker else None, applying.get(domain_id))
+    return {domain_id: domain_state(snapshot, containers[snapshot.container_id].routable,
+                                    workers[snapshot.worker].view.ready, applying.get(domain_id))
             for domain_id, snapshot in configs.items()}
 
   def domain_payloads(self, domains) -> list[dict]:
@@ -78,18 +78,16 @@ class DomainsMixin:
     route on the worker it goes to. A running apply is not interrupted: the latest request waits for it."""
     for domain in Domain.select().where(Domain.id.in_(list(domain_ids))):
       snapshot = capture(domain)
-      scopes = {domain_scope(domain.id)}
+      scopes = {domain_scope(domain.id), route_scope(snapshot.worker, domain.id)}
       if snapshot.host is not None:
         scopes.add(host_scope(snapshot.host))
-      if snapshot.worker is not None:
-        scopes.add(route_scope(snapshot.worker, domain.id))
       self.add_task(task=self.apply_domain, key=("apply_domain", domain.id), scopes=scopes, executor="app",
                     params={"domain_id": domain.id, "worker": snapshot.worker, "host": snapshot.host},
                     labels={"Domain": snapshot.host or domain.name}, on_conflict=OnConflict.REPLACE, quiet=True)
 
-  async def apply_domain(self, domain_id: str, worker: str | None, host: str | None):
+  async def apply_domain(self, domain_id: str, worker: str, host: str | None):
     """Writes the domain's routing file on its worker while its container can be routed to and removes it once it
-    can't or the domain is unlinked, leaving it alone while that is not known or the worker isn't reachable and set up;
+    can't, leaving it alone while that is not known or the worker isn't reachable and set up;
     then makes its DNS records what its configuration gives. Holds the outcome for the fingerprint it applied, a
     success only when the route was applied too. An edit during the apply queues another; discovery, whose
     availability follows the outcome, is published again."""
@@ -103,14 +101,11 @@ class DomainsMixin:
       self.request_domain_applies([domain_id])
       return
     fingerprint = snapshot.content_hash
-    eligible = None
-    if snapshot.container_id is not None:
-      eligible = self.container_states([domain.container])[snapshot.container_id].routable
-    goal = route_goal(snapshot.container_id is not None, eligible)
-    routed = worker is None or (goal is not None and is_workable(worker))
+    goal = route_goal(self.container_states([domain.container])[snapshot.container_id].routable)
+    routed = goal is not None and is_workable(worker)
     phase, failure = "route", None
     try:
-      if worker is not None and routed:
+      if routed:
         path = f"{config.WORKER_HOME_DIR}/traefik/dynamic/{snapshot.filename}"
         if goal == "present":
           await Tailscale().sync_file(worker, config.TEMPLATES_DIR / "worker/file", path, {"CONTENT": snapshot.route()})
@@ -122,7 +117,7 @@ class DomainsMixin:
       cloudflare = Cloudflare()
       await run_in_executor_with_context(cloudflare.connect)
       tunnel = None
-      if snapshot.type == "public" and snapshot.container_id is not None:
+      if snapshot.type == "public":
         tunnel = await run_in_executor_with_context(cloudflare.find_tunnel, cloudflare.worker_tunnel_name(worker))
       await run_in_executor_with_context(cloudflare.sync_dns_records, {snapshot.dns_comment: snapshot.dns_records(tunnel)},
                                          type="CNAME", proxied=True)

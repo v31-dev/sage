@@ -431,7 +431,7 @@ def unsettled(container):
 
 
 class TestDelete:
-  async def test_a_delete_removes_the_placement_then_the_row_and_unlinks_its_domains(
+  async def test_a_delete_removes_the_placement_then_the_row_with_its_domains(
           self, manager, worker_host, container, application, notices):
     place(container, deployed(container))
     worker_host.run(container, "running d0")
@@ -442,7 +442,7 @@ class TestDelete:
     assert not Path(placement_dir(config.WORKER_HOME_DIR, container.id)).exists()
     assert worker_host.runtime(container) is None
     assert Container.get_or_none(Container.id == container.id) is None
-    assert Domain.get_by_id(domain.id).container is None
+    assert Domain.get_or_none(Domain.id == domain.id) is None
     assert Containers().target(container.id) == TargetRead("unobserved")
     assert [(action, transition) for action, transition, _ in events(container)] == [("delete", "admitted"), ("delete", "succeeded")]
     assert [line["message"] for line in Logs().query_application_lines("demo-web")["lines"]] == [
@@ -537,12 +537,12 @@ class TestDomainApplies:
       await deploy(manager, container)
     assert manager.applied == []
 
-  async def test_a_delete_has_the_domains_it_unlinked_applied_and_their_routes_left_on_the_worker_removed(
+  async def test_a_delete_with_domains_asks_the_pass_to_remove_their_routes_and_records(
           self, manager, worker_host, container, domains):
     await manager.delete_container(container.id)
-    assert (manager.applied, manager.reconciled) == ([domains], 1)
+    assert (manager.applied, manager.reconciled) == ([], 1)
 
-  async def test_a_delete_that_unlinks_no_domain_asks_for_no_pass(self, manager, worker_host, container):
+  async def test_a_delete_without_domains_asks_for_no_pass(self, manager, worker_host, container):
     await manager.delete_container(container.id)
     assert (manager.applied, manager.reconciled) == ([], 0)
 

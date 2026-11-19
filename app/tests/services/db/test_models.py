@@ -158,66 +158,64 @@ class TestContainer:
 
 class TestDomain:
   @pytest.fixture
-  def other_worker(self, db):
-    return Worker.create(hostname="w2", subdomain="blue")
+  def other_container(self, application):
+    return Container.create(application=application, worker=Worker.create(hostname="w2", subdomain="blue"))
 
   def test_its_id_is_opaque(self, container):
     assert OPAQUE_ID.fullmatch(Domain.create(name="shop", type="public", port=80, container=container).id)
 
-  def test_deleting_its_container_unlinks_it_and_an_internal_one_keeps_its_namespace(self, container, worker):
-    public = Domain.create(name="shop", type="public", port=80, container=container)
-    internal = Domain.create(name="shop", type="internal", port=80, container=container, namespace_worker=worker)
+  def test_a_domain_needs_a_container(self, db):
+    with pytest.raises(IntegrityError, match="NOT NULL constraint failed: domain.container_id"):
+      Domain.create(name="shop", type="public", port=80)
+
+  def test_deleting_its_container_deletes_its_domains_only(self, container, other_container, worker):
+    Domain.create(name="shop", type="public", port=80, container=container)
+    Domain.create(name="shop", type="internal", port=80, container=container, namespace_worker=worker)
+    kept = Domain.create(name="api", type="public", port=80, container=other_container)
 
     container.delete_instance()
 
-    public, internal = Domain.get_by_id(public.id), Domain.get_by_id(internal.id)
-    assert (public.container_id, internal.container_id) == (None, None)
-    assert internal.namespace_worker_id == worker.hostname
+    assert [domain.id for domain in Domain.select()] == [kept.id]
 
-  def test_a_worker_whose_namespace_holds_a_domain_cannot_be_deleted(self, worker):
-    Domain.create(name="shop", type="internal", port=80, namespace_worker=worker)
+  def test_a_public_name_is_taken_once(self, container, other_container):
+    Domain.create(name="shop", type="public", port=80, container=container)
 
     with pytest.raises(IntegrityError):
-      worker.delete_instance()
-
-  def test_a_public_name_is_taken_once(self, db):
-    Domain.create(name="shop", type="public", port=80)
-
-    with pytest.raises(IntegrityError):
-      Domain.create(name="shop", type="public", port=81)
+      Domain.create(name="shop", type="public", port=81, container=other_container)
 
   @pytest.mark.parametrize("first, second", [("internal", "internal"), ("internal", "tcp"), ("tcp", "internal")])
-  def test_an_internal_or_tcp_name_is_taken_once_in_a_workers_namespace(self, worker, first, second):
-    Domain.create(name="shop", type=first, port=80, namespace_worker=worker)
+  def test_an_internal_or_tcp_name_is_taken_once_in_a_workers_namespace(self, container, worker, first, second):
+    Domain.create(name="shop", type=first, port=80, container=container, namespace_worker=worker)
 
     with pytest.raises(IntegrityError):
-      Domain.create(name="shop", type=second, port=81, namespace_worker=worker)
+      Domain.create(name="shop", type=second, port=81, container=container, namespace_worker=worker)
 
-  def test_the_same_name_can_be_in_two_workers_namespaces_and_public(self, worker, other_worker):
-    Domain.create(name="shop", type="internal", port=80, namespace_worker=worker)
-    Domain.create(name="shop", type="tcp", port=80, namespace_worker=other_worker)
-    Domain.create(name="shop", type="public", port=80)
+  def test_the_same_name_can_be_in_two_workers_namespaces_and_public(self, container, other_container, worker):
+    Domain.create(name="shop", type="internal", port=80, container=container, namespace_worker=worker)
+    Domain.create(name="shop", type="tcp", port=80, container=other_container,
+                  namespace_worker=other_container.worker)
+    Domain.create(name="shop", type="public", port=80, container=container)
 
     assert Domain.select().where(Domain.name == "shop").count() == 3
 
   @pytest.mark.parametrize("port", [1, 65535])
-  def test_a_port_in_range_is_accepted(self, db, port):
-    Domain.create(name="shop", type="public", port=port)
+  def test_a_port_in_range_is_accepted(self, container, port):
+    Domain.create(name="shop", type="public", port=port, container=container)
 
   @pytest.mark.parametrize("port", [0, 65536, -1])
-  def test_a_port_out_of_range_is_refused(self, db, port):
+  def test_a_port_out_of_range_is_refused(self, container, port):
     with pytest.raises(IntegrityError, match="CHECK constraint failed"):
-      Domain.create(name="shop", type="public", port=port)
+      Domain.create(name="shop", type="public", port=port, container=container)
 
   @pytest.mark.parametrize("name", ["shop", "shop-eu", "1shop", "a" * 63, "a-b-c"])
-  def test_a_name_service_and_pool_are_any_valid_domain_label(self, db, name):
-    Domain.create(name=name, type="public", port=80, service=name, pool=name)
+  def test_a_name_service_and_pool_are_any_valid_domain_label(self, container, name):
+    Domain.create(name=name, type="public", port=80, service=name, pool=name, container=container)
 
   @pytest.mark.parametrize("name", ["Shop", "-shop", "shop-", "a" * 64, "shop_eu", "shop.eu", ""])
   @pytest.mark.parametrize("field", ["name", "service", "pool"])
-  def test_anything_else_is_refused(self, db, field, name):
+  def test_anything_else_is_refused(self, container, field, name):
     with pytest.raises(ValueError, match="lowercase letters, digits and dashes, at most 63"):
-      Domain.create(**{"name": "shop", "type": "public", "port": 80, field: name})
+      Domain.create(**{"name": "shop", "type": "public", "port": 80, "container": container, field: name})
 
 
 class TestWorker:
@@ -338,7 +336,7 @@ class TestEvents:
 
 @pytest.fixture
 def one_row_each(container, worker):
-  Domain.create(name="shop", type="public", port=80)
+  Domain.create(name="shop", type="public", port=80, container=container)
   Backup.create(storage_id="aaaaaaaaaaaaaaaa", s3_path="backups/x")
   Notification.create(content="hello")
   Task.create(task_id="t1", name="deploy", executor="common", status="completed")

@@ -147,7 +147,7 @@ def attach_container(application_id: int, worker_hostname: str) -> Container:
 
 
 def detach_container(container_id: str) -> list[str]:
-  """Deletes the container's row, which unlinks its domains, and returns their ids."""
+  """Deletes the container's row with its domains, and returns their ids."""
   with write():
     container = get(Container, Container.id == container_id)
     domains = [domain.id for domain in container.domains]

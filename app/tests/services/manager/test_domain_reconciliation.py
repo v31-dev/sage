@@ -179,16 +179,6 @@ class TestRequest:
 
 
 class TestEdit:
-  async def test_a_domain_moved_to_another_worker_is_routed_there_and_its_old_route_withdrawn(
-          self, manager, public, hosts, provider, application):
-    conforming(hosts, provider, public)
-    elsewhere = Container.create(application=application, worker="w2")
-    manager.routable[elsewhere.id], manager.ready["w2"] = True, True
-    commands.patch_domain(public.id, {"container": elsewhere.id})
-    manager.domain_edited(public.id)
-    await manager.run()
-    assert (hosts.routes("w1"), hosts.routes("w2")) == ([], [f"domain-{public.id}.yml"])
-    assert state(manager, public).view.status == "synced"
 
   async def test_an_edit_in_place_rewrites_its_route_and_removes_nothing(self, manager, public, hosts, provider):
     conforming(hosts, provider, public)
@@ -289,15 +279,6 @@ class TestObservation:
     await manager.reconcile_domains()
     assert Domains().dns_conforms(public.id, fingerprint(public)) is False and applies(manager) == [public.id]
 
-  async def test_an_unlinked_public_domain_is_applied_once_since_no_route_of_it_can_be_seen(self, manager, public, hosts, provider):
-    Domain.update(container=None).where(Domain.id == public.id).execute()
-    provider.zone[f"sage-domain-{public.id}"] = {}
-    await manager.reconcile_domains()
-    assert applies(manager) == [public.id]
-    await manager.run()
-    await manager.reconcile_domains()
-    assert (state(manager, public).view.status, applies(manager)) == ("synced", [])
-
   async def test_a_failed_apply_is_tried_again_by_the_pass(self, manager, public, hosts, provider):
     conforming(hosts, provider, public)
     hosts.found["w1"] = "unreachable"
@@ -377,15 +358,6 @@ class TestCleanup:
     await manager.reconcile_domains()
     assert (hosts.routes("w1"), hosts.routes("w2")) == ([f"domain-{public.id}.yml"], [f"domain-{moved.id}.yml"])
     assert writes(hosts) == [("w1", "rm -f " + " ".join(f"{DYNAMIC}/domain-{domain_id}.yml" for domain_id in sorted((moved.id, GONE))))]
-
-  async def test_an_unlinked_public_domains_route_goes_and_an_unlinked_internal_one_stays_for_its_apply(
-          self, manager, public, internal, hosts, provider):
-    Domain.update(container=None).where(Domain.id.in_([public.id, internal.id])).execute()
-    for domain in (public, internal):
-      hosts.put("w1", domain.id, "0" * 64)
-    await manager.reconcile_domains()
-    assert hosts.routes("w1") == [f"domain-{internal.id}.yml"]
-    assert applies(manager) == sorted([public.id, internal.id])
 
   async def test_a_route_is_never_removed_for_its_containers_state(self, manager, public, hosts, provider):
     conforming(hosts, provider, public)

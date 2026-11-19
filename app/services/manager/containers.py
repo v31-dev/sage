@@ -620,7 +620,6 @@ class ContainersMixin:
       await mark(container, "Removed from this worker")
     domains = detach_container(container.id)
     Containers().forget(container.id)
-    self.request_domain_applies(domains)
     if domains:
       self.request_domain_reconciliation()
     if record is None:
@@ -628,4 +627,4 @@ class ContainersMixin:
                              "warning", page)
     else:
       Notifications().notify(f"{name} deleted.", "success", page)
-    logger.info(f"Container {container.id} deleted; {len(domains)} domains unlinked.")
+    logger.info(f"Container {container.id} deleted with its {len(domains)} domains.")

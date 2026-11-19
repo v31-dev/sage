@@ -162,10 +162,10 @@ def test_the_actions_go_worker_by_worker_then_cloudflare_the_store_and_the_domai
   assert steps[8][2].startswith("Delete the DNS record [*.example.test] and the tunnel [example.test-sage], which 0.1.3 created.")
   assert "neither the retention period nor deleting a volume removes them" in steps[9][2]
   assert [why for where, _, why in steps if where == "Sage"] == [
-      "The internal domain [web] (port [8080]) of [shop-web] was removed by this upgrade. Add it again on the Domains "
-      "page, linked to the [shop-web] container that should serve it.",
-      "The public domain [shop] (port [80]) of [shop-web] was removed by this upgrade. Add it again on the Domains "
-      "page, linked to the [shop-web] container that should serve it."]
+      "The internal domain [web] (port [8080]) of [shop-web] was removed by this upgrade. Add it again on the card of "
+      "the [shop-web] container that should serve it, on its application's page.",
+      "The public domain [shop] (port [80]) of [shop-web] was removed by this upgrade. Add it again on the card of "
+      "the [shop-web] container that should serve it, on its application's page."]
 
 
 def test_a_move_puts_the_data_in_its_new_place_and_never_over_data_already_there(migrated, tmp_path, monkeypatch):
