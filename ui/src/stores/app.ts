@@ -142,11 +142,11 @@ export const useAppStore = defineStore('app', () => {
   // Whether the worker's internal names have their certificate: issued for them, then synced to the worker.
   function certificateIndicator(certificate: WorkerCertificate): Indicator {
     if (certificate.error && (!certificate.covered || !certificate.synced)) {
-      return { state: 'error', label: 'certificate update failed' }
+      return { state: 'error', label: 'update failed' }
     }
-    if (!certificate.covered) return { state: 'busy', label: 'waiting for the certificate' }
-    if (!certificate.synced) return { state: 'busy', label: 'syncing the certificate' }
-    return { state: certificate.error ? 'warning' : 'ok', label: 'certificate ready' }
+    if (!certificate.covered) return { state: 'busy', label: 'waiting' }
+    if (!certificate.synced) return { state: 'busy', label: 'syncing' }
+    return { state: certificate.error ? 'warning' : 'ok', label: 'ready' }
   }
 
   function tunnelIndicator(status: TunnelStatus): Indicator {

@@ -232,7 +232,7 @@ worker, is 1 GB of memory and 1 core. Give a machine more as its applications an
 Once Sage is up, the UI is at `https://<TS_NAME>.core.<DOMAIN>`. S3 (backups) and
 notifications are optional and set in the UI.
 
-An application is reached at the names you give its containers on the Domains page: a public
+An application is reached at the names you give its containers on its page: a public
 name `<name>.<DOMAIN>`, or an internal one `<name>.<subdomain>.int.<DOMAIN>` (tailnet only, on
 its worker). Names that share a service are listed together for clients that choose one, at
 `https://discovery.<DOMAIN>/?service=<service>` (public) or

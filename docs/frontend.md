@@ -35,7 +35,7 @@ container counts, and each container owns its headline, runtime details and queu
 - `info`: the app store (loading `GET /api`). A settings section's Test button is busy while its `testing` is true, set at once when its request is answered (`setSettingTesting`) and confirmed by the next push. Its `migration` is read by `MigrationNotice` (in `App.vue`), which opens Settings → Upgrade on a run that left steps to do by hand once per browser (local storage); the Upgrade page opens its Migration logs on the run its `migration` query names.
 - `workers`: the app store (loading `GET /workers`): for each worker its status, address, path, certificates, newest report and newest minute of metrics. The Workers page, the sidebar, the container cards and the Add Container dialog read the store; each card on the Workers page shows the worker's minute from it, so the page asks for no metrics of its own. The graph pages (a worker's and an application's metrics, the Home page) still poll every 60 s.
 - `worker:<hostname>`: the Worker page (loading `GET /workers/{hostname}`): the worker with its containers, its stack and its status, and why the manager would refuse to remove it now (`removal_refusal`), which disables Delete and is shown on the page. The page has no timer; an action on a container reloads it at once through `loadWorkerStatus`. A worker removed while the page is open shows as not found.
-- `domains`: the Domains page (loading `GET /domains/`): every domain with its container, and every container a domain can be linked to. The manager pushes it when a domain, a container (its state too) or a worker's subdomain is written, and when per-record sync results or their queued/running tasks change. The page groups the domains by namespace and service, a card each, and a named service's card links to its public or internal discovery URL in a new tab. Each domain's card shows its sync state apart from its container's state, and links to its application and worker.
+- `domains`: the Domains page (loading `GET /domains/`): every domain with its container, and every container with its state. The manager pushes it when a domain, a container (its state too) or a worker's subdomain is written, and when per-record sync results or their queued/running tasks change. The page groups the domains by namespace and service, a card each, and a named service's card links to its public or internal discovery URL in a new tab. Each domain's card (`DomainCard`) shows its sync state apart from its container's state, and links to its application and worker, with the worker's status. Domains are added on the Application page; the cards here edit and delete them.
 - `application:<project>/<name>`: the Application page (loading the application route). Each push replaces the whole application, including its counts, containers, volumes and variables; an edit dialog keeps the values it copied when it opened. An action on the page reloads it at once through `loadApplication`. An application deleted while the page is open shows as not found.
 - `tasks`: the Tasks page, the Upgrade page (which tasks it waits for before a stop) and the restore overlay, which follows it only while restoring (loading `GET /tasks`). The overlay counts both running and queued tasks ahead of `restore_platform`; it reloads the page when the restore ends.
 - `task-history`, a feed: the Tasks page's finished tasks (`GET /tasks/history`), a list (below).
@@ -93,9 +93,11 @@ Routes in `ui/src/router/index.ts` currently cover:
 - Backups and restore flows
 - Settings: one page per section, listed under a "Settings" group in the sidebar
 
-The Application page shows linked domains on their container cards. Each domain keeps its address/copy controls,
-sync state, type, service and pool; internal/TCP names also show the worker's pending certificate state. The
-card reads `container.domains` from the application's pushed data. Domain editing stays on the Domains page.
+A container card shows its worker with the worker's status, and a Domains section whose + adds a domain to that
+container (`DomainDialog`, the container fixed). Each domain is a `DomainCard`, the Domains page's card without its
+application and worker: its type, service, pool and, for an internal or TCP name, its worker's certificate, then its
+address with Edit and Delete. The card reads `container.domains` from the application's pushed data. A domain stays
+on its container: moving a name is deleting it and adding it on another container.
 
 The Home summary reads project and application counts, worker/container/Domain state counts, succeeded and failed
 deploys, platform and volume archives, and recent error/warning notices. Its minute refresh waits for the previous
@@ -144,7 +146,7 @@ section, `workersIndicator` for the Workers menu item, `applicationIndicator` fo
 application's counts, `containerIndicator`, `workerIndicator`, `certificateIndicator`, `tunnelIndicator`,
 `pathIndicator`, `infraIndicator`, `domainIndicator`, `taskIndicator`). Used by the
 settings badge and sidebar, the Workers menu item, the application, container, worker and
-task statuses, a domain's sync state and the worker dot in a container card. A title with a
+task statuses, a domain's sync state and a worker's status beside its name. A title with a
 state beside it is a `SectionTitle` with the indicator in its slot. Both Domain views read the same record status:
 `pending` (idle), queue-derived `syncing` (busy), `synced` (ok) or `error` (error, labelled “sync failed”).
 Failure detail is available on the indicator; container health remains separate.

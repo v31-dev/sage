@@ -223,10 +223,10 @@ describe('certificates', () => {
         role === 'discovery' ? failed : ready(discoveryExpiry)
       )
       const other = role === 'worker' ? 'discovery' : 'worker'
-      expect(field(role).text()).toContain('certificate update failed')
+      expect(field(role).text()).toContain('update failed')
       expect(field(role).text()).toContain('CA unavailable')
       expect(field(role).text()).not.toContain('Valid until')
-      expect(field(other).text()).toContain('certificate ready')
+      expect(field(other).text()).toContain('ready')
       expect(field(other).text()).not.toContain('CA unavailable')
     }
   )
@@ -239,7 +239,7 @@ describe('certificates', () => {
         role === 'worker' ? failed : readyCertificate,
         role === 'discovery' ? failed : readyCertificate
       )
-      expect(field(role).text()).toContain('certificate ready')
+      expect(field(role).text()).toContain('ready')
       expect(field(role).text()).toContain('renewal rejected')
       expect(field(role).text()).toContain(`Valid until ${formatDate(ownExpiry)}`)
     }
@@ -250,8 +250,8 @@ describe('certificates', () => {
       { covered: true, synced: false, expiry: ownExpiry, error: null },
       { covered: false, synced: false, expiry: discoveryExpiry, error: null }
     )
-    expect(field('worker').text()).toContain('syncing the certificate')
-    expect(field('discovery').text()).toContain('waiting for the certificate')
+    expect(field('worker').text()).toContain('syncing')
+    expect(field('discovery').text()).toContain('waiting')
     expect(wrapper.text()).not.toContain('Valid until')
     await wrapper.setProps({
       worker: worker('eu1', {

@@ -38,13 +38,12 @@ import {
 import { Spinner } from '@/components/ui/spinner'
 import IconButton from '@/components/IconButton.vue'
 import { useAppStore } from '@/stores/app'
-import { type ContainerReference, type Domain, createDomain, updateDomain } from '@/services/api'
+import { type Domain, createDomain, updateDomain } from '@/services/api'
 
-// Creates a domain, or edits `domain`. The container comes first: it decides the worker, so the name's shape follows
-// it, and choosing another one clears the type.
+// Adds a domain to `container`, or edits `domain`, which stays on its container. The container's worker gives an
+// internal or TCP name its subdomain.
 interface Props {
-  containers: ContainerReference[]
-  domains: Domain[]
+  container: { id: string; worker: string }
   domain?: Domain
   reload: () => Promise<void>
 }
@@ -59,7 +58,6 @@ const GUIDANCE: Record<Domain['type'], string> = {
 }
 
 const open = ref(false)
-const containerId = ref('')
 const type = ref<Domain['type'] | ''>('')
 const name = ref('')
 const port = ref(80)
@@ -69,15 +67,9 @@ const corsOrigins = ref('')
 const errorMessage = ref('')
 const submitting = ref(false)
 
-const container = computed(() =>
-  props.containers.find(container => String(container.id) === containerId.value)
-)
-// The subdomain the name of an internal or TCP domain is under: its container's worker's, or for an unlinked one,
-// the worker it kept.
 const subdomain = computed(
   () =>
-    container.value?.worker.subdomain ??
-    appStore.workers?.find(worker => worker.hostname === props.domain?.worker)?.subdomain ??
+    appStore.workers?.find(worker => worker.hostname === props.container.worker)?.subdomain ??
     '<subdomain>'
 )
 const prefix = computed(() => (type.value === 'tcp' ? '' : 'https://'))
@@ -86,24 +78,10 @@ const suffix = computed(() => {
   if (type.value === 'public') return `.${base}`
   return `.${subdomain.value}.int.${base}${type.value === 'tcp' ? ':8443' : ''}`
 })
-// The services already used in the namespace of the chosen type, to pick from.
-const services = computed(() => {
-  const isPublic = type.value === 'public'
-  return [
-    ...new Set(
-      props.domains
-        .filter(domain => (domain.type === 'public') === isPublic && domain.service)
-        .map(domain => domain.service!)
-    ),
-  ].sort()
-})
-const ready = computed(
-  () => !!type.value && !!name.value.trim() && (!!container.value || !!props.domain)
-)
+const ready = computed(() => !!type.value && !!name.value.trim())
 
 function openDialog() {
   errorMessage.value = ''
-  containerId.value = props.domain?.container ? String(props.domain.container.id) : ''
   type.value = props.domain?.type ?? ''
   name.value = props.domain?.name ?? ''
   port.value = props.domain?.port ?? 80
@@ -111,15 +89,6 @@ function openDialog() {
   pool.value = props.domain?.pool ?? ''
   corsOrigins.value = props.domain?.cors_origins?.join('\n') ?? ''
   open.value = true
-}
-
-function chooseContainer(value: unknown) {
-  containerId.value = String(value)
-  type.value = ''
-}
-
-function containerLabel(container: ContainerReference) {
-  return `${container.application.label} (${container.application.project.label}) · ${container.worker.hostname}`
 }
 
 async function onConfirm() {
@@ -139,10 +108,9 @@ async function onConfirm() {
               .split('\n')
               .map(origin => origin.trim())
               .filter(Boolean),
-      ...(container.value ? { container: container.value.id } : {}),
     }
     if (props.domain) await updateDomain(props.domain.id, data)
-    else await createDomain(data)
+    else await createDomain({ ...data, container: props.container.id })
     open.value = false
     await props.reload()
     toast.success(props.domain ? 'Domain updated' : 'Domain added')
@@ -160,44 +128,20 @@ async function onConfirm() {
       <IconButton :icon="Edit" label="Edit" @click="openDialog" />
     </DialogTrigger>
     <DialogTrigger v-else as-child>
-      <Button size="sm" class="gap-2" @click="openDialog">
-        <Plus />
-        Add Domain
-      </Button>
+      <IconButton :icon="Plus" label="Add domain" @click="openDialog" />
     </DialogTrigger>
     <DialogContent class="sm:max-w-[480px]">
       <DialogHeader>
         <DialogTitle>{{ props.domain ? 'Edit Domain' : 'Add Domain' }}</DialogTitle>
         <DialogDescription>{{
-          props.domain?.host ?? 'A name for one container'
+          props.domain?.host ?? `A name for this container on ${props.container.worker}`
         }}</DialogDescription>
       </DialogHeader>
       <FieldSet>
         <FieldGroup>
           <Field>
-            <FieldLabel for="domain-container"> Container </FieldLabel>
-            <Select :model-value="containerId" @update:model-value="chooseContainer">
-              <SelectTrigger id="domain-container">
-                <SelectValue
-                  :placeholder="
-                    props.domain ? 'Not linked: choose a container' : 'Choose a container'
-                  "
-                />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem
-                  v-for="item in props.containers"
-                  :key="item.id"
-                  :value="String(item.id)"
-                >
-                  {{ containerLabel(item) }}
-                </SelectItem>
-              </SelectContent>
-            </Select>
-          </Field>
-          <Field>
             <FieldLabel for="domain-type"> Type </FieldLabel>
-            <Select v-model="type" :disabled="!container && !props.domain">
+            <Select v-model="type">
               <SelectTrigger id="domain-type">
                 <SelectValue placeholder="Choose a type" />
               </SelectTrigger>
@@ -249,15 +193,7 @@ async function onConfirm() {
           </Field>
           <Field>
             <FieldLabel for="domain-service"> Service (optional) </FieldLabel>
-            <Input
-              id="domain-service"
-              v-model="service"
-              list="domain-services"
-              placeholder="e.g. shop"
-            />
-            <datalist id="domain-services">
-              <option v-for="item in services" :key="item" :value="item" />
-            </datalist>
+            <Input id="domain-service" v-model="service" placeholder="e.g. shop" />
             <FieldDescription>
               Names that share a service are listed together at discovery, apart for public and
               internal.
