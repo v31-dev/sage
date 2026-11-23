@@ -72,8 +72,10 @@ lock wait on the provider, the event loop included.
 ## Answer these, each with source locations
 
 1. **Races on the resources tasks touch.** For each remote write, the resource it changes (from its path or its
-   owner's writer), every task that reaches it and that task's scopes. On one lock path, each writer holds the
-   resource's scope or an ancestor; under two roots, each writer holds both sides or only removes. A write no task
+   owner's writer), side effects included (a Compose command creates and removes its project's networks and volumes),
+   every task that reaches it and that task's scopes; group the writes by resource, not by command or function. On one
+   lock path, each writer holds the resource's scope or an ancestor; under two roots, or two sibling scopes of one
+   root, each writer holds both sides or only removes. A write no task
    reaches (a route, a callback, a thread) is a finding. Each scope is built by its resource's package; one built from
    a binding that can change is checked again at the task's start. A remote command can outlive the attempt that
    started it (a dropped connection leaves it running until its worker-side timeout): a retry of it, or the next task
