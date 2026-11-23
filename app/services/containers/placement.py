@@ -61,6 +61,15 @@ def runtime_name(container_id: str) -> str:
   return f"sage-{container_id}"
 
 
+def networks_command() -> str:
+  """Lists the worker's applications' networks, a line each for `workers.decisions.parse_networks`: its name, its
+  container's id, its subnets and its members, each list comma-separated."""
+  fields = (f"{{{{.Name}}}} {{{{index .Labels \"{LABEL_CONTAINER}\"}}}} {{{{range .IPAM.Config}}}}{{{{.Subnet}}}},{{{{end}}}} "
+            "{{range .Containers}}{{.Name}},{{end}}")
+  return (f"ids=$(docker network ls -q --filter label={LABEL_CONTAINER}); [ -z \"$ids\" ] || "
+          f"docker network inspect -f '{fields}' $ids")
+
+
 def bridge_name(container_id: str) -> str:
   """The interface of the placement's network: the applications' prefix and as much of the id as Linux's 15
   characters for an interface name leave."""

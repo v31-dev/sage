@@ -56,36 +56,36 @@ class TestDomains:
 
 class TestDomainState:
   def test_after_a_restart_it_is_pending_until_applied_or_scanned(self, snapshot):
-    state = domain_state(snapshot, True, True, None)
+    state = domain_state(snapshot, True, {"w1": True}, {}, None, None)
     assert (state.view.status, state.view.reason) == ("pending", "not_applied")
 
   def test_the_held_facts_of_its_fingerprint_and_worker_decide_it(self, domain, snapshot):
     Domains().record_route(domain, "w1", RouteObservation("present", snapshot.content_hash))
     Domains().record_dns(domain, snapshot.content_hash, True)
-    state = domain_state(snapshot, True, True, None)
+    state = domain_state(snapshot, True, {"w1": True}, {}, None, None)
     assert (state.view.status, state.view.conforms) == ("synced", True)
-    assert (state.facts.route, state.facts.dns_conforms) == (RouteObservation("present", snapshot.content_hash), True)
+    assert (state.facts.routes[0].observed, state.facts.dns_conforms) == (RouteObservation("present", snapshot.content_hash), True)
 
   def test_an_outcome_of_an_older_fingerprint_does_not_count(self, domain, snapshot):
     Domains().record_outcome(domain, ApplyOutcome("older", False, "dns", "timeout"))
-    assert domain_state(snapshot, True, True, None).view.status == "pending"
+    assert domain_state(snapshot, True, {"w1": True}, {}, None, None).view.status == "pending"
     Domains().record_outcome(domain, ApplyOutcome(snapshot.content_hash, False, "dns", "timeout"))
-    view = domain_state(snapshot, True, True, None).view
+    view = domain_state(snapshot, True, {"w1": True}, {}, None, None).view
     assert (view.status, view.reason, view.error) == ("error", "dns", "timeout")
 
   def test_a_queued_or_running_apply_shows_it_syncing(self, snapshot):
-    assert domain_state(snapshot, True, True, datetime(2026, 1, 1, 12)).view.status == "syncing"
+    assert domain_state(snapshot, True, {"w1": True}, {}, None, datetime(2026, 1, 1, 12)).view.status == "syncing"
 
   def test_its_worker_not_ready_is_why_it_is_pending(self, snapshot):
-    assert domain_state(snapshot, True, False, None).view.reason == "worker_not_ready"
+    assert domain_state(snapshot, True, {"w1": False}, {}, None, None).view.reason == "worker_not_ready"
 
   def test_while_its_container_is_not_known_it_is_pending_for_that(self, snapshot):
-    assert domain_state(snapshot, None, True, None).view.reason == "eligibility_unknown"
+    assert domain_state(snapshot, None, {"w1": True}, {}, None, None).view.reason == "eligibility_unknown"
 
 
 class TestPayload:
   def test_a_linked_domain_has_its_name_address_container_and_decided_state(self, domain, snapshot):
-    state = domain_state(snapshot, True, True, None)
+    state = domain_state(snapshot, True, {"w1": True}, {}, None, None)
     payload = domain_payload(domain, state, "example.test")
     assert {key: payload[key] for key in ("name", "type", "port", "host", "address", "worker")} == {
         "name": "shop", "type": "public", "port": 8080, "host": "shop.example.test", "address": "https://shop.example.test",
@@ -101,7 +101,7 @@ class TestPayload:
     first, second = Application.create(project=other, name="zeta", label="Zeta", image="x"), application
     for caller in (second, first):
       DomainCaller.create(domain=domain, application=caller)
-    payload = domain_payload(domain, domain_state(snapshot, True, True, None), "example.test")
+    payload = domain_payload(domain, domain_state(snapshot, True, {"w1": True}, {}, None, None), "example.test")
     assert payload["callers"] == [
         {"id": first.id, "name": "zeta", "label": "Zeta", "project": {"name": "alpha", "label": "Alpha"}},
         {"id": second.id, "name": "web", "label": "Web", "project": {"name": "demo", "label": "Demo"}}]

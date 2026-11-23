@@ -325,8 +325,8 @@ def test_what_an_older_version_left_in_traefiks_folders_is_stray_and_nothing_thi
   dynamic.mkdir()
   (tmp_path / "traefik/traefik.yml").write_text("")
   current = ["config.yml", "certs.yml", "domain-0123456789abcdef.yml", "_discovery-public-api.yml",
-             "_discovery-internal-api.yml", "_callers.yml"]
-  old = ["shop-web-public-shop.yml", "shop-web-internal-web-eu.yml", "domain-shop.yml", "notes.txt"]
+             "_discovery-internal-api.yml"]
+  old = ["shop-web-public-shop.yml", "shop-web-internal-web-eu.yml", "domain-shop.yml", "notes.txt", "_callers.yml"]
   for name in (*current, *old):
     (dynamic / name).write_text("")
   for name in ("fullchain.pem", "key.pem", "managed/worker-0123456789abcdef.pem"):

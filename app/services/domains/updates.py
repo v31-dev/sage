@@ -1,5 +1,5 @@
 from services.applications.updates import application_changed
-from services.db.models import Domain
+from services.db.models import Container, Domain, DomainCaller
 from services.updates import Updates, UpdateSource
 
 
@@ -12,3 +12,11 @@ def domain_changed(domain: Domain):
   domains_changed()
   application_changed(domain.container.application)
   Updates().changed(UpdateSource.WORKER_CONTAINERS, domain.container.worker_id)
+
+
+def callers_observed(hostname: str):
+  """A worker's applications' networks were seen to change: the pages of each Domain that allows an application with a
+  container there."""
+  for domain in (Domain.select().join(DomainCaller).join(Container, on=(Container.application == DomainCaller.application))
+                 .where(Container.worker == hostname).distinct()):
+    domain_changed(domain)

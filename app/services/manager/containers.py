@@ -24,6 +24,7 @@ from services.containers.rendering import deployment_hash, render_placement
 from services.containers.state import ContainerState, QueuedRequest, container_payload, container_state
 from services.containers.targets import Containers
 from services.db.models import Application, Container, ContainerEvent, Domain, Instance, Project, Volume, Worker
+from services.domains.callers import allowing
 from services.history import record_container_event
 from services.metrics import Metrics
 from services.notification import Notifications
@@ -570,7 +571,7 @@ class ContainersMixin:
       await self.fail_lifecycle(container, record, error)
     record_container_event(container, "deploy", "succeeded", operation.id, dedupe_key=f"{operation.id}:succeeded")
     await mark(container, "Deployed")
-    self.request_domain_applies(domain.id for domain in container.domains)
+    self.request_domain_applies([*(domain.id for domain in container.domains), *allowing(container.application_id)])
     self.request_traefik_networks(container.worker_id)
     name, page = self.container_notice(container)
     Notifications().notify(f"{name} deployed.", "success", page)
@@ -594,7 +595,7 @@ class ContainersMixin:
       await self.fail_lifecycle(container, record, error)
     record_container_event(container, "stop", "succeeded", operation.id, dedupe_key=f"{operation.id}:succeeded")
     await mark(container, "Stopped")
-    self.request_domain_applies(domain.id for domain in container.domains)
+    self.request_domain_applies([*(domain.id for domain in container.domains), *allowing(container.application_id)])
     name, page = self.container_notice(container)
     Notifications().notify(f"{name} stopped.", "success", page)
 
@@ -622,6 +623,7 @@ class ContainersMixin:
       await mark(container, "Removed from this worker")
     domains = detach_container(container.id)
     Containers().forget(container.id)
+    self.request_domain_applies(allowing(container.application_id))
     # Its domains went with it, so every worker's callers follow; else only its network goes.
     self.request_traefik_networks(None if domains else container.worker_id)
     if domains:

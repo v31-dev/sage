@@ -546,6 +546,27 @@ class TestDomainApplies:
     await manager.delete_container(container.id)
     assert manager.traefik_networks == [None]
 
+  @pytest.fixture
+  def allowing(self, container, project):
+    """An internal Domain of another application, on another worker, that allows the container's application."""
+    from services.db.models import Application, DomainCaller, Worker
+    other = Application.create(project=project, name="pg", label="PG", image="postgres")
+    target = Container.create(application=other, worker=Worker.create(hostname="w9", subdomain="grey"))
+    domain = Domain.create(name="pg", type="tcp", port=5432, container=target, namespace_worker="w9")
+    DomainCaller.create(domain=domain, application=container.application)
+    return domain.id
+
+  async def test_a_deploy_a_stop_a_failure_and_a_delete_have_the_domains_allowing_its_application_applied(
+          self, manager, worker_host, container, allowing):
+    await deploy(manager, container)
+    await manager.stop_container(container.id)
+    worker_host.flag("up-fails")
+    with pytest.raises(TaskFailed):
+      await deploy(manager, container)
+    (worker_host.state / "up-fails").unlink()
+    await manager.delete_container(container.id)
+    assert manager.applied == [[allowing]] * 4
+
   async def test_a_failed_deploy_has_them_applied(self, manager, worker_host, container, domains):
     worker_host.flag("up-fails")
     with pytest.raises(TaskFailed):

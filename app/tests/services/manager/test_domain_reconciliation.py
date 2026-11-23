@@ -1,10 +1,13 @@
+from types import SimpleNamespace
+
 import pytest
 
 import config
 from services.applications import commands as application_commands
 from services.cloudflare import Cloudflare
-from services.db.models import Application, Container, Domain, Worker
+from services.db.models import Application, Container, Domain, DomainCaller, Worker
 from services.domains import commands
+from services.domains.callers import worker_fingerprints
 from services.domains.config import DomainConfig
 from services.domains.decisions import ApplyOutcome, RouteObservation
 from services.domains.state import Domains
@@ -35,8 +38,8 @@ class ListedHosts(Hosts):
         while_listing()
       if hostname == self.listing_fails:
         raise Exception(f"Error executing command on {hostname}: timed out")
-      return 0, [f"{path}:{content.splitlines()[0]}" for (host, path), content in sorted(self.files.items())
-                 if host == hostname and path.startswith(f"{DYNAMIC}/domain-")]
+      return 0, [*(f"{path}:{content.splitlines()[0]}" for (host, path), content in sorted(self.files.items())
+                   if host == hostname and path.startswith(f"{DYNAMIC}/domain-")), *self.networks.get(hostname, [])]
     if command.startswith("rm -f ") and " " in command[len("rm -f "):]:
       self.commands.append((hostname, command))
       if self.fails and self.fails in command:
@@ -350,6 +353,48 @@ class TestObservation:
     Domain.delete().where(Domain.id == gone.id).execute()
     await manager.reconcile_domains()
     assert (Domains().outcome(gone.id), Domains().outcome(public.id)) == (None, ApplyOutcome("f1", True))
+
+
+class TestCallers:
+  """An internal Domain on w1 allowing `app`, which has a container on w2, and a third worker w3 set up."""
+
+  @pytest.fixture
+  def called(self, manager, internal, project, hosts, provider):
+    app = Application.create(project=project, name="app", label="App", image="x")
+    remote = Container.create(application=app, worker="w2")
+    DomainCaller.create(domain=internal, application=app)
+    Worker.create(hostname="w3", subdomain="green")
+    for hostname in ("w2", "w3"):
+      hosts.found[hostname], manager.ready[hostname] = "reachable", True
+      Workers().record_setup(hostname, "succeeded", "100.64.0.3")
+    hosts.networks = {"w2": [f"sage-{remote.id} {remote.id} 172.31.0.0/16, sage-{remote.id},traefik,"]}
+    hosts.addresses["w1"] = "100.64.0.1"
+    conforming(hosts, provider, internal)
+    snapshot = DomainConfig.capture(Domain.get_by_id(internal.id), "example.test")
+    expected = worker_fingerprints(snapshot, {"w2": {remote.id: ("172.31.0.0/16",)}}, "100.64.0.1")["w2"]
+    return SimpleNamespace(domain=internal, remote=remote, expected=expected)
+
+  async def test_the_pass_records_each_workers_networks_and_sees_the_domain_synced_by_its_file_on_a_callers_worker(
+          self, manager, called, hosts):
+    hosts.put("w2", called.domain.id, called.expected)
+    await manager.reconcile_domains()
+    assert Workers().networks("w2") == {called.remote.id: ("172.31.0.0/16",)}
+    assert Domains().route(called.domain.id, "w2") == RouteObservation("present", called.expected)
+    assert (state(manager, called.domain).view.status, applies(manager)) == ("synced", [])
+
+  async def test_a_callers_worker_without_the_file_or_with_another_has_the_domain_applied(self, manager, called, hosts):
+    await manager.reconcile_domains()
+    assert applies(manager) == [called.domain.id]
+
+  async def test_a_file_on_a_worker_neither_its_own_nor_a_callers_is_removed_and_a_callers_is_kept(self, manager, called, hosts):
+    hosts.put("w2", called.domain.id, called.expected)
+    hosts.put("w3", called.domain.id, called.expected)
+    await manager.reconcile_domains()
+    assert (hosts.routes("w2"), hosts.routes("w3")) == ([f"domain-{called.domain.id}.yml"], [])
+
+  async def test_each_pass_asks_for_traefiks_networks_on_every_worker(self, manager, called):
+    await manager.reconcile_domains()
+    assert manager.traefik_networks == [None]
 
 
 class TestCleanup:

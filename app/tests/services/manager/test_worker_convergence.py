@@ -88,9 +88,6 @@ class Hosts:
       return 0, list(self.networks)
     if command.startswith("docker inspect -f '{{range $name, $network := .NetworkSettings.Networks}}"):
       return 0, list(self.traefik_aliases)
-    if command.startswith("head -n 1 "):
-      written = self.files.get(f"{hostname}:{command.split()[3]}")
-      return 0, written[0].splitlines()[:1] if written else []
     if command.startswith("stat -c %g"):
       return 0, ["998"]
     if command.startswith("docker network inspect sage_edge >/dev/null 2>&1 || "):
@@ -611,25 +608,6 @@ class TestTraefikNetworks:
       await manager.converge_worker("w1")
     assert Workers().setup("w1") == "failed"
 
-  def callers_file(self, hosts):
-    file = hosts.files.get(f"w1:{HOME}/traefik/dynamic/_callers.yml")
-    return file[0] if file else None
-
-  async def test_the_callers_file_is_written_for_a_name_that_allows_an_application_here_then_kept_then_removed(
-          self, manager, hosts, placed):
-    domain = Domain.create(name="api", type="internal", port=80, container=placed, namespace_worker="w1")
-    DomainCaller.create(domain=domain, application=placed.application)
-    await manager.converge_worker("w1")
-    written = self.callers_file(hosts)
-    assert f"Host(`api.red.int.example.test`) && (ClientIP(`172.21.0.0/16`))" in written
-    untouched = written.splitlines()[0] + "\n# untouched\n"
-    hosts.files[f"w1:{HOME}/traefik/dynamic/_callers.yml"] = (untouched, 0o644)
-    await manager.sync_traefik_networks("w1")
-    assert self.callers_file(hosts) == untouched
-    DomainCaller.delete().execute()
-    await manager.sync_traefik_networks("w1")
-    assert self.callers_file(hosts) is None
-
   async def test_traefik_joins_a_network_under_the_names_its_application_may_call(self, manager, hosts, placed):
     domain = Domain.create(name="api", type="internal", port=80, container=placed, namespace_worker="w1")
     DomainCaller.create(domain=domain, application=placed.application)
@@ -647,10 +625,6 @@ class TestTraefikNetworks:
     await manager.converge_worker("w1")
     attached_again = [command for command in self.changes(hosts) if f"docker network disconnect sage-{placed.id} traefik && " in command]
     assert bool(attached_again) == again
-
-  async def test_without_callers_no_file_is_written(self, manager, hosts, placed):
-    await manager.converge_worker("w1")
-    assert self.callers_file(hosts) is None
 
   def test_a_request_for_every_worker_queues_one_on_each_worker_set_up_and_reachable(self, manager, hosts, worker):
     Worker.create(hostname="w2", subdomain="blue")

@@ -5,20 +5,21 @@ from datetime import datetime
 
 from services.base import Base
 from services.db.models import Application, Domain, DomainCaller, Project
+from services.domains.callers import worker_fingerprints
 from services.domains.config import DomainConfig, address
-from services.domains.decisions import ApplyOutcome, DomainFacts, DomainView, RouteObservation, decide_domain
+from services.domains.decisions import ApplyOutcome, DomainFacts, DomainView, RouteObservation, WorkerRoute, decide_domain
 from services.domains.updates import domain_changed
 
 
 class Domains(Base):
-  """By Domain id: how its last apply ended, for the fingerprint it applied; what was last seen of its routing file, on
-  the worker it was looked for on; and whether its DNS records conformed, for the fingerprint they were compared
-  with. Nothing until an apply or a scan, since none of it is stored."""
+  """By Domain id: how its last apply ended, for the fingerprint it applied; what was last seen of its file on each
+  worker it was looked for on; and whether its DNS records conformed, for the fingerprint they were compared with.
+  Nothing until an apply or a scan, since none of it is stored."""
 
   def __init__(self):
     super().__init__()
     self._outcomes: dict[str, ApplyOutcome] = {}
-    self._routes: dict[str, tuple[str, RouteObservation]] = {}
+    self._routes: dict[str, dict[str, RouteObservation]] = {}
     self._dns: dict[str, tuple[str, bool]] = {}
 
   def outcome(self, domain_id: str) -> ApplyOutcome | None:
@@ -26,10 +27,9 @@ class Domains(Base):
       return self._outcomes.get(domain_id)
 
   def route(self, domain_id: str, worker: str | None) -> RouteObservation:
-    """What was last seen of its routing file on `worker`; unobserved when it was last looked for on another."""
+    """What was last seen of its file on `worker`; unobserved until it was looked for there."""
     with self.lock:
-      seen = self._routes.get(domain_id)
-    return seen[1] if seen is not None and seen[0] == worker else RouteObservation("unobserved")
+      return self._routes.get(domain_id, {}).get(worker, RouteObservation("unobserved"))
 
   def dns_conforms(self, domain_id: str, fingerprint: str) -> bool | None:
     with self.lock:
@@ -40,7 +40,12 @@ class Domains(Base):
     self._hold(domain, self._outcomes, outcome)
 
   def record_route(self, domain: Domain, worker: str, observation: RouteObservation):
-    self._hold(domain, self._routes, (worker, observation))
+    with self.lock:
+      routes = self._routes.setdefault(domain.id, {})
+      changed = routes.get(worker) != observation
+      routes[worker] = observation
+    if changed:
+      domain_changed(domain)
 
   def record_dns(self, domain: Domain, fingerprint: str, conforms: bool):
     self._hold(domain, self._dns, (fingerprint, conforms))
@@ -79,14 +84,18 @@ class DomainState:
   facts: DomainFacts
 
 
-def domain_state(config: DomainConfig, eligible: bool | None, worker_ready: bool | None,
+def domain_state(config: DomainConfig, eligible: bool | None, ready: dict[str, bool | None],
+                 networks: dict[str, dict[str, tuple[str, ...]] | None], address: str | None,
                  syncing_since: datetime | None) -> DomainState:
-  """The domain's state now, given its configuration, whether its container can be routed to, whether its worker is
-  ready and when an apply of it queued or running was queued."""
+  """The domain's state now, given its configuration, whether its container can be routed to, whether each worker it
+  has a file on is ready, their applications' networks, its own worker's address and when an apply of it queued or
+  running was queued."""
   fingerprint = config.content_hash
-  facts = DomainFacts(fingerprint, eligible, worker_ready,
-                      Domains().route(config.domain_id, config.worker), Domains().dns_conforms(config.domain_id, fingerprint),
-                      Domains().outcome(config.domain_id), syncing_since)
+  routes = tuple(WorkerRoute(worker, expected, Domains().route(config.domain_id, worker), ready.get(worker))
+                 for worker, expected in worker_fingerprints(config, networks, address).items())
+  facts = DomainFacts(fingerprint, eligible, ready.get(config.worker), routes,
+                      Domains().dns_conforms(config.domain_id, fingerprint), Domains().outcome(config.domain_id),
+                      syncing_since)
   return DomainState(decide_domain(facts), config, facts)
 
 

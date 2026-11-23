@@ -10,9 +10,9 @@ from peewee import JOIN
 import config
 from services.certs import TEMPLATE_DIGEST, Certs
 from services.cloudflare import Cloudflare
-from services.containers.placement import LABEL_CONTAINER, runtime_owner
+from services.containers.placement import networks_command, runtime_owner
 from services.db.models import Application, Container, Domain, Instance, Project, Worker
-from services.domains.callers import CALLERS_FILE, called_names, caller_aliases, render_callers
+from services.domains.callers import called_names, caller_aliases
 from services.domains.config import parse_route_listing, routes_command
 from services.domains.updates import domain_changed
 from services.history import record_worker_event
@@ -362,32 +362,18 @@ class WorkersMixin:
     await self._attach_traefik(hostname)
 
   async def _attach_traefik(self, hostname: str):
-    """Writes the callers' file when it changed, then attaches Traefik to the network of each of the worker's
-    containers, under the names that application may call, attaches it again where those names changed, and removes
-    the networks of containers gone, which their Compose project leaves while Traefik is on them. A network that went
-    meanwhile is not a failure."""
-    fields = (f"{{{{.Name}}}} {{{{index .Labels \"{LABEL_CONTAINER}\"}}}} {{{{range .IPAM.Config}}}}{{{{.Subnet}}}},{{{{end}}}} "
-              "{{range .Containers}}{{.Name}},{{end}}")
-    _, listing = await Tailscale().exec_command(
-        hostname, f"ids=$(docker network ls -q --filter label={LABEL_CONTAINER}); [ -z \"$ids\" ] || "
-        f"docker network inspect -f '{fields}' $ids", timeout=30)
+    """Attaches Traefik to the network of each of the worker's containers, under the names that application may call,
+    attaches it again where those names changed, and removes the networks of containers gone, which their Compose
+    project leaves while Traefik is on them. A network that went meanwhile is not a failure."""
+    listed_at = utcnow()
+    _, listing = await Tailscale().exec_command(hostname, networks_command(), timeout=30)
     applications = {container.id: container.application_id
                     for container in Container.select(Container.id, Container.application).where(Container.worker == hostname)}
     networks = parse_networks(listing)
+    Workers().record_networks(hostname, {network.container_id: network.subnets for network in networks}, listed_at)
     owners = {network.name: applications[network.container_id] for network in networks if network.container_id in applications}
     names = called_names(get_env("DOMAIN"))
     addresses = {name.worker: Tailscale().address(name.worker) for name in names}
-
-    callers = render_callers(names, hostname, {owners[network.name]: network.subnets for network in networks
-                                               if network.name in owners}, addresses)
-    path = f"{config.WORKER_HOME_DIR}/traefik/dynamic/{CALLERS_FILE}"
-    _, written = await Tailscale().exec_command(hostname, f"head -n 1 {path} 2>/dev/null; true", timeout=30)
-    if callers is None and written:
-      await Tailscale().exec_command(hostname, f"rm -f {path}", timeout=30)
-      logger.info(f"No name on {hostname} has callers any more; its callers' file is removed.")
-    elif callers is not None and [line.strip() for line in written] != [callers.splitlines()[0]]:
-      await Tailscale().sync_file(hostname, config.TEMPLATES_DIR / "worker/file", path, {"CONTENT": callers})
-      logger.info(f"The callers' file on {hostname} is written.")
 
     aliases = caller_aliases(names, hostname, owners, addresses)
     attach, remove = traefik_network_changes(networks, set(applications))

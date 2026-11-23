@@ -6,7 +6,7 @@ from dataclasses import asdict, dataclass
 import config
 from services.applications.rules import response_headers
 from services.containers.placement import runtime_name
-from services.db.models import Domain
+from services.db.models import Container, Domain, DomainCaller
 from services.workers.rendering import worker_scope
 from utils.common import OPAQUE_ID, fill
 
@@ -102,7 +102,9 @@ def allowed_origins(domain: Domain, base_domain: str) -> tuple[str, ...]:
 
 @dataclass(frozen=True)
 class DomainConfig:
-  """What a domain's routing and DNS are rendered from. `worker` is where its route goes, its container's."""
+  """What a domain's routing and DNS are rendered from. `worker` is where its route goes, its container's; `callers`
+  are the containers of the applications allowed to call an internal or TCP one, as (worker, container id,
+  application id)."""
   domain_id: str
   type: str
   host: str | None
@@ -111,6 +113,7 @@ class DomainConfig:
   container_id: str
   cors_origins: tuple[str, ...]
   headers: tuple[tuple[str, str], ...]
+  callers: tuple[tuple[str, str, int], ...]
   templates: str
 
   @classmethod
@@ -121,12 +124,20 @@ class DomainConfig:
         worker=container.worker_id, container_id=domain.container_id, cors_origins=allowed_origins(domain, base_domain),
         headers=tuple(sorted(response_headers(container.application.response_headers).items()))
         if domain.type != "tcp" else (),
+        callers=tuple(sorted((caller.worker_id, caller.id, caller.application_id) for caller in Container.select().join(
+            DomainCaller, on=(DomainCaller.application == Container.application)).where(DomainCaller.domain == domain.id)))
+        if domain.type != "public" else (),
         templates=templates,
     )
 
   @property
   def content_hash(self) -> str:
     return hashlib.sha256(json.dumps(asdict(self), sort_keys=True).encode()).hexdigest()
+
+  @property
+  def workers(self) -> tuple[str, ...]:
+    """The workers it has a file on: its own and each with a container of an allowed application."""
+    return tuple(sorted({self.worker, *(caller[0] for caller in self.callers)}))
 
   @property
   def filename(self) -> str:

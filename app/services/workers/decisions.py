@@ -9,7 +9,6 @@ from datetime import datetime
 import config
 from services.containers.placement import runtime_name
 from services.domains import discovery
-from services.domains.callers import CALLERS_FILE
 from services.domains.config import domain_artifact_owner
 from services.worker_reports import Received, is_current
 from services.workers.rendering import PRIVATE_RANGES, TRAEFIK_CONTAINER, TRAEFIK_FOLDERS
@@ -158,15 +157,14 @@ def reboot_outcome(baseline_boot_id: str, boot_id: str | None, ready: bool | Non
 def stray_traefik_files(listing: list[str]) -> list[str]:
   """The entries of a listing of `TRAEFIK_FOLDERS` (`rendering.traefik_files_command`) in none of the forms this
   version writes there: the stack's `config.yml`, the certificates' `certs.yml` and `managed` folder, the Domains'
-  routing files, the callers' file and the discovery files. What an older version left, removed when the stack is
-  written."""
+  routing files and the discovery files. What an older version left, removed when the stack is written."""
   dynamic, certs = TRAEFIK_FOLDERS
 
   def stray(path: str) -> bool:
     folder, _, name = path.rpartition("/")
     if folder == certs:
       return name != "managed"
-    return folder == dynamic and not (name in ("config.yml", "certs.yml", CALLERS_FILE) or domain_artifact_owner("file", name)
+    return folder == dynamic and not (name in ("config.yml", "certs.yml") or domain_artifact_owner("file", name)
                                       or (name.startswith(discovery.PREFIX) and name.endswith(discovery.SUFFIX)))
   return sorted(path for path in (line.strip() for line in listing) if stray(path))
 

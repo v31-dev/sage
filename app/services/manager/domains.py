@@ -7,8 +7,10 @@ from datetime import datetime
 
 import config
 from services.cloudflare import Cloudflare, dns_record_matches
+from services.containers.placement import networks_command
 from services.containers.state import container_reference
 from services.db.models import Application, Container, Domain, Project, Worker
+from services.domains.callers import domain_file
 from services.domains.config import (ROUTE_FIELDS, DomainConfig, domain_artifact_name, domain_artifact_owner, domain_scope, host_scope,
                                      parse_route_listing, route_scope, routes_command)
 from services.domains.decisions import ApplyOutcome, RouteObservation, route_goal
@@ -17,8 +19,9 @@ from services.domains.updates import domain_changed
 from services.notification import Notifications
 from services.tailscale import Tailscale
 from services.updates import Fact
-from services.workers.state import is_workable
-from utils.common import get_env
+from services.workers.decisions import parse_networks
+from services.workers.state import Workers, is_workable
+from utils.common import get_env, utcnow
 from utils.executor import run_in_executor_with_context
 from utils.logging import TaskFailed
 from utils.queue import OnConflict
@@ -39,10 +42,13 @@ class DomainsMixin:
     configs = {domain.id: capture(domain) for domain in domains}
     containers = self.container_states(Container.select().where(
         Container.id.in_({snapshot.container_id for snapshot in configs.values()})))
-    workers = self.worker_states(list({snapshot.worker for snapshot in configs.values()}))
+    hostnames = list({worker for snapshot in configs.values() for worker in snapshot.workers})
+    workers = self.worker_states(hostnames)
+    ready = {hostname: workers[hostname].view.ready for hostname in hostnames}
+    networks = {hostname: Workers().networks(hostname) for hostname in hostnames}
     applying = self._applying_domains()
-    return {domain_id: domain_state(snapshot, containers[snapshot.container_id].routable,
-                                    workers[snapshot.worker].view.ready, applying.get(domain_id))
+    return {domain_id: domain_state(snapshot, containers[snapshot.container_id].routable, ready, networks,
+                                    Tailscale().address(snapshot.worker), applying.get(domain_id))
             for domain_id, snapshot in configs.items()}
 
   def domain_payloads(self, domains) -> list[dict]:
@@ -74,45 +80,61 @@ class DomainsMixin:
     return [Fact(lambda: frozenset(self._applying_domains()), on_change=changed)]
 
   def request_domain_applies(self, domain_ids):
-    """Queues the apply of each of the domains as it is configured now, holding the domain, its full name, and its
-    route on the worker it goes to. A running apply is not interrupted: the latest request waits for it."""
+    """Queues the apply of each of the domains as it is configured now, holding the domain, its full name, and its file
+    on each worker it has one on: its own and each with a container of an allowed application. A running apply is not
+    interrupted: the latest request waits for it."""
     for domain in Domain.select().where(Domain.id.in_(list(domain_ids))):
       snapshot = capture(domain)
-      scopes = {domain_scope(domain.id), route_scope(snapshot.worker, domain.id)}
+      scopes = {domain_scope(domain.id), *(route_scope(worker, domain.id) for worker in snapshot.workers)}
       if snapshot.host is not None:
         scopes.add(host_scope(snapshot.host))
       self.add_task(task=self.apply_domain, key=("apply_domain", domain.id), scopes=scopes, executor="app",
-                    params={"domain_id": domain.id, "worker": snapshot.worker, "host": snapshot.host},
+                    params={"domain_id": domain.id, "worker": snapshot.worker, "host": snapshot.host,
+                            "workers": list(snapshot.workers)},
                     labels={"Domain": snapshot.host or domain.name}, on_conflict=OnConflict.REPLACE, quiet=True)
 
-  async def apply_domain(self, domain_id: str, worker: str, host: str | None):
-    """Writes the domain's routing file on its worker while its container can be routed to and removes it once it
-    can't, leaving it alone while that is not known or the worker isn't reachable and set up;
-    then makes its DNS records what its configuration gives. Holds the outcome for the fingerprint it applied, a
-    success only when the route was applied too. An edit during the apply queues another; discovery, whose
-    availability follows the outcome, is published again."""
+  async def apply_domain(self, domain_id: str, worker: str, host: str | None, workers: list[str]):
+    """Writes the domain's file on each of `workers` while its container can be routed to and removes it once it
+    can't, leaving it alone while that is not known or a worker isn't reachable and set up: on its own worker its
+    route with its callers there, on a caller's worker their passthrough, from the networks it lists there. Then makes
+    its DNS records what its configuration gives. Holds the outcome for the fingerprint it applied, a success only when
+    every file was applied too. An edit during the apply queues another; discovery, whose availability follows the
+    outcome, is published again."""
     domain = Domain.get_or_none(Domain.id == domain_id)
     if domain is None:
       Domains().forget(domain_id)
       logger.info(f"Domain {domain_id} was deleted before its apply; nothing to do.")
       return
     snapshot = capture(domain)
-    if (snapshot.worker, snapshot.host) != (worker, host):
+    if (snapshot.worker, snapshot.host, list(snapshot.workers)) != (worker, host, list(workers)):
       self.request_domain_applies([domain_id])
       return
     fingerprint = snapshot.content_hash
     goal = route_goal(self.container_states([domain.container])[snapshot.container_id].routable)
-    routed = goal is not None and is_workable(worker)
+    reachable = [hostname for hostname in workers if is_workable(hostname)] if goal is not None else []
+    routed = goal is not None and len(reachable) == len(workers)
+    address = Tailscale().address(worker)
+    path = f"{config.WORKER_HOME_DIR}/traefik/dynamic/{snapshot.filename}"
     phase, failure = "route", None
     try:
-      if routed:
-        path = f"{config.WORKER_HOME_DIR}/traefik/dynamic/{snapshot.filename}"
-        if goal == "present":
-          await Tailscale().sync_file(worker, config.TEMPLATES_DIR / "worker/file", path, {"CONTENT": snapshot.route()})
-          Domains().record_route(domain, worker, RouteObservation("present", fingerprint))
-        else:
-          await Tailscale().exec_command(worker, f"rm -f {path}", timeout=30)
-          Domains().record_route(domain, worker, RouteObservation("absent"))
+      for hostname in reachable:
+        if goal == "absent":
+          await Tailscale().exec_command(hostname, f"rm -f {path}", timeout=30)
+          Domains().record_route(domain, hostname, RouteObservation("absent"))
+          continue
+        networks = {}
+        if any(caller[0] == hostname for caller in snapshot.callers):
+          listed_at = utcnow()
+          _, listing = await Tailscale().exec_command(hostname, networks_command(), timeout=30)
+          networks = {network.container_id: network.subnets for network in parse_networks(listing)}
+          Workers().record_networks(hostname, networks, listed_at)
+        rendered = domain_file(snapshot, hostname, networks, address)
+        if rendered is None:
+          routed = False
+          continue
+        written, content = rendered
+        await Tailscale().sync_file(hostname, config.TEMPLATES_DIR / "worker/file", path, {"CONTENT": content})
+        Domains().record_route(domain, hostname, RouteObservation("present", written))
       phase = "dns"
       cloudflare = Cloudflare()
       await run_in_executor_with_context(cloudflare.connect)
@@ -140,8 +162,9 @@ class DomainsMixin:
                              "/domains")
       raise TaskFailed()
     if not routed:
-      logger.info(f"Domain {snapshot.host or domain.name}: DNS applied; its route waits for "
-                  + ("its container's state to be known." if goal is None else f"worker {worker}."))
+      logger.info(f"Domain {snapshot.host or domain.name}: DNS applied; its files wait for "
+                  + ("its container's state to be known." if goal is None else
+                     f"workers {', '.join(workers)} to be reachable and set up, and {worker}'s address."))
 
   def domain_edited(self, domain_id: str):
     """After the domain's edit (its command): it is applied as it is configured now, the pass withdraws what the edit
@@ -165,17 +188,19 @@ class DomainsMixin:
                   on_conflict=OnConflict.REPLACE, quiet=True)
 
   async def reconcile_domains(self):
-    """Lists the routing files on every worker reachable and set up, the zone and the tunnels; removes the routing files
-    of Domains gone or bound to another worker, and the DNS records of Domains gone; holds what it saw of each Domain's
-    route and DNS; then requests the apply of each Domain in error, drifted or not applied, and discovery's
-    publication. Holding every Domain, it never crosses an apply; it lists before it reads the rows, so a Domain
-    created meanwhile is never taken for one gone."""
+    """Lists the Domains' files and the applications' networks on every worker reachable and set up, the zone and the
+    tunnels; removes the files of Domains gone or with no reason to be on that worker, and the DNS records of Domains
+    gone; holds what it saw of each Domain's files and DNS and of each worker's networks; then requests the apply of
+    each Domain in error, drifted or not applied, discovery's publication and Traefik's networks on every worker.
+    Holding every Domain, it never crosses an apply; it lists before it reads the rows, so a Domain created meanwhile
+    is never taken for one gone."""
     hostnames = [worker.hostname for worker in Worker.select(Worker.hostname) if is_workable(worker.hostname)]
     cloudflare, failures = Cloudflare(), []
+    listed_at = utcnow()
     zone, tunnels, *listings = await asyncio.gather(
         run_in_executor_with_context(cloudflare.get_dns_records), run_in_executor_with_context(cloudflare.tunnels),
-        *(Tailscale().exec_command(hostname, routes_command(f"{config.WORKER_HOME_DIR}/traefik/dynamic"), timeout=30)
-          for hostname in hostnames), return_exceptions=True)
+        *(Tailscale().exec_command(hostname, f"{routes_command(f'{config.WORKER_HOME_DIR}/traefik/dynamic')}; {networks_command()}",
+                                   timeout=30) for hostname in hostnames), return_exceptions=True)
     for name, listed in (("the DNS zone", zone), ("the tunnels", tunnels)):
       if isinstance(listed, Exception):
         failures.append(f"{name} could not be listed: {listed}")
@@ -185,6 +210,8 @@ class DomainsMixin:
         failures.append(f"the routing files on {hostname} could not be listed: {listing}")
       else:
         routes[hostname] = parse_route_listing(listing[1])
+        Workers().record_networks(hostname, {network.container_id: network.subnets for network in parse_networks(listing[1])},
+                                  listed_at)
 
     domains = {domain.id: domain for domain in Domain.select()}
     configs = {domain_id: capture(domain) for domain_id, domain in domains.items()}
@@ -203,9 +230,9 @@ class DomainsMixin:
 
     for domain_id, snapshot in configs.items():
       domain = domains[domain_id]
-      if snapshot.worker is not None:
-        listed = routes.get(snapshot.worker)
-        Domains().record_route(domain, snapshot.worker, RouteObservation("unreachable") if listed is None else
+      for hostname in snapshot.workers:
+        listed = routes.get(hostname)
+        Domains().record_route(domain, hostname, RouteObservation("unreachable") if listed is None else
                                RouteObservation("present", listed[domain_id]) if domain_id in listed else RouteObservation("absent"))
       if not isinstance(zone, Exception) and not isinstance(tunnels, Exception):
         records = [record for record in zone if record.get("comment") == snapshot.dns_comment]
@@ -222,15 +249,17 @@ class DomainsMixin:
     self.request_domain_applies(domain_id for domain_id, state in self.domain_states(domains.values()).items()
                                 if state.view.status == "error" or state.view.reason in ("drifted", "not_applied"))
     self.request_discovery()
+    self.request_traefik_networks()
     if failures:
       Notifications().notify("The domains could not all be checked: " + "; ".join(failures), "error", "/domains")
       raise TaskFailed()
     logger.info(f"Domains reconciled on {len(routes)} worker(s).")
 
   async def remove_obsolete_routes(self, hostname: str, listed, configs: dict[str, DomainConfig]):
-    """Removes, in one command, the routing files on the worker among `listed` (Domain ids) whose Domain is gone or
-    goes to another worker; never for its container's state, which is its apply's."""
-    obsolete = sorted(domain_id for domain_id in listed if domain_id not in configs or configs[domain_id].worker != hostname)
+    """Removes, in one command, the Domains' files on the worker among `listed` (Domain ids) whose Domain is gone or has
+    no file there: neither its own worker nor one with a container of an application it allows; never for its
+    container's state, which is its apply's."""
+    obsolete = sorted(domain_id for domain_id in listed if domain_id not in configs or hostname not in configs[domain_id].workers)
     if obsolete:
       await Tailscale().exec_command(hostname, "rm -f " + " ".join(
           f"{config.WORKER_HOME_DIR}/traefik/dynamic/{domain_artifact_name('file', domain_id)}" for domain_id in obsolete), timeout=30)
