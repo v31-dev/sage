@@ -51,7 +51,7 @@ After compaction, reread the relevant `docs/` page before continuing.
 | `app/services/manager/` | Manager singleton (mixins): the operation orchestrator |
 | `app/services/db/` | Peewee models, storage fields, encryption, DB bootstrap and the migration runner (`migrator.py`); `data.db`'s baseline and steps in `migrations.py`, as each package owning SQLite files keeps its own |
 | `app/services/applications/` | Project, Application, Volume and container-placement commands, their value rules, deploy input capture, lookups, the application and project payloads and update publication |
-| `app/services/domains/` | Domain commands, routing config, artifact names and route listing, host and origin derivation, the pure apply-status decision, discovery's services, files and fingerprint, and update publication |
+| `app/services/domains/` | Domain commands, routing config, artifact names and route listing, host and origin derivation, a Domain's callers (its file on each worker, their fingerprints and the aliases), the pure apply-status decision, discovery's services, files and fingerprint, and update publication |
 | `app/services/workers/` | Worker row commands (add with a subdomain, subdomain change, removal), the `Workers` owner of setup outcomes and applied certificates, the worker state and payload, infrastructure rendering and its fingerprint, and the pure worker status and reboot decisions |
 | `app/services/history.py` | Container and worker event append, task parts and history retention |
 | `app/services/backups/` | Backup key policy (archives by volume and placement id), the catalog's reconciliation with the configured store, Backup row commands, download links and the backups' payload |

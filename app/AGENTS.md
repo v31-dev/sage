@@ -153,13 +153,15 @@ Each resource's own rules, on top of the root's working rules 9–13. The workfl
   `Domains`, and `syncing` comes from the queue. `Domain.container` owns a name's binding: use `Container.domains`,
   with no application-level domain collection. Domain changes and queue state tell the linked application's and
   worker's views.
-- An apply never holds its container's scope, and checks its worker and name again before any I/O. Its route follows
-  the container's `routable` at the apply, and unknown removes nothing. It certifies only the fingerprint it applied;
-  an edit during it queues another.
-- The Domain pass and worker setup remove a routing file only by binding (its Domain gone or bound to another worker),
-  never for its container's state; a route left behind is withdrawn by requesting the pass. The pass never awaits the
-  applies it requests, and a failed pass leaves a Domain's successful apply proof alone. A file in Traefik's folders in
-  none of the forms this version writes there is an older version's, removed when worker setup writes the stack.
+- An apply never holds its container's scope, and checks its workers and name again before any I/O. Its files follow
+  the container's `routable` at the apply, and unknown removes nothing. A file on a callers' worker is built from the
+  networks the apply lists there itself, never from memory, and carries that worker's fingerprint, which covers the
+  callers' subnets. It certifies only the fingerprints it applied; an edit during it queues another.
+- The Domain pass and worker setup remove a Domain's file only by binding (its Domain gone, or that worker neither its
+  own nor one with a container of an application it allows), never for its container's state; a route left behind is
+  withdrawn by requesting the pass. The pass never awaits the applies it requests, and a failed pass leaves a Domain's
+  successful apply proof alone. A file in Traefik's folders in none of the forms this version writes there is an older
+  version's, removed when worker setup writes the stack.
 - A failed apply does not retry itself: its end requests discovery only, and the passes retry. A failed saved edit
   withdraws outdated owned routing where reachable and reports pending or error, leaving the container's runtime
   alone; it checks against the current configuration first, keeps artifacts already correct, and never takes unknown

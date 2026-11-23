@@ -301,17 +301,20 @@ see the name's own certificate. Any other application is refused: its lookup fin
 which its network can't reach, so the call times out.
 
 Inside an allowed application's network the name is an alias of Traefik's attachment there, so Docker's DNS answers
-it with Traefik on that same network. Traefik tells the caller by its network's subnet, from the callers' file
-(`traefik/dynamic/_callers.yml`) that Sage writes on each worker:
+it with Traefik on that same network. Traefik tells the caller by its network's subnet, from the Domain's own file on
+the caller's worker (`traefik/dynamic/domain-<id>.yml`, which the Domain's apply writes on its own worker and on each
+worker with a container of an application it allows):
 
 - A name routed on that worker goes to the Domain's own service, with its headers and allowed origins. The application
   sees the caller container's own address in `X-Forwarded-For`.
 - A name on another worker passes through unopened to that worker's tailnet address on 443 or 8443, where the
   Domain's route admits it as the tailnet and ends TLS. The application sees the calling worker's tailnet address.
 
-A change to what a Domain allows, to its name or to a worker's address reaches every worker within seconds. A
-change to the names an application may call attaches Traefik to its network again, so that application's own names
-pause for about a second on that worker.
+Those files are the Domain's, so a change to what it allows, to its name, to where its callers run or to a caller's
+subnet shows it syncing and then synced like any edit, a failure to write one is its apply's error, and the Domain pass
+retries it within five minutes. Rewriting a file can interrupt the name's routes for a moment. A change to the names
+an application may call attaches Traefik to its network again, so that application's own names pause for about a
+second on that worker.
 
 ### Client Address
 
