@@ -95,8 +95,9 @@ Routes in `ui/src/router/index.ts` currently cover:
 
 A container card shows its worker with the worker's status, and a Domains section whose + adds a domain to that
 container (`DomainDialog`, the container fixed). Each domain is a `DomainCard`, the Domains page's card without its
-application and worker: its type, service, pool and, for an internal or TCP name, its worker's certificate, then its
-address with Edit and Delete. The card reads `container.domains` from the application's pushed data. A domain stays
+application and worker: its type, service, pool, the applications allowed to call it and, for an internal or TCP name,
+its worker's certificate, then its address with Edit and Delete. `DomainDialog` chooses those applications, for an
+internal or TCP name only, from every project's applications (`fetchProjects`). The card reads `container.domains` from the application's pushed data. A domain stays
 on its container: moving a name is deleting it and adding it on another container.
 
 The Home summary reads project and application counts, worker/container/Domain state counts, succeeded and failed

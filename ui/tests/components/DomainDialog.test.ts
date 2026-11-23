@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import DomainDialog from '@/components/DomainDialog.vue'
 import {
   createDomain,
+  fetchProjects,
   updateDomain,
   type AppInfo,
   type Domain,
@@ -16,6 +17,10 @@ vi.mock('@/services/api', async importOriginal => ({
   ...(await importOriginal<typeof import('@/services/api')>()),
   createDomain: vi.fn(async () => ({})),
   updateDomain: vi.fn(async () => ({})),
+  fetchProjects: vi.fn(async () => [
+    { name: 'alpha', label: 'Alpha', applications: [{ id: 3, name: 'api', label: 'API' }] },
+    { name: 'demo', label: 'Demo', applications: [{ id: 1, name: 'web', label: 'Web' }] },
+  ]),
 }))
 
 const application = { name: 'web', label: 'Web', project: { name: 'demo', label: 'Demo' } }
@@ -32,6 +37,7 @@ const domain = (overrides: Partial<Domain> = {}): Domain => ({
   address: 'https://shop.example.test',
   worker: 'w1',
   container: { id: '1', worker: 'w1', application },
+  callers: [],
   view: { status: 'synced', conforms: true, reason: null, error: null },
   created_at: '2026-01-01T00:00:00',
   updated_at: '2026-01-01T00:00:00',
@@ -68,6 +74,15 @@ describe('the domain dialog', () => {
           DialogTitle: inline,
           DialogDescription: inline,
           DialogFooter: inline,
+          DropdownMenu: inline,
+          DropdownMenuTrigger: inline,
+          DropdownMenuContent: inline,
+          DropdownMenuCheckboxItem: {
+            props: ['modelValue'],
+            emits: ['update:modelValue'],
+            template:
+              '<button data-caller :data-checked="modelValue" @click="$emit(\'update:modelValue\', !modelValue)"><slot /></button>',
+          },
         },
       },
     })
@@ -75,6 +90,7 @@ describe('the domain dialog', () => {
       .findAll('button')
       .find(button => ['Add domain', 'Edit'].includes(button.attributes('aria-label') ?? ''))!
       .trigger('click')
+    await flushPromises()
     return wrapper
   }
 
@@ -181,6 +197,48 @@ describe('the domain dialog', () => {
       '7',
       expect.objectContaining({ type: 'tcp', cors_origins: null })
     )
+  })
+
+  const callerButton = (wrapper: Awaited<ReturnType<typeof open>>, label: string) =>
+    wrapper.findAll('[data-caller]').find(button => button.text() === label)!
+
+  it('opens an internal name with its callers chosen and saves the ones chosen then', async () => {
+    const wrapper = await open({
+      domain: domain({ type: 'internal', callers: [{ id: 1, ...application }] }),
+    })
+    expect(fetchProjects).toHaveBeenCalled()
+    expect(wrapper.get('#domain-callers').text()).toBe('Demo / Web')
+    expect(callerButton(wrapper, 'Web').attributes('data-checked')).toBe('true')
+
+    await callerButton(wrapper, 'API').trigger('click')
+    await callerButton(wrapper, 'Web').trigger('click')
+    expect(wrapper.get('#domain-callers').text()).toBe('Alpha / API')
+    await save(wrapper, 'Save')
+
+    expect(updateDomain).toHaveBeenCalledWith('7', expect.objectContaining({ callers: [3] }))
+  })
+
+  it('adds an internal or TCP name with no callers when none is chosen', async () => {
+    const wrapper = await open({ container: { id: '2', worker: 'w2' } })
+    vm(wrapper).type = 'tcp'
+    await flushPromises()
+    expect(wrapper.get('#domain-callers').text()).toBe('None')
+    await wrapper.get('#domain-name').setValue('db')
+    await save(wrapper, 'Add')
+
+    expect(createDomain).toHaveBeenCalledWith(expect.objectContaining({ type: 'tcp', callers: [] }))
+  })
+
+  it('has no callers for a public name and sends none', async () => {
+    const wrapper = await open({
+      domain: domain({ type: 'internal', callers: [{ id: 1, ...application }] }),
+    })
+    vm(wrapper).type = 'public'
+    await flushPromises()
+    expect(wrapper.find('#domain-callers').exists()).toBe(false)
+    await save(wrapper, 'Save')
+
+    expect(vi.mocked(updateDomain).mock.calls[0][1]).not.toHaveProperty('callers')
   })
 
   it('retains the entered origins when the backend rejects them', async () => {

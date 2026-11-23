@@ -144,10 +144,11 @@ class DomainsMixin:
                   + ("its container's state to be known." if goal is None else f"worker {worker}."))
 
   def domain_edited(self, domain_id: str):
-    """After the domain's edit (its command): it is applied as it is configured now, and the pass withdraws what the edit
-    left behind, such as its route on the worker it was on."""
+    """After the domain's edit (its command): it is applied as it is configured now, the pass withdraws what the edit
+    left behind, such as its route on the worker it was on, and every worker's callers follow it."""
     self.request_domain_applies([domain_id])
     self.request_domain_reconciliation()
+    self.request_traefik_networks()
 
   def application_edited(self, application_id: int, changed: set[str]):
     """After an application's edit changed these fields (its command): the Domains of its containers are applied as

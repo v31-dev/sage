@@ -539,6 +539,13 @@ class TestDomainApplies:
     await manager.delete_container(container.id)
     assert manager.traefik_networks == ["w1", "w1"]
 
+  async def test_a_delete_of_a_container_with_domains_has_every_workers_callers_follow_it(
+          self, manager, worker_host, container, domains):
+    await deploy(manager, container)
+    manager.traefik_networks.clear()
+    await manager.delete_container(container.id)
+    assert manager.traefik_networks == [None]
+
   async def test_a_failed_deploy_has_them_applied(self, manager, worker_host, container, domains):
     worker_host.flag("up-fails")
     with pytest.raises(TaskFailed):

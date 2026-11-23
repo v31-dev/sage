@@ -9,6 +9,7 @@ from datetime import datetime
 import config
 from services.containers.placement import runtime_name
 from services.domains import discovery
+from services.domains.callers import CALLERS_FILE
 from services.domains.config import domain_artifact_owner
 from services.worker_reports import Received, is_current
 from services.workers.rendering import PRIVATE_RANGES, TRAEFIK_CONTAINER, TRAEFIK_FOLDERS
@@ -157,14 +158,15 @@ def reboot_outcome(baseline_boot_id: str, boot_id: str | None, ready: bool | Non
 def stray_traefik_files(listing: list[str]) -> list[str]:
   """The entries of a listing of `TRAEFIK_FOLDERS` (`rendering.traefik_files_command`) in none of the forms this
   version writes there: the stack's `config.yml`, the certificates' `certs.yml` and `managed` folder, the Domains'
-  routing files and the discovery files. What an older version left, removed when the stack is written."""
+  routing files, the callers' file and the discovery files. What an older version left, removed when the stack is
+  written."""
   dynamic, certs = TRAEFIK_FOLDERS
 
   def stray(path: str) -> bool:
     folder, _, name = path.rpartition("/")
     if folder == certs:
       return name != "managed"
-    return folder == dynamic and not (name in ("config.yml", "certs.yml") or domain_artifact_owner("file", name)
+    return folder == dynamic and not (name in ("config.yml", "certs.yml", CALLERS_FILE) or domain_artifact_owner("file", name)
                                       or (name.startswith(discovery.PREFIX) and name.endswith(discovery.SUFFIX)))
   return sorted(path for path in (line.strip() for line in listing) if stray(path))
 
@@ -183,23 +185,63 @@ def edge_subnets(listing: list[str]) -> tuple[str, ...]:
   return tuple(subnets)
 
 
-def traefik_network_changes(listing: list[str], containers: set[str]) -> tuple[tuple[str, ...], tuple[str, ...]]:
-  """The applications' networks to attach Traefik to and those to remove, from a listing of a line per network (its
-  name, its container's id and its members, comma-separated) and the ids of the worker's containers in the database:
-  Traefik joins the network of each of those containers, and a network of a container gone that only Traefik is on
-  goes. A line naming anything but Sage's network of its container is left out."""
-  attach, remove = [], []
+@dataclass(frozen=True)
+class AppNetwork:
+  """An application's network on a worker as Docker lists it: its name, its container's id, its subnets and the
+  containers on it."""
+  name: str
+  container_id: str
+  subnets: tuple[str, ...]
+  members: frozenset[str]
+
+
+def parse_networks(listing: list[str]) -> tuple[AppNetwork, ...]:
+  """The applications' networks from a listing of a line per network: its name, its container's id, its subnets and
+  its members, each list comma-separated. A line naming anything but Sage's network of its container, or a subnet
+  that isn't one, is left out."""
+  networks = []
   for line in listing:
-    fields = line.split(maxsplit=2)
-    if len(fields) < 2 or not re.fullmatch(OPAQUE_ID, fields[1]) or fields[0] != runtime_name(fields[1]):
+    fields = line.split(" ", 3)
+    if len(fields) < 3 or not re.fullmatch(OPAQUE_ID, fields[1]) or fields[0] != runtime_name(fields[1]):
       continue
-    members = {member for member in (fields[2] if len(fields) > 2 else "").split(",") if member}
-    if fields[1] in containers:
-      if TRAEFIK_CONTAINER not in members:
-        attach.append(fields[0])
-    elif members <= {TRAEFIK_CONTAINER}:
-      remove.append(fields[0])
+    try:
+      subnets = tuple(str(ipaddress.ip_network(subnet)) for subnet in fields[2].split(",") if subnet)
+    except ValueError:
+      continue
+    members = frozenset(member for member in (fields[3] if len(fields) > 3 else "").strip().split(",") if member)
+    networks.append(AppNetwork(fields[0], fields[1], subnets, members))
+  return tuple(networks)
+
+
+def traefik_network_changes(networks: tuple[AppNetwork, ...], containers: set[str]) -> tuple[tuple[str, ...], tuple[str, ...]]:
+  """The applications' networks to attach Traefik to and those to remove, given the ids of the worker's containers in
+  the database: Traefik joins the network of each of those containers, and a network of a container gone that only
+  Traefik is on goes."""
+  attach, remove = [], []
+  for network in networks:
+    if network.container_id in containers:
+      if TRAEFIK_CONTAINER not in network.members:
+        attach.append(network.name)
+    elif network.members <= {TRAEFIK_CONTAINER}:
+      remove.append(network.name)
   return tuple(attach), tuple(remove)
+
+
+def parse_aliases(lines: list[str]) -> dict[str, frozenset[str]]:
+  """Traefik's aliases on each of its networks, from a line per network: its name, then its aliases comma-separated."""
+  aliases = {}
+  for line in lines:
+    network, _, names = line.strip().partition(" ")
+    if network:
+      aliases[network] = frozenset(name for name in names.split(",") if name)
+  return aliases
+
+
+def alias_changes(networks: tuple[AppNetwork, ...], wanted: dict[str, tuple[str, ...]],
+                  current: dict[str, frozenset[str]]) -> tuple[str, ...]:
+  """The applications' networks Traefik is on with other aliases than `wanted`, to attach again with those."""
+  return tuple(network.name for network in networks if TRAEFIK_CONTAINER in network.members and network.name in wanted
+               and frozenset(wanted[network.name]) != current.get(network.name, frozenset()))
 
 
 def dns_exceptions(resolv_conf: list[str]) -> tuple[str, ...]:

@@ -29,6 +29,8 @@ export interface Domain {
   address: string | null
   worker: string | null
   container: { id: string; worker: string; application: ContainerApplication }
+  // The applications allowed to call an internal or TCP name from their containers, by project and name.
+  callers: (ContainerApplication & { id: number })[]
   view: DomainView
   created_at: string
   updated_at: string

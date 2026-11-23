@@ -91,6 +91,16 @@ async function onConfirmDelete() {
         </template>
         <dt class="text-muted-foreground">Port</dt>
         <dd data-port>{{ props.domain.port }}</dd>
+        <template v-if="props.domain.callers.length">
+          <dt class="text-muted-foreground">Callers</dt>
+          <dd class="min-w-0" data-callers>
+            {{
+              props.domain.callers
+                .map(caller => `${caller.project.label} / ${caller.label}`)
+                .join(', ')
+            }}
+          </dd>
+        </template>
         <template v-if="!props.inContainer">
           <dt class="text-muted-foreground">Worker</dt>
           <dd class="flex min-w-0 flex-wrap items-center gap-2">

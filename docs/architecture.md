@@ -289,8 +289,29 @@ openssl s_client -connect <name>.<subdomain>.int.<domain>:8443 -servername <name
 ```
 
 Applications don't reach each other directly: each container is on a network of its own
-([Application Networks](#application-networks)), and an internal or TCP name admits tailnet devices only, so an
-application's call to another's internal name, on its worker or another, is refused.
+([Application Networks](#application-networks)), and an internal or TCP name admits tailnet devices and the
+applications its Domain allows ([Calls Between Applications](#calls-between-applications)).
+
+### Calls Between Applications
+
+An internal or TCP Domain lists the **applications allowed to call it** (none by default; a public name has none,
+since it is open to the Internet). An allowed application's containers, on any worker, call the name exactly as a
+tailnet device does (`https://api.red.int.<domain>`, `db.red.int.<domain>:8443`), with no setting of their own, and
+see the name's own certificate. Any other application is refused: its lookup finds the worker's tailnet address,
+which its network can't reach, so the call times out.
+
+Inside an allowed application's network the name is an alias of Traefik's attachment there, so Docker's DNS answers
+it with Traefik on that same network. Traefik tells the caller by its network's subnet, from the callers' file
+(`traefik/dynamic/_callers.yml`) that Sage writes on each worker:
+
+- A name routed on that worker goes to the Domain's own service, with its headers and allowed origins. The application
+  sees the caller container's own address in `X-Forwarded-For`.
+- A name on another worker passes through unopened to that worker's tailnet address on 443 or 8443, where the
+  Domain's route admits it as the tailnet and ends TLS. The application sees the calling worker's tailnet address.
+
+A change to what a Domain allows, to its name or to a worker's address reaches every worker within seconds. A
+change to the names an application may call attaches Traefik to its network again, so that application's own names
+pause for about a second on that worker.
 
 ### Client Address
 
@@ -374,6 +395,7 @@ Core entities:
 - `Application`
 - `Container`
 - `Domain`
+- `DomainCaller` (an application allowed to call an internal or TCP domain)
 - `Volume`
 - `ContainerEvent`
 - `WorkerEvent`
@@ -396,6 +418,7 @@ Relationships are centered on:
 - project -> applications
 - application -> containers, volumes, backups
 - container -> domains, events
+- domain -> the applications allowed to call it
 - worker -> containers, internal/TCP domains, events
 
 The [model writer index](operations.md#model-writer-index) lists every model's direct, queued and implicit

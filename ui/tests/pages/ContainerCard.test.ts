@@ -32,6 +32,7 @@ const domain = ({
     address: 'https://shop.example.test',
     worker: 'w1',
     container: { id: 'c1', worker: 'w1', application },
+    callers: [],
     view: {
       status,
       conforms: status === 'synced',

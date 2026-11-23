@@ -6,9 +6,9 @@ import pytest
 
 import config
 from services.worker_reports import ContainerReading, Received, Snapshot
-from services.workers.decisions import (SETUPS, SSH, STATUSES, TUNNELS, WorkerFacts, WorkerReport, addressable, connectivity, decide_worker,
-                                        discovery_member, dns_exceptions, edge_subnets, reboot_outcome, report_of, stray_traefik_files,
-                                        traefik_network_changes, workable, worker_claim_refusal, worker_owner)
+from services.workers.decisions import (SETUPS, SSH, STATUSES, TUNNELS, WorkerFacts, WorkerReport, addressable, alias_changes, connectivity,
+                                        decide_worker, discovery_member, dns_exceptions, edge_subnets, parse_aliases, parse_networks, reboot_outcome,
+                                        report_of, stray_traefik_files, traefik_network_changes, workable, worker_claim_refusal, worker_owner)
 from services.workers.rendering import traefik_files_command
 
 GOOD = WorkerReport("known", True)
@@ -226,21 +226,46 @@ class TestEdgeSubnets:
 class TestTraefikNetworkChanges:
   KEPT, RUNNING, GONE, EMPTY, ORPHAN = "1111111111111111", "2222222222222222", "3333333333333333", "4444444444444444", "5555555555555555"
 
-  def network(self, container_id, *members):
-    return f"sage-{container_id} {container_id} {''.join(member + ',' for member in members)}"
+  def network(self, container_id, *members, subnets="172.21.0.0/16,"):
+    return f"sage-{container_id} {container_id} {subnets} {''.join(member + ',' for member in members)}"
 
   def test_traefik_joins_each_containers_network_and_leaves_the_networks_of_containers_gone_that_only_it_is_on(self):
     listing = [self.network(self.KEPT, "sage-" + self.KEPT, "traefik"), self.network(self.RUNNING, "sage-" + self.RUNNING),
                self.network(self.GONE, "traefik"), self.network(self.EMPTY), self.network(self.ORPHAN, "sage-" + self.ORPHAN)]
-    assert traefik_network_changes(listing, {self.KEPT, self.RUNNING}) == (
+    assert traefik_network_changes(parse_networks(listing), {self.KEPT, self.RUNNING}) == (
         ("sage-" + self.RUNNING,), ("sage-" + self.GONE, "sage-" + self.EMPTY))
 
+  def test_a_network_is_read_with_its_subnets_and_members(self):
+    (network,) = parse_networks([self.network(self.KEPT, "traefik", "sage-" + self.KEPT, subnets="172.21.0.0/16,fd00:21::/64,")])
+    assert (network.name, network.container_id, network.subnets, network.members) == (
+        "sage-" + self.KEPT, self.KEPT, ("172.21.0.0/16", "fd00:21::/64"), frozenset({"traefik", "sage-" + self.KEPT}))
+
   @pytest.mark.parametrize("line", ['time="2026-11-23T10:00:00Z" level=warning msg="a warning"', "",
-                                    "sage-1111111111111111", "sage-x;reboot 1111111111111111 traefik,",
-                                    "sage-2222222222222222 1111111111111111 traefik,", "sage-shop shop traefik,"],
-                           ids=["a-warning", "blank", "no-id", "a-planted-name", "another-containers-name", "not-an-id"])
+                                    "sage-1111111111111111", "sage-x;reboot 1111111111111111 172.21.0.0/16, traefik,",
+                                    "sage-2222222222222222 1111111111111111 172.21.0.0/16, traefik,",
+                                    "sage-shop shop 172.21.0.0/16, traefik,",
+                                    "sage-1111111111111111 1111111111111111 172.21.0.1/16, traefik,",
+                                    "sage-1111111111111111 1111111111111111 0.0.0.0/0;reboot, traefik,"],
+                           ids=["a-warning", "blank", "no-id", "a-planted-name", "another-containers-name", "not-an-id",
+                                "an-address-not-a-subnet", "a-planted-subnet"])
   def test_a_line_that_is_not_sages_network_of_its_container_is_left_out(self, line):
-    assert traefik_network_changes([line], set()) == ((), ())
+    assert parse_networks([line]) == ()
+
+
+class TestAliasChanges:
+  def network(self, name, *members):
+    return parse_networks([f"sage-{name} {name} 172.21.0.0/16, {''.join(member + ',' for member in members)}"])[0]
+
+  def test_traefiks_aliases_are_read_per_network(self):
+    assert parse_aliases(["bridge ", "sage-1111111111111111 api.red.int.example.test,db.red.int.example.test", ""]) == {
+        "bridge": frozenset(), "sage-1111111111111111": frozenset({"api.red.int.example.test", "db.red.int.example.test"})}
+
+  def test_a_network_traefik_is_on_with_other_names_than_wanted_is_attached_again(self):
+    same, other, joining, unowned = (self.network("1111111111111111", "traefik"), self.network("2222222222222222", "traefik"),
+                                     self.network("3333333333333333"), self.network("4444444444444444", "traefik"))
+    wanted = {same.name: ("a.test",), other.name: ("a.test", "b.test"), joining.name: ("a.test",)}
+    current = {same.name: frozenset({"a.test"}), other.name: frozenset({"a.test"}), unowned.name: frozenset({"x.test"})}
+    assert alias_changes((same, other, joining, unowned), wanted, current) == (other.name,)
 
 
 class TestDnsExceptions:
@@ -300,7 +325,7 @@ def test_what_an_older_version_left_in_traefiks_folders_is_stray_and_nothing_thi
   dynamic.mkdir()
   (tmp_path / "traefik/traefik.yml").write_text("")
   current = ["config.yml", "certs.yml", "domain-0123456789abcdef.yml", "_discovery-public-api.yml",
-             "_discovery-internal-api.yml"]
+             "_discovery-internal-api.yml", "_callers.yml"]
   old = ["shop-web-public-shop.yml", "shop-web-internal-web-eu.yml", "domain-shop.yml", "notes.txt"]
   for name in (*current, *old):
     (dynamic / name).write_text("")

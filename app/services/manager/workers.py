@@ -12,6 +12,7 @@ from services.certs import TEMPLATE_DIGEST, Certs
 from services.cloudflare import Cloudflare
 from services.containers.placement import LABEL_CONTAINER, runtime_owner
 from services.db.models import Application, Container, Domain, Instance, Project, Worker
+from services.domains.callers import CALLERS_FILE, called_names, caller_aliases, render_callers
 from services.domains.config import parse_route_listing, routes_command
 from services.domains.updates import domain_changed
 from services.history import record_worker_event
@@ -21,8 +22,8 @@ from services.tailscale import Tailscale
 from services.updates import Fact, Updates, UpdateSource
 from services.worker_reports import WorkerReports
 from services.workers import commands
-from services.workers.decisions import (TASKS, addressable, dns_exceptions, edge_subnets, reboot_outcome, stray_traefik_files,
-                                        traefik_network_changes, worker_claim_refusal, worker_owner)
+from services.workers.decisions import (TASKS, addressable, alias_changes, dns_exceptions, edge_subnets, parse_aliases, parse_networks,
+                                        reboot_outcome, stray_traefik_files, traefik_network_changes, worker_claim_refusal, worker_owner)
 from services.workers.rendering import (DEFAULT_DNS_CONTAINER, EDGE_NETWORK_CREATED, FIREWALL_FILES, FIREWALL_UNIT, FIREWALL_UNIT_PATH,
                                         TRAEFIK_CONTAINER, InfraInputs, applications_memory_mb, edge_network_command, firewall_fingerprint,
                                         infra_fingerprint, remove_edge_network_command, render_firewall, render_infrastructure, stack_scope,
@@ -299,8 +300,11 @@ class WorkersMixin:
         self.request_certificate_renewal()
       elif not force and not all(state["synced"] for state in certificates):
         self.request_certificate_distribution(hostname)
+      moved = Workers().setup_address(hostname) != address
       Workers().record_setup(hostname, "succeeded", address)
       self.setup_failures.pop(hostname, None)
+      if moved:
+        self.request_traefik_networks()
       self.request_domain_reconciliation()
       if force:
         self.request_certificate_distribution(hostname, force=True)
@@ -339,13 +343,17 @@ class WorkersMixin:
       logger.info(f"Worker {hostname}'s edge network was missing and is created again; its setup follows.")
       self.request_convergence(hostname)
 
-  def request_traefik_networks(self, hostname: str):
-    """Queues Traefik's attachment to the worker's applications' networks. It holds the stack's scope, as everything
-    that recreates Traefik does, and none of a container's, so it waits for neither a deploy nor a delete; one
-    requested while one runs follows it."""
-    self.add_task(task=self.sync_traefik_networks, key=("sync_traefik_networks", hostname), scopes={stack_scope(hostname)},
-                  executor="app", params={"hostname": hostname}, labels={"Worker": hostname},
-                  on_conflict=OnConflict.REPLACE, quiet=True)
+  def request_traefik_networks(self, hostname: str | None = None):
+    """Queues Traefik's attachment to the applications' networks, with the callers' file, on `hostname` or on every
+    worker reachable and set up: a change to what a name allows, to its name or to a worker's address reaches the
+    callers on every worker. It holds the stack's scope, as everything that recreates Traefik does, and none of a
+    container's, so it waits for neither a deploy nor a delete; one requested while one runs follows it."""
+    hostnames = [hostname] if hostname is not None else [worker.hostname for worker in Worker.select(Worker.hostname)
+                                                         if is_workable(worker.hostname)]
+    for name in hostnames:
+      self.add_task(task=self.sync_traefik_networks, key=("sync_traefik_networks", name), scopes={stack_scope(name)},
+                    executor="app", params={"hostname": name}, labels={"Worker": name},
+                    on_conflict=OnConflict.REPLACE, quiet=True)
 
   async def sync_traefik_networks(self, hostname: str):
     if not is_workable(hostname):
@@ -354,21 +362,57 @@ class WorkersMixin:
     await self._attach_traefik(hostname)
 
   async def _attach_traefik(self, hostname: str):
-    """Attaches Traefik to the network of each of the worker's containers and removes the networks of containers gone,
-    which their Compose project leaves while Traefik is on them. A network that went meanwhile is not a failure."""
-    fields = f"{{{{.Name}}}} {{{{index .Labels \"{LABEL_CONTAINER}\"}}}} {{{{range .Containers}}}}{{{{.Name}}}},{{{{end}}}}"
+    """Writes the callers' file when it changed, then attaches Traefik to the network of each of the worker's
+    containers, under the names that application may call, attaches it again where those names changed, and removes
+    the networks of containers gone, which their Compose project leaves while Traefik is on them. A network that went
+    meanwhile is not a failure."""
+    fields = (f"{{{{.Name}}}} {{{{index .Labels \"{LABEL_CONTAINER}\"}}}} {{{{range .IPAM.Config}}}}{{{{.Subnet}}}},{{{{end}}}} "
+              "{{range .Containers}}{{.Name}},{{end}}")
     _, listing = await Tailscale().exec_command(
         hostname, f"ids=$(docker network ls -q --filter label={LABEL_CONTAINER}); [ -z \"$ids\" ] || "
         f"docker network inspect -f '{fields}' $ids", timeout=30)
-    containers = {container.id for container in Container.select(Container.id).where(Container.worker == hostname)}
-    attach, remove = traefik_network_changes(listing, containers)
+    applications = {container.id: container.application_id
+                    for container in Container.select(Container.id, Container.application).where(Container.worker == hostname)}
+    networks = parse_networks(listing)
+    owners = {network.name: applications[network.container_id] for network in networks if network.container_id in applications}
+    names = called_names(get_env("DOMAIN"))
+    addresses = {name.worker: Tailscale().address(name.worker) for name in names}
+
+    callers = render_callers(names, hostname, {owners[network.name]: network.subnets for network in networks
+                                               if network.name in owners}, addresses)
+    path = f"{config.WORKER_HOME_DIR}/traefik/dynamic/{CALLERS_FILE}"
+    _, written = await Tailscale().exec_command(hostname, f"head -n 1 {path} 2>/dev/null; true", timeout=30)
+    if callers is None and written:
+      await Tailscale().exec_command(hostname, f"rm -f {path}", timeout=30)
+      logger.info(f"No name on {hostname} has callers any more; its callers' file is removed.")
+    elif callers is not None and [line.strip() for line in written] != [callers.splitlines()[0]]:
+      await Tailscale().sync_file(hostname, config.TEMPLATES_DIR / "worker/file", path, {"CONTENT": callers})
+      logger.info(f"The callers' file on {hostname} is written.")
+
+    aliases = caller_aliases(names, hostname, owners, addresses)
+    attach, remove = traefik_network_changes(networks, set(applications))
+    current = {}
+    if any(TRAEFIK_CONTAINER in network.members for network in networks):
+      _, lines = await Tailscale().exec_command(
+          hostname, f"docker inspect -f '{{{{range $name, $network := .NetworkSettings.Networks}}}}{{{{$name}}}} "
+          f"{{{{join $network.Aliases \",\"}}}}{{{{println}}}}{{{{end}}}}' {TRAEFIK_CONTAINER}", timeout=30)
+      current = parse_aliases(lines)
+    again = alias_changes(networks, aliases, current)
     gone = "! docker network inspect {} >/dev/null 2>&1"
-    commands = [f"{{ docker network connect {name} {TRAEFIK_CONTAINER} || {gone.format(name)}; }}" for name in attach] + [
+
+    def connect(name):
+      return " ".join(["docker network connect", *(f"--alias {shlex.quote(alias)}" for alias in aliases.get(name, ())),
+                       name, TRAEFIK_CONTAINER])
+
+    commands = [f"{{ {connect(name)} || {gone.format(name)}; }}" for name in attach] + [
+        f"{{ docker network disconnect {name} {TRAEFIK_CONTAINER} && {connect(name)} || {gone.format(name)}; }}"
+        for name in again] + [
         f"{{ docker network disconnect -f {name} {TRAEFIK_CONTAINER} 2>/dev/null; "
         f"docker network rm {name} >/dev/null 2>&1 || {gone.format(name)}; }}" for name in remove]
     if commands:
       await Tailscale().exec_command(hostname, " && ".join(commands), timeout=60)
-      logger.info(f"Traefik on {hostname} is attached to {len(attach)} more networks; {len(remove)} unused ones removed.")
+      logger.info(f"Traefik on {hostname} is attached to {len(attach)} more networks and again to {len(again)} whose "
+                  f"names changed; {len(remove)} unused ones removed.")
 
   def request_worker_tmp_cleanup(self):
     """Queues, for each worker reachable and set up, the removal of its temp folder (`WORKER_TMP_DIR`). It holds the
@@ -545,11 +589,12 @@ class WorkersMixin:
 
   def worker_subdomain_changed(self, hostname: str):
     """After the worker's subdomain changed (its command): its `*.<subdomain>.int` record moves with its convergence,
-    its internal and TCP domains, whose names are under it, are applied again, and its certificate is renewed for the
-    new names."""
+    its internal and TCP domains, whose names are under it, are applied again, its certificate is renewed for the new
+    names, and every worker's callers follow them."""
     self.request_convergence(hostname, changed=True)
     self.request_domain_applies(domain.id for domain in Domain.select(Domain.id).where(Domain.namespace_worker == hostname))
     self.request_certificate_renewal()
+    self.request_traefik_networks()
 
   async def _boot_id(self, hostname: str) -> str:
     _, lines = await Tailscale().exec_command(hostname, "cat /proc/sys/kernel/random/boot_id", timeout=10)

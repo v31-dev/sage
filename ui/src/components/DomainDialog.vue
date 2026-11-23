@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { toast } from 'vue-sonner'
-import { Edit, Plus } from 'lucide-vue-next'
+import { ChevronDown, Edit, Plus } from 'lucide-vue-next'
 import {
   Dialog,
   DialogContent,
@@ -35,10 +35,23 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuLabel,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { Spinner } from '@/components/ui/spinner'
 import IconButton from '@/components/IconButton.vue'
 import { useAppStore } from '@/stores/app'
-import { type Domain, createDomain, updateDomain } from '@/services/api'
+import {
+  type Domain,
+  type ProjectPage,
+  createDomain,
+  fetchProjects,
+  updateDomain,
+} from '@/services/api'
 
 // Adds a domain to `container`, or edits `domain`, which stays on its container. The container's worker gives an
 // internal or TCP name its subdomain.
@@ -64,6 +77,8 @@ const port = ref(80)
 const service = ref('')
 const pool = ref('')
 const corsOrigins = ref('')
+const callers = ref<number[]>([])
+const projects = ref<ProjectPage[]>([])
 const errorMessage = ref('')
 const submitting = ref(false)
 
@@ -79,6 +94,24 @@ const suffix = computed(() => {
   return `.${subdomain.value}.int.${base}${type.value === 'tcp' ? ':8443' : ''}`
 })
 const ready = computed(() => !!type.value && !!name.value.trim())
+const callable = computed(() => type.value === 'internal' || type.value === 'tcp')
+// The chosen applications as "Project / Application", from the domain's own until the applications have loaded.
+const chosen = computed(() => {
+  const labels = new Map(
+    (props.domain?.callers ?? []).map(caller => [
+      caller.id,
+      `${caller.project.label} / ${caller.label}`,
+    ])
+  )
+  for (const project of projects.value)
+    for (const application of project.applications)
+      labels.set(application.id, `${project.label} / ${application.label}`)
+  return callers.value.map(id => labels.get(id) ?? `#${id}`).join(', ')
+})
+
+function toggleCaller(id: number, allowed: boolean | 'indeterminate') {
+  callers.value = allowed === true ? [...callers.value, id] : callers.value.filter(c => c !== id)
+}
 
 function openDialog() {
   errorMessage.value = ''
@@ -88,7 +121,11 @@ function openDialog() {
   service.value = props.domain?.service ?? ''
   pool.value = props.domain?.pool ?? ''
   corsOrigins.value = props.domain?.cors_origins?.join('\n') ?? ''
+  callers.value = props.domain?.callers.map(caller => caller.id) ?? []
   open.value = true
+  fetchProjects()
+    .then(list => (projects.value = list))
+    .catch(() => (errorMessage.value = 'Failed to load the applications'))
 }
 
 async function onConfirm() {
@@ -108,6 +145,7 @@ async function onConfirm() {
               .split('\n')
               .map(origin => origin.trim())
               .filter(Boolean),
+      ...(callable.value && { callers: callers.value }),
     }
     if (props.domain) await updateDomain(props.domain.id, data)
     else await createDomain({ ...data, container: props.container.id })
@@ -176,6 +214,42 @@ async function onConfirm() {
             <FieldLabel for="domain-port"> Port </FieldLabel>
             <Input id="domain-port" v-model="port" type="number" />
             <FieldDescription>The container's port the name routes to.</FieldDescription>
+          </Field>
+          <Field v-if="callable">
+            <FieldLabel for="domain-callers">
+              Applications allowed to call it (optional)
+            </FieldLabel>
+            <DropdownMenu>
+              <DropdownMenuTrigger as-child>
+                <Button id="domain-callers" variant="outline" class="justify-between font-normal">
+                  <span class="truncate">{{ chosen || 'None' }}</span>
+                  <ChevronDown class="text-muted-foreground" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent
+                align="start"
+                class="max-h-72 w-(--reka-dropdown-menu-trigger-width)"
+              >
+                <template v-for="project in projects" :key="project.name">
+                  <DropdownMenuLabel v-if="project.applications.length">{{
+                    project.label
+                  }}</DropdownMenuLabel>
+                  <DropdownMenuCheckboxItem
+                    v-for="application in project.applications"
+                    :key="application.id"
+                    :model-value="callers.includes(application.id)"
+                    @update:model-value="toggleCaller(application.id, $event)"
+                    @select.prevent
+                  >
+                    {{ application.label }}
+                  </DropdownMenuCheckboxItem>
+                </template>
+              </DropdownMenuContent>
+            </DropdownMenu>
+            <FieldDescription>
+              Their containers can call this name from any worker; other applications can't. Tailnet
+              devices always can.
+            </FieldDescription>
           </Field>
           <Field v-if="type && type !== 'tcp'">
             <FieldLabel for="domain-cors"> Allowed origins (optional) </FieldLabel>

@@ -4,7 +4,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime
 
 from services.base import Base
-from services.db.models import Domain
+from services.db.models import Application, Domain, DomainCaller, Project
 from services.domains.config import DomainConfig, address
 from services.domains.decisions import ApplyOutcome, DomainFacts, DomainView, RouteObservation, decide_domain
 from services.domains.updates import domain_changed
@@ -92,7 +92,7 @@ def domain_state(config: DomainConfig, eligible: bool | None, worker_ready: bool
 
 def domain_payload(domain: Domain, state: DomainState, base_domain: str) -> dict:
   """The domain as its pages show it: its configuration, its full name and how it is reached, the worker its route goes
-  to, its container with its application, and its decided state."""
+  to, its container with its application, the applications allowed to call it, and its decided state."""
   container = domain.container
   application = container.application
   return {
@@ -115,6 +115,10 @@ def domain_payload(domain: Domain, state: DomainState, base_domain: str) -> dict
               "project": {"name": application.project.name, "label": application.project.label},
           },
       },
+      "callers": [{"id": caller.id, "name": caller.name, "label": caller.label,
+                   "project": {"name": caller.project.name, "label": caller.project.label}}
+                  for caller in Application.select(Application, Project).join(DomainCaller).switch(Application).join(Project)
+                  .where(DomainCaller.domain == domain.id).order_by(Project.name, Application.name)],
       "view": asdict(state.view),
       "created_at": domain.created_at,
       "updated_at": domain.updated_at,

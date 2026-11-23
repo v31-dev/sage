@@ -48,6 +48,7 @@ const domain = (
   address: 'https://shop.example.test',
   worker: 'w1',
   container: { id: '1', worker: 'w1', application },
+  callers: [],
   view: { status, conforms: status === 'synced', reason: status === 'error' ? 'dns' : null, error },
   created_at: '2026-01-01T00:00:00',
   updated_at: '2026-01-01T00:00:00',

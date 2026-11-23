@@ -33,6 +33,7 @@ class TestCreate:
     domain = Domain.get(Domain.name == "shop")
     assert (response.json(), domain.container_id) == ({"id": domain.id}, container.id)
     assert manager.called("request_domain_applies") == [(([domain.id],), {})]
+    assert manager.called("request_traefik_networks") == [((), {})]
 
   @pytest.mark.parametrize("linked, fields, status", [
       (None, {"name": "shop"}, 400), ("c0000000000000000", {"name": "shop"}, 404), ("own", {"name": "taken"}, 409),
@@ -68,6 +69,7 @@ class TestDelete:
     assert client.delete(f"{URL}/{domain.id}").status_code == 204
     assert Domain.select().count() == 0
     assert manager.called("request_domain_reconciliation") == [((), {})]
+    assert manager.called("request_traefik_networks") == [((), {})]
 
   def test_an_unknown_domain_is_a_404_and_asks_for_nothing(self, client, domain, manager):
     assert client.delete(f"{URL}/missing").status_code == 404

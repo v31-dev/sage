@@ -91,7 +91,7 @@ class Manager(DomainsMixin, QueueMixin):
 
   def __init__(self):
     self.pool = ThreadPoolExecutor(max_workers=2)
-    self.routable, self.ready, self.finished, self.discovered = {}, {}, [], 0
+    self.routable, self.ready, self.finished, self.discovered, self.traefik_networks = {}, {}, [], 0, []
     self.started_at = utcnow()
     self.queue_facts = self.domains_queue_facts()
     self.task_queue = TaskQueue(SCOPES, names=TASK_NAMES, executors={"app": self.pool},
@@ -100,6 +100,9 @@ class Manager(DomainsMixin, QueueMixin):
 
   def request_discovery(self):
     self.discovered += 1
+
+  def request_traefik_networks(self, hostname=None):
+    self.traefik_networks.append(hostname)
 
   def container_states(self, containers):
     return {container.id: SimpleNamespace(routable=self.routable.get(container.id), view=ContainerView(

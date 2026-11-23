@@ -237,7 +237,8 @@ def from_0_2_0(db: SqliteDatabase) -> list[dict]:
   """0.2.0's database: every application gets its response headers' changes, none yet, so each sends Sage's
   defaults. A domain belongs to its container and is deleted with it, so the domains 0.2.0 kept unlinked after their
   container's deletion are removed: they have no DNS record, and a route one left on a worker goes with the Domain
-  pass, as any Domain gone. Its actions list them, to add again."""
+  pass, as any Domain gone. Its actions list them, to add again. An internal or TCP domain gets the applications
+  allowed to call it, none yet."""
   db.execute_sql('ALTER TABLE "application" ADD COLUMN "response_headers" TEXT')
   logger.info("Applications get their response headers: none is changed, so every application sends the defaults.")
   domains = rows(db, "domain")
@@ -247,6 +248,17 @@ CREATE INDEX "domain_container_id" ON "domain" ("container_id");
 CREATE INDEX "domain_namespace_worker_id" ON "domain" ("namespace_worker_id");
 CREATE UNIQUE INDEX "domain_name_namespace_worker" ON "domain" ("name", coalesce(namespace_worker_id, ''));
 """, [row for row in domains if row["container_id"] is not None])
+  for statement in (
+      'CREATE TABLE "domaincaller" ("id" INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT, "created_at" DATETIME NOT NULL, '
+      '"updated_at" DATETIME NOT NULL, "domain_id" VARCHAR(255) NOT NULL, "application_id" INTEGER NOT NULL, '
+      'FOREIGN KEY ("domain_id") REFERENCES "domain" ("id") ON DELETE CASCADE, '
+      'FOREIGN KEY ("application_id") REFERENCES "application" ("id") ON DELETE CASCADE)',
+      'CREATE INDEX "domaincaller_domain_id" ON "domaincaller" ("domain_id")',
+      'CREATE INDEX "domaincaller_application_id" ON "domaincaller" ("application_id")',
+      'CREATE UNIQUE INDEX "domaincaller_domain_id_application_id" ON "domaincaller" ("domain_id", "application_id")',
+  ):
+    db.execute_sql(statement)
+  logger.info("Internal and TCP domains get the applications allowed to call them: none yet.")
   unlinked = sorted((row for row in domains if row["container_id"] is None), key=lambda row: (row["type"], row["name"]))
   actions = []
   for row in unlinked:

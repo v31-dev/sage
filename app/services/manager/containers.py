@@ -622,7 +622,8 @@ class ContainersMixin:
       await mark(container, "Removed from this worker")
     domains = detach_container(container.id)
     Containers().forget(container.id)
-    self.request_traefik_networks(container.worker_id)
+    # Its domains went with it, so every worker's callers follow; else only its network goes.
+    self.request_traefik_networks(None if domains else container.worker_id)
     if domains:
       self.request_domain_reconciliation()
     if record is None:

@@ -25,6 +25,7 @@ const domain = (overrides: Partial<Domain> = {}): Domain => ({
   address: 'https://shop.example.test',
   worker: 'w1',
   container: { id: '1', worker: 'w1', application },
+  callers: [],
   view: { status: 'synced', conforms: true, reason: null, error: null },
   created_at: '2026-01-01T00:00:00',
   updated_at: '2026-01-01T00:00:00',
@@ -97,6 +98,18 @@ describe('a domain card', () => {
     const wrapper = card({ domain: domain({ type: 'internal' }), inContainer: true })
 
     expect(wrapper.get('[data-certificate]').text()).toBe(label)
+  })
+
+  it('names the applications allowed to call an internal name, and has no row without any', () => {
+    const callers = [
+      { id: 3, name: 'api', label: 'API', project: { name: 'alpha', label: 'Alpha' } },
+      { id: 1, ...application },
+    ]
+    const wrapper = card({ domain: domain({ type: 'internal', callers }), inContainer: true })
+    expect(wrapper.get('[data-callers]').text()).toBe('Alpha / API, Demo / Web')
+    expect(card({ domain: domain(), inContainer: true }).find('[data-callers]').exists()).toBe(
+      false
+    )
   })
 
   it('shows no certificate for a public name', () => {

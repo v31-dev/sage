@@ -10,7 +10,7 @@ import config
 from services.certs import Certs
 from services.cloudflare import Cloudflare
 from services.containers.placement import placement_scope
-from services.db.models import Container, Domain, Instance, Worker, WorkerEvent
+from services.db.models import Container, Domain, DomainCaller, Instance, Worker, WorkerEvent
 from services.manager.domains import DomainsMixin
 from services.manager.queue import SCOPES, TASK_NAMES, QueueMixin
 from services.manager.workers import WorkersMixin
@@ -31,13 +31,14 @@ class Hosts:
   """The tailnet and the workers on it as convergence sees them: each worker's SSH fact and address, its files by path,
   the commands run on it, a command that fails (`fails`, a part of it), the stack's services that run (`running`), the
   resolvers Docker recorded for its containers (`resolvers`, None for none recorded), its applications' networks
-  (`networks`, a line each as Docker lists them), and the machine's hostname by what names it (`machines`)."""
+  (`networks`, a line each as Docker lists them) with Traefik's aliases on them (`traefik_aliases`), and the machine's
+  hostname by what names it (`machines`)."""
 
   def __init__(self):
     self.found, self.addresses, self.files, self.fails = {}, {}, {}, None
     self.running, self.mem_total_kb = set(config.WORKER_STACK_SERVICES), 979204
     self.edge_subnets, self.edge_network, self.resolvers = ["172.22.0.0/16"], True, "1.1.1.1 8.8.8.8"
-    self.networks = []
+    self.networks, self.traefik_aliases = [], []
     self.answering, self.boots, self.commands, self.forgotten, self.on_boot = set(), [], [], [], None
     self.machines = {}
 
@@ -85,6 +86,11 @@ class Hosts:
       return 0, ["nameserver 127.0.0.11", *([f"# ExtServers: [{self.resolvers}]"] if self.resolvers is not None else [])]
     if command.startswith("ids=$(docker network ls -q --filter label=sage.container)"):
       return 0, list(self.networks)
+    if command.startswith("docker inspect -f '{{range $name, $network := .NetworkSettings.Networks}}"):
+      return 0, list(self.traefik_aliases)
+    if command.startswith("head -n 1 "):
+      written = self.files.get(f"{hostname}:{command.split()[3]}")
+      return 0, written[0].splitlines()[:1] if written else []
     if command.startswith("stat -c %g"):
       return 0, ["998"]
     if command.startswith("docker network inspect sage_edge >/dev/null 2>&1 || "):
@@ -568,7 +574,8 @@ class TestTraefikNetworks:
   def placed(self, hosts, worker, application):
     """A container on w1 whose network Traefik is not on, and the network of a container gone that only Traefik is on."""
     container = Container.create(application=application, worker=worker)
-    hosts.networks = [f"sage-{container.id} {container.id} sage-{container.id},", f"sage-{self.GONE} {self.GONE} traefik,"]
+    hosts.networks = [f"sage-{container.id} {container.id} 172.21.0.0/16, sage-{container.id},",
+                      f"sage-{self.GONE} {self.GONE} 172.22.0.0/16, traefik,"]
     return container
 
   def changes(self, hosts):
@@ -590,7 +597,7 @@ class TestTraefikNetworks:
 
   async def test_with_nothing_to_change_nothing_is_run(self, manager, hosts, worker, application):
     container = Container.create(application=application, worker=worker)
-    hosts.networks = [f"sage-{container.id} {container.id} sage-{container.id},traefik,"]
+    hosts.networks = [f"sage-{container.id} {container.id} 172.21.0.0/16, sage-{container.id},traefik,"]
     await manager.converge_worker("w1")
     assert self.changes(hosts) == []
 
@@ -603,6 +610,74 @@ class TestTraefikNetworks:
     with pytest.raises(TaskFailed):
       await manager.converge_worker("w1")
     assert Workers().setup("w1") == "failed"
+
+  def callers_file(self, hosts):
+    file = hosts.files.get(f"w1:{HOME}/traefik/dynamic/_callers.yml")
+    return file[0] if file else None
+
+  async def test_the_callers_file_is_written_for_a_name_that_allows_an_application_here_then_kept_then_removed(
+          self, manager, hosts, placed):
+    domain = Domain.create(name="api", type="internal", port=80, container=placed, namespace_worker="w1")
+    DomainCaller.create(domain=domain, application=placed.application)
+    await manager.converge_worker("w1")
+    written = self.callers_file(hosts)
+    assert f"Host(`api.red.int.example.test`) && (ClientIP(`172.21.0.0/16`))" in written
+    untouched = written.splitlines()[0] + "\n# untouched\n"
+    hosts.files[f"w1:{HOME}/traefik/dynamic/_callers.yml"] = (untouched, 0o644)
+    await manager.sync_traefik_networks("w1")
+    assert self.callers_file(hosts) == untouched
+    DomainCaller.delete().execute()
+    await manager.sync_traefik_networks("w1")
+    assert self.callers_file(hosts) is None
+
+  async def test_traefik_joins_a_network_under_the_names_its_application_may_call(self, manager, hosts, placed):
+    domain = Domain.create(name="api", type="internal", port=80, container=placed, namespace_worker="w1")
+    DomainCaller.create(domain=domain, application=placed.application)
+    await manager.converge_worker("w1")
+    assert any(f"docker network connect --alias api.red.int.example.test sage-{placed.id} traefik" in command
+               for command in self.changes(hosts))
+
+  @pytest.mark.parametrize("aliases, again", [("", True), ("api.red.int.example.test", False)])
+  async def test_traefik_on_a_network_with_other_names_is_attached_again_and_one_with_the_same_is_left(
+          self, manager, hosts, placed, aliases, again):
+    domain = Domain.create(name="api", type="internal", port=80, container=placed, namespace_worker="w1")
+    DomainCaller.create(domain=domain, application=placed.application)
+    hosts.networks = [f"sage-{placed.id} {placed.id} 172.21.0.0/16, sage-{placed.id},traefik,"]
+    hosts.traefik_aliases = ["sage_default ", f"sage-{placed.id} {aliases}"]
+    await manager.converge_worker("w1")
+    attached_again = [command for command in self.changes(hosts) if f"docker network disconnect sage-{placed.id} traefik && " in command]
+    assert bool(attached_again) == again
+
+  async def test_without_callers_no_file_is_written(self, manager, hosts, placed):
+    await manager.converge_worker("w1")
+    assert self.callers_file(hosts) is None
+
+  def test_a_request_for_every_worker_queues_one_on_each_worker_set_up_and_reachable(self, manager, hosts, worker):
+    Worker.create(hostname="w2", subdomain="blue")
+    Workers().record_setup("w1", "succeeded", "100.64.0.2")
+    manager.request_traefik_networks()
+    assert [tuple(key) for name, key, _, _ in requested(manager) if name == "sync_traefik_networks"] == [
+        ("sync_traefik_networks", "w1")]
+
+  @pytest.fixture
+  def asked(self, manager, monkeypatch):
+    calls = []
+    monkeypatch.setattr(manager, "request_traefik_networks", lambda hostname=None: calls.append(hostname))
+    return calls
+
+  async def test_a_setup_at_a_new_address_has_every_workers_callers_follow_it_and_one_at_the_same_does_not(
+          self, manager, hosts, worker, asked):
+    await manager.converge_worker("w1")
+    assert asked == [None]
+    await manager.converge_worker("w1")
+    assert asked == [None]
+    hosts.addresses["w1"] = "100.64.0.9"
+    await manager.converge_worker("w1")
+    assert asked == [None, None]
+
+  def test_a_new_subdomain_has_every_workers_callers_follow_it(self, manager, worker, asked):
+    manager.worker_subdomain_changed("w1")
+    assert asked == [None]
 
   def test_the_request_holds_the_stack_so_it_waits_for_repair_and_setup_and_for_no_container_and_a_second_replaces_it(
           self, manager, worker):

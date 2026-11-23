@@ -1,6 +1,6 @@
 import pytest
 
-from services.db.models import Application, Container, Domain, Worker
+from services.db.models import Application, Container, Domain, DomainCaller, Worker
 from services.domains.commands import create_domain, delete_domain, patch_domain
 from services.domains.config import allowed_origins
 from services.updates import UpdateSource
@@ -158,6 +158,55 @@ class TestPatch:
   def test_a_missing_domain_is_not_found(self, db):
     with pytest.raises(LookupError, match="Domain not found."):
       patch_domain("0123456789abcdef", {"port": 81})
+
+
+class TestCallers:
+  def callers(self, domain):
+    return sorted(caller.application_id for caller in DomainCaller.select().where(DomainCaller.domain == domain.id))
+
+  @pytest.mark.parametrize("type", ["internal", "tcp"])
+  def test_an_internal_or_tcp_domain_keeps_the_applications_allowed_to_call_it_once_each(self, red, blue, type):
+    domain = shop(red, type=type, callers=[blue.application_id, red.application_id, blue.application_id])
+    assert self.callers(domain) == sorted([red.application_id, blue.application_id])
+
+  @pytest.mark.parametrize("callers, message", [
+      ("2", "callers must be a list of application ids."), ([True], "callers must be a list of application ids."),
+      (["2"], "callers must be a list of application ids."), ([999], "Unknown applications: 999.")])
+  def test_callers_that_are_not_applications_are_refused_and_nothing_is_stored(self, red, callers, message):
+    with pytest.raises(ValueError, match=message):
+      shop(red, callers=callers)
+    assert not Domain.select().exists() and not DomainCaller.select().exists()
+
+  def test_a_public_domain_takes_none(self, red, blue):
+    with pytest.raises(ValueError, match="A public domain takes no allowed applications."):
+      shop(red, type="public", callers=[blue.application_id])
+    assert not Domain.select().exists()
+
+  def test_a_patch_replaces_them_and_one_without_them_keeps_them(self, red, blue, signals):
+    domain = shop(red, callers=[red.application_id])
+    signals.clear()
+    patch_domain(domain.id, {"callers": [blue.application_id]})
+    assert self.callers(domain) == [blue.application_id] and signals
+    patch_domain(domain.id, {"port": 81})
+    assert self.callers(domain) == [blue.application_id]
+
+  def test_a_patch_that_sends_the_same_ones_says_nothing(self, red, blue, signals):
+    domain = shop(red, callers=[red.application_id, blue.application_id])
+    signals.clear()
+    patch_domain(domain.id, {"callers": [blue.application_id, red.application_id]})
+    assert signals == []
+
+  def test_a_domain_made_public_loses_them(self, red, blue):
+    domain = shop(red, callers=[blue.application_id])
+    patch_domain(domain.id, {"type": "public"})
+    assert self.callers(domain) == []
+
+  def test_they_go_with_their_domain_and_with_their_application(self, red, project):
+    other = Application.create(project=project, name="cron", label="Cron", image="busybox")
+    kept, gone = shop(red, callers=[red.application_id, other.id]), shop(red, name="api", callers=[red.application_id])
+    Application.delete().where(Application.id == other.id).execute()
+    delete_domain(gone.id)
+    assert [(caller.domain_id, caller.application_id) for caller in DomainCaller.select()] == [(kept.id, red.application_id)]
 
 
 def test_deleting_a_domain_tells_the_pages_it_was_on(red, signals):

@@ -107,6 +107,15 @@ Domain.add_index(Domain.index(Domain.name, SQL("coalesce(namespace_worker_id, ''
                               name="domain_name_namespace_worker"))
 
 
+class DomainCaller(BaseModel):
+  """An application allowed to call an internal or TCP domain from its containers' networks, gone with either."""
+  domain = ForeignKeyField(Domain, backref="callers", on_delete="CASCADE")
+  application = ForeignKeyField(Application, backref="calls", on_delete="CASCADE")
+
+  class Meta:
+    indexes = ((("domain", "application"), True),)
+
+
 class Volume(BaseModel):
   id = CharField(primary_key=True, default=new_id)
   name = AlphaNumericField()

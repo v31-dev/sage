@@ -2,7 +2,7 @@ from datetime import datetime
 
 import pytest
 
-from services.db.models import Container, Domain
+from services.db.models import Application, Container, Domain, DomainCaller, Project
 from services.domains.config import DomainConfig
 from services.domains.decisions import ApplyOutcome, RouteObservation
 from services.domains.state import Domains, domain_payload, domain_state
@@ -94,3 +94,14 @@ class TestPayload:
         "name": "web", "label": "Web", "project": {"name": "demo", "label": "Demo"}}}
     assert payload["view"] == {"status": state.view.status, "conforms": state.view.conforms, "reason": state.view.reason,
                                "error": state.view.error}
+    assert payload["callers"] == []
+
+  def test_the_applications_allowed_to_call_it_are_listed_by_project_and_name(self, domain, snapshot, application):
+    other = Project.create(name="alpha", label="Alpha")
+    first, second = Application.create(project=other, name="zeta", label="Zeta", image="x"), application
+    for caller in (second, first):
+      DomainCaller.create(domain=domain, application=caller)
+    payload = domain_payload(domain, domain_state(snapshot, True, True, None), "example.test")
+    assert payload["callers"] == [
+        {"id": first.id, "name": "zeta", "label": "Zeta", "project": {"name": "alpha", "label": "Alpha"}},
+        {"id": second.id, "name": "web", "label": "Web", "project": {"name": "demo", "label": "Demo"}}]

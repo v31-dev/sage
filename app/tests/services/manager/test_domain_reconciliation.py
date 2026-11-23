@@ -188,6 +188,10 @@ class TestEdit:
     assert hosts.route("w1", public) == fingerprint(public)
     assert [command for command in writes(hosts) if "rm -f" in command[1]] == []
 
+  def test_an_edit_has_every_workers_callers_follow_it(self, manager, public):
+    manager.domain_edited(public.id)
+    assert manager.traefik_networks == [None]
+
 
 class TestApplicationEdit:
   async def test_its_headers_reach_the_routes_of_its_domains_and_no_other(self, manager, public, internal, application,
