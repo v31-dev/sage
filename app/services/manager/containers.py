@@ -623,10 +623,12 @@ class ContainersMixin:
       await mark(container, "Removed from this worker")
     domains = detach_container(container.id)
     Containers().forget(container.id)
-    self.request_domain_applies(allowing(container.application_id))
+    allowed = allowing(container.application_id)
+    self.request_domain_applies(allowed)
     # Its domains went with it, so every worker's callers follow; else only its network goes.
     self.request_traefik_networks(None if domains else container.worker_id)
-    if domains:
+    # The allowing Domains' files on its worker go by binding, once no other container of its application is there.
+    if domains or allowed:
       self.request_domain_reconciliation()
     if record is None:
       Notifications().notify(f"{name} deleted from Sage; the worker could not be reached, so its files stay there.",

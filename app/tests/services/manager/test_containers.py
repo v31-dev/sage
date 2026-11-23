@@ -588,6 +588,11 @@ class TestDomainApplies:
     await manager.delete_container(container.id)
     assert (manager.applied, manager.reconciled) == ([], 0)
 
+  async def test_a_delete_of_a_container_a_domain_allows_asks_the_pass_to_remove_that_domains_file_on_its_worker(
+          self, manager, worker_host, container, allowing):
+    await manager.delete_container(container.id)
+    assert (manager.applied, manager.reconciled) == ([[allowing]], 1)
+
 
 class TestDeleteRequests:
   @pytest.fixture

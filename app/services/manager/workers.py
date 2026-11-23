@@ -10,7 +10,7 @@ from peewee import JOIN
 import config
 from services.certs import TEMPLATE_DIGEST, Certs
 from services.cloudflare import Cloudflare
-from services.containers.placement import networks_command, runtime_owner
+from services.containers.placement import networks_command, placement_scope, runtime_owner
 from services.db.models import Application, Container, Domain, Instance, Project, Worker
 from services.domains.callers import called_names, caller_aliases
 from services.domains.config import parse_route_listing, routes_command
@@ -337,17 +337,18 @@ class WorkersMixin:
                              f"/workers/{hostname}")
     else:
       logger.warning(f"Worker {hostname}'s stack was not ready, but starting it changed nothing.")
-    await self._attach_traefik(hostname)
+    self.request_traefik_networks(hostname)
     # Its new subnet is what Traefik must trust: the worker's setup writes that.
     if EDGE_NETWORK_CREATED in {line.strip() for line in networks}:
       logger.info(f"Worker {hostname}'s edge network was missing and is created again; its setup follows.")
       self.request_convergence(hostname)
 
   def request_traefik_networks(self, hostname: str | None = None):
-    """Queues Traefik's attachment to the applications' networks, with the callers' file, on `hostname` or on every
-    worker reachable and set up: a change to what a name allows, to its name or to a worker's address reaches the
-    callers on every worker. It holds the stack's scope, as everything that recreates Traefik does, and none of a
-    container's, so it waits for neither a deploy nor a delete; one requested while one runs follows it."""
+    """Queues the check of Traefik's attachment to the applications' networks on `hostname` or on every worker reachable
+    and set up: a change to what a name allows, to its name or to a worker's address reaches the callers on every
+    worker. It holds the stack's scope, as everything that recreates Traefik does, and none of a container's, so it
+    waits for neither a deploy nor a delete; one requested while one runs follows it. What it can't change without a
+    container's scope it requests as `attach_traefik_networks`."""
     hostnames = [hostname] if hostname is not None else [worker.hostname for worker in Worker.select(Worker.hostname)
                                                          if is_workable(worker.hostname)]
     for name in hostnames:
@@ -359,12 +360,27 @@ class WorkersMixin:
     if not is_workable(hostname):
       logger.info(f"Worker {hostname} is not there to attach Traefik on; nothing to do.")
       return
-    await self._attach_traefik(hostname)
+    if due := await self._attach_traefik(hostname, held=set()):
+      self.add_task(task=self.attach_traefik_networks, key=("attach_traefik_networks", hostname),
+                    scopes={stack_scope(hostname), *(placement_scope(hostname, container_id) for container_id in due)},
+                    executor="app", params={"hostname": hostname, "container_ids": sorted(due)}, labels={"Worker": hostname},
+                    on_conflict=OnConflict.REPLACE, quiet=True)
 
-  async def _attach_traefik(self, hostname: str):
-    """Attaches Traefik to the network of each of the worker's containers, under the names that application may call,
-    attaches it again where those names changed, and removes the networks of containers gone, which their Compose
-    project leaves while Traefik is on them. A network that went meanwhile is not a failure."""
+  async def attach_traefik_networks(self, hostname: str, container_ids: list[str]):
+    """Changes Traefik's attachment to the networks of `container_ids`, holding their scopes, so that no Deploy, Stop
+    or Delete of theirs runs Compose on a network while Traefik joins it. Changes due on others since the check have it
+    run again."""
+    if not is_workable(hostname):
+      logger.info(f"Worker {hostname} is not there to attach Traefik on; nothing to do.")
+      return
+    if await self._attach_traefik(hostname, held=set(container_ids)):
+      self.request_traefik_networks(hostname)
+
+  async def _attach_traefik(self, hostname: str, held: set[str] | None = None) -> set[str]:
+    """Attaches Traefik to the network of each of the worker's containers in `held` (each one when None), under the
+    names that application may call, attaches it again where those names changed, and removes the networks of
+    containers gone, which their Compose project leaves while Traefik is on them. A network that went meanwhile is not
+    a failure. The ids of the containers outside `held` whose networks it left unchanged."""
     listed_at = utcnow()
     _, listing = await Tailscale().exec_command(hostname, networks_command(), timeout=30)
     applications = {container.id: container.application_id
@@ -384,6 +400,10 @@ class WorkersMixin:
           f"{{{{join $network.Aliases \",\"}}}}{{{{println}}}}{{{{end}}}}' {TRAEFIK_CONTAINER}", timeout=30)
       current = parse_aliases(lines)
     again = alias_changes(networks, aliases, current)
+    containers = {network.name: network.container_id for network in networks}
+    due = {containers[name] for name in (*attach, *again) if held is not None and containers[name] not in held}
+    attach = [name for name in attach if containers[name] not in due]
+    again = [name for name in again if containers[name] not in due]
     gone = "! docker network inspect {} >/dev/null 2>&1"
 
     def connect(name):
@@ -399,6 +419,7 @@ class WorkersMixin:
       await Tailscale().exec_command(hostname, " && ".join(commands), timeout=60)
       logger.info(f"Traefik on {hostname} is attached to {len(attach)} more networks and again to {len(again)} whose "
                   f"names changed; {len(remove)} unused ones removed.")
+    return due
 
   def request_worker_tmp_cleanup(self):
     """Queues, for each worker reachable and set up, the removal of its temp folder (`WORKER_TMP_DIR`). It holds the

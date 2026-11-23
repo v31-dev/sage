@@ -249,7 +249,8 @@ Stop](../docs/backend.md#pause-and-stop).
   direct configuration edit needs guarded results independently of queue scopes. A resource Sage writes outside its
   database has one scope, built by its package, and every task that writes it holds that scope or an ancestor, so its
   writers exclude each other. A resource under two roots (a Domain's route on a worker, a worker's certificate files)
-  is held on both sides by a writer that changes it; a writer that holds a single side only removes.
+  or two sibling scopes of one root (Traefik's endpoint on a container's network) is held on both sides by a writer
+  that changes it; a writer that holds a single side only removes.
 - `params` are JSON-safe ids and flags, recorded and shown; frozen execution objects (a deploy snapshot, an S3
   session) go in `inputs`, never recorded or pushed; `labels` name the subjects the way the UI does
   (`{"Application": "shop / web"}`), taken when queued. `quiet=True` is for scheduled housekeeping only.

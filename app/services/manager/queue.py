@@ -15,8 +15,9 @@ SCOPES = frozenset({"worker", "domain", "certificate", "backup", "discovery", "s
 TASK_NAMES = frozenset({
     *REQUESTS, "backup_preserve", "recover", "reset", "read_record", "list_records", "observe_containers", "cleanup_orphan",
     "apply_domain", "reconcile_domains", "publish_discovery", "publish_discovery_dns",
-    "observe_workers", "converge_worker", "repair_worker_stack", "sync_traefik_networks", "cleanup_worker_tmp", "add_worker", "remove_worker",
-    "reboot_worker", "refresh_worker_paths", "list_tunnels", "renew_certificates", "distribute_certificates",
+    "observe_workers", "converge_worker", "repair_worker_stack", "sync_traefik_networks", "attach_traefik_networks",
+    "cleanup_worker_tmp", "add_worker", "remove_worker", "reboot_worker", "refresh_worker_paths", "list_tunnels",
+    "renew_certificates", "distribute_certificates",
     "discover_backups", "prune_backups", "delete_archive", "delete_volume_archives", "backup_platform", "restore_platform",
     "flush_metrics", "metrics_cleanup", "logs_cleanup", "purge_history", "safety_copies_cleanup", "refresh_latest_release",
     "send_summary_notification", *(f"{kind}_{section}" for kind in ("check", "test") for section in SETTING_SECTIONS),

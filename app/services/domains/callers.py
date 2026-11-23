@@ -37,16 +37,18 @@ def called_names(base_domain: str) -> tuple[CalledName, ...]:
                for domain in domains if domain.type in ENTRY_POINTS and (name := host(domain, base_domain)))
 
 
-def routed(name: CalledName, worker: str, addresses: dict[str, str | None]) -> bool:
-  """Whether `worker` routes `name`'s callers: on its own worker, or through to one whose address is known."""
-  return name.worker == worker or bool(addresses.get(name.worker))
+def routed(home: str, worker: str, address: str | None) -> bool:
+  """Whether `worker` routes the callers of a name whose route is on `home`: it is `home`, or `home`'s address is known
+  to pass them through to."""
+  return worker == home or bool(address)
 
 
 def caller_aliases(names: tuple[CalledName, ...], worker: str, applications: dict[str, int],
                    addresses: dict[str, str | None]) -> dict[str, tuple[str, ...]]:
   """The names Traefik answers to on each application's network on `worker`, given the application of each network:
   those its application may call that `worker` routes, so a lookup there finds Traefik on that network."""
-  return {network: tuple(sorted(name.host for name in names if application in name.callers and routed(name, worker, addresses)))
+  return {network: tuple(sorted(name.host for name in names if application in name.callers
+                                and routed(name.worker, worker, addresses.get(name.worker))))
           for network, application in applications.items()}
 
 
@@ -62,7 +64,7 @@ def worker_fingerprints(config: DomainConfig, networks: dict[str, dict[str, tupl
     listed, remote = networks.get(worker), worker != config.worker
     if not remote and not here:
       fingerprints[worker] = config.content_hash
-    elif listed is None or (remote and not address):
+    elif listed is None or not routed(config.worker, worker, address):
       fingerprints[worker] = None
     else:
       subnets = sorted({subnet for container_id in here for subnet in listed.get(container_id, ())})

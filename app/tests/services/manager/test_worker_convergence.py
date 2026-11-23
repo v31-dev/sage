@@ -10,7 +10,7 @@ import config
 from services.certs import Certs
 from services.cloudflare import Cloudflare
 from services.containers.placement import placement_scope
-from services.db.models import Container, Domain, DomainCaller, Instance, Worker, WorkerEvent
+from services.db.models import Application, Container, Domain, DomainCaller, Instance, Worker, WorkerEvent
 from services.manager.domains import DomainsMixin
 from services.manager.queue import SCOPES, TASK_NAMES, QueueMixin
 from services.manager.workers import WorkersMixin
@@ -542,13 +542,14 @@ class TestStackRepair:
     hosts.edge_network = False
     await manager.repair_worker_stack("w1")
     assert hosts.edge_network and hosts.running == set(config.WORKER_STACK_SERVICES)
-    assert requested(manager) == [("converge_worker", ["converge_worker", "w1"], ["worker:w1"], True)]
+    assert requested(manager) == [("sync_traefik_networks", ["sync_traefik_networks", "w1"], ["worker:w1:stack"], True),
+                                  ("converge_worker", ["converge_worker", "w1"], ["worker:w1"], True)]
 
   async def test_a_repair_whose_edge_network_is_there_asks_for_no_setup(self, manager, hosts, worker):
     Workers().record_setup("w1", "succeeded", "100.64.0.2")
     hosts.running -= {"traefik"}
     await manager.repair_worker_stack("w1")
-    assert requested(manager) == []
+    assert requested(manager) == [("sync_traefik_networks", ["sync_traefik_networks", "w1"], ["worker:w1:stack"], True)]
 
   async def test_a_repair_with_every_service_running_starts_nothing(self, manager, hosts, worker):
     Workers().record_setup("w1", "succeeded", "100.64.0.2")
@@ -584,13 +585,87 @@ class TestTraefikNetworks:
     (command,) = self.changes(hosts)
     assert f"docker network connect sage-{placed.id} traefik" in command and f"docker network rm sage-{self.GONE}" in command
 
-  async def test_a_stack_repair_attaches_it_again_after_starting_the_stack(self, manager, hosts, placed):
+  async def test_a_stack_repair_asks_for_the_check_once_the_stack_runs_and_changes_no_network_itself(self, manager, hosts, placed):
     Workers().record_setup("w1", "succeeded", "100.64.0.2")
     hosts.running -= {"traefik"}
     await manager.repair_worker_stack("w1")
-    started = next(index for index, command in enumerate(hosts.commands) if " up -d " in command)
-    attached = next(index for index, command in enumerate(hosts.commands) if "docker network connect " in command)
-    assert started < attached
+    assert any(" up -d " in command for command in hosts.commands) and self.changes(hosts) == []
+    assert requested(manager) == [("sync_traefik_networks", ["sync_traefik_networks", "w1"], ["worker:w1:stack"], True)]
+
+  @pytest.fixture
+  def other(self, hosts, worker, application, placed):
+    """A container of another application on w1 whose network Traefik is not on either."""
+    container = Container.create(application=Application.create(project=application.project, name="pg", label="PG", image="postgres"),
+                                 worker=worker)
+    hosts.networks.append(f"sage-{container.id} {container.id} 172.23.0.0/16, sage-{container.id},")
+    return container
+
+  async def test_the_check_removes_the_networks_of_containers_gone_and_queues_the_change_of_the_others_holding_them(
+          self, manager, hosts, placed, other):
+    Workers().record_setup("w1", "succeeded", "100.64.0.2")
+    await manager.sync_traefik_networks("w1")
+    (command,) = self.changes(hosts)
+    assert f"docker network rm sage-{self.GONE}" in command and "docker network connect " not in command
+    ((task,),) = [manager.task_queue.snapshot()["queued"]]
+    assert (task["name"], task["key"], set(task["scopes"]), task["params"], task["quiet"]) == (
+        "attach_traefik_networks", ["attach_traefik_networks", "w1"],
+        {stack_scope("w1"), placement_scope("w1", placed.id), placement_scope("w1", other.id)},
+        {"hostname": "w1", "container_ids": sorted([placed.id, other.id])}, True)
+
+  async def test_the_check_with_nothing_to_change_queues_nothing(self, manager, hosts, worker, application):
+    Workers().record_setup("w1", "succeeded", "100.64.0.2")
+    container = Container.create(application=application, worker=worker)
+    hosts.networks = [f"sage-{container.id} {container.id} 172.21.0.0/16, sage-{container.id},traefik,"]
+    await manager.sync_traefik_networks("w1")
+    assert (self.changes(hosts), requested(manager)) == ([], [])
+
+  async def test_the_change_touches_only_the_networks_it_holds_and_asks_for_the_check_for_the_rest(
+          self, manager, hosts, placed, other):
+    Workers().record_setup("w1", "succeeded", "100.64.0.2")
+    await manager.attach_traefik_networks("w1", [placed.id])
+    (command,) = self.changes(hosts)
+    assert f"docker network connect sage-{placed.id} traefik" in command and f"sage-{other.id}" not in command
+    assert requested(manager) == [("sync_traefik_networks", ["sync_traefik_networks", "w1"], ["worker:w1:stack"], True)]
+
+  async def test_the_change_holding_every_network_due_asks_for_nothing_more(self, manager, hosts, placed, other):
+    Workers().record_setup("w1", "succeeded", "100.64.0.2")
+    await manager.attach_traefik_networks("w1", [placed.id, other.id])
+    assert requested(manager) == []
+
+  async def test_the_change_on_a_worker_not_set_up_does_nothing(self, manager, hosts, placed):
+    await manager.attach_traefik_networks("w1", [placed.id])
+    assert hosts.commands == []
+
+  async def test_the_change_never_runs_beside_a_delete_of_a_container_it_holds(self, manager, hosts, placed):
+    """On the real queue, with the scopes the check requested: a Delete running holds the change back until it ends,
+    and a change running holds a Delete back."""
+    Workers().record_setup("w1", "succeeded", "100.64.0.2")
+    await manager.sync_traefik_networks("w1")
+    ((change,),) = [manager.task_queue.snapshot()["queued"]]
+    for first in ("delete", "attach_traefik_networks"):
+      started, release = [], asyncio.Event()
+      queue = TaskQueue(SCOPES, {"app": manager.pool}, names=TASK_NAMES)
+
+      def body(name):
+        async def run(**_):
+          started.append(name)
+          await release.wait()
+        return run
+
+      requests = {"delete": (("delete", placed.id), {placement_scope("w1", placed.id)}),
+                  "attach_traefik_networks": (tuple(change["key"]), set(change["scopes"]))}
+      for name in (first, *(other for other in requests if other != first)):
+        key, scopes = requests[name]
+        queue.add_task(task=body(name), key=key, name=name, scopes=scopes, executor="app")
+      queue.dispatch_tick()
+      await asyncio.sleep(0)
+      assert started == [first]
+      release.set()
+      for _ in range(5):
+        await asyncio.sleep(0)
+      queue.dispatch_tick()
+      await asyncio.sleep(0)
+      assert len(started) == 2
 
   async def test_with_nothing_to_change_nothing_is_run(self, manager, hosts, worker, application):
     container = Container.create(application=application, worker=worker)
