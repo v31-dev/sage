@@ -26,8 +26,13 @@ services:
     volumes: [ ${VOLUMES} ]
     env_file: .env
     networks:
-      - sage_default
+      - default
 
+# Its own network, which only Traefik joins beside it; kept while Traefik is attached to it.
 networks:
-  sage_default:
-    external: true
+  default:
+    name: ${RUNTIME_NAME}
+    driver_opts:
+      com.docker.network.bridge.name: ${BRIDGE_NAME}
+    labels:
+      sage.container: "${CONTAINER_ID}"

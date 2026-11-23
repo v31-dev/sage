@@ -32,8 +32,10 @@ services:
       - ${TS_IP}:443:443
       - ${TS_IP}:8443:8443
     networks:
-      - default
-      - edge
+      # Its default route stays on the stack's network, whatever applications' networks it is attached to.
+      default:
+        gw_priority: 1
+      edge: {}
     command:
       - "--configFile=/etc/traefik/traefik.yml"
 

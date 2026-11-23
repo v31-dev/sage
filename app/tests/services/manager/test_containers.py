@@ -54,7 +54,7 @@ case "$1 $2 $4" in
   "compose -f "*)
     file="$3"
     name=$(sed -n 's/^name: //p' "$file")
-    label() { sed -n "s/^ *sage.$1: \\"\\(.*\\)\\"$/\\1/p" "$file"; }
+    label() { sed -n "s/^ *sage.$1: \\"\\(.*\\)\\"$/\\1/p" "$file" | head -n 1; }
     deployment=$(label deployment)
     [ -e "$state/runs-another" ] && deployment=another
     labels="$deployment|$(label instance)|$(label generation)|$(label container)"
@@ -139,7 +139,7 @@ class Lifecycle(ContainersMixin, LifecycleMixin, QueueMixin):
     self.queue_facts = []
     self.recoveries = {}
     self.orphans = {}
-    self.applied, self.reconciled = [], 0
+    self.applied, self.reconciled, self.traefik_networks = [], 0, []
     self.task_queue = TaskQueue(SCOPES, names=TASK_NAMES, executors={"app": self.pool}, record=lambda task, status: None, notify=self._queue_changed)
 
   def request_domain_applies(self, domain_ids):
@@ -148,6 +148,9 @@ class Lifecycle(ContainersMixin, LifecycleMixin, QueueMixin):
 
   def request_domain_reconciliation(self):
     self.reconciled += 1
+
+  def request_traefik_networks(self, hostname):
+    self.traefik_networks.append(hostname)
 
   async def run(self):
     self.task_queue.dispatch_tick()
@@ -525,6 +528,17 @@ class TestDomainApplies:
     await manager.stop_container(container.id)
     assert manager.applied == [domains, domains]
 
+  async def test_a_deploy_and_a_delete_ask_for_traefiks_networks_when_they_end_and_a_failed_deploy_does_not(
+          self, manager, worker_host, container):
+    worker_host.flag("up-fails")
+    with pytest.raises(TaskFailed):
+      await deploy(manager, container)
+    assert manager.traefik_networks == []
+    (worker_host.state / "up-fails").unlink()
+    await deploy(manager, container)
+    await manager.delete_container(container.id)
+    assert manager.traefik_networks == ["w1", "w1"]
+
   async def test_a_failed_deploy_has_them_applied(self, manager, worker_host, container, domains):
     worker_host.flag("up-fails")
     with pytest.raises(TaskFailed):
@@ -885,6 +899,11 @@ class TestOrphanCleanup:
     await manager.cleanup_orphan("w1", ORPHAN)
     assert not directory.exists() and worker_host.runtime(SimpleNamespace(id=ORPHAN)) is None
     assert notices() == [("warning", "Removed a container Sage no longer has from worker w1.", f"{MANAGER}/workers/w1")]
+
+  async def test_a_cleanup_asks_for_traefiks_networks_so_its_network_goes(self, manager, worker_host, container):
+    orphan_placement(worker_host, running=False)
+    await manager.cleanup_orphan("w1", ORPHAN)
+    assert manager.traefik_networks == ["w1"]
 
   async def test_a_bare_directory_is_removed(self, manager, worker_host, container, notices):
     directory = orphan_placement(worker_host, running=False)

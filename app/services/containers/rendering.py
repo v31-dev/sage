@@ -9,7 +9,7 @@ import yaml
 
 import config
 from services.applications.deploy_input import DeployConfig
-from services.containers.placement import runtime_name, volume_dir
+from services.containers.placement import bridge_name, runtime_name, volume_dir
 from services.containers.record import Authority
 from values.key_values import parse_multiline_kv
 
@@ -49,6 +49,7 @@ def render_placement(deploy: DeployConfig, authority: Authority, deployment_id: 
       INSTANCE_ID=authority.instance_id,
       STATE_GENERATION=authority.state_generation,
       CONTAINER_ID=authority.container_id,
+      BRIDGE_NAME=bridge_name(authority.container_id),
       DEPLOYMENT_ID=deployment_id,
       APPLICATION=deploy.qualified_name,
       IMAGE=deploy.image or "",

@@ -188,8 +188,8 @@ unreachable; tailnet traffic reaches every port the manager container listens on
 
 ### Workers
 
-A worker is a Linux machine with Docker (including the Compose plugin) that joins the
-tailnet with Tailscale SSH enabled:
+A worker is a Linux machine with systemd, nftables (`nft`) and Docker (including the Compose
+plugin) that joins the tailnet with Tailscale SSH enabled:
 
 ```bash
 tailscale up --ssh --auth-key=tskey-auth-...   # a key tagged tag:sage-worker

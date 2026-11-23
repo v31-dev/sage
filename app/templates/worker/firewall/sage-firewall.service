@@ -1,0 +1,18 @@
+# Managed by the Sage manager, which renders and installs this unit. Changes made here are overwritten on the next
+# sync.
+[Unit]
+Description=Sage: what the applications' networks may reach
+# Loaded before the network and Docker, so that no application container runs without it.
+DefaultDependencies=no
+After=local-fs.target
+Before=network-pre.target docker.service
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=nft -f ${TABLE_FILE}
+ExecStop=-nft delete table inet ${TABLE}
+
+[Install]
+WantedBy=sysinit.target

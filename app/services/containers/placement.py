@@ -2,7 +2,7 @@
 import re
 
 from services.containers.record import Authority, TargetRead, parse_record_listing
-from services.workers.rendering import worker_scope
+from services.workers.rendering import APPLICATION_BRIDGE_PREFIX, worker_scope
 from utils.common import OPAQUE_ID
 
 LABEL_INSTANCE = "sage.instance"
@@ -57,8 +57,14 @@ def parse_placements(lines: list[str]) -> tuple[set[str], dict[str, TargetRead]]
 
 
 def runtime_name(container_id: str) -> str:
-  """The Compose project and the Docker container of the placement."""
+  """The Compose project, the Docker container and the network of the placement."""
   return f"sage-{container_id}"
+
+
+def bridge_name(container_id: str) -> str:
+  """The interface of the placement's network: the applications' prefix and as much of the id as Linux's 15
+  characters for an interface name leave."""
+  return f"{APPLICATION_BRIDGE_PREFIX}{container_id[:15 - len(APPLICATION_BRIDGE_PREFIX)]}"
 
 
 def runtime_owner(name: str) -> str | None:

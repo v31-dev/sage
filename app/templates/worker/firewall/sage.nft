@@ -1,0 +1,49 @@
+# Managed by the Sage manager, which renders this file and loads it at boot. Changes made here are overwritten on the
+# next sync.
+#
+# What the applications' bridges may reach: the Internet, Traefik on their own bridge and their DNS resolvers; not the
+# tailnet, other private networks, link-local addresses (cloud metadata) or the host.
+table inet ${TABLE}
+delete table inet ${TABLE}
+table inet ${TABLE} {
+  set private4 {
+    type ipv4_addr
+    flags interval
+    elements = { ${PRIVATE4} }
+  }
+  set private6 {
+    type ipv6_addr
+    flags interval
+    elements = { ${PRIVATE6} }
+  }
+  # The private resolvers Docker forwards an application's DNS to from the application's own network.
+  set resolvers4 {
+    type ipv4_addr
+    ${RESOLVERS4}
+  }
+  set resolvers6 {
+    type ipv6_addr
+    ${RESOLVERS6}
+  }
+
+  # Ahead of Docker's, Tailscale's and ufw's chains: a drop here is final whatever they accept.
+  chain forward {
+    type filter hook forward priority filter - 10; policy accept;
+    iifname "${BRIDGES}" ct state established,related accept
+    # Bridge netfilter passes traffic within a bridge through this hook too; Docker keeps the bridges apart.
+    iifname "${BRIDGES}" oifname "${BRIDGES}" accept
+    iifname "${BRIDGES}" ip daddr @resolvers4 meta l4proto { tcp, udp } th dport 53 accept
+    iifname "${BRIDGES}" ip6 daddr @resolvers6 meta l4proto { tcp, udp } th dport 53 accept
+    # The original destination, so that the worker's own published ports, reached through DNAT, are refused too.
+    iifname "${BRIDGES}" ct original ip daddr @private4 drop
+    iifname "${BRIDGES}" ct original ip6 daddr @private6 drop
+  }
+
+  chain input {
+    type filter hook input priority filter - 10; policy accept;
+    iifname "${BRIDGES}" ct state established,related accept
+    iifname "${BRIDGES}" ip daddr @resolvers4 meta l4proto { tcp, udp } th dport 53 accept
+    iifname "${BRIDGES}" ip6 daddr @resolvers6 meta l4proto { tcp, udp } th dport 53 accept
+    iifname "${BRIDGES}" drop
+  }
+}

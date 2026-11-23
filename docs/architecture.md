@@ -108,6 +108,42 @@ through the unprivileged ICMP sockets Docker allows.
 
 Applications themselves are also deployed onto workers as Docker workloads.
 
+### Application Networks
+
+Each container runs on a network of its own, `sage-<container id>`, whose bridge's interface is `sage` and the id's
+first 11 characters, a prefix no other interface on a worker uses. Only Traefik joins it beside the container: Traefik
+reaches the container there by its name, also `sage-<container id>`, and keeps its own default route on the stack's
+network. The network is the container's Compose project's: a Stop or a Deploy keeps it while Traefik is on it, and it
+goes once the container is deleted ([backend](backend.md)).
+
+From its network an application reaches the Internet, Traefik on that same network and its DNS resolvers, and nothing
+private: Sage's own nftables table on the worker (`inet sage`) drops what it sends to the
+tailnet (`100.64.0.0/10`), to the private ranges (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, and `fc00::/7`,
+which holds the tailnet's IPv6 range), to link-local addresses (`169.254.0.0/16` and `fe80::/10`, where a cloud's
+metadata service answers) and to the worker itself, published ports included. So an application can't reach another
+worker, the manager or another tailnet device as its worker, nor the worker's LAN or the host's services.
+
+The table's chains run ahead of Docker's, Tailscale's and ufw's: a drop there is final whatever they allow, and what it
+lets through still goes through their rules, so it never loosens them. A private resolver Docker forwards an
+application's DNS to (a VPC resolver set as the daemon's `dns`) is let through on port 53; systemd-resolved's
+`127.0.0.53` needs nothing, since Docker reaches it from the host's own network. The worker's setup writes the table
+and `sage-firewall.service`, which loads it at boot before the network and Docker start, so no application container
+runs without it. The distribution's own `nftables` service has to stay disabled: its configuration flushes every
+table, Sage's included.
+
+Docker gives each network a subnet from its address pools. With its defaults each network takes a whole `/16` of
+`172.17.0.0/16` to `172.31.0.0/16`, then a `/20` of `192.168.0.0/16`, skipping what the host already routes: about 30
+networks on a host, four of them the worker's own. A worker therefore holds about 26 containers, and the next Deploy
+fails with Docker's "all predefined address pools have been fully subnetted". To hold more, set the pools in the
+worker's `/etc/docker/daemon.json` and restart Docker; networks created from then on take them:
+
+```json
+{ "default-address-pools": [{ "base": "10.201.0.0/16", "size": 24 }] }
+```
+
+Docker then cuts the range into `/24`s by itself, 256 networks. Choose a base that overlaps neither the worker's LAN or
+VPC nor the tailnet (`100.64.0.0/10`).
+
 ## Certificate Lifecycle
 
 Adding a worker requests its own wildcard leaf. Changing its subdomain removes and revokes its obsolete leaf
@@ -252,8 +288,9 @@ openssl s_client -connect <name>.<subdomain>.int.<domain>:8443 -servername <name
   </dev/null 2>/dev/null | openssl x509 -noout -subject -issuer
 ```
 
-For access between containers on one worker, use the Docker DNS name (the container's `qualified_name`) on
-`sage_default`.
+Applications don't reach each other directly: each container is on a network of its own
+([Application Networks](#application-networks)), and an internal or TCP name admits tailnet devices only, so an
+application's call to another's internal name, on its worker or another, is refused.
 
 ### Client Address
 
@@ -268,13 +305,13 @@ straight from the tailnet, and Traefik replaces any `X-Forwarded-*` or `X-Real-I
 | `CF-Connecting-IP` | the client as Cloudflare saw it | not set by Sage; passed on if the client sends it |
 
 On a public name, a client that sends its own `X-Forwarded-For` keeps it: Cloudflare adds the client's address after
-it. Sage turns off Tailscale's source NAT on its workers so that internal names see the tailnet address; an
-application calling an internal name on its own worker still arrives from the Docker bridge's gateway address.
+it. Sage turns off Tailscale's source NAT on its workers so that internal names see the tailnet address.
 
-To read the right address on both kinds of name, an application trusts Docker's private range (`172.16.0.0/12`) as
-its proxies and reads `X-Forwarded-For` from the right: it skips the tunnel and takes the address Cloudflare added on a
-public name, or the one address on an internal name, and a client can't choose it. For Pocket ID that is
-`TRUST_PROXY=172.16.0.0/12`. Two settings look right but aren't:
+To read the right address on both kinds of name, an application trusts the ranges Docker gives networks as its
+proxies, since only Traefik shares its network: `172.16.0.0/12` and `192.168.0.0/16` with Docker's default pools, or
+the `base` of the worker's `default-address-pools`. It reads `X-Forwarded-For` from the right: it skips the tunnel and
+takes the address Cloudflare added on a public name, or the one address on an internal name, and a client can't choose
+it. For Pocket ID that is `TRUST_PROXY` with those ranges. Two settings look right but aren't:
 
 - Trusting every address (Pocket ID's `TRUST_PROXY=true`) takes the leftmost `X-Forwarded-For`, which a public client
   can set.

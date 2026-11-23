@@ -9,6 +9,7 @@ import pytest
 import config
 from services.certs import Certs
 from services.cloudflare import Cloudflare
+from services.containers.placement import placement_scope
 from services.db.models import Container, Domain, Instance, Worker, WorkerEvent
 from services.manager.domains import DomainsMixin
 from services.manager.queue import SCOPES, TASK_NAMES, QueueMixin
@@ -16,24 +17,27 @@ from services.manager.workers import WorkersMixin
 from services.tailscale import Tailscale
 from services.worker_reports import ContainerReading, HostReading, Snapshot, WorkerReports
 from services.workers import commands
-from services.workers.rendering import InfraInputs, infra_fingerprint, remove_edge_network_command, worker_scope
+from services.workers.rendering import (InfraInputs, firewall_fingerprint, infra_fingerprint, remove_edge_network_command, render_firewall,
+                                        stack_scope, worker_scope)
 from services.workers.state import Workers, is_workable
 from utils.executor import active_executor
 from utils.logging import TaskFailed
-from utils.queue import TaskQueue
+from utils.queue import TaskQueue, _scope_conflict
 
 HOME = "/opt/sage"
 
 
 class Hosts:
   """The tailnet and the workers on it as convergence sees them: each worker's SSH fact and address, its files by path,
-  the commands run on it, a command that fails (`fails`, a part of it), the stack's services that run (`running`), and
-  the machine's hostname by what names it (`machines`)."""
+  the commands run on it, a command that fails (`fails`, a part of it), the stack's services that run (`running`), the
+  resolvers Docker recorded for its containers (`resolvers`, None for none recorded), its applications' networks
+  (`networks`, a line each as Docker lists them), and the machine's hostname by what names it (`machines`)."""
 
   def __init__(self):
     self.found, self.addresses, self.files, self.fails = {}, {}, {}, None
     self.running, self.mem_total_kb = set(config.WORKER_STACK_SERVICES), 979204
-    self.edge_subnets, self.edge_network = ["172.22.0.0/16"], True
+    self.edge_subnets, self.edge_network, self.resolvers = ["172.22.0.0/16"], True, "1.1.1.1 8.8.8.8"
+    self.networks = []
     self.answering, self.boots, self.commands, self.forgotten, self.on_boot = set(), [], [], [], None
     self.machines = {}
 
@@ -77,6 +81,10 @@ class Hosts:
     if command.startswith("grep -H . "):
       prefix = f"{hostname}:{HOME}/revisions/"
       return 0, [f"{path[len(hostname) + 1:]}:{content}" for path, (content, _) in self.files.items() if path.startswith(prefix)]
+    if command.startswith('cat "$(docker inspect -f '):
+      return 0, ["nameserver 127.0.0.11", *([f"# ExtServers: [{self.resolvers}]"] if self.resolvers is not None else [])]
+    if command.startswith("ids=$(docker network ls -q --filter label=sage.container)"):
+      return 0, list(self.networks)
     if command.startswith("stat -c %g"):
       return 0, ["998"]
     if command.startswith("docker network inspect sage_edge >/dev/null 2>&1 || "):
@@ -271,10 +279,12 @@ class TestConvergence:
     assert (provider.tunnels, provider.records) == (["sage-example.test-w1"], {"w1": ("red", "100.64.0.2")})
     stack = hosts.stack("w1")
     assert set(stack) == {"docker-compose.yml", ".env", "traefik/traefik.yml", "traefik/dynamic/config.yml",
-                          "vector/config/vector.yml", "telegraf/telegraf.conf"}
+                          "vector/config/vector.yml", "telegraf/telegraf.conf", "firewall/sage.nft",
+                          "firewall/sage-firewall.service"}
     assert stack[".env"][1] == 0o600 and "TUNNEL_TOKEN=token-tunnel-sage-example.test-w1" in stack[".env"][0]
     assert "DOCKER_GID=998" in stack[".env"][0]
     assert hosts.stamp("w1", "infra") == fingerprint()
+    assert hosts.stamp("w1", "firewall") == firewall_fingerprint(render_firewall((), HOME))
     assert (Workers().setup("w1"), Workers().setup_address("w1")) == ("succeeded", "100.64.0.2")
     assert events() == [("infrastructure", "admitted"), ("infrastructure", "succeeded")]
 
@@ -311,7 +321,7 @@ class TestConvergence:
     await manager.converge_worker("w1")
     hosts.commands, hosts.mem_total_kb = [], mem_total_kb
     await manager.converge_worker("w1", force=force)
-    assert [command for command in hosts.commands if command.startswith("systemctl ")] == [
+    assert [command for command in hosts.commands if command.startswith("systemctl set-property ")] == [
         f"systemctl set-property sage-apps.slice MemoryMax={limit}"]
 
   @pytest.mark.parametrize("force", [False, True])
@@ -322,11 +332,39 @@ class TestConvergence:
     assert [command for command in hosts.commands if command.startswith("tailscale ")] == [
         "tailscale set --snat-subnet-routes=false"]
 
+  @pytest.mark.parametrize("force", [False, True])
+  async def test_every_setup_loads_the_firewall_again(self, manager, hosts, worker, force):
+    await manager.converge_worker("w1")
+    hosts.commands = []
+    await manager.converge_worker("w1", force=force)
+    assert [command for command in hosts.commands if command.startswith("systemctl restart ")] == [
+        "systemctl restart sage-firewall.service"]
+
+  async def test_a_private_resolver_gets_its_dns_through_and_a_new_one_installs_the_firewall_again(
+          self, manager, hosts, worker):
+    hosts.resolvers = "10.0.0.2 1.1.1.1"
+    await manager.converge_worker("w1")
+    assert hosts.stamp("w1", "firewall") == firewall_fingerprint(render_firewall(("10.0.0.2",), HOME))
+    assert "elements = { 10.0.0.2 }" in hosts.stack("w1")["firewall/sage.nft"][0]
+    hosts.files, hosts.resolvers = {path: file for path, file in hosts.files.items() if "/revisions/" in path}, "host(127.0.0.53)"
+    await manager.converge_worker("w1")
+    assert set(hosts.stack("w1")) == {"firewall/sage.nft", "firewall/sage-firewall.service"}
+    assert hosts.stamp("w1", "firewall") == firewall_fingerprint(render_firewall((), HOME))
+
+  @pytest.mark.parametrize("fails, resolvers", [("systemctl restart sage-firewall", "1.1.1.1"), (None, None)],
+                           ids=["the-table-does-not-load", "docker-recorded-no-resolvers"])
+  async def test_a_worker_whose_firewall_cannot_be_applied_is_not_set_up(self, manager, hosts, worker, notices, fails,
+                                                                         resolvers):
+    hosts.fails, hosts.resolvers = fails, resolvers
+    with pytest.raises(TaskFailed):
+      await manager.converge_worker("w1")
+    assert Workers().setup("w1") == "failed"
+
   async def test_force_applies_whatever_the_stamp_says(self, manager, hosts, worker):
     await manager.converge_worker("w1")
     hosts.files = {path: file for path, file in hosts.files.items() if "/revisions/" in path}
     await manager.converge_worker("w1", force=True)
-    assert len(hosts.stack("w1")) == 6
+    assert len(hosts.stack("w1")) == 8
     assert [transition for _, transition in events()] == ["admitted", "succeeded"] * 2
 
   async def test_a_resync_writes_again_its_certificates_its_domains_routes_and_its_discovery(
@@ -523,6 +561,59 @@ class TestStackRepair:
     assert (hosts.commands, events(), notices()) == ([], [], [])
 
 
+class TestTraefikNetworks:
+  GONE = "0123456789abcdef"
+
+  @pytest.fixture
+  def placed(self, hosts, worker, application):
+    """A container on w1 whose network Traefik is not on, and the network of a container gone that only Traefik is on."""
+    container = Container.create(application=application, worker=worker)
+    hosts.networks = [f"sage-{container.id} {container.id} sage-{container.id},", f"sage-{self.GONE} {self.GONE} traefik,"]
+    return container
+
+  def changes(self, hosts):
+    return [command for command in hosts.commands if "docker network connect " in command or "docker network rm " in command]
+
+  async def test_setup_attaches_traefik_to_its_containers_networks_and_removes_those_of_containers_gone(
+          self, manager, hosts, placed):
+    await manager.converge_worker("w1")
+    (command,) = self.changes(hosts)
+    assert f"docker network connect sage-{placed.id} traefik" in command and f"docker network rm sage-{self.GONE}" in command
+
+  async def test_a_stack_repair_attaches_it_again_after_starting_the_stack(self, manager, hosts, placed):
+    Workers().record_setup("w1", "succeeded", "100.64.0.2")
+    hosts.running -= {"traefik"}
+    await manager.repair_worker_stack("w1")
+    started = next(index for index, command in enumerate(hosts.commands) if " up -d " in command)
+    attached = next(index for index, command in enumerate(hosts.commands) if "docker network connect " in command)
+    assert started < attached
+
+  async def test_with_nothing_to_change_nothing_is_run(self, manager, hosts, worker, application):
+    container = Container.create(application=application, worker=worker)
+    hosts.networks = [f"sage-{container.id} {container.id} sage-{container.id},traefik,"]
+    await manager.converge_worker("w1")
+    assert self.changes(hosts) == []
+
+  async def test_the_task_on_a_worker_not_set_up_does_nothing(self, manager, hosts, placed):
+    await manager.sync_traefik_networks("w1")
+    assert hosts.commands == []
+
+  async def test_a_network_that_cannot_be_changed_fails_the_setup(self, manager, hosts, placed):
+    hosts.fails = "docker network connect "
+    with pytest.raises(TaskFailed):
+      await manager.converge_worker("w1")
+    assert Workers().setup("w1") == "failed"
+
+  def test_the_request_holds_the_stack_so_it_waits_for_repair_and_setup_and_for_no_container_and_a_second_replaces_it(
+          self, manager, worker):
+    manager.request_traefik_networks("w1")
+    manager.request_traefik_networks("w1")
+    ((name, key, scopes, quiet),) = requested(manager)
+    assert (name, tuple(key), set(scopes), quiet) == ("sync_traefik_networks", ("sync_traefik_networks", "w1"), {stack_scope("w1")}, True)
+    assert _scope_conflict(stack_scope("w1"), worker_scope("w1"))
+    assert not _scope_conflict(stack_scope("w1"), placement_scope("w1", self.GONE))
+
+
 class TestTmpCleanup:
   def test_each_worker_reachable_and_set_up_gets_a_quiet_cleanup_holding_the_whole_worker(self, manager, hosts, worker):
     Worker.create(hostname="w2", subdomain="blue")
@@ -667,9 +758,11 @@ class TestRemove:
     commands.mark_removal("w1")
     await manager.remove_worker("w1")
     assert Worker.get_or_none(Worker.hostname == "w1") is None
-    assert any(command.endswith(f"down --remove-orphans && {remove_edge_network_command()} && rm -rf {HOME} "
-                                "&& systemctl revert sage-apps.slice && tailscale set --snat-subnet-routes=true")
-               for command in hosts.commands)
+    assert any(command.endswith(
+        f"down --remove-orphans && {remove_edge_network_command()} && (! test -e /etc/systemd/system/sage-firewall.service "
+        "|| systemctl disable --now --quiet sage-firewall.service) && rm -f /etc/systemd/system/sage-firewall.service "
+        f"&& systemctl daemon-reload && rm -rf {HOME} && systemctl revert sage-apps.slice "
+        "&& tailscale set --snat-subnet-routes=true") for command in hosts.commands)
     assert (provider.records["w1"], provider.tunnels, hosts.forgotten) == ((None, None), [], ["w1"])
     assert (Workers().setup("w1"), WorkerReports().latest("w1"), manager.setup_failures) == (None, None, {})
     assert events()[-2:] == [("remove", "admitted"), ("remove", "succeeded")]

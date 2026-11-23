@@ -1,6 +1,7 @@
 """The worker's stack as Sage writes it: its files rendered from their inputs, and the fingerprint the worker's infra
 stamp holds once they are applied."""
 import hashlib
+import ipaddress
 import json
 from dataclasses import asdict, dataclass
 
@@ -43,6 +44,23 @@ TRAEFIK_FOLDERS = ("traefik/dynamic", "traefik/certs")
 def traefik_files_command(home: str) -> str:
   """Lists every entry of `TRAEFIK_FOLDERS`, as `<folder>/<name>`, for `decisions.stray_traefik_files`."""
   return f"cd {home} && find {' '.join(TRAEFIK_FOLDERS)} -mindepth 1 -maxdepth 1 2>/dev/null; true"
+
+
+# What every application bridge's interface name starts with, and no other interface's: the firewall matches them by it.
+APPLICATION_BRIDGE_PREFIX = "sage"
+# What the application bridges may not reach: the tailnet, other private networks and link-local addresses (cloud
+# metadata); `fc00::/7` holds the tailnet's IPv6 range.
+PRIVATE_RANGES = ("100.64.0.0/10", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16", "fc00::/7",
+                  "fe80::/10")
+FIREWALL_TABLE = "sage"
+FIREWALL_UNIT = "sage-firewall.service"
+# Where the unit is installed: systemd reads it from there before any other filesystem is mounted.
+FIREWALL_UNIT_PATH = f"/etc/systemd/system/{FIREWALL_UNIT}"
+# The stack's container with no `dns` of its own, whose `resolv.conf` records the resolvers Docker gives an application.
+DEFAULT_DNS_CONTAINER = "cloudflared"
+TRAEFIK_CONTAINER = "traefik"
+# The firewall's files under the worker's home, and the templates they come from under the worker templates.
+FIREWALL_FILES = ("firewall/sage.nft", f"firewall/{FIREWALL_UNIT}")
 
 
 # The templates the stack's files come from, under the worker templates.
@@ -108,3 +126,31 @@ def render_infrastructure(inputs: InfraInputs, tunnel_token: str, discovery_tunn
           "IP": inputs.manager_address, "INGEST_PORT": config.INGEST_PORT, "HOSTNAME": inputs.hostname,
           "TS_IP": inputs.address, "INTERVAL": inputs.report_interval}), 0o644),
   )
+
+
+def render_firewall(resolvers: tuple[str, ...], home: str) -> tuple[StackFile, ...]:
+  """The firewall's table and the boot unit that loads it, with `resolvers` the private resolvers DNS may reach
+  (`decisions.dns_exceptions`)."""
+  def elements(version: int) -> str:
+    found = [address for address in resolvers if ipaddress.ip_address(address).version == version]
+    return f"elements = {{ {', '.join(found)} }}" if found else ""
+
+  table, unit = FIREWALL_FILES
+  ranges = {version: ", ".join(network for network in PRIVATE_RANGES if ipaddress.ip_network(network).version == version)
+            for version in (4, 6)}
+  return (
+      StackFile(table, fill((config.TEMPLATES_DIR / "worker" / table).read_text(), {
+          "TABLE": FIREWALL_TABLE, "BRIDGES": f"{APPLICATION_BRIDGE_PREFIX}*", "PRIVATE4": ranges[4],
+          "PRIVATE6": ranges[6], "RESOLVERS4": elements(4), "RESOLVERS6": elements(6)}), 0o644),
+      StackFile(unit, fill((config.TEMPLATES_DIR / "worker" / unit).read_text(),
+                           {"TABLE": FIREWALL_TABLE, "TABLE_FILE": f"{home}/{table}"}), 0o644),
+  )
+
+
+def firewall_fingerprint(files: tuple[StackFile, ...]) -> str:
+  """The fingerprint of the firewall's rendered files, which the worker's firewall stamp holds once they are applied."""
+  digest = hashlib.sha256()
+  for file in files:
+    digest.update(file.path.encode())
+    digest.update(file.content.encode())
+  return digest.hexdigest()[:16]

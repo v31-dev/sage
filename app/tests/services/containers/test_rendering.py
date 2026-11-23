@@ -75,6 +75,16 @@ def test_every_label_value_stays_a_quoted_string(deploy):
     assert f'      {label}: "{value}"' in lines, label
 
 
+@pytest.mark.parametrize("deploy", [DOCKER, GIT], ids=["docker", "git"])
+def test_a_placement_has_a_network_of_its_own_named_and_labelled_by_its_container(deploy):
+  compose = yaml.safe_load(render(deploy)["docker-compose.yml"][0])
+  (service,) = compose["services"].values()
+  assert service["networks"] == ["default"]
+  assert compose["networks"] == {"default": {
+      "name": "sage-2222222222222222", "driver_opts": {"com.docker.network.bridge.name": "sage22222222222"},
+      "labels": {"sage.container": "2222222222222222"}}}
+
+
 def test_inputs_that_break_the_compose_file_are_refused():
   with pytest.raises(yaml.YAMLError):
     render_placement(DeployConfig(**{**DOCKER.__dict__, "type": "git", "path": "a: b"}), AUTHORITY, DEPLOYMENT, "w1",

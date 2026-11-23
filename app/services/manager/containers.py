@@ -451,6 +451,7 @@ class ContainersMixin:
       logger.error(f"The orphan {container_id} on {hostname} could not be removed: {error}")
       raise TaskFailed()
     self.orphans.pop((hostname, container_id), None)
+    self.request_traefik_networks(hostname)
     if not left and not removed:
       logger.info(f"Nothing of container {container_id} is left on {hostname}; nothing to clean up.")
       return
@@ -570,6 +571,7 @@ class ContainersMixin:
     record_container_event(container, "deploy", "succeeded", operation.id, dedupe_key=f"{operation.id}:succeeded")
     await mark(container, "Deployed")
     self.request_domain_applies(domain.id for domain in container.domains)
+    self.request_traefik_networks(container.worker_id)
     name, page = self.container_notice(container)
     Notifications().notify(f"{name} deployed.", "success", page)
 
@@ -620,6 +622,7 @@ class ContainersMixin:
       await mark(container, "Removed from this worker")
     domains = detach_container(container.id)
     Containers().forget(container.id)
+    self.request_traefik_networks(container.worker_id)
     if domains:
       self.request_domain_reconciliation()
     if record is None:

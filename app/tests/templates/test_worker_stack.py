@@ -160,6 +160,11 @@ class TestTunnels:
 
 
 class TestTheEdge:
+  def test_internal_and_tcp_names_admit_the_tailnet_only(self):
+    dynamic = yaml.safe_load((TEMPLATES / "traefik" / "config.yml").read_text())
+    assert dynamic["http"]["middlewares"]["tailscale-only"]["ipAllowList"]["sourceRange"] == ["100.64.0.0/10"]
+    assert dynamic["tcp"]["middlewares"]["tailscale-only-tcp"]["ipAllowList"]["sourceRange"] == ["100.64.0.0/10"]
+
   def test_every_service_runs_an_exact_release(self):
     stack = yaml.safe_load((TEMPLATES / "docker-compose.yml").read_text())["services"]
     for name, definition in stack.items():
@@ -171,10 +176,14 @@ class TestTheEdge:
     assert list(static["providers"]) == ["file"]
     assert not any("docker.sock" in volume for volume in service("traefik")["volumes"])
 
+  def test_traefiks_default_route_stays_on_the_stacks_network_whatever_it_is_attached_to(self):
+    networks = service("traefik")["networks"]
+    assert networks["default"]["gw_priority"] > (networks["edge"] or {}).get("gw_priority", 0)
+
   def test_only_traefik_and_the_tunnels_are_on_the_edge_network_which_the_setup_creates(self):
     stack = yaml.safe_load((TEMPLATES / "docker-compose.yml").read_text())
     assert stack["networks"]["edge"] == {"name": EDGE_NETWORK, "external": True}
-    assert service("traefik")["networks"] == ["default", "edge"]
+    assert set(service("traefik")["networks"]) == {"default", "edge"}
     assert {name for name, definition in stack["services"].items() if "edge" in definition.get("networks", [])} == {
         "traefik", "cloudflared", "cloudflared-discovery"}
     assert service("cloudflared")["networks"] == service("cloudflared-discovery")["networks"] == ["edge"]
