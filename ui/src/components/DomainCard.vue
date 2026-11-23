@@ -94,11 +94,15 @@ async function onConfirmDelete() {
         <template v-if="props.domain.callers.length">
           <dt class="text-muted-foreground">Callers</dt>
           <dd class="min-w-0" data-callers>
-            {{
-              props.domain.callers
-                .map(caller => `${caller.project.label} / ${caller.label}`)
-                .join(', ')
-            }}
+            <template v-for="(caller, index) in props.domain.callers" :key="caller.id">
+              <template v-if="index">, </template>
+              <RouterLink
+                :to="`/applications/${caller.project.name}/${caller.name}`"
+                :class="link"
+                data-caller
+                >{{ caller.project.label }} / {{ caller.label }}</RouterLink
+              >
+            </template>
           </dd>
         </template>
         <template v-if="!props.inContainer">

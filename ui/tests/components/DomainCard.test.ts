@@ -107,6 +107,12 @@ describe('a domain card', () => {
     ]
     const wrapper = card({ domain: domain({ type: 'internal', callers }), inContainer: true })
     expect(wrapper.get('[data-callers]').text()).toBe('Alpha / API, Demo / Web')
+    expect(
+      wrapper
+        .findAllComponents(RouterLinkStub)
+        .filter(link => link.attributes('data-caller') !== undefined)
+        .map(link => link.props('to'))
+    ).toEqual(['/applications/alpha/api', '/applications/demo/web'])
     expect(card({ domain: domain(), inContainer: true }).find('[data-callers]').exists()).toBe(
       false
     )
