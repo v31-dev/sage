@@ -13,8 +13,8 @@ export interface DomainView {
   error: string | null
 }
 
-// A name linked to one container: public `<name>.<domain>`, or internal or TCP `<name>.<subdomain>.int.<domain>` under
-// its worker's subdomain. Deleting the container unlinks it (`container` is none); an internal one keeps its worker.
+// A name of one container, deleted with it: public `<name>.<domain>`, or internal or TCP
+// `<name>.<subdomain>.int.<domain>` under its container's worker's subdomain.
 // Names that share a `service` are listed together at discovery, apart for public and internal; `pool` is a subgroup.
 export interface Domain {
   id: string
@@ -28,13 +28,15 @@ export interface Domain {
   host: string | null
   address: string | null
   worker: string | null
-  container: { id: string; worker: string; application: ContainerApplication } | null
+  container: { id: string; worker: string; application: ContainerApplication }
+  // The applications allowed to call an internal or TCP name from their containers, by project and name.
+  callers: (ContainerApplication & { id: number })[]
   view: DomainView
   created_at: string
   updated_at: string
 }
 
-// The Domains page: every domain, and every container one can be linked to.
+// The Domains page: every domain, and every container with its state.
 export interface DomainsResponse {
   domains: Domain[]
   containers: ContainerReference[]

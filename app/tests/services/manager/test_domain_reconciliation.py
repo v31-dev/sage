@@ -1,9 +1,13 @@
+from types import SimpleNamespace
+
 import pytest
 
 import config
+from services.applications import commands as application_commands
 from services.cloudflare import Cloudflare
-from services.db.models import Container, Domain, Worker
+from services.db.models import Application, Container, Domain, DomainCaller, Worker
 from services.domains import commands
+from services.domains.callers import worker_fingerprints
 from services.domains.config import DomainConfig
 from services.domains.decisions import ApplyOutcome, RouteObservation
 from services.domains.state import Domains
@@ -34,8 +38,8 @@ class ListedHosts(Hosts):
         while_listing()
       if hostname == self.listing_fails:
         raise Exception(f"Error executing command on {hostname}: timed out")
-      return 0, [f"{path}:{content.splitlines()[0]}" for (host, path), content in sorted(self.files.items())
-                 if host == hostname and path.startswith(f"{DYNAMIC}/domain-")]
+      return 0, [*(f"{path}:{content.splitlines()[0]}" for (host, path), content in sorted(self.files.items())
+                   if host == hostname and path.startswith(f"{DYNAMIC}/domain-")), *self.networks.get(hostname, [])]
     if command.startswith("rm -f ") and " " in command[len("rm -f "):]:
       self.commands.append((hostname, command))
       if self.fails and self.fails in command:
@@ -178,16 +182,6 @@ class TestRequest:
 
 
 class TestEdit:
-  async def test_a_domain_moved_to_another_worker_is_routed_there_and_its_old_route_withdrawn(
-          self, manager, public, hosts, provider, application):
-    conforming(hosts, provider, public)
-    elsewhere = Container.create(application=application, worker="w2")
-    manager.routable[elsewhere.id], manager.ready["w2"] = True, True
-    commands.patch_domain(public.id, {"container": elsewhere.id})
-    manager.domain_edited(public.id)
-    await manager.run()
-    assert (hosts.routes("w1"), hosts.routes("w2")) == ([], [f"domain-{public.id}.yml"])
-    assert state(manager, public).view.status == "synced"
 
   async def test_an_edit_in_place_rewrites_its_route_and_removes_nothing(self, manager, public, hosts, provider):
     conforming(hosts, provider, public)
@@ -196,6 +190,32 @@ class TestEdit:
     await manager.run()
     assert hosts.route("w1", public) == fingerprint(public)
     assert [command for command in writes(hosts) if "rm -f" in command[1]] == []
+
+  def test_an_edit_has_every_workers_callers_follow_it(self, manager, public):
+    manager.domain_edited(public.id)
+    assert manager.traefik_networks == [None]
+
+
+class TestApplicationEdit:
+  async def test_its_headers_reach_the_routes_of_its_domains_and_no_other(self, manager, public, internal, application,
+                                                                          hosts, provider):
+    other_application = Application.create(project=application.project, name="api", label="API", image="nginx")
+    other = Domain.create(name="other", type="public", port=80,
+                          container=Container.create(application=other_application, worker="w1"))
+    manager.routable[other.container_id] = True
+    for domain in (public, internal, other):
+      conforming(hosts, provider, domain)
+    manager.application_edited(application.id, application_commands.patch_application(
+        application.id, {"label": "Web 2", "image": "redis"}))
+    assert applies(manager) == []
+    manager.application_edited(application.id, application_commands.patch_application(
+        application.id, {"response_headers": {"X-App": "v1"}}))
+    assert applies(manager) == sorted([public.id, internal.id])
+    await manager.run()
+    for domain in (public, internal):
+      assert hosts.route("w1", domain) == fingerprint(domain)
+      assert '"X-App": "v1"' in hosts.files[("w1", f"{DYNAMIC}/domain-{domain.id}.yml")]
+    assert '"X-App"' not in hosts.files[("w1", f"{DYNAMIC}/domain-{other.id}.yml")]
 
 
 class TestObservation:
@@ -266,15 +286,6 @@ class TestObservation:
     await manager.reconcile_domains()
     assert Domains().dns_conforms(public.id, fingerprint(public)) is False and applies(manager) == [public.id]
 
-  async def test_an_unlinked_public_domain_is_applied_once_since_no_route_of_it_can_be_seen(self, manager, public, hosts, provider):
-    Domain.update(container=None).where(Domain.id == public.id).execute()
-    provider.zone[f"sage-domain-{public.id}"] = {}
-    await manager.reconcile_domains()
-    assert applies(manager) == [public.id]
-    await manager.run()
-    await manager.reconcile_domains()
-    assert (state(manager, public).view.status, applies(manager)) == ("synced", [])
-
   async def test_a_failed_apply_is_tried_again_by_the_pass(self, manager, public, hosts, provider):
     conforming(hosts, provider, public)
     hosts.found["w1"] = "unreachable"
@@ -344,6 +355,48 @@ class TestObservation:
     assert (Domains().outcome(gone.id), Domains().outcome(public.id)) == (None, ApplyOutcome("f1", True))
 
 
+class TestCallers:
+  """An internal Domain on w1 allowing `app`, which has a container on w2, and a third worker w3 set up."""
+
+  @pytest.fixture
+  def called(self, manager, internal, project, hosts, provider):
+    app = Application.create(project=project, name="app", label="App", image="x")
+    remote = Container.create(application=app, worker="w2")
+    DomainCaller.create(domain=internal, application=app)
+    Worker.create(hostname="w3", subdomain="green")
+    for hostname in ("w2", "w3"):
+      hosts.found[hostname], manager.ready[hostname] = "reachable", True
+      Workers().record_setup(hostname, "succeeded", "100.64.0.3")
+    hosts.networks = {"w2": [f"sage-{remote.id} {remote.id} 172.31.0.0/16, sage-{remote.id},traefik,"]}
+    hosts.addresses["w1"] = "100.64.0.1"
+    conforming(hosts, provider, internal)
+    snapshot = DomainConfig.capture(Domain.get_by_id(internal.id), "example.test")
+    expected = worker_fingerprints(snapshot, {"w2": {remote.id: ("172.31.0.0/16",)}}, "100.64.0.1")["w2"]
+    return SimpleNamespace(domain=internal, remote=remote, expected=expected)
+
+  async def test_the_pass_records_each_workers_networks_and_sees_the_domain_synced_by_its_file_on_a_callers_worker(
+          self, manager, called, hosts):
+    hosts.put("w2", called.domain.id, called.expected)
+    await manager.reconcile_domains()
+    assert Workers().networks("w2") == {called.remote.id: ("172.31.0.0/16",)}
+    assert Domains().route(called.domain.id, "w2") == RouteObservation("present", called.expected)
+    assert (state(manager, called.domain).view.status, applies(manager)) == ("synced", [])
+
+  async def test_a_callers_worker_without_the_file_or_with_another_has_the_domain_applied(self, manager, called, hosts):
+    await manager.reconcile_domains()
+    assert applies(manager) == [called.domain.id]
+
+  async def test_a_file_on_a_worker_neither_its_own_nor_a_callers_is_removed_and_a_callers_is_kept(self, manager, called, hosts):
+    hosts.put("w2", called.domain.id, called.expected)
+    hosts.put("w3", called.domain.id, called.expected)
+    await manager.reconcile_domains()
+    assert (hosts.routes("w2"), hosts.routes("w3")) == ([f"domain-{called.domain.id}.yml"], [])
+
+  async def test_each_pass_asks_for_traefiks_networks_on_every_worker(self, manager, called):
+    await manager.reconcile_domains()
+    assert manager.traefik_networks == [None]
+
+
 class TestCleanup:
   async def test_routes_of_domains_gone_or_bound_to_another_worker_are_removed_in_one_command(
           self, manager, public, hosts, provider, application):
@@ -354,15 +407,6 @@ class TestCleanup:
     await manager.reconcile_domains()
     assert (hosts.routes("w1"), hosts.routes("w2")) == ([f"domain-{public.id}.yml"], [f"domain-{moved.id}.yml"])
     assert writes(hosts) == [("w1", "rm -f " + " ".join(f"{DYNAMIC}/domain-{domain_id}.yml" for domain_id in sorted((moved.id, GONE))))]
-
-  async def test_an_unlinked_public_domains_route_goes_and_an_unlinked_internal_one_stays_for_its_apply(
-          self, manager, public, internal, hosts, provider):
-    Domain.update(container=None).where(Domain.id.in_([public.id, internal.id])).execute()
-    for domain in (public, internal):
-      hosts.put("w1", domain.id, "0" * 64)
-    await manager.reconcile_domains()
-    assert hosts.routes("w1") == [f"domain-{internal.id}.yml"]
-    assert applies(manager) == sorted([public.id, internal.id])
 
   async def test_a_route_is_never_removed_for_its_containers_state(self, manager, public, hosts, provider):
     conforming(hosts, provider, public)

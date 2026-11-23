@@ -25,7 +25,9 @@ from routes.workers import router as workers_router
 from services.cloudflare import Cloudflare
 from services.manager import Manager
 from services.updates import Updates
+from utils.api import RefuseOtherSites
 from utils.errors import Conflict
+from values.headers import SECURITY_HEADERS
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, redirect_slashes=False)
 
@@ -52,6 +54,13 @@ async def refuse_changes_unless_running(request: Request, call_next):
   # was not queued.
   if Manager().task_state() == "restoring" and request.scope.get("endpoint") is not restore_backup:
     return JSONResponse(status_code=503, content={"detail": _REFUSALS["restoring"]})
+  return response
+
+
+@app.middleware("http")
+async def send_the_managers_headers(request: Request, call_next):
+  response = await call_next(request)
+  response.headers.update(SECURITY_HEADERS)
   return response
 
 
@@ -130,11 +139,12 @@ class OnlyManagerAddress:
 
 
 def build_asgi_app(only_manager_address: bool):
-  """What the servers serve: the Socket.IO server in front of the API, and in production only at the manager's
-  address https://TS_NAME.core.domain, other names for it redirecting (the tailnet name or IP, after a certificate
-  warning)."""
+  """What the servers serve: the Socket.IO server in front of the API, to the manager's own pages only, and in
+  production only at the manager's address https://TS_NAME.core.domain, other names for it redirecting (the tailnet
+  name or IP, after a certificate warning)."""
   Updates().serve(TOPICS, jsonable_encoder)
-  served = socketio.ASGIApp(sio, other_asgi_app=app, socketio_path=SOCKET_IO_PATH.lstrip("/"))
+  served = RefuseOtherSites(socketio.ASGIApp(sio, other_asgi_app=app, socketio_path=SOCKET_IO_PATH.lstrip("/")),
+                            lambda: f"https://{Cloudflare().manager_hostname}")
   return OnlyManagerAddress(served) if only_manager_address else served
 
 

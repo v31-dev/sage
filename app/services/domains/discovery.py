@@ -41,7 +41,7 @@ def discovery_services(domains, published: dict[str, bool], now: datetime, start
   """Services as `[namespace, service, [[host, pool, online], ...]]`, sorted, from `(domain, state)` of each Domain
   with a service: public, or internal for internal and TCP names. Every name with a full name is listed. `online` is
   true while its Domain is synced, its container can be routed to and its worker is ready; false once one of those is
-  known not to hold (unlinked, not routable, not ready, its Domain in error or drifted). While that is not known yet,
+  known not to hold (not routable, not ready, its Domain in error or drifted). While that is not known yet,
   an apply of its Domain under way included, it is what the worker publishes for it (`published`, false when it
   publishes nothing), and false once it has not been known for UNKNOWN_HOLD_SECONDS: from when that apply was queued,
   else from when the Manager started."""
@@ -51,7 +51,7 @@ def discovery_services(domains, published: dict[str, bool], now: datetime, start
     if host is None:
       continue
     facts, view = state.facts, state.view
-    if (not facts.linked or facts.eligible is False or facts.worker_ready is False or view.status == "error"
+    if (facts.eligible is False or facts.worker_ready is False or view.status == "error"
             or (view.status == "pending" and view.reason == "drifted")):
       online = False
     elif view.status == "synced" and facts.eligible is True and facts.worker_ready is True:

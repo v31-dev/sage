@@ -6,7 +6,7 @@ http:
       entrypoints:
         - websecure
       middlewares:
-        - security-headers
+        - domain_${ID}_headers
         - tailscale-only
         - domain_${ID}_cors
       service: domain_${ID}
@@ -25,6 +25,10 @@ http:
       tls: {}
 
   middlewares:
+    # The application's response headers: Sage's defaults with its changes over them.
+    domain_${ID}_headers:
+      headers:
+        customResponseHeaders: ${HEADERS}
     domain_${ID}_cors:
       headers:
         customResponseHeaders:

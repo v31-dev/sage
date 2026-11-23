@@ -8,6 +8,7 @@ import yaml
 import config
 from services.containers.placement import LABEL_APPLICATION, LABEL_CONTAINER, LABELS
 from services.worker_reports import LABEL_PREFIX
+from services.workers.rendering import EDGE_NETWORK
 
 TEMPLATES = Path(__file__).parent.parent.parent / "templates" / "worker"
 
@@ -40,7 +41,7 @@ class TestVectorConfig:
 
   def test_it_posts_to_the_log_route_with_the_workers_name(self):
     sink = vector_sink()
-    assert sink["uri"].endswith(":9001/api/vector/logs")
+    assert sink["uri"] == "http://${IP}:${INGEST_PORT}/api/vector/logs"
     assert sink["request"]["headers"]["X-Node-Name"] == "${HOSTNAME}"
 
   def test_it_ships_the_containers_through_the_transform_that_picks_them(self):
@@ -67,7 +68,7 @@ class TestTelegrafConfig:
 
   def test_it_pushes_gzip_json_to_the_report_route_with_the_workers_name(self):
     output, = telegraf_config()["outputs"]["http"]
-    assert output["url"].endswith(":9001/api/telegraf/report")
+    assert output["url"] == "http://x:x/api/telegraf/report"
     assert output["data_format"] == "json" and output["content_encoding"] == "gzip"
     assert output["headers"]["X-Node-Name"] == "x"
 
@@ -84,6 +85,36 @@ class TestTelegrafConfig:
     (docker,) = telegraf_config()["inputs"]["docker"]
     assert docker["docker_label_include"] == list(LABELS)
     assert all(label.startswith(LABEL_PREFIX) for label in LABELS)
+
+
+class TestApplicationHeaders:
+  @pytest.mark.parametrize("name", ["service_public.yml", "service_internal.yml"])
+  def test_an_http_route_sends_the_applications_headers_from_a_middleware_of_its_own(self, name):
+    text = (TEMPLATES / "traefik" / name).read_text()
+    assert "- domain_${ID}_headers" in text and "customResponseHeaders: ${HEADERS}" in text
+
+  def test_no_template_sends_headers_of_sages_own_on_an_applications_routes(self):
+    assert not any("security-headers" in path.read_text() for path in (TEMPLATES / "traefik").glob("*.yml"))
+
+
+class TestLeastPrivilege:
+  @pytest.mark.parametrize("name", ["traefik", "cloudflared", "cloudflared-discovery", "vector", "telegraf"])
+  def test_every_service_drops_its_capabilities_gains_no_privileges_and_has_a_read_only_root(self, name):
+    definition = service(name)
+    assert definition["cap_drop"] == ["ALL"]
+    assert "no-new-privileges:true" in definition["security_opt"]
+    assert definition["read_only"] is True
+    assert not definition.get("privileged")
+
+  def test_only_traefik_keeps_a_capability_the_one_to_bind_its_ports(self):
+    stack = yaml.safe_load((TEMPLATES / "docker-compose.yml").read_text())["services"]
+    assert {name: definition["cap_add"] for name, definition in stack.items() if "cap_add" in definition} == {
+        "traefik": ["NET_BIND_SERVICE"]}
+
+  def test_traefik_reads_its_configuration_and_vector_writes_only_its_buffer(self):
+    assert service("traefik")["volumes"] == ["${SAGE_HOME}/traefik:/etc/traefik:ro"]
+    assert [volume for volume in service("vector")["volumes"] if not volume.endswith(":ro")] == [
+        "${SAGE_HOME}/vector/buffer:/var/lib/vector"]
 
 
 class TestTelegrafService:
@@ -123,6 +154,43 @@ class TestTunnels:
     env = (TEMPLATES / "worker.env").read_text().splitlines()
     assert {"TUNNEL_TOKEN=${TUNNEL_TOKEN}", "DISCOVERY_TUNNEL_TOKEN=${DISCOVERY_TUNNEL_TOKEN}"} <= set(env)
 
+  @pytest.mark.parametrize("name", ["cloudflared", "cloudflared-discovery"])
+  def test_each_serves_its_metrics_on_its_own_loopback_only(self, name):
+    assert service(name)["command"].split()[:4] == ["tunnel", "--no-autoupdate", "--metrics", "127.0.0.1:20241"]
+
+
+class TestTheEdge:
+  def test_internal_and_tcp_names_admit_the_tailnet_only(self):
+    dynamic = yaml.safe_load((TEMPLATES / "traefik" / "config.yml").read_text())
+    assert dynamic["http"]["middlewares"]["tailscale-only"]["ipAllowList"]["sourceRange"] == ["100.64.0.0/10"]
+    assert dynamic["tcp"]["middlewares"]["tailscale-only-tcp"]["ipAllowList"]["sourceRange"] == ["100.64.0.0/10"]
+
+  def test_every_service_runs_an_exact_release(self):
+    stack = yaml.safe_load((TEMPLATES / "docker-compose.yml").read_text())["services"]
+    for name, definition in stack.items():
+      _, _, tag = definition["image"].rpartition(":")
+      assert re.fullmatch(r"v?\d+(\.\d+)+(-alpine)?", tag), f"{name} runs {definition['image']}"
+
+  def test_traefik_reads_its_routes_from_files_only_and_has_no_docker_socket(self):
+    static = yaml.safe_load((TEMPLATES / "traefik" / "traefik.yml").read_text())
+    assert list(static["providers"]) == ["file"]
+    assert not any("docker.sock" in volume for volume in service("traefik")["volumes"])
+
+  def test_traefiks_default_route_stays_on_the_stacks_network_whatever_it_is_attached_to(self):
+    networks = service("traefik")["networks"]
+    assert networks["default"]["gw_priority"] > (networks["edge"] or {}).get("gw_priority", 0)
+
+  def test_only_traefik_and_the_tunnels_are_on_the_edge_network_which_the_setup_creates(self):
+    stack = yaml.safe_load((TEMPLATES / "docker-compose.yml").read_text())
+    assert stack["networks"]["edge"] == {"name": EDGE_NETWORK, "external": True}
+    assert set(service("traefik")["networks"]) == {"default", "edge"}
+    assert {name for name, definition in stack["services"].items() if "edge" in definition.get("networks", [])} == {
+        "traefik", "cloudflared", "cloudflared-discovery"}
+    assert service("cloudflared")["networks"] == service("cloudflared-discovery")["networks"] == ["edge"]
+
+  def test_traefik_publishes_only_the_internal_names_ports_on_the_tailnet(self):
+    assert service("traefik")["ports"] == ["${TS_IP}:443:443", "${TS_IP}:8443:8443"]
+
 
 COMPOSE_TEMPLATES = ["docker-compose.yml", "application/dockerhub-compose.yml", "application/gitrepo-compose.yml"]
 
@@ -147,6 +215,15 @@ class TestContainerLogs:
   def test_only_an_applications_container_has_the_labels_and_it_has_all_of_them(self, name):
     labelled = {tuple(definition.get("labels", {})) for definition in compose_services(name).values()}
     assert labelled == ({tuple(LABELS)} if name.startswith("application/") else {()})
+
+
+class TestApplicationPrivileges:
+  @pytest.mark.parametrize("name", ["application/dockerhub-compose.yml", "application/gitrepo-compose.yml"])
+  def test_an_application_gains_no_privileges_and_opens_no_raw_sockets(self, name):
+    [definition] = compose_services(name).values()
+    assert definition["cap_drop"] == ["NET_RAW"]
+    assert definition["security_opt"] == ["no-new-privileges:true"]
+    assert "cap_add" not in definition and not definition.get("privileged")
 
 
 @pytest.mark.parametrize("name", ["application/dockerhub-compose.yml", "application/gitrepo-compose.yml"])

@@ -279,7 +279,7 @@ class TestASchemaThatDiffersIsRefused:
       Database().migrate()
 
     assert "container.id is INTEGER" in str(refused.value)
-    assert "domain.container_id is INTEGER REFERENCES container (id) ON DELETE SET NULL" in str(refused.value)
+    assert "domain.container_id is INTEGER NOT NULL REFERENCES container (id) ON DELETE CASCADE" in str(refused.value)
 
   def test_rows_that_point_at_nothing_are_refused_and_named(self, db, application):
     point_a_domain_at_a_missing_container(db)

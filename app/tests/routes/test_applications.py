@@ -35,6 +35,16 @@ class TestApplication:
     manager.answers["application_page"] = {"name": "web"}
     assert client.put(f"{URL}/web", json={"image": "redis"}).json() == {"name": "web"}
     assert Application.get_by_id(application.id).image == "redis"
+    assert manager.called("application_edited") == [((application.id, {"image"}), {})]
+
+  def test_an_edit_that_changes_nothing_tells_the_manager_nothing(self, client, application, manager):
+    client.put(f"{URL}/web", json={"image": "nginx", "response_headers": {"Set-Cookie": "a=b"}})
+    assert manager.called("application_edited") == []
+
+  def test_a_header_sage_cannot_send_is_a_400_and_nothing_is_applied(self, client, application, manager):
+    response = client.put(f"{URL}/web", json={"response_headers": {"X-Bad Name": "v"}})
+    assert response.status_code == 400 and "Invalid header name" in response.json()["detail"]
+    assert manager.called("application_edited") == []
 
   def test_an_edit_of_an_unknown_application_or_one_of_another_project_is_a_404(self, client, application):
     other = Project.create(name="other", label="Other")

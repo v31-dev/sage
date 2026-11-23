@@ -106,6 +106,26 @@ CREATE INDEX "workerevent_created_at" ON "worker_event" ("created_at");
 }
 
 
+def rows(db: SqliteDatabase, table: str) -> list[dict]:
+  cursor = db.execute_sql(f'SELECT * FROM "{table}"')
+  return [dict(zip([column[0] for column in cursor.description], row)) for row in cursor.fetchall()]
+
+
+def rebuild_table(db: SqliteDatabase, table: str, schema: str, copied: list[dict]):
+  """Replaces `table` with the one `schema` creates, holding the `copied` rows."""
+  # SQLite's procedure: the new table under another name, the old one dropped, the new one renamed into its place,
+  # so the other tables' foreign keys keep naming it.
+  create, *indexes = migrator.statements(schema)
+  db.execute_sql(create.replace(f'CREATE TABLE "{table}"', f'CREATE TABLE "{table}_rebuilt"', 1))
+  for row in copied:
+    db.execute_sql(f'INSERT INTO "{table}_rebuilt" ({", ".join(f'"{key}"' for key in row)}) '
+                   f'VALUES ({", ".join("?" * len(row))})', list(row.values()))
+  db.execute_sql(f'DROP TABLE IF EXISTS "{table}"')
+  db.execute_sql(f'ALTER TABLE "{table}_rebuilt" RENAME TO "{table}"')
+  for index in indexes:
+    db.execute_sql(index)
+
+
 def from_0_1_3(db: SqliteDatabase) -> list[dict]:
   """0.1.3's database to 0.2's. The configuration comes across with containers and volumes under new opaque ids and
   every worker under a random subdomain; the Domains, the history (events, notifications, tasks) and the backup
@@ -114,25 +134,11 @@ def from_0_1_3(db: SqliteDatabase) -> list[dict]:
   has every application stopped. Its actions, in order: on each worker, stop 0.1.3's runtimes, move each volume's data
   to its new place and remove 0.1.3's folders; in Cloudflare and the store, what 0.1.3 left; in Sage, the Domains to
   add again."""
-  def rows(table: str) -> list[dict]:
-    cursor = db.execute_sql(f'SELECT * FROM "{table}"')
-    return [dict(zip([column[0] for column in cursor.description], row)) for row in cursor.fetchall()]
-
   def rebuild(table: str, copied: list[dict]):
-    # SQLite's procedure: the new table under another name, the old one dropped, the new one renamed into its place,
-    # so the other tables' foreign keys keep naming it.
-    create, *indexes = migrator.statements(SCHEMA_0_2[table])
-    db.execute_sql(create.replace(f'CREATE TABLE "{table}"', f'CREATE TABLE "{table}_0_2"', 1))
-    for row in copied:
-      db.execute_sql(f'INSERT INTO "{table}_0_2" ({", ".join(f'"{key}"' for key in row)}) '
-                     f'VALUES ({", ".join("?" * len(row))})', list(row.values()))
-    db.execute_sql(f'DROP TABLE IF EXISTS "{table}"')
-    db.execute_sql(f'ALTER TABLE "{table}_0_2" RENAME TO "{table}"')
-    for index in indexes:
-      db.execute_sql(index)
+    rebuild_table(db, table, SCHEMA_0_2[table], copied)
 
-  instances, projects, applications = rows("instance"), rows("project"), rows("application")
-  workers, volumes, containers, domains = rows("worker"), rows("volume"), rows("container"), rows("domain")
+  instances, projects, applications = rows(db, "instance"), rows(db, "project"), rows(db, "application")
+  workers, volumes, containers, domains = rows(db, "worker"), rows(db, "volume"), rows(db, "container"), rows(db, "domain")
   # 0.1.3 kept each application's runtime and volumes on a worker under its qualified name.
   qualified = {row["id"]: f"{row['project_id']}-{row['name']}" for row in applications}
   stamp = ("created_at", "updated_at")
@@ -221,9 +227,49 @@ def from_0_1_3(db: SqliteDatabase) -> list[dict]:
   for row in sorted(domains, key=lambda row: (qualified[row["application_id"]], row["type"], row["name"])):
     actions.append({"where": "Sage", "command": None,
                     "why": f"The {row['type']} domain [{row['name']}] (port [{row['port']}]) of "
-                    f"[{qualified[row['application_id']]}] was removed by this upgrade. Add it again on the Domains "
-                    f"page, linked to the [{qualified[row['application_id']]}] container that should serve it."})
+                    f"[{qualified[row['application_id']]}] was removed by this upgrade. Add it again on the card of "
+                    f"the [{qualified[row['application_id']]}] container that should serve it, on its application's "
+                    "page."})
   return actions
 
 
-STEPS = [from_0_1_3]
+def from_0_2_0(db: SqliteDatabase) -> list[dict]:
+  """0.2.0's database: every application gets its response headers' changes, none yet, so each sends Sage's
+  defaults. A domain belongs to its container and is deleted with it, so the domains 0.2.0 kept unlinked after their
+  container's deletion are removed: they have no DNS record, and a route one left on a worker goes with the Domain
+  pass, as any Domain gone. Its actions list them, to add again. An internal or TCP domain gets the applications
+  allowed to call it, none yet."""
+  db.execute_sql('ALTER TABLE "application" ADD COLUMN "response_headers" TEXT')
+  logger.info("Applications get their response headers: none is changed, so every application sends the defaults.")
+  domains = rows(db, "domain")
+  rebuild_table(db, "domain", """
+CREATE TABLE "domain" ("id" VARCHAR(255) NOT NULL PRIMARY KEY, "created_at" DATETIME NOT NULL, "updated_at" DATETIME NOT NULL, "name" VARCHAR(63) NOT NULL, "type" VARCHAR(255) NOT NULL CHECK ("type" IN ('internal', 'public', 'tcp')), "port" INTEGER NOT NULL CHECK (port BETWEEN 1 AND 65535), "container_id" VARCHAR(255) NOT NULL, "namespace_worker_id" VARCHAR(255), "service" VARCHAR(63), "pool" VARCHAR(63), "cors_origins" TEXT, FOREIGN KEY ("container_id") REFERENCES "container" ("id") ON DELETE CASCADE, FOREIGN KEY ("namespace_worker_id") REFERENCES "worker" ("hostname") ON DELETE RESTRICT);
+CREATE INDEX "domain_container_id" ON "domain" ("container_id");
+CREATE INDEX "domain_namespace_worker_id" ON "domain" ("namespace_worker_id");
+CREATE UNIQUE INDEX "domain_name_namespace_worker" ON "domain" ("name", coalesce(namespace_worker_id, ''));
+""", [row for row in domains if row["container_id"] is not None])
+  for statement in (
+      'CREATE TABLE "domaincaller" ("id" INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT, "created_at" DATETIME NOT NULL, '
+      '"updated_at" DATETIME NOT NULL, "domain_id" VARCHAR(255) NOT NULL, "application_id" INTEGER NOT NULL, '
+      'FOREIGN KEY ("domain_id") REFERENCES "domain" ("id") ON DELETE CASCADE, '
+      'FOREIGN KEY ("application_id") REFERENCES "application" ("id") ON DELETE CASCADE)',
+      'CREATE INDEX "domaincaller_domain_id" ON "domaincaller" ("domain_id")',
+      'CREATE INDEX "domaincaller_application_id" ON "domaincaller" ("application_id")',
+      'CREATE UNIQUE INDEX "domaincaller_domain_id_application_id" ON "domaincaller" ("domain_id", "application_id")',
+  ):
+    db.execute_sql(statement)
+  logger.info("Internal and TCP domains get the applications allowed to call them: none yet.")
+  unlinked = sorted((row for row in domains if row["container_id"] is None), key=lambda row: (row["type"], row["name"]))
+  actions = []
+  for row in unlinked:
+    where = f" on worker [{row['namespace_worker_id']}]" if row["namespace_worker_id"] else ""
+    logger.info(f"Removed the unlinked {row['type']} domain [{row['name']}]{where} ([{row['id']}]): this version "
+                "deletes a domain with its container.")
+    actions.append({"where": "Sage", "command": None,
+                    "why": f"The unlinked {row['type']} domain [{row['name']}]{where} (port [{row['port']}]) was "
+                    "removed by this upgrade: a domain now belongs to its container. Add it again on the card of the "
+                    "container that should serve it, on its application's page."})
+  return actions
+
+
+STEPS = [from_0_1_3, from_0_2_0]

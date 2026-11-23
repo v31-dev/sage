@@ -9,15 +9,16 @@ from fastapi.testclient import TestClient
 import config
 from services.metrics import Metrics
 from services.worker_reports import WorkerReports, parse_batch, snapshot
+from tests.routes.fakes import MANAGER_IP
 
 BATCH = json.loads((Path(__file__).parent.parent / "data" / "telegraf_batch.json").read_text())
 URL = "/api/telegraf/report"
 
 
 @pytest.fixture
-def client(db, thread_connections, manager):
+def client(db, thread_connections, manager, tailscale):
   from api_ingest import app
-  return TestClient(app)
+  return TestClient(app, base_url=f"http://{MANAGER_IP}:9001")
 
 
 @pytest.fixture
@@ -57,6 +58,20 @@ class TestReport:
   def test_a_plain_body_with_a_length_is_read_too(self, client, worker, ingested):
     assert post(client, json.dumps(BATCH).encode(), encoding=None, chunked=False).status_code == 204
     assert WorkerReports().latest("w1") is not None
+
+  @pytest.mark.parametrize("host", ["rebound.example", "100.64.0.10", "localhost"])
+  def test_a_report_sent_to_another_name_is_refused_and_not_kept(self, client, worker, ingested, host):
+    response = client.post(f"http://{host}:9001{URL}", content=json.dumps(BATCH).encode(), headers={"X-Node-Name": "w1"})
+    assert response.status_code == 421
+    assert WorkerReports().latest("w1") is None
+    assert ingested == []
+
+  def test_a_report_a_browser_sends_is_refused_and_not_kept(self, client, worker, ingested):
+    response = client.post(URL, content=json.dumps(BATCH).encode(),
+                           headers={"X-Node-Name": "w1", "Sec-Fetch-Site": "same-origin", "Origin": "http://rebound.example:9001"})
+    assert response.status_code == 403
+    assert WorkerReports().latest("w1") is None
+    assert ingested == []
 
   def test_a_batch_of_several_gathers_keeps_each_but_the_newest_until_the_next_report(self, client, worker, ingested):
     first, second = [snapshot(metrics) for _, metrics in sorted(parse_batch(BATCH).items())]

@@ -72,8 +72,10 @@ lock wait on the provider, the event loop included.
 ## Answer these, each with source locations
 
 1. **Races on the resources tasks touch.** For each remote write, the resource it changes (from its path or its
-   owner's writer), every task that reaches it and that task's scopes. On one lock path, each writer holds the
-   resource's scope or an ancestor; under two roots, each writer holds both sides or only removes. A write no task
+   owner's writer), side effects included (a Compose command creates and removes its project's networks and volumes),
+   every task that reaches it and that task's scopes; group the writes by resource, not by command or function. On one
+   lock path, each writer holds the resource's scope or an ancestor; under two roots, or two sibling scopes of one
+   root, each writer holds both sides or only removes. A write no task
    reaches (a route, a callback, a thread) is a finding. Each scope is built by its resource's package; one built from
    a binding that can change is checked again at the task's start. A remote command can outlive the attempt that
    started it (a dropped connection leaves it running until its worker-side timeout): a retry of it, or the next task
@@ -126,9 +128,11 @@ lock wait on the provider, the event loop included.
 
 ## Record and hand off
 
-- Save each run in a new directory `<memory repo>/sage/engine-review-<short commit>-<YYYYMMDD>/` (a second run on
-  the same commit and day adds `-2`); a focus goes in the subject, not the name. Do not read or update existing
-  tracker items, deduplicate against them or reconcile the report with earlier runs. The layout:
+- A run's report is ephemeral, so no later run can lean on it: save it in a new directory
+  `engine-review-<short commit>-<YYYYMMDD>/` in the session's scratchpad directory (`/tmp` without one), never in the
+  memory repo or the code repo (a second run on the same commit and day adds `-2`); a focus goes in the subject, not
+  the name. Do not read or update existing tracker items, deduplicate against them or reconcile the report with
+  earlier runs. The layout:
 
   ```text
   engine-review-<short commit>-<YYYYMMDD>/
@@ -157,6 +161,10 @@ lock wait on the provider, the event loop included.
   extracted copy of `app/` in scratch space, with its command in its docstring.
 - Report by the four questions, races and deadlocks first, then what was not verified.
 - Change no runtime code, test or doc during the review.
+- A finding the user promotes to a todo, sprint or backlog item is written into that item whole, so it stands alone
+  once the report is gone: its locations, the interleaving or wait cycle, why the protection doesn't hold, the rule,
+  the direction, and what the evidence showed and did not show (a probe as the scenario it ran). The item links
+  nothing in the report.
 
 ## Refine this skill
 

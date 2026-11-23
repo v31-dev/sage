@@ -4,7 +4,6 @@ http:
       ipAllowList:
         sourceRange:
           - "100.64.0.0/10"
-          - "172.16.0.0/12"
     # Lets a page on another origin time the probe of a name.
     probe:
       headers:
@@ -12,26 +11,6 @@ http:
           Timing-Allow-Origin: "*"
           Access-Control-Allow-Origin: "*"
           Cache-Control: "no-store"
-    security-headers:
-      headers:
-        frameDeny: true
-        browserXssFilter: true
-        contentTypeNosniff: true
-        forceSTSHeader: true
-        stsSeconds: 63072000
-        referrerPolicy: "strict-origin-when-cross-origin"
-        permissionsPolicy: "camera=(), microphone=(), geolocation=(), payment=()"
-        # This is very strict
-        contentSecurityPolicy: >-
-          upgrade-insecure-requests;
-          default-src 'self'; 
-          script-src 'self' 'unsafe-inline';
-          connect-src 'self' *.${DOMAIN} api.iconify.design;
-          style-src 'self' 'unsafe-inline'; 
-          img-src 'self' data: *.openstreetmap.org; 
-          worker-src 'self' blob:;
-          frame-ancestors 'none';
-          form-action 'self' *.${DOMAIN};
 
 tcp:
   middlewares:
@@ -39,7 +18,6 @@ tcp:
       ipAllowList:
         sourceRange:
           - "100.64.0.0/10"
-          - "172.16.0.0/12"
 
 # TLS options for the TCP routers, which terminate TLS
 tls:

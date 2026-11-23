@@ -219,14 +219,11 @@ class TestPublication:
     await manager.publish_discovery("w1")
     assert hosts.endpoints("w1", "_discovery-public-shop.yml") == '"a.example.test";online, "b.example.test";online=?0'
 
-  async def test_an_unlinked_name_with_its_pool_is_listed_offline_and_one_without_a_service_is_not(self, manager, hosts, shop):
-    Domain.create(name="c", type="public", port=80, service="shop", pool="eu")
+  async def test_a_name_without_a_service_is_not_listed(self, manager, hosts, shop):
     Domain.create(name="d", type="public", port=80, container=shop[0].container)
-    Domain.create(name="e", type="internal", port=80, service="db")
     await manager.publish_discovery("w1")
     assert set(hosts.discovery("w1")) == {"_discovery-public-shop.yml"}
-    assert hosts.endpoints("w1", "_discovery-public-shop.yml") == (
-        '"a.example.test";online, "b.example.test";online, "c.example.test";pool="eu";online=?0')
+    assert hosts.endpoints("w1", "_discovery-public-shop.yml") == '"a.example.test";online, "b.example.test";online'
 
   async def test_nothing_is_written_while_every_files_proof_is_current(self, manager, hosts, shop):
     await manager.publish_discovery("w1")

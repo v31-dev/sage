@@ -20,10 +20,11 @@ from services.containers.decisions import PROGRESS, Runtime, correction
 from services.containers.placement import (LABEL_APPLICATION, labels_authority, parse_placements, placement_dir, placement_scope, placements_command,
                                            records_command, runtime_name, runtime_owner, volume_dir)
 from services.containers.record import Applied, Authority, Operation, Recovery, Settled, TargetRead, TargetRecord, parse_record_listing
-from services.containers.rendering import render_placement
+from services.containers.rendering import deployment_hash, render_placement
 from services.containers.state import ContainerState, QueuedRequest, container_payload, container_state
 from services.containers.targets import Containers
 from services.db.models import Application, Container, ContainerEvent, Domain, Instance, Project, Volume, Worker
+from services.domains.callers import allowing
 from services.history import record_container_event
 from services.metrics import Metrics
 from services.notification import Notifications
@@ -57,7 +58,7 @@ class ContainersMixin:
     for container in containers:
       if container.application_id not in hashes:
         try:
-          hashes[container.application_id] = capture_deploy_config(container.application_id).content_hash
+          hashes[container.application_id] = deployment_hash(capture_deploy_config(container.application_id))
         except LookupError:
           hashes[container.application_id] = None
       states[container.id] = container_state(container, instance, live.get(container.id), queued.get(container.id, ()),
@@ -451,6 +452,7 @@ class ContainersMixin:
       logger.error(f"The orphan {container_id} on {hostname} could not be removed: {error}")
       raise TaskFailed()
     self.orphans.pop((hostname, container_id), None)
+    self.request_traefik_networks(hostname)
     if not left and not removed:
       logger.info(f"Nothing of container {container_id} is left on {hostname}; nothing to clean up.")
       return
@@ -525,7 +527,7 @@ class ContainersMixin:
 
   async def deploy_container(self, container_id: str, deploy: DeployConfig):
     """Stops the container, writes the deployment's files, starts it and verifies it runs this deployment."""
-    begun = await self.begin_lifecycle(container_id, "deploy", deploy.content_hash)
+    begun = await self.begin_lifecycle(container_id, "deploy", deployment_hash(deploy))
     if begun is None:
       return
     container, record = begun
@@ -561,7 +563,7 @@ class ContainersMixin:
         raise Exception(f"The container runs deployment {reading.deployment_id}, not {operation.id}.")
       now = utcnow()
       await Containers().write(container, replace(
-          record, applied=Applied(operation.id, deploy.content_hash, now),
+          record, applied=Applied(operation.id, deployment_hash(deploy), now),
           settled=Settled(operation.id, "running", "succeeded", now),
           operation=replace(operation, phase="settled", outcome="succeeded", finished_at=now,
                             verified_on_worker_at=verified_at)))
@@ -569,7 +571,8 @@ class ContainersMixin:
       await self.fail_lifecycle(container, record, error)
     record_container_event(container, "deploy", "succeeded", operation.id, dedupe_key=f"{operation.id}:succeeded")
     await mark(container, "Deployed")
-    self.request_domain_applies(domain.id for domain in container.domains)
+    self.request_domain_applies([*(domain.id for domain in container.domains), *allowing(container.application_id)])
+    self.request_traefik_networks(container.worker_id)
     name, page = self.container_notice(container)
     Notifications().notify(f"{name} deployed.", "success", page)
 
@@ -592,7 +595,7 @@ class ContainersMixin:
       await self.fail_lifecycle(container, record, error)
     record_container_event(container, "stop", "succeeded", operation.id, dedupe_key=f"{operation.id}:succeeded")
     await mark(container, "Stopped")
-    self.request_domain_applies(domain.id for domain in container.domains)
+    self.request_domain_applies([*(domain.id for domain in container.domains), *allowing(container.application_id)])
     name, page = self.container_notice(container)
     Notifications().notify(f"{name} stopped.", "success", page)
 
@@ -620,12 +623,16 @@ class ContainersMixin:
       await mark(container, "Removed from this worker")
     domains = detach_container(container.id)
     Containers().forget(container.id)
-    self.request_domain_applies(domains)
-    if domains:
+    allowed = allowing(container.application_id)
+    self.request_domain_applies(allowed)
+    # Its domains went with it, so every worker's callers follow; else only its network goes.
+    self.request_traefik_networks(None if domains else container.worker_id)
+    # The allowing Domains' files on its worker go by binding, once no other container of its application is there.
+    if domains or allowed:
       self.request_domain_reconciliation()
     if record is None:
       Notifications().notify(f"{name} deleted from Sage; the worker could not be reached, so its files stay there.",
                              "warning", page)
     else:
       Notifications().notify(f"{name} deleted.", "success", page)
-    logger.info(f"Container {container.id} deleted; {len(domains)} domains unlinked.")
+    logger.info(f"Container {container.id} deleted with its {len(domains)} domains.")

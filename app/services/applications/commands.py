@@ -1,4 +1,5 @@
-from services.applications.rules import apply_type, validate_backup_cron, validate_image, validate_repo, validate_volume_path
+from services.applications.rules import (apply_type, validate_backup_cron, validate_image, validate_repo, validate_response_headers,
+                                         validate_volume_path)
 from services.applications.updates import application_changed, container_changed, hosts_changed
 from services.backups.catalog import UNFINISHED
 from services.db.models import Application, Backup, Container, Project, Volume, Worker
@@ -7,7 +8,8 @@ from utils.errors import Conflict
 from values.names import derive_name
 
 PROJECT_FIELDS = ("label", "description", "env")
-APPLICATION_FIELDS = ("label", "description", "type", "image", "repo", "path", "env", "args", "build_secrets", "command")
+APPLICATION_FIELDS = ("label", "description", "type", "image", "repo", "path", "env", "args", "build_secrets", "command",
+                      "response_headers")
 TYPE_FIELDS = {"type", "image", "repo", "path", "args", "build_secrets"}
 VOLUME_FIELDS = ("name", "path", "backup_cron")
 
@@ -62,7 +64,8 @@ def create_application(project_name: str, label: str, description: str | None = 
   return application
 
 
-def patch_application(application_id: int, fields: dict) -> Application:
+def patch_application(application_id: int, fields: dict) -> set[str]:
+  """The names of the fields it changed."""
   with write():
     application = get(Application, Application.id == application_id)
     config = merged(application, fields, APPLICATION_FIELDS)
@@ -70,10 +73,12 @@ def patch_application(application_id: int, fields: dict) -> Application:
       apply_type(config)
       validate_image(config["image"])
       validate_repo(config["repo"])
+    if "response_headers" in fields:
+      config["response_headers"] = validate_response_headers(config["response_headers"])
     changed = save_changes(application, config)
   if changed:
     hosts_changed(application)
-  return application
+  return changed
 
 
 def delete_application(application_id: int):
@@ -142,7 +147,7 @@ def attach_container(application_id: int, worker_hostname: str) -> Container:
 
 
 def detach_container(container_id: str) -> list[str]:
-  """Deletes the container's row, which unlinks its domains, and returns their ids."""
+  """Deletes the container's row with its domains, and returns their ids."""
   with write():
     container = get(Container, Container.id == container_id)
     domains = [domain.id for domain in container.domains]

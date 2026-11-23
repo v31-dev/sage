@@ -1,12 +1,14 @@
 """Each worker's state as its pages show it, worked out from the facts its owners hold; the setup outcomes the
 Manager's convergence leaves, the certificates the worker applied, and the stamps Sage keeps on the worker."""
 from dataclasses import asdict, dataclass
+from datetime import datetime
 
 import config
 from services.base import Base
 from services.certs import TEMPLATE_DIGEST, Certs
 from services.cloudflare import Cloudflare
 from services.db.models import Worker
+from services.domains.updates import callers_observed
 from services.tailscale import Tailscale
 from services.worker_reports import WorkerReports
 from services.workers.decisions import WorkerFacts, WorkerReport, WorkerView, addressable, decide_worker, report_of, workable
@@ -19,13 +21,16 @@ class Workers(Base):
   until a setup has run, and again once its SSH server stops answering, since it is set up again when it returns. And
   the stamps on the worker: one line each under `revisions/`, its owner (`<instance id> <domain>`) and the fingerprint
   of the infrastructure applied. And the proofs of the certificates it applied, by role, from its `certs` stamp at its
-  setup and from each distribution; none until one of them."""
+  setup and from each distribution; none until one of them. And its applications' networks as its newest listing
+  found them; none until one."""
 
   def __init__(self):
     super().__init__()
     # By hostname: the outcome and the address the setup applied.
     self._setups: dict[str, tuple[str, str | None]] = {}
     self._certificates: dict[str, dict[str, str]] = {}
+    # By hostname: when the newest listing of its applications' networks started, and their subnets by container id.
+    self._networks: dict[str, tuple[datetime, dict[str, tuple[str, ...]]]] = {}
 
   async def read_revisions(self, hostname: str) -> dict[str, str]:
     """The worker's stamps by name; none when it has none yet."""
@@ -66,17 +71,37 @@ class Workers(Base):
     with self.lock:
       self._certificates[hostname] = dict(proofs)
 
+  def networks(self, hostname: str) -> dict[str, tuple[str, ...]] | None:
+    """The subnets of each of the worker's applications' networks, by its container's id; None until a listing."""
+    with self.lock:
+      held = self._networks.get(hostname)
+    return dict(held[1]) if held is not None else None
+
+  def record_networks(self, hostname: str, subnets: dict[str, tuple[str, ...]], listed_at: datetime):
+    """Holds a listing of the worker's applications' networks that started at `listed_at`, unless a newer one is held,
+    since its recorders share no scope; tells the pages of the Domains they concern when they changed."""
+    with self.lock:
+      held = self._networks.get(hostname)
+      if held is not None and held[0] > listed_at:
+        return
+      changed = held is None or held[1] != subnets
+      self._networks[hostname] = (listed_at, dict(subnets))
+    if changed:
+      callers_observed(hostname)
+
   def forget(self, hostname: str):
     """Drops what is held of the worker once it is removed."""
     with self.lock:
       self._setups.pop(hostname, None)
       self._certificates.pop(hostname, None)
+      self._networks.pop(hostname, None)
 
   def clear(self):
     """Drops what is held of every worker, as when the Manager starts: after a platform restore."""
     with self.lock:
       self._setups.clear()
       self._certificates.clear()
+      self._networks.clear()
 
 
 @dataclass(frozen=True)

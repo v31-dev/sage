@@ -20,6 +20,14 @@ const deleting = computed(
     props.container.queued.some(request => request.operation === 'delete')
 )
 
+// The names that go with the container.
+const body = computed(() => {
+  const names = props.container.domains.map(domain => domain.host ?? domain.name)
+  return `Are you sure you want to delete this container? This action cannot be undone.${
+    names.length ? ` Its domains are deleted with it: ${names.join(', ')}.` : ''
+  }`
+})
+
 async function onConfirmDeleteContainer() {
   await deleteContainer(props.application.project.name, props.application.name, props.container.id)
   await props.loadApplication()
@@ -30,7 +38,7 @@ async function onConfirmDeleteContainer() {
   <ConfirmationButton
     triggerText="Delete"
     title="Delete Container"
-    body="Are you sure you want to delete this container? This action cannot be undone."
+    :body="body"
     :description="`Worker: ${props.container.worker.hostname}`"
     :icon="Trash"
     icon-only

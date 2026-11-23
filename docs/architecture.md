@@ -22,7 +22,33 @@ node — `tailscaled` in userspace networking mode, state under `/app/data/tails
 then starts the manager process. Tailnet connections to the node's IP are delivered to
 the same port on `127.0.0.1` inside the container, so `:443`, `:80` and `:9001` need no published
 ports — and anything listening there is reachable from the tailnet wherever the tailnet
-policy allows.
+policy allows. The manager's servers listen on `127.0.0.1` only (`config.LISTEN_HOST`), so nothing on the
+container's own network (another container beside it, a platform's private network) reaches them, and the tailnet
+policy stays the only way in. The health check is the exception: it answers only that the process runs.
+
+### Requests From Other Sites
+
+A device the tailnet policy allows also carries, in its browser, the requests of any page it opens. Both servers
+refuse what another site's page sends (`RefuseOtherSites`, `app/utils/api.py`), by any method, over HTTP or a
+WebSocket, with a 403 or close code 1008:
+
+- The main server (UI, API, Socket.IO) takes a browser request only from its own pages: the browser's
+  `Sec-Fetch-Site` is `same-origin`, or `none` for an address the user typed or bookmarked; from a browser that sends
+  no `Sec-Fetch-Site`, its `Origin` is exactly `https://<TS_NAME>.core.<DOMAIN>`. A link followed from another site
+  (a notification's, say), a GET loading a whole tab, opens the page; a frame, a fetch, an image, a form and a
+  WebSocket from another site, the customer's own names under `<DOMAIN>` included, are refused.
+- The ingest server (`:9001`) takes no browser request at all: only the workers' Telegraf and Vector call it. It also
+  answers only at the manager's tailnet IP, the address their configurations name, with a 421 for any other host, so
+  a page whose name was made to resolve to the manager (DNS rebinding) gets nothing.
+
+A request with neither header is not a browser's and passes (curl, the workers).
+
+The manager also sends Sage's strict security headers on everything its main server answers (`SECURITY_HEADERS`,
+`app/values/headers.py`), the same ones every application sends by default: a CSP that loads scripts, styles, images,
+fonts and connections from its own origin only (inline styles allowed, which its charts and Vue insert, and images and
+workers from the `blob:` URLs its own script makes), no framing
+(`frame-ancestors 'none'`, `X-Frame-Options: DENY`), `nosniff`, HSTS, `Referrer-Policy: no-referrer` and every powerful
+browser feature off. The UI's icons are bundled (`lucide-vue-next`), so it fetches nothing from another origin.
 
 In userspace mode the container has no route into the tailnet, so outbound traffic goes
 through `tailscaled`: SSH to workers uses asyncssh's `proxy_command` with
@@ -31,15 +57,17 @@ through `tailscaled`: SSH to workers uses asyncssh's `proxy_command` with
 
 The manager process starts these concurrent services from `app/main.py`:
 
-1. Main FastAPI API and UI on port `443`, serving TLS with the manager's own certificate; port `80` only
+1. The health check (`app/api_health.py`), `GET /health` on `0.0.0.0:<HEALTHCHECK_PORT>` (default `8080`), the one
+   server on the container's own network, started first so a platform's probe is answered during the setup below
+2. Main FastAPI API and UI on port `443`, serving TLS with the manager's own certificate; port `80` only
    redirects there (in development, plain HTTP on `9000` behind the dev Traefik)
-2. Ingestion FastAPI API on port `9001` (receives workers' Telegraf reports and Vector log shipments)
-3. APScheduler (cron/interval) scheduler
+3. Ingestion FastAPI API on port `9001` (receives workers' Telegraf reports and Vector log shipments)
+4. APScheduler (cron/interval) scheduler
 
 Startup is service-driven:
 
 - `Manager()` initializes the platform services.
-- Before serving, startup sets up the domain (`Manager.setup_domain`): connect to Cloudflare (zone, tunnel, the manager's record) and get the manager's certificate, retrying a failure that clears by itself (a network error, HTTP 5xx or 429) after 1, 4 and 16 minutes and then exiting; any other failure, such as a rejected token, and a rate limit exit at once, and a still-valid certificate lets startup continue. Other startup work that touches the network (release check, worker and discovery certificates, S3 backup discovery, settings checks, each reachable worker's setup, by its stamps) runs as queued tasks once the servers are up. S3 and notifications are optional.
+- Before serving, with only the health check up, startup sets up the domain (`Manager.setup_domain`, on the `platform` lane): connect to Cloudflare (zone, tunnel, the manager's record) and get the manager's certificate, retrying a failure that clears by itself (a network error, HTTP 5xx or 429) after 1, 4 and 16 minutes and then exiting; any other failure, such as a rejected token, and a rate limit exit at once, and a still-valid certificate lets startup continue. Other startup work that touches the network (release check, worker and discovery certificates, S3 backup discovery, settings checks, each reachable worker's setup, by its stamps) runs as queued tasks once the servers are up. S3 and notifications are optional.
 - If service initialization fails, the process exits.
 
 ## Worker Runtime
@@ -60,9 +88,61 @@ The worker stack currently includes:
 - `cloudflared`, running the worker's own tunnel
 - `cloudflared-discovery`, a replica of the platform's tunnel, which every worker runs
 
+The edge: Traefik answers on the worker's tailnet address on `:443` (internal names) and `:8443` (TCP names) only. The
+two tunnels reach its `web` entry point over the edge network (`sage_edge`), which only they and Traefik join and the
+worker's setup creates; Traefik takes forwarded headers (the client's address) from that network's subnet alone, read
+at each setup, so an application or a tailnet device can't set them. Traefik reads its routes from files and has no
+Docker socket, and each tunnel's metrics server listens on its own loopback. Every image is pinned to an exact release.
+
+Every service of the stack runs with all its capabilities dropped (Traefik keeps `NET_BIND_SERVICE` for its ports),
+`no-new-privileges` and a read-only root filesystem; Telegraf and the tunnels run as non-root users. Traefik and Vector
+stay root, which without its other capabilities reads only files root owns: Sage writes the certificates' keys and
+Vector's buffer folder as root, so they keep working; a key owned by another user would not be served.
+
+Every application container runs with `no-new-privileges`, so a setuid binary such as `sudo` gains nothing (an
+entrypoint that starts as root and drops to a user, with `gosu` or `su-exec`, still works), and without `NET_RAW`, so it
+opens no raw sockets: no crafted packets or ARP spoofing on the network it shares, no `tcpdump`. `ping` still works,
+through the unprivileged ICMP sockets Docker allows.
+
 `vector` and `telegraf` run with a 128 MiB memory limit, swap included: their executables are large, and the kernel keeps the pages it has read in the container's memory, which on a small worker the applications could use.
 
 Applications themselves are also deployed onto workers as Docker workloads.
+
+### Application Networks
+
+Each container runs on a network of its own, `sage-<container id>`, whose bridge's interface is `sage` and the id's
+first 11 characters, a prefix no other interface on a worker uses. Only Traefik joins it beside the container: Traefik
+reaches the container there by its name, also `sage-<container id>`, and keeps its own default route on the stack's
+network. The network is the container's Compose project's: a Stop or a Deploy keeps it while Traefik is on it, and it
+goes once the container is deleted ([backend](backend.md)).
+
+From its network an application reaches the Internet, Traefik on that same network and its DNS resolvers, and nothing
+private: Sage's own nftables table on the worker (`inet sage`) drops what it sends to the
+tailnet (`100.64.0.0/10`), to the private ranges (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, and `fc00::/7`,
+which holds the tailnet's IPv6 range), to link-local addresses (`169.254.0.0/16` and `fe80::/10`, where a cloud's
+metadata service answers) and to the worker itself, published ports included. So an application can't reach another
+worker, the manager or another tailnet device as its worker, nor the worker's LAN or the host's services.
+
+The table's chains run ahead of Docker's, Tailscale's and ufw's: a drop there is final whatever they allow, and what it
+lets through still goes through their rules, so it never loosens them. A private resolver Docker forwards an
+application's DNS to (a VPC resolver set as the daemon's `dns`) is let through on port 53; systemd-resolved's
+`127.0.0.53` needs nothing, since Docker reaches it from the host's own network. The worker's setup writes the table
+and `sage-firewall.service`, which loads it at boot before the network and Docker start, so no application container
+runs without it. The distribution's own `nftables` service has to stay disabled: its configuration flushes every
+table, Sage's included.
+
+Docker gives each network a subnet from its address pools. With its defaults each network takes a whole `/16` of
+`172.17.0.0/16` to `172.31.0.0/16`, then a `/20` of `192.168.0.0/16`, skipping what the host already routes: about 30
+networks on a host, four of them the worker's own. A worker therefore holds about 26 containers, and the next Deploy
+fails with Docker's "all predefined address pools have been fully subnetted". To hold more, set the pools in the
+worker's `/etc/docker/daemon.json` and restart Docker; networks created from then on take them:
+
+```json
+{ "default-address-pools": [{ "base": "10.201.0.0/16", "size": 24 }] }
+```
+
+Docker then cuts the range into `/24`s by itself, 256 networks. Choose a base that overlaps neither the worker's LAN or
+VPC nor the tailnet (`100.64.0.0/10`).
 
 ## Certificate Lifecycle
 
@@ -101,8 +181,8 @@ Current traffic and naming patterns are driven by Cloudflare, Traefik, and Tails
   `discovery.int.<domain>?service=<service>` for internal and TCP ones (tailnet only, an A record per worker reachable and set up).
   The answer is an RFC 9651 list in `Sage-Endpoints`, for example
   `"a.example.test";pool="eu";online, "b.example.test";pool="eu";online=?0`, to HEAD, GET or OPTIONS.
-  `;online` means available; `;online=?0` means offline. Every service-assigned name stays listed, including unlinked
-  names and pending or failed syncs. An available name needs an active container, its worker's cached ready status,
+  `;online` means available; `;online=?0` means offline. Every service-assigned name stays listed, including pending
+  or failed syncs. An available name needs an active container, its worker's cached ready status,
   and a successful Domain sync for its current configuration. This is last-known state, derived when discovery
   config is generated; discovery performs no live health checks. The names follow the Domains at once; a name whose
   state is not known yet (after the manager starts, or while its Domain is being applied) keeps the availability it was
@@ -174,10 +254,9 @@ linked to, and optionally a service and a pool:
   TLS (e.g. `rediss://`, libpq `sslmode=require`); Traefik handles Postgres STARTTLS (Traefik 3.x), so no
   `sslnegotiation=direct` or sidecar is needed.
 
-Deleting a container unlinks its domains: they stay, listed on the Domains page, with no routing, and an internal one
-keeps its worker, so it keeps its name. Linking it to a container on another worker moves an internal name there (its
-subdomain in the name follows), so moving an application to another worker keeps its public names. A worker that has
-internal domains, linked or not, can't be removed. A public name is one level under `<domain>`, because Cloudflare's
+A domain belongs to the container it was added on: it stays on that container's worker and is deleted with it.
+Moving a name to another container is deleting it and adding it there: a public name can be added again as it was,
+and an internal one takes the new worker's subdomain. A public name is one level under `<domain>`, because Cloudflare's
 free edge certificate covers only first-level names, and it keeps its record while its container is stopped, so it
 doesn't come and go with deploys; Traefik answers it while the container is active.
 
@@ -209,8 +288,59 @@ openssl s_client -connect <name>.<subdomain>.int.<domain>:8443 -servername <name
   </dev/null 2>/dev/null | openssl x509 -noout -subject -issuer
 ```
 
-For access between containers on one worker, use the Docker DNS name (the container's `qualified_name`) on
-`sage_default`.
+Applications don't reach each other directly: each container is on a network of its own
+([Application Networks](#application-networks)), and an internal or TCP name admits tailnet devices and the
+applications its Domain allows ([Calls Between Applications](#calls-between-applications)).
+
+### Calls Between Applications
+
+An internal or TCP Domain lists the **applications allowed to call it** (none by default; a public name has none,
+since it is open to the Internet). An allowed application's containers, on any worker, call the name exactly as a
+tailnet device does (`https://api.red.int.<domain>`, `db.red.int.<domain>:8443`), with no setting of their own, and
+see the name's own certificate. Any other application is refused: its lookup finds the worker's tailnet address,
+which its network can't reach, so the call times out.
+
+Inside an allowed application's network the name is an alias of Traefik's attachment there, so Docker's DNS answers
+it with Traefik on that same network. Traefik tells the caller by its network's subnet, from the Domain's own file on
+the caller's worker (`traefik/dynamic/domain-<id>.yml`, which the Domain's apply writes on its own worker and on each
+worker with a container of an application it allows):
+
+- A name routed on that worker goes to the Domain's own service, with its headers and allowed origins. The application
+  sees the caller container's own address in `X-Forwarded-For`.
+- A name on another worker passes through unopened to that worker's tailnet address on 443 or 8443, where the
+  Domain's route admits it as the tailnet and ends TLS. The application sees the calling worker's tailnet address.
+
+Those files are the Domain's, so a change to what it allows, to its name, to where its callers run or to a caller's
+subnet shows it syncing and then synced like any edit, a failure to write one is its apply's error, and the Domain pass
+retries it within five minutes. Rewriting a file can interrupt the name's routes for a moment. A change to the names
+an application may call attaches Traefik to its network again, so that application's own names pause for about a
+second on that worker.
+
+### Client Address
+
+An application's connection always comes from Traefik, so it finds its client's address in the headers Traefik
+sends. On a public name the request comes through Cloudflare and the worker's tunnel; on an internal name it comes
+straight from the tailnet, and Traefik replaces any `X-Forwarded-*` or `X-Real-Ip` the client sent.
+
+| Header | Public name | Internal name |
+| --- | --- | --- |
+| `X-Forwarded-For` | the client as Cloudflare saw it, then the tunnel's address | the client's tailnet address |
+| `X-Real-Ip` | the tunnel's address | the client's tailnet address |
+| `CF-Connecting-IP` | the client as Cloudflare saw it | not set by Sage; passed on if the client sends it |
+
+On a public name, a client that sends its own `X-Forwarded-For` keeps it: Cloudflare adds the client's address after
+it. Sage turns off Tailscale's source NAT on its workers so that internal names see the tailnet address.
+
+To read the right address on both kinds of name, an application trusts the ranges Docker gives networks as its
+proxies, since only Traefik shares its network: `172.16.0.0/12` and `192.168.0.0/16` with Docker's default pools, or
+the `base` of the worker's `default-address-pools`. It reads `X-Forwarded-For` from the right: it skips the tunnel and
+takes the address Cloudflare added on a public name, or the one address on an internal name, and a client can't choose
+it. For Pocket ID that is `TRUST_PROXY` with those ranges. Two settings look right but aren't:
+
+- Trusting every address (Pocket ID's `TRUST_PROXY=true`) takes the leftmost `X-Forwarded-For`, which a public client
+  can set.
+- Trusting `CF-Connecting-IP` (Pocket ID's `TRUSTED_PLATFORM=CF-Connecting-IP`) is right on public names only: an
+  internal name has no such header unless the client sends one, and any tailnet client can.
 
 ### Allowed Origins
 
@@ -226,8 +356,28 @@ requires updating each backend's list manually. A blank field follows its own Do
 
 Traefik applies this list to the application's HTTP responses and handles credentialless preflight requests.
 Requests may use methods and headers including Authorization; the browser can read the response only when its
-Origin matches. The form configures origins only; application response headers and cookies have no Sage editor.
+Origin matches. The form configures origins only; the security headers are the application's (below), and cookies
+have no Sage editor.
 TCP has no HTTP CORS policy. CORS changes apply through the Domain's sync, without a container deployment.
+
+### Response Headers
+
+Every HTTP name of an application sends its **response headers**: Sage's strict defaults (`SECURITY_HEADERS`,
+`app/values/headers.py`, the manager's own), with the application's changes over them. The defaults grant nothing a page
+doesn't ask for but inline styles and the `blob:` images and workers its own script makes: a CSP loading only from the
+name's own origin, no framing, `nosniff`, HSTS, `Referrer-Policy: no-referrer` and every powerful browser feature off.
+The application page lists what each header sends and edits them, a reset putting one header back to its default. An
+application that needs more (images from a map's tile servers, the visitor's location) changes that header. It can also
+add headers of its own, named `X-…`. An application that writes its own CSP for each response (a nonce or a hash for
+its inline scripts, as Pocket ID and server-rendered frameworks do) can send it instead of Sage's
+(`APPLICATION_OWN_HEADERS`, stored as `null`): its routes then name no CSP, so the application's own reaches the
+browser, or none if it sends none. `X-Frame-Options` stays Sage's; browsers ignore it when the application's CSP has
+`frame-ancestors`. A change holds only header names and values: another name, or a value that is empty or the
+default, is dropped without an error, so every other security header always sends at least its default; a header Sage
+can't send (an `X-` name that isn't a header token, a
+value over one line or too long, a name given twice) is refused. Sage's headers replace the application's own ones of
+the same name. They are part of each Domain's route and its fingerprint, so an edit that changes them applies its
+Domains, and a changed default reaches every Domain through the Domain pass. TCP names send none.
 
 Discovery remains readable from any origin. A Domain's `HEAD /ping` latency probe also allows any origin, exposes
 timing and is not cached; GET `/ping` reaches the application under its configured origins. The probe measures the
@@ -248,6 +398,7 @@ Core entities:
 - `Application`
 - `Container`
 - `Domain`
+- `DomainCaller` (an application allowed to call an internal or TCP domain)
 - `Volume`
 - `ContainerEvent`
 - `WorkerEvent`
@@ -270,6 +421,7 @@ Relationships are centered on:
 - project -> applications
 - application -> containers, volumes, backups
 - container -> domains, events
+- domain -> the applications allowed to call it
 - worker -> containers, internal/TCP domains, events
 
 The [model writer index](operations.md#model-writer-index) lists every model's direct, queued and implicit

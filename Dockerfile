@@ -46,14 +46,13 @@ RUN test -f /app/VERSION || (echo "ERROR: VERSION file is required" && exit 1)
 # Copy built UI static files to app for serving
 COPY --from=ui-builder /ui/dist /app/static
 
-ENV PORT=80
-ENV INGEST_PORT=9001
 ENV PYTHONUNBUFFERED=1
 ENV MALLOC_ARENA_MAX=2
 
-EXPOSE 80
-EXPOSE 443
-EXPOSE 9001
+# The health probe, the one port served on the container's own network.
+EXPOSE 8080
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:${HEALTHCHECK_PORT:-8080}/health', timeout=4)"
 
 ENTRYPOINT ["/app/entrypoint.sh"]
 CMD ["python", "main.py"]

@@ -14,6 +14,7 @@ import config
 from services.applications.deploy_input import capture_deploy_config
 from services.containers.placement import placement_dir, record_path, runtime_name
 from services.containers.record import Applied, Authority, Operation, Recovery, Settled, TargetRead, TargetRecord, decode_record, encode_record
+from services.containers.rendering import deployment_hash
 from services.containers.targets import Containers
 from services.db.models import Application, Container, ContainerEvent, Domain, Instance, Volume
 from services.logs import Logs
@@ -53,7 +54,7 @@ case "$1 $2 $4" in
   "compose -f "*)
     file="$3"
     name=$(sed -n 's/^name: //p' "$file")
-    label() { sed -n "s/^ *sage.$1: \\"\\(.*\\)\\"$/\\1/p" "$file"; }
+    label() { sed -n "s/^ *sage.$1: \\"\\(.*\\)\\"$/\\1/p" "$file" | head -n 1; }
     deployment=$(label deployment)
     [ -e "$state/runs-another" ] && deployment=another
     labels="$deployment|$(label instance)|$(label generation)|$(label container)"
@@ -138,7 +139,7 @@ class Lifecycle(ContainersMixin, LifecycleMixin, QueueMixin):
     self.queue_facts = []
     self.recoveries = {}
     self.orphans = {}
-    self.applied, self.reconciled = [], 0
+    self.applied, self.reconciled, self.traefik_networks = [], 0, []
     self.task_queue = TaskQueue(SCOPES, names=TASK_NAMES, executors={"app": self.pool}, record=lambda task, status: None, notify=self._queue_changed)
 
   def request_domain_applies(self, domain_ids):
@@ -147,6 +148,9 @@ class Lifecycle(ContainersMixin, LifecycleMixin, QueueMixin):
 
   def request_domain_reconciliation(self):
     self.reconciled += 1
+
+  def request_traefik_networks(self, hostname):
+    self.traefik_networks.append(hostname)
 
   async def run(self):
     self.task_queue.dispatch_tick()
@@ -235,7 +239,7 @@ class TestDeploy:
     assert (record.authority, operation.contract, operation.phase, operation.outcome) == (
         authority(container), "deploy", "settled", "succeeded")
     assert record.applied.deployment_id == operation.id
-    assert record.applied.config_hash == capture_deploy_config(container.application_id).content_hash
+    assert record.applied.config_hash == deployment_hash(capture_deploy_config(container.application_id))
     assert (record.settled.operation_id, record.settled.runtime_goal, record.settled.result) == (operation.id, "running", "succeeded")
     assert operation.verified_on_worker_at == VERIFIED and operation.effect_bound_seconds == 905
     assert worker_host.runtime(container) == f"running {operation.id}"
@@ -430,7 +434,7 @@ def unsettled(container):
 
 
 class TestDelete:
-  async def test_a_delete_removes_the_placement_then_the_row_and_unlinks_its_domains(
+  async def test_a_delete_removes_the_placement_then_the_row_with_its_domains(
           self, manager, worker_host, container, application, notices):
     place(container, deployed(container))
     worker_host.run(container, "running d0")
@@ -441,7 +445,7 @@ class TestDelete:
     assert not Path(placement_dir(config.WORKER_HOME_DIR, container.id)).exists()
     assert worker_host.runtime(container) is None
     assert Container.get_or_none(Container.id == container.id) is None
-    assert Domain.get_by_id(domain.id).container is None
+    assert Domain.get_or_none(Domain.id == domain.id) is None
     assert Containers().target(container.id) == TargetRead("unobserved")
     assert [(action, transition) for action, transition, _ in events(container)] == [("delete", "admitted"), ("delete", "succeeded")]
     assert [line["message"] for line in Logs().query_application_lines("demo-web")["lines"]] == [
@@ -524,6 +528,45 @@ class TestDomainApplies:
     await manager.stop_container(container.id)
     assert manager.applied == [domains, domains]
 
+  async def test_a_deploy_and_a_delete_ask_for_traefiks_networks_when_they_end_and_a_failed_deploy_does_not(
+          self, manager, worker_host, container):
+    worker_host.flag("up-fails")
+    with pytest.raises(TaskFailed):
+      await deploy(manager, container)
+    assert manager.traefik_networks == []
+    (worker_host.state / "up-fails").unlink()
+    await deploy(manager, container)
+    await manager.delete_container(container.id)
+    assert manager.traefik_networks == ["w1", "w1"]
+
+  async def test_a_delete_of_a_container_with_domains_has_every_workers_callers_follow_it(
+          self, manager, worker_host, container, domains):
+    await deploy(manager, container)
+    manager.traefik_networks.clear()
+    await manager.delete_container(container.id)
+    assert manager.traefik_networks == [None]
+
+  @pytest.fixture
+  def allowing(self, container, project):
+    """An internal Domain of another application, on another worker, that allows the container's application."""
+    from services.db.models import Application, DomainCaller, Worker
+    other = Application.create(project=project, name="pg", label="PG", image="postgres")
+    target = Container.create(application=other, worker=Worker.create(hostname="w9", subdomain="grey"))
+    domain = Domain.create(name="pg", type="tcp", port=5432, container=target, namespace_worker="w9")
+    DomainCaller.create(domain=domain, application=container.application)
+    return domain.id
+
+  async def test_a_deploy_a_stop_a_failure_and_a_delete_have_the_domains_allowing_its_application_applied(
+          self, manager, worker_host, container, allowing):
+    await deploy(manager, container)
+    await manager.stop_container(container.id)
+    worker_host.flag("up-fails")
+    with pytest.raises(TaskFailed):
+      await deploy(manager, container)
+    (worker_host.state / "up-fails").unlink()
+    await manager.delete_container(container.id)
+    assert manager.applied == [[allowing]] * 4
+
   async def test_a_failed_deploy_has_them_applied(self, manager, worker_host, container, domains):
     worker_host.flag("up-fails")
     with pytest.raises(TaskFailed):
@@ -536,14 +579,19 @@ class TestDomainApplies:
       await deploy(manager, container)
     assert manager.applied == []
 
-  async def test_a_delete_has_the_domains_it_unlinked_applied_and_their_routes_left_on_the_worker_removed(
+  async def test_a_delete_with_domains_asks_the_pass_to_remove_their_routes_and_records(
           self, manager, worker_host, container, domains):
     await manager.delete_container(container.id)
-    assert (manager.applied, manager.reconciled) == ([domains], 1)
+    assert (manager.applied, manager.reconciled) == ([], 1)
 
-  async def test_a_delete_that_unlinks_no_domain_asks_for_no_pass(self, manager, worker_host, container):
+  async def test_a_delete_without_domains_asks_for_no_pass(self, manager, worker_host, container):
     await manager.delete_container(container.id)
     assert (manager.applied, manager.reconciled) == ([], 0)
+
+  async def test_a_delete_of_a_container_a_domain_allows_asks_the_pass_to_remove_that_domains_file_on_its_worker(
+          self, manager, worker_host, container, allowing):
+    await manager.delete_container(container.id)
+    assert (manager.applied, manager.reconciled) == ([[allowing]], 1)
 
 
 class TestDeleteRequests:
@@ -884,6 +932,11 @@ class TestOrphanCleanup:
     await manager.cleanup_orphan("w1", ORPHAN)
     assert not directory.exists() and worker_host.runtime(SimpleNamespace(id=ORPHAN)) is None
     assert notices() == [("warning", "Removed a container Sage no longer has from worker w1.", f"{MANAGER}/workers/w1")]
+
+  async def test_a_cleanup_asks_for_traefiks_networks_so_its_network_goes(self, manager, worker_host, container):
+    orphan_placement(worker_host, running=False)
+    await manager.cleanup_orphan("w1", ORPHAN)
+    assert manager.traefik_networks == ["w1"]
 
   async def test_a_bare_directory_is_removed(self, manager, worker_host, container, notices):
     directory = orphan_placement(worker_host, running=False)

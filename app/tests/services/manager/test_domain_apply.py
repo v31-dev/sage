@@ -7,7 +7,7 @@ import pytest
 import config
 from services.cloudflare import Cloudflare
 from services.containers.decisions import ContainerView
-from services.db.models import Container, Domain, Worker
+from services.db.models import Application, Container, Domain, DomainCaller, Worker
 from services.domains.config import DomainConfig, parse_route_listing
 from services.domains.decisions import ApplyOutcome, RouteObservation
 from services.domains.state import Domains
@@ -32,9 +32,14 @@ class Hosts:
 
   def __init__(self):
     self.found, self.files, self.commands, self.fails, self.during = {}, {}, [], None, None
+    # Each worker's applications' networks as Docker lists them, and its tailnet address.
+    self.networks, self.addresses = {}, {}
 
   def ssh(self, hostname):
     return self.found.get(hostname, "unobserved")
+
+  def address(self, hostname):
+    return self.addresses.get(hostname)
 
   async def exec_command(self, hostname, command, timeout=300):
     self.commands.append((hostname, command))
@@ -42,6 +47,8 @@ class Hosts:
       raise Exception(f"Error executing command on {hostname}: exit code 1")
     if command.startswith("rm -f "):
       self.files.pop((hostname, command[len("rm -f "):]), None)
+    if command.startswith("ids=$(docker network ls"):
+      return 0, list(self.networks.get(hostname, []))
     return 0, []
 
   async def sync_file(self, hostname, src, dst, keys=None, formatter=None, timeout=120, mode=0o644):
@@ -91,7 +98,7 @@ class Manager(DomainsMixin, QueueMixin):
 
   def __init__(self):
     self.pool = ThreadPoolExecutor(max_workers=2)
-    self.routable, self.ready, self.finished, self.discovered = {}, {}, [], 0
+    self.routable, self.ready, self.finished, self.discovered, self.traefik_networks = {}, {}, [], 0, []
     self.started_at = utcnow()
     self.queue_facts = self.domains_queue_facts()
     self.task_queue = TaskQueue(SCOPES, names=TASK_NAMES, executors={"app": self.pool},
@@ -100,6 +107,9 @@ class Manager(DomainsMixin, QueueMixin):
 
   def request_discovery(self):
     self.discovered += 1
+
+  def request_traefik_networks(self, hostname=None):
+    self.traefik_networks.append(hostname)
 
   def container_states(self, containers):
     return {container.id: SimpleNamespace(routable=self.routable.get(container.id), view=ContainerView(
@@ -188,18 +198,13 @@ class TestRequests:
     manager.request_domain_applies([public.id])
     assert queued(manager) == [(
         ("apply_domain", public.id), sorted({f"domain:{public.id}", "domain:host:shop.example.test", f"worker:w1:routing:{public.id}"}),
-        {"domain_id": public.id, "worker": "w1", "host": "shop.example.test"}, {"Domain": "shop.example.test"}, True)]
+        {"domain_id": public.id, "worker": "w1", "host": "shop.example.test", "workers": ["w1"]}, {"Domain": "shop.example.test"},
+        True)]
 
   def test_an_internal_domains_name_is_under_its_workers_subdomain(self, manager, internal):
     manager.request_domain_applies([internal.id])
     [(_, scopes, params, labels, _)] = queued(manager)
     assert "domain:host:api.red.int.example.test" in scopes and params["host"] == "api.red.int.example.test"
-
-  def test_an_unlinked_public_domain_holds_no_worker(self, manager, public):
-    Domain.update(container=None).where(Domain.id == public.id).execute()
-    manager.request_domain_applies([public.id])
-    [(_, scopes, params, _, _)] = queued(manager)
-    assert scopes == sorted({f"domain:{public.id}", "domain:host:shop.example.test"}) and params["worker"] is None
 
   def test_the_latest_of_requests_waiting_is_the_one_kept(self, manager, public):
     manager.request_domain_applies([public.id])
@@ -270,22 +275,6 @@ class TestApply:
     view = (await applied(manager, internal)).view
     assert hosts.route("w1", internal) == fingerprint(internal)
     assert provider.zone == {f"sage-domain-{internal.id}": {}}
-    assert view.status == "synced"
-
-  async def test_an_unlinked_internal_domain_loses_its_route_on_its_namespace_worker(self, manager, internal, hosts):
-    await applied(manager, internal)
-    Domain.update(container=None).where(Domain.id == internal.id).execute()
-    view = (await applied(manager, internal)).view
-    assert hosts.route("w1", internal) is None
-    assert view.status == "synced"
-
-  async def test_an_unlinked_public_domain_loses_its_name_and_touches_no_worker(self, manager, public, hosts, provider):
-    await applied(manager, public)
-    hosts.commands.clear()
-    Domain.update(container=None).where(Domain.id == public.id).execute()
-    view = (await applied(manager, public)).view
-    assert hosts.commands == []
-    assert provider.zone == {f"sage-domain-{public.id}": {}}
     assert view.status == "synced"
 
   async def test_a_failed_route_write_is_the_routes_error_and_dns_is_not_touched(self, manager, public, hosts, provider, notices):
@@ -369,6 +358,63 @@ class TestApply:
     manager.request_domain_applies([public.id])
     await manager.run()
     assert (Domains().outcome(public.id), Domains().route(public.id, "w1")) == (None, RouteObservation("unobserved"))
+
+
+class TestCallers:
+  """An internal Domain on w1 allowing `app`, which has a container on w1 and one on w2."""
+
+  @pytest.fixture
+  def called(self, manager, internal, project, hosts):
+    app = Application.create(project=project, name="app", label="App", image="x")
+    local, remote = (Container.create(application=app, worker=worker) for worker in ("w1", "w2"))
+    DomainCaller.create(domain=internal, application=app)
+    hosts.networks = {"w1": [f"sage-{local.id} {local.id} 172.21.0.0/16, sage-{local.id},traefik,"],
+                      "w2": [f"sage-{remote.id} {remote.id} 172.31.0.0/16, sage-{remote.id},traefik,"]}
+    hosts.addresses["w1"] = "100.64.0.1"
+    manager.ready["w2"] = True
+    return SimpleNamespace(domain=internal, app=app, local=local, remote=remote)
+
+  def file(self, hosts, worker, domain):
+    return hosts.files.get((worker, f"{DYNAMIC}/domain-{domain.id}.yml"))
+
+  def test_its_request_holds_its_file_on_each_callers_worker(self, manager, called):
+    manager.request_domain_applies([called.domain.id])
+    [(_, scopes, params, _, _)] = queued(manager)
+    assert {f"worker:w1:routing:{called.domain.id}", f"worker:w2:routing:{called.domain.id}"} <= set(scopes)
+    assert params["workers"] == ["w1", "w2"]
+
+  async def test_its_route_with_the_local_callers_and_the_remote_callers_passthrough_are_written_and_synced(
+          self, manager, called, hosts):
+    view = (await applied(manager, called.domain)).view
+    own, remote = self.file(hosts, "w1", called.domain), self.file(hosts, "w2", called.domain)
+    assert "ClientIP(`172.21.0.0/16`)" in own and f"domain_{called.domain.id}:" in own
+    assert "ClientIP(`172.31.0.0/16`)" in remote and "100.64.0.1:443" in remote and "passthrough: true" in remote
+    assert (view.status, view.conforms) == ("synced", True)
+    assert Workers().networks("w2") == {called.remote.id: ("172.31.0.0/16",)}
+
+  async def test_a_remote_callers_file_waits_for_the_domains_worker_address_and_the_apply_is_not_a_success(
+          self, manager, called, hosts):
+    hosts.addresses.clear()
+    state_after = await applied(manager, called.domain)
+    assert self.file(hosts, "w2", called.domain) is None and self.file(hosts, "w1", called.domain) is not None
+    assert state_after.view.status != "synced" and Domains().outcome(called.domain.id) is None
+
+  async def test_a_caller_container_placed_after_the_request_has_the_apply_queued_again_over_its_worker(
+          self, manager, internal, project, hosts):
+    app = Application.create(project=project, name="app", label="App", image="x")
+    DomainCaller.create(domain=internal, application=app)
+    manager.request_domain_applies([internal.id])
+    Container.create(application=app, worker="w2")
+    manager.ready["w2"], hosts.addresses["w1"] = True, "100.64.0.1"
+    await manager.run()
+    assert {hostname for hostname, _ in hosts.commands} == {"w1", "w2"}
+    assert self.file(hosts, "w2", internal) is not None
+
+  async def test_a_container_no_longer_routable_loses_its_file_on_every_worker(self, manager, called, hosts):
+    await applied(manager, called.domain)
+    manager.routable[called.domain.container_id] = False
+    await applied(manager, called.domain)
+    assert self.file(hosts, "w1", called.domain) is None and self.file(hosts, "w2", called.domain) is None
 
 
 class TestStates:

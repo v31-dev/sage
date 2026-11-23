@@ -69,6 +69,7 @@ class Application(BaseModel):
   build_secrets = EncryptedKeyValueField(null=True)
   command = CharField(null=True)
   container_count = IntegerField(default=0, constraints=[Check("container_count >= 0")])
+  response_headers = JSONField(null=True)
 
   class Meta:
     indexes = ((("project", "name"), True),)
@@ -86,15 +87,15 @@ class Container(BaseModel):
 
 
 class Domain(BaseModel):
-  """A name linked to one container, which it routes to on `port`: public `<name>.<domain>`, or internal or TCP
-  `<name>.<subdomain>.int.<domain>` under its namespace worker's subdomain, which it keeps when its container is
-  unlinked. Deleting the container unlinks it. `service` groups names for discovery, apart for each namespace (public,
-  or internal and TCP), and `pool` is a subgroup of a service."""
+  """A name of one container, which it routes to on `port`, deleted with it: public `<name>.<domain>`, or internal or
+  TCP `<name>.<subdomain>.int.<domain>` under its namespace worker's subdomain, its container's worker. `service`
+  groups names for discovery, apart for each namespace (public, or internal and TCP), and `pool` is a subgroup of a
+  service."""
   id = CharField(primary_key=True, default=new_id)
   name = LabelField()
   type = ChoiceField(("internal", "public", "tcp"), default="internal")
   port = IntegerField(constraints=[Check("port BETWEEN 1 AND 65535")])
-  container = ForeignKeyField(Container, backref="domains", null=True, on_delete="SET NULL")
+  container = ForeignKeyField(Container, backref="domains", on_delete="CASCADE")
   namespace_worker = ForeignKeyField(Worker, backref="domains", null=True, on_delete="RESTRICT")
   service = LabelField(null=True)
   pool = LabelField(null=True)
@@ -104,6 +105,15 @@ class Domain(BaseModel):
 # A name once among the public domains, and once per worker among the internal and TCP ones.
 Domain.add_index(Domain.index(Domain.name, SQL("coalesce(namespace_worker_id, '')"), unique=True,
                               name="domain_name_namespace_worker"))
+
+
+class DomainCaller(BaseModel):
+  """An application allowed to call an internal or TCP domain from its containers' networks, gone with either."""
+  domain = ForeignKeyField(Domain, backref="callers", on_delete="CASCADE")
+  application = ForeignKeyField(Application, backref="calls", on_delete="CASCADE")
+
+  class Meta:
+    indexes = ((("domain", "application"), True),)
 
 
 class Volume(BaseModel):

@@ -1,5 +1,5 @@
 from services.applications.updates import application_changed
-from services.db.models import Domain
+from services.db.models import Container, Domain, DomainCaller
 from services.updates import Updates, UpdateSource
 
 
@@ -7,13 +7,16 @@ def domains_changed():
   Updates().changed(UpdateSource.DOMAINS)
 
 
-def domain_changed(domain: Domain, previous_container=None, previous_namespace: str | None = None):
-  """A domain was written: the Domains page, the pages of the applications and workers of its container and of the
-  one it was linked to before, and those of its namespace worker now and before, whose removal its internal domains
-  refuse."""
+def domain_changed(domain: Domain):
+  """A domain was written: the Domains page, and the pages of its container's application and worker."""
   domains_changed()
-  for application in {container.application for container in (domain.container, previous_container) if container}:
-    application_changed(application)
-  for hostname in ({container.worker_id for container in (domain.container, previous_container) if container}
-                   | {domain.namespace_worker_id, previous_namespace}) - {None}:
-    Updates().changed(UpdateSource.WORKER_CONTAINERS, hostname)
+  application_changed(domain.container.application)
+  Updates().changed(UpdateSource.WORKER_CONTAINERS, domain.container.worker_id)
+
+
+def callers_observed(hostname: str):
+  """A worker's applications' networks were seen to change: the pages of each Domain that allows an application with a
+  container there."""
+  for domain in (Domain.select().join(DomainCaller).join(Container, on=(Container.application == DomainCaller.application))
+                 .where(Container.worker == hostname).distinct()):
+    domain_changed(domain)

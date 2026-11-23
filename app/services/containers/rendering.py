@@ -1,4 +1,5 @@
 """The files a deployment writes into its placement, rendered from its frozen deploy inputs."""
+import hashlib
 import json
 import shlex
 from dataclasses import dataclass
@@ -8,11 +9,15 @@ import yaml
 
 import config
 from services.applications.deploy_input import DeployConfig
-from services.containers.placement import runtime_name, volume_dir
+from services.containers.placement import bridge_name, runtime_name, volume_dir
 from services.containers.record import Authority
 from values.key_values import parse_multiline_kv
 
 COMPOSE_TEMPLATES = {"docker": "dockerhub-compose.yml", "git": "gitrepo-compose.yml"}
+# The Compose templates' digest, part of every deployment's hash: they ship in the image, so it is worked out once.
+COMPOSE_DIGEST = hashlib.sha256(b"".join(
+    name.encode() + (config.TEMPLATES_DIR / "worker/application" / name).read_bytes()
+    for name in sorted(COMPOSE_TEMPLATES.values()))).hexdigest()[:16]
 
 
 @dataclass(frozen=True)
@@ -20,6 +25,11 @@ class PlacementFile:
   path: str  # relative to the placement directory
   content: str
   mode: int
+
+
+def deployment_hash(deploy: DeployConfig) -> str:
+  """What a deployment of `deploy` applies: its inputs and the Compose templates."""
+  return hashlib.sha256(f"{deploy.content_hash}:{COMPOSE_DIGEST}".encode()).hexdigest()
 
 
 def render_placement(deploy: DeployConfig, authority: Authority, deployment_id: str, worker: str,
@@ -39,6 +49,7 @@ def render_placement(deploy: DeployConfig, authority: Authority, deployment_id: 
       INSTANCE_ID=authority.instance_id,
       STATE_GENERATION=authority.state_generation,
       CONTAINER_ID=authority.container_id,
+      BRIDGE_NAME=bridge_name(authority.container_id),
       DEPLOYMENT_ID=deployment_id,
       APPLICATION=deploy.qualified_name,
       IMAGE=deploy.image or "",

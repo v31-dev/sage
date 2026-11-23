@@ -13,6 +13,7 @@ from services.containers.placement import (LABEL_CONTAINER, LABEL_DEPLOYMENT, LA
 from services.containers.record import Authority, Baseline, Operation, Settled, TargetRecord
 from services.containers.targets import Containers
 from services.db.models import Application, Container, Instance, Project
+from services.domains.callers import allowing
 from services.history import record_container_event
 from services.logs import Logs
 from services.notification import Notifications
@@ -243,7 +244,7 @@ class LifecycleMixin:
     record_container_event(container, operation.contract, "failed", operation.id, reason={"error": reason},
                            dedupe_key=f"{operation.id}:failed")
     await mark(container, f"{NAMES[operation.contract]} failed: {reason}")
-    self.request_domain_applies(domain.id for domain in container.domains)
+    self.request_domain_applies([*(domain.id for domain in container.domains), *allowing(container.application_id)])
     raise TaskFailed(reason)
 
   async def stop_runtime(self, hostname: str, container_id: str, options: str = "") -> datetime:

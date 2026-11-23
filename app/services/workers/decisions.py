@@ -1,14 +1,18 @@
 """A worker's status, decided from the facts its owners hold: whether its SSH server answers, whether its tunnel is
 connected, how its setup went, what its newest report says, which of its tasks are queued or running, and whether its
 removal was asked for."""
+import ipaddress
+import re
 from dataclasses import dataclass
 from datetime import datetime
 
 import config
+from services.containers.placement import runtime_name
 from services.domains import discovery
 from services.domains.config import domain_artifact_owner
 from services.worker_reports import Received, is_current
-from services.workers.rendering import TRAEFIK_FOLDERS
+from services.workers.rendering import PRIVATE_RANGES, TRAEFIK_CONTAINER, TRAEFIK_FOLDERS
+from utils.common import OPAQUE_ID
 
 STATUSES = ("removing", "adding", "rebooting", "checking", "offline", "not ready", "online")
 SSH = ("unobserved", "reachable", "unreachable", "unknown")
@@ -163,6 +167,100 @@ def stray_traefik_files(listing: list[str]) -> list[str]:
     return folder == dynamic and not (name in ("config.yml", "certs.yml") or domain_artifact_owner("file", name)
                                       or (name.startswith(discovery.PREFIX) and name.endswith(discovery.SUFFIX)))
   return sorted(path for path in (line.strip() for line in listing) if stray(path))
+
+
+def edge_subnets(listing: list[str]) -> tuple[str, ...]:
+  """The edge network's subnets from `rendering.edge_network_command`'s listing, in order; any other line (Docker's
+  warnings) is left out. Raises when there is none."""
+  subnets = []
+  for line in listing:
+    try:
+      subnets.append(str(ipaddress.ip_network(line.strip())))
+    except ValueError:
+      continue
+  if not subnets:
+    raise ValueError("Docker listed no subnet for the edge network.")
+  return tuple(subnets)
+
+
+@dataclass(frozen=True)
+class AppNetwork:
+  """An application's network on a worker as Docker lists it: its name, its container's id, its subnets and the
+  containers on it."""
+  name: str
+  container_id: str
+  subnets: tuple[str, ...]
+  members: frozenset[str]
+
+
+def parse_networks(listing: list[str]) -> tuple[AppNetwork, ...]:
+  """The applications' networks from a listing of a line per network: its name, its container's id, its subnets and
+  its members, each list comma-separated. A line naming anything but Sage's network of its container, or a subnet
+  that isn't one, is left out."""
+  networks = []
+  for line in listing:
+    fields = line.split(" ", 3)
+    if len(fields) < 3 or not re.fullmatch(OPAQUE_ID, fields[1]) or fields[0] != runtime_name(fields[1]):
+      continue
+    try:
+      subnets = tuple(str(ipaddress.ip_network(subnet)) for subnet in fields[2].split(",") if subnet)
+    except ValueError:
+      continue
+    members = frozenset(member for member in (fields[3] if len(fields) > 3 else "").strip().split(",") if member)
+    networks.append(AppNetwork(fields[0], fields[1], subnets, members))
+  return tuple(networks)
+
+
+def traefik_network_changes(networks: tuple[AppNetwork, ...], containers: set[str]) -> tuple[tuple[str, ...], tuple[str, ...]]:
+  """The applications' networks to attach Traefik to and those to remove, given the ids of the worker's containers in
+  the database: Traefik joins the network of each of those containers, and a network of a container gone that only
+  Traefik is on goes."""
+  attach, remove = [], []
+  for network in networks:
+    if network.container_id in containers:
+      if TRAEFIK_CONTAINER not in network.members:
+        attach.append(network.name)
+    elif network.members <= {TRAEFIK_CONTAINER}:
+      remove.append(network.name)
+  return tuple(attach), tuple(remove)
+
+
+def parse_aliases(lines: list[str]) -> dict[str, frozenset[str]]:
+  """Traefik's aliases on each of its networks, from a line per network: its name, then its aliases comma-separated."""
+  aliases = {}
+  for line in lines:
+    network, _, names = line.strip().partition(" ")
+    if network:
+      aliases[network] = frozenset(name for name in names.split(",") if name)
+  return aliases
+
+
+def alias_changes(networks: tuple[AppNetwork, ...], wanted: dict[str, tuple[str, ...]],
+                  current: dict[str, frozenset[str]]) -> tuple[str, ...]:
+  """The applications' networks Traefik is on with other aliases than `wanted`, to attach again with those."""
+  return tuple(network.name for network in networks if TRAEFIK_CONTAINER in network.members and network.name in wanted
+               and frozenset(wanted[network.name]) != current.get(network.name, frozenset()))
+
+
+def dns_exceptions(resolv_conf: list[str]) -> tuple[str, ...]:
+  """The resolvers of the `# ExtServers:` line Docker writes in a container's `resolv.conf` that the firewall lets DNS
+  reach: those in `rendering.PRIVATE_RANGES`, in order and once each. A `host(…)` entry needs none, since Docker
+  forwards it from the host's own network. Raises when the line is missing or names anything but addresses."""
+  for line in resolv_conf:
+    if not line.startswith("# ExtServers:"):
+      continue
+    entries = line.removeprefix("# ExtServers:").strip()
+    if not (entries.startswith("[") and entries.endswith("]")):
+      raise ValueError(f"Docker's resolvers are not a list: {line}")
+    private, found = [ipaddress.ip_network(network) for network in PRIVATE_RANGES], []
+    for entry in entries[1:-1].split():
+      if entry.startswith("host(") and entry.endswith(")"):
+        continue
+      address = ipaddress.ip_address(entry)
+      if any(address in network for network in private) and str(address) not in found:
+        found.append(str(address))
+    return tuple(found)
+  raise ValueError("Docker recorded no resolvers in the container's resolv.conf.")
 
 
 def worker_owner(revisions: dict) -> tuple[str, str] | None:

@@ -16,12 +16,12 @@ from utils.queue import _scope_conflict
 STARTED = datetime(2026, 1, 1, 12)
 
 
-def member(type="public", service="shop", host="shop.example.test", pool=None, status="synced", reason=None, linked=True,
-           eligible=True, ready=True, syncing_since=None):
+def member(type="public", service="shop", host="shop.example.test", pool=None, status="synced", reason=None, eligible=True,
+           ready=True, syncing_since=None):
   """A Domain with a service and its state, as discovery reads them."""
   return (SimpleNamespace(type=type, service=service, pool=pool),
           SimpleNamespace(config=SimpleNamespace(host=host), view=SimpleNamespace(status=status, reason=reason),
-                          facts=SimpleNamespace(linked=linked, eligible=eligible, worker_ready=ready, syncing_since=syncing_since)))
+                          facts=SimpleNamespace(eligible=eligible, worker_ready=ready, syncing_since=syncing_since)))
 
 
 def services(members, published=None, now=STARTED, started_at=STARTED):
@@ -35,7 +35,7 @@ def online_of(given, published=None, now=STARTED):
 
 NOT_KNOWN = [{"status": "syncing", "syncing_since": STARTED}, {"status": "pending", "reason": "not_applied"},
              {"status": "pending", "reason": "eligibility_unknown", "eligible": None}, {"eligible": None}, {"ready": None}]
-KNOWN = [({}, True), ({"linked": False, "eligible": None}, False), ({"eligible": False}, False), ({"ready": False}, False),
+KNOWN = [({}, True), ({"eligible": False}, False), ({"ready": False}, False),
          ({"status": "error", "reason": "route"}, False), ({"status": "pending", "reason": "drifted"}, False),
          ({"status": "pending", "reason": "worker_not_ready", "ready": False}, False),
          ({"status": "syncing", "syncing_since": STARTED, "ready": False}, False),
@@ -78,16 +78,16 @@ class TestServices:
     assert online_of(given, {"shop.example.test": True}, queued + timedelta(seconds=config.UNKNOWN_HOLD_SECONDS - 1)) is True
     assert online_of(given, {"shop.example.test": True}, queued + timedelta(seconds=config.UNKNOWN_HOLD_SECONDS)) is False
 
-  @pytest.mark.parametrize("status, reason, linked, eligible, ready", list(itertools.product(
-      ("synced", "pending", "error", "syncing"), (None, "drifted", "not_applied"), (True, False), (True, False, None),
+  @pytest.mark.parametrize("status, reason, eligible, ready", list(itertools.product(
+      ("synced", "pending", "error", "syncing"), (None, "drifted", "not_applied"), (True, False, None),
       (True, False, None))))
   def test_a_name_is_online_only_when_known_good_or_held_as_published_and_offline_whenever_one_part_is_known_bad(
-          self, status, reason, linked, eligible, ready):
-    given = {"status": status, "reason": reason, "linked": linked, "eligible": eligible, "ready": ready,
+          self, status, reason, eligible, ready):
+    given = {"status": status, "reason": reason, "eligible": eligible, "ready": ready,
              "syncing_since": STARTED if status == "syncing" else None}
-    good = status == "synced" and linked and eligible is True and ready is True
+    good = status == "synced" and eligible is True and ready is True
     assert (online_of(given) is True) == good
-    if not linked or eligible is False or ready is False or status == "error":
+    if eligible is False or ready is False or status == "error":
       assert online_of(given, {"shop.example.test": True}) is False
 
 

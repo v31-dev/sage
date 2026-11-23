@@ -39,23 +39,24 @@ After compaction, reread the relevant `docs/` page before continuing.
 | Path | Purpose |
 | --- | --- |
 | `app/entrypoint.sh` | Container entrypoint: starts the manager's userspace `tailscaled`, then the manager process |
-| `app/main.py` | Starts the main API, vector ingestion API, and APScheduler scheduler |
+| `app/main.py` | Starts the health check first, then the main API, vector ingestion API, and APScheduler scheduler |
 | `app/config.py` | Locations, endpoints and timings; read as `config.NAME` where used so tests can override them |
 | `app/tests/` | Backend unit tests (`pytest` from `app/`); `conftest.py` provides the `data_dir`, `db` and `register` fixtures |
 | `ui/tests/` | UI unit tests (`npm test` from `ui/`, Vitest and happy-dom), in the layout of `ui/src/`; `ui/vitest.config.ts` holds the config |
 | `app/api.py` | Main FastAPI application |
 | `app/api_ingest.py` | Worker ingestion FastAPI application: Telegraf reports and Vector logs |
+| `app/api_health.py` | Health check FastAPI application, the one server on the container's own network |
 | `app/routes/` | API route handlers |
 | `app/services/` | Singleton service layer |
 | `app/services/manager/` | Manager singleton (mixins): the operation orchestrator |
 | `app/services/db/` | Peewee models, storage fields, encryption, DB bootstrap and the migration runner (`migrator.py`); `data.db`'s baseline and steps in `migrations.py`, as each package owning SQLite files keeps its own |
 | `app/services/applications/` | Project, Application, Volume and container-placement commands, their value rules, deploy input capture, lookups, the application and project payloads and update publication |
-| `app/services/domains/` | Domain commands, routing config, artifact names and route listing, host and origin derivation, the pure apply-status decision, discovery's services, files and fingerprint, and update publication |
+| `app/services/domains/` | Domain commands, routing config, artifact names and route listing, host and origin derivation, a Domain's callers (its file on each worker, their fingerprints and the aliases), the pure apply-status decision, discovery's services, files and fingerprint, and update publication |
 | `app/services/workers/` | Worker row commands (add with a subdomain, subdomain change, removal), the `Workers` owner of setup outcomes and applied certificates, the worker state and payload, infrastructure rendering and its fingerprint, and the pure worker status and reboot decisions |
 | `app/services/history.py` | Container and worker event append, task parts and history retention |
 | `app/services/backups/` | Backup key policy (archives by volume and placement id), the catalog's reconciliation with the configured store, Backup row commands, download links and the backups' payload |
 | `app/services/containers/` | Container target record (types, codec, listing), placement names and labels, deployment rendering, the `Containers` owner of each placement's last record read, the runtime read from reports, the state and payload a page shows, and the pure status decision |
-| `app/values/` | Pure name, origin and multiline key/value rules |
+| `app/values/` | Pure name, origin, security header and multiline key/value rules |
 | `app/scheduler.py` | APScheduler cron/interval triggers that enqueue operations |
 | `app/utils/queue.py` | In-memory operation queue (scopes + single-dispatcher) |
 | `app/utils/executor.py` | Thread-pool lanes + context-preserving offload helpers |
@@ -79,6 +80,7 @@ After compaction, reread the relevant `docs/` page before continuing.
 11. The DB owns configured resource membership. Reconcile orphaned artifacts through their resource owner after establishing Sage ownership and the absence of a configured owner; remote leftovers do not recreate deleted configuration.
 12. Application owns shared configuration and container membership; each Container owns its lifecycle, status and target evidence. Application views show counts such as active/total, with no application status. Deploy all/Stop all dispatch independent container operations, admitted exactly when every container would admit its own request (else refused whole, in the API and the UI); Deploy all shares one frozen input snapshot. Configuration drift marks the affected container dirty and does not by itself stop it.
 13. Zero downtime is not a requirement. After preconditions pass, container deployment stops its target before build/pull/apply and proceeds only after stop is confirmed. Failure reports error and does not automatically restore or roll back to an older deployment.
+14. Breaking changes don't constrain a design: existing installs are the automatic migration's and the release notes' concern, and the dev instance isn't started until a logical unit of work is done, so states between steps need not run.
 
 ## Build And Verify
 

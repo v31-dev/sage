@@ -6,8 +6,9 @@ import pytest
 import config
 from services.certs import TEMPLATE_DIGEST, Certs
 from services.cloudflare import Cloudflare
-from services.db.models import Worker
+from services.db.models import Application, Container, Domain, DomainCaller, Worker
 from services.tailscale import Tailscale
+from services.updates import UpdateSource
 from services.worker_reports import ContainerReading, HostReading, Snapshot, WorkerReports
 from services.workers.decisions import WorkerReport, WorkerView
 from services.workers.state import Workers, WorkerState, worker_payload, worker_state
@@ -68,6 +69,39 @@ class TestWorkers:
     Workers().record_setup("w1", "succeeded")
     Workers().forget("w1")
     assert (Workers().certificates("w1"), Workers().setup("w1")) == (None, None)
+
+
+class TestNetworks:
+  EARLY, LATE = datetime(2026, 1, 1, 9), datetime(2026, 1, 1, 9, 1)
+
+  def test_none_are_known_until_listed_and_a_removal_forgets_them(self, db):
+    assert Workers().networks("w1") is None
+    Workers().record_networks("w1", {"c1": ("172.21.0.0/16",)}, self.EARLY)
+    assert Workers().networks("w1") == {"c1": ("172.21.0.0/16",)}
+    Workers().forget("w1")
+    assert Workers().networks("w1") is None
+
+  def test_an_older_listing_never_replaces_a_newer_one(self, db):
+    Workers().record_networks("w1", {"c1": ("172.22.0.0/16",)}, self.LATE)
+    Workers().record_networks("w1", {"c1": ("172.21.0.0/16",)}, self.EARLY)
+    assert Workers().networks("w1") == {"c1": ("172.22.0.0/16",)}
+
+  def test_a_change_tells_the_pages_of_the_domains_allowing_an_application_with_a_container_there_and_a_repeat_says_nothing(
+          self, db, project, signals):
+    target, caller = (Application.create(project=project, name=name, label=name, image="x") for name in ("pg", "app"))
+    w1, w2 = Worker.create(hostname="w1", subdomain="red"), Worker.create(hostname="w2", subdomain="blue")
+    domain = Domain.create(name="pg", type="tcp", port=5432, container=Container.create(application=target, worker=w1),
+                           namespace_worker=w1)
+    Domain.create(name="other", type="tcp", port=80, container=Container.create(application=caller, worker=w1),
+                  namespace_worker=w1)
+    DomainCaller.create(domain=domain, application=caller)
+    Container.create(application=caller, worker=w2)
+    signals.clear()
+    Workers().record_networks("w2", {"c1": ("172.21.0.0/16",)}, self.EARLY)
+    assert (UpdateSource.DOMAINS, None) in signals and (UpdateSource.WORKER_CONTAINERS, "w1") in signals
+    signals.clear()
+    Workers().record_networks("w2", {"c1": ("172.21.0.0/16",)}, self.LATE)
+    assert signals == []
 
 
 class TestWorkerState:

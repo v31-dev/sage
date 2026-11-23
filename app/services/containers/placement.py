@@ -2,7 +2,7 @@
 import re
 
 from services.containers.record import Authority, TargetRead, parse_record_listing
-from services.workers.rendering import worker_scope
+from services.workers.rendering import APPLICATION_BRIDGE_PREFIX, worker_scope
 from utils.common import OPAQUE_ID
 
 LABEL_INSTANCE = "sage.instance"
@@ -57,8 +57,23 @@ def parse_placements(lines: list[str]) -> tuple[set[str], dict[str, TargetRead]]
 
 
 def runtime_name(container_id: str) -> str:
-  """The Compose project and the Docker container of the placement."""
+  """The Compose project, the Docker container and the network of the placement."""
   return f"sage-{container_id}"
+
+
+def networks_command() -> str:
+  """Lists the worker's applications' networks, a line each for `workers.decisions.parse_networks`: its name, its
+  container's id, its subnets and its members, each list comma-separated."""
+  fields = (f"{{{{.Name}}}} {{{{index .Labels \"{LABEL_CONTAINER}\"}}}} {{{{range .IPAM.Config}}}}{{{{.Subnet}}}},{{{{end}}}} "
+            "{{range .Containers}}{{.Name}},{{end}}")
+  return (f"ids=$(docker network ls -q --filter label={LABEL_CONTAINER}); [ -z \"$ids\" ] || "
+          f"docker network inspect -f '{fields}' $ids")
+
+
+def bridge_name(container_id: str) -> str:
+  """The interface of the placement's network: the applications' prefix and as much of the id as Linux's 15
+  characters for an interface name leave."""
+  return f"{APPLICATION_BRIDGE_PREFIX}{container_id[:15 - len(APPLICATION_BRIDGE_PREFIX)]}"
 
 
 def runtime_owner(name: str) -> str | None:

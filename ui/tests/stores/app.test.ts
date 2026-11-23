@@ -238,13 +238,13 @@ describe('sectionIndicator', () => {
 
 describe('the indicators by status', () => {
   it.each([
-    [false, false, null, 'busy', 'waiting for the certificate'],
-    [false, true, null, 'busy', 'waiting for the certificate'],
-    [true, false, null, 'busy', 'syncing the certificate'],
-    [true, true, null, 'ok', 'certificate ready'],
-    [false, false, 'CA unavailable', 'error', 'certificate update failed'],
-    [true, false, 'copy failed', 'error', 'certificate update failed'],
-    [true, true, 'renewal rejected', 'warning', 'certificate ready'],
+    [false, false, null, 'busy', 'waiting'],
+    [false, true, null, 'busy', 'waiting'],
+    [true, false, null, 'busy', 'syncing'],
+    [true, true, null, 'ok', 'ready'],
+    [false, false, 'CA unavailable', 'error', 'update failed'],
+    [true, false, 'copy failed', 'error', 'update failed'],
+    [true, true, 'renewal rejected', 'warning', 'ready'],
   ] as const)(
     'certificateIndicator: coverage %s, applied %s, error %s',
     (covered, synced, error, state, label) => {

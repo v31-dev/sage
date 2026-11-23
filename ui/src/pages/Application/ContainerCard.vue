@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { ArrowRight } from 'lucide-vue-next'
 import {
   Card,
   CardHeader,
@@ -10,8 +9,6 @@ import {
   CardFooter,
 } from '@/components/ui/card'
 import { RouterLink } from 'vue-router'
-import { Button } from '@/components/ui/button'
-import { Badge } from '@/components/ui/badge'
 
 import { useAppStore } from '@/stores/app'
 import EventLogsButton from './EventLogsButton.vue'
@@ -20,7 +17,9 @@ import DeployApplicationButton from './DeployApplicationButton.vue'
 import StopApplicationButton from './StopApplicationButton.vue'
 import { type Application, type Container, type Domain } from '@/services/api'
 import ContainerStatus from '@/components/ContainerStatus.vue'
-import DomainAddress from '@/components/DomainAddress.vue'
+import DomainCard from '@/components/DomainCard.vue'
+import DomainDialog from '@/components/DomainDialog.vue'
+import SectionTitle from '@/components/SectionTitle.vue'
 import StateIndicator from '@/components/StateIndicator.vue'
 
 interface Props {
@@ -33,14 +32,12 @@ const appStore = useAppStore()
 
 const props = withDefaults(defineProps<Props>(), {})
 
-const TYPES: Record<Domain['type'], string> = { public: 'Public', internal: 'Internal', tcp: 'TCP' }
+const TYPE_ORDER: Record<Domain['type'], number> = { public: 0, internal: 1, tcp: 2 }
 
-const pendingCertificate = computed(() => {
-  const certificate = appStore.workerCertificate(props.container.worker.hostname)
-  return certificate && !(certificate.covered && certificate.synced)
-    ? appStore.certificateIndicator(certificate)
-    : undefined
-})
+// Public names first, then internal and TCP ones, each in the order the manager sends them (by name).
+const domains = computed(() =>
+  [...props.container.domains].sort((a, b) => TYPE_ORDER[a.type] - TYPE_ORDER[b.type])
+)
 
 // The status of the container's worker in the list of workers; none before the list has loaded.
 const workerIndicator = computed(() => {
@@ -52,9 +49,24 @@ const workerIndicator = computed(() => {
 <template>
   <Card data-container>
     <CardHeader class="flex items-start justify-between border-b">
-      <CardTitle class="min-w-0">
-        <ContainerStatus :container="props.container" :reload="props.loadApplication" />
-      </CardTitle>
+      <div class="min-w-0 space-y-3">
+        <CardTitle class="min-w-0">
+          <ContainerStatus :container="props.container" :reload="props.loadApplication" />
+        </CardTitle>
+        <dl class="grid grid-cols-[max-content_minmax(0,1fr)] items-center gap-x-4 text-sm">
+          <dt class="text-muted-foreground">Worker</dt>
+          <dd class="flex min-w-0 flex-wrap items-center gap-2">
+            <RouterLink
+              :to="`/workers/${props.container.worker.hostname}`"
+              class="min-w-0 truncate underline decoration-muted-foreground/50 underline-offset-4 hover:decoration-foreground"
+              data-worker
+            >
+              {{ props.container.worker.hostname }}
+            </RouterLink>
+            <StateIndicator v-if="workerIndicator" v-bind="workerIndicator" show-label />
+          </dd>
+        </dl>
+      </div>
       <CardAction>
         <DeleteContainerButton
           :application="props.application"
@@ -77,49 +89,22 @@ const workerIndicator = computed(() => {
         />
       </div>
       <EventLogsButton :container="props.container" class="w-full min-w-0" />
-      <Button as-child variant="outline" size="sm" class="w-full min-w-0">
-        <RouterLink
-          :to="`/workers/${props.container.worker.hostname}`"
-          :title="`Worker: ${props.container.worker.hostname}`"
-        >
-          <StateIndicator
-            v-if="workerIndicator"
-            dot
-            class="size-2"
-            :state="workerIndicator.state"
-            :label="`Worker ${workerIndicator.label}`"
-          />
-          <span class="block truncate">Worker: {{ props.container.worker.hostname }}</span>
-          <ArrowRight />
-        </RouterLink>
-      </Button>
     </CardFooter>
-    <CardContent v-if="props.container.domains.length" class="border-t pt-6 space-y-4">
-      <div v-for="domain in props.container.domains" :key="domain.id" class="space-y-2" data-domain>
-        <DomainAddress :domain="domain" />
-        <div class="flex flex-wrap items-center gap-2">
-          <StateIndicator
-            v-if="domain.type !== 'public' && pendingCertificate"
-            v-bind="pendingCertificate"
-            show-label
-          />
-          <StateIndicator v-bind="appStore.domainIndicator(domain.view.status)" show-label />
-          <Badge variant="outline">{{ TYPES[domain.type] }}</Badge>
-          <Badge v-if="domain.service" variant="outline" class="font-mono">
-            Service {{ domain.service }}
-          </Badge>
-          <Badge v-if="domain.pool" variant="outline" class="font-mono">
-            Pool {{ domain.pool }}
-          </Badge>
-        </div>
-        <p
-          v-if="appStore.domainReason(domain.view)"
-          class="text-sm text-muted-foreground"
-          data-reason
-        >
-          {{ appStore.domainReason(domain.view) }}
-        </p>
+    <CardContent class="space-y-4 border-t pt-6" data-domains>
+      <div class="flex items-center justify-between gap-2">
+        <SectionTitle title="Domains" />
+        <DomainDialog
+          :container="{ id: props.container.id, worker: props.container.worker.hostname }"
+          :reload="props.loadApplication"
+        />
       </div>
+      <DomainCard
+        v-for="domain in domains"
+        :key="domain.id"
+        :domain="domain"
+        in-container
+        :reload="props.loadApplication"
+      />
     </CardContent>
   </Card>
 </template>

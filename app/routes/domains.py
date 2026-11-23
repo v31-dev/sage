@@ -16,12 +16,13 @@ def create_domain(data: dict = Body(...)):
   """A name for a container (`container`, by id)."""
   domain = commands.create_domain(data.pop("container", None), data)
   Manager().request_domain_applies([domain.id])
+  Manager().request_traefik_networks()
   return Manager().domain_payloads([domain])[0]
 
 
 @router.put("/{domain}")
 def update_domain(domain: str, data: dict = Body(...)):
-  """Changes what is sent; `container` relinks it."""
+  """Changes what is sent; its container stays."""
   edited = commands.patch_domain(domain, data)
   Manager().domain_edited(edited.id)
   return Manager().domain_payloads([edited])[0]
@@ -31,3 +32,4 @@ def update_domain(domain: str, data: dict = Body(...)):
 def delete_domain(domain: str):
   commands.delete_domain(domain)
   Manager().request_domain_reconciliation()
+  Manager().request_traefik_networks()

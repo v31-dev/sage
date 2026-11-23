@@ -5,15 +5,16 @@ from fastapi.testclient import TestClient
 
 import config
 from services.logs import Logs
+from tests.routes.fakes import MANAGER_IP
 from tests.services.logs.builders import event, push
 
 URL = "/api/vector/logs"
 
 
 @pytest.fixture
-def client(db, thread_connections):
+def client(db, thread_connections, tailscale):
   from api_ingest import app
-  return TestClient(app)
+  return TestClient(app, base_url=f"http://{MANAGER_IP}:9001")
 
 
 def body(*messages, container="demo-web"):
@@ -30,6 +31,18 @@ class TestIntake:
 
     assert response.status_code == 204
     assert stored() == ["one", "two"]
+
+  def test_lines_sent_to_another_name_are_refused_and_not_stored(self, client):
+    response = client.post(f"http://rebound.example:9001{URL}", content=body("forged"), headers={"X-Node-Name": "w1"})
+
+    assert response.status_code == 421
+    assert stored() == []
+
+  def test_lines_a_browser_sends_are_refused_and_not_stored(self, client):
+    response = client.post(URL, content=body("forged"), headers={"X-Node-Name": "w1", "Origin": "http://rebound.example:9001"})
+
+    assert response.status_code == 403
+    assert stored() == []
 
   def test_it_is_decoded_and_written_on_the_logs_thread_not_the_event_loop(self, client, monkeypatch):
     threads = []

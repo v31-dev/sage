@@ -20,7 +20,7 @@ sinks:
   fastapi_http:
     type: http
     inputs: ["shipped"]
-    uri: "http://${IP}:9001/api/vector/logs"
+    uri: "http://${IP}:${INGEST_PORT}/api/vector/logs"
     method: post
     encoding:
       codec: json

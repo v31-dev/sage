@@ -197,8 +197,8 @@ tests:
 Run them from that folder, then check the whole config without connecting to Docker or the sink:
 
 ```bash
-docker run --rm -e IP=127.0.0.1 -e HOSTNAME=w1 -v "$PWD":/etc/vector:ro timberio/vector:<tag> test /etc/vector/vector.yml
-docker run --rm -e IP=127.0.0.1 -e HOSTNAME=w1 -v "$PWD":/etc/vector:ro timberio/vector:<tag> validate --no-environment /etc/vector/vector.yml
+docker run --rm -e IP=127.0.0.1 -e INGEST_PORT=9001 -e HOSTNAME=w1 -v "$PWD":/etc/vector:ro timberio/vector:<tag> test /etc/vector/vector.yml
+docker run --rm -e IP=127.0.0.1 -e INGEST_PORT=9001 -e HOSTNAME=w1 -v "$PWD":/etc/vector:ro timberio/vector:<tag> validate --no-environment /etc/vector/vector.yml
 ```
 
 ## UI Tests

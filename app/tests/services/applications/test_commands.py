@@ -207,6 +207,34 @@ class TestVolume:
     renamed = stored(volume)
     assert (renamed.id, renamed.name, renamed.path, renamed.backup_cron) == (volume.id, "files", "/data", None)
 
+  def test_its_response_headers_are_stored_as_their_changes_and_kept_by_a_patch_of_another_field(self, application):
+    commands.patch_application(application.id, {"response_headers": {"referrer-policy": "same-origin", "Permissions-Policy": None,
+                                                                     "X-App": " v1 "}})
+    commands.patch_application(application.id, {"label": "Web 2"})
+    assert stored(application).response_headers == {"Referrer-Policy": "same-origin", "X-App": "v1"}
+
+  def test_a_csp_the_application_sends_itself_is_stored_and_its_echo_changes_nothing(self, application):
+    commands.patch_application(application.id, {"response_headers": {"Content-Security-Policy": None}})
+    assert stored(application).response_headers == {"Content-Security-Policy": None}
+    assert commands.patch_application(application.id, {"response_headers": {"Content-Security-Policy": None}}) == set()
+
+  def test_it_returns_the_fields_it_changed(self, application):
+    assert commands.patch_application(application.id, {"response_headers": {"X-App": "v1"}}) == {"response_headers"}
+    assert commands.patch_application(application.id, {"label": "Web 2", "response_headers": {
+        "X-Frame-Options": "DENY", "X-App": "v1"}}) == {"label"}
+    assert commands.patch_application(application.id, {"label": "Web 2"}) == set()
+
+  @pytest.mark.parametrize("cleared", [None, {}])
+  def test_clearing_them_goes_back_to_the_defaults(self, application, cleared):
+    commands.patch_application(application.id, {"response_headers": {"X-App": "v1"}})
+    commands.patch_application(application.id, {"response_headers": cleared})
+    assert stored(application).response_headers is None
+
+  def test_a_header_sage_cannot_send_is_refused_and_nothing_of_the_patch_is_written(self, application):
+    with pytest.raises(ValueError, match="Invalid header name"):
+      commands.patch_application(application.id, {"label": "Changed", "response_headers": {"X-Bad Name": "v"}})
+    assert (stored(application).label, stored(application).response_headers) == ("Web", None)
+
   def test_a_patch_that_changes_nothing_says_nothing(self, application, signals):
     volume = create_volume(application.id, "data", "/data")
     signals.clear()
@@ -248,18 +276,19 @@ class TestContainer:
     with pytest.raises(LookupError, match="Worker with hostname 'nobody' not found."):
       attach_container(application.id, "nobody")
 
-  def test_detaching_uncounts_it_unlinks_its_domains_and_keeps_its_events(self, application, worker, signals):
+  def test_detaching_uncounts_it_deletes_its_domains_and_keeps_its_events(self, application, worker, signals):
     container = attach_container(application.id, worker.hostname)
+    other = attach_container(application.id, Worker.create(hostname="w2", subdomain="blue").hostname)
     linked = Domain.create(name="shop", type="public", port=80, container=container)
-    Domain.create(name="other", type="public", port=80)
+    kept = Domain.create(name="other", type="public", port=80, container=other)
     ContainerEvent.create(container=container, subject_id=container.id, action="deploy", transition="succeeded",
                           application_name="demo-web", worker_hostname="w1")
     signals.clear()
 
     assert detach_container(container.id) == [linked.id]
 
-    assert stored(application).container_count == 0
-    assert stored(linked).container_id is None
+    assert stored(application).container_count == 1
+    assert [domain.id for domain in Domain.select()] == [kept.id]
     assert ContainerEvent.get().container_id is None
     assert signals == [(UpdateSource.APPLICATION, "demo/web"), (UpdateSource.WORKER_CONTAINERS, "w1"),
                        (UpdateSource.DOMAINS, None)]

@@ -85,6 +85,13 @@ It needs:
   running tasks (a deploy, a backup) finish before it exits. Docker's default is 10 seconds
   before it kills the container.
 
+Optional:
+
+- `HEALTHCHECK_PORT` — the port of its health check, `GET /health`, the one thing it serves on
+  the container's own network (default `8080`). Point a platform's health check there; it
+  answers from the first second, while the first start's setup can take minutes. The image's
+  Docker health check uses it too.
+
 `.env`:
 
 ```bash
@@ -148,7 +155,9 @@ IP, so it only works from the tailnet. Plain `http://<TS_NAME>` redirects to it.
 **Sage has no login or access control of its own.** Anyone who can reach the manager over
 the tailnet can use the UI and API, including reading the stored S3 keys and Discord
 webhook. The tailnet policy is the only gate: restrict who can reach the manager,
-and never expose it outside the tailnet (no published ports, no public URL).
+and never expose it outside the tailnet (no published ports, no public URL). The
+manager refuses requests that another site's page sends through the browser of a tailnet
+device ([Requests From Other Sites](docs/architecture.md#requests-from-other-sites)).
 
 In the tailnet policy, give the manager and the workers their own tags (the examples use
 `tag:sage` and `tag:sage-worker`) and allow the traffic Sage uses. Anything not allowed is
@@ -179,16 +188,19 @@ unreachable; tailnet traffic reaches every port the manager container listens on
 
 ### Workers
 
-A worker is a Linux machine with Docker (including the Compose plugin) that joins the
-tailnet with Tailscale SSH enabled:
+A worker is a Linux machine with systemd, nftables (`nft`) and Docker (including the Compose
+plugin) that joins the tailnet with Tailscale SSH enabled:
 
 ```bash
 tailscale up --ssh --auth-key=tskey-auth-...   # a key tagged tag:sage-worker
 ```
 
 The tag is for the tailnet policy above, which lets the manager reach the machine; Sage does
-not read it. Add the machine on the Workers page by its hostname or Tailscale IP: Sage checks
-that it answers, then sets it up over SSH. In Sage a worker has a subdomain, given when
+not read it. Sage turns off Tailscale's source NAT on its workers
+(`--snat-subnet-routes=false`), so applications see their tailnet clients' addresses
+([Client Address](docs/architecture.md#client-address)); a later
+`tailscale up` on a worker has to name that flag too. Add the machine on the Workers page by
+its hostname or Tailscale IP: Sage checks that it answers, then sets it up over SSH. In Sage a worker has a subdomain, given when
 it is added, which its internal names are under (`<name>.<subdomain>.int.<DOMAIN>`). A new
 worker gets its own certificate and private key; changing its subdomain replaces only that
 certificate. Workers share a separate certificate for internal discovery. Certificates use
@@ -196,8 +208,8 @@ certificate. Workers share a separate certificate for internal discovery. Certif
 status and applied expiry separately; Settings → Cloudflare shows the full inventory and any issuance or
 retirement errors. See [Certificate Lifecycle](docs/architecture.md#certificate-lifecycle) for cleanup and rate limits.
 Deleting a worker stops
-Sage's services on it and removes Sage's files from it. A worker with containers or internal domains can't be
-deleted: delete its containers and move or delete its domains first, even when it is offline. A worker that is
+Sage's services on it and removes Sage's files from it. A worker with containers can't be deleted: delete its
+containers first, which deletes their domains, even when it is offline. A worker that is
 offline is removed from Sage only; its VM has to be cleaned up by hand.
 
 A worker records which Sage manages it. Several Sages can share a tailnet when each has its own
@@ -220,13 +232,14 @@ worker, is 1 GB of memory and 1 core. Give a machine more as its applications an
 Once Sage is up, the UI is at `https://<TS_NAME>.core.<DOMAIN>`. S3 (backups) and
 notifications are optional and set in the UI.
 
-An application is reached at the names you give its containers on the Domains page: a public
+An application is reached at the names you give its containers on its page: a public
 name `<name>.<DOMAIN>`, or an internal one `<name>.<subdomain>.int.<DOMAIN>` (tailnet only, on
 its worker). Names that share a service are listed together for clients that choose one, at
 `https://discovery.<DOMAIN>/?service=<service>` (public) or
 `https://discovery.int.<DOMAIN>/?service=<service>` (internal), in the `Sage-Endpoints`
 header, with an online flag for each name; [Domain Types](docs/architecture.md#domain-types) has the details.
-Each HTTP Domain can [allow frontend origins](docs/architecture.md#allowed-origins) for browser API requests.
+Each HTTP Domain can [allow frontend origins](docs/architecture.md#allowed-origins) for browser API requests, and
+each application sends strict [security headers](docs/architecture.md#response-headers) it can loosen.
 The [client guide](docs/discovery.md) shows how to discover a backend service, probe its replicas and choose one.
 
 Sage lists the backups already in the S3 bucket and path when you save the S3 settings,

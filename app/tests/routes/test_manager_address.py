@@ -110,3 +110,19 @@ class TestTheComposedApp:
 
   def test_in_development_any_name_is_served(self, composed):
     assert composed(False, "100.64.0.1").get(self.URL).status_code == 200
+
+  @pytest.mark.parametrize("production", [True, False], ids=["production", "development"])
+  def test_a_form_another_site_submits_is_refused_before_the_api(self, composed, production):
+    response = composed(production, MANAGER).post("/api/settings/pause", data={"x": "1"},
+                                                  headers={"Sec-Fetch-Site": "cross-site", "Origin": "https://evil.example"})
+    assert response.status_code == 403
+
+  @pytest.mark.parametrize("production", [True, False], ids=["production", "development"])
+  def test_a_link_followed_from_another_site_is_served(self, composed, production):
+    response = composed(production, MANAGER).get(
+        self.URL, headers={"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "document"})
+    assert response.status_code == 200
+
+  def test_the_managers_own_page_is_served(self, composed):
+    response = composed(True, MANAGER).get(self.URL, headers={"Sec-Fetch-Site": "same-origin", "Origin": f"https://{MANAGER}"})
+    assert response.status_code == 200

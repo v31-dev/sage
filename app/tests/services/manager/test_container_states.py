@@ -11,6 +11,7 @@ import config
 from services.applications.deploy_input import capture_deploy_config
 from services.containers.placement import placement_dir, placement_scope, record_path, runtime_name
 from services.containers.record import Applied, Authority, Operation, Settled, TargetRead, TargetRecord, encode_record
+from services.containers.rendering import deployment_hash
 from services.containers.targets import Containers
 from services.db.models import Application, Container, Domain, Instance, Project, Worker
 from services.history import record_container_event
@@ -118,7 +119,7 @@ def authority(container):
 async def deployed(container):
   """The container's record of a deploy of its application's current inputs, as its Deploy writes it."""
   at = datetime(2026, 1, 1, 11, 59)
-  config_hash = capture_deploy_config(container.application_id).content_hash
+  config_hash = deployment_hash(capture_deploy_config(container.application_id))
   await Containers().write(container, TargetRecord(
       authority(container), Applied("d1", config_hash, at), Settled("d1", "running", "succeeded", at),
       Operation("d1", "deploy", "settled", at, 905, at, config_hash, outcome="succeeded", verified_on_worker_at=WORKER_CLOCK)))

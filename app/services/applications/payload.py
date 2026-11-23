@@ -1,5 +1,6 @@
 """Projects and applications as their pages show them: an application around the payloads of its containers."""
 from services.db.models import Application, Project, Volume
+from values.headers import APPLICATION_OWN_HEADERS, SECURITY_HEADERS
 
 
 def project_payload(project: Project) -> dict:
@@ -47,6 +48,8 @@ def application_payload(application: Application, volumes: list[Volume], contain
       "args": application.args,
       "build_secrets": application.build_secrets,
       "command": application.command,
+      "response_headers": {"defaults": SECURITY_HEADERS, "changes": application.response_headers or {},
+                           "own_allowed": list(APPLICATION_OWN_HEADERS)},
       "project": {"name": application.project.name, "label": application.project.label},
       "volumes": [volume_payload(volume) for volume in volumes],
       "containers": containers,

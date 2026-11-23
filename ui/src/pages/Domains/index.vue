@@ -1,27 +1,20 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { toast } from 'vue-sonner'
-import { RouterLink } from 'vue-router'
-import { Compass, ExternalLink, Trash } from 'lucide-vue-next'
-import { Badge } from '@/components/ui/badge'
+import { Compass, ExternalLink } from 'lucide-vue-next'
 import { Button } from '@/components/ui/button'
 import {
   Card,
   CardAction,
   CardContent,
   CardDescription,
-  CardFooter,
   CardHeader,
   CardTitle,
 } from '@/components/ui/card'
 import { Spinner } from '@/components/ui/spinner'
-import ConfirmationButton from '@/components/ConfirmationButton.vue'
-import DomainAddress from '@/components/DomainAddress.vue'
-import StateIndicator from '@/components/StateIndicator.vue'
+import DomainCard from '@/components/DomainCard.vue'
 import { watchState } from '@/lib/updates'
-import { type Domain, type DomainsResponse, deleteDomain, fetchDomains } from '@/services/api'
+import { type DomainsResponse, fetchDomains } from '@/services/api'
 import { useAppStore } from '@/stores/app'
-import DomainDialog from './DomainDialog.vue'
 
 const appStore = useAppStore()
 const state = ref<DomainsResponse>({ domains: [], containers: [] })
@@ -77,12 +70,6 @@ async function load() {
   show(await fetchDomains())
 }
 
-async function onConfirmDelete(domain: Domain) {
-  await deleteDomain(domain.id)
-  await load()
-  toast.success('Domain deleted')
-}
-
 // The domains, loaded from their route and then pushed by the manager each time one, or its container, changes.
 onMounted(async () => {
   const watch = watchState('domains', fetchDomains, show)
@@ -109,10 +96,6 @@ onUnmounted(() => stop?.())
       </div>
 
       <div v-else class="space-y-6">
-        <div class="flex justify-end">
-          <DomainDialog :containers="state.containers" :domains="state.domains" :reload="load" />
-        </div>
-
         <Card v-if="error">
           <CardContent class="flex flex-col items-center justify-center py-12">
             <p class="text-muted-foreground text-lg">Failed to load domains</p>
@@ -123,7 +106,9 @@ onUnmounted(() => stop?.())
         <Card v-else-if="groups.length === 0">
           <CardContent class="flex flex-col items-center justify-center py-12">
             <p class="text-muted-foreground text-lg">No domains</p>
-            <p class="text-sm text-muted-foreground">Give a container a name to reach it at.</p>
+            <p class="text-sm text-muted-foreground">
+              Add one on a container's card, on its application's page.
+            </p>
           </CardContent>
         </Card>
 
@@ -151,89 +136,13 @@ onUnmounted(() => stop?.())
             </CardAction>
           </CardHeader>
           <CardContent class="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
-            <Card
+            <DomainCard
               v-for="domain in group.domains"
               :key="domain.id"
-              data-domain
-              class="min-w-0 gap-0 py-0"
-            >
-              <CardHeader class="flex items-center gap-2 border-b py-4 [.border-b]:pb-4">
-                <CardTitle class="min-w-0 flex-1 truncate leading-normal" data-host>
-                  {{ domain.host ?? domain.name }}
-                </CardTitle>
-                <Badge v-if="domain.type === 'tcp'" variant="outline">TCP</Badge>
-                <StateIndicator v-bind="appStore.domainIndicator(domain.view.status)" show-label />
-              </CardHeader>
-              <CardContent class="flex-1 space-y-3 py-4">
-                <dl
-                  class="grid grid-cols-[max-content_minmax(0,1fr)] items-center gap-x-4 gap-y-2 text-sm"
-                >
-                  <template v-if="domain.pool">
-                    <dt class="text-muted-foreground">Pool</dt>
-                    <dd data-pool>{{ domain.pool }}</dd>
-                  </template>
-                  <dt class="text-muted-foreground">Application</dt>
-                  <dd class="flex min-w-0 flex-wrap items-center gap-2">
-                    <template v-if="domain.container">
-                      <RouterLink
-                        :to="`/applications/${domain.container.application.project.name}/${domain.container.application.name}`"
-                        class="min-w-0 truncate underline decoration-muted-foreground/50 underline-offset-4 hover:decoration-foreground"
-                        data-application
-                      >
-                        {{ domain.container.application.project.label }} /
-                        {{ domain.container.application.label }}
-                      </RouterLink>
-                      <StateIndicator
-                        v-if="indicators[domain.container.id]"
-                        v-bind="indicators[domain.container.id]!"
-                        show-label
-                      />
-                    </template>
-                    <StateIndicator v-else state="warning" label="not linked" show-label />
-                  </dd>
-                  <template v-if="domain.container?.worker ?? domain.worker">
-                    <dt class="text-muted-foreground">Worker</dt>
-                    <dd class="min-w-0">
-                      <RouterLink
-                        :to="`/workers/${domain.container?.worker ?? domain.worker}`"
-                        class="block truncate underline decoration-muted-foreground/50 underline-offset-4 hover:decoration-foreground"
-                        data-worker
-                      >
-                        {{ domain.container?.worker ?? domain.worker }}
-                      </RouterLink>
-                    </dd>
-                  </template>
-                </dl>
-                <p
-                  v-if="appStore.domainReason(domain.view)"
-                  class="text-sm text-muted-foreground"
-                  data-reason
-                >
-                  {{ appStore.domainReason(domain.view) }}
-                </p>
-              </CardContent>
-              <CardFooter class="gap-1 border-t py-2 pr-3 [.border-t]:pt-2">
-                <DomainAddress :domain="domain" />
-                <div class="ml-auto flex shrink-0 items-center gap-1">
-                  <DomainDialog
-                    :containers="state.containers"
-                    :domains="state.domains"
-                    :domain="domain"
-                    :reload="load"
-                  />
-                  <ConfirmationButton
-                    triggerText="Delete"
-                    title="Delete Domain"
-                    body="Are you sure you want to delete this domain? This action cannot be undone."
-                    :description="domain.host ?? domain.name"
-                    :icon="Trash"
-                    icon-only
-                    destructive
-                    :onConfirm="() => onConfirmDelete(domain)"
-                  />
-                </div>
-              </CardFooter>
-            </Card>
+              :domain="domain"
+              :container-indicator="indicators[domain.container.id]"
+              :reload="load"
+            />
           </CardContent>
         </Card>
       </div>

@@ -4,10 +4,10 @@ from pathlib import Path
 import pytest
 
 from services.containers.placement import (LABEL_APPLICATION, LABEL_CONTAINER, LABEL_DEPLOYMENT, LABEL_GENERATION, LABEL_INSTANCE, LABELS,
-                                           labels_authority, parse_placements, placement_dir, placement_scope, placements_command, record_path,
-                                           runtime_name, runtime_owner, volume_dir)
+                                           bridge_name, labels_authority, parse_placements, placement_dir, placement_scope, placements_command,
+                                           record_path, runtime_name, runtime_owner, volume_dir)
 from services.containers.record import Authority, TargetRead
-from services.workers.rendering import stack_scope, worker_scope
+from services.workers.rendering import APPLICATION_BRIDGE_PREFIX, stack_scope, worker_scope
 from utils.common import new_id
 from utils.queue import _scope_conflict
 
@@ -36,6 +36,13 @@ def test_a_runtime_is_named_by_its_container_id_and_the_name_gives_it_back():
                                   "SAGE-2222222222222222", "sage-22222222222222", "demo-web"])
 def test_any_other_runtime_name_is_not_a_placement(name):
   assert runtime_owner(name) is None
+
+
+def test_a_placements_bridge_is_the_applications_prefix_and_its_id_within_an_interface_names_15_characters():
+  ids = [new_id() for _ in range(50)]
+  names = [bridge_name(container_id) for container_id in ids]
+  assert all(len(name) <= 15 and name.startswith(APPLICATION_BRIDGE_PREFIX) for name in names)
+  assert len(set(names)) == len(ids) and bridge_name("0123456789abcdef") == "sage0123456789a"
 
 
 def test_a_runtimes_labels_give_back_its_authority():

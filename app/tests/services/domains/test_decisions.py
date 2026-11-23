@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from services.domains.config import ROUTING_TEMPLATES, domain_artifact_name, parse_route_listing, routes_command
-from services.domains.decisions import ROUTES, STATUSES, ApplyOutcome, DomainFacts, RouteObservation, decide_domain, route_goal
+from services.domains.decisions import ROUTES, STATUSES, ApplyOutcome, DomainFacts, RouteObservation, WorkerRoute, decide_domain, route_goal
 
 NOW_HASH, OLD_HASH = "a" * 64, "b" * 64
 QUEUED = datetime(2026, 1, 1, 12)
@@ -16,9 +16,10 @@ TEMPLATES = Path(__file__).parent.parent.parent.parent / "templates" / "worker" 
 REASONS = {None, "drifted", "worker_not_ready", "eligibility_unknown", "not_applied", "Traefik", "DNS"}
 
 
-def facts(linked=True, eligible=True, worker_ready=True, route=RouteObservation("present", NOW_HASH), dns=True, outcome=None,
+def facts(eligible=True, worker_ready=True, route=RouteObservation("present", NOW_HASH), dns=True, outcome=None,
           syncing_since=None):
-  return DomainFacts(NOW_HASH, linked, eligible, worker_ready, route, dns, outcome, syncing_since)
+  return DomainFacts(NOW_HASH, eligible, worker_ready, (WorkerRoute("w1", NOW_HASH, route, worker_ready),), dns, outcome,
+                     syncing_since)
 
 
 APPLIED = RouteObservation("present", NOW_HASH)
@@ -34,7 +35,6 @@ SCENARIOS = {
     "routable but its file missing": (facts(route=ABSENT), "pending", False, "drifted"),
     "its container stopped and the file gone": (facts(eligible=False, route=ABSENT), "synced", True, None),
     "its container stopped and the file still there": (facts(eligible=False), "pending", False, "drifted"),
-    "unlinked and the file gone": (facts(linked=False, eligible=None, worker_ready=None, route=ABSENT), "synced", True, None),
     "eligibility not known and a file present": (facts(eligible=None), "pending", None, "eligibility_unknown"),
     "the apply of this configuration failed at DNS": (facts(route=ABSENT, dns=False, outcome=FAILED_DNS), "error", False, "DNS"),
     "an older configuration failed, this one not applied yet": (
@@ -43,6 +43,18 @@ SCENARIOS = {
     "applied just now, not scanned since": (facts(route=RouteObservation("unobserved"), dns=None,
                                                   outcome=ApplyOutcome(NOW_HASH, True)), "synced", None, None),
     "applied, then the file disappeared": (facts(route=ABSENT, outcome=ApplyOutcome(NOW_HASH, True)), "pending", False, "drifted"),
+    "a caller's file not known yet, this configuration applied": (
+        DomainFacts(NOW_HASH, True, True, (WorkerRoute("w1", NOW_HASH, APPLIED, True),
+                                           WorkerRoute("w2", None, RouteObservation("present", OLD_HASH), True)), True,
+                    ApplyOutcome(NOW_HASH, True)), "synced", None, None),
+    "a caller's file drifted": (
+        DomainFacts(NOW_HASH, True, True, (WorkerRoute("w1", NOW_HASH, APPLIED, True),
+                                           WorkerRoute("w2", "c" * 64, RouteObservation("present", OLD_HASH), True)), True),
+        "pending", False, "drifted"),
+    "a caller's worker offline": (
+        DomainFacts(NOW_HASH, True, True, (WorkerRoute("w1", NOW_HASH, APPLIED, True),
+                                           WorkerRoute("w2", "c" * 64, RouteObservation("unreachable"), False)), True),
+        "pending", None, "worker_not_ready"),
     "its worker offline": (facts(worker_ready=False, route=RouteObservation("unreachable"), dns=True), "pending", None,
                            "worker_not_ready"),
     "a sync under way": (facts(route=ABSENT, outcome=FAILED_DNS, syncing_since=QUEUED), "syncing", False, None),
@@ -61,10 +73,9 @@ def test_an_error_says_why():
   assert decide_domain(facts(route=ABSENT, outcome=FAILED_DNS)).error == "Cloudflare: unavailable"
 
 
-@pytest.mark.parametrize("linked, eligible, goal", [
-    (True, True, "present"), (True, False, "absent"), (True, None, None), (False, None, "absent"), (False, True, "absent")])
-def test_the_route_goal_removes_nothing_while_eligibility_is_unknown(linked, eligible, goal):
-  assert route_goal(linked, eligible) == goal
+@pytest.mark.parametrize("eligible, goal", [(True, "present"), (False, "absent"), (None, None)])
+def test_the_route_goal_removes_nothing_while_eligibility_is_unknown(eligible, goal):
+  assert route_goal(eligible) == goal
 
 
 def every_route():
@@ -73,16 +84,32 @@ def every_route():
 
 
 def expected_conformance(given):
-  """Conformance worked out on its own: the file must match the goal, and DNS must match, three-valued."""
-  wanted = None if given.linked and given.eligible is None else (given.linked and given.eligible is True)
-  route = given.route
-  if wanted is None or route.kind in ("unobserved", "unreachable"):
-    routed = None
-  else:
-    routed = (route.kind == "present" and route.fingerprint == NOW_HASH) if wanted else route.kind == "absent"
-  if routed is False or given.dns_conforms is False:
+  """Conformance worked out on its own: each worker's file must match the goal, the expected fingerprint when there is
+  one to match and it is known, and DNS must match, three-valued."""
+  wanted = None if given.eligible is None else given.eligible
+  results = []
+  for route in given.routes:
+    seen = route.observed
+    if wanted is None or seen.kind in ("unobserved", "unreachable"):
+      results.append(None)
+    elif not wanted:
+      results.append(seen.kind == "absent")
+    else:
+      results.append(None if route.expected is None else seen.kind == "present" and seen.fingerprint == route.expected)
+  results.append(given.dns_conforms)
+  if False in results:
     return False
-  return None if None in (routed, given.dns_conforms) else True
+  return None if None in results else True
+
+
+def caller_routes():
+  """No caller worker, or one whose file is expected with a fingerprint known or not, seen in each way, ready or not."""
+  yield ()
+  for expected in ("c" * 64, None):
+    for seen in (RouteObservation("present", "c" * 64), RouteObservation("present", OLD_HASH), RouteObservation("absent"),
+                 RouteObservation("unreachable")):
+      for ready in (True, False):
+        yield (WorkerRoute("w2", expected, seen, ready),)
 
 
 def test_every_combination_of_facts_keeps_the_invariants():
@@ -93,9 +120,11 @@ def test_every_combination_of_facts_keeps_the_invariants():
           OLD_HASH, False, "Traefik", "x"), ApplyOutcome(
           OLD_HASH, True)]
   seen_statuses, seen_reasons = set(), set()
-  for linked, eligible, ready, route, dns, outcome, syncing in itertools.product(
-          (True, False), (True, False, None), (True, False, None), every_route(), (True, False, None), outcomes, (None, QUEUED)):
-    given = DomainFacts(NOW_HASH, linked, eligible, ready, route, dns, outcome, syncing)
+  for eligible, ready, route, callers, dns, outcome, syncing in itertools.product(
+          (True, False, None), (True, False, None), every_route(), tuple(caller_routes()), (True, False, None), outcomes,
+          (None, QUEUED)):
+    given = DomainFacts(NOW_HASH, eligible, ready, (WorkerRoute("w1", NOW_HASH, route, ready), *callers), dns, outcome,
+                        syncing)
     view = decide_domain(given)
     seen_statuses.add(view.status)
     seen_reasons.add(view.reason)
@@ -110,9 +139,9 @@ def test_every_combination_of_facts_keeps_the_invariants():
       assert current is not None and not current.succeeded and view.conforms is not True, given
     if view.conforms is True:
       assert view.status in ("syncing", "synced"), given
-    if linked and eligible is None:
+    if eligible is None:
       assert view.conforms is not True, given
-    without_old = decide_domain(DomainFacts(NOW_HASH, linked, eligible, ready, route, dns, current, syncing))
+    without_old = decide_domain(DomainFacts(NOW_HASH, eligible, ready, given.routes, dns, current, syncing))
     assert without_old == view, given
 
   assert seen_statuses == set(STATUSES)

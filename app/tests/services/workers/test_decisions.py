@@ -6,9 +6,9 @@ import pytest
 
 import config
 from services.worker_reports import ContainerReading, Received, Snapshot
-from services.workers.decisions import (SETUPS, SSH, STATUSES, TUNNELS, WorkerFacts, WorkerReport, addressable, connectivity, decide_worker,
-                                        discovery_member, reboot_outcome, report_of, stray_traefik_files, workable, worker_claim_refusal,
-                                        worker_owner)
+from services.workers.decisions import (SETUPS, SSH, STATUSES, TUNNELS, WorkerFacts, WorkerReport, addressable, alias_changes, connectivity,
+                                        decide_worker, discovery_member, dns_exceptions, edge_subnets, parse_aliases, parse_networks, reboot_outcome,
+                                        report_of, stray_traefik_files, traefik_network_changes, workable, worker_claim_refusal, worker_owner)
 from services.workers.rendering import traefik_files_command
 
 GOOD = WorkerReport("known", True)
@@ -211,6 +211,85 @@ def test_a_worker_is_addressable_only_reachable_and_with_an_address():
       ("reachable", "100.64.0.2")}
 
 
+class TestEdgeSubnets:
+  def test_each_subnet_is_kept_in_order_and_other_lines_are_left_out(self):
+    listing = ["172.22.0.0/16", 'time="2026-11-18T10:00:00Z" level=warning msg="a warning"', "", " fd00:22::/64 "]
+    assert edge_subnets(listing) == ("172.22.0.0/16", "fd00:22::/64")
+
+  @pytest.mark.parametrize("listing", [[], [""], ["Error: No such network: sage_edge"], ["172.22.0.1/16"]],
+                           ids=["empty", "blank", "an-error", "an-address-not-a-network"])
+  def test_a_listing_without_a_subnet_is_refused(self, listing):
+    with pytest.raises(ValueError):
+      edge_subnets(listing)
+
+
+class TestTraefikNetworkChanges:
+  KEPT, RUNNING, GONE, EMPTY, ORPHAN = "1111111111111111", "2222222222222222", "3333333333333333", "4444444444444444", "5555555555555555"
+
+  def network(self, container_id, *members, subnets="172.21.0.0/16,"):
+    return f"sage-{container_id} {container_id} {subnets} {''.join(member + ',' for member in members)}"
+
+  def test_traefik_joins_each_containers_network_and_leaves_the_networks_of_containers_gone_that_only_it_is_on(self):
+    listing = [self.network(self.KEPT, "sage-" + self.KEPT, "traefik"), self.network(self.RUNNING, "sage-" + self.RUNNING),
+               self.network(self.GONE, "traefik"), self.network(self.EMPTY), self.network(self.ORPHAN, "sage-" + self.ORPHAN)]
+    assert traefik_network_changes(parse_networks(listing), {self.KEPT, self.RUNNING}) == (
+        ("sage-" + self.RUNNING,), ("sage-" + self.GONE, "sage-" + self.EMPTY))
+
+  def test_a_network_is_read_with_its_subnets_and_members(self):
+    (network,) = parse_networks([self.network(self.KEPT, "traefik", "sage-" + self.KEPT, subnets="172.21.0.0/16,fd00:21::/64,")])
+    assert (network.name, network.container_id, network.subnets, network.members) == (
+        "sage-" + self.KEPT, self.KEPT, ("172.21.0.0/16", "fd00:21::/64"), frozenset({"traefik", "sage-" + self.KEPT}))
+
+  @pytest.mark.parametrize("line", ['time="2026-11-23T10:00:00Z" level=warning msg="a warning"', "",
+                                    "sage-1111111111111111", "sage-x;reboot 1111111111111111 172.21.0.0/16, traefik,",
+                                    "sage-2222222222222222 1111111111111111 172.21.0.0/16, traefik,",
+                                    "sage-shop shop 172.21.0.0/16, traefik,",
+                                    "sage-1111111111111111 1111111111111111 172.21.0.1/16, traefik,",
+                                    "sage-1111111111111111 1111111111111111 0.0.0.0/0;reboot, traefik,"],
+                           ids=["a-warning", "blank", "no-id", "a-planted-name", "another-containers-name", "not-an-id",
+                                "an-address-not-a-subnet", "a-planted-subnet"])
+  def test_a_line_that_is_not_sages_network_of_its_container_is_left_out(self, line):
+    assert parse_networks([line]) == ()
+
+
+class TestAliasChanges:
+  def network(self, name, *members):
+    return parse_networks([f"sage-{name} {name} 172.21.0.0/16, {''.join(member + ',' for member in members)}"])[0]
+
+  def test_traefiks_aliases_are_read_per_network(self):
+    assert parse_aliases(["bridge ", "sage-1111111111111111 api.red.int.example.test,db.red.int.example.test", ""]) == {
+        "bridge": frozenset(), "sage-1111111111111111": frozenset({"api.red.int.example.test", "db.red.int.example.test"})}
+
+  def test_a_network_traefik_is_on_with_other_names_than_wanted_is_attached_again(self):
+    same, other, joining, unowned = (self.network("1111111111111111", "traefik"), self.network("2222222222222222", "traefik"),
+                                     self.network("3333333333333333"), self.network("4444444444444444", "traefik"))
+    wanted = {same.name: ("a.test",), other.name: ("a.test", "b.test"), joining.name: ("a.test",)}
+    current = {same.name: frozenset({"a.test"}), other.name: frozenset({"a.test"}), unowned.name: frozenset({"x.test"})}
+    assert alias_changes((same, other, joining, unowned), wanted, current) == (other.name,)
+
+
+class TestDnsExceptions:
+  def resolvers(self, entries):
+    return dns_exceptions(["nameserver 127.0.0.11", "options ndots:0", "", f"# ExtServers: [{entries}]",
+                           "# Overrides: [nameservers]"])
+
+  @pytest.mark.parametrize("entries", ["1.1.1.1 8.8.8.8", "host(127.0.0.53)", "2606:4700:4700::1111", ""],
+                           ids=["public", "the-hosts-loopback-resolver", "public-ipv6", "none"])
+  def test_a_resolver_dns_reaches_anyway_needs_no_exception(self, entries):
+    assert self.resolvers(entries) == ()
+
+  def test_each_private_resolver_is_kept_in_order_and_once(self):
+    entries = "10.0.0.2 1.1.1.1 169.254.169.254 host(127.0.0.53) fd00::53 100.100.100.100 10.0.0.2"
+    assert self.resolvers(entries) == ("10.0.0.2", "169.254.169.254", "fd00::53", "100.100.100.100")
+
+  @pytest.mark.parametrize("lines", [[], ["nameserver 127.0.0.11"], ["# ExtServers: 1.1.1.1"],
+                                     ["# ExtServers: [dns.example.test]"], ["# ExtServers: [1.1.1.1:53]"]],
+                           ids=["empty", "no-line", "not-a-list", "a-name", "an-address-with-a-port"])
+  def test_a_file_without_a_list_of_addresses_is_refused(self, lines):
+    with pytest.raises(ValueError):
+      dns_exceptions(lines)
+
+
 class TestWorkerOwner:
   def test_the_stamp_holds_the_instance_and_its_domain(self):
     assert worker_owner({"owner": "abc123 example.test"}) == ("abc123", "example.test")
@@ -247,7 +326,7 @@ def test_what_an_older_version_left_in_traefiks_folders_is_stray_and_nothing_thi
   (tmp_path / "traefik/traefik.yml").write_text("")
   current = ["config.yml", "certs.yml", "domain-0123456789abcdef.yml", "_discovery-public-api.yml",
              "_discovery-internal-api.yml"]
-  old = ["shop-web-public-shop.yml", "shop-web-internal-web-eu.yml", "domain-shop.yml", "notes.txt"]
+  old = ["shop-web-public-shop.yml", "shop-web-internal-web-eu.yml", "domain-shop.yml", "notes.txt", "_callers.yml"]
   for name in (*current, *old):
     (dynamic / name).write_text("")
   for name in ("fullchain.pem", "key.pem", "managed/worker-0123456789abcdef.pem"):

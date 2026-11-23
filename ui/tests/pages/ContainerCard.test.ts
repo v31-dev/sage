@@ -1,14 +1,18 @@
-import { flushPromises, mount } from '@vue/test-utils'
+import { flushPromises, mount, RouterLinkStub } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it } from 'vitest'
 import ContainerCard from '@/pages/Application/ContainerCard.vue'
 import CopyButton from '@/components/CopyButton.vue'
+import DomainCard from '@/components/DomainCard.vue'
+import DomainDialog from '@/components/DomainDialog.vue'
 import type { Application, Domain, DomainStatus, WorkerStatus } from '@/services/api'
 import { container } from '../helpers/containers'
 import { worker } from '../helpers/workers'
 import { useAppStore } from '@/stores/app'
 
 const listed = (hostname: string, status: WorkerStatus) => worker(hostname, status)
+
+const application = { name: 'web', label: 'Web', project: { name: 'demo', label: 'Demo' } }
 
 // A domain, with its state's `status` and `error` given apart.
 const domain = ({
@@ -27,7 +31,8 @@ const domain = ({
     host: 'shop.example.test',
     address: 'https://shop.example.test',
     worker: 'w1',
-    container: { id: 'c1', worker: 'w1', application: {} },
+    container: { id: 'c1', worker: 'w1', application },
+    callers: [],
     view: {
       status,
       conforms: status === 'synced',
@@ -50,69 +55,107 @@ function mountCard(hostname = 'w1', domains: Domain[] = []) {
         DeployApplicationButton: true,
         StopApplicationButton: true,
         EventLogsButton: true,
+        DomainDialog: true,
+        ConfirmationButton: true,
         CopyButton: true,
-        RouterLink: { template: '<a><slot /></a>' },
+        RouterLink: RouterLinkStub,
       },
     },
   })
 }
 
-const dot = (wrapper: ReturnType<typeof mountCard>) =>
-  wrapper.find('[role="img"][aria-label^="Worker "]')
+// The Worker row's value: the worker's link and its status.
+const workerRow = (wrapper: ReturnType<typeof mountCard>) =>
+  wrapper.get('[data-worker]').element.parentElement!
 
 beforeEach(() => {
   setActivePinia(createPinia())
 })
 
-describe('the dot of the worker', () => {
+describe('the worker of the container', () => {
+  it('links to the worker’s page', () => {
+    expect(mountCard('w1').getComponent<typeof RouterLinkStub>('[data-worker]').props('to')).toBe(
+      '/workers/w1'
+    )
+  })
+
   it.each([
-    ['online', 'Worker online'],
-    ['not ready', 'Worker not ready'],
-    ['offline', 'Worker offline'],
-    ['checking', 'Worker checking'],
-    ['rebooting', 'Worker rebooting'],
-    ['adding', 'Worker adding'],
-    ['removing', 'Worker removing'],
-  ] as [WorkerStatus, string][])(
-    'says %s as the status the list has for the worker',
-    (status, label) => {
-      useAppStore().workers = [listed('w1', status), listed('w2', 'online')]
+    'online',
+    'not ready',
+    'offline',
+    'checking',
+    'rebooting',
+    'adding',
+    'removing',
+  ] as WorkerStatus[])('says %s as the status the list has for the worker', status => {
+    useAppStore().workers = [listed('w1', status), listed('w2', 'online')]
 
-      expect(dot(mountCard('w1')).attributes('aria-label')).toBe(label)
-    }
-  )
+    expect(workerRow(mountCard('w1')).textContent).toBe(`w1 ${status}`.replace(/\s+/g, ' '))
+  })
 
-  it('is not there before the list of workers has loaded or for a worker that is not in it', () => {
+  it('shows no status before the list of workers has loaded or for a worker that is not in it', () => {
     const store = useAppStore()
-    expect(dot(mountCard()).exists()).toBe(false)
+    expect(workerRow(mountCard()).textContent!.trim()).toBe('w1')
 
     store.workers = [listed('w2', 'online')]
-    expect(dot(mountCard('w1')).exists()).toBe(false)
+    expect(workerRow(mountCard('w1')).textContent!.trim()).toBe('w1')
   })
 
   it('follows the list when the manager pushes another', async () => {
     const store = useAppStore()
     store.workers = [listed('w1', 'online')]
     const wrapper = mountCard()
-    expect(dot(wrapper).attributes('aria-label')).toBe('Worker online')
+    expect(workerRow(wrapper).textContent).toContain('online')
 
     store.workers = [listed('w1', 'rebooting')]
     await flushPromises()
 
-    expect(dot(wrapper).attributes('aria-label')).toBe('Worker rebooting')
+    expect(workerRow(wrapper).textContent).toContain('rebooting')
   })
 })
 
-describe('the domains linked to the container', () => {
-  it('shows several names linked to the container', () => {
+describe('the domains of the container', () => {
+  it('has a Domains heading whose Add is for this container, with no domains yet', () => {
+    const wrapper = mountCard('w1')
+    const domains = wrapper.get('[data-domains]')
+
+    expect(domains.text()).toContain('Domains')
+    expect(domains.getComponent(DomainDialog).props()).toMatchObject({
+      container: { id: 'c1', worker: 'w1' },
+      domain: undefined,
+    })
+    expect(wrapper.find('[data-domain]').exists()).toBe(false)
+  })
+
+  it('shows a card for each domain, on its container', () => {
     const wrapper = mountCard('w1', [
       domain(),
       domain({ id: 'd2', address: 'https://other.example.test' }),
     ])
 
-    expect(wrapper.findAll('[data-domain] a').map(link => link.attributes('href'))).toEqual([
+    expect(wrapper.findAll('[data-address]').map(link => link.attributes('href'))).toEqual([
       'https://shop.example.test',
       'https://other.example.test',
+    ])
+    expect(wrapper.findAllComponents(DomainCard).map(card => card.props('inContainer'))).toEqual([
+      true,
+      true,
+    ])
+  })
+
+  it('shows the public names first, then the internal and TCP ones', () => {
+    const wrapper = mountCard('w1', [
+      domain({ id: 'd1', type: 'internal', host: 'api.red.int.example.test' }),
+      domain({ id: 'd2', host: 'b.example.test' }),
+      domain({ id: 'd3', type: 'tcp', host: 'db.red.int.example.test' }),
+      domain({ id: 'd4', host: 'c.example.test' }),
+    ])
+
+    expect(wrapper.findAll('[data-host]').map(host => host.text())).toEqual([
+      'b.example.test',
+      'c.example.test',
+      'api.red.int.example.test',
+      'db.red.int.example.test',
     ])
   })
 
@@ -126,7 +169,7 @@ describe('the domains linked to the container', () => {
       },
     })
 
-    expect(wrapper.findAll('[data-domain] a').map(link => link.attributes('href'))).toEqual([
+    expect(wrapper.findAll('[data-address]').map(link => link.attributes('href'))).toEqual([
       'https://new.example.test',
     ])
     expect(wrapper.get('[data-domain]').text()).toContain('syncing')
@@ -144,7 +187,8 @@ describe('the domains linked to the container', () => {
           DeployApplicationButton: true,
           StopApplicationButton: true,
           EventLogsButton: true,
-          RouterLink: { template: '<a><slot /></a>' },
+          DomainDialog: true,
+          RouterLink: RouterLinkStub,
         },
       },
     })
@@ -159,14 +203,14 @@ describe('the domains linked to the container', () => {
 
   it('links to the address, copies it, and shows its type, service and pool', () => {
     const wrapper = mountCard('w1', [domain({ service: 'shop', pool: 'eu' })])
-    const row = wrapper.get('[data-domain]')
+    const card = wrapper.get('[data-domain]')
 
-    expect(row.get('a').attributes('href')).toBe('https://shop.example.test')
-    expect(row.getComponent(CopyButton).props('text')).toBe('https://shop.example.test')
-    expect(row.text()).toContain('synced')
-    expect(row.text()).toContain('Public')
-    expect(row.text()).toContain('Service shop')
-    expect(row.text()).toContain('Pool eu')
+    expect(card.get('[data-address]').attributes('href')).toBe('https://shop.example.test')
+    expect(card.getComponent(CopyButton).props('text')).toBe('https://shop.example.test')
+    expect(card.text()).toContain('synced')
+    expect(card.text()).toContain('Public')
+    expect(card.get('[data-service]').text()).toBe('shop')
+    expect(card.get('[data-pool]').text()).toBe('eu')
   })
 
   it('shows a TCP address without an HTTP link', () => {
@@ -177,11 +221,11 @@ describe('the domains linked to the container', () => {
         address: 'db.red.int.example.test:8443',
       }),
     ])
-    const row = wrapper.get('[data-domain]')
+    const card = wrapper.get('[data-domain]')
 
-    expect(row.find('a').exists()).toBe(false)
-    expect(row.text()).toContain('db.red.int.example.test:8443')
-    expect(row.text()).toContain('TCP')
+    expect(card.get('[data-address]').element.tagName).toBe('SPAN')
+    expect(card.text()).toContain('db.red.int.example.test:8443')
+    expect(card.text()).toContain('TCP')
   })
 
   it.each([
@@ -206,17 +250,16 @@ describe('the domains linked to the container', () => {
   )
 
   it.each([
-    [{ covered: false, synced: false, expiry: null, error: null }, 'waiting for the certificate'],
-    [{ covered: true, synced: false, expiry: null, error: null }, 'syncing the certificate'],
-  ])('shows an internal name’s worker certificate until it is ready', (certificate, shown) => {
+    [{ covered: false, synced: false, expiry: null, error: null }, 'waiting'],
+    [{ covered: true, synced: false, expiry: null, error: null }, 'syncing'],
+    [{ covered: true, synced: true, expiry: null, error: null }, 'ready'],
+  ])('shows an internal name’s worker certificate: %j', (certificate, shown) => {
     useAppStore().workers = [
       worker('w1', 'online', { certificates: { worker: certificate, discovery: certificate } }),
     ]
     const internal = domain({ type: 'internal', address: 'https://shop.red.int.example.test' })
 
-    expect(mountCard('w1', [internal]).text()).toContain(shown)
-    expect(mountCard('w1', [domain()]).text()).not.toContain(shown)
-    useAppStore().workers = [listed('w1', 'online')]
-    expect(mountCard('w1', [internal]).text()).not.toContain('certificate')
+    expect(mountCard('w1', [internal]).get('[data-certificate]').text()).toBe(shown)
+    expect(mountCard('w1', [domain()]).find('[data-certificate]').exists()).toBe(false)
   })
 })

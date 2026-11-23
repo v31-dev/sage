@@ -36,8 +36,9 @@ vi.mock('@/services/api', async importOriginal => ({
 
 // The confirmation dialog, confirmed at a click on its trigger.
 const confirmation = {
-  props: ['triggerText', 'disabled', 'onConfirm'],
-  template: '<button :disabled="disabled" @click="onConfirm()">{{ triggerText }}</button>',
+  props: ['triggerText', 'body', 'disabled', 'onConfirm'],
+  template:
+    '<button :disabled="disabled" :data-body="body" @click="onConfirm()">{{ triggerText }}</button>',
 }
 
 const stopped = (id: string, overrides: Partial<Container> = {}) =>
@@ -200,6 +201,26 @@ describe('Delete', () => {
 
     expect(deleteContainer).toHaveBeenCalledWith('demo', 'web', 'c4')
     expect(loadApplication).toHaveBeenCalledOnce()
+  })
+
+  it.each([
+    [[], 'Are you sure you want to delete this container? This action cannot be undone.'],
+    [
+      [
+        { host: 'shop.example.test', name: 'shop' },
+        { host: null, name: 'db' },
+      ],
+      'Are you sure you want to delete this container? This action cannot be undone. Its domains are deleted ' +
+        'with it: shop.example.test, db.',
+    ],
+  ])('names the domains deleted with the container: %j', (domains, body) => {
+    const one = container({ domains: domains as Container['domains'] })
+    const { wrapper } = mountButton(DeleteContainerButton, {
+      application: application([one]),
+      container: one,
+    })
+
+    expect(wrapper.get('button').attributes('data-body')).toBe(body)
   })
 
   it.each([

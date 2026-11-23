@@ -16,6 +16,8 @@ here and are not repeated. How the backend works (the queue's modes, each workfl
   place, so a reader never finds a partial file. Anything else temporary on a worker goes in that folder too: the
   daily cleanup removes it whole. A file with a secret in it goes with `mode=0o600` (a script `0o700`; the default
   is `0o644`): Tailscale SSH ignores the mode of a new directory, so the file's own mode is what keeps it private.
+- Everything the manager serves is behind `RefuseOtherSites` (`utils/api.py`), the one owner of which origins may
+  call: a new server or ASGI app goes behind it, and nothing behind it (Socket.IO included) checks origins again.
 - The manager's own temporary files go in `config.TMP_DIR`, never the system temp folder: the Manager empties it at
   boot, before anything runs.
 
@@ -68,11 +70,11 @@ here and are not repeated. How the backend works (the queue's modes, each workfl
   `KeyError` or `IndexError` stays a 500).
 - A page's payload is built by its resource's `*_payload` function from the state a Manager reader decides; REST and
   the topics share those readers, and a missing resource is a `LookupError`.
-- Storage fields belong to `services/db/fields.py`, encryption to `services/db/encryption.py`, name and origin rules
-  to `values/names.py`, key/value rules to `values/key_values.py`; scalar rules are shared, not repeated in routes and
-  models. Importing a value or codec initializes no encryption and never exits the process: bootstrap validates and
-  initializes the key before encrypted storage is used. The DB package initializer loads no models or signals;
-  schemas and initialization are imported from their owning modules.
+- Storage fields belong to `services/db/fields.py`, encryption to `services/db/encryption.py`, name and origin rules to
+  `values/names.py`, key/value rules to `values/key_values.py`, Sage's strict security headers to `values/headers.py`;
+  scalar rules are shared, not repeated in routes and models. Importing a value or codec initializes no encryption and
+  never exits the process: bootstrap validates and initializes the key before encrypted storage is used. The DB package
+  initializer loads no models or signals; schemas and initialization are imported from their owning modules.
 - Everything Sage writes outside its database (worker files, markers, DNS record comments, archives) is named by the
   id of the resource that owns it, with no instance prefix, number or mutable name: an opaque random id (stable across
   renames and recreation, distinct between Sages), or for a worker its hostname, the Worker's primary key and unique
@@ -151,13 +153,15 @@ Each resource's own rules, on top of the root's working rules 9–13. The workfl
   `Domains`, and `syncing` comes from the queue. `Domain.container` owns a name's binding: use `Container.domains`,
   with no application-level domain collection. Domain changes and queue state tell the linked application's and
   worker's views.
-- An apply never holds its container's scope, and checks its worker and name again before any I/O. Its route follows
-  the container's `routable` at the apply, and unknown removes nothing. It certifies only the fingerprint it applied;
-  an edit during it queues another.
-- The Domain pass and worker setup remove a routing file only by binding (its Domain gone or bound to another worker),
-  never for its container's state; a route left behind is withdrawn by requesting the pass. The pass never awaits the
-  applies it requests, and a failed pass leaves a Domain's successful apply proof alone. A file in Traefik's folders in
-  none of the forms this version writes there is an older version's, removed when worker setup writes the stack.
+- An apply never holds its container's scope, and checks its workers and name again before any I/O. Its files follow
+  the container's `routable` at the apply, and unknown removes nothing. A file on a callers' worker is built from the
+  networks the apply lists there itself, never from memory, and carries that worker's fingerprint, which covers the
+  callers' subnets. It certifies only the fingerprints it applied; an edit during it queues another.
+- The Domain pass and worker setup remove a Domain's file only by binding (its Domain gone, or that worker neither its
+  own nor one with a container of an application it allows), never for its container's state; a route left behind is
+  withdrawn by requesting the pass. The pass never awaits the applies it requests, and a failed pass leaves a Domain's
+  successful apply proof alone. A file in Traefik's folders in none of the forms this version writes there is an older
+  version's, removed when worker setup writes the stack.
 - A failed apply does not retry itself: its end requests discovery only, and the passes retry. A failed saved edit
   withdraws outdated owned routing where reachable and reports pending or error, leaving the container's runtime
   alone; it checks against the current configuration first, keeps artifacts already correct, and never takes unknown
@@ -245,7 +249,8 @@ Stop](../docs/backend.md#pause-and-stop).
   direct configuration edit needs guarded results independently of queue scopes. A resource Sage writes outside its
   database has one scope, built by its package, and every task that writes it holds that scope or an ancestor, so its
   writers exclude each other. A resource under two roots (a Domain's route on a worker, a worker's certificate files)
-  is held on both sides by a writer that changes it; a writer that holds a single side only removes.
+  or two sibling scopes of one root (Traefik's endpoint on a container's network) is held on both sides by a writer
+  that changes it; a writer that holds a single side only removes.
 - `params` are JSON-safe ids and flags, recorded and shown; frozen execution objects (a deploy snapshot, an S3
   session) go in `inputs`, never recorded or pushed; `labels` name the subjects the way the UI does
   (`{"Application": "shop / web"}`), taken when queued. `quiet=True` is for scheduled housekeeping only.

@@ -2,10 +2,7 @@ import { flushPromises, mount, RouterLinkStub } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import Domains from '@/pages/Domains'
-import DomainDialog from '@/pages/Domains/DomainDialog.vue'
 import {
-  createDomain,
-  updateDomain,
   type AppInfo,
   type Domain,
   type DomainsResponse,
@@ -20,8 +17,6 @@ vi.mock('vue-sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
 vi.mock('@/services/api', async importOriginal => ({
   ...(await importOriginal<typeof import('@/services/api')>()),
   fetchDomains: vi.fn(),
-  createDomain: vi.fn(async () => ({})),
-  updateDomain: vi.fn(async () => ({})),
 }))
 
 const application = { name: 'web', label: 'Web', project: { name: 'demo', label: 'Demo' } }
@@ -53,6 +48,7 @@ const domain = (
   address: 'https://shop.example.test',
   worker: 'w1',
   container: { id: '1', worker: 'w1', application },
+  callers: [],
   view: { status, conforms: status === 'synced', reason: status === 'error' ? 'dns' : null, error },
   created_at: '2026-01-01T00:00:00',
   updated_at: '2026-01-01T00:00:00',
@@ -62,8 +58,6 @@ const domain = (
 beforeEach(() => {
   setActivePinia(createPinia())
   useAppStore().info = { domain: 'example.test' } as AppInfo
-  vi.mocked(createDomain).mockClear()
-  vi.mocked(updateDomain).mockClear()
 })
 
 describe('the Domains page', () => {
@@ -252,19 +246,6 @@ describe('the Domains page', () => {
     expect(plain!.find('[data-pool]').exists()).toBe(false)
   })
 
-  it('links an unlinked internal domain to the worker it kept', async () => {
-    const wrapper = shown({
-      domains: [domain(1, { type: 'internal', container: null, worker: 'w2' })],
-      containers: [],
-    })
-    await flushPromises()
-
-    expect(wrapper.find('[data-application]').exists()).toBe(false)
-    expect(wrapper.getComponent<typeof RouterLinkStub>('[data-worker]').props('to')).toBe(
-      '/workers/w2'
-    )
-  })
-
   it('opens an HTTP address and shows a TCP one as text', async () => {
     const wrapper = shown({
       domains: [
@@ -287,221 +268,11 @@ describe('the Domains page', () => {
     expect(addresses[0]!.attributes('href')).toBe('https://shop.example.test')
   })
 
-  it('says a domain whose container is gone is not linked', async () => {
-    const wrapper = shown({ domains: [domain(1, { container: null })], containers: [] })
+  it('offers no Add: a domain is added on its container', async () => {
+    const wrapper = shown({ domains: [], containers: [] })
     await flushPromises()
 
-    expect(wrapper.get('[data-domain]').text()).toContain('not linked')
-  })
-})
-
-describe('the domain dialog', () => {
-  const containers = [linkable(1, 'w1', 'red'), linkable(2, 'w2', 'blue')]
-
-  async function open(props: { domain?: Domain; domains?: Domain[] } = {}) {
-    const inline = { template: '<div><slot /></div>' }
-    const wrapper = mount(DomainDialog, {
-      props: {
-        containers,
-        domains: props.domains ?? [],
-        domain: props.domain,
-        reload: async () => {},
-      },
-      global: {
-        stubs: {
-          Dialog: inline,
-          DialogTrigger: inline,
-          DialogContent: inline,
-          DialogHeader: inline,
-          DialogTitle: inline,
-          DialogDescription: inline,
-          DialogFooter: inline,
-        },
-      },
-    })
-    await wrapper
-      .findAll('button')
-      .find(
-        button => button.text().includes('Add Domain') || button.attributes('aria-label') === 'Edit'
-      )!
-      .trigger('click')
-    return wrapper
-  }
-
-  const vm = (wrapper: Awaited<ReturnType<typeof open>>) =>
-    wrapper.vm as unknown as {
-      chooseContainer: (value: string) => void
-      type: string
-      suffix: string
-    }
-
-  it("shows the name's shape for its type under the chosen container's worker", async () => {
-    const wrapper = await open()
-    const dialog = vm(wrapper)
-
-    dialog.chooseContainer('1')
-    dialog.type = 'internal'
-    await flushPromises()
-    expect(dialog.suffix).toBe('.red.int.example.test')
-    dialog.type = 'tcp'
-    expect(dialog.suffix).toBe('.red.int.example.test:8443')
-    dialog.type = 'public'
-    expect(dialog.suffix).toBe('.example.test')
-  })
-
-  it('clears the type when another container is chosen', async () => {
-    const dialog = vm(await open())
-
-    dialog.chooseContainer('1')
-    dialog.type = 'internal'
-    dialog.chooseContainer('2')
-
-    expect(dialog.type).toBe('')
-    dialog.type = 'internal'
-    expect(dialog.suffix).toBe('.blue.int.example.test')
-  })
-
-  it('creates the domain on the chosen container', async () => {
-    const wrapper = await open()
-    vm(wrapper).chooseContainer('2')
-    vm(wrapper).type = 'public'
-    await flushPromises()
-    await wrapper.get('#domain-name').setValue(' shop ')
-    await wrapper.get('#domain-service').setValue('shop')
-    await wrapper
-      .findAll('button')
-      .find(button => button.text() === 'Add')!
-      .trigger('click')
-    await flushPromises()
-
-    expect(createDomain).toHaveBeenCalledWith({
-      name: 'shop',
-      type: 'public',
-      port: 80,
-      service: 'shop',
-      pool: '',
-      cors_origins: null,
-      container: '2',
-    })
-  })
-
-  it('opens with the domain it edits, and an unlinked one keeps its container empty', async () => {
-    const wrapper = await open({ domain: domain(7, { container: null, port: 8080, pool: 'eu' }) })
-    await wrapper.get('#domain-port').setValue('9090')
-    await wrapper
-      .findAll('button')
-      .find(button => button.text() === 'Save')!
-      .trigger('click')
-    await flushPromises()
-
-    expect(updateDomain).toHaveBeenCalledWith('7', {
-      name: 'shop',
-      type: 'public',
-      port: 9090,
-      service: '',
-      pool: 'eu',
-      cors_origins: null,
-    })
-  })
-
-  it("offers the services of the chosen type's namespace", async () => {
-    const domains = [
-      domain(1, { service: 'shop' }),
-      domain(2, { type: 'internal', service: 'api' }),
-      domain(3, { type: 'tcp', service: 'db' }),
-    ]
-    const wrapper = await open({ domains })
-    vm(wrapper).chooseContainer('1')
-    vm(wrapper).type = 'internal'
-    await flushPromises()
-
-    expect(
-      wrapper.findAll('#domain-services option').map(option => option.attributes('value'))
-    ).toEqual(['api', 'db'])
-  })
-
-  it('keeps a blank origins field and describes the current origin after a rename', async () => {
-    const wrapper = await open({ domain: domain(7, {}) })
-    expect(wrapper.get('#domain-cors').element).toHaveProperty('value', '')
-    expect(wrapper.text()).toContain('https://shop.example.test')
-
-    await wrapper.get('#domain-name').setValue('frontend')
-
-    expect(wrapper.get('#domain-cors').element).toHaveProperty('value', '')
-    expect(wrapper.text()).toContain('https://frontend.example.test')
-  })
-
-  it('opens with explicit origins and submits one origin per nonempty line', async () => {
-    const wrapper = await open({
-      domain: domain(7, { cors_origins: ['https://app.example.test'] }),
-    })
-    expect(wrapper.get('#domain-cors').element).toHaveProperty('value', 'https://app.example.test')
-    await wrapper
-      .get('#domain-cors')
-      .setValue('https://app.example.test\n\n http://localhost:5173 ')
-    await wrapper
-      .findAll('button')
-      .find(button => button.text() === 'Save')!
-      .trigger('click')
-    await flushPromises()
-
-    expect(updateDomain).toHaveBeenCalledWith(
-      '7',
-      expect.objectContaining({
-        cors_origins: ['https://app.example.test', 'http://localhost:5173'],
-      })
-    )
-  })
-
-  it('clears an override to null without substituting the shown default', async () => {
-    const wrapper = await open({
-      domain: domain(7, { cors_origins: ['https://app.example.test'] }),
-    })
-    await wrapper.get('#domain-cors').setValue('  ')
-    await wrapper
-      .findAll('button')
-      .find(button => button.text() === 'Save')!
-      .trigger('click')
-    await flushPromises()
-
-    expect(updateDomain).toHaveBeenCalledWith('7', expect.objectContaining({ cors_origins: null }))
-  })
-
-  it('hides the HTTP policy for TCP and clears it on a protocol change', async () => {
-    const wrapper = await open({
-      domain: domain(7, { cors_origins: ['https://app.example.test'] }),
-    })
-    vm(wrapper).type = 'tcp'
-    await flushPromises()
-    expect(wrapper.find('#domain-cors').exists()).toBe(false)
-    await wrapper
-      .findAll('button')
-      .find(button => button.text() === 'Save')!
-      .trigger('click')
-    await flushPromises()
-
-    expect(updateDomain).toHaveBeenCalledWith(
-      '7',
-      expect.objectContaining({ type: 'tcp', cors_origins: null })
-    )
-  })
-
-  it('retains the entered origins when the backend rejects them', async () => {
-    vi.mocked(updateDomain).mockRejectedValueOnce(
-      new Error('Invalid origin: use an HTTP(S) origin.')
-    )
-    const wrapper = await open({ domain: domain(7, {}) })
-    await wrapper.get('#domain-cors').setValue('https://app.example.test/path')
-    await wrapper
-      .findAll('button')
-      .find(button => button.text() === 'Save')!
-      .trigger('click')
-    await flushPromises()
-
-    expect(wrapper.text()).toContain('Invalid origin: use an HTTP(S) origin.')
-    expect(wrapper.get('#domain-cors').element).toHaveProperty(
-      'value',
-      'https://app.example.test/path'
-    )
+    expect(wrapper.findComponent({ name: 'DomainDialog' }).exists()).toBe(false)
+    expect(wrapper.text()).toContain("Add one on a container's card")
   })
 })

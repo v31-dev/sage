@@ -9,12 +9,12 @@ from services.base import Base
 from utils.common import new_id, utcnow
 
 from . import migration_log, migrations, migrator
-from .models import (Application, Backup, Container, ContainerEvent, Domain, Instance, Notification, Project, Setting, Task, Volume, Worker,
-                     WorkerEvent, db)
+from .models import (Application, Backup, Container, ContainerEvent, Domain, DomainCaller, Instance, Notification, Project, Setting, Task, Volume,
+                     Worker, WorkerEvent, db)
 
 logger = logging.getLogger(__name__)
 
-MODELS = [Setting, Instance, Project, Application, Volume, Domain, Worker, Container, ContainerEvent, WorkerEvent, Notification,
+MODELS = [Setting, Instance, Project, Application, Volume, Domain, DomainCaller, Worker, Container, ContainerEvent, WorkerEvent, Notification,
           Backup, Task]
 # What happened rather than what is configured: never in a platform backup, and emptied by a restore.
 HISTORY = (ContainerEvent, WorkerEvent, Notification, Task)

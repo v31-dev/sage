@@ -43,8 +43,7 @@ Use a Structured Fields parser rather than splitting on commas or semicolons. Ea
 with a Boolean `online` parameter and an optional string `pool`. Bare `;online` means true; `;online=?0` means
 false. There are no priority, weight, protocol or port parameters. Ignore unknown parameters.
 
-All service-assigned Domains with a resolvable name remain listed, including unlinked records and records with
-pending or failed sync. `online` requires an active container, a worker meeting Sage's cached readiness policy,
+All service-assigned Domains with a resolvable name remain listed, including records with pending or failed sync. `online` requires an active container, a worker meeting Sage's cached readiness policy,
 and a successful Domain sync matching its current configuration. This is last-known state: detection, publication
 and client caching introduce lag. It is neither a live health check nor a promise that an application request succeeds.
 

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { toast } from 'vue-sonner'
-import { Edit, Plus } from 'lucide-vue-next'
+import { ChevronDown, Edit, Plus } from 'lucide-vue-next'
 import {
   Dialog,
   DialogContent,
@@ -35,16 +35,28 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuLabel,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { Spinner } from '@/components/ui/spinner'
 import IconButton from '@/components/IconButton.vue'
 import { useAppStore } from '@/stores/app'
-import { type ContainerReference, type Domain, createDomain, updateDomain } from '@/services/api'
+import {
+  type Domain,
+  type ProjectPage,
+  createDomain,
+  fetchProjects,
+  updateDomain,
+} from '@/services/api'
 
-// Creates a domain, or edits `domain`. The container comes first: it decides the worker, so the name's shape follows
-// it, and choosing another one clears the type.
+// Adds a domain to `container`, or edits `domain`, which stays on its container. The container's worker gives an
+// internal or TCP name its subdomain.
 interface Props {
-  containers: ContainerReference[]
-  domains: Domain[]
+  container: { id: string; worker: string }
   domain?: Domain
   reload: () => Promise<void>
 }
@@ -59,25 +71,20 @@ const GUIDANCE: Record<Domain['type'], string> = {
 }
 
 const open = ref(false)
-const containerId = ref('')
 const type = ref<Domain['type'] | ''>('')
 const name = ref('')
 const port = ref(80)
 const service = ref('')
 const pool = ref('')
 const corsOrigins = ref('')
+const callers = ref<number[]>([])
+const projects = ref<ProjectPage[]>([])
 const errorMessage = ref('')
 const submitting = ref(false)
 
-const container = computed(() =>
-  props.containers.find(container => String(container.id) === containerId.value)
-)
-// The subdomain the name of an internal or TCP domain is under: its container's worker's, or for an unlinked one,
-// the worker it kept.
 const subdomain = computed(
   () =>
-    container.value?.worker.subdomain ??
-    appStore.workers?.find(worker => worker.hostname === props.domain?.worker)?.subdomain ??
+    appStore.workers?.find(worker => worker.hostname === props.container.worker)?.subdomain ??
     '<subdomain>'
 )
 const prefix = computed(() => (type.value === 'tcp' ? '' : 'https://'))
@@ -86,40 +93,39 @@ const suffix = computed(() => {
   if (type.value === 'public') return `.${base}`
   return `.${subdomain.value}.int.${base}${type.value === 'tcp' ? ':8443' : ''}`
 })
-// The services already used in the namespace of the chosen type, to pick from.
-const services = computed(() => {
-  const isPublic = type.value === 'public'
-  return [
-    ...new Set(
-      props.domains
-        .filter(domain => (domain.type === 'public') === isPublic && domain.service)
-        .map(domain => domain.service!)
-    ),
-  ].sort()
+const ready = computed(() => !!type.value && !!name.value.trim())
+const callable = computed(() => type.value === 'internal' || type.value === 'tcp')
+// The chosen applications as "Project / Application", from the domain's own until the applications have loaded.
+const chosen = computed(() => {
+  const labels = new Map(
+    (props.domain?.callers ?? []).map(caller => [
+      caller.id,
+      `${caller.project.label} / ${caller.label}`,
+    ])
+  )
+  for (const project of projects.value)
+    for (const application of project.applications)
+      labels.set(application.id, `${project.label} / ${application.label}`)
+  return callers.value.map(id => labels.get(id) ?? `#${id}`).join(', ')
 })
-const ready = computed(
-  () => !!type.value && !!name.value.trim() && (!!container.value || !!props.domain)
-)
+
+function toggleCaller(id: number, allowed: boolean | 'indeterminate') {
+  callers.value = allowed === true ? [...callers.value, id] : callers.value.filter(c => c !== id)
+}
 
 function openDialog() {
   errorMessage.value = ''
-  containerId.value = props.domain?.container ? String(props.domain.container.id) : ''
   type.value = props.domain?.type ?? ''
   name.value = props.domain?.name ?? ''
   port.value = props.domain?.port ?? 80
   service.value = props.domain?.service ?? ''
   pool.value = props.domain?.pool ?? ''
   corsOrigins.value = props.domain?.cors_origins?.join('\n') ?? ''
+  callers.value = props.domain?.callers.map(caller => caller.id) ?? []
   open.value = true
-}
-
-function chooseContainer(value: unknown) {
-  containerId.value = String(value)
-  type.value = ''
-}
-
-function containerLabel(container: ContainerReference) {
-  return `${container.application.label} (${container.application.project.label}) · ${container.worker.hostname}`
+  fetchProjects()
+    .then(list => (projects.value = list))
+    .catch(() => (errorMessage.value = 'Failed to load the applications'))
 }
 
 async function onConfirm() {
@@ -139,10 +145,10 @@ async function onConfirm() {
               .split('\n')
               .map(origin => origin.trim())
               .filter(Boolean),
-      ...(container.value ? { container: container.value.id } : {}),
+      ...(callable.value && { callers: callers.value }),
     }
     if (props.domain) await updateDomain(props.domain.id, data)
-    else await createDomain(data)
+    else await createDomain({ ...data, container: props.container.id })
     open.value = false
     await props.reload()
     toast.success(props.domain ? 'Domain updated' : 'Domain added')
@@ -160,44 +166,20 @@ async function onConfirm() {
       <IconButton :icon="Edit" label="Edit" @click="openDialog" />
     </DialogTrigger>
     <DialogTrigger v-else as-child>
-      <Button size="sm" class="gap-2" @click="openDialog">
-        <Plus />
-        Add Domain
-      </Button>
+      <IconButton :icon="Plus" label="Add domain" @click="openDialog" />
     </DialogTrigger>
     <DialogContent class="sm:max-w-[480px]">
       <DialogHeader>
         <DialogTitle>{{ props.domain ? 'Edit Domain' : 'Add Domain' }}</DialogTitle>
         <DialogDescription>{{
-          props.domain?.host ?? 'A name for one container'
+          props.domain?.host ?? `A name for this container on ${props.container.worker}`
         }}</DialogDescription>
       </DialogHeader>
       <FieldSet>
         <FieldGroup>
           <Field>
-            <FieldLabel for="domain-container"> Container </FieldLabel>
-            <Select :model-value="containerId" @update:model-value="chooseContainer">
-              <SelectTrigger id="domain-container">
-                <SelectValue
-                  :placeholder="
-                    props.domain ? 'Not linked: choose a container' : 'Choose a container'
-                  "
-                />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem
-                  v-for="item in props.containers"
-                  :key="item.id"
-                  :value="String(item.id)"
-                >
-                  {{ containerLabel(item) }}
-                </SelectItem>
-              </SelectContent>
-            </Select>
-          </Field>
-          <Field>
             <FieldLabel for="domain-type"> Type </FieldLabel>
-            <Select v-model="type" :disabled="!container && !props.domain">
+            <Select v-model="type">
               <SelectTrigger id="domain-type">
                 <SelectValue placeholder="Choose a type" />
               </SelectTrigger>
@@ -233,6 +215,42 @@ async function onConfirm() {
             <Input id="domain-port" v-model="port" type="number" />
             <FieldDescription>The container's port the name routes to.</FieldDescription>
           </Field>
+          <Field v-if="callable">
+            <FieldLabel for="domain-callers">
+              Applications allowed to call it (optional)
+            </FieldLabel>
+            <DropdownMenu>
+              <DropdownMenuTrigger as-child>
+                <Button id="domain-callers" variant="outline" class="justify-between font-normal">
+                  <span class="truncate">{{ chosen || 'None' }}</span>
+                  <ChevronDown class="text-muted-foreground" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent
+                align="start"
+                class="max-h-72 w-(--reka-dropdown-menu-trigger-width)"
+              >
+                <template v-for="project in projects" :key="project.name">
+                  <DropdownMenuLabel v-if="project.applications.length">{{
+                    project.label
+                  }}</DropdownMenuLabel>
+                  <DropdownMenuCheckboxItem
+                    v-for="application in project.applications"
+                    :key="application.id"
+                    :model-value="callers.includes(application.id)"
+                    @update:model-value="toggleCaller(application.id, $event)"
+                    @select.prevent
+                  >
+                    {{ application.label }}
+                  </DropdownMenuCheckboxItem>
+                </template>
+              </DropdownMenuContent>
+            </DropdownMenu>
+            <FieldDescription>
+              Their containers can call this name from any worker; other applications can't. Tailnet
+              devices always can.
+            </FieldDescription>
+          </Field>
           <Field v-if="type && type !== 'tcp'">
             <FieldLabel for="domain-cors"> Allowed origins (optional) </FieldLabel>
             <Textarea
@@ -249,15 +267,7 @@ async function onConfirm() {
           </Field>
           <Field>
             <FieldLabel for="domain-service"> Service (optional) </FieldLabel>
-            <Input
-              id="domain-service"
-              v-model="service"
-              list="domain-services"
-              placeholder="e.g. shop"
-            />
-            <datalist id="domain-services">
-              <option v-for="item in services" :key="item" :value="item" />
-            </datalist>
+            <Input id="domain-service" v-model="service" placeholder="e.g. shop" />
             <FieldDescription>
               Names that share a service are listed together at discovery, apart for public and
               internal.

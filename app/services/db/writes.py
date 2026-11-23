@@ -35,11 +35,11 @@ def merged(row, fields: dict, allowed: tuple[str, ...]) -> dict:
   return config
 
 
-def save_changes(row, config: dict) -> bool:
-  """Writes the values of `config` that differ from `row`, and says whether there were any."""
+def save_changes(row, config: dict) -> set[str]:
+  """Writes the values of `config` that differ from `row`, and returns their names."""
   changed = {name: value for name, value in config.items() if getattr(row, name) != value}
   for name, value in changed.items():
     setattr(row, name, value)
   if changed:
     row.save()
-  return bool(changed)
+  return set(changed)
