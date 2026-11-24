@@ -5,7 +5,8 @@ The diagrams show the main flows; the tables list every queued operation and the
 Names in code font are searchable function, task or model names.
 
 - [Execution flow](#execution-flow)
-- [Scopes and admission](#scopes-and-admission)
+- [Resources and scopes](#resources-and-scopes)
+- [Admission](#admission)
 - [Scheduler timetable](#scheduler-timetable)
 - [Task catalog](#task-catalog)
 - [Follow-up flows](#follow-up-flows)
@@ -56,40 +57,73 @@ Sources: [scheduler](../app/scheduler.py), [queue engine](../app/utils/queue.py)
 [history writer](../app/services/history.py), [notification writer](../app/services/notification.py),
 [pools](../app/utils/executor.py).
 
-## Scopes and admission
+## Resources and scopes
 
-`<id>` is a Domain ID;
-`<manager>` is `TS_NAME`. Braces mean **all** listed scopes are held together.
+What Sage holds falls into six kinds, each with one place and one meaning:
 
-Each scope of a resource Sage writes outside its database is built by its resource's package, beside its other names there:
-`services/containers/placement.py`, `services/workers/rendering.py`, `services/domains/config.py` and `discovery.py`,
-`services/certs.py`, `services/backups/keys.py` and `services/metrics`; the scopes under a worker are built on `worker_scope`.
-A task holding a whole root calls the root's builder with no argument. The settings checks and the release check write
-only memory, so their scopes are written as they are.
+| Kind | Where | What it is for |
+| --- | --- | --- |
+| Configuration | `data.db`: Project, Application, Volume, Container, Domain, DomainCaller, Worker (hostname, subdomain), Setting, Instance | What the user asked Sage to run; written by the routes' commands, read by every task at its start |
+| Accepted intent | `data.db`: `Container.intent`, `Worker.removing`, Backup rows recorded queued | A request accepted before it reaches its target, kept across a restart (the queue is memory) until its outcome |
+| Target records | On the target: a container's `record.json`, a worker's stamps under `revisions/`, the proof lines in Sage's worker files, the comments on Sage's DNS records | What was done there: an operation in progress and its baseline, what was applied and from which configuration; recovery and drift are read from them |
+| Observations | Memory, in their owners (below) | Live status, rebuilt after a restart from reports, listings and checks; never authority to start a container |
+| Applied artifacts | Workers, Docker, Cloudflare, S3, the manager's certificate store | What Sage writes outside its database from the configuration; each has one scope, and every writer holds it |
+| History and telemetry | `data.db`: ContainerEvent, WorkerEvent, Notification, Task; the log, request, task-log and metric shards | Appended as things happen, kept for the retention period, never authority |
 
-| Scope | Built by | Excludes | Does not exclude by itself |
+### Scopes
+
+A scope names one resource Sage writes. `:` builds the hierarchy: a scope conflicts with itself, its ancestors and its
+descendants, and siblings never conflict. Each scope is built by its resource's package; a task holding a whole root
+calls the root's builder with no argument. `<id>` is the resource's id; braces mean all listed scopes are held
+together.
+
+| Scope | Built by | The resource it holds | Writers (scopes held) |
 | --- | --- | --- | --- |
-| `domain:<id>` | `domain_scope(id)` | Work for that record, and tasks holding root `domain` | Other records |
-| `domain:host:<fqdn>` | `host_scope` | The apply of any record with that full name, so a name swapped between two records is applied by one at a time | Other names |
-| `domain` | `domain_scope()` | Every Domain apply, and every other task holding it: the Domain pass, maintenance | Worker and application tasks |
-| `worker:<host>` | `worker_scope` | Work on that worker and every scope below it: its containers, its stack, its routes and its discovery files | Other workers |
-| `worker:<host>:container:<id>`, `worker:<host>:stack`, `worker:<host>:routing:<id>`, `worker:<host>:discovery`, `worker:<host>:tls` | `placement_scope`, `stack_scope`, `route_scope`, `discovery_files_scope`, `certificate_files_scope` | That one and `worker:<host>` | Their siblings: a container's operations, the stack's repair and the check of Traefik's networks (a change of a container's network holds both sides), a Domain's route, the discovery files and the certificate files on the same worker |
-| `certificate:worker:<host>` | `certificate_scope(host)` | That worker's certificate copy, and `certificate` | Other workers' copies |
-| `discovery` | `discovery_scope()` | The discovery DNS publication | Every other root, the workers' discovery files included |
-| `certificate` | `certificate_scope()` | The certificates' renewal, and every task under it | Worker, domain and application work |
-| `settings:<section>` | — | That section's check | Other sections' checks |
-| `release` | — | The release check | The other roots |
-| `metrics:flush` | `metrics_scope("flush")` | The metrics flush, and root `metrics` maintenance | The other roots |
-| `backup:store:<identity>` | `store_scope` | The store's discovery and retention, and every archive's write, read or deletion in that store | Other stores' work |
-| `backup:store:<identity>:write:<part>` | `archive_write_scope` | That archive write and the store's root | Other archives' work in the store |
-| `backup:store:<identity>:archive:<part>` | `archive_scope` | A restore from that archive, its deletion, and the store's root | Other archives' work in the store |
-| `metrics` | `metrics_scope()` | All metric flushes and maintenance | The other roots |
+| `worker:<host>` | `worker_scope` (`services/workers/rendering.py`) | The whole worker: everything below, plus its owner, infra and firewall stamps, the stack's files, the firewall's table and unit, Sage's temp folder there, and its tunnel and `*.<subdomain>.int` record in Cloudflare | `converge_worker`, inline in `add_worker` and `reboot_worker`; `remove_worker`; `cleanup_worker_tmp` |
+| `worker:<host>:container:<id>` | `placement_scope` (`services/containers/placement.py`) | A placement: its directory and `record.json`, its runtime and its volumes' copies | `deploy`, `stop`, `delete`, `recover`, `reset`, `backup_stopped`, `backup_preserve`, `restore_stopped`, `cleanup_orphan`; `read_record` reads; `attach_traefik_networks` joins its network |
+| `worker:<host>:stack` | `stack_scope` | The stack's runtime: Traefik, Telegraf, Vector, cloudflared, and the Docker networks Traefik is on | `repair_worker_stack`; `sync_traefik_networks`; `attach_traefik_networks` {stack, each container whose network it changes} |
+| `worker:<host>:routing:<id>` | `route_scope` (`services/domains/config.py`) | A Domain's `domain-<id>.yml` on that worker | `apply_domain`; removed by `reconcile_domains` (holding `domain`) and `converge_worker` (holding `worker:<host>`) |
+| `worker:<host>:discovery` | `discovery_files_scope` (`services/domains/discovery.py`) | The worker's `_discovery-*.yml` files | `publish_discovery` |
+| `worker:<host>:tls` | `certificate_files_scope` (`services/certs.py`) | The certificate files and `certs.yml` on the worker, and its `certs` stamp | `distribute_certificates` {`certificate:worker:<host>`, `worker:<host>:tls`} |
+| `domain` | `domain_scope()` | Every Domain's route files and DNS records together | `reconcile_domains`: removes what no Domain owns |
+| `domain:<id>` | `domain_scope(id)` | A Domain's `sage-domain-<id>` DNS records | `apply_domain` {`domain:<id>`, `domain:host:<fqdn>`, `worker:<host>:routing:<id>` for each of its workers} |
+| `domain:host:<fqdn>` | `host_scope` | A full name's records, which two Domains swapping the name share | `apply_domain` |
+| `discovery` | `discovery_scope()` | Discovery's DNS records: `discovery.int.<domain>` A records (`sage-discovery-<host>`) and the `discovery.<domain>` CNAME (`sage-tunnel`) | `publish_discovery_dns` |
+| `certificate` | `certificate_scope()` | The manager's certificate store: every certificate's key and chain, the retired leaves, and the ACME challenge records | `renew_certificates` |
+| `certificate:worker:<host>` | `certificate_scope(host)` | The manager's material for that worker, as one copy reads it | `distribute_certificates` (reads) |
+| `backup:store:<identity>` | `store_scope` (`services/backups/keys.py`) | Every archive in one store | `discover_backups` (reads), `prune_backups`, `delete_volume_archives` |
+| `backup:store:<identity>:write:<part>` | `archive_write_scope` | The archives written for a container or for `platform` | `backup_stopped`, `backup_preserve` {placement, write}; `backup_platform` |
+| `backup:store:<identity>:archive:<part>` | `archive_scope` | One archive | `restore_stopped` {placement, archive} (reads); `delete_archive` |
+| `metrics` | `metrics_scope()` (`services/metrics`) | The metric shards | `flush_metrics`, `metrics_cleanup` |
+| `settings:<section>` | — | That section's check result, in memory | `check_<section>` |
+| `release` | — | The latest release, in memory | `refresh_latest_release` |
 
-A Domain's apply holds its route's scope under its worker, not its container's: it does not wait for the container's
-operations, and the worker's convergence and reboot exclude it. The `common` pool has one thread;
-async task bodies can still overlap while their offloads wait for it. Pool size is not a lock.
+A resource under two roots is held on both sides by a writer that changes it: a Domain's route (`domain:<id>` and
+`worker:<host>:routing:<id>`) and a worker's certificate files (`certificate:worker:<host>` and `worker:<host>:tls`). A
+writer holding a single side only removes. A Domain's apply holds its route's scope under its worker, not its
+container's: it does not wait for the container's operations, and the worker's convergence and reboot exclude it.
+A lane's pool size is not a lock: async task bodies overlap while their offloads wait for a thread.
+
+### Writers without a scope
+
+| Writer | What it writes | What keeps it apart instead |
+| --- | --- | --- |
+| The routes' commands | Configuration and accepted intent in `data.db` | Its own `IMMEDIATE` transaction; a task re-fetches at its start and a frozen snapshot travels in `inputs` |
+| `setup_domain`, at boot | The platform tunnel, the manager's DNS record and its certificate | Runs before the queue starts |
+| `restore_platform` | All of `data.db` | The queue's own entry: it starts once nothing runs or waits, and every other request is refused meanwhile |
+| `purge_history` | History rows past retention | Rows no other writer changes |
+| `observe_workers`, `refresh_worker_paths`, `list_tunnels`, `observe_containers`, `list_records` | Observations in memory | Their owners' locks; DEDUP keeps one of each |
+| Report intake (Telegraf) | Reports and metric peaks in memory | `WorkerReports`' lock |
+| `test_<section>` | Nothing: a result row pushed to its page | DEDUP, a second request refused |
+| `send_summary_notification` | A message to the channels | — |
+| Vector log intake and `Logs.write_marker` | Application and request log shards | `LOGS_EXECUTOR`, one thread |
+| Task-log capture | `logs/tasks.db` | Its drain thread, SQLite's `BEGIN IMMEDIATE` and the trim lock |
+| `logs_cleanup` | Every log shard: old lines, orphan application shards, trims | SQLite's `BEGIN IMMEDIATE` and the trim lock |
+| `safety_copies_cleanup` | The `data.db.restore-*` and `data.db.migration-*` copies | Files no running writer touches |
 
 The platform restore holds no scope: it is the queue's own entry and starts once nothing runs or waits.
+
+## Admission
 
 | Admission | Effect on an operation with the same **key** (by default its name, subject ids and intent; a container's lifecycle requests share `("lifecycle", <container id>)`), whatever its scopes |
 | --- | --- |
@@ -149,7 +183,7 @@ Sources: [trigger definitions](../app/scheduler.py), [due-volume selection](../a
 Each operation appears once below, with source-dependent admission variants in its row. **Q** means quiet;
 **H** means normal terminal history. Sources listed as follow-ups enqueue independent tasks. An inline call
 is part of its caller and acquires no additional scope. Table effects exclude the shared Task/Notification
-effects described [above](#execution-flow).
+effects described [above](#execution-flow). What each scope holds is in [Resources and scopes](#resources-and-scopes).
 
 ### Applications and volumes
 
@@ -231,7 +265,7 @@ Implementation: [platform operations](../app/services/manager/platform.py),
 | `test_<section>` → `run_test` | none · common | DEDUP on `("test_<section>",)`, a request finding one queued or running answered 409; H | `request_test`: POST `/settings/{section}/test` | No main-DB write. Tests the candidate values (an input, never recorded) with the test's effects, apart from the section's check; logs one line and publishes one row (`{ok, message, at}`) to `setting-tests:<section>`, failed when the Test failed. Params name what was tested (S3: endpoint, bucket, base path; notifications: channel names, Discord webhook id), never a secret. |
 | `refresh_latest_release` → `Releases.refresh` | `release` · common | REPLACE on `("refresh_latest_release",)`; schedule and startup Q, POST H | `request_release_check`: every 4 h and startup; POST `/info/release/refresh` | No main-DB write. Fetches GitHub's latest release and keeps it and its version in memory (`Releases`), pushing `release`, and `latest_version` when the version is new; a failed fetch keeps the last. |
 | `send_summary_notification` | none · common | REPLACE on `("send_summary_notification",)` / H | `request_summary`: daily 08:00; nothing without a notification channel | No main-DB write. `get_system_summary` (the workers, containers and Domains by their states now, the last 24 hours' deploys, backups and error and warning notices) dispatched to the channels; an error when a notice was, or a container or Domain is in error or a worker offline, a warning when a notice was or a worker is otherwise not online. **No Notification row** for the summary. |
-| `flush_metrics` → `Metrics.flush` | `metrics:flush` · metrics | DEDUP on `("flush_metrics",)` / Q | `request_metrics_flush`: every minute | No main-DB write. Writes the completed minutes of the manager's samples and of each worker's reports to their metric shards (`WorkerMeta`, `WorkerMetrics`, `ContainerMetrics`); keeps each worker's newest written minute (`Metrics.newest`), dropped by a flush that writes none for it, and fires `worker_list` and that worker's `worker_entry` when it changed. Never crosses `metrics_cleanup`, which holds `metrics`. |
+| `flush_metrics` → `Metrics.flush` | `metrics` · metrics | DEDUP on `("flush_metrics",)` / Q | `request_metrics_flush`: every minute | No main-DB write. Writes the completed minutes of the manager's samples and of each worker's reports to their metric shards (`WorkerMeta`, `WorkerMetrics`, `ContainerMetrics`); keeps each worker's newest written minute (`Metrics.newest`), dropped by a flush that writes none for it, and fires `worker_list` and that worker's `worker_entry` when it changed. Never crosses `metrics_cleanup`, which holds `metrics`. |
 | `metrics_cleanup` → `Metrics.cleanup` | `metrics` · metrics | REPLACE on `("metrics_cleanup",)` / Q | `request_cleanup`: daily 04:00 | No main-DB write. Delete old metric rows and orphan host shards; read Worker rows to identify live hosts. |
 | `logs_cleanup` → `Logs.cleanup` | none · common | REPLACE on `("logs_cleanup",)` / Q | `request_cleanup`: daily 04:00 | No main-DB write. Delete old log/request/task-log lines and orphan application shards; trim size limits and optimize indexes. |
 | `purge_history` | none · common | REPLACE on `("purge_history",)` / Q | `request_cleanup`: daily 04:00 | Deletes the history (ContainerEvent, WorkerEvent, Notification and Task rows) older than `config.RETENTION_DAYS` (14). Holds no scope; one queued before a platform restore runs first, and none is queued while it waits or runs. |
