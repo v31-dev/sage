@@ -102,6 +102,9 @@ A resource under two roots is held on both sides by a writer that changes it: a 
 `worker:<host>:routing:<id>`) and a worker's certificate files (`certificate:worker:<host>` and `worker:<host>:tls`). A
 writer holding a single side only removes. A Domain's apply holds its route's scope under its worker, not its
 container's: it does not wait for the container's operations, and the worker's convergence and reboot exclude it.
+`sync_traefik_networks` holds only the stack, so a routing change never waits for a container's operation or holds
+one back; what it can't change without a container's scope it requests as `attach_traefik_networks`, which holds
+those containers too.
 A lane's pool size is not a lock: async task bodies overlap while their offloads wait for a thread.
 
 ### Writers without a scope
