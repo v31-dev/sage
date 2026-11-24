@@ -40,10 +40,10 @@ shows. A review records findings; fixing one is a separate change the user appro
 ## Ground it
 
 - Initialize the memory repo through [root AGENTS](../../../AGENTS.md#agent-memory): read its global rules and
-  memory index, skipping review and todo/backlog content.
+  memory index, skipping review and todo/backlog content until the tracker cross-check.
 - Every run is independent. Do not read, search, reuse or cite prior reviews, their inventories or probes, or
-  todo/backlog items. Do not use earlier review conclusions already in context as a checklist or evidence. Build
-  the inventory, probes and findings afresh from the source being reviewed.
+  todo/backlog items before the findings are final. Do not use earlier review conclusions already in context as a
+  checklist or evidence. Build the inventory, probes and findings afresh from the source being reviewed.
 - Read the engine's files in full, the contract above, and the docs on the queue: backend.md's [Operation
   Queue](../../../docs/backend.md#operation-queue), [Pause And Stop](../../../docs/backend.md#pause-and-stop),
   [Execution Modes And Pools](../../../docs/backend.md#execution-modes-and-pools), [Choosing A Task
@@ -64,7 +64,7 @@ the source:
 - **effects:** each remote call (SSH, Cloudflare, S3) by enclosing function, with every task body that reaches it
   through inline calls and that task's scopes and policy, or the root it is reached from when no task is;
 - **locks:** each block that holds a lock or a database transaction and what it calls, marking a request, a Fact
-  check or a publication;
+  check or a publication, and a block of a class held across a call out of the manager (`!`);
 - **readers:** what reads the queue and the params it reads;
 - **facts:** each Fact, what its callback calls, and where Facts are checked;
 - **decisions:** each decision in a `decisions.py` and its users, and each owner's raw fact compared in a workflow or
@@ -77,8 +77,10 @@ a change, run it on the baseline too (`git archive <rev> app | tar -x -C <scratc
 Cross-check the candidate list against provider implementations and their route, startup, callback and thread
 entry points: synchronous provider calls made inline can be absent, including an explicit test's effects. Inspect
 explicit `.acquire()` / `.release()` paths too; the lock list covers context-manager blocks. Inside a provider class
-its own API calls are not listed as remote, so read its lock blocks: a lock held across one makes every reader of that
-lock wait on the provider, the event loop included.
+its own API calls are not listed as remote; the lock list marks a block held across one, and a lock held so makes
+every reader of that lock wait on the provider, the event loop included. Read the providers' connection handling too
+(a pool, a shared connection, what an error path closes): one task's error that closes a shared connection ends the
+commands of other tasks on it.
 
 ## Answer these, each with source locations
 
@@ -88,7 +90,9 @@ lock wait on the provider, the event loop included.
    inventory finds; each writer outside the queue is in the writers without a scope, with what keeps it apart; each
    scope names a resource. Each task that holds a scope runs on `main`, and nothing relies on a lane's size to keep two
    tasks apart. Check both ways: a resource, writer or scope the code has and the map lacks, and a row the code no
-   longer bears out.
+   longer bears out. A row that declares an exception (a scope with no builder, a writer kept apart by something
+   other than a scope, a task said to write nothing) is checked against the rule it departs from: an exception the
+   rule does not allow is a gap.
 2. **Races on the resources tasks touch.** For each remote write, the resource it changes (from its path or its
    owner's writer), side effects included (a Compose command creates and removes its project's networks and volumes),
    every task that reaches it and that task's scopes; group the writes by resource, not by command or function. On one
@@ -97,7 +101,10 @@ lock wait on the provider, the event loop included.
    reaches (a route, a callback, a thread) is a finding. Each scope is built by its resource's package; one built from
    a binding that can change is checked again at the task's start. A remote command can outlive the attempt that
    started it (a dropped connection leaves it running until its worker-side timeout): a retry of it, or the next task
-   on its resource once the scope is released, is a second writer while it may still run.
+   on its resource once the scope is released, is a second writer while it may still run. Sort each remote call's
+   errors into "never started", "ended" and "may still run", say whether the code can tell them apart, and follow
+   each to its retry and to the record it settles. Read the command or script such a call runs to its end: what it
+   does last (a removal, a rename, a start) is the worst effect a second writer meets.
 3. **Deadlock.** The wait graph over scopes, the queue lock, Fact locks, service locks, lanes, the event loop and
    SQLite: for each lock, what runs under it and on which threads. Name the edges the engine makes impossible (the
    code) and those a rule forbids (the rule), and the call sites that keep or break each: a Fact callback that checks
@@ -111,14 +118,20 @@ lock wait on the provider, the event loop included.
    task uses REPLACE. Order between tasks comes from scopes or from a body's follow-up request; nothing relies on when
    a task starts or on the order of tasks that do not conflict, and nothing starts a task ahead of earlier conflicting
    work. An owner's memory that tasks sharing no scope write (one replacing it whole with what it gathered across an
-   await) is traced for lost updates, and a Fact callback for the requests lost when it raises after `last` is set. A
+   await) is traced for lost updates against every writer of it, inline helpers in other tasks and routes included,
+   not only its own repeats; a Fact callback is traced for the requests lost when it raises after `last` is set. A
    request function that writes rows before its `add_task` leaves a moment with neither; a body that reads the queue
-   and then those rows is traced across it.
+   and then those rows is traced across it. A row a request writes for its task (an intent, a row recorded queued) is
+   settled on every way that task can end: run to its outcome, refused, cancelled, superseded by a REVISE or REPLACE
+   while waiting, absorbed by a DEDUP, or dropped by a restore. A way that leaves the row standing is traced to
+   whatever reads it next.
 5. **Data flow.** Each reader of the queue finds a subject by key and a resource by scope, never identity in params;
    the queue's facts only publish, and work is requested by a body's end, a state Fact's callback or a scheduled pass.
    For each decision table: its inputs with their owner, source and knowledge states, the bound on each state not
-   known yet (root working rule 10), and its consumers. A consumer that composes a decided question again from raw
-   facts is a finding.
+   known yet (root working rule 10), and its consumers. A bound is what turns the state known, traced to each consumer
+   that waits on it, not only the headline; a repair that can fail is not a bound. A consumer that composes a decided
+   question again from raw facts is a finding, and so is a workflow that decides a resource's status, refusal or
+   correction inline from its owners' facts with no decision in the resource's package to call.
 
 ## Judge with evidence
 
@@ -144,15 +157,15 @@ lock wait on the provider, the event loop included.
   committed state, or deadlocks the manager; P1 leaves a wrong state that lasts until someone acts (a second writer,
   a row stuck, a refusal held for good, a stalled event loop); P2 loses or delays work that a pass or a later request
   brings back, or needs a narrow window; P3 is a gap in the rules or an unguarded edge no reachable interleaving
-  shows yet.
+  shows yet. A finding with several variants (a backup, a restore, a deploy) is one finding, with the priority of its
+  worst variant; a finding whose trigger was not shown reachable is P3 whatever its outcome.
 
 ## Record and hand off
 
 - A run's report is ephemeral, so no later run can lean on it: save it in a new directory
   `engine-review-<short commit>-<YYYYMMDD>/` in the session's scratchpad directory (`/tmp` without one), never in the
   memory repo or the code repo (a second run on the same commit and day adds `-2`); a focus goes in the subject, not
-  the name. Do not read or update existing tracker items, deduplicate against them or reconcile the report with
-  earlier runs. The layout:
+  the name. Do not reconcile the report with earlier runs. The layout:
 
   ```text
   engine-review-<short commit>-<YYYYMMDD>/
@@ -171,8 +184,8 @@ lock wait on the provider, the event loop included.
   commands with their results). Then `## Findings`, a table `# | Priority | Question | Finding | Grade` linking each
   detail file; one section per question, `## 1. Kinds and the map`, `## 2. Races on the resources tasks touch`,
   `## 3. Deadlock`, `## 4. Consistency over time`, `## 5. Data flow`, each answered with source locations and citing findings by number, and
-  what was checked and holds; then `## Not verified`, `## Out of scope` (one line each) and `## Skill changes`
-  ("None" when none).
+  what was checked and holds; then `## Not verified`, `## Out of scope` (one line each), `## Tracker fit` and
+  `## Skill changes` (each "None" when none).
 - A finding file: `# NN — <the claim in one line>`, then `Priority: P<n>. Question: <n. name>. Grade: <grade>
   (<how>).`, then `## Locations`, `## Interleaving` (or `## Wait cycle`), `## Why the protection doesn't hold`,
   `## Contract` (the line it drifts from, or the gap), `## Direction` and `## Evidence and limits`, which names the `evidence/` file and test that shows it and
@@ -181,6 +194,11 @@ lock wait on the provider, the event loop included.
   extracted copy of `app/` in scratch space, with its command in its docstring.
 - Report by the five questions, the map first, then races and deadlocks, then what was not verified.
 - Change no runtime code, test or doc during the review.
+- Cross-check the tracker last, once every finding is final: in the memory repo, read `sage/todos/todo.md` (open and
+  done items) with the detail files of the items it lists, and `sage/todos/BACKLOG.md`. In `## Tracker fit`, for each finding, name the
+  item it fits, in one line with why: the same defect, an item whose planned change would settle or change it, or a
+  done item it contradicts (a regression). A finding that fits none is listed as new. The cross-check changes no
+  finding, its priority or its grade, and writes nothing into the tracker.
 - A finding the user promotes to a todo, sprint or backlog item is written into that item whole, so it stands alone
   once the report is gone: its locations, the interleaving or wait cycle, why the protection doesn't hold, the contract,
   the direction, and what the evidence showed and did not show (a probe as the scenario it ran). The item links
@@ -188,8 +206,9 @@ lock wait on the provider, the event loop included.
 
 ## Refine this skill
 
-- When a review shows a blind spot, a false positive or an unclear step, make the smallest reusable fix in the
-  procedure or the script. A rule goes to the AGENTS file that owns it, with the user's approval. Hard-code no task
-  names, scope roots, counts or answers to past findings.
+- When a review shows a blind spot, a false positive or an unclear step, propose the smallest reusable fix in the
+  procedure or the script under `## Skill changes`; it is made only on the user's go-ahead, after the review. A rule
+  goes to the AGENTS file that owns it, with the user's approval. Hard-code no task names, scope roots, counts or
+  answers to past findings.
 - Keep `.agents/skills/sage-engine-review/` and `.claude/skills/sage-engine-review/` identical (SKILL.md and the
   script), validate the frontmatter and links, run the script, and report what changed and why.

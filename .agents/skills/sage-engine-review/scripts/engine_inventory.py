@@ -26,6 +26,9 @@ QUEUE_READS = {"task_snapshot", "has_task", "cancel_tasks", "is_busy"}
 # The last name of a call that requests work, checks a Fact or publishes (besides any `request_*`).
 SIGNALS = {"add_task", "add_restore", "check", "changed", "publish", "notify"}
 SECTIONS = ("enqueues", "effects", "locks", "readers", "facts", "decisions")
+# The libraries whose calls leave the manager (HTTP, SSH, S3, DNS, a child process).
+CLIENTS = {"httpx", "requests", "boto3", "asyncssh", "acme", "dns", "socket", "subprocess"}
+SUBPROCESSES = {"create_subprocess_exec", "create_subprocess_shell"}
 
 
 def segment(source, node, width=110):
@@ -186,7 +189,70 @@ def collect(root):
                           for decorator in function.node.decorator_list)}
   for function in functions:
     function.locks.extend((line, text, called) for line, name, text, called in function.entered if name in transactions)
+  calling_out(modules, functions)
   return functions
+
+
+def chain(func):
+  """A called expression's dotted names from its base, `self.http.request` → ['self', 'http', 'request']."""
+  names = []
+  while isinstance(func, ast.Attribute):
+    names.append(func.attr)
+    func = func.value
+  return [func.id, *reversed(names)] if isinstance(func, ast.Name) else list(reversed(names))
+
+
+def calling_out(modules, functions):
+  """Marks each lock block of a class that is held across a call out of the manager: a client library's call (on its
+  module, a module-level client, or a client the class keeps on `self`), made in the block or by a method it calls on
+  `self` or on `<Class>()`."""
+  def client_call(value, names):
+    return isinstance(value, ast.Call) and bool(chain(value.func)) and chain(value.func)[0] in names
+
+  out, held = {}, defaultdict(set)
+  for module in modules:
+    names = {(alias.asname or alias.name).split(".")[0] for node in ast.walk(module.tree) if isinstance(node, ast.Import)
+             for alias in node.names if alias.name.split(".")[0] in CLIENTS}
+    names |= {target.id for node in module.tree.body if isinstance(node, ast.Assign) and client_call(node.value, names)
+              for target in node.targets if isinstance(target, ast.Name)}
+    out[module.path] = names
+  for function in functions:
+    if function.owner:
+      held[(function.module.path, function.owner)] |= {
+          target.attr for node in own_nodes(function) if isinstance(node, ast.Assign) and client_call(node.value, out[function.module.path])
+          for target in node.targets if isinstance(target, ast.Attribute) and chain(target)[:1] == ["self"]}
+
+  def outward(function, names):
+    path = chain(names) if isinstance(names, ast.AST) else names
+    return bool(path) and (path[0] in out[function.module.path] or path[-1] in SUBPROCESSES
+                           or (path[0] == "self" and len(path) > 2
+                               and path[1] in held[(function.module.path, function.owner)]))
+
+  def top(function):
+    while function.parent is not None:
+      function = function.parent
+    return function
+
+  reaching = {(top(function).module.path, top(function).owner, top(function).node.name) for function in functions
+              if function.owner and any(outward(function, node.func) for node in own_nodes(function) if isinstance(node, ast.Call))}
+  while True:
+    more = {(top(function).module.path, top(function).owner, top(function).node.name) for function in functions
+            if function.owner and any(kind == "self" and (function.module.path, function.owner, name) in reaching
+                                      for kind, name, _, _, _ in function.calls)} - reaching
+    if not more:
+      break
+    reaching |= more
+  methods = {(owner, name) for _, owner, name in reaching}
+  for function in functions:
+    if not function.owner:
+      continue
+    for index, (line, lock, called) in enumerate(function.locks):
+      across = [name for name in called if outward(function, name.split("."))
+                or (name.startswith("self.") and name.count(".") == 1
+                    and (function.module.path, function.owner, name[5:]) in reaching)
+                or (name.count("().") == 1 and name.count(".") == 1 and tuple(name.split("().")) in methods)]
+      if across:
+        function.locks[index] = (line, lock, called, across)
 
 
 def resolver(functions):
@@ -366,9 +432,10 @@ def main():
     locks = sorted(((function, lock) for function in functions for lock in function.locks),
                    key=lambda item: (item[0].module.path, item[1][0]))
     print(f"## locks ({len(locks)}): each block that holds a lock or a database transaction and what it calls"
-          " (* requests work, checks or publishes)")
-    for function, (line, lock, called) in locks:
-      print(f"{function.module.path}:{line}  {function.name}  with {lock}: {marked(called)}")
+          " (* requests work, checks or publishes; ! held across a call out of the manager)")
+    for function, (line, lock, called, *across) in locks:
+      print(f"{function.module.path}:{line}  {function.name}  with {lock}: {marked(called)}"
+            f"{'  ! across ' + ', '.join(across[0]) if across else ''}")
     print()
 
   if "readers" in wanted:
