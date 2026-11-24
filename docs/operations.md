@@ -72,7 +72,7 @@ What Sage holds falls into six kinds, each with one place and one meaning:
 
 ### Scopes
 
-A scope names one resource Sage writes. `:` builds the hierarchy: a scope conflicts with itself, its ancestors and its
+A scope names one resource Sage writes: something outside its database, or a result in memory that one kind of task writes (a section's check), whose REPLACE request made while one runs must wait for it. DEDUP joins a running task and REVISE answers busy, so a task under either needs no scope to keep its repeats apart. `:` builds the hierarchy: a scope conflicts with itself, its ancestors and its
 descendants, and siblings never conflict. Each scope is built by its resource's package; a task holding a whole root
 calls the root's builder with no argument. `<id>` is the resource's id; braces mean all listed scopes are held
 together.
@@ -96,7 +96,6 @@ together.
 | `backup:store:<identity>:archive:<part>` | `archive_scope` | One archive | `restore_stopped` {placement, archive} (reads); `delete_archive` |
 | `metrics` | `metrics_scope()` (`services/metrics`) | The metric shards | `flush_metrics`, `metrics_cleanup` |
 | `settings:<section>` | — | That section's check result, in memory | `check_<section>` |
-| `release` | — | The latest release, in memory | `refresh_latest_release` |
 
 A resource under two roots is held on both sides by a writer that changes it: a Domain's route (`domain:<id>` and
 `worker:<host>:routing:<id>`) and a worker's certificate files (`certificate:worker:<host>` and `worker:<host>:tls`). A
@@ -111,15 +110,16 @@ A lane's pool size is not a lock: async task bodies overlap while their offloads
 | The routes' commands | Configuration and accepted intent in `data.db` | Its own `IMMEDIATE` transaction; a task re-fetches at its start and a frozen snapshot travels in `inputs` |
 | `setup_domain`, at boot | The platform tunnel, the manager's DNS record and its certificate | Runs before the queue starts |
 | `restore_platform` | All of `data.db` | The queue's own entry: it starts once nothing runs or waits, and every other request is refused meanwhile |
-| `purge_history` | History rows past retention | Rows no other writer changes |
+| `purge_history` | History rows past retention | Rows no other writer changes; DEDUP keeps one |
 | `observe_workers`, `refresh_worker_paths`, `list_tunnels`, `observe_containers`, `list_records` | Observations in memory | Their owners' locks; DEDUP keeps one of each |
 | Report intake (Telegraf) | Reports and metric peaks in memory | `WorkerReports`' lock |
 | `test_<section>` | Nothing: a result row pushed to its page | DEDUP, a second request refused |
-| `send_summary_notification` | A message to the channels | — |
+| `send_summary_notification` | A message to the channels | DEDUP keeps one |
+| `refresh_latest_release` | The latest release, in memory | `Releases`' lock; DEDUP keeps one |
 | Vector log intake and `Logs.write_marker` | Application and request log shards | `LOGS_EXECUTOR`, one thread |
 | Task-log capture | `logs/tasks.db` | Its drain thread, SQLite's `BEGIN IMMEDIATE` and the trim lock |
-| `logs_cleanup` | Every log shard: old lines, orphan application shards, trims | SQLite's `BEGIN IMMEDIATE` and the trim lock |
-| `safety_copies_cleanup` | The `data.db.restore-*` and `data.db.migration-*` copies | Files no running writer touches |
+| `logs_cleanup` | Every log shard: old lines, orphan application shards, trims | SQLite's `BEGIN IMMEDIATE` and the trim lock; DEDUP keeps one |
+| `safety_copies_cleanup` | The `data.db.restore-*` and `data.db.migration-*` copies | Files no running writer touches; DEDUP keeps one |
 
 The platform restore holds no scope: it is the queue's own entry and starts once nothing runs or waits.
 
@@ -263,13 +263,13 @@ Implementation: [platform operations](../app/services/manager/platform.py),
 | `prune_backups` | `backup:store:<identity>` · common | REPLACE on `("prune_backups",)` / Q | `request_backup_retention`, daily 04:00 | Deletes the store's platform backups and volume archives older than `config.RETENTION_DAYS` (14), then the rows of those deleted and the store's rows of that age not completed or deleted, a prefix that failed failing the task after the other. Nothing when the store changed. |
 | `check_<section>` → `check_setting` | `settings:<section>` · common | REPLACE on `("check_<section>",)`; `request_settings_checks` Q, `settings_saved` H | `request_settings_checks`: every 5 min and startup, for configured sections; `settings_saved`: PUT `/settings/{s3,notifications}` when complete | No main-DB write. Records the check for the revision it checked (`Settings.record_check`; dropped when the section was saved meanwhile). The Cloudflare check confirms the platform tunnel is in the account (`find_tunnel`); the tunnels' health is `list_tunnels`'. Sections: tailscale, cloudflare, s3, notifications. |
 | `test_<section>` → `run_test` | none · common | DEDUP on `("test_<section>",)`, a request finding one queued or running answered 409; H | `request_test`: POST `/settings/{section}/test` | No main-DB write. Tests the candidate values (an input, never recorded) with the test's effects, apart from the section's check; logs one line and publishes one row (`{ok, message, at}`) to `setting-tests:<section>`, failed when the Test failed. Params name what was tested (S3: endpoint, bucket, base path; notifications: channel names, Discord webhook id), never a secret. |
-| `refresh_latest_release` → `Releases.refresh` | `release` · common | REPLACE on `("refresh_latest_release",)`; schedule and startup Q, POST H | `request_release_check`: every 4 h and startup; POST `/info/release/refresh` | No main-DB write. Fetches GitHub's latest release and keeps it and its version in memory (`Releases`), pushing `release`, and `latest_version` when the version is new; a failed fetch keeps the last. |
-| `send_summary_notification` | none · common | REPLACE on `("send_summary_notification",)` / H | `request_summary`: daily 08:00; nothing without a notification channel | No main-DB write. `get_system_summary` (the workers, containers and Domains by their states now, the last 24 hours' deploys, backups and error and warning notices) dispatched to the channels; an error when a notice was, or a container or Domain is in error or a worker offline, a warning when a notice was or a worker is otherwise not online. **No Notification row** for the summary. |
+| `refresh_latest_release` → `Releases.refresh` | none · common | DEDUP on `("refresh_latest_release",)`; schedule and startup Q, POST H | `request_release_check`: every 4 h and startup; POST `/info/release/refresh` | No main-DB write. Fetches GitHub's latest release and keeps it and its version in memory (`Releases`), pushing `release`, and `latest_version` when the version is new; a failed fetch keeps the last. |
+| `send_summary_notification` | none · common | DEDUP on `("send_summary_notification",)` / H | `request_summary`: daily 08:00; nothing without a notification channel | No main-DB write. `get_system_summary` (the workers, containers and Domains by their states now, the last 24 hours' deploys, backups and error and warning notices) dispatched to the channels; an error when a notice was, or a container or Domain is in error or a worker offline, a warning when a notice was or a worker is otherwise not online. **No Notification row** for the summary. |
 | `flush_metrics` → `Metrics.flush` | `metrics` · metrics | DEDUP on `("flush_metrics",)` / Q | `request_metrics_flush`: every minute | No main-DB write. Writes the completed minutes of the manager's samples and of each worker's reports to their metric shards (`WorkerMeta`, `WorkerMetrics`, `ContainerMetrics`); keeps each worker's newest written minute (`Metrics.newest`), dropped by a flush that writes none for it, and fires `worker_list` and that worker's `worker_entry` when it changed. Never crosses `metrics_cleanup`, which holds `metrics`. |
 | `metrics_cleanup` → `Metrics.cleanup` | `metrics` · metrics | REPLACE on `("metrics_cleanup",)` / Q | `request_cleanup`: daily 04:00 | No main-DB write. Delete old metric rows and orphan host shards; read Worker rows to identify live hosts. |
-| `logs_cleanup` → `Logs.cleanup` | none · common | REPLACE on `("logs_cleanup",)` / Q | `request_cleanup`: daily 04:00 | No main-DB write. Delete old log/request/task-log lines and orphan application shards; trim size limits and optimize indexes. |
-| `purge_history` | none · common | REPLACE on `("purge_history",)` / Q | `request_cleanup`: daily 04:00 | Deletes the history (ContainerEvent, WorkerEvent, Notification and Task rows) older than `config.RETENTION_DAYS` (14). Holds no scope; one queued before a platform restore runs first, and none is queued while it waits or runs. |
-| `safety_copies_cleanup` → `Database.remove_safety_copies` | none · common | REPLACE on `("safety_copies_cleanup",)` / Q | `request_cleanup`: daily 04:00 | No main-DB write. Removes the `data.db.restore-*` files (and their journals) older than `config.RETENTION_DAYS` (14), safety copies that only an install killed part way leaves, and the `data.db.migration-*` copies a boot took before migrating older than `config.MIGRATION_COPY_RETENTION_DAYS` (90). |
+| `logs_cleanup` → `Logs.cleanup` | none · common | DEDUP on `("logs_cleanup",)` / Q | `request_cleanup`: daily 04:00 | No main-DB write. Delete old log/request/task-log lines and orphan application shards; trim size limits and optimize indexes. |
+| `purge_history` | none · common | DEDUP on `("purge_history",)` / Q | `request_cleanup`: daily 04:00 | Deletes the history (ContainerEvent, WorkerEvent, Notification and Task rows) older than `config.RETENTION_DAYS` (14). Holds no scope; one queued before a platform restore runs first, and none is queued while it waits or runs. |
+| `safety_copies_cleanup` → `Database.remove_safety_copies` | none · common | DEDUP on `("safety_copies_cleanup",)` / Q | `request_cleanup`: daily 04:00 | No main-DB write. Removes the `data.db.restore-*` files (and their journals) older than `config.RETENTION_DAYS` (14), safety copies that only an install killed part way leaves, and the `data.db.migration-*` copies a boot took before migrating older than `config.MIGRATION_COPY_RETENTION_DAYS` (90). |
 
 ## Follow-up flows
 

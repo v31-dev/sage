@@ -11,7 +11,6 @@ from services.settings import Settings
 from services.workers.decisions import STATUSES as WORKER_STATUSES
 from utils.common import utcnow
 from utils.executor import NOTIFICATIONS_EXECUTOR, submit_with_context
-from utils.queue import OnConflict
 
 # A container's headlines while an operation on it is under way, which the daily message counts together.
 IN_PROGRESS = ("deploying", "stopping", "backup", "restoring", "recovering")
@@ -59,7 +58,7 @@ class SummaryMixin:
     if not Settings().is_configured("notifications"):
       return None
     return self.add_task(task=self.send_summary_notification, key=("send_summary_notification",), scopes=set(),
-                         executor="common", on_conflict=OnConflict.REPLACE).task_id
+                         executor="common").task_id
 
   def send_summary_notification(self):
     """Sends the summary of the last 24 hours to the notification channels, with no notice of its own. It is an error

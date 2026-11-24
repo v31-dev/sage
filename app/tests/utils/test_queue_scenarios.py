@@ -17,9 +17,8 @@ from utils.queue import OnConflict, Outcome, QueueState, TaskQueue
 
 # Worker counts of the lanes in utils.executor.LANES.
 POOLS = {"platform": 1, "common": 1, "app": 6, "metrics": 2}
-ROOTS = frozenset({"worker", "domain", "certificate", "backup", "discovery", "settings", "release", "metrics"})
-LANE_OF_ROOT = {"certificate": "platform", "backup": "platform", "settings": "common",
-                "release": "common", "metrics": "metrics"}
+ROOTS = frozenset({"worker", "domain", "certificate", "backup", "discovery", "settings", "metrics"})
+LANE_OF_ROOT = {"certificate": "platform", "backup": "platform", "settings": "common", "metrics": "metrics"}
 GATE = object()    # a blocking call that ends when the test opens the thread gate
 
 

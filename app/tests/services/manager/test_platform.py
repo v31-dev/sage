@@ -467,12 +467,21 @@ class TestStartup:
   def test_startup_requests_what_runs_when_sage_starts_and_checks_for_a_release_quietly(self, manager):
     manager.request_startup()
     assert manager.requested == STARTUP
-    assert queued(manager) == [(("refresh_latest_release",), ["release"], "common", True)]
+    assert queued(manager) == [(("refresh_latest_release",), [], "common", True)]
 
-  def test_a_release_check_asked_for_is_visible_and_one_still_queued_is_replaced(self, manager):
-    manager.request_release_check()
-    manager.request_release_check(quiet=False)
-    assert queued(manager) == [(("refresh_latest_release",), ["release"], "common", False)]
+  def test_a_release_check_asked_for_while_one_is_queued_is_that_one_made_visible(self, manager):
+    queued_id = manager.request_release_check()
+    assert manager.request_release_check(quiet=False) == queued_id
+    assert queued(manager) == [(("refresh_latest_release",), [], "common", False)]
+
+  async def test_a_release_check_asked_for_while_one_runs_is_that_one_made_visible(self, manager, register):
+    register(Releases, SimpleNamespace(refresh=lambda: None))
+    running_id = manager.request_release_check()
+    manager.task_queue.dispatch_tick()
+    assert manager.request_release_check(quiet=False) == running_id
+    assert queued(manager) == []
+    assert [task["quiet"] for task in manager.task_queue.snapshot()["running"]] == [False]
+    await manager.run()
 
 
 class TestMetricsFlush:
@@ -501,7 +510,7 @@ class TestMetricsFlush:
     assert flushed == [True]
 
   async def test_it_runs_while_other_work_holds_its_scopes(self, manager, flushed):
-    manager.add_task(task=self.holding, key=("held",), scopes={"worker", "domain", "backup", "settings", "release"}, executor="app")
+    manager.add_task(task=self.holding, key=("held",), scopes={"worker", "domain", "backup", "settings"}, executor="app")
     manager.task_queue.dispatch_tick()
     manager.request_metrics_flush()
     manager.task_queue.dispatch_tick()
@@ -521,9 +530,16 @@ class TestCleanup:
   def test_each_part_is_a_quiet_task_of_its_own_and_the_store_is_asked_to_prune(self, manager, cleaned):
     manager.request_cleanup()
     manager.request_cleanup()
-    assert queued(manager) == [(("metrics_cleanup",), ["metrics"], "metrics", True), (("logs_cleanup",), [], "common", True),
-                               (("purge_history",), [], "common", True), (("safety_copies_cleanup",), [], "common", True)]
+    assert sorted(queued(manager)) == [(("logs_cleanup",), [], "common", True), (("metrics_cleanup",), ["metrics"], "metrics", True),
+                                       (("purge_history",), [], "common", True), (("safety_copies_cleanup",), [], "common", True)]
     assert manager.requested == ["request_worker_tmp_cleanup", "request_backup_retention"] * 2
+
+  async def test_a_cleanup_asked_for_while_one_runs_queues_none_of_the_parts_without_a_scope(self, manager, cleaned):
+    manager.request_cleanup()
+    manager.task_queue.dispatch_tick()
+    manager.request_cleanup()
+    assert queued(manager) == [(("metrics_cleanup",), ["metrics"], "metrics", True)]
+    await manager.run()
 
   async def test_the_tasks_run_while_other_work_holds_its_scopes(self, manager, cleaned, clock):
     Notification.create(content="Deployed.")
@@ -532,7 +548,7 @@ class TestCleanup:
     async def holding():
       await asyncio.sleep(0.05)
 
-    manager.add_task(task=holding, key=("held",), scopes={"worker", "domain", "backup", "settings", "release"}, executor="app")
+    manager.add_task(task=holding, key=("held",), scopes={"worker", "domain", "backup", "settings"}, executor="app")
     manager.task_queue.dispatch_tick()
     manager.request_cleanup()
     manager.task_queue.dispatch_tick()

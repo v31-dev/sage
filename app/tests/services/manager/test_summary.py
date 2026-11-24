@@ -1,3 +1,4 @@
+import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from types import SimpleNamespace
@@ -157,3 +158,12 @@ class TestDailyMessage:
     [task] = summarised.task_queue.snapshot()["queued"]
     assert (tuple(task["key"]), task["scopes"], task["executor"], task["quiet"]) == (
         ("send_summary_notification",), [], "common", False)
+
+  async def test_one_asked_for_while_one_runs_is_that_one(self, summarised, thread_connections):
+    Settings().set("notifications", {"discord_webhook": "https://discord.example.test/api/webhooks/1/x"})
+    running_id = summarised.request_summary()
+    summarised.task_queue.dispatch_tick()
+    assert summarised.request_summary() == running_id
+    assert summarised.task_queue.snapshot()["queued"] == []
+    while summarised.task_queue.snapshot()["running"]:
+      await asyncio.sleep(0.01)

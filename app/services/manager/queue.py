@@ -10,7 +10,7 @@ from .settings import SETTING_SECTIONS
 
 logger = logging.getLogger(__name__)
 
-SCOPES = frozenset({"worker", "domain", "certificate", "backup", "discovery", "settings", "release", "metrics"})
+SCOPES = frozenset({"worker", "domain", "certificate", "backup", "discovery", "settings", "metrics"})
 # Every task's name: a task of another name is refused, and the history's filter offers each.
 TASK_NAMES = frozenset({
     *REQUESTS, "backup_preserve", "recover", "reset", "read_record", "list_records", "observe_containers", "cleanup_orphan",

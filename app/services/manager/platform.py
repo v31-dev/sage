@@ -101,12 +101,10 @@ class PlatformMixin:
     safety copies past their retention, each worker's temp folder, and the store's old backups."""
     self.add_task(task=Metrics().cleanup, key=("metrics_cleanup",), scopes={metrics_scope()}, executor="metrics", quiet=True,
                   on_conflict=OnConflict.REPLACE)
-    self.add_task(task=Logs().cleanup, key=("logs_cleanup",), scopes=set(), executor="common", quiet=True,
-                  on_conflict=OnConflict.REPLACE)
-    self.add_task(task=purge_history, key=("purge_history",), scopes=set(), executor="common", quiet=True,
-                  on_conflict=OnConflict.REPLACE)
+    self.add_task(task=Logs().cleanup, key=("logs_cleanup",), scopes=set(), executor="common", quiet=True)
+    self.add_task(task=purge_history, key=("purge_history",), scopes=set(), executor="common", quiet=True)
     self.add_task(task=Database().remove_safety_copies, key=("safety_copies_cleanup",), scopes=set(), executor="common",
-                  quiet=True, on_conflict=OnConflict.REPLACE)
+                  quiet=True)
     self.request_worker_tmp_cleanup()
     self.request_backup_retention()
 
@@ -115,10 +113,10 @@ class PlatformMixin:
     self.add_task(task=Metrics().flush, key=("flush_metrics",), scopes={metrics_scope()}, executor="metrics", quiet=True)
 
   def request_release_check(self, quiet: bool = True) -> str:
-    """Queues fetching the newest release: quietly from the schedule and at startup, visibly when asked for. The
-    task's id."""
-    return self.add_task(task=Releases().refresh, key=("refresh_latest_release",), scopes={"release"}, executor="common",
-                         on_conflict=OnConflict.REPLACE, quiet=quiet).task_id
+    """Queues fetching the newest release: quietly from the schedule and at startup, visibly when asked for; one
+    queued or running does it. The task's id."""
+    return self.add_task(task=Releases().refresh, key=("refresh_latest_release",), scopes=set(), executor="common",
+                         quiet=quiet).task_id
 
   def request_platform_backup(self, slot: datetime | None = None) -> str | None:
     """Queues a platform backup into the configured store, with its backup recorded queued; None without a store. The
