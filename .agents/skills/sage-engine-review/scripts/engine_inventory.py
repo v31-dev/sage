@@ -315,6 +315,34 @@ def explain(function, expr, call=None, caller=None, depth=2):
   return "; ".join(dict.fromkeys(notes))
 
 
+def held_values(function, expr, call=None, caller=None, depth=2):
+  """The expression with what its names hold, as `explain` finds them, as nodes."""
+  found = [expr]
+  for name in sorted({node.id for node in ast.walk(expr) if isinstance(node, ast.Name)}):
+    if call is not None and name in function.parameters:
+      position = function.parameters.index(name) - (1 if function.owner else 0)
+      given = next((keyword.value for keyword in call.keywords if keyword.arg == name), None)
+      if given is None and 0 <= position < len(call.args):
+        given = call.args[position]
+      if given is not None:
+        found.append(given)
+    for node in own_nodes(function):
+      if isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and target.id == name for target in node.targets):
+        found.extend(held_values(function, node.value, call, caller, depth - 1) if depth > 1 else [node.value])
+  return found
+
+
+def builders(values):
+  """The functions called in the values: for scopes, the builders they come from."""
+  return {chain(node.func)[-1] for value in values for node in ast.walk(value)
+          if isinstance(node, ast.Call) and chain(node.func)}
+
+
+def per_item(values):
+  """Whether the values build a scope for each item of a collection: a task of several subjects."""
+  return any(isinstance(node, (ast.GeneratorExp, ast.ListComp, ast.SetComp)) for value in values for node in ast.walk(value))
+
+
 def task_bodies(resolve, function, value):
   if isinstance(value, ast.Attribute) and isinstance(value.value, ast.Name) and value.value.id == "self":
     return resolve(function, "self", value.attr, function.owner)
@@ -340,12 +368,24 @@ def main():
         if callee is not function:
           callers[callee].add(function)
 
+  # The commands that write rows in their own transaction; a request function that calls one writes rows around its
+  # `add_task`.
+  transactions = {function.node.name for function in functions if function.parent is None and function.owner is None
+                  and any(lock for _, lock, *_ in function.locks if "atomic(" in lock)}
+  commands = {function.node.name for function in functions if function.parent is None and function.owner is None
+              and function.node.name not in transactions and any(
+                  lock == "write()" or "atomic(" in lock for _, lock, *_ in function.locks)}
+
+  def row_writes(*functions_):
+    return sorted({name for function in functions_ for kind, name, _, _, _ in function.calls
+                   if kind == "function" and name in commands})
+
   def text(function, keywords, key, default="", width=160):
     return segment(function.module.source, keywords[key], width) if key in keywords else default
 
   # Each task body with the enqueues that queue it; an enqueue whose task is a parameter is a wrapper, and the
   # argument its callers pass for it is the body.
-  tasks, rows, wrappers = defaultdict(list), [], {}
+  tasks, rows, wrappers, entries = defaultdict(list), [], {}, []
   for function in functions:
     for line, keywords in function.enqueues:
       site = f"{function.module.path}:{line}"
@@ -354,13 +394,18 @@ def main():
       if not (isinstance(task, ast.Name) and task.id in function.parameters):
         held = " ".join(explain(function, keywords[key]) for key in ("scopes", "on_conflict") if key in keywords)
         scopes = f"{scopes} [{held}]" if held else scopes
+      writes = row_writes(function)
       rows.append(f"{site}  {function.name}  key={text(function, keywords, 'key', '—')}"
                   f"{'  name=' + text(function, keywords, 'name') if 'name' in keywords else ''}  scopes={scopes}"
                   f"  {policy.replace('OnConflict.', '')}  lane={text(function, keywords, 'executor')}"
                   f"  quiet={text(function, keywords, 'quiet', 'False')}  task={text(function, keywords, 'task')}"
-                  f"  params={text(function, keywords, 'params', '—')}  inputs={text(function, keywords, 'inputs', '—')}")
+                  f"  params={text(function, keywords, 'params', '—')}  inputs={text(function, keywords, 'inputs', '—')}"
+                  f"{'  writes=' + ', '.join(writes) if writes else ''}")
       if isinstance(task, ast.Name) and task.id in function.parameters:
         wrappers[function] = (task.id, keywords, site)
+      else:
+        values = held_values(function, keywords["scopes"]) if "scopes" in keywords else []
+        entries.append((site, text(function, keywords, "task"), scopes, builders(values), per_item(values), writes))
       for body in task_bodies(resolve, function, task):
         tasks[body].append((site, scopes, policy))
   for function in functions:
@@ -380,10 +425,15 @@ def main():
         policy = text(wrapper, keywords, "on_conflict", "DEDUP")
         rule = explain(wrapper, keywords["on_conflict"], node, function) if "on_conflict" in keywords else ""
         policy = f"{policy} [{rule}]" if rule else policy
+        values = held_values(wrapper, keywords["scopes"], node, function) if "scopes" in keywords else []
+        writes = row_writes(function, wrapper)
         for body in task_bodies(resolve, function, given):
           tasks[body].append((f"{function.module.path}:{node.lineno} via {wrapper.name}", scopes, policy))
           rows.append(f"{function.module.path}:{node.lineno}  {function.name}  via {wrapper.name}  task={body.name}"
-                      f"  scopes={scopes}  {policy}  call={segment(function.module.source, node, 220)}")
+                      f"  scopes={scopes}  {policy}{'  writes=' + ', '.join(writes) if writes else ''}"
+                      f"  call={segment(function.module.source, node, 220)}")
+          entries.append((f"{function.module.path}:{node.lineno} via {wrapper.name}", body.name, scopes, builders(values),
+                          per_item(values), writes))
 
   def reaching(function, depth=12):
     """The task bodies that reach the function, and the roots without a task above them that call it."""
@@ -445,6 +495,24 @@ def main():
     for function in readers:
       params = f"  params: {', '.join(sorted(function.params_read))}" if function.params_read else ""
       print(f"{function.where}  {function.name}  {', '.join(sorted(function.queue_reads))}{params}")
+    cancels = sorted(((function, node) for function in functions for kind, name, _, node, argument in function.calls
+                      if name == "cancel_tasks" and argument is None), key=lambda item: (item[0].module.path, item[1].lineno))
+    print(f"### cancels ({len(cancels)}): each cancel, and the queued tasks its scope can match (by the builders of"
+          " their scopes): a task with a scope per item has several subjects; writes are the rows its request wrote")
+    for function, node in cancels:
+      arguments = [*node.args, *(keyword.value for keyword in node.keywords)]
+      held = "; ".join(filter(None, (explain(function, argument) for argument in arguments)))
+      print(f"{function.module.path}:{node.lineno}  {function.name}  {segment(function.module.source, node, 90)}"
+            f"{'  [' + held + ']' if held else ''}")
+      scope = next((keyword.value for keyword in node.keywords if keyword.arg == "scope"),
+                   node.args[2] if len(node.args) > 2 else None)
+      if scope is None:
+        continue
+      names = builders(held_values(function, scope))
+      for site, task, scopes, built, several, writes in sorted(entries):
+        if names & built:
+          print(f"    ↦ {site}  task={task}  scopes={scopes}{'  several subjects' if several else ''}"
+                f"{'  writes=' + ', '.join(writes) if writes else ''}")
     print()
 
   if "facts" in wanted:

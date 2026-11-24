@@ -60,12 +60,15 @@ From the repository root, `python3 -I .agents/skills/sage-engine-review/scripts/
 the source:
 
 - **enqueues:** each `add_task` with its key, name, scopes (what a variable in them holds), policy, lane, quiet flag,
-  task body, params and inputs, and each call of a wrapper that enqueues the task it is given, with that call;
+  task body, params and inputs, and each call of a wrapper that enqueues the task it is given, with that call; with
+  `writes=`, the commands its request function (and the wrapper) calls, which write rows around the `add_task`;
 - **effects:** each remote call (SSH, Cloudflare, S3) by enclosing function, with every task body that reaches it
   through inline calls and that task's scopes and policy, or the root it is reached from when no task is;
 - **locks:** each block that holds a lock or a database transaction and what it calls, marking a request, a Fact
   check or a publication, and a block of a class held across a call out of the manager (`!`);
-- **readers:** what reads the queue and the params it reads;
+- **readers:** what reads the queue and the params it reads, and each cancel with the queued tasks its scope can
+  match, by the builders of their scopes: one with a scope per item has several subjects, and each shows the rows its
+  request wrote;
 - **facts:** each Fact, what its callback calls, and where Facts are checked;
 - **decisions:** each decision in a `decisions.py` and its users, and each owner's raw fact compared in a workflow or
   a route, called on its owner or read off a value that holds it.
@@ -124,7 +127,11 @@ commands of other tasks on it.
    and then those rows is traced across it. A row a request writes for its task (an intent, a row recorded queued) is
    settled on every way that task can end: run to its outcome, refused, cancelled, superseded by a REVISE or REPLACE
    while waiting, absorbed by a DEDUP, or dropped by a restore. A way that leaves the row standing is traced to
-   whatever reads it next.
+   whatever reads it next. Each cancel, by key or by scope, is followed to every task it can remove, not only the ones
+   its caller means: a task of several subjects goes with it, and a removed task's rows are settled by whoever removed
+   it or not at all. Rows written around an admission are checked against a second request crossing the first between
+   its writes and its `add_task`, or between its `add_task` and the settlement that follows: a settlement of others'
+   rows covers exactly the tasks its admission superseded.
 5. **Data flow.** Each reader of the queue finds a subject by key and a resource by scope, never identity in params;
    the queue's facts only publish, and work is requested by a body's end, a state Fact's callback or a scheduled pass.
    For each decision table: its inputs with their owner, source and knowledge states, the bound on each state not
