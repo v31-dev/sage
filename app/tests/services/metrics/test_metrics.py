@@ -6,11 +6,10 @@ from pathlib import Path
 import pytest
 
 from services import worker_reports
-from services.metrics import Metrics, metrics_scope
+from services.metrics import Metrics
 from services.metrics.peaks import MinutePeaks
 from services.updates import UpdateSource
 from tests.services.metrics.test_peaks import MINUTE, container, host, snapshot
-from utils.queue import _scope_conflict
 
 
 @pytest.fixture
@@ -349,7 +348,3 @@ class TestQueriesSeeTheMinutesNotYetWritten:
   def test_a_host_nothing_has_been_reported_for_has_no_rows(self, store, clock):
     clock.set(MINUTE + timedelta(seconds=30))
     assert self.host_ts_with_data(self.hour(store, "nobody")) == []
-
-
-def test_the_metric_files_scope_covers_their_flush():
-  assert _scope_conflict(metrics_scope(), metrics_scope("flush"))

@@ -19,9 +19,9 @@ from .shards import open_shard
 logger = logging.getLogger(__name__)
 
 
-def metrics_scope(part: str | None = None) -> str:
-  """The queue's scope of the metric files; with a part (`flush`), of that work on them."""
-  return f"metrics:{part}" if part else "metrics"
+def metrics_scope() -> str:
+  """The queue's scope of the metric shards."""
+  return "metrics"
 
 
 class Metrics(Base):

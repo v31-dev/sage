@@ -112,7 +112,7 @@ class PlatformMixin:
 
   def request_metrics_flush(self):
     """Queues the write of the metrics' completed minutes, the manager's and each worker's."""
-    self.add_task(task=Metrics().flush, key=("flush_metrics",), scopes={metrics_scope("flush")}, executor="metrics", quiet=True)
+    self.add_task(task=Metrics().flush, key=("flush_metrics",), scopes={metrics_scope()}, executor="metrics", quiet=True)
 
   def request_release_check(self, quiet: bool = True) -> str:
     """Queues fetching the newest release: quietly from the schedule and at startup, visibly when asked for. The

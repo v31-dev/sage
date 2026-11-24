@@ -489,7 +489,7 @@ class TestMetricsFlush:
   def test_it_is_one_quiet_task_on_the_metrics_lane(self, manager, flushed):
     manager.request_metrics_flush()
     manager.request_metrics_flush()
-    assert queued(manager) == [(("flush_metrics",), ["metrics:flush"], "metrics", True)]
+    assert queued(manager) == [(("flush_metrics",), ["metrics"], "metrics", True)]
 
   async def test_it_waits_while_the_daily_metrics_cleanup_runs(self, manager, flushed):
     manager.add_task(task=self.holding, key=("metrics_cleanup",), scopes={"metrics"}, executor="metrics")
