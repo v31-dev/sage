@@ -214,7 +214,7 @@ Pools (lanes) are defined in `app/utils/executor.py`. `LANES` holds the queue's 
 | `LANES["metrics"]` | 2 | `metrics` lane — the minutely flush, metrics-store cleanup |
 | `UPDATES_EXECUTOR` | 2 | the pushed topics of the UI's Socket.IO connection (off-queue) |
 | `NOTIFICATIONS_EXECUTOR` | 1 | `Notifications.notify` webhook sends (off-queue, fire-and-forget) |
-| `LOGS_EXECUTOR` | 1 | Workers' Vector log ingestion (off-queue, request-path; single SQLite writer) |
+| `LOGS_EXECUTOR` | 1 | Workers' Vector log ingestion and Sage's markers (off-queue, request-path; the one inserter of application and request lines) |
 
 Worker counts are **fixed I/O-concurrency limits, not derived from `os.cpu_count()`** — these lanes run blocking network I/O (Tailscale, S3, httpx), so the manager's core count doesn't gate them, and in a CPU-limited container `os.cpu_count()` reports host cores rather than the container's allowance. `platform` runs one task at a time (the platform backup and restore, certificate renewal), so it stays at 1; `common` is the low-priority lane (settings checks, log cleanup, release refresh) and stays at 1 too, so its tasks run one at a time even where their scopes (`settings:<section>`) would allow more; `app`/`metrics` are sized for the realistic ceiling (≤10 workers, ≤50 apps, a couple of parallel deploys). Concurrent DB writes from `app`-lane threads are safe: Peewee keeps per-thread SQLite connections and the DB runs WAL + `busy_timeout`.
 

@@ -239,8 +239,9 @@ class StoreMixin:
     return sum(removed.values())
 
   def _drop_shard(self, name: str):
-    """Close the file's connection and delete it, with its `-wal` and `-shm`: a deleted application's space comes back
-    only this way, as its pages are never reused."""
+    """Close this thread's connection to the file and delete it, with its `-wal` and `-shm`: a deleted application's
+    space comes back only this way, as its pages are never reused, once the other threads' connections to it are
+    collected."""
     with self.lock:
       store = self._stores.pop(name, None)
     if store is not None:
@@ -254,26 +255,30 @@ class StoreMixin:
 
   def cleanup(self, days: int = config.RETENTION_DAYS):
     """Drop the files that are neither a kind of log nor an application's shard, delete the lines older than `days`,
-    and trim what is over the size limits."""
+    and trim what is over the size limits, holding the trim lock throughout: a trim after a write is skipped meanwhile,
+    and none reopens a file being dropped."""
     cutoff = utcnow() - timedelta(days=days)
 
-    live = set(self.FILES) | self._application_names()
-    logs_dir = Path(self.db_path) / "logs"
-    orphans = {path.stem for path in logs_dir.glob("*.db")} - live
-    for name in sorted(orphans):
-      self._drop_shard(name)
-      logger.info(f"Removed orphaned logs shard '{name}'.")
+    with self._trim_lock:
+      live = set(self.FILES) | self._application_names()
+      logs_dir = Path(self.db_path) / "logs"
+      orphans = {path.stem for path in logs_dir.glob("*.db")} - live
+      for name in sorted(orphans):
+        self._drop_shard(name)
+        logger.info(f"Removed orphaned logs shard '{name}'.")
 
-    # A delete only marks the index's entries, so it is merged after; later writes reuse the freed pages.
-    existing = {path.stem for path in logs_dir.glob("*.db")} & live
-    deleted = 0
-    for name in sorted(existing):
-      store = self._store(name)
-      deleted += store.lines.delete().where(store.lines.ts < stored_time(cutoff)).execute()
-      if store.index is not None:
-        store.index.optimize()
+      # A delete only marks the index's entries, so it is merged after; later writes reuse the freed pages.
+      existing = {path.stem for path in logs_dir.glob("*.db")} & live
+      deleted = 0
+      for name in sorted(existing):
+        store = self._store(name)
+        expired = store.lines.select().where(store.lines.ts < stored_time(cutoff)).count()
+        store.delete_oldest(expired)
+        deleted += expired
+        if store.index is not None:
+          store.index.optimize()
 
-    trimmed = sum(self.trim_shard(name) for name in sorted(existing)) + self.trim_total()
+      trimmed = sum(self.trim_shard(name) for name in sorted(existing)) + self.trim_total()
 
     logger.info(
         f"Logs cleanup: removed {deleted} log rows older than {days} days and trimmed {trimmed} over the size limits; "

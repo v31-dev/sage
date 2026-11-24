@@ -26,8 +26,9 @@ UPDATES_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="sage-up
 # Fire-and-forget webhook sends (Manager.notify); not a queue lane.
 NOTIFICATIONS_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="sage-notifications")
 
-# Log ingestion is a request-path write to an independent SQLite store, so it
-# stays off the operation queue. Single writer to serialize the SQLite writes.
+# Log ingestion and Sage's markers: a request-path write to the log files, so it stays off the operation queue. One
+# thread inserts every application and request line (see `Logs._insert`); SQLite's write lock orders it with the
+# cleanup's deletions.
 LOGS_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="sage-logs")
 
 # Set by TaskQueue.run_task to the running task's pool, so blocking offloads

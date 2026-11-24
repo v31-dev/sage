@@ -301,6 +301,46 @@ class TestCleanup:
     logs.cleanup()
     assert [line["message"] for line in logs.query_task_logs("t1")["lines"]] == ["recent"]
 
+  def test_expired_lines_go_a_batch_to_a_transaction_whatever_order_they_were_written_in(self, logs, application, small):
+    name = qualified_name(application.project_id, application.name)
+    cutoff = utcnow() - timedelta(days=config.RETENTION_DAYS)
+    expired = [{"hostname": "w1", "ts": stored_time(cutoff - timedelta(seconds=index + 1)), "stream": "stdout",
+                "message": f"old {index}"} for index in range(1200)]
+    kept = [{"hostname": "w1", "ts": stored_time(cutoff + timedelta(minutes=index + 1)), "stream": "stdout",
+             "message": f"new {index}"} for index in range(10)]
+    logs.write_application_lines(name, kept[:5] + expired + kept[5:])
+    transactions = []
+    logs._store(name).db.connection().set_trace_callback(
+        lambda sql: transactions.append(sql) if sql == "BEGIN IMMEDIATE" else None)
+
+    logs.cleanup()
+
+    assert sorted(row["message"] for row in logs.query_application_lines(name)["lines"]) == sorted(
+        row["message"] for row in kept)
+    assert len(transactions) == 3
+
+  def test_a_trim_after_a_write_is_skipped_while_the_cleanup_runs(self, logs, application, small, monkeypatch):
+    name = qualified_name(application.project_id, application.name)
+    logs.write_application_lines(name, lines(0, 10))
+    trims, cleanup_total = [], logs.trim_total
+    monkeypatch.setattr(logs, "trim_shard", lambda shard: trims.append(threading.current_thread().name) or 0)
+
+    def trim_total():
+      logs._checked, logs._total_checked = {}, float("-inf")
+
+      def write():
+        logs.write_application_lines(name, lines(10, 10))
+        close_connections(logs)
+
+      writer = threading.Thread(target=write, name="writer")
+      writer.start()
+      writer.join()
+      return cleanup_total()
+
+    monkeypatch.setattr(logs, "trim_total", trim_total)
+    logs.cleanup()
+    assert trims and "writer" not in trims
+
   def test_it_applies_the_size_limits(self, logs, application, small, limit):
     name = qualified_name(application.project_id, application.name)
     logs.write_application_lines(name, lines(0, 3000))
