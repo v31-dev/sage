@@ -631,8 +631,7 @@ class TestBlockingRecords:
     zone = [{"id": "1", "name": "a.example.test", "type": "CNAME", "comment": "sage-domain-old"},
             {"id": "2", "name": "a.example.test", "type": "A"},
             {"id": "3", "name": "b.example.test", "content": "t1", "comment": "sage-domain-new", "type": "CNAME"}]
-    message = 'a.example.test already has a CNAME record (comment "sage-domain-old") and an A record (no comment) that ' \
-              "this Sage doesn't manage."
+    message = 'a.example.test already has a CNAME record (comment "sage-domain-old") and an A record (no comment).'
     with pytest.raises(Conflict) as refused:
       connected.sync_dns_records({"sage-domain-new": {"a.example.test": "t1"}}, zone=zone, type="CNAME", proxied=True)
     assert str(refused.value) == message

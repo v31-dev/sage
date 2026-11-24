@@ -153,7 +153,7 @@ Each resource's own rules, on top of the root's working rules 9–13. The workfl
   `Domains`, and `syncing` comes from the queue. `Domain.container` owns a name's binding: use `Container.domains`,
   with no application-level domain collection. Domain changes and queue state tell the linked application's and
   worker's views.
-- An apply never holds its container's scope, and checks its workers and name again before any I/O. Its files follow
+- An apply never holds its container's scope, and checks its workers again before any I/O. Its files follow
   the container's `routable` at the apply, and unknown removes nothing. A file on a callers' worker is built from the
   networks the apply lists there itself, never from memory, and carries that worker's fingerprint, which covers the
   callers' subnets. It certifies only the fingerprints it applied; an edit during it queues another.

@@ -11,8 +11,8 @@ from services.containers.placement import networks_command
 from services.containers.state import container_reference
 from services.db.models import Application, Container, Domain, Project, Worker
 from services.domains.callers import domain_file
-from services.domains.config import (ROUTE_FIELDS, DomainConfig, domain_artifact_name, domain_artifact_owner, domain_scope, host_scope,
-                                     parse_route_listing, route_scope, routes_command)
+from services.domains.config import (ROUTE_FIELDS, DomainConfig, domain_artifact_name, domain_artifact_owner, domain_scope, parse_route_listing,
+                                     route_scope, routes_command)
 from services.domains.decisions import ApplyOutcome, RouteObservation, route_goal
 from services.domains.state import Domains, DomainState, domain_payload, domain_state
 from services.domains.updates import domain_changed
@@ -80,20 +80,17 @@ class DomainsMixin:
     return [Fact(lambda: frozenset(self._applying_domains()), on_change=changed)]
 
   def request_domain_applies(self, domain_ids):
-    """Queues the apply of each of the domains as it is configured now, holding the domain, its full name, and its file
-    on each worker it has one on: its own and each with a container of an allowed application. A running apply is not
-    interrupted: the latest request waits for it."""
+    """Queues the apply of each of the domains as it is configured now, holding the domain and its file on each worker
+    it has one on: its own and each with a container of an allowed application. A running apply is not interrupted:
+    the latest request waits for it."""
     for domain in Domain.select().where(Domain.id.in_(list(domain_ids))):
       snapshot = capture(domain)
       scopes = {domain_scope(domain.id), *(route_scope(worker, domain.id) for worker in snapshot.workers)}
-      if snapshot.host is not None:
-        scopes.add(host_scope(snapshot.host))
       self.add_task(task=self.apply_domain, key=("apply_domain", domain.id), scopes=scopes, executor="app",
-                    params={"domain_id": domain.id, "worker": snapshot.worker, "host": snapshot.host,
-                            "workers": list(snapshot.workers)},
+                    params={"domain_id": domain.id, "worker": snapshot.worker, "workers": list(snapshot.workers)},
                     labels={"Domain": snapshot.host or domain.name}, on_conflict=OnConflict.REPLACE, quiet=True)
 
-  async def apply_domain(self, domain_id: str, worker: str, host: str | None, workers: list[str]):
+  async def apply_domain(self, domain_id: str, worker: str, workers: list[str]):
     """Writes the domain's file on each of `workers` while its container can be routed to and removes it once it
     can't, leaving it alone while that is not known or a worker isn't reachable and set up: on its own worker its
     route with its callers there, on a caller's worker their passthrough, from the networks it lists there. Then makes
@@ -106,7 +103,7 @@ class DomainsMixin:
       logger.info(f"Domain {domain_id} was deleted before its apply; nothing to do.")
       return
     snapshot = capture(domain)
-    if (snapshot.worker, snapshot.host, list(snapshot.workers)) != (worker, host, list(workers)):
+    if (snapshot.worker, list(snapshot.workers)) != (worker, list(workers)):
       self.request_domain_applies([domain_id])
       return
     fingerprint = snapshot.content_hash

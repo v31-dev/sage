@@ -194,24 +194,23 @@ async def applied(manager, domain):
 
 
 class TestRequests:
-  def test_a_linked_public_domain_holds_itself_its_name_and_its_route_on_its_worker(self, manager, public):
+  def test_a_linked_public_domain_holds_itself_and_its_route_on_its_worker(self, manager, public):
     manager.request_domain_applies([public.id])
     assert queued(manager) == [(
-        ("apply_domain", public.id), sorted({f"domain:{public.id}", "domain:host:shop.example.test", f"worker:w1:routing:{public.id}"}),
-        {"domain_id": public.id, "worker": "w1", "host": "shop.example.test", "workers": ["w1"]}, {"Domain": "shop.example.test"},
-        True)]
+        ("apply_domain", public.id), sorted({f"domain:{public.id}", f"worker:w1:routing:{public.id}"}),
+        {"domain_id": public.id, "worker": "w1", "workers": ["w1"]}, {"Domain": "shop.example.test"}, True)]
 
   def test_an_internal_domains_name_is_under_its_workers_subdomain(self, manager, internal):
     manager.request_domain_applies([internal.id])
-    [(_, scopes, params, labels, _)] = queued(manager)
-    assert "domain:host:api.red.int.example.test" in scopes and params["host"] == "api.red.int.example.test"
+    [(_, _, _, labels, _)] = queued(manager)
+    assert labels == {"Domain": "api.red.int.example.test"}
 
   def test_the_latest_of_requests_waiting_is_the_one_kept(self, manager, public):
     manager.request_domain_applies([public.id])
     Domain.update(name="store").where(Domain.id == public.id).execute()
     manager.request_domain_applies([public.id])
-    [(_, scopes, params, _, _)] = queued(manager)
-    assert params["host"] == "store.example.test" and "domain:host:store.example.test" in scopes
+    [(_, _, _, labels, _)] = queued(manager)
+    assert labels == {"Domain": "store.example.test"}
 
   async def test_a_request_while_one_runs_waits_for_it_and_then_runs(self, manager, public, hosts):
     seen = []
@@ -345,6 +344,13 @@ class TestApply:
     await manager.run()
     assert hosts.route("w1", public) is None and hosts.route("w2", public) == fingerprint(public)
     assert [hostname for hostname, _ in hosts.commands] == ["w2"]
+
+  async def test_a_domain_renamed_before_its_apply_ran_gets_its_new_name_from_that_apply(self, manager, public, hosts, provider):
+    manager.request_domain_applies([public.id])
+    Domain.update(name="store").where(Domain.id == public.id).execute()
+    await manager.run()
+    assert provider.zone == {f"sage-domain-{public.id}": {"store.example.test": "t1.cfargotunnel.com"}}
+    assert len(provider.calls) == 1 and hosts.route("w1", public) == fingerprint(Domain.get_by_id(public.id))
 
   async def test_a_domain_deleted_before_its_apply_ran_is_forgotten_and_nothing_is_touched(self, manager, public, hosts, provider):
     Domains().record_outcome(public, ApplyOutcome("f1", True))

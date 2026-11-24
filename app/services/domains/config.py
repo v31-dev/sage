@@ -32,11 +32,6 @@ def domain_scope(domain_id: str | None = None) -> str:
   return f"domain:{domain_id}" if domain_id else "domain"
 
 
-def host_scope(host: str) -> str:
-  """The queue's scope of a full name, which the applies of every Domain with that name share."""
-  return f"{domain_scope()}:host:{host}"
-
-
 def route_scope(hostname: str, domain_id: str) -> str:
   """The queue's scope of the Domain's routing file on the worker."""
   return f"{worker_scope(hostname)}:routing:{domain_id}"

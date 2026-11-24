@@ -87,8 +87,7 @@ together.
 | `worker:<host>:discovery` | `discovery_files_scope` (`services/domains/discovery.py`) | The worker's `_discovery-*.yml` files | `publish_discovery` |
 | `worker:<host>:tls` | `certificate_files_scope` (`services/certs.py`) | The certificate files and `certs.yml` on the worker, and its `certs` stamp | `distribute_certificates` {`certificate:worker:<host>`, `worker:<host>:tls`} |
 | `domain` | `domain_scope()` | Every Domain's route files and DNS records together | `reconcile_domains`: removes what no Domain owns |
-| `domain:<id>` | `domain_scope(id)` | A Domain's `sage-domain-<id>` DNS records | `apply_domain` {`domain:<id>`, `domain:host:<fqdn>`, `worker:<host>:routing:<id>` for each of its workers} |
-| `domain:host:<fqdn>` | `host_scope` | A full name's records, which two Domains swapping the name share | `apply_domain` |
+| `domain:<id>` | `domain_scope(id)` | A Domain's `sage-domain-<id>` DNS records | `apply_domain` {`domain:<id>`, `worker:<host>:routing:<id>` for each of its workers} |
 | `discovery` | `discovery_scope()` | Discovery's DNS records: `discovery.int.<domain>` A records (`sage-discovery-<host>`) and the `discovery.<domain>` CNAME (`sage-tunnel`) | `publish_discovery_dns` |
 | `certificate` | `certificate_scope()` | The manager's certificate store: every certificate's key and chain, the retired leaves, and the ACME challenge records | `renew_certificates` |
 | `certificate:worker:<host>` | `certificate_scope(host)` | The manager's material for that worker, as one copy reads it | `distribute_certificates` (reads) |
@@ -220,7 +219,7 @@ Implementation: [Domain operations and request helpers](../app/services/manager/
 
 | Operation | Scopes · executor | Admission / history | Every initiating source | Model writes and other effects |
 | --- | --- | --- | --- | --- |
-| `apply_domain` | `domain:<id>`; `domain:host:<fqdn>` when it has a name; `worker:<host>:routing:<id>` for its own worker and each with a container of an allowed application · app | REPLACE on `("apply_domain", <id>)` / Q | `request_domain_applies`: a Domain's create and edit (`domain_edited`, which requests `reconcile_domains` too); the end of a container's Deploy or Stop and either one's failure, for its Domains and the Domains allowing its application; a container's Delete, for the Domains allowing its application; `observe_containers` when a container becomes routable or stops being; a worker's subdomain change (its internal and TCP Domains); `reconcile_domains` (a Domain in error, drifted or not applied); its own follow-up after an edit during it or a change of its full name or of its workers before it | No main-DB write. `domain-<id>.yml` on each of its workers (on its own its route with the routers of its callers there; on a caller's, their passthrough, from the networks it lists there and records in `Workers`): written while its container is routable, removed once it is not, left as it is while that is unknown or the worker is not reachable and set up. Then its `sage-domain-<id>` DNS records: a public name's CNAME to its worker's tunnel, none otherwise. The `Domains` owner holds the outcome for the fingerprint applied (a success only when the route was applied too) and what it did to the route and DNS. A failure fails the task and is not retried by itself. |
+| `apply_domain` | `domain:<id>`; `worker:<host>:routing:<id>` for its own worker and each with a container of an allowed application · app | REPLACE on `("apply_domain", <id>)` / Q | `request_domain_applies`: a Domain's create and edit (`domain_edited`, which requests `reconcile_domains` too); the end of a container's Deploy or Stop and either one's failure, for its Domains and the Domains allowing its application; a container's Delete, for the Domains allowing its application; `observe_containers` when a container becomes routable or stops being; a worker's subdomain change (its internal and TCP Domains); `reconcile_domains` (a Domain in error, drifted or not applied); its own follow-up after an edit during it or a change of its workers before it | No main-DB write. `domain-<id>.yml` on each of its workers (on its own its route with the routers of its callers there; on a caller's, their passthrough, from the networks it lists there and records in `Workers`): written while its container is routable, removed once it is not, left as it is while that is unknown or the worker is not reachable and set up. Then its `sage-domain-<id>` DNS records: a public name's CNAME to its worker's tunnel, none otherwise. The `Domains` owner holds the outcome for the fingerprint applied (a success only when the route was applied too) and what it did to the route and DNS. A failure fails the task and is not retried by itself. |
 | `reconcile_domains` | `domain` · app | REPLACE on `("reconcile_domains",)` / Q | `request_domain_reconciliation`: every 5 min and startup; the end of a worker's setup; a container Delete that took Domains with it or whose application a Domain allows; Domain edits and deletes | No main-DB write. Lists the Domains' files and the applications' networks on each worker reachable and set up (one command each), the zone and the tunnels, then reads the Domain rows. Removes the files of Domains gone or with no file on that worker, neither their own nor one with a container of an application they allow (one `rm -f` per worker), and the `sage-domain-<id>` records of Domains gone. `Workers` holds each listed worker's networks; `Domains` holds each Domain's file on each of its workers and whether its DNS conforms, and drops what it held of Domains gone. Requests `apply_domain` for each Domain in error, drifted or not applied, and `sync_traefik_networks` on every worker reachable and set up. A failed listing or removal fails the task after the rest ran. |
 | `publish_discovery` | `worker:<host>:discovery` · app | REPLACE on `("publish_discovery", <host>)` / Q; forced on its own key with `"force"` / H | `request_discovery`, for each worker reachable and set up (forced: one worker's resync): the end of every Domain apply and Domain pass; `observe_containers` when whether a container with a service's Domain can be routed to changed; a change of the ready workers or of those reachable and set up (worker observation and reports) | No main-DB write. Re-checks the worker; lists each `_discovery-*.yml`'s proof line and `Sage-Endpoints`; writes each service's file whose proof differs (every one when forced), a name not known yet keeping the availability its file publishes for two minutes at most; removes the files of services no Domain has. Requests nothing. |
 | `publish_discovery_dns` | `discovery` · app | REPLACE on `("publish_discovery_dns",)` / Q | `request_discovery`, with every request | No main-DB write. One zone listing: `discovery.int.<domain>` A records to each worker reachable and set up under `sage-discovery-<host>` (that of a worker known to be out, or removed, deleted; that of one not known yet left as it is while the manager is cut off from the tailnet or the worker answers only through its tunnel, and for two minutes after it started otherwise), and `discovery.<domain>` CNAME to the platform tunnel under `sage-tunnel`. |
@@ -287,9 +286,9 @@ while holding `domain`, since that scope excludes every child's `domain:<id>`.
 flowchart TB
     edit["Domain create or edit<br/>direct model write; no scope"]
     trigger["5 min / startup / worker setup /<br/>a change that leaves a route behind"]
-    request["request_domain_applies<br/>capture its worker and name<br/>for the scopes"]
+    request["request_domain_applies<br/>capture its workers<br/>for the scopes"]
     parent["Domain pass<br/>hold domain<br/>list, remove what is left behind,<br/>find drift"]
-    child["Domain apply<br/>hold domain:id, domain:host:fqdn,<br/>worker:host:routing:id<br/>re-check worker and name"]
+    child["Domain apply<br/>hold domain:id,<br/>worker:host:routing:id<br/>re-check its workers"]
     apply["Route by the container's routable,<br/>then DNS"]
     result["Domains holds the outcome<br/>for the fingerprint applied"]
     facts["A container's routable, or the ready<br/>or reachable workers, change"]
@@ -310,7 +309,7 @@ flowchart TB
     linkStyle default stroke:#ef4444,stroke-width:3px
 ```
 
-A Domain whose worker or name changed after its request is requested again with the right scopes before any I/O. A
+A Domain whose workers changed after its request is requested again with the right scopes before any I/O. A
 container's operation does not hold the apply back: the route follows its `routable` when the apply runs, and a change
 of that requests the apply again. Failed applies, and routes left because the worker could not be written to or the
 container's state was not known, wait for the Domain pass. Discovery's publication only reads results and requests
@@ -477,7 +476,7 @@ writes above apply in addition to the listed fields.
 These are useful places to check when changing a flow:
 
 - **A scope is not a database lock.** Direct configuration writes and FK actions can overlap queued work. A deploy
-  captures its input snapshot when it is requested; a Domain apply re-checks its worker and name and holds its
+  captures its input snapshot when it is requested; a Domain apply re-checks its workers and holds its
   outcome for the fingerprint it applied, so an edit during it is never certified by it. CRUD does not join these
   scopes.
 - **Scopes are per resource.** A container's operations hold its own scope under its worker's; a worker's setup,

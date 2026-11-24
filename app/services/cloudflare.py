@@ -205,7 +205,7 @@ class Cloudflare(Base):
           described = " and ".join(
               f"{'an' if record['type'][0] == 'A' else 'a'} {record['type']} record "
               + (f"(comment \"{record['comment']}\")" if record.get("comment") else "(no comment)") for record in blocked)
-          raise Conflict(f"{name} already has {described} that this Sage doesn't manage.")
+          raise Conflict(f"{name} already has {described}.")
     for comment, wanted in records.items():
       # Cloudflare matches a comment in any case, so the comparison is here.
       existing = [record for record in zone if record.get("comment") == comment]

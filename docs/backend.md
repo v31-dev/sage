@@ -368,11 +368,11 @@ records failed tasks, including quiet tasks, in task history. UI notifications u
 (`DomainConfig.workers`): its own worker, where the file is its route with a router for each of its callers there,
 and each worker with a container of an application it allows, where the file passes those callers' connections
 through to its own worker. `request_domain_applies` captures each Domain's `DomainConfig` and queues its apply with
-`REPLACE` on `("apply_domain", <id>)`, holding `domain:<id>`, its full name (`domain:host:<fqdn>`) and its file on
+`REPLACE` on `("apply_domain", <id>)`, holding `domain:<id>` and its file on
 each of its workers (`worker:<host>:routing:<id>`). It does not hold a container's scope, so a long deploy does not
 hold back a Domain edit; a worker's convergence and reboot, holding `worker:<host>`, exclude it. The task re-fetches
-the row: a missing one is a quiet no-op that drops what `Domains` held of it, and a full name or a set of workers that
-changed since the request (an edit, its worker's subdomain, a caller placed or deleted) queues it again with the right
+the row: a missing one is a quiet no-op that drops what `Domains` held of it, and a set of workers that
+changed since the request (a move, a caller placed or deleted) queues it again with the right
 scopes before any remote work.
 
 The route follows the container's `routable` when the apply runs (`route_goal`): present while it can be routed to,
