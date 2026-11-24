@@ -147,7 +147,7 @@ class BackupCatalogMixin:
     if session is None:
       return
     self.add_task(task=self.prune_backups, key=("prune_backups",), scopes={store_scope(session.identity)},
-                  executor="common", params={"storage_id": session.identity}, on_conflict=OnConflict.REPLACE, quiet=True)
+                  executor="common", params={"storage_id": session.identity}, quiet=True)
 
   async def prune_backups(self, storage_id: str):
     """Deletes from the store the platform backups and volume archives older than `config.RETENTION_DAYS`, then the rows

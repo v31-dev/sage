@@ -455,6 +455,13 @@ class TestRetention:
     manager.request_backup_retention()
     assert queued(manager) == []
 
+  async def test_one_asked_for_while_one_runs_is_that_one(self, manager, stores, db):
+    manager.request_backup_retention()
+    manager.task_queue.dispatch_tick()
+    manager.request_backup_retention()
+    assert queued(manager) == []
+    await manager.run()
+
   async def test_backups_past_the_retention_period_go_with_their_rows(self, manager, stores, volume):
     old = [row(stores.a, key, volume if "applications" in key else None)
            for key in (archive_key(volume, config.RETENTION_DAYS + 1), f"backups/platform/{named(config.RETENTION_DAYS + 2)}_0.2.0_1.db.enc")]

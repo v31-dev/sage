@@ -99,8 +99,7 @@ class PlatformMixin:
   def request_cleanup(self):
     """Requests the daily cleanup, each part a task of its own: the metrics, logs, history and an interrupted restore's
     safety copies past their retention, each worker's temp folder, and the store's old backups."""
-    self.add_task(task=Metrics().cleanup, key=("metrics_cleanup",), scopes={metrics_scope()}, executor="metrics", quiet=True,
-                  on_conflict=OnConflict.REPLACE)
+    self.add_task(task=Metrics().cleanup, key=("metrics_cleanup",), scopes={metrics_scope()}, executor="metrics", quiet=True)
     self.add_task(task=Logs().cleanup, key=("logs_cleanup",), scopes=set(), executor="common", quiet=True)
     self.add_task(task=purge_history, key=("purge_history",), scopes=set(), executor="common", quiet=True)
     self.add_task(task=Database().remove_safety_copies, key=("safety_copies_cleanup",), scopes=set(), executor="common",

@@ -534,11 +534,11 @@ class TestCleanup:
                                        (("purge_history",), [], "common", True), (("safety_copies_cleanup",), [], "common", True)]
     assert manager.requested == ["request_worker_tmp_cleanup", "request_backup_retention"] * 2
 
-  async def test_a_cleanup_asked_for_while_one_runs_queues_none_of_the_parts_without_a_scope(self, manager, cleaned):
+  async def test_a_cleanup_asked_for_while_one_runs_queues_none_of_its_parts(self, manager, cleaned):
     manager.request_cleanup()
     manager.task_queue.dispatch_tick()
     manager.request_cleanup()
-    assert queued(manager) == [(("metrics_cleanup",), ["metrics"], "metrics", True)]
+    assert queued(manager) == []
     await manager.run()
 
   async def test_the_tasks_run_while_other_work_holds_its_scopes(self, manager, cleaned, clock):
