@@ -44,7 +44,7 @@ class CertificatesMixin:
 
   def request_certificate_renewal(self):
     """Queues the renewal of every certificate. A request while one runs gets one of its own after it."""
-    self.add_task(task=self.renew_certificates, key=("renew_certificates",), scopes={certificate_scope()}, executor="platform",
+    self.add_task(task=self.renew_certificates, key=("renew_certificates",), scopes={certificate_scope()}, executor="main",
                   on_conflict=OnConflict.REPLACE)
 
   async def renew_certificates(self):
@@ -80,7 +80,7 @@ class CertificatesMixin:
     renewal excludes it, and the worker's certificate files, so its setup, reboot or removal does; workers go on in
     parallel. Forced, the files are written whatever the worker holds, as a visible task of its own."""
     self.add_task(task=self.distribute_certificates, key=("distribute_certificates", hostname, *(("force",) if force else ())),
-                  scopes={certificate_scope(hostname), certificate_files_scope(hostname)}, executor="app",
+                  scopes={certificate_scope(hostname), certificate_files_scope(hostname)}, executor="main",
                   params={"hostname": hostname, "force": force}, labels={"Worker": hostname},
                   on_conflict=OnConflict.REPLACE, quiet=not force)
 

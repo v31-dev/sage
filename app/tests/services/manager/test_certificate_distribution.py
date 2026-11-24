@@ -71,7 +71,7 @@ class Manager(CertificatesMixin, QueueMixin):
     self.queue_facts = []
     self.checks = 0
     self.worker_state = SimpleNamespace(check=self.count_check)
-    self.task_queue = TaskQueue(SCOPES, names=TASK_NAMES, executors={"platform": self.pool, "app": self.pool}, record=lambda task, status: None,
+    self.task_queue = TaskQueue(SCOPES, names=TASK_NAMES, executors={"main": self.pool}, record=lambda task, status: None,
                                 notify=self._queue_changed)
 
   def count_check(self):
@@ -148,7 +148,7 @@ class TestRequests:
       return wait
 
     for name, scopes in (("renew_certificates", {"certificate"}), ("converge_worker", {"worker:w2"})):
-      manager.add_task(task=held(name), key=(name,), scopes=scopes, executor="app")
+      manager.add_task(task=held(name), key=(name,), scopes=scopes, executor="main")
     manager.task_queue.dispatch_tick()
     for hostname in ("w1", "w2"):
       manager.request_certificate_distribution(hostname)

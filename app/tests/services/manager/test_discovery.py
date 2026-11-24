@@ -194,7 +194,7 @@ class TestRequests:
     async def converge_worker(hostname):
       await release.wait()
 
-    manager.add_task(task=converge_worker, key=("converge_worker", "w1"), scopes={"worker:w1"}, executor="app",
+    manager.add_task(task=converge_worker, key=("converge_worker", "w1"), scopes={"worker:w1"}, executor="main",
                      params={"hostname": "w1"})
     manager.task_queue.dispatch_tick()
     manager.request_discovery()

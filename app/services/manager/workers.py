@@ -160,7 +160,7 @@ class WorkersMixin:
 
   def request_worker_observation(self):
     """Queues the look at every worker's SSH server."""
-    self.add_task(task=self.observe_workers, key=("observe_workers",), scopes=set(), executor="app", quiet=True)
+    self.add_task(task=self.observe_workers, key=("observe_workers",), scopes=set(), executor="main", quiet=True)
 
   async def observe_workers(self):
     """Asks every configured worker's SSH server, tells the pages of the workers whose state changed, then asks for the
@@ -210,7 +210,7 @@ class WorkersMixin:
     worker's configuration changed), it runs after a convergence already running, which read the configuration before.
     The task's id."""
     return self.add_task(task=self.converge_worker, key=("converge_worker", hostname, *(("force",) if force else ())),
-                         scopes={worker_scope(hostname)}, executor="app", params={"hostname": hostname, "force": force},
+                         scopes={worker_scope(hostname)}, executor="main", params={"hostname": hostname, "force": force},
                          labels={"Worker": hostname}, on_conflict=OnConflict.REPLACE if changed else OnConflict.DEDUP,
                          quiet=not force).task_id
 
@@ -324,7 +324,7 @@ class WorkersMixin:
     """Queues the start of whatever of the worker's stack is stopped. It holds the stack's own scope, so a deploy on the
     worker does not delay it; convergence and reboot, holding the whole worker, exclude it."""
     self.add_task(task=self.repair_worker_stack, key=("repair_worker_stack", hostname), scopes={stack_scope(hostname)},
-                  executor="app", params={"hostname": hostname}, labels={"Worker": hostname}, quiet=True)
+                  executor="main", params={"hostname": hostname}, labels={"Worker": hostname}, quiet=True)
 
   async def repair_worker_stack(self, hostname: str):
     if not is_workable(hostname):
@@ -353,7 +353,7 @@ class WorkersMixin:
                                                          if is_workable(worker.hostname)]
     for name in hostnames:
       self.add_task(task=self.sync_traefik_networks, key=("sync_traefik_networks", name), scopes={stack_scope(name)},
-                    executor="app", params={"hostname": name}, labels={"Worker": name},
+                    executor="main", params={"hostname": name}, labels={"Worker": name},
                     on_conflict=OnConflict.REPLACE, quiet=True)
 
   async def sync_traefik_networks(self, hostname: str):
@@ -363,7 +363,7 @@ class WorkersMixin:
     if due := await self._attach_traefik(hostname, held=set()):
       self.add_task(task=self.attach_traefik_networks, key=("attach_traefik_networks", hostname),
                     scopes={stack_scope(hostname), *(placement_scope(hostname, container_id) for container_id in due)},
-                    executor="app", params={"hostname": hostname, "container_ids": sorted(due)}, labels={"Worker": hostname},
+                    executor="main", params={"hostname": hostname, "container_ids": sorted(due)}, labels={"Worker": hostname},
                     on_conflict=OnConflict.REPLACE, quiet=True)
 
   async def attach_traefik_networks(self, hostname: str, container_ids: list[str]):
@@ -427,7 +427,7 @@ class WorkersMixin:
     for worker in Worker.select(Worker.hostname):
       if is_workable(worker.hostname):
         self.add_task(task=self.cleanup_worker_tmp, key=("cleanup_worker_tmp", worker.hostname),
-                      scopes={worker_scope(worker.hostname)}, executor="app", params={"hostname": worker.hostname},
+                      scopes={worker_scope(worker.hostname)}, executor="main", params={"hostname": worker.hostname},
                       labels={"Worker": worker.hostname}, quiet=True)
 
   async def cleanup_worker_tmp(self, hostname: str):
@@ -447,7 +447,7 @@ class WorkersMixin:
       raise Conflict("A worker with the manager's name is not allowed.")
     commands.add_worker(peer.hostname, subdomain)
     return peer.hostname, self.add_task(task=self.add_worker, key=("add_worker", peer.hostname),
-                                        scopes={worker_scope(peer.hostname)}, executor="app",
+                                        scopes={worker_scope(peer.hostname)}, executor="main",
                                         params={"hostname": peer.hostname}, labels={"Worker": peer.hostname}).task_id
 
   async def add_worker(self, hostname: str):
@@ -482,7 +482,7 @@ class WorkersMixin:
     """Queues the removal of a worker marked for it: the user's request, or observation's after a restart or a failure.
     The task's id."""
     return self.add_task(task=self.remove_worker, key=("remove_worker", hostname), scopes={worker_scope(hostname)},
-                         executor="app", params={"hostname": hostname}, labels={"Worker": hostname}).task_id
+                         executor="main", params={"hostname": hostname}, labels={"Worker": hostname}).task_id
 
   async def remove_worker(self, hostname: str):
     """Removes the worker marked for removal: when it answers and is this Sage's, its stack, its firewall and Sage's
@@ -546,7 +546,7 @@ class WorkersMixin:
     if worker.removing:
       raise Conflict("A worker being removed can't be restarted.")
     return self.add_task(task=self.reboot_worker, key=("reboot_worker", hostname), scopes={worker_scope(hostname)},
-                         executor="app", params={"hostname": hostname}, labels={"Worker": hostname}).task_id
+                         executor="main", params={"hostname": hostname}, labels={"Worker": hostname}).task_id
 
   async def reboot_worker(self, hostname: str):
     """Reboots the worker and waits, holding it, until a new boot of it is set up again and ready on a report that arrived
@@ -620,7 +620,7 @@ class WorkersMixin:
 
   def request_worker_paths(self):
     """Queues the look at how each reachable worker is reached."""
-    self.add_task(task=self.refresh_worker_paths, key=("refresh_worker_paths",), scopes=set(), executor="app", quiet=True)
+    self.add_task(task=self.refresh_worker_paths, key=("refresh_worker_paths",), scopes=set(), executor="main", quiet=True)
 
   async def refresh_worker_paths(self):
     """Finds how each reachable worker is reached, direct or through a relay."""
@@ -635,7 +635,7 @@ class WorkersMixin:
 
   def request_tunnel_listing(self):
     """Queues the listing of the account's tunnels."""
-    self.add_task(task=self.list_tunnels, key=("list_tunnels",), scopes=set(), executor="common", quiet=True)
+    self.add_task(task=self.list_tunnels, key=("list_tunnels",), scopes=set(), executor="main", quiet=True)
 
   async def list_tunnels(self):
     """Lists the account's tunnels with their health, then tells the pages of the workers whose state changed and the

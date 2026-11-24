@@ -86,7 +86,7 @@ class Manager(PlatformMixin, QueueMixin):
     self.requested = []
     self.setup_failures, self.stack_repairs, self.removal_failures = {"w1": 1.0}, {"w1": 1.0}, {"w1": 1.0}
     self.recoveries, self.orphans = {"c": 1}, {"o": 1}
-    self.task_queue = TaskQueue(SCOPES, {lane: self.pool for lane in ("platform", "app", "common", "metrics")},
+    self.task_queue = TaskQueue(SCOPES, {lane: self.pool for lane in ("main", "common")},
                                 record=lambda task, status: None, notify=self._queue_changed,
                                 names=TASK_NAMES | {"held", "later", "old"})
 
@@ -313,11 +313,11 @@ class TestRestoreRequest:
     manager.request_platform_restore(backup.id)
     [task] = manager.task_queue.snapshot()["queued"]
     assert (task["name"], task["key"], task["scopes"], task["executor"], task["params"]) == (
-        "restore_platform", ["restore_platform", backup.s3_path], [], "platform", {"s3_path": backup.s3_path, "storage_id": "sa"})
+        "restore_platform", ["restore_platform", backup.s3_path], [], "main", {"s3_path": backup.s3_path, "storage_id": "sa"})
     assert (manager.task_state(), manager.restoring_from()) == ("restoring", "2026-01-01T03:00:00")
 
   def test_the_backup_being_restored_is_the_one_its_key_names_whatever_its_params_say(self, manager, stores):
-    manager.add_restore(task=manager.restore_platform, name="restore_platform", executor="platform",
+    manager.add_restore(task=manager.restore_platform, name="restore_platform", executor="main",
                         key=("restore_platform", "base/backups/platform/20260101_030000_4444444444444444_0.2.0_1.db.enc"),
                         params={"s3_path": "base/backups/platform/20250101_030000_4444444444444444_0.2.0_1.db.enc", "storage_id": "sa"})
     assert manager.restoring_from() == "2026-01-01T03:00:00"
@@ -325,7 +325,7 @@ class TestRestoreRequest:
   def test_every_other_request_is_refused_while_it_waits(self, manager, stores):
     backup = Backup.create(s3_path="base/backups/platform/20260101_030000_4444444444444444_0.2.0_1.db.enc", storage_id="sa", type="platform")
     manager.request_platform_restore(backup.id)
-    assert manager.add_task(task=asyncio.sleep, key=("later",), scopes=set(), executor="app").outcome == Outcome.REFUSED
+    assert manager.add_task(task=asyncio.sleep, key=("later",), scopes=set(), executor="main").outcome == Outcome.REFUSED
     with pytest.raises(Conflict, match="not running"):
       manager.request_platform_restore(backup.id)
     assert [task["name"] for task in manager.task_queue.snapshot()["queued"]] == ["restore_platform"]
@@ -354,7 +354,7 @@ class TestRestore:
     async def waiting():
       ran.append(Worker.select().count())
 
-    manager.add_task(task=waiting, key=("old",), scopes=set(), executor="app")
+    manager.add_task(task=waiting, key=("old",), scopes=set(), executor="main")
     manager.request_platform_restore(backup.id)
     await manager.run()
     assert [worker.hostname for worker in Worker.select()] == ["w1"]
@@ -429,8 +429,8 @@ class TestMigrationNotice:
 class TestFacts:
   async def test_the_backup_status_follows_a_running_platform_backup_and_a_discovery_queued(self, manager):
     assert manager.backup_status() == {"platform_backup_in_progress": False, "discovery_in_progress": False}
-    manager.add_task(task=asyncio.sleep, key=("backup_platform",), scopes=set(), executor="platform", params={"delay": 0})
-    manager.add_task(task=asyncio.sleep, key=("discover_backups",), scopes={"backup:store:sa"}, executor="platform",
+    manager.add_task(task=asyncio.sleep, key=("backup_platform",), scopes=set(), executor="main", params={"delay": 0})
+    manager.add_task(task=asyncio.sleep, key=("discover_backups",), scopes={"backup:store:sa"}, executor="main",
                      params={"delay": 0})
     assert manager.backup_status() == {"platform_backup_in_progress": False, "discovery_in_progress": True}
     manager.task_queue.dispatch_tick()
@@ -467,12 +467,12 @@ class TestStartup:
   def test_startup_requests_what_runs_when_sage_starts_and_checks_for_a_release_quietly(self, manager):
     manager.request_startup()
     assert manager.requested == STARTUP
-    assert queued(manager) == [(("refresh_latest_release",), [], "common", True)]
+    assert queued(manager) == [(("refresh_latest_release",), [], "main", True)]
 
   def test_a_release_check_asked_for_while_one_is_queued_is_that_one_made_visible(self, manager):
     queued_id = manager.request_release_check()
     assert manager.request_release_check(quiet=False) == queued_id
-    assert queued(manager) == [(("refresh_latest_release",), [], "common", False)]
+    assert queued(manager) == [(("refresh_latest_release",), [], "main", False)]
 
   async def test_a_release_check_asked_for_while_one_runs_is_that_one_made_visible(self, manager, register):
     register(Releases, SimpleNamespace(refresh=lambda: None))
@@ -498,10 +498,10 @@ class TestMetricsFlush:
   def test_it_is_one_quiet_task_on_the_metrics_lane(self, manager, flushed):
     manager.request_metrics_flush()
     manager.request_metrics_flush()
-    assert queued(manager) == [(("flush_metrics",), ["metrics"], "metrics", True)]
+    assert queued(manager) == [(("flush_metrics",), ["metrics"], "main", True)]
 
   async def test_it_waits_while_the_daily_metrics_cleanup_runs(self, manager, flushed):
-    manager.add_task(task=self.holding, key=("metrics_cleanup",), scopes={"metrics"}, executor="metrics")
+    manager.add_task(task=self.holding, key=("metrics_cleanup",), scopes={"metrics"}, executor="main")
     manager.task_queue.dispatch_tick()
     manager.request_metrics_flush()
     manager.task_queue.dispatch_tick()
@@ -510,7 +510,7 @@ class TestMetricsFlush:
     assert flushed == [True]
 
   async def test_it_runs_while_other_work_holds_its_scopes(self, manager, flushed):
-    manager.add_task(task=self.holding, key=("held",), scopes={"worker", "domain", "backup", "settings"}, executor="app")
+    manager.add_task(task=self.holding, key=("held",), scopes={"worker", "domain", "backup", "settings"}, executor="main")
     manager.task_queue.dispatch_tick()
     manager.request_metrics_flush()
     manager.task_queue.dispatch_tick()
@@ -530,7 +530,7 @@ class TestCleanup:
   def test_each_part_is_a_quiet_task_of_its_own_and_the_store_is_asked_to_prune(self, manager, cleaned):
     manager.request_cleanup()
     manager.request_cleanup()
-    assert sorted(queued(manager)) == [(("logs_cleanup",), [], "common", True), (("metrics_cleanup",), ["metrics"], "metrics", True),
+    assert sorted(queued(manager)) == [(("logs_cleanup",), [], "common", True), (("metrics_cleanup",), ["metrics"], "main", True),
                                        (("purge_history",), [], "common", True), (("safety_copies_cleanup",), [], "common", True)]
     assert manager.requested == ["request_worker_tmp_cleanup", "request_backup_retention"] * 2
 
@@ -548,7 +548,7 @@ class TestCleanup:
     async def holding():
       await asyncio.sleep(0.05)
 
-    manager.add_task(task=holding, key=("held",), scopes={"worker", "domain", "backup", "settings"}, executor="app")
+    manager.add_task(task=holding, key=("held",), scopes={"worker", "domain", "backup", "settings"}, executor="main")
     manager.task_queue.dispatch_tick()
     manager.request_cleanup()
     manager.task_queue.dispatch_tick()

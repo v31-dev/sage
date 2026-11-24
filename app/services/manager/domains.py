@@ -86,7 +86,7 @@ class DomainsMixin:
     for domain in Domain.select().where(Domain.id.in_(list(domain_ids))):
       snapshot = capture(domain)
       scopes = {domain_scope(domain.id), *(route_scope(worker, domain.id) for worker in snapshot.workers)}
-      self.add_task(task=self.apply_domain, key=("apply_domain", domain.id), scopes=scopes, executor="app",
+      self.add_task(task=self.apply_domain, key=("apply_domain", domain.id), scopes=scopes, executor="main",
                     params={"domain_id": domain.id, "worker": snapshot.worker, "workers": list(snapshot.workers)},
                     labels={"Domain": snapshot.host or domain.name}, on_conflict=OnConflict.REPLACE, quiet=True)
 
@@ -181,7 +181,7 @@ class DomainsMixin:
   def request_domain_reconciliation(self):
     """Queues the pass over every Domain's artifacts. A request while one runs gets a pass of its own after it, so a
     change that pass did not see is not missed."""
-    self.add_task(task=self.reconcile_domains, key=("reconcile_domains",), scopes={domain_scope()}, executor="app",
+    self.add_task(task=self.reconcile_domains, key=("reconcile_domains",), scopes={domain_scope()}, executor="main",
                   on_conflict=OnConflict.REPLACE, quiet=True)
 
   async def reconcile_domains(self):

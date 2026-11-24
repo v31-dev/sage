@@ -236,7 +236,7 @@ Stop](../docs/backend.md#pause-and-stop).
   a subject's requests by key and a resource's holders by scope, takes the kind of work from the name, and never reads
   identity from params. Scope roots and every task's name (`TASK_NAMES`) are declared in
   `services/manager/queue.py` and lanes in `utils/executor.py`, independently; the queue refuses a task outside them,
-  and a new task adds its name there. `common` is single-thread and low priority, so nothing urgent goes there.
+  and a new task adds its name there. A task that holds a scope runs on `main`; `common` (one thread) runs only scheduled housekeeping that holds none, and no task relies on a lane's size to keep it apart from another.
 - Only the dispatcher starts tasks, on the loop. A queued task cannot start while its scopes conflict with a running
   task or with a task queued before it, either way (a parent before its child, a child before its parent); tasks that
   do not conflict start together. Nothing relies on when a queued task starts or on the order of tasks that do not

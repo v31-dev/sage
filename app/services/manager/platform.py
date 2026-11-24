@@ -99,7 +99,7 @@ class PlatformMixin:
   def request_cleanup(self):
     """Requests the daily cleanup, each part a task of its own: the metrics, logs, history and an interrupted restore's
     safety copies past their retention, each worker's temp folder, and the store's old backups."""
-    self.add_task(task=Metrics().cleanup, key=("metrics_cleanup",), scopes={metrics_scope()}, executor="metrics", quiet=True)
+    self.add_task(task=Metrics().cleanup, key=("metrics_cleanup",), scopes={metrics_scope()}, executor="main", quiet=True)
     self.add_task(task=Logs().cleanup, key=("logs_cleanup",), scopes=set(), executor="common", quiet=True)
     self.add_task(task=purge_history, key=("purge_history",), scopes=set(), executor="common", quiet=True)
     self.add_task(task=Database().remove_safety_copies, key=("safety_copies_cleanup",), scopes=set(), executor="common",
@@ -109,12 +109,12 @@ class PlatformMixin:
 
   def request_metrics_flush(self):
     """Queues the write of the metrics' completed minutes, the manager's and each worker's."""
-    self.add_task(task=Metrics().flush, key=("flush_metrics",), scopes={metrics_scope()}, executor="metrics", quiet=True)
+    self.add_task(task=Metrics().flush, key=("flush_metrics",), scopes={metrics_scope()}, executor="main", quiet=True)
 
   def request_release_check(self, quiet: bool = True) -> str:
     """Queues fetching the newest release: quietly from the schedule and at startup, visibly when asked for; one
     queued or running does it. The task's id."""
-    return self.add_task(task=Releases().refresh, key=("refresh_latest_release",), scopes=set(), executor="common",
+    return self.add_task(task=Releases().refresh, key=("refresh_latest_release",), scopes=set(), executor="main",
                          quiet=quiet).task_id
 
   def request_platform_backup(self, slot: datetime | None = None) -> str | None:
@@ -138,7 +138,7 @@ class PlatformMixin:
     backup_ids = [reused] if reused else add_backups(session.identity, slot or now, slot is not None, [
         session.get_full_path(platform_backup_key(archive_name(now), config.VERSION, len(migrations.STEPS)))])
     added = self.add_task(task=settling(self.backup_platform), key=("backup_platform",),
-                          scopes={archive_write_scope(session.identity, "platform")}, executor="platform",
+                          scopes={archive_write_scope(session.identity, "platform")}, executor="main",
                           params={"backup_ids": backup_ids, "storage_id": session.identity}, on_conflict=OnConflict.REPLACE)
     if added.outcome == Outcome.ACCEPTED:
       cancel_queued_backups(backup_ids)
@@ -195,7 +195,7 @@ class PlatformMixin:
     if refusal := platform_restore_refusal(backup.s3_path, len(migrations.STEPS)):
       raise Conflict(refusal)
     added = self.add_restore(task=self.restore_platform, name="restore_platform", key=("restore_platform", backup.s3_path),
-                             executor="platform", params={"s3_path": backup.s3_path, "storage_id": backup.storage_id})
+                             executor="main", params={"s3_path": backup.s3_path, "storage_id": backup.storage_id})
     if added.outcome == Outcome.REFUSED:
       raise Conflict("Sage is not running, so it can't restore now.")
     return added.task_id

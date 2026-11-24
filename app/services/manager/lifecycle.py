@@ -149,7 +149,7 @@ class LifecycleMixin:
         commands.settle_intent(container.id, name)
 
     added = self.add_task(
-        task=task, key=(slot, container.id), name=name, scopes={scope, *scopes}, executor="app",
+        task=task, key=(slot, container.id), name=name, scopes={scope, *scopes}, executor="main",
         params={"container_id": container.id, **(params or {})}, inputs=inputs,
         labels={**self.container_labels(container), **(labels or {})}, on_conflict=on_conflict)
     if name in INTENTS and added.outcome != Outcome.ACCEPTED:

@@ -72,7 +72,7 @@ class Manager(ContainersMixin, LifecycleMixin, QueueMixin):
     self.recoveries = {}
     self.orphans = {}
     self.applied, self.discovered = [], 0
-    self.task_queue = TaskQueue(SCOPES, names=TASK_NAMES | {"record_read"}, executors={"app": self.pool},
+    self.task_queue = TaskQueue(SCOPES, names=TASK_NAMES | {"record_read"}, executors={"main": self.pool},
                                 record=lambda task, status: None, notify=self._queue_changed)
 
   def request_domain_applies(self, domain_ids):
@@ -605,8 +605,8 @@ class TestQueuedRequests:
     container = containers[0]
     manager.request_deploy(container.id)
     manager.add_task(task=automatic, key=("backup_preserve", container.id), scopes={f"worker:w1:container:{container.id}"},
-                     executor="app", params={"container_id": container.id})
-    manager.add_task(task=automatic, key=("record_read", container.id), scopes=set(), executor="app",
+                     executor="main", params={"container_id": container.id})
+    manager.add_task(task=automatic, key=("record_read", container.id), scopes=set(), executor="main",
                      params={"container_id": container.id})
     queued = manager.container_states([container])[container.id].queued
     assert [(request.operation, request.cancellable) for request in queued] == [("deploy", True), ("backup_preserve", False)]
@@ -621,7 +621,7 @@ class TestQueuedRequests:
 
     first, second = containers
     manager.add_task(task=automatic, key=("backup_preserve", first.id), scopes={f"worker:w1:container:{first.id}"},
-                     executor="app", params={"container_id": second.id})
+                     executor="main", params={"container_id": second.id})
     states = manager.container_states(containers)
     assert ([request.operation for request in states[first.id].queued], states[second.id].queued) == (["backup_preserve"], ())
 

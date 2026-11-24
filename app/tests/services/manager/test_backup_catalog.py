@@ -66,7 +66,7 @@ class Manager(BackupCatalogMixin, QueueMixin):
   def __init__(self):
     self.pool, self.started_at = ThreadPoolExecutor(max_workers=1), NOW
     self.queue_facts = []
-    self.task_queue = TaskQueue(SCOPES, names=TASK_NAMES, executors={"common": self.pool},
+    self.task_queue = TaskQueue(SCOPES, names=TASK_NAMES, executors={"main": self.pool},
                                 record=lambda task, status: None, notify=self._queue_changed)
 
   async def run(self):
@@ -518,7 +518,7 @@ class TestScopes:
     async def held():
       await release.wait()
 
-    manager.add_task(task=held, key=("discover_backups",), scopes={"backup:store:sa"}, executor="common")
+    manager.add_task(task=held, key=("discover_backups",), scopes={"backup:store:sa"}, executor="main")
     manager.task_queue.dispatch_tick()
     here = row(stores.a, archive_key(volume), volume)
     there = row(stores.b, archive_key(volume, 1), volume)

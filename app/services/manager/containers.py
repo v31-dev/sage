@@ -169,7 +169,7 @@ class ContainersMixin:
 
   def request_container_observation(self):
     """Queues the minutely look at every container's state."""
-    self.add_task(task=self.observe_containers, key=("observe_containers",), scopes=set(), executor="app", quiet=True)
+    self.add_task(task=self.observe_containers, key=("observe_containers",), scopes=set(), executor="main", quiet=True)
 
   async def observe_containers(self):
     """Tells the pages of the containers whose state changed, then asks for what reconciliation does about each. A
@@ -237,13 +237,13 @@ class ContainersMixin:
     """Queues the recovery of the operation `incident` on the container (or of its unreadable record): its
     containment, or once the old work's allowance has passed its settlement."""
     self.add_task(task=self.recover_container, key=("recover", container.id),
-                  scopes={placement_scope(container.worker_id, container.id)}, executor="app",
+                  scopes={placement_scope(container.worker_id, container.id)}, executor="main",
                   params={"container_id": container.id, "incident": incident, "final": final}, labels=self.container_labels(container))
 
   def request_reset(self, container: Container, cause: str):
     """Queues the reset of a container whose runtime contradicts its record."""
     self.add_task(task=self.reset_container, key=("reset", container.id),
-                  scopes={placement_scope(container.worker_id, container.id)}, executor="app",
+                  scopes={placement_scope(container.worker_id, container.id)}, executor="main",
                   params={"container_id": container.id, "cause": cause}, labels=self.container_labels(container))
 
   async def recover_container(self, container_id: str, incident: str, final: bool):
@@ -361,7 +361,7 @@ class ContainersMixin:
     """Queues a read of the container's record from its worker, under its scope so it never crosses a write."""
     self.add_task(
         task=self.read_record, key=("read_record", container.id), scopes={placement_scope(container.worker_id, container.id)},
-        executor="app", params={"container_id": container.id}, labels=self.container_labels(container), quiet=True)
+        executor="main", params={"container_id": container.id}, labels=self.container_labels(container), quiet=True)
 
   async def read_record(self, container_id: str):
     container = Container.get_or_none(Container.id == container_id)
@@ -374,7 +374,7 @@ class ContainersMixin:
     """Queues, for each worker that reports, a listing of the container records on it."""
     for worker in Worker.select():
       if WorkerReports().current(worker.hostname) is not None:
-        self.add_task(task=self.list_records, key=("list_records", worker.hostname), scopes=set(), executor="app",
+        self.add_task(task=self.list_records, key=("list_records", worker.hostname), scopes=set(), executor="main",
                       params={"hostname": worker.hostname}, labels={"Worker": worker.hostname}, quiet=True)
 
   async def list_records(self, hostname: str):
@@ -409,7 +409,7 @@ class ContainersMixin:
     if seen is not None and monotonic() - seen[1] < seen[2]:
       return
     self.add_task(task=self.cleanup_orphan, key=("cleanup_orphan", hostname, container_id),
-                  scopes={placement_scope(hostname, container_id)}, executor="app",
+                  scopes={placement_scope(hostname, container_id)}, executor="main",
                   params={"hostname": hostname, "container_id": container_id},
                   labels={"Worker": hostname, "Container": container_id, **({"Application": application} if application else {})})
 

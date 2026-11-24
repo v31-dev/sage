@@ -67,7 +67,7 @@ The manager process starts these concurrent services from `app/main.py`:
 Startup is service-driven:
 
 - `Manager()` initializes the platform services.
-- Before serving, with only the health check up, startup sets up the domain (`Manager.setup_domain`, on the `platform` lane): connect to Cloudflare (zone, tunnel, the manager's record) and get the manager's certificate, retrying a failure that clears by itself (a network error, HTTP 5xx or 429) after 1, 4 and 16 minutes and then exiting; any other failure, such as a rejected token, and a rate limit exit at once, and a still-valid certificate lets startup continue. Other startup work that touches the network (release check, worker and discovery certificates, S3 backup discovery, settings checks, each reachable worker's setup, by its stamps) runs as queued tasks once the servers are up. S3 and notifications are optional.
+- Before serving, with only the health check up, startup sets up the domain (`Manager.setup_domain`, on the `main` lane): connect to Cloudflare (zone, tunnel, the manager's record) and get the manager's certificate, retrying a failure that clears by itself (a network error, HTTP 5xx or 429) after 1, 4 and 16 minutes and then exiting; any other failure, such as a rejected token, and a rate limit exit at once, and a still-valid certificate lets startup continue. Other startup work that touches the network (release check, worker and discovery certificates, S3 backup discovery, settings checks, each reachable worker's setup, by its stamps) runs as queued tasks once the servers are up. S3 and notifications are optional.
 - If service initialization fails, the process exits.
 
 ## Worker Runtime
@@ -151,7 +151,7 @@ before issuance of the replacement; other workers' leaves and the shared discove
 Deleting a worker also retires its leaf. Revocation can run while a worker is offline; its next setup repairs the
 remote certificate inventory. An offline removed VM still needs manual decommissioning.
 
-Renewal takes one certificate at a time under `certificate`, on the platform lane. Each worker's copy holds that
+Renewal takes one certificate at a time under `certificate`, on the `main` lane. Each worker's copy holds that
 worker's `certificate:worker:<host>` and `worker:<host>:tls`, so the workers' copies go on in parallel.
 An individual failure is reported while other certificate owners continue. A valid leaf stays in use if ordinary
 renewal fails. Retired public leaves survive restart until revocation succeeds or they expire; their private keys

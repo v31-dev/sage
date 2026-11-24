@@ -73,7 +73,7 @@ class SettingsMixin:
         self._request_check(key, quiet=True)
 
   def _request_check(self, key: str, quiet: bool):
-    self.add_task(task=self.check_setting, key=(f"check_{key}",), scopes={f"settings:{key}"}, executor="common",
+    self.add_task(task=self.check_setting, key=(f"check_{key}",), scopes={f"settings:{key}"}, executor="main",
                   params={"key": key}, on_conflict=OnConflict.REPLACE, quiet=quiet)
 
   def request_test(self, key: str, value: dict) -> str:
@@ -81,7 +81,7 @@ class SettingsMixin:
     check: one per section, a Conflict while one is queued or running. The task's id."""
     if key not in SETTING_SECTIONS:
       raise KeyError(f"Unknown settings section: {key}")
-    added = self.add_task(task=self.run_test, key=(f"test_{key}",), scopes=set(), executor="common",
+    added = self.add_task(task=self.run_test, key=(f"test_{key}",), scopes=set(), executor="main",
                           params={"section": key, **TESTED.get(key, lambda value: {})(value)}, inputs={"value": value},
                           labels={"Section": key})
     if added.outcome == Outcome.EXISTING:

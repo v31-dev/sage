@@ -3,21 +3,16 @@ from concurrent.futures import ThreadPoolExecutor
 from contextvars import ContextVar, copy_context
 from functools import partial
 
-# Every thread pool in the process is defined here. LANES holds the operation-queue
-# lanes (the Manager builds its TaskQueue from it). Worker counts are fixed I/O-concurrency limits, not derived
-# from os.cpu_count(): these lanes run blocking network I/O (Cloudflare API, S3,
-# tailscale status, httpx), so the manager's core count doesn't gate them -- and in a CPU-limited
-# container os.cpu_count() reports host cores, not the container's allowance.
-# platform runs the platform backup and restore and certificate renewal, one at a time.
-# common is the low-priority lane (settings checks, log cleanup, release refresh), one
-# worker too: its tasks run one at a time even where their scopes would allow more.
-# app runs the containers', workers' and Domains' operations, sized for a couple of parallel
-# deploys beside the minutely observations; metrics runs the minutely flush beside the daily cleanup.
+# Every thread pool in the process is defined here. LANES holds the operation-queue lanes (the Manager builds its
+# TaskQueue from it). A lane thread is held only by blocking work (Cloudflare, S3, ACME, the tailscale CLI, httpx,
+# local SQLite and files); a worker's commands are asyncssh on the event loop and hold none. Worker counts are fixed
+# limits on that blocking work, not derived from os.cpu_count(), which in a CPU-limited container reports the host's.
+# A task is running, holding its scopes, from its dispatch, before it has a thread, so every task that holds a scope
+# runs on main, and common runs only scheduled housekeeping that holds none, one at a time; no task relies on a lane's
+# size to keep it apart from another.
 LANES = {
-    "platform": ThreadPoolExecutor(max_workers=1, thread_name_prefix="sage-platform"),
+    "main": ThreadPoolExecutor(max_workers=6, thread_name_prefix="sage-main"),
     "common": ThreadPoolExecutor(max_workers=1, thread_name_prefix="sage-common"),
-    "app": ThreadPoolExecutor(max_workers=6, thread_name_prefix="sage-app"),
-    "metrics": ThreadPoolExecutor(max_workers=2, thread_name_prefix="sage-metrics"),
 }
 
 # The topics pushed over Socket.IO (`Updates`) are computed here.

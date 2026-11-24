@@ -130,7 +130,7 @@ class BackupsMixin:
             task=settling(self.backup_container_preserving),
             key=("backup_preserve", container.id, *sorted(volume.id for volume in due)),
             scopes={placement_scope(container.worker_id, container.id), archive_write_scope(session.identity, container.id)},
-            executor="app", params={"container_id": container.id, "backup_ids": backup_ids, "storage_id": session.identity},
+            executor="main", params={"container_id": container.id, "backup_ids": backup_ids, "storage_id": session.identity},
             labels={**self.container_labels(container), "Volumes": ", ".join(volume.name for volume in due)})
         if added.outcome == Outcome.ACCEPTED:
           requeue_backups([reused for reused in due.values() if reused])

@@ -177,7 +177,7 @@ class Settled(SettingsMixin, QueueMixin):
   def __init__(self):
     self.pool = ThreadPoolExecutor(max_workers=1)
     self.queue_facts, self.requested = [], []
-    self.task_queue = TaskQueue(SCOPES, names=TASK_NAMES, executors={"common": self.pool}, record=lambda task, status: None,
+    self.task_queue = TaskQueue(SCOPES, names=TASK_NAMES, executors={"main": self.pool}, record=lambda task, status: None,
                                 notify=self._queue_changed)
 
   def request_backup_discovery(self):
@@ -209,7 +209,7 @@ class TestSave:
     settled.settings_saved("s3")
     assert (settled.installed.s3, settled.installed.notifications, settled.requested) == (
         [STORE], [], ["request_backup_discovery"])
-    assert settled.queued() == [(("check_s3",), ["settings:s3"], "common", {"key": "s3"}, False)]
+    assert settled.queued() == [(("check_s3",), ["settings:s3"], "main", {"key": "s3"}, False)]
     assert settled.applying_tasks()["s3"]["name"] == "check_s3"
 
   def test_a_cleared_store_is_installed_off_and_not_checked(self, settled):
@@ -236,9 +236,9 @@ class TestScheduledChecks:
     Settings().set("notifications", WEBHOOK)
     settled.request_settings_checks()
     assert settled.queued() == [
-        (("check_tailscale",), ["settings:tailscale"], "common", {"key": "tailscale"}, True),
-        (("check_cloudflare",), ["settings:cloudflare"], "common", {"key": "cloudflare"}, True),
-        (("check_notifications",), ["settings:notifications"], "common", {"key": "notifications"}, True)]
+        (("check_tailscale",), ["settings:tailscale"], "main", {"key": "tailscale"}, True),
+        (("check_cloudflare",), ["settings:cloudflare"], "main", {"key": "cloudflare"}, True),
+        (("check_notifications",), ["settings:notifications"], "main", {"key": "notifications"}, True)]
     assert set(settled.applying_tasks().values()) == {None}
 
   def test_a_scheduled_check_after_a_save_keeps_it_applying(self, settled):
@@ -281,8 +281,8 @@ class TestTest:
     settled.request_test("s3", STORE)
     settled.request_test("notifications", WEBHOOK)
     assert settled.queued() == [
-        (("test_s3",), [], "common", {"section": "s3", "endpoint": STORE["endpoint"], "bucket": "a", "path": "base"}, False),
-        (("test_notifications",), [], "common", {"section": "notifications", "channels": ["Discord"], "discord_webhook_id": "1"},
+        (("test_s3",), [], "main", {"section": "s3", "endpoint": STORE["endpoint"], "bucket": "a", "path": "base"}, False),
+        (("test_notifications",), [], "main", {"section": "notifications", "channels": ["Discord"], "discord_webhook_id": "1"},
          False)]
     assert [task.inputs for task in settled.task_queue._queue] == [{"value": STORE}, {"value": WEBHOOK}]
 

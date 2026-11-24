@@ -101,7 +101,7 @@ class Manager(DomainsMixin, QueueMixin):
     self.routable, self.ready, self.finished, self.discovered, self.traefik_networks = {}, {}, [], 0, []
     self.started_at = utcnow()
     self.queue_facts = self.domains_queue_facts()
-    self.task_queue = TaskQueue(SCOPES, names=TASK_NAMES, executors={"app": self.pool},
+    self.task_queue = TaskQueue(SCOPES, names=TASK_NAMES, executors={"main": self.pool},
                                 record=lambda task, status: self.finished.append((task.name, status)),
                                 notify=self._queue_changed)
 
@@ -458,7 +458,7 @@ class TestPayloads:
     async def apply_domain(domain_id, worker, host):
       pass
 
-    manager.add_task(task=apply_domain, key=("apply_domain", public.id), scopes={f"domain:{public.id}"}, executor="app",
+    manager.add_task(task=apply_domain, key=("apply_domain", public.id), scopes={f"domain:{public.id}"}, executor="main",
                      params={"domain_id": internal.id, "worker": None, "host": None})
     assert state(manager, public).view.status == "syncing" and state(manager, internal).view.status != "syncing"
 

@@ -30,10 +30,10 @@ class DiscoveryMixin:
     for worker in workers:
       if is_workable(worker.hostname):
         self.add_task(task=self.publish_discovery, key=("publish_discovery", worker.hostname, *(("force",) if force else ())),
-                      scopes={discovery_files_scope(worker.hostname)}, executor="app",
+                      scopes={discovery_files_scope(worker.hostname)}, executor="main",
                       params={"hostname": worker.hostname, "force": force}, labels={"Worker": worker.hostname},
                       on_conflict=OnConflict.REPLACE, quiet=not force)
-    self.add_task(task=self.publish_discovery_dns, key=("publish_discovery_dns",), scopes={discovery_scope()}, executor="app",
+    self.add_task(task=self.publish_discovery_dns, key=("publish_discovery_dns",), scopes={discovery_scope()}, executor="main",
                   on_conflict=OnConflict.REPLACE, quiet=True)
 
   async def publish_discovery(self, hostname: str, force: bool = False):

@@ -28,7 +28,7 @@ class Summarised(SummaryMixin, QueueMixin):
   def __init__(self):
     self.pool = ThreadPoolExecutor(max_workers=1)
     self.queue_facts = []
-    self.task_queue = TaskQueue(SCOPES, names=TASK_NAMES, executors={"common": self.pool}, record=lambda task, status: None,
+    self.task_queue = TaskQueue(SCOPES, names=TASK_NAMES, executors={"main": self.pool, "common": self.pool}, record=lambda task, status: None,
                                 notify=self._queue_changed)
     self.workers, self.containers, self.domains = ("online",), ("active",), ("synced",)
 

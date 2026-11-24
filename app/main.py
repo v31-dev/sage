@@ -110,7 +110,7 @@ async def main():
   # Cloudflare is part of the platform: Sage serves only once its domain is set up. Nothing else uses the platform
   # lane before the scheduler starts.
   try:
-    await run_in_executor_with_context(Manager().setup_domain, executor=LANES["platform"])
+    await run_in_executor_with_context(Manager().setup_domain, executor=LANES["main"])
   except Exception as e:
     logger.critical(
         f"Could not set up {Cloudflare().manager_hostname}: {e}. Check CLOUDFLARE_API_TOKEN "

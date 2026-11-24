@@ -140,7 +140,7 @@ class Lifecycle(ContainersMixin, LifecycleMixin, QueueMixin):
     self.recoveries = {}
     self.orphans = {}
     self.applied, self.reconciled, self.traefik_networks = [], 0, []
-    self.task_queue = TaskQueue(SCOPES, names=TASK_NAMES, executors={"app": self.pool}, record=lambda task, status: None, notify=self._queue_changed)
+    self.task_queue = TaskQueue(SCOPES, names=TASK_NAMES, executors={"main": self.pool}, record=lambda task, status: None, notify=self._queue_changed)
 
   def request_domain_applies(self, domain_ids):
     if ids := sorted(domain_ids):

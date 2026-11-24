@@ -62,7 +62,7 @@ class Manager(WorkersMixin, QueueMixin):
     self.tunnel_state = self.tunnels_fact()
     self.setup_failures, self.stack_repairs, self.removal_failures = {}, {}, {}
     self.discovered = 0
-    self.task_queue = TaskQueue(SCOPES, names=TASK_NAMES, executors={"app": self.pool, "common": self.pool}, record=lambda task, status: None,
+    self.task_queue = TaskQueue(SCOPES, names=TASK_NAMES, executors={"main": self.pool}, record=lambda task, status: None,
                                 notify=self._queue_changed)
 
   def request_discovery(self):
@@ -147,10 +147,10 @@ class TestObservation:
     [task] = manager.task_queue.snapshot()["queued"]
     assert (task["key"], task["scopes"], task["quiet"]) == (key, [], True)
 
-  def test_the_tunnel_listing_runs_on_the_low_priority_lane(self, manager):
+  def test_the_tunnel_listing_runs_on_main(self, manager):
     manager.request_tunnel_listing()
     [task] = manager.task_queue.snapshot()["queued"]
-    assert task["executor"] == "common"
+    assert task["executor"] == "main"
 
 
 class TestTunnelListing:
@@ -255,7 +255,7 @@ class TestPublication:
     async def reboot_worker(hostname):
       pass
 
-    manager.add_task(task=reboot_worker, key=("reboot_worker", "w1"), scopes={"worker:w1"}, executor="app", params={"hostname": "w2"})
+    manager.add_task(task=reboot_worker, key=("reboot_worker", "w1"), scopes={"worker:w1"}, executor="main", params={"hostname": "w2"})
     states = manager.worker_states()
     assert (states["w1"].view.status, states["w2"].tasks) == ("rebooting", frozenset())
 
@@ -265,7 +265,7 @@ class TestPublication:
     async def reboot_worker(hostname):
       await release.wait()
 
-    manager.add_task(task=reboot_worker, key=("reboot_worker", "w1"), scopes={"worker:w1"}, executor="app", params={"hostname": "w1"})
+    manager.add_task(task=reboot_worker, key=("reboot_worker", "w1"), scopes={"worker:w1"}, executor="main", params={"hostname": "w1"})
     assert signals == pages("w1")
     assert manager.worker_states()["w1"].view.status == "rebooting"
     manager.task_queue.dispatch_tick()

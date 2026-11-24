@@ -36,7 +36,7 @@ class BackupCatalogMixin:
       mark_deleted([backup.id])
       return None
     return self.add_task(task=self.delete_archive, key=("delete_archive", backup.storage_id, backup.s3_path),
-                         scopes={archive_scope(backup.storage_id, backup.s3_path)}, executor="common",
+                         scopes={archive_scope(backup.storage_id, backup.s3_path)}, executor="main",
                          params={"s3_path": backup.s3_path, "storage_id": backup.storage_id},
                          labels={"Backup of": backup.source_volume_name if backup.type == "application" else "the platform"}).task_id
 
@@ -86,7 +86,7 @@ class BackupCatalogMixin:
       return
     for volume in volumes:
       self.add_task(task=self.delete_volume_archives, key=("delete_volume_archives", session.identity, volume.id),
-                    scopes={store_scope(session.identity)}, executor="common",
+                    scopes={store_scope(session.identity)}, executor="main",
                     params={"volume_id": volume.id, "storage_id": session.identity}, labels={"Volume": volume.name})
 
   async def delete_volume_archives(self, volume_id: str, storage_id: str):
@@ -112,7 +112,7 @@ class BackupCatalogMixin:
     if session is None:
       return None
     return self.add_task(task=self.discover_backups, key=("discover_backups",), scopes={store_scope(session.identity)},
-                         executor="common", params={"storage_id": session.identity}, on_conflict=OnConflict.REPLACE).task_id
+                         executor="main", params={"storage_id": session.identity}, on_conflict=OnConflict.REPLACE).task_id
 
   async def discover_backups(self, storage_id: str):
     """Lists the platform backups and volume archives in the store, then reads the rows, and makes the table mirror the
@@ -147,7 +147,7 @@ class BackupCatalogMixin:
     if session is None:
       return
     self.add_task(task=self.prune_backups, key=("prune_backups",), scopes={store_scope(session.identity)},
-                  executor="common", params={"storage_id": session.identity}, quiet=True)
+                  executor="main", params={"storage_id": session.identity}, quiet=True)
 
   async def prune_backups(self, storage_id: str):
     """Deletes from the store the platform backups and volume archives older than `config.RETENTION_DAYS`, then the rows

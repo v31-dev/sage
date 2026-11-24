@@ -188,7 +188,7 @@ class Manager(WorkersMixin, DomainsMixin, QueueMixin):
     self.setup_failures, self.stack_repairs, self.removal_failures = {}, {}, {}
     self.applied, self.reconciled, self.discovered, self.renewals, self.distributions = [], 0, 0, 0, []
     self.forced = []
-    self.task_queue = TaskQueue(SCOPES, names=TASK_NAMES, executors={"app": self.pool}, record=lambda task, status: None, notify=self._queue_changed)
+    self.task_queue = TaskQueue(SCOPES, names=TASK_NAMES, executors={"main": self.pool}, record=lambda task, status: None, notify=self._queue_changed)
 
   def request_domain_applies(self, domain_ids):
     if ids := sorted(domain_ids):
@@ -644,7 +644,7 @@ class TestTraefikNetworks:
     ((change,),) = [manager.task_queue.snapshot()["queued"]]
     for first in ("delete", "attach_traefik_networks"):
       started, release = [], asyncio.Event()
-      queue = TaskQueue(SCOPES, {"app": manager.pool}, names=TASK_NAMES)
+      queue = TaskQueue(SCOPES, {"main": manager.pool}, names=TASK_NAMES)
 
       def body(name):
         async def run(**_):
@@ -656,7 +656,7 @@ class TestTraefikNetworks:
                   "attach_traefik_networks": (tuple(change["key"]), set(change["scopes"]))}
       for name in (first, *(other for other in requests if other != first)):
         key, scopes = requests[name]
-        queue.add_task(task=body(name), key=key, name=name, scopes=scopes, executor="app")
+        queue.add_task(task=body(name), key=key, name=name, scopes=scopes, executor="main")
       queue.dispatch_tick()
       await asyncio.sleep(0)
       assert started == [first]

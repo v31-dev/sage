@@ -16,9 +16,8 @@ from utils.logging import TaskFailed, task_id
 from utils.queue import OnConflict, Outcome, QueueState, TaskQueue
 
 # Worker counts of the lanes in utils.executor.LANES.
-POOLS = {"platform": 1, "common": 1, "app": 6, "metrics": 2}
+POOLS = {"main": 6, "common": 1}
 ROOTS = frozenset({"worker", "domain", "certificate", "backup", "discovery", "settings", "metrics"})
-LANE_OF_ROOT = {"certificate": "platform", "backup": "platform", "settings": "common", "metrics": "metrics"}
 GATE = object()    # a blocking call that ends when the test opens the thread gate
 
 
@@ -28,8 +27,8 @@ def conflict(first, second):
 
 
 def lane_of(scopes):
-  roots = sorted({scope.split(":")[0] for scope in scopes})
-  return next((LANE_OF_ROOT[root] for root in roots if root in LANE_OF_ROOT), "app")
+  """Every task that holds a scope runs on main; common runs housekeeping that holds none."""
+  return "main" if scopes else "common"
 
 
 def container(index, workers=3):
@@ -61,7 +60,7 @@ class Job:
     self.block = block
     self.fail = fail
     self.during = during
-    self.lane = "platform" if restore else lane_of(self.scopes)
+    self.lane = "main" if restore else lane_of(self.scopes)
     self.gate = asyncio.Event()
     self.runs = 0
     self.added = None
@@ -542,14 +541,14 @@ class TestContainerOperations:
   async def test_blocking_work_of_many_deploys_is_limited_by_the_size_of_the_lane(self, sim):
     for index in range(10):
       sim.add(f"deploy#{index}", container(index), block=GATE)
-    await sim.until(lambda: sim.in_thread["app"] == POOLS["app"])
+    await sim.until(lambda: sim.in_thread["main"] == POOLS["main"])
     await asyncio.sleep(0.05)
-    assert sim.in_thread["app"] == POOLS["app"]
+    assert sim.in_thread["main"] == POOLS["main"]
     assert len(sim.running()) == 10
     sim.thread_gate.set()
     await sim.drain()
     sim.verify()
-    assert sim.max_in_thread["app"] == POOLS["app"]
+    assert sim.max_in_thread["main"] == POOLS["main"]
 
   async def test_a_task_that_adds_another_does_not_wait_for_it(self, sim):
     def add_children(job):
@@ -891,13 +890,12 @@ class TestShutdownOfTheLoop:
 class TestLanes:
   @pytest.mark.parametrize("sync", [False, True], ids=["offloaded from a coroutine", "a function"])
   @pytest.mark.parametrize("lane, scopes, size", [
-      ("common", [f"settings:{key}" for key in "abcdef"], 1),
-      ("metrics", [f"metrics:h{index}" for index in range(8)], 2),
-      ("app", [container(index) for index in range(12)], 6),
+      ("common", [None] * 6, 1),
+      ("main", [container(index) for index in range(12)], 6),
   ])
   async def test_blocking_work_never_exceeds_the_lane_however_many_scopes_are_free(self, sim, sync, lane, scopes, size):
     for index, scope in enumerate(scopes):
-      sim.add(f"job#{index}", scope, block=0.03, sync=sync)
+      sim.add(f"job#{index}", *([scope] if scope else []), block=0.03, sync=sync)
     await sim.drain()
     sim.verify()
     assert sim.max_in_thread[lane] == size
@@ -918,10 +916,10 @@ class TestLanes:
       seen[job.label] = (task_id.get(), active_executor.get())
 
     rng = random.Random(7)
-    scopes = [container(1), container(2), "settings:x", "metrics:h", "certificate"]
+    scopes = [container(1), container(2), "settings:x", "metrics", "certificate", None]
     for index in range(60):
       scope = rng.choice(scopes)
-      sim.add(f"job#{index}", scope, on_conflict=OnConflict.QUEUE, delay=rng.uniform(0, 0.01),
+      sim.add(f"job#{index}", *([scope] if scope else []), on_conflict=OnConflict.QUEUE, delay=rng.uniform(0, 0.01),
               block=rng.choice([None, 0.001]), during=look)
     await sim.drain()
     sim.verify()
@@ -942,7 +940,7 @@ def random_operation(rng, index):
   placement = container(number)
   kind = rng.choices(
       ["deploy", "stop", "cancel", "delete", "reconcile", "user-reconcile", "observe", "setup", "certificate", "backup",
-       "check", "metrics", "delete-archive", "domain"],
+       "check", "flush", "delete-archive", "domain"],
       weights=[20, 8, 3, 3, 24, 4, 6, 4, 3, 4, 5, 6, 5, 6])[0]
   options = dict(delay=rng.uniform(0, 0.012), fail=rng.choices([None, "task", "error"], [90, 5, 5])[0],
                  block=rng.choice([None, None, rng.uniform(0, 0.006)]), sync=rng.random() < 0.2)
@@ -972,9 +970,8 @@ def random_operation(rng, index):
     section = rng.choice("abc")
     return label, [f"settings:{section}"], dict(key=("check", section), on_conflict=OnConflict.REPLACE,
                                                 quiet=rng.random() < 0.7, **options)
-  if kind == "metrics":
-    host = f"h{rng.randrange(3)}"
-    return label, [f"metrics:{host}"], dict(key=("collect", host), quiet=True, **options)
+  if kind == "flush":
+    return label, ["metrics"], dict(key=("flush_metrics",), quiet=True, **options)
   if kind == "delete-archive":
     return label, [f"backup:store:s1:object:{rng.randrange(4)}"], dict(key=(label,), on_conflict=OnConflict.QUEUE,
                                                                        **options)
@@ -987,7 +984,7 @@ SEEDS = range(12)
 
 KEYS = [("deploy", "c1"), ("deploy", "c2"), ("reconcile", "c1"), ("sync_domain", "d1"), ("check", "s3"), ("renew",)]
 SCOPE_CHOICES = ["worker", "worker:w1", "worker:w1:container:c1", "worker:w1:container:c2", "worker:w2:container:c3",
-                 "domain:id:d1", "certificate", "settings:s3", "metrics:h1", "backup:store:s1"]
+                 "domain:id:d1", "certificate", "settings:s3", "metrics", "backup:store:s1"]
 
 
 def random_scopes(rng):

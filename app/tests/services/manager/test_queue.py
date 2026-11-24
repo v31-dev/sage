@@ -77,7 +77,7 @@ class TestQueueFacts:
 
 def finished(**fields):
   return QueuedTask(**{"name": "deploy", "key": ("lifecycle", "c1"), "scopes": frozenset({"worker:w1:container:c1"}),
-                       "task": lambda: None, "params": {"container_id": "c1"}, "executor": "app", "task_id": "t-1", **fields})
+                       "task": lambda: None, "params": {"container_id": "c1"}, "executor": "main", "task_id": "t-1", **fields})
 
 
 class TestHistoryFilters:

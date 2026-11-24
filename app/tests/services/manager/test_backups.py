@@ -119,7 +119,7 @@ class Manager(BackupsMixin, BackupCatalogMixin, Lifecycle):
   def __init__(self):
     super().__init__()
     self.started_at = datetime(2000, 1, 1)
-    self.task_queue = TaskQueue(SCOPES, names=TASK_NAMES, executors={"app": self.pool, "common": self.pool}, record=lambda task, status: None,
+    self.task_queue = TaskQueue(SCOPES, names=TASK_NAMES, executors={"main": self.pool}, record=lambda task, status: None,
                                 notify=self._queue_changed)
 
 
