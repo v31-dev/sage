@@ -59,12 +59,13 @@ Sources: [scheduler](../app/scheduler.py), [queue engine](../app/utils/queue.py)
 
 ## Resources and scopes
 
-What Sage holds falls into six kinds, each with one place and one meaning:
+What Sage holds falls into seven kinds, each with one place and one meaning:
 
 | Kind | Where | What it is for |
 | --- | --- | --- |
 | Configuration | `data.db`: Project, Application, Volume, Container, Domain, DomainCaller, Worker (hostname, subdomain), Setting, Instance | What the user asked Sage to run; written by the routes' commands, read by every task at its start |
-| Accepted intent | `data.db`: `Container.intent`, `Worker.removing`, Backup rows recorded queued | A request accepted before it reaches its target, kept across a restart (the queue is memory) until its outcome |
+| Accepted intent | `data.db`: `Container.intent`, `Worker.removing` | A request accepted before it reaches its target, kept across a restart (the queue is memory) and resumed until its outcome |
+| Catalog | `data.db`: Backup | The store's archives as Sage knows them, and each backup asked for or taken with its outcome; backup discovery reconciles it with the store, and a row an earlier run left queued or running is settled from the store, never resumed |
 | Target records | On the target: a container's `record.json`, a worker's stamps under `revisions/`, the proof lines in Sage's worker files, the comments on Sage's DNS records | What was done there: an operation in progress and its baseline, what was applied and from which configuration; recovery and drift are read from them |
 | Observations | Memory, in their owners (below) | Live status, rebuilt after a restart from reports, listings and checks; never authority to start a container |
 | Applied artifacts | Workers, Docker, Cloudflare, S3, the manager's certificate store | What Sage writes outside its database from the configuration; each has one scope, and every writer holds it |
@@ -107,7 +108,7 @@ A lane's pool size is not a lock: async task bodies overlap while their offloads
 
 | Writer | What it writes | What keeps it apart instead |
 | --- | --- | --- |
-| The routes' commands | Configuration and accepted intent in `data.db` | Its own `IMMEDIATE` transaction; a task re-fetches at its start and a frozen snapshot travels in `inputs` |
+| The routes' commands | Configuration, accepted intent, and the Backup rows they record queued or settle, in `data.db` | Its own `IMMEDIATE` transaction; a task re-fetches at its start and a frozen snapshot travels in `inputs` |
 | `setup_domain`, at boot | The platform tunnel, the manager's DNS record and its certificate | Runs before the queue starts |
 | `restore_platform` | All of `data.db` | The queue's own entry: it starts once nothing runs or waits, and every other request is refused meanwhile |
 | `purge_history` | History rows past retention | Rows no other writer changes; DEDUP keeps one |
