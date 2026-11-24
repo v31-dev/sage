@@ -11,6 +11,8 @@ tasks touch stay free of deadlocks and races and the facts they read flow one wa
 - operations.md's [Resources and scopes](../../../docs/operations.md#resources-and-scopes): the kinds of data and
   where each lives, every scope with the resource it holds and its writers, and the writers without a scope with what
   keeps them apart; and its [Admission](../../../docs/operations.md#admission);
+- backend.md's [Execution Modes And Pools](../../../docs/backend.md#execution-modes-and-pools): the lanes, what each
+  runs, and that a task holding a scope runs on `main`;
 - app/AGENTS's [Operation Queue And Scheduler](../../../app/AGENTS.md#operation-queue-and-scheduler), [Services,
   Memory And Updates](../../../app/AGENTS.md#services-memory-and-updates), [Code
   Layout](../../../app/AGENTS.md#code-layout) and [Async And `task_id`](../../../app/AGENTS.md#async-and-task_id);
@@ -28,8 +30,8 @@ shows. A review records findings; fixing one is a separate change the user appro
   and certifies.
 - Out: anything that is not drift from the contract (an idea, extra hardening, a hypothetical, a simpler design),
   hunting bugs or auditing the rest of the code, the UI and payloads, docs drift beyond the contract and the queue
-  docs below, a resource's lifecycle rules beyond its locks, how long a task waits, the lanes' sizes until the
-  contract lists them, and scaling: a cost that shows only beyond the envelope in [Core
+  docs below, a resource's lifecycle rules beyond its locks, how long a task waits, a lane's
+  size, and scaling: a cost that shows only beyond the envelope in [Core
   Context](../../../AGENTS.md#core-context-to-preserve) is not a finding. Something out of scope met on the way gets
   one line in the hand-off, not an investigation.
 - Say the subject (the engine, a change against its baseline commit, or a planned design) and the commit at the start.
@@ -84,8 +86,9 @@ lock wait on the provider, the event loop included.
    intent in the database, records on their target, observations in their owner's memory, history and telemetry in
    their stores. Each resource a task writes has its row in the map, with its scope, its builder and every writer the
    inventory finds; each writer outside the queue is in the writers without a scope, with what keeps it apart; each
-   scope names a resource. Check both ways: a resource, writer or scope the code has and the map lacks, and a row the
-   code no longer bears out.
+   scope names a resource. Each task that holds a scope runs on `main`, and nothing relies on a lane's size to keep two
+   tasks apart. Check both ways: a resource, writer or scope the code has and the map lacks, and a row the code no
+   longer bears out.
 2. **Races on the resources tasks touch.** For each remote write, the resource it changes (from its path or its
    owner's writer), side effects included (a Compose command creates and removes its project's networks and volumes),
    every task that reaches it and that task's scopes; group the writes by resource, not by command or function. On one
