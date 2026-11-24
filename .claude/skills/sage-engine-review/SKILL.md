@@ -1,18 +1,24 @@
 ---
 name: sage-engine-review
-description: Independently check Sage's core operation engine and the code that uses it - that every task's scopes cover the resources it writes, that nothing can deadlock or race on those resources, and that the facts tasks and decisions read flow one way from their owners. Use when a change adds or alters a task, a scope, a remote write, a Fact, a lock or a decision table, when asked to evaluate the engine, or to check a planned design for it.
+description: Independently check Sage's core operation engine and the code that uses it for drift from its contract - that every piece of state lives where its kind says, that every task's scopes cover the resources it writes as the resource map lists them, that nothing can deadlock or race on those resources, and that the facts tasks and decisions read flow one way from their owners. Use when a change adds or alters a task, a scope, a remote write, a Fact, a lock or a decision table, when asked to evaluate the engine, or to check a planned design for it.
 ---
 
 # Sage Engine Review
 
-Keep the core scheduler engine intact as Sage grows: catch code that drifts from the resource scope locks, and
-reconcile the tasks' data flow (observation sources, decision tables, the consumers of facts) so the resources they
-touch stay free of deadlocks and races. The rules are app/AGENTS's [Operation Queue And
-Scheduler](../../../app/AGENTS.md#operation-queue-and-scheduler), [Services, Memory And
-Updates](../../../app/AGENTS.md#services-memory-and-updates), [Code Layout](../../../app/AGENTS.md#code-layout) and
-[Async And `task_id`](../../../app/AGENTS.md#async-and-task_id), with the root's [working
-rules](../../../AGENTS.md#working-rules) 3 and 9–11; this skill is how to check the code against them. A review
-records findings; fixing one is a separate change the user approves.
+Keep the core scheduler engine intact as Sage grows: catch code that drifts from its contract, so the resources
+tasks touch stay free of deadlocks and races and the facts they read flow one way. The contract is:
+
+- operations.md's [Resources and scopes](../../../docs/operations.md#resources-and-scopes): the kinds of data and
+  where each lives, every scope with the resource it holds and its writers, and the writers without a scope with what
+  keeps them apart; and its [Admission](../../../docs/operations.md#admission);
+- app/AGENTS's [Operation Queue And Scheduler](../../../app/AGENTS.md#operation-queue-and-scheduler), [Services,
+  Memory And Updates](../../../app/AGENTS.md#services-memory-and-updates), [Code
+  Layout](../../../app/AGENTS.md#code-layout) and [Async And `task_id`](../../../app/AGENTS.md#async-and-task_id);
+- the root's [working rules](../../../AGENTS.md#working-rules) 3 and 9–11.
+
+This skill is how to check the code against the contract, and the contract against itself. It is a drift check, not
+a design review: a finding names the line of the contract the code drifts from, or the gap in the contract the code
+shows. A review records findings; fixing one is a separate change the user approves.
 
 ## Scope
 
@@ -20,8 +26,10 @@ records findings; fixing one is a separate change the user approves.
   `services/updates.py`) and its boundary: every enqueue, every remote write and the tasks that reach it, every reader
   of the queue, every Fact and lock, every decision table and its consumers, and what a task body freezes, re-reads
   and certifies.
-- Out: hunting bugs or auditing the rest of the code, the UI and payloads, docs drift, a resource's lifecycle rules
-  beyond its locks, how long a task waits, and scaling: a cost that shows only beyond the envelope in [Core
+- Out: anything that is not drift from the contract (an idea, extra hardening, a hypothetical, a simpler design),
+  hunting bugs or auditing the rest of the code, the UI and payloads, docs drift beyond the contract and the queue
+  docs below, a resource's lifecycle rules beyond its locks, how long a task waits, the lanes' sizes until the
+  contract lists them, and scaling: a cost that shows only beyond the envelope in [Core
   Context](../../../AGENTS.md#core-context-to-preserve) is not a finding. Something out of scope met on the way gets
   one line in the hand-off, not an investigation.
 - Say the subject (the engine, a change against its baseline commit, or a planned design) and the commit at the start.
@@ -34,12 +42,13 @@ records findings; fixing one is a separate change the user approves.
 - Every run is independent. Do not read, search, reuse or cite prior reviews, their inventories or probes, or
   todo/backlog items. Do not use earlier review conclusions already in context as a checklist or evidence. Build
   the inventory, probes and findings afresh from the source being reviewed.
-- Read the engine's files in full, the rules above, and the docs on the queue: backend.md's [Operation
+- Read the engine's files in full, the contract above, and the docs on the queue: backend.md's [Operation
   Queue](../../../docs/backend.md#operation-queue), [Pause And Stop](../../../docs/backend.md#pause-and-stop),
   [Execution Modes And Pools](../../../docs/backend.md#execution-modes-and-pools), [Choosing A Task
   Shape](../../../docs/backend.md#choosing-a-task-shape) and [Pushed Updates](../../../docs/backend.md#pushed-updates),
-  and operations.md's [Scopes and admission](../../../docs/operations.md#scopes-and-admission) and [Task
-  catalog](../../../docs/operations.md#task-catalog). They are claims to check against the source, not proof.
+  and operations.md's [Resources and scopes](../../../docs/operations.md#resources-and-scopes),
+  [Admission](../../../docs/operations.md#admission) and [Task catalog](../../../docs/operations.md#task-catalog).
+  They are claims to check against the source, not proof.
 - Inspect the working tree, staged and unstaged, without changing it; read an older version with
   `git show <rev>:<path>`.
 
@@ -71,7 +80,13 @@ lock wait on the provider, the event loop included.
 
 ## Answer these, each with source locations
 
-1. **Races on the resources tasks touch.** For each remote write, the resource it changes (from its path or its
+1. **Kinds and the map.** Each piece of state the code keeps lives where its kind says: configuration and accepted
+   intent in the database, records on their target, observations in their owner's memory, history and telemetry in
+   their stores. Each resource a task writes has its row in the map, with its scope, its builder and every writer the
+   inventory finds; each writer outside the queue is in the writers without a scope, with what keeps it apart; each
+   scope names a resource. Check both ways: a resource, writer or scope the code has and the map lacks, and a row the
+   code no longer bears out.
+2. **Races on the resources tasks touch.** For each remote write, the resource it changes (from its path or its
    owner's writer), side effects included (a Compose command creates and removes its project's networks and volumes),
    every task that reaches it and that task's scopes; group the writes by resource, not by command or function. On one
    lock path, each writer holds the resource's scope or an ancestor; under two roots, or two sibling scopes of one
@@ -80,12 +95,12 @@ lock wait on the provider, the event loop included.
    a binding that can change is checked again at the task's start. A remote command can outlive the attempt that
    started it (a dropped connection leaves it running until its worker-side timeout): a retry of it, or the next task
    on its resource once the scope is released, is a second writer while it may still run.
-2. **Deadlock.** The wait graph over scopes, the queue lock, Fact locks, service locks, lanes, the event loop and
+3. **Deadlock.** The wait graph over scopes, the queue lock, Fact locks, service locks, lanes, the event loop and
    SQLite: for each lock, what runs under it and on which threads. Name the edges the engine makes impossible (the
    code) and those a rule forbids (the rule), and the call sites that keep or break each: a Fact callback that checks
    a Fact, an owner that enqueues or publishes under its lock, a sync task that waits on its own lane, a body that
    waits for another queued task.
-3. **Consistency over time.** Enqueue, start, result: what a task freezes in `inputs`, what it reads again at its
+4. **Consistency over time.** Enqueue, start, result: what a task freezes in `inputs`, what it reads again at its
    start, how its result is tied to what it applied (a fingerprint, a generation, its authority), and what guards it
    against writers outside the queue. Each reference a task carries in its key, params or inputs resolves at its start
    to the resource its scopes were built for: an id a deletion frees for reuse, or a row field another writer can
@@ -96,7 +111,7 @@ lock wait on the provider, the event loop included.
    await) is traced for lost updates, and a Fact callback for the requests lost when it raises after `last` is set. A
    request function that writes rows before its `add_task` leaves a moment with neither; a body that reads the queue
    and then those rows is traced across it.
-4. **Data flow.** Each reader of the queue finds a subject by key and a resource by scope, never identity in params;
+5. **Data flow.** Each reader of the queue finds a subject by key and a resource by scope, never identity in params;
    the queue's facts only publish, and work is requested by a body's end, a state Fact's callback or a scheduled pass.
    For each decision table: its inputs with their owner, source and knowledge states, the bound on each state not
    known yet (root working rule 10), and its consumers. A consumer that composes a decided question again from raw
@@ -104,6 +119,8 @@ lock wait on the provider, the event loop included.
 
 ## Judge with evidence
 
+- Each finding names the line of the contract it drifts from (a kind, a map row, an admission rule, an AGENTS rule),
+  or the gap in the contract it shows. What names neither is not a finding.
 - "By construction" names the code that makes a violation impossible; "by rule" names the AGENTS rule and whether the
   inventory shows every call site keeping it. Do not hold code to a rule the AGENTS files lack; a gap in the rules is
   itself a finding.
@@ -149,20 +166,20 @@ lock wait on the provider, the event loop included.
 - `README.md`: `# Engine review — <short commit> (<YYYY-MM-DD>)`, then a subject paragraph (the subject, full
   commit, branch and tree state, the focus, anything read beyond the source and why, and the suite and probe
   commands with their results). Then `## Findings`, a table `# | Priority | Question | Finding | Grade` linking each
-  detail file; one section per question, `## 1. Races on the resources tasks touch`, `## 2. Deadlock`, `## 3.
-  Consistency over time`, `## 4. Data flow`, each answered with source locations and citing findings by number, and
+  detail file; one section per question, `## 1. Kinds and the map`, `## 2. Races on the resources tasks touch`,
+  `## 3. Deadlock`, `## 4. Consistency over time`, `## 5. Data flow`, each answered with source locations and citing findings by number, and
   what was checked and holds; then `## Not verified`, `## Out of scope` (one line each) and `## Skill changes`
   ("None" when none).
 - A finding file: `# NN — <the claim in one line>`, then `Priority: P<n>. Question: <n. name>. Grade: <grade>
   (<how>).`, then `## Locations`, `## Interleaving` (or `## Wait cycle`), `## Why the protection doesn't hold`,
-  `## Rule`, `## Direction` and `## Evidence and limits`, which names the `evidence/` file and test that shows it and
+  `## Contract` (the line it drifts from, or the gap), `## Direction` and `## Evidence and limits`, which names the `evidence/` file and test that shows it and
   what it does not show. Probe code lives in `probes.py`, not in a finding; a few quoted lines are fine.
 - `evidence/` holds only files the run produced and leaves out one with nothing in it. `probes.py` runs from an
   extracted copy of `app/` in scratch space, with its command in its docstring.
-- Report by the four questions, races and deadlocks first, then what was not verified.
+- Report by the five questions, the map first, then races and deadlocks, then what was not verified.
 - Change no runtime code, test or doc during the review.
 - A finding the user promotes to a todo, sprint or backlog item is written into that item whole, so it stands alone
-  once the report is gone: its locations, the interleaving or wait cycle, why the protection doesn't hold, the rule,
+  once the report is gone: its locations, the interleaving or wait cycle, why the protection doesn't hold, the contract,
   the direction, and what the evidence showed and did not show (a probe as the scenario it ran). The item links
   nothing in the report.
 
