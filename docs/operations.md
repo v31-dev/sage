@@ -117,7 +117,9 @@ A lane's pool size is not a lock: async task bodies overlap while their offloads
 | `purge_history` | History rows past retention | Rows no other writer changes; DEDUP keeps one |
 | `observe_workers`, `refresh_worker_paths`, `list_tunnels`, `observe_containers`, `list_records` | Observations in memory | Their owners' locks; DEDUP keeps one of each |
 | Report intake (Telegraf) | Reports and metric peaks in memory | `WorkerReports`' lock |
-| `test_<section>` | Nothing: a result row pushed to its page | DEDUP, a second request refused |
+| The manager's metric sampler (`metrics-sampler` thread) | The manager's minute peaks in memory | `Metrics`' lock, under which `flush_metrics` drains them |
+| `test_<section>` | A result row pushed to its page; the S3 Test writes and deletes `<path>/.sage-check` in the candidate bucket, which can be the configured store's; the notifications Test sends a message to each configured channel | DEDUP, a second request refused; the marker is outside `<path>/backups/`, where every other store writer and backup discovery stay |
+| `settings_saved`, from PUT `/settings/{s3,notifications}` | The S3 or Notifications consumer, installed in memory from the saved snapshot | Each consumer keeps the revision it installed and ignores an older one |
 | `send_summary_notification` | A message to the channels | DEDUP keeps one |
 | `refresh_latest_release` | The latest release, in memory | `Releases`' lock; DEDUP keeps one |
 | Vector log intake and `Logs.write_marker` | Application and request log shards | `LOGS_EXECUTOR`, one thread |

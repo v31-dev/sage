@@ -22,7 +22,7 @@ from services.tailscale import Tailscale
 from services.updates import Fact, Updates, UpdateSource
 from services.worker_reports import WorkerReports
 from services.workers import commands
-from services.workers.decisions import (TASKS, addressable, alias_changes, dns_exceptions, edge_subnets, parse_aliases, parse_networks,
+from services.workers.decisions import (TASKS, addressable, alias_changes, correction, dns_exceptions, edge_subnets, parse_aliases, parse_networks,
                                         reboot_outcome, stray_traefik_files, traefik_network_changes, worker_claim_refusal, worker_owner)
 from services.workers.rendering import (DEFAULT_DNS_CONTAINER, EDGE_NETWORK_CREATED, FIREWALL_FILES, FIREWALL_UNIT, FIREWALL_UNIT_PATH,
                                         TRAEFIK_CONTAINER, InfraInputs, applications_memory_mb, edge_network_command, firewall_fingerprint,
@@ -43,9 +43,6 @@ logger = logging.getLogger(__name__)
 # The statuses between which a worker's observed changes are recorded in its history: what its tasks show is theirs,
 # and checking says nothing is known yet.
 OBSERVED = ("offline", "not ready", "online")
-# Why a worker set up but not ready gets its stack started: part of it is down, Traefik does not answer, or it is
-# silent (for longer than WORKER_STACK_SILENCE_SECONDS).
-REPAIRED = ("stack_down", "traefik_down", "not_reporting")
 # Why a reboot was not confirmed in time, by how far it got.
 REBOOT_FAILURES = {"old_boot": "it did not restart", "not_ready": "it restarted but is not ready",
                    "unknown": "it did not answer"}
@@ -163,12 +160,9 @@ class WorkersMixin:
     self.add_task(task=self.observe_workers, key=("observe_workers",), scopes=set(), executor="main", quiet=True)
 
   async def observe_workers(self):
-    """Asks every configured worker's SSH server, tells the pages of the workers whose state changed, then asks for the
-    removal of each worker marked for it, once its SSH server's answer is known and WORKER_SETUP_RETRY_SECONDS after its
-    last removal failed; for the convergence of each other reachable worker not set up since the Manager started or
-    since it came back, whose address changed, or whose last setup failed or was refused WORKER_SETUP_RETRY_SECONDS ago;
-    and for the repair of the stack of a worker set up but not ready because of it. A look that fails tells the pages of the workers whose state changed
-    and fails."""
+    """Asks every configured worker's SSH server, tells the pages of the workers whose state changed, then asks for each
+    worker's `correction`: its removal, its convergence or its stack's repair. A look that fails tells the pages of the
+    workers whose state changed and fails."""
     hostnames = [worker.hostname for worker in Worker.select(Worker.hostname)]
     try:
       await Tailscale().observe_workers(hostnames)
@@ -181,22 +175,18 @@ class WorkersMixin:
     self.worker_state.check()
     now = monotonic()
     for hostname, state in self.worker_state.last.items():
-      if state.removing:
-        failed_at = self.removal_failures.get(hostname)
-        if state.ssh in ("reachable", "unreachable") and (
-                failed_at is None or now - failed_at >= config.WORKER_SETUP_RETRY_SECONDS):
-          self.request_removal(hostname)
-        continue
-      if not state.addressable:
-        continue
-      failed_at = self.setup_failures.get(hostname)
-      if (state.setup is None or Workers().setup_address(hostname) != state.address
-              or (state.setup != "succeeded" and (failed_at is None or now - failed_at >= config.WORKER_SETUP_RETRY_SECONDS))):
+      since_setup_failure, since_removal_failure, since_stack_repair = (
+          None if (at := held.get(hostname)) is None else now - at
+          for held in (self.setup_failures, self.removal_failures, self.stack_repairs))
+      wanted = correction(removing=state.removing, ssh=state.ssh, setup=state.setup, address=state.address,
+                          setup_address=Workers().setup_address(hostname), reason=state.view.reason,
+                          silent_seconds=WorkerReports().silent_for(hostname), since_setup_failure=since_setup_failure,
+                          since_removal_failure=since_removal_failure, since_stack_repair=since_stack_repair)
+      if wanted == "remove":
+        self.request_removal(hostname)
+      elif wanted == "converge":
         self.request_convergence(hostname)
-      elif (state.setup == "succeeded" and state.view.reason in REPAIRED
-            and (state.view.reason != "not_reporting" or WorkerReports().silent_for(hostname) > config.WORKER_STACK_SILENCE_SECONDS)
-            and (hostname not in self.stack_repairs
-                 or now - self.stack_repairs[hostname] >= config.WORKER_STACK_REPAIR_COOLDOWN_SECONDS)):
+      elif wanted == "repair":
         self.stack_repairs[hostname] = now
         self.request_stack_repair(hostname)
     for held in (self.setup_failures, self.removal_failures):

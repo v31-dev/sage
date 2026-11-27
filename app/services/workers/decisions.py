@@ -143,6 +143,39 @@ def discovery_member(ssh: str, tunnel: str | None, setup: str | None, address: s
   return None if answers in ("unknown", "tailnet_unreachable") or seconds_since_start < config.UNKNOWN_HOLD_SECONDS else False
 
 
+# Why a worker set up but not ready gets its stack started: part of it is down, Traefik does not answer, or it is
+# silent (for longer than WORKER_STACK_SILENCE_SECONDS).
+REPAIRED = ("stack_down", "traefik_down", "not_reporting")
+CORRECTIONS = ("remove", "converge", "repair")
+
+
+def correction(removing: bool, ssh: str, setup: str | None, address: str | None, setup_address: str | None,
+               reason: str | None, silent_seconds: float, since_setup_failure: float | None,
+               since_removal_failure: float | None, since_stack_repair: float | None) -> str | None:
+  """What observation asks for the worker, one of CORRECTIONS or None, given the address its last setup applied, the
+  seconds since it last reported and since the Manager's last failed setup, failed removal and stack repair of it
+  (None when none). A worker marked for removal is removed once its SSH server's answer is known,
+  WORKER_SETUP_RETRY_SECONDS after a failed removal, and nothing else is done to it. Else an addressable worker is
+  converged when not set up since the Manager started or since it came back, when its address changed, or
+  WORKER_SETUP_RETRY_SECONDS after a failed or refused setup; and a worker set up but not ready because of its stack
+  gets the stack repaired, once per WORKER_STACK_REPAIR_COOLDOWN_SECONDS."""
+  if removing:
+    if ssh in ("reachable", "unreachable") and (
+            since_removal_failure is None or since_removal_failure >= config.WORKER_SETUP_RETRY_SECONDS):
+      return "remove"
+    return None
+  if not addressable(ssh, address):
+    return None
+  if (setup is None or setup_address != address
+          or (setup != "succeeded" and (since_setup_failure is None or since_setup_failure >= config.WORKER_SETUP_RETRY_SECONDS))):
+    return "converge"
+  if (setup == "succeeded" and reason in REPAIRED
+          and (reason != "not_reporting" or silent_seconds > config.WORKER_STACK_SILENCE_SECONDS)
+          and (since_stack_repair is None or since_stack_repair >= config.WORKER_STACK_REPAIR_COOLDOWN_SECONDS)):
+    return "repair"
+  return None
+
+
 def reboot_outcome(baseline_boot_id: str, boot_id: str | None, ready: bool | None) -> str:
   """What a requested reboot has achieved: verified once the worker runs a new boot and is ready; old_boot while it
   still runs the one from before the request; not_ready on a new boot that is not ready; unknown while the boot

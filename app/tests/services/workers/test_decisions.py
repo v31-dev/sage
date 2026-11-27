@@ -6,9 +6,10 @@ import pytest
 
 import config
 from services.worker_reports import ContainerReading, Received, Snapshot
-from services.workers.decisions import (SETUPS, SSH, STATUSES, TUNNELS, WorkerFacts, WorkerReport, addressable, alias_changes, connectivity,
-                                        decide_worker, discovery_member, dns_exceptions, edge_subnets, parse_aliases, parse_networks, reboot_outcome,
-                                        report_of, stray_traefik_files, traefik_network_changes, workable, worker_claim_refusal, worker_owner)
+from services.workers.decisions import (REPAIRED, SETUPS, SSH, STATUSES, TUNNELS, WorkerFacts, WorkerReport, addressable, alias_changes, connectivity,
+                                        correction, decide_worker, discovery_member, dns_exceptions, edge_subnets, parse_aliases, parse_networks,
+                                        reboot_outcome, report_of, stray_traefik_files, traefik_network_changes, workable, worker_claim_refusal,
+                                        worker_owner)
 from services.workers.rendering import traefik_files_command
 
 GOOD = WorkerReport("known", True)
@@ -187,6 +188,63 @@ def test_discovery_points_at_a_worker_reachable_and_set_up_and_leaves_one_not_kn
 def test_discovery_leaves_out_a_worker_being_removed_whatever_else_is_known():
   assert {discovery_member(ssh, tunnel, setup, "100.64.0.2", since, removing=True)
           for ssh, tunnel, setup, since in itertools.product(SSH, TUNNELS, SETUPS, (0, config.UNKNOWN_HOLD_SECONDS))} == {False}
+
+
+def corrected(**facts):
+  return correction(**{"removing": False, "ssh": "reachable", "setup": "succeeded", "address": "100.64.0.2",
+                       "setup_address": "100.64.0.2", "reason": None, "silent_seconds": 0, "since_setup_failure": None,
+                       "since_removal_failure": None, "since_stack_repair": None, **facts})
+
+
+def test_a_worker_set_up_at_its_address_and_ready_needs_nothing():
+  assert corrected() is None
+
+
+def test_a_worker_marked_for_removal_is_removed_once_its_ssh_answer_is_known_and_nothing_else_is_done():
+  assert {ssh: {corrected(removing=True, ssh=ssh, setup=setup, setup_address=None, reason="stack_down")
+                for setup in SETUPS} for ssh in SSH} == {
+      "unobserved": {None}, "reachable": {"remove"}, "unreachable": {"remove"}, "unknown": {None}}
+
+
+def test_a_failed_removal_is_tried_again_after_the_retry_time():
+  retry = config.WORKER_SETUP_RETRY_SECONDS
+  assert [corrected(removing=True, since_removal_failure=since) for since in (retry - 1, retry)] == [None, "remove"]
+
+
+@pytest.mark.parametrize("ssh, address", [("unreachable", "100.64.0.2"), ("unobserved", "100.64.0.2"), ("unknown", "100.64.0.2"),
+                                          ("reachable", None)])
+def test_a_worker_not_addressable_is_left_alone(ssh, address):
+  assert corrected(ssh=ssh, address=address, setup=None, setup_address=None, reason="stack_down") is None
+
+
+@pytest.mark.parametrize("facts", [{"setup": None, "setup_address": None}, {"setup_address": "100.64.0.9"}],
+                         ids=["not set up", "a new address"])
+def test_a_worker_not_set_up_or_at_a_new_address_is_converged_before_any_repair(facts):
+  assert corrected(**facts, reason="stack_down") == "converge"
+
+
+@pytest.mark.parametrize("setup", ["failed", "refused"])
+def test_a_failed_or_refused_setup_is_tried_again_after_the_retry_time(setup):
+  retry = config.WORKER_SETUP_RETRY_SECONDS
+  assert [corrected(setup=setup, since_setup_failure=since) for since in (None, retry - 1, retry)] == [
+      "converge", None, "converge"]
+
+
+@pytest.mark.parametrize("reason", REPAIRED)
+def test_a_set_up_worker_not_ready_for_its_stack_gets_it_repaired_once_per_cooldown(reason):
+  cooldown, silence = config.WORKER_STACK_REPAIR_COOLDOWN_SECONDS, config.WORKER_STACK_SILENCE_SECONDS + 1
+  assert [corrected(reason=reason, silent_seconds=silence, since_stack_repair=since)
+          for since in (None, cooldown - 1, cooldown)] == ["repair", None, "repair"]
+
+
+def test_a_silent_worker_is_repaired_only_once_silent_past_the_limit():
+  silence = config.WORKER_STACK_SILENCE_SECONDS
+  assert [corrected(reason="not_reporting", silent_seconds=seconds) for seconds in (silence, silence + 1)] == [None, "repair"]
+
+
+@pytest.mark.parametrize("reason", ["traefik_unchecked", "stale", "ssh_unreachable", "owned_elsewhere"])
+def test_a_worker_not_ready_for_another_reason_gets_no_repair(reason):
+  assert corrected(reason=reason, silent_seconds=config.WORKER_STACK_SILENCE_SECONDS + 1) is None
 
 
 @pytest.mark.parametrize("ssh, connected, down, unknown", [
