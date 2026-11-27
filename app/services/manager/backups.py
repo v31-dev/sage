@@ -88,10 +88,13 @@ class BackupsMixin:
   def request_automatic_backups(self, now: datetime, since_start: bool = False):
     """Queues, for each container of an application, an automatic backup of its volumes whose schedule's slot is due
     (`slot_due`) into the configured store: the slot of `now`'s minute, or with `since_start` each schedule's most
-    recent slot before the Manager started; nothing without a store. Its backups are recorded queued for the slot, a
-    slot's own interrupted or cancelled row taken again; the new ones are dropped when the queue does not take it. It
-    has its own key, by container and volumes, on the container's scope: a user request waits behind a running one and
-    is never refused or replaced by it, and the backup of other volumes due meanwhile is queued after it."""
+    recent slot before the Manager started; nothing without a store or while the queue is not running. Its backups are
+    recorded queued for the slot, a slot's own interrupted or cancelled row taken again; the new ones are dropped when
+    the queue does not take it. It has its own key, by container and volumes, on the container's scope: a user request
+    waits behind a running one and is never refused or replaced by it, and the backup of other volumes due meanwhile is
+    queued after it."""
+    if self.task_state() != "running":
+      return
     session = configured_session()
     if session is None:
       return

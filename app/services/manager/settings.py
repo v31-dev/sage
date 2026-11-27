@@ -10,7 +10,7 @@ from services.certs import Certs
 from services.cloudflare import Cloudflare
 from services.notification import CHANNELS, ChannelCheckFailed, Notifications
 from services.s3 import S3
-from services.settings import SETTING_DEFINITIONS, SettingCheck, Settings, section_status
+from services.settings import SETTING_DEFINITIONS, SettingCheck, Settings, section_status, settings_scope
 from services.tailscale import Tailscale
 from services.updates import Fact, UpdateFeed, Updates, UpdateSource
 from utils.common import get_env, utcnow
@@ -73,7 +73,7 @@ class SettingsMixin:
         self._request_check(key, quiet=True)
 
   def _request_check(self, key: str, quiet: bool):
-    self.add_task(task=self.check_setting, key=(f"check_{key}",), scopes={f"settings:{key}"}, executor="main",
+    self.add_task(task=self.check_setting, key=(f"check_{key}",), scopes={settings_scope(key)}, executor="main",
                   params={"key": key}, on_conflict=OnConflict.REPLACE, quiet=quiet)
 
   def request_test(self, key: str, value: dict) -> str:

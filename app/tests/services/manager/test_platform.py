@@ -193,10 +193,21 @@ class TestBackup:
     assert [task["task_id"] for task in manager.task_queue.snapshot()["queued"]] == [second] != [first]
     assert sorted(row.status for row in Backup.select()) == ["cancelled", "queued"]
 
-  def test_one_the_queue_does_not_take_leaves_no_backup(self, manager, stores):
+  def test_one_the_queue_does_not_take_leaves_no_backup(self, manager, stores, monkeypatch):
     manager.task_queue.stop()
+    monkeypatch.setattr(manager, "task_state", lambda: "running")
     manager.request_platform_backup()
     assert Backup.select().count() == 0
+
+  @pytest.mark.parametrize("hold", [
+      lambda queue: queue.pause(), lambda queue: queue.stop(),
+      lambda queue: queue.request_restore(task=lambda: None, name="restore_platform", executor="main")],
+      ids=["paused", "stopping", "restoring"])
+  def test_none_is_recorded_or_queued_while_the_queue_is_not_running(self, manager, stores, clock, hold):
+    hold(manager.task_queue)
+    before = manager.task_queue.snapshot()
+    assert manager.request_platform_backup(clock.current) is None
+    assert Backup.select().count() == 0 and manager.task_queue.snapshot() == before
 
   async def test_the_configuration_is_uploaded_encrypted_and_recorded_by_the_key_uploaded(
           self, manager, stores, worker, tmp_path):

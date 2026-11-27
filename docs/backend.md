@@ -173,7 +173,9 @@ the `TaskQueue` (`QueueState`: `running`, `paused`, `restoring`, `stopping`), ex
   `dispatch_tick` starts nothing: running tasks finish, queued tasks wait. Cron triggers
   keep firing and their tasks queue as usual, so a pause behaves like one long task holding
   every scope; DEDUP/REPLACE keep each recurring task to one pending copy, and they run on
-  resume. In memory only, so a restart comes back running.
+  resume. The scheduled backups are the exception: their requests skip while the queue is not
+  running, and the catch-up at the next start takes each schedule's most recent slot. In memory
+  only, so a restart comes back running.
 - **Restoring** (a platform restore). The restore is the queue's own entry
   (`TaskQueue.request_restore`, through `Manager().add_restore`), keyed by the archive it restores
   (`("restore_platform", <s3 path>)`), with no scope or admission policy: refused unless the queue

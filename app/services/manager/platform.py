@@ -118,11 +118,13 @@ class PlatformMixin:
                          quiet=quiet).task_id
 
   def request_platform_backup(self, slot: datetime | None = None) -> str | None:
-    """Queues a platform backup into the configured store, with its backup recorded queued; None without a store. The
-    schedule's names its `slot` and is queued only while that slot is due (`slot_due`), taking the slot's own
+    """Queues a platform backup into the configured store, with its backup recorded queued; None without a store or
+    while the queue is not running. The schedule's names its `slot` and is queued only while that slot is due (`slot_due`), taking the slot's own
     interrupted or cancelled row again. A new row is dropped when the queue does not take it. It holds only its part
     of the store, so it runs alongside other work; a request while one runs gets one of its own after it, and one that
     replaces a queued one settles that one cancelled. The task's id."""
+    if self.task_state() != "running":
+      return None
     session = configured_session()
     if session is None:
       return None

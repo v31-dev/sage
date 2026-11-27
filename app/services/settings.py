@@ -38,6 +38,11 @@ class SettingCheck:
   channels: dict | None = None
 
 
+def settings_scope(key: str) -> str:
+  """The queue's scope of the section's check result."""
+  return f"settings:{key}"
+
+
 def validate_section(key: str, values: dict):
   """The local rules of a section's values, which a save applies before storing them: only the section's fields, text
   or nothing in each, and in a section whose fields belong together, all of them or none."""

@@ -739,12 +739,13 @@ class TestAutomaticRequests:
     assert task["params"]["backup_ids"] == [left] and Backup.select().count() == 1
     assert (backup.status, backup.reason, backup.s3_path) == ("queued", None, "base/k")
 
-  def test_a_slots_backup_the_queue_does_not_take_again_stays_as_it_was(self, manager, container, volumes):
+  def test_a_slots_backup_the_queue_does_not_take_again_stays_as_it_was(self, manager, container, volumes, monkeypatch):
     Volume.update(backup_cron="0 3 * * *").execute()
     manager.started_at = datetime(2026, 1, 2, 9, 30)
     [left] = add_backups("s1", datetime(2026, 1, 2, 3, 0), True, ["base/k"], [volumes[0]], container)
     settle_backups([left], "cancelled")
     manager.task_queue.stop()
+    monkeypatch.setattr(manager, "task_state", lambda: "running")
     manager.request_automatic_backups(datetime(2026, 1, 2, 9, 31), since_start=True)
     assert [(row.id, row.status) for row in Backup.select()] == [(left, "cancelled")]
 
@@ -762,6 +763,17 @@ class TestAutomaticRequests:
     Volume.update(backup_cron="0 3 * * *").execute()
     manager.request_automatic_backups(at)
     assert self.queued(manager) == []
+
+  @pytest.mark.parametrize("hold", [
+      lambda queue: queue.pause(), lambda queue: queue.stop(),
+      lambda queue: queue.request_restore(task=lambda: None, name="restore_platform", executor="main")],
+      ids=["paused", "stopping", "restoring"])
+  def test_nothing_is_recorded_or_queued_while_the_queue_is_not_running(self, manager, container, volumes, at, hold):
+    Volume.update(backup_cron="0 3 * * *").execute()
+    hold(manager.task_queue)
+    before = manager.task_queue.snapshot()
+    manager.request_automatic_backups(at)
+    assert Backup.select().count() == 0 and manager.task_queue.snapshot() == before
 
   def test_an_invalid_schedule_is_logged_and_skipped(self, manager, container, volumes, at, caplog):
     Volume.update(backup_cron="not a cron").where(Volume.id == volumes[0].id).execute()
