@@ -15,7 +15,7 @@ import asyncssh
 
 import config
 from services.base import Base
-from utils.common import dict_to_obj, fill, get_env
+from utils.common import dict_to_obj, fill, get_env, new_id
 from utils.executor import run_in_executor_with_context
 
 logger = logging.getLogger(__name__)
@@ -49,13 +49,24 @@ def ping_path(output: str) -> str | None:
 EX_TEMPFAIL = 75
 
 
+# The failures that mean the connection itself is gone, so the pool drops it; any other leaves it to the other tasks.
+LOST = (OSError, asyncssh.DisconnectError, asyncssh.SFTPConnectionLost, asyncssh.SFTPNoConnection)
+
+
 class CommandError(Exception):
   """A worker could not be reached, or a command on it failed; `transient` when trying again can work: the connection
-  failed, or the command exited with `EX_TEMPFAIL`."""
+  failed, or the command exited with `EX_TEMPFAIL`; `running` when the command may still run on the worker: its
+  unit could not be stopped after its connection was lost."""
 
-  def __init__(self, message: str, transient: bool = False):
+  def __init__(self, message: str, transient: bool = False, running: bool = False):
     super().__init__(message)
     self.transient = transient
+    self.running = running
+
+
+def still_running(error: BaseException) -> bool:
+  """Whether the failure leaves a worker command that may still run (`CommandError.running`)."""
+  return getattr(error, "running", False)
 
 
 class Tailscale(Base):
@@ -262,9 +273,9 @@ class Tailscale(Base):
     return next((peer for peer in self.peers() if query in (peer.hostname, peer.ip)), None)
 
   async def _start_command(self, hostname, command):
-    """Open a channel on a pooled connection and start `command` on it. A stale pooled
-    connection is evicted and the open retried once on a fresh one; that is safe because
-    nothing has run yet. Once this returns the command is running and is never retried."""
+    """Open a channel on a pooled connection and start `command` on it. A pooled connection found lost is evicted and
+    the open retried once on a fresh one; that is safe because nothing has run yet. A channel the worker refuses is
+    a transient failure, with the connection kept. Once this returns the command is running and is never retried."""
     for attempt in range(2):
       try:
         conn = await self._get_conn(hostname)
@@ -273,12 +284,14 @@ class Tailscale(Base):
       try:
         # stderr is merged into stdout so a failed command's output is captured
         return await conn.create_process(command, stderr=asyncssh.STDOUT, errors="replace")
-      except (OSError, asyncssh.Error) as e:
+      except LOST as e:
         await self._evict(hostname)
         if attempt == 1:
           raise CommandError(f"Error executing command on {hostname}: {e}", transient=True)
+      except asyncssh.Error as e:
+        raise CommandError(f"Error executing command on {hostname}: {e}", transient=True)
 
-  async def exec_command(self, hostname, command, timeout=300):
+  async def exec_command(self, hostname, command, timeout=300, unit=None):
     """
     Execute a command on a worker over the Tailscale SSH server via asyncssh,
     reusing a pooled connection. Each output line is logged as it arrives. Returns
@@ -288,12 +301,21 @@ class Tailscale(Base):
     session's own shell): Tailscale SSH ignores signals and a closed channel, so nothing the
     manager does afterwards would stop it. The manager also gives up on a worker that answers
     nothing, a little after the deadline.
+
+    With `unit`, a name prefix, the command runs as a transient systemd unit of that prefix, which stops it whole: once
+    its connection is lost or its worker answers nothing, the unit is stopped over a fresh connection before this
+    raises, and a stop that can't be confirmed makes the error `running`.
     """
     if timeout <= 0:
       raise ValueError(f"timeout must be positive, got {timeout}")  # `timeout 0` would mean no deadline
     logger.info(f"Executing command on {hostname}: {command}")
     wrapped = (
         f'timeout -k {config.COMMAND_KILL_AFTER_SECONDS} {timeout} "${{SHELL:-/bin/sh}}" -c {shlex.quote(command)}')
+    name = f"{unit}-{new_id()}" if unit is not None else None
+    if name is not None:
+      # A unit has no HOME of its own, where Docker keeps its credentials.
+      wrapped = (f"systemd-run --quiet --wait --pipe --collect --unit={name} -E HOME "
+                 f"-p TimeoutStopSec={config.COMMAND_KILL_AFTER_SECONDS} {wrapped}")
     process = await self._start_command(hostname, wrapped)
 
     output_lines = []
@@ -307,12 +329,18 @@ class Tailscale(Base):
             output_lines.append(line)
             logger.info(f"[{hostname}] {line}")
         result = await process.wait()
-    except TimeoutError:
-      await self._evict(hostname)  # the worker is not answering; do not reuse the connection
-      raise Exception(f"Command on {hostname} timed out after {timeout}s: {command}")
-    except (OSError, asyncssh.Error) as e:
-      await self._evict(hostname)  # connection likely dead
-      raise CommandError(f"Error executing command on {hostname}: {e}", transient=True)
+    except (TimeoutError, OSError, asyncssh.Error) as e:
+      await self._evict(hostname)  # the worker is not answering or the connection is likely dead; do not reuse it
+      lost = (Exception(f"Command on {hostname} timed out after {timeout}s: {command}") if isinstance(e, TimeoutError)
+              else CommandError(f"Error executing command on {hostname}: {e}", transient=True))
+      if name is not None:
+        try:
+          await self.exec_command(hostname, f"systemctl stop {name}.service; ! systemctl is-active -q {name}.service",
+                                  timeout=30)
+        except Exception as stop_error:
+          raise CommandError(f"{lost} It may still be running: it could not be stopped ({stop_error}).",
+                             running=True) from e
+      raise lost from e
     finally:
       process.close()
 
@@ -344,7 +372,8 @@ class Tailscale(Base):
     and `dst` takes `mode` even when an earlier copy had another one.
 
     `timeout` caps the whole connect+transfer so a wedged sync can't hold a
-    task's scope forever.
+    task's scope forever. A lost connection is evicted and the copy tried once more on a fresh
+    one; any other failure keeps the connection and is not retried.
     """
     if os.path.isdir(src):
       raise Exception(f"src must be a file, not a directory: {src}")
@@ -388,8 +417,10 @@ class Tailscale(Base):
         break
       except asyncio.TimeoutError:
         raise Exception(f"Syncing file to {hostname} timed out after {timeout}s: {dst}")
-      except (OSError, asyncssh.Error) as e:
-        await self._evict(hostname)  # connection likely dead; retry once fresh
+      except LOST as e:
+        await self._evict(hostname)
         if attempt == 1:
           raise CommandError(f"Error syncing file to {hostname}: {e}", transient=True)
+      except asyncssh.Error as e:
+        raise CommandError(f"Error syncing file to {hostname}: {e}", transient=isinstance(e, asyncssh.ChannelOpenError))
     logger.info(f"Successfully synced file to {hostname}: {dst}.")

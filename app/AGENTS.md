@@ -124,9 +124,13 @@ Each resource's own rules, on top of the root's working rules 9–13. The workfl
   recreate them), restores the applied deployment rather than newer saved config, and reports its own failure apart
   when the runtime came back. Its intent and the prior runtime are persisted in the target record, so a restart
   restores them too; an incomplete automatic backup is not handled as an interrupted deploy.
-- Crash recovery uses the existing bounded worker command timeouts and normal reconciliation, with no PID tracking or
-  targeted cancellation. Recovery may repeat containment stops; a new remote mutation on the target waits until old
-  work has settled and the runtime is verified. A live task never releases its scope while its children still run.
+- A placement's runtime commands (Compose's `up`, `down`, `stop` and `start`, the backup and restore scripts) run as
+  transient systemd units named from `placement_unit`, and only those: one whose connection is lost is stopped by its
+  unit before its task fails, and one whose stop can't be confirmed may still run, so its failure leaves the record
+  recovering with nothing run beside it. Recovery, orphan cleanup and a Delete first stop the placement's leftover
+  units, then go on at once, with no wait for old work; a leftover stop not confirmed leaves the record recovering.
+  Recovery may repeat containment stops; a new remote mutation on the target waits until old work has settled and the
+  runtime is verified. A live task never releases its scope while its children still run.
 
 ### Workers
 

@@ -55,7 +55,7 @@ def container(application, worker):
 
 def record_of(container, operation="d1"):
   return TargetRecord(Authority("0123456789abcdef", "1111111111111111", container.id),
-                      operation=Operation(operation, "stop", "executing", AT, 65, task_ref="t1"))
+                      operation=Operation(operation, "stop", "executing", AT, task_ref="t1"))
 
 
 PUBLISHED = [(UpdateSource.APPLICATION, "demo/web"), (UpdateSource.WORKER_CONTAINERS, "w1"), (UpdateSource.DOMAINS, None)]

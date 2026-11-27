@@ -55,12 +55,12 @@ SCENARIOS = {
     "a manual backup or volume restore from stopped": (present(settled=STOPPED_OK), known("absent", None), None, "h1", "inactive",
                                                        "not_deployed", None),
     "an automatic backup cut off by a restart": (
-        present(applied=APPLIED, settled=RUNNING_OK, operation=Operation("b1", "backup_preserve", "executing", AT, 0)), known("exited"), None,
+        present(applied=APPLIED, settled=RUNNING_OK, operation=Operation("b1", "backup_preserve", "executing", AT)), known("exited"), None,
         "h1", "checking", "current", "backup_interrupted"),
-    "a deploy cut off by a restart": (present(applied=APPLIED, settled=RUNNING_OK, operation=Operation("d3", "deploy", "executing", AT, 0)),
+    "a deploy cut off by a restart": (present(applied=APPLIED, settled=RUNNING_OK, operation=Operation("d3", "deploy", "executing", AT)),
                                       known(), None, "h1", "recovering", "current", "interrupted"),
     "a live operation that owns its unfinished record": (
-        present(applied=APPLIED, settled=RUNNING_OK, operation=Operation("d3", "deploy", "executing", AT, 0)), known("exited"), "deploy", "h1",
+        present(applied=APPLIED, settled=RUNNING_OK, operation=Operation("d3", "deploy", "executing", AT)), known("exited"), "deploy", "h1",
         "deploying", "current", None),
     "a deployed container that exited by itself": (DEPLOYED, known("exited", exit_code=137, oom_killed=True), None, "h1", "error",
                                                    "current", "unexpected_exit"),
@@ -93,7 +93,7 @@ SCENARIOS = {
                                              "h1", "checking", "current", None),
     "another deployment running than the applied one": (DEPLOYED, known(deployment="d0"), None, "h1", "error", "current",
                                                         "unexpected_deployment"),
-    "a reset after a failure": (present(applied=APPLIED, settled=FAILED, operation=Operation("r1", "reset", "executing", AT, 0)),
+    "a reset after a failure": (present(applied=APPLIED, settled=FAILED, operation=Operation("r1", "reset", "executing", AT)),
                                 known("exited"), "reset", "h1", "error", "current", "failed"),
     "a live delete": (DEPLOYED, known(), "delete", "h1", "stopping", "current", None),
     "the record kept while its worker cannot be read": (TargetRead("unreachable", DEPLOYED.record), known(), None, "h1", "active",
@@ -120,7 +120,7 @@ def test_a_known_runtime_needs_a_reading():
 
 
 def every_record():
-  operations = [None] + [Operation("o1", contract, phase, AT, 0) for contract, phase in itertools.product(CONTRACTS, PHASES)]
+  operations = [None] + [Operation("o1", contract, phase, AT) for contract, phase in itertools.product(CONTRACTS, PHASES)]
   for authority, applied, settled, operation in itertools.product(
           (OURS, RESTORED, FOREIGN), (None, APPLIED), (None, RUNNING_OK, STOPPED_OK, FAILED, Settled("d2", "running", "failed", AT)),
           operations):
@@ -210,7 +210,7 @@ def test_every_combination_of_facts_keeps_the_invariants():
 @pytest.mark.parametrize("target, runtime, live, expected", [
     (DEPLOYED, known(), None, True),
     (DEPLOYED, known(), "deploy", True),
-    (present(applied=APPLIED, settled=RUNNING_OK, operation=Operation("d3", "deploy", "executing", AT, 0)), known(), "deploy", False),
+    (present(applied=APPLIED, settled=RUNNING_OK, operation=Operation("d3", "deploy", "executing", AT)), known(), "deploy", False),
     (present(applied=APPLIED, settled=STOPPED_OK), known("exited"), None, False),
     (present(applied=APPLIED, settled=FAILED), known("exited"), None, False),
     (DEPLOYED, known("exited"), None, False),
@@ -241,7 +241,7 @@ class TestLifecycleRefusal:
 
   def test_every_read(self):
     records = [None, *(TargetRecord(authority, APPLIED, RUNNING_OK, operation) for authority in (OURS, RESTORED, FOREIGN)
-                       for operation in (None, *(Operation("o1", "deploy", phase, AT, 905) for phase in PHASES)))]
+                       for operation in (None, *(Operation("o1", "deploy", phase, AT) for phase in PHASES)))]
     seen = set()
     for kind in READS:
       for kept in records:
@@ -256,11 +256,11 @@ class TestLifecycleRefusal:
     assert seen == {None, "unreachable", "invalid_record", "authority", "interrupted"}
 
   def test_a_settled_record_from_before_a_restore_does_not_refuse(self):
-    settled = Operation("o1", "deploy", "settled", AT, 905, AT, outcome="succeeded", verified_on_worker_at=AT)
+    settled = Operation("o1", "deploy", "settled", AT, AT, outcome="succeeded", verified_on_worker_at=AT)
     assert lifecycle_refusal(TargetRead("present", TargetRecord(RESTORED, APPLIED, RUNNING_OK, settled)), OURS, "deploy") is None
 
 
-UNSETTLED = Operation("d3", "deploy", "executing", AT, 905)
+UNSETTLED = Operation("d3", "deploy", "executing", AT)
 
 CORRECTIONS = {
     "never read": (TargetRead("unobserved"), Runtime("unobserved"), False, Correction("read")),
@@ -272,7 +272,7 @@ CORRECTIONS = {
     "a deploy from before a restore that never settled": (TargetRead("present", TargetRecord(RESTORED, operation=UNSETTLED)),
                                                           known(), True, Correction("recover", "interrupted")),
     "an automatic backup that never settled": (
-        present(applied=APPLIED, settled=RUNNING_OK, operation=Operation("b1", "backup_preserve", "executing", AT, 930)),
+        present(applied=APPLIED, settled=RUNNING_OK, operation=Operation("b1", "backup_preserve", "executing", AT)),
         known("exited"), True, Correction("recover", "interrupted")),
     "another Sage's record": (TargetRead("present", TargetRecord(FOREIGN, APPLIED, RUNNING_OK)), known(authority=FOREIGN),
                               True, None),

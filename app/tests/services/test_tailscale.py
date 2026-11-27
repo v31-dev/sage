@@ -231,8 +231,59 @@ async def test_a_connection_lost_while_the_command_runs_is_not_retried(tailscale
   assert process.closed
 
 
-async def test_a_stale_connection_is_replaced_and_the_open_retried_once(tailscale):
-  stale = FakeConn(asyncssh.ChannelOpenError(2, "connect failed"))
+def unit_of(sent):
+  return shlex.split(sent)[5].removeprefix("--unit=")
+
+
+async def test_a_tracked_command_runs_as_a_transient_unit_of_its_prefix_around_the_same_deadline(tailscale):
+  conn = FakeConn(FakeProcess(), FakeProcess())
+  use(tailscale, conn, conn)
+  await tailscale.exec_command(HOST, "docker compose up", timeout=120, unit="sage-run-c1")
+  await tailscale.exec_command(HOST, "docker compose up", timeout=120, unit="sage-run-c1")
+
+  first, second = (sent for sent, _ in conn.calls)
+  assert shlex.split(first)[:5] == ["systemd-run", "--quiet", "--wait", "--pipe", "--collect"]
+  assert shlex.split(first)[6:] == ["-E", "HOME", "-p", f"TimeoutStopSec={config.COMMAND_KILL_AFTER_SECONDS}", "timeout", "-k",
+                                    str(config.COMMAND_KILL_AFTER_SECONDS), "120", "${SHELL:-/bin/sh}", "-c", "docker compose up"]
+  assert unit_of(first).startswith("sage-run-c1-") and unit_of(first) != unit_of(second)
+
+
+async def test_a_tracked_command_whose_connection_is_lost_is_stopped_and_fails_transiently(tailscale):
+  lost = FakeConn(FakeProcess(["started\n"], error=asyncssh.ConnectionLost("gone")))
+  fresh = FakeConn(FakeProcess())
+  use(tailscale, lost, fresh)
+
+  with pytest.raises(CommandError, match=f"Error executing command on {HOST}: gone") as raised:
+    await tailscale.exec_command(HOST, "docker compose up", unit="sage-run-c1")
+
+  [(stop, _)] = fresh.calls
+  assert f"systemctl stop {unit_of(lost.calls[0][0])}.service;" in stop
+  assert (raised.value.transient, raised.value.running) == (True, False)
+
+
+@pytest.mark.parametrize("stop", [FakeProcess(status=1), OSError("no route")], ids=["still active", "unreachable"])
+async def test_a_tracked_command_whose_stop_is_not_confirmed_may_still_run(tailscale, stop):
+  use(tailscale, FakeConn(FakeProcess(error=asyncssh.ConnectionLost("gone"))), FakeConn(stop))
+
+  with pytest.raises(CommandError, match="It may still be running") as raised:
+    await tailscale.exec_command(HOST, "docker compose up", unit="sage-run-c1")
+
+  assert (raised.value.transient, raised.value.running) == (False, True)
+
+
+@pytest.mark.parametrize("stop, running", [(FakeProcess(), False), (FakeProcess(status=1), True)], ids=["stopped", "still active"])
+async def test_a_tracked_command_whose_worker_answers_nothing_is_stopped_too(tailscale, monkeypatch, stop, running):
+  monkeypatch.setattr(config, "COMMAND_WAIT_GRACE_SECONDS", 0)
+  use(tailscale, FakeConn(FakeProcess(gate=asyncio.Event())), FakeConn(stop))
+
+  with pytest.raises(Exception, match=f"Command on {HOST} timed out after 0.05s: docker compose up") as raised:
+    await tailscale.exec_command(HOST, "docker compose up", timeout=0.05, unit="sage-run-c1")
+
+  assert getattr(raised.value, "running", False) is running
+
+
+async def test_a_lost_pooled_connection_is_replaced_and_the_open_retried_once(tailscale):
+  stale = FakeConn(asyncssh.ConnectionLost("gone"))
   fresh = FakeConn(FakeProcess(["ok\n"]))
   use(tailscale, stale, fresh)
 
@@ -240,6 +291,16 @@ async def test_a_stale_connection_is_replaced_and_the_open_retried_once(tailscal
 
   assert len(stale.calls) == 1 and len(fresh.calls) == 1
   assert tailscale.evicted == [HOST]
+
+
+async def test_a_refused_channel_is_a_transient_failure_that_keeps_the_connection(tailscale):
+  refusing = FakeConn(asyncssh.ChannelOpenError(2, "connect failed"))
+  use(tailscale, refusing, FakeConn(FakeProcess(["ok\n"])))
+
+  with pytest.raises(CommandError, match="connect failed") as raised:
+    await tailscale.exec_command(HOST, "docker ps")
+
+  assert raised.value.transient and len(refusing.calls) == 1 and tailscale.evicted == []
 
 
 async def test_an_open_that_fails_twice_raises(tailscale):
@@ -448,6 +509,24 @@ class TestAFailedSync:
       await tailscale.sync_file(HOST, template, DESTINATION, {"CONTENT": "new"}, **arguments)
 
     assert sftp.files == {DESTINATION: {"data": b"old", "mode": 0o600}}
+
+
+class TestSyncFailures:
+  async def test_a_file_error_fails_at_once_and_keeps_the_connection(self, tailscale, sftp, template):
+    sftp.write_error = asyncssh.SFTPNoSpaceOnFilesystem("disk full")
+
+    with pytest.raises(CommandError, match="disk full") as raised:
+      await tailscale.sync_file(HOST, template, DESTINATION, {"CONTENT": "new"})
+
+    assert not raised.value.transient and tailscale.evicted == []
+
+  async def test_a_lost_session_is_tried_once_more_on_a_fresh_connection(self, tailscale, sftp, template):
+    sftp.write_error = asyncssh.SFTPConnectionLost("session gone")
+
+    with pytest.raises(CommandError, match="session gone") as raised:
+      await tailscale.sync_file(HOST, template, DESTINATION, {"CONTENT": "new"})
+
+    assert raised.value.transient and tailscale.evicted == [HOST, HOST]
 
 
 class ClosableConnection:

@@ -9,7 +9,7 @@ from services.backups.commands import cancel_queued_backups
 from services.containers import commands
 from services.containers.decisions import RUNNING, RuntimeReading, lifecycle_refusal
 from services.containers.placement import (LABEL_CONTAINER, LABEL_DEPLOYMENT, LABEL_GENERATION, LABEL_INSTANCE, labels_authority, placement_scope,
-                                           runtime_name)
+                                           placement_unit, runtime_name, stop_units_command)
 from services.containers.record import Authority, Baseline, Operation, Settled, TargetRecord
 from services.containers.targets import Containers
 from services.db.models import Application, Container, Instance, Project
@@ -17,7 +17,7 @@ from services.domains.callers import allowing
 from services.history import record_container_event
 from services.logs import Logs
 from services.notification import Notifications
-from services.tailscale import Tailscale
+from services.tailscale import CommandError, Tailscale, still_running
 from utils.common import new_id, utcnow
 from utils.errors import Conflict
 from utils.executor import LOGS_EXECUTOR, run_in_executor_with_context
@@ -207,36 +207,27 @@ class LifecycleMixin:
       record_container_event(container, contract, "rejected", reason={"refusal": refusal})
       logger.error(f"{NAMES[contract]} refused: {REFUSALS[refusal]}.")
       raise Rejected(refusal)
-    timeout = {"deploy": config.CONTAINER_UP_TIMEOUT_SECONDS, "stop": config.CONTAINER_DOWN_TIMEOUT_SECONDS,
-               "delete": config.CONTAINER_DOWN_TIMEOUT_SECONDS, "backup_stopped": config.BACKUP_TIMEOUT_SECONDS,
-               "backup_preserve": config.BACKUP_TIMEOUT_SECONDS, "restore_stopped": config.BACKUP_TIMEOUT_SECONDS}[contract]
-    bound = timeout + config.COMMAND_KILL_AFTER_SECONDS
-    earlier = target.record.operation if target.record is not None else None
-    # Taking over from work that may still run (only a Delete does), the record keeps that work's allowance; an
-    # unreadable record's is unknown, so the longest one's.
-    if target.kind == "invalid":
-      bound = max(bound, config.CONTAINER_UP_TIMEOUT_SECONDS + config.COMMAND_KILL_AFTER_SECONDS)
-    elif earlier is not None and earlier.phase != "settled":
-      bound = max(bound, earlier.effect_bound_seconds)
-    operation = Operation(new_id(), contract, "executing", utcnow(), bound,
-                          input_hash=input_hash, baseline=baseline, task_ref=task_id.get() or None)
+    operation = Operation(new_id(), contract, "executing", utcnow(), input_hash=input_hash, baseline=baseline,
+                          task_ref=task_id.get() or None)
     record_container_event(container, contract, "admitted", operation.id, dedupe_key=f"{operation.id}:admitted")
     return container, TargetRecord(authority, kept.applied if kept else None, kept.settled if kept else None, operation)
 
   async def fail_lifecycle(self, container: Container, record: TargetRecord, error: Exception):
     """After a failure of a begun operation: stops the container, settles the record stopped with the failure, or
-    leaves it recovering when the stop is not verified, then fails the task."""
+    leaves it recovering when the stop is not verified, or with no stop when the failed command may still run, then
+    fails the task."""
     operation, reason = record.operation, str(error) or type(error).__name__
     name, page = self.container_notice(container)
     Notifications().notify(f"{NAMES[operation.contract]} of {name} failed: {reason}", "error", page)
-    try:
-      verified_at = await self.stop_runtime(container.worker_id, container.id)
-      now = utcnow()
-      failed = replace(record, settled=Settled(operation.id, "stopped", "failed", now, reason), operation=replace(
-          operation, phase="settled", outcome="failed", reason=reason, finished_at=now, verified_on_worker_at=verified_at))
-    except Exception as stop_error:
-      logger.error(f"The container could not be stopped after the failure: {stop_error}")
-      failed = replace(record, operation=replace(operation, phase="recovering", outcome="failed", reason=reason))
+    failed = replace(record, operation=replace(operation, phase="recovering", outcome="failed", reason=reason))
+    if not still_running(error):
+      try:
+        verified_at = await self.stop_runtime(container.worker_id, container.id)
+        now = utcnow()
+        failed = replace(record, settled=Settled(operation.id, "stopped", "failed", now, reason), operation=replace(
+            operation, phase="settled", outcome="failed", reason=reason, finished_at=now, verified_on_worker_at=verified_at))
+      except Exception as stop_error:
+        logger.error(f"The container could not be stopped after the failure: {stop_error}")
     try:
       await Containers().write(container, failed)
     except Exception as write_error:
@@ -247,11 +238,19 @@ class LifecycleMixin:
     self.request_domain_applies([*(domain.id for domain in container.domains), *allowing(container.application_id)])
     raise TaskFailed(reason)
 
+  async def stop_leftovers(self, hostname: str, container_id: str):
+    """Stops what the placement's earlier runtime commands left running on the worker; a `running` CommandError when
+    that is not confirmed."""
+    try:
+      await Tailscale().exec_command(hostname, stop_units_command(placement_unit(container_id)), timeout=30)
+    except Exception as error:
+      raise CommandError(f"What earlier work on it left running could not be stopped: {error}", running=True) from error
+
   async def stop_runtime(self, hostname: str, container_id: str, options: str = "") -> datetime:
     """Stops the container's runtime on the worker (`options` for `docker compose down`); when the worker verified it
     stopped, on the worker's clock. Raises when it was not stopped."""
     await Tailscale().exec_command(hostname, f"docker compose -p {runtime_name(container_id)} down {options}".strip(),
-                                   timeout=config.CONTAINER_DOWN_TIMEOUT_SECONDS)
+                                   timeout=config.CONTAINER_DOWN_TIMEOUT_SECONDS, unit=placement_unit(container_id))
     reading, verified_at = await self.inspect_runtime(hostname, container_id)
     if reading.state in RUNNING:
       raise Exception(f"The container is still {reading.state} after it was stopped.")
@@ -261,7 +260,7 @@ class LifecycleMixin:
     """Stops the container's runtime on the worker and keeps it, to be started again as it is. Raises when it was not
     stopped."""
     await Tailscale().exec_command(hostname, f"docker compose -p {runtime_name(container_id)} stop",
-                                   timeout=config.CONTAINER_DOWN_TIMEOUT_SECONDS)
+                                   timeout=config.CONTAINER_DOWN_TIMEOUT_SECONDS, unit=placement_unit(container_id))
     reading, _ = await self.inspect_runtime(hostname, container_id)
     if reading.state in RUNNING:
       raise Exception(f"The container is still {reading.state} after it was stopped.")
@@ -272,7 +271,7 @@ class LifecycleMixin:
     is not that runtime."""
     if baseline.runtime == "running":
       await Tailscale().exec_command(hostname, f"docker compose -p {runtime_name(container_id)} start",
-                                     timeout=config.CONTAINER_DOWN_TIMEOUT_SECONDS)
+                                     timeout=config.CONTAINER_DOWN_TIMEOUT_SECONDS, unit=placement_unit(container_id))
     reading, verified_at = await self.inspect_runtime(hostname, container_id)
     if baseline.runtime == "stopped":
       if reading.state in RUNNING:

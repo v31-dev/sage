@@ -6,7 +6,6 @@ import logging
 import re
 from collections import Counter
 from dataclasses import replace
-from time import monotonic
 
 import config
 from services.applications.commands import detach_container
@@ -17,8 +16,8 @@ from services.applications.updates import container_changed
 from services.backups.commands import cancel_queued_backups
 from services.containers.commands import settle_intent
 from services.containers.decisions import PROGRESS, Runtime, correction
-from services.containers.placement import (LABEL_APPLICATION, labels_authority, parse_placements, placement_dir, placement_scope, placements_command,
-                                           records_command, runtime_name, runtime_owner, volume_dir)
+from services.containers.placement import (LABEL_APPLICATION, labels_authority, parse_placements, placement_dir, placement_scope, placement_unit,
+                                           placements_command, records_command, runtime_name, runtime_owner, volume_dir)
 from services.containers.record import Applied, Authority, Operation, Recovery, Settled, TargetRead, TargetRecord, parse_record_listing
 from services.containers.rendering import deployment_hash, render_placement
 from services.containers.state import ContainerState, QueuedRequest, container_payload, container_state
@@ -28,7 +27,7 @@ from services.domains.callers import allowing
 from services.history import record_container_event
 from services.metrics import Metrics
 from services.notification import Notifications
-from services.tailscale import Tailscale
+from services.tailscale import Tailscale, still_running
 from services.updates import Fact
 from services.worker_reports import WorkerReports
 from utils.common import OPAQUE_ID, new_id, utcnow
@@ -189,8 +188,6 @@ class ContainersMixin:
         reporting[container.worker_id] = WorkerReports().current(container.worker_id) is not None
       found = correction(state.target, state.runtime, state.live,
                          Authority(instance.id, instance.state_generation, container.id), reporting[container.worker_id])
-      if found is None or found.kind != "recover":
-        self.recoveries.pop(container.id, None)
       if found is None:
         if container.intent is not None and reporting[container.worker_id] and not any(
                 self.has_task((slot, container.id)) for slot in ("lifecycle", "delete")):
@@ -210,17 +207,7 @@ class ContainersMixin:
         self.request_reset(container, found.cause)
       else:
         operation = state.target.record.operation if state.target.record is not None else None
-        incident = operation.id if operation is not None else "unreadable"
-        bound = (operation.effect_bound_seconds if operation is not None
-                 else config.CONTAINER_UP_TIMEOUT_SECONDS + config.COMMAND_KILL_AFTER_SECONDS)
-        seen = self.recoveries.get(container.id)
-        if seen is None or seen[0] != incident:
-          self.recoveries[container.id] = (incident, monotonic())
-          self.request_recovery(container, incident, final=False)
-        elif monotonic() - seen[1] >= bound:
-          self.request_recovery(container, incident, final=True)
-    for container_id in self.recoveries.keys() - containers.keys():
-      self.recoveries.pop(container_id, None)
+        self.request_recovery(container, operation.id if operation is not None else "unreadable")
 
     # Runtimes of this Sage's that no container owns any more, on the workers that report.
     placed = {}
@@ -233,12 +220,11 @@ class ContainersMixin:
         if orphan and orphan not in placed.get(worker.hostname, ()) and owner is not None and owner.instance_id == instance.id:
           self.request_orphan_cleanup(worker.hostname, orphan, reading.labels.get(LABEL_APPLICATION))
 
-  def request_recovery(self, container: Container, incident: str, final: bool):
-    """Queues the recovery of the operation `incident` on the container (or of its unreadable record): its
-    containment, or once the old work's allowance has passed its settlement."""
+  def request_recovery(self, container: Container, incident: str):
+    """Queues the recovery of the operation `incident` on the container, or of its unreadable record."""
     self.add_task(task=self.recover_container, key=("recover", container.id),
                   scopes={placement_scope(container.worker_id, container.id)}, executor="main",
-                  params={"container_id": container.id, "incident": incident, "final": final}, labels=self.container_labels(container))
+                  params={"container_id": container.id, "incident": incident}, labels=self.container_labels(container))
 
   def request_reset(self, container: Container, cause: str):
     """Queues the reset of a container whose runtime contradicts its record."""
@@ -246,13 +232,13 @@ class ContainersMixin:
                   scopes={placement_scope(container.worker_id, container.id)}, executor="main",
                   params={"container_id": container.id, "cause": cause}, labels=self.container_labels(container))
 
-  async def recover_container(self, container_id: str, incident: str, final: bool):
+  async def recover_container(self, container_id: str, incident: str):
     """Recovers from an operation on the container that never settled, or from its unreadable record, once no task
-    owns it: stops the container and keeps the record recovering with the old work's allowance; once that allowance
-    has passed (`final`), stops it again and settles the record stopped, failed by the interruption. An operation that
-    kept a baseline under this Sage's current authority (an automatic backup) is stopped as it is instead, and at the
-    end brought back to that baseline, its last intentional outcome kept; when that fails it is stopped and settled
-    failed. Nothing is done when the record no longer shows that incident."""
+    owns it: stops what its runtime commands left running, then the container, and settles the record stopped, failed
+    by the interruption. An operation that kept a baseline under this Sage's current authority (an automatic backup)
+    is brought back to that baseline instead, its last intentional outcome kept; when that fails it is stopped and
+    settled failed. A stop that fails, or a command that may still run, leaves the record recovering. Nothing is done
+    when the record no longer shows that incident."""
     container = Container.get_or_none(Container.id == container_id)
     if container is None:
       logger.info(f"Container {container_id} was deleted before its recovery; nothing to do.")
@@ -271,54 +257,47 @@ class ContainersMixin:
     if found != incident:
       logger.info(f"Container {container.id} no longer needs the recovery of {incident}; nothing to do.")
       return
-    contract = operation.contract if operation is not None else "reset"
-    baseline = operation.baseline if operation is not None and record.authority == authority else None
-    resume_failure = None
-    if final and baseline is not None:
-      try:
-        verified_at = await self.resume_runtime(container.worker_id, container.id, baseline)
-      except Exception as error:
-        resume_failure = f"it could not be started again as it was before the backup: {error}"
-      else:
-        await Containers().write(container, replace(record, operation=replace(
-            operation, phase="settled", outcome=operation.outcome or "interrupted", finished_at=utcnow(),
-            verified_on_worker_at=verified_at, recovery=Recovery("verified"))))
-        record_container_event(container, contract, "recovered", operation.id, dedupe_key=f"{operation.id}:recovered")
-        await mark(container, "Back as it was before an interrupted backup")
-        return
+    baseline = operation.baseline if record is not None and record.authority == authority else None
+    if operation is None:
+      operation = Operation(new_id(), "reset", "recovering", utcnow(), outcome="interrupted",
+                            reason="its record could not be read", recovery=Recovery("unresolved"),
+                            task_ref=task_id.get() or None)
+    record_container_event(container, operation.contract, "interrupted", operation.id,
+                           dedupe_key=f"{operation.id}:interrupted")
+    resumed_at = resume_failure = None
     try:
-      if baseline is not None and not final:
-        await self.quiesce_runtime(container.worker_id, container.id)
-      else:
+      await self.stop_leftovers(container.worker_id, container.id)
+      if baseline is not None:
+        try:
+          resumed_at = await self.resume_runtime(container.worker_id, container.id, baseline)
+        except Exception as error:
+          if still_running(error):
+            raise
+          resume_failure = f"it could not be started again as it was before the backup: {error}"
+      if resumed_at is None:
         verified_at = await self.stop_runtime(container.worker_id, container.id)
     except Exception as error:
-      record_container_event(container, contract, "recovery_failed", operation.id if operation else None,
-                             reason={"error": str(error)})
+      record_container_event(container, operation.contract, "recovery_failed", operation.id, reason={"error": str(error)})
       logger.error(f"The recovery could not stop the container: {error}")
       raise TaskFailed()
-    now = utcnow()
-    if operation is None:
-      operation = Operation(new_id(), "reset", "recovering", now, config.CONTAINER_UP_TIMEOUT_SECONDS + config.COMMAND_KILL_AFTER_SECONDS,
-                            outcome="interrupted", reason="its record could not be read", recovery=Recovery("unresolved"),
-                            task_ref=task_id.get() or None)
-    if not final:
-      await Containers().write(container, TargetRecord(
-          record.authority if record is not None else authority, record.applied if record else None,
-          record.settled if record else None,
-          replace(operation, phase="recovering", outcome=operation.outcome or "interrupted", recovery=Recovery("unresolved"))))
-      record_container_event(container, contract, "interrupted", operation.id, dedupe_key=f"{operation.id}:interrupted")
-      await mark(container, "Stopped: an earlier operation on it was interrupted")
+    if resumed_at is not None:
+      await Containers().write(container, replace(record, operation=replace(
+          operation, phase="settled", outcome=operation.outcome or "interrupted", finished_at=utcnow(),
+          verified_on_worker_at=resumed_at, recovery=Recovery("verified"))))
+      record_container_event(container, operation.contract, "recovered", operation.id, dedupe_key=f"{operation.id}:recovered")
+      await mark(container, "Back as it was before an interrupted backup")
       return
-    reason = resume_failure or operation.reason or f"its {NAMES[contract].lower()} was interrupted"
+    now = utcnow()
+    reason = resume_failure or operation.reason or f"its {NAMES[operation.contract].lower()} was interrupted"
     kept = record if record is not None and record.authority == authority else None
     await Containers().write(container, TargetRecord(
         authority, kept.applied if kept else None, Settled(operation.id, "stopped", "failed", now, reason),
         replace(operation, phase="settled", outcome=operation.outcome or "interrupted", finished_at=now,
                 verified_on_worker_at=verified_at, recovery=Recovery("verified"))))
-    record_container_event(container, contract, "recovered", operation.id, dedupe_key=f"{operation.id}:recovered")
+    record_container_event(container, operation.contract, "recovered", operation.id, dedupe_key=f"{operation.id}:recovered")
     await mark(container, "Stopped and settled after an interrupted operation")
     name, page = self.container_notice(container)
-    Notifications().notify(f"{name} was stopped after an interrupted {NAMES[contract].lower()}.", "warning", page)
+    Notifications().notify(f"{name} was stopped after an interrupted {NAMES[operation.contract].lower()}.", "warning", page)
 
   async def reset_container(self, container_id: str, cause: str):
     """Stops a container whose runtime contradicts its record, once its record and its runtime, read again now, still
@@ -336,8 +315,7 @@ class ContainersMixin:
       logger.info(f"Container {container.id} no longer needs a reset; nothing to do.")
       return
     kept = target.record if target.record is not None and target.record.authority == authority else None
-    operation = Operation(new_id(), "reset", "executing", utcnow(),
-                          config.CONTAINER_DOWN_TIMEOUT_SECONDS + config.COMMAND_KILL_AFTER_SECONDS, task_ref=task_id.get() or None)
+    operation = Operation(new_id(), "reset", "executing", utcnow(), task_ref=task_id.get() or None)
     record = TargetRecord(authority, kept.applied if kept else None, kept.settled if kept else None, operation)
     record_container_event(container, "reset", "admitted", operation.id, reason={"cause": found.cause},
                            dedupe_key=f"{operation.id}:admitted")
@@ -399,15 +377,9 @@ class ContainersMixin:
                or listed[container_id].record.authority.instance_id == instance_id}
     for container_id in orphans:
       self.request_orphan_cleanup(hostname, container_id)
-    for key in [key for key in self.orphans if key[0] == hostname and key[1] not in orphans]:
-      self.orphans.pop(key, None)
 
   def request_orphan_cleanup(self, hostname: str, container_id: str, application: str | None = None):
-    """Queues the removal of what this Sage left on the worker for a container it has no row for, unless it is still
-    waiting out an operation its record shows unsettled."""
-    seen = self.orphans.get((hostname, container_id))
-    if seen is not None and monotonic() - seen[1] < seen[2]:
-      return
+    """Queues the removal of what this Sage left on the worker for a container it has no row for."""
     self.add_task(task=self.cleanup_orphan, key=("cleanup_orphan", hostname, container_id),
                   scopes={placement_scope(hostname, container_id)}, executor="main",
                   params={"hostname": hostname, "container_id": container_id},
@@ -415,9 +387,9 @@ class ContainersMixin:
 
   async def cleanup_orphan(self, hostname: str, container_id: str):
     """Removes what this Sage left on the worker for a container it has no row for: its runtime and its placement,
-    volume data included. Nothing is done while the row is there, when its record or runtime is another Sage's, or
-    when nothing of it is left (what asked for it saw the worker before the container's Delete ended); an operation its
-    record shows unsettled (any, when the record is unreadable) is first waited out from when Sage saw it."""
+    volume data included, after what its runtime commands left running. Nothing is done while the row is there, when
+    its record or runtime is another Sage's, or when nothing of it is left (what asked for it saw the worker before the
+    container's Delete ended)."""
     if Container.select().where((Container.id == container_id) & (Container.worker == hostname)).exists():
       logger.info(f"Container {container_id} is on {hostname} again; nothing to clean up.")
       return
@@ -429,29 +401,17 @@ class ContainersMixin:
            for authority in (target.record.authority if target.record else None, reading.authority)):
       logger.info(f"The placement of {container_id} on {hostname} is another Sage's; it is left alone.")
       return
-    operation = target.record.operation if target.record else None
-    if target.kind == "invalid" or (operation is not None and operation.phase != "settled"):
-      incident = operation.id if target.kind == "present" else "unreadable"
-      bound = (operation.effect_bound_seconds if target.kind == "present"
-               else config.CONTAINER_UP_TIMEOUT_SECONDS + config.COMMAND_KILL_AFTER_SECONDS)
-      seen = self.orphans.get((hostname, container_id))
-      if seen is None or seen[0] != incident:
-        self.orphans[(hostname, container_id)] = (incident, monotonic(), bound)
-        logger.info(f"The orphan {container_id} on {hostname} waits up to {bound} s for its earlier work to end.")
-        return
-      if monotonic() - seen[1] < seen[2]:
-        return
     left = target.kind != "absent" or reading.state != "absent"
     directory = placement_dir(config.WORKER_HOME_DIR, container_id)
     try:
       if left:
+        await self.stop_leftovers(hostname, container_id)
         await self.stop_runtime(hostname, container_id, "--volumes --rmi local --remove-orphans")
       _, removed = await Tailscale().exec_command(
           hostname, f"if [ -d {directory} ]; then rm -rf {directory}; echo removed; fi", timeout=30)
     except Exception as error:
       logger.error(f"The orphan {container_id} on {hostname} could not be removed: {error}")
       raise TaskFailed()
-    self.orphans.pop((hostname, container_id), None)
     self.request_traefik_networks(hostname)
     if not left and not removed:
       logger.info(f"Nothing of container {container_id} is left on {hostname}; nothing to clean up.")
@@ -555,7 +515,7 @@ class ContainersMixin:
 
       await Tailscale().exec_command(
           host, f"docker compose -f {directory}/docker-compose.yml up -d --wait --remove-orphans --quiet-pull --build",
-          timeout=config.CONTAINER_UP_TIMEOUT_SECONDS)
+          timeout=config.CONTAINER_UP_TIMEOUT_SECONDS, unit=placement_unit(container.id))
       reading, verified_at = await self.inspect_runtime(container.worker_id, container.id)
       if reading.state != "running":
         raise Exception(f"The container is {reading.state} after the deploy.")
@@ -600,8 +560,8 @@ class ContainersMixin:
     Notifications().notify(f"{name} stopped.", "success", page)
 
   async def delete_container(self, container_id: str, force: bool = False):
-    """Stops the container and removes its placement from the worker, then its row. With `force`, a worker that can't
-    be reached is left as it is and only the row goes."""
+    """Stops what earlier work on the container left running and the container, and removes its placement from the
+    worker, then its row. With `force`, a worker that can't be reached is left as it is and only the row goes."""
     begun = await self.begin_lifecycle(container_id, "delete", force=force)
     if begun is None:
       return
@@ -614,6 +574,7 @@ class ContainersMixin:
       operation = record.operation
       try:
         await Containers().write(container, record)
+        await self.stop_leftovers(container.worker_id, container.id)
         await self.stop_runtime(container.worker_id, container.id, "--volumes --rmi local --remove-orphans")
         await Tailscale().exec_command(
             container.worker_id, f"rm -rf {placement_dir(config.WORKER_HOME_DIR, container.id)}", timeout=30)

@@ -23,7 +23,7 @@ from services.manager.backups import BackupsMixin, settling
 from services.manager.lifecycle import REFUSALS
 from services.manager.queue import SCOPES, TASK_NAMES
 from services.s3 import S3
-from services.tailscale import Tailscale
+from services.tailscale import CommandError, Tailscale
 from services.worker_reports import HostReading, Snapshot, WorkerReports
 from tests.services.manager.test_containers import PAGE, VERIFIED, Lifecycle, Worker, authority, deployed, events, place, worker_record
 from utils.archive import decrypt_file
@@ -169,7 +169,7 @@ def container(application, worker, volumes):
 def stopped(container, at=VERIFIED):
   """A record of a stop that succeeded after a deploy."""
   return TargetRecord(authority(container), Applied("d0", "a" * 64, at), Settled("s0", "stopped", "succeeded", at),
-                      Operation("s0", "stop", "settled", at, 65, at, outcome="succeeded", verified_on_worker_at=at))
+                      Operation("s0", "stop", "settled", at, at, outcome="succeeded", verified_on_worker_at=at))
 
 
 def running(container, worker_host):
@@ -215,12 +215,16 @@ def no_retry_delays(monkeypatch):
   monkeypatch.setattr(config, "BACKUP_RETRY_DELAYS", (0, 0))
 
 
-def steps(worker_host):
-  """What the container's backup asks of the worker, in order: Docker Compose's commands and each archive."""
+def steps(worker_host, lost=None):
+  """What the container's backup asks of the worker, in order: Docker Compose's commands and each archive; the first
+  `lost` step loses its connection with its unit not stopped."""
   log, original = [], worker_host.exec_command
 
-  async def exec_command(hostname, command, timeout=300):
-    log.append(command.split()[4] if command.startswith("docker compose -p") else "archive" if command.endswith("/backup.sh") else None)
+  async def exec_command(hostname, command, timeout=300, unit=None):
+    step = command.split()[4] if command.startswith("docker compose -p") else "archive" if command.endswith("/backup.sh") else None
+    log.append(step)
+    if step == lost and unit is not None and log.count(lost) == 1:
+      raise CommandError(f"Error executing command on {hostname}: gone It may still be running.", running=True)
     return await original(hostname, command, timeout)
 
   worker_host.exec_command = exec_command
@@ -231,6 +235,17 @@ pytestmark = pytest.mark.usefixtures("thread_connections", "in_task", "clock")
 
 
 class TestManualBackup:
+  async def test_an_archive_that_may_still_run_is_not_taken_again_and_leaves_it_recovering_without_a_stop(
+          self, manager, worker_host, store, container, volumes):
+    place(container, stopped(container))
+    log = steps(worker_host, lost="archive")
+    with pytest.raises(TaskFailed):
+      await take(manager.backup_container, container, volumes)
+    assert [step for step in log if step] == ["archive"]
+    assert sorted(row.status for row in Backup.select()) == ["failed", "failed"]
+    record = worker_record(container)
+    assert (record.operation.phase, record.operation.outcome) == ("recovering", "failed")
+
   async def test_a_stopped_containers_volumes_are_archived_by_id_and_it_is_committed_stopped(
           self, manager, worker_host, store, container, volumes, notices):
     place(container, stopped(container))
@@ -349,7 +364,7 @@ class TestManualRequests:
           self, manager, worker_host, store, container, others, volumes):
     await self.held(container, stopped(container))
     await self.held(others, replace(stopped(others), operation=Operation(
-        "d9", "deploy", "recovering", VERIFIED, 905, input_hash="a" * 64, outcome="interrupted")))
+        "d9", "deploy", "recovering", VERIFIED, input_hash="a" * 64, outcome="interrupted")))
     with pytest.raises(Conflict, match="^A container of this application can't take this request: an earlier operation"):
       manager.request_backup(container.application_id, ids(volumes))
     [backup_id] = add_backups(store.identity, utcnow(), False, [store.get_full_path(volume_archive_key(
@@ -399,7 +414,7 @@ class TestAutomaticBackup:
     log = []
     original = worker_host.exec_command
 
-    async def exec_command(hostname, command, timeout=300):
+    async def exec_command(hostname, command, timeout=300, unit=None):
       log.append(command.split()[4] if command.startswith("docker compose -p") else "archive" if command.endswith("/backup.sh") else None)
       return await original(hostname, command, timeout)
 
@@ -412,6 +427,18 @@ class TestAutomaticBackup:
     assert (record.applied, record.settled) == (deployed(container).applied, deployed(container).settled)
     assert worker_host.runtime(container) == "running d0" and len(rows()) == 2
     assert [transition for _, transition, _ in events(container)] == ["admitted", "succeeded"]
+
+  @pytest.mark.parametrize("lost, asked", [("archive", ["ps", "stop", "archive"]), ("start", ["ps", "stop", "archive", "archive", "start"])])
+  async def test_a_command_that_may_still_run_leaves_it_recovering_with_nothing_run_beside_it(
+          self, manager, worker_host, store, container, volumes, lost, asked):
+    running(container, worker_host)
+    log = steps(worker_host, lost=lost)
+    with pytest.raises(TaskFailed):
+      await take(manager.backup_container_preserving, container, volumes)
+    assert [step for step in log if step] == asked
+    record = worker_record(container)
+    assert (record.operation.phase, record.operation.outcome) == ("recovering", "failed")
+    assert worker_host.runtime(container) == "exited d0"
 
   async def test_a_stopped_container_is_archived_and_left_stopped(self, manager, worker_host, container, volumes):
     place(container, stopped(container))
@@ -580,7 +607,7 @@ class TestVolumeDeletion:
       await self.held(others, deployed(others))
     elif setup == "recovering":
       await self.held(others, replace(stopped(others), operation=Operation(
-          "d9", "deploy", "recovering", VERIFIED, 905, input_hash="a" * 64, outcome="interrupted")))
+          "d9", "deploy", "recovering", VERIFIED, input_hash="a" * 64, outcome="interrupted")))
     elif setup == "failed":
       await self.held(others, replace(stopped(others), settled=Settled("s0", "stopped", "failed", VERIFIED, "boom")))
     elif setup == "unreachable":
@@ -816,14 +843,14 @@ class TestInterruptedAutomaticBackup:
     record = deployed(container)
     baseline = Baseline("d0", "running", "d0", (f"id-{runtime_name(container.id)}",))
     place(container, TargetRecord(authority(container, generation), record.applied, record.settled,
-                                  Operation("b1", "backup_preserve", "executing", VERIFIED, 905, baseline=baseline)))
+                                  Operation("b1", "backup_preserve", "executing", VERIFIED, baseline=baseline)))
     worker_host.run(container, "exited d0", labelled=authority(container, generation))
 
-  async def test_it_is_stopped_as_it_is_then_brought_back_to_its_baseline(self, manager, worker_host, container):
+  async def test_what_it_left_running_is_stopped_then_it_is_brought_back_to_its_baseline(self, manager, worker_host, container):
     self.interrupted(container, worker_host)
-    await manager.recover_container(container.id, "b1", final=False)
-    assert worker_host.runtime(container) == "exited d0" and worker_record(container).operation.phase == "recovering"
-    await manager.recover_container(container.id, "b1", final=True)
+    worker_host.leave_unit(container.id)
+    await manager.recover_container(container.id, "b1")
+    assert worker_host.units() == []
     record = worker_record(container)
     assert (record.operation.phase, record.operation.outcome, record.operation.recovery.result) == ("settled", "interrupted", "verified")
     assert record.settled == deployed(container).settled and worker_host.runtime(container) == "running d0"
@@ -832,14 +859,23 @@ class TestInterruptedAutomaticBackup:
   async def test_one_that_does_not_come_back_is_stopped_and_settled_failed(self, manager, worker_host, container):
     self.interrupted(container, worker_host)
     worker_host.flag("start-fails")
-    await manager.recover_container(container.id, "b1", final=True)
+    await manager.recover_container(container.id, "b1")
     settled = worker_record(container).settled
     assert (settled.runtime_goal, settled.result) == ("stopped", "failed") and "started again" in settled.reason
     assert worker_host.runtime(container) is None
 
+  async def test_a_resume_that_may_still_run_leaves_it_recovering_with_nothing_run_beside_it(
+          self, manager, worker_host, container):
+    self.interrupted(container, worker_host)
+    worker_host.loses = "start"
+    with pytest.raises(TaskFailed):
+      await manager.recover_container(container.id, "b1")
+    assert worker_record(container).operation.phase == "executing" and worker_host.runtime(container) == "exited d0"
+    assert [transition for _, transition, _ in events(container)] == ["interrupted", "recovery_failed"]
+
   async def test_one_from_before_a_platform_restore_is_not_brought_back(self, manager, worker_host, container):
     self.interrupted(container, worker_host, generation="0123456789abcdef")
-    await manager.recover_container(container.id, "b1", final=True)
+    await manager.recover_container(container.id, "b1")
     settled = worker_record(container).settled
     assert (settled.runtime_goal, settled.result) == ("stopped", "failed") and worker_host.runtime(container) is None
     assert worker_record(container).authority == authority(container)

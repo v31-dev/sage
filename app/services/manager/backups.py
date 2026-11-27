@@ -14,14 +14,14 @@ from services.backups.commands import add_backups, apply_catalog, requeue_backup
 from services.backups.decisions import SlotRow, slot_due
 from services.backups.keys import VOLUME_ARCHIVE_SUFFIX, archive_name, archive_scope, archive_write_scope, taken_at, volume_archive_key
 from services.containers.decisions import maintenance_refusal
-from services.containers.placement import placement_dir, placement_scope
+from services.containers.placement import placement_dir, placement_scope, placement_unit
 from services.containers.record import Baseline, Settled
 from services.containers.targets import Containers
 from services.db.models import Application, Backup, Container, Project, Volume
 from services.history import record_container_event
 from services.notification import Notifications
 from services.s3 import S3, S3Session
-from services.tailscale import Tailscale
+from services.tailscale import CommandError, Tailscale, still_running
 from utils.common import get_env, new_id, utcnow
 from utils.errors import Conflict
 from utils.logging import TaskFailed
@@ -223,11 +223,14 @@ class BackupsMixin:
         await self.quiesce_runtime(host, container.id)
       failure = "; ".join(await self._archive(container, session, backups)) or None
     except Exception as error:
+      if still_running(error):
+        await self.fail_lifecycle(container, record, error)
       failure = str(error) or type(error).__name__
     try:
       verified_at = await self.resume_runtime(host, container.id, operation.baseline)
     except Exception as error:
-      await self.fail_lifecycle(container, record, Exception(f"it could not be started again as it was before the backup: {error}"))
+      await self.fail_lifecycle(container, record, CommandError(
+          f"it could not be started again as it was before the backup: {error}", running=still_running(error)))
     try:
       await Containers().write(container, replace(record, operation=replace(
           operation, phase="settled", outcome="failed" if failure else "succeeded", reason=failure, finished_at=utcnow(),
@@ -279,7 +282,8 @@ class BackupsMixin:
           "VOLUME_ID": volume.id, "ENCRYPTION_KEY": get_env("ENCRYPTION_KEY"),
           "DOWNLOAD_URL": session.create_presigned_download_url(backup.s3_path, config.WORKER_LINK_SECONDS, raw_path=True),
       }, mode=0o700)
-      await Tailscale().exec_command(container.worker_id, script, timeout=config.BACKUP_TIMEOUT_SECONDS)
+      await Tailscale().exec_command(container.worker_id, script, timeout=config.BACKUP_TIMEOUT_SECONDS,
+                                     unit=placement_unit(container.id))
       verified_at = await self.stop_runtime(container.worker_id, container.id)
       now = utcnow()
       await Containers().write(container, replace(
@@ -333,7 +337,8 @@ class BackupsMixin:
   async def _archive(self, container: Container, session: S3Session, backups: list[Backup]) -> list[str]:
     """Takes each of the backups from the container's placement into the store at its key, and settles it: succeeded
     once uploaded, failed with its error, cancelled when its volume is no longer configured. Those that failed
-    transiently are taken again together after each of `BACKUP_RETRY_DELAYS`. What failed, one line each."""
+    transiently are taken again together after each of `BACKUP_RETRY_DELAYS`. What failed, one line each; a backup
+    whose command may still run is not taken again, and this raises once the backups left are settled failed."""
     failures, last, waiting = [], {}, {backup.source_volume_id: backup for backup in backups}
     pending = [(volume, waiting.pop(volume.id)) for volume in Volume.select().where(
         (Volume.application == container.application_id) & Volume.id.in_(list(waiting))).order_by(Volume.name)]
@@ -352,8 +357,11 @@ class BackupsMixin:
               "ARCHIVE_NAME": name, "ENCRYPTION_KEY": get_env("ENCRYPTION_KEY"),
               "UPLOAD_URL": session.create_presigned_upload_url(key, config.WORKER_LINK_SECONDS, raw_path=True),
           }, mode=0o700)
-          await Tailscale().exec_command(container.worker_id, script, timeout=config.BACKUP_TIMEOUT_SECONDS)
+          await Tailscale().exec_command(container.worker_id, script, timeout=config.BACKUP_TIMEOUT_SECONDS,
+                                         unit=placement_unit(container.id))
         except Exception as error:
+          if still_running(error):
+            raise
           last[backup.id] = error
           if is_transient(error):
             transient = transient or error
@@ -375,4 +383,6 @@ class BackupsMixin:
         reason = last.get(backup.id, error)
         settle_backups([backup.id], "failed", str(reason) or type(reason).__name__)
         failures.append(f"volume {volume.name}: {reason}")
+      if still_running(error):
+        raise
     return failures

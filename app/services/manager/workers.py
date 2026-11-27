@@ -10,7 +10,7 @@ from peewee import JOIN
 import config
 from services.certs import TEMPLATE_DIGEST, Certs
 from services.cloudflare import Cloudflare
-from services.containers.placement import networks_command, placement_scope, runtime_owner
+from services.containers.placement import UNIT_PREFIX, networks_command, placement_scope, runtime_owner, stop_units_command
 from services.db.models import Application, Container, Domain, Instance, Project, Worker
 from services.domains.callers import called_names, caller_aliases
 from services.domains.config import parse_route_listing, routes_command
@@ -412,8 +412,9 @@ class WorkersMixin:
     return due
 
   def request_worker_tmp_cleanup(self):
-    """Queues, for each worker reachable and set up, the removal of its temp folder (`WORKER_TMP_DIR`). It holds the
-    whole worker, so no work of this Sage writes there meanwhile."""
+    """Queues, for each worker reachable and set up, the removal of its temp folder (`WORKER_TMP_DIR`) once nothing the
+    placements' runtime commands left runs. It holds the whole worker, so no work of this Sage writes there
+    meanwhile."""
     for worker in Worker.select(Worker.hostname):
       if is_workable(worker.hostname):
         self.add_task(task=self.cleanup_worker_tmp, key=("cleanup_worker_tmp", worker.hostname),
@@ -424,7 +425,8 @@ class WorkersMixin:
     if not is_workable(hostname):
       logger.info(f"Worker {hostname} is not there to clean up; nothing to do.")
       return
-    await Tailscale().exec_command(hostname, f"rm -rf {config.WORKER_TMP_DIR}", timeout=120)
+    await Tailscale().exec_command(hostname, f"{stop_units_command(UNIT_PREFIX)} && rm -rf {config.WORKER_TMP_DIR}",
+                                   timeout=120)
 
   def request_add_worker(self, host: str | None, subdomain: str | None) -> tuple[str, str]:
     """Adds the machine of the tailnet with that hostname (any case) or Tailscale IP as a worker, named by its hostname

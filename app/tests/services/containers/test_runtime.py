@@ -36,7 +36,7 @@ def deployed(verified: int, finished: int, goal="running", phase="settled") -> T
   settled_phase = phase == "settled"
   return TargetRecord(
       OURS, Applied("B", HASH, MANAGER), Settled("B", goal, "succeeded", MANAGER),
-      Operation("B", "deploy" if goal == "running" else "stop", phase, MANAGER, 0,
+      Operation("B", "deploy" if goal == "running" else "stop", phase, MANAGER,
                 MANAGER + timedelta(seconds=finished) if settled_phase else None, HASH if goal == "running" else None,
                 outcome="succeeded" if settled_phase else None,
                 verified_on_worker_at=WORKER + timedelta(seconds=verified) if settled_phase else None))
@@ -96,7 +96,7 @@ def test_an_unsettled_operation_sets_no_barrier_and_reports_count_by_their_recei
 
 
 def test_a_settled_operation_with_no_intentional_outcome_leaves_an_older_report_stale():
-  record = TargetRecord(OURS, operation=Operation("r1", "reset", "settled", MANAGER, 0, at(5), outcome="succeeded",
+  record = TargetRecord(OURS, operation=Operation("r1", "reset", "settled", MANAGER, at(5), outcome="succeeded",
                                                   verified_on_worker_at=WORKER + timedelta(seconds=5)))
   assert runtime_of(sample(gathered=0, received=6), ID, record, at(6), True).knowledge == "stale"
 

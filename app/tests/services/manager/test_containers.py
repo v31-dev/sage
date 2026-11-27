@@ -12,7 +12,7 @@ import pytest
 
 import config
 from services.applications.deploy_input import capture_deploy_config
-from services.containers.placement import placement_dir, record_path, runtime_name
+from services.containers.placement import placement_dir, placement_unit, record_path, runtime_name
 from services.containers.record import Applied, Authority, Operation, Recovery, Settled, TargetRead, TargetRecord, decode_record, encode_record
 from services.containers.rendering import deployment_hash
 from services.containers.targets import Containers
@@ -70,6 +70,18 @@ esac
 exit 0
 """
 
+SYSTEMCTL = """#!/bin/sh
+# The worker's systemd: a file `unit-<name>` under $FAKE_DOCKER for each active unit; `units-stay` keeps them active
+# through a stop.
+state="$FAKE_DOCKER"
+for last; do :; done
+case "$1" in
+  stop) [ -e "$state/units-stay" ] || rm -f "$state"/unit-$last ;;
+  is-active) for unit in "$state"/unit-$last; do [ -e "$unit" ] && exit 0; done; exit 4 ;;
+esac
+exit 0
+"""
+
 
 class Worker:
   """A worker whose commands run in a local shell over the test's directory, with Docker and the clock replaced, and
@@ -80,13 +92,14 @@ class Worker:
     self.state.mkdir()
     binaries = root / "bin"
     binaries.mkdir()
-    for name, script in (("docker", DOCKER), ("date", f"#!/bin/sh\necho {WORKER_CLOCK}\n")):
+    for name, script in (("docker", DOCKER), ("systemctl", SYSTEMCTL), ("date", f"#!/bin/sh\necho {WORKER_CLOCK}\n")):
       (binaries / name).write_text(script)
       (binaries / name).chmod(stat.S_IRWXU)
     self.env = {**os.environ, "PATH": f"{binaries}:{os.environ['PATH']}", "FAKE_DOCKER": str(self.state)}
     self.reachable = True
     self.breaks_at = None
     self.records_fail = False
+    self.loses = None
 
   def flag(self, *names):
     for name in names:
@@ -104,6 +117,13 @@ class Worker:
     (self.state / f"runtime-{runtime_name(container.id)}").write_text(
         "|".join([status, deployment, authority.instance_id, authority.state_generation, authority.container_id]) + "\n")
 
+  def leave_unit(self, container_id):
+    """A unit of the placement's runtime commands, left active."""
+    (self.state / f"unit-{placement_unit(container_id)}-{len(self.units())}").touch()
+
+  def units(self) -> list[str]:
+    return sorted(path.name.removeprefix("unit-") for path in self.state.glob("unit-*"))
+
   def ssh(self, hostname):
     return "reachable" if self.reachable else "unreachable"
 
@@ -113,8 +133,11 @@ class Worker:
     if not self.reachable:
       raise CommandError("Error connecting to w1: no route", transient=True)
 
-  async def exec_command(self, hostname, command, timeout=300):
+  async def exec_command(self, hostname, command, timeout=300, unit=None):
+    """Runs the command; a tracked one holding `loses` instead loses its connection, its unit not stopped."""
     self.answer(command)
+    if unit is not None and self.loses is not None and self.loses in command:
+      raise CommandError(f"Error executing command on {hostname}: gone It may still be running.", running=True)
     result = subprocess.run(["sh", "-c", command], capture_output=True, text=True, env=self.env)
     if result.returncode:
       raise CommandError(f"Error executing command on {hostname}: exit code {result.returncode}\n{result.stdout}",
@@ -137,8 +160,6 @@ class Lifecycle(ContainersMixin, LifecycleMixin, QueueMixin):
   def __init__(self):
     self.pool = ThreadPoolExecutor(max_workers=2)
     self.queue_facts = []
-    self.recoveries = {}
-    self.orphans = {}
     self.applied, self.reconciled, self.traefik_networks = [], 0, []
     self.task_queue = TaskQueue(SCOPES, names=TASK_NAMES, executors={"main": self.pool}, record=lambda task, status: None, notify=self._queue_changed)
 
@@ -216,7 +237,7 @@ def events(container):
 def deployed(container, at=VERIFIED):
   """A record of a deploy that succeeded."""
   return TargetRecord(authority(container), Applied("d0", "a" * 64, at), Settled("d0", "running", "succeeded", at),
-                      Operation("d0", "deploy", "settled", at, 905, at, "a" * 64, outcome="succeeded", verified_on_worker_at=at))
+                      Operation("d0", "deploy", "settled", at, at, "a" * 64, outcome="succeeded", verified_on_worker_at=at))
 
 
 async def deploy(manager, container):
@@ -241,7 +262,7 @@ class TestDeploy:
     assert record.applied.deployment_id == operation.id
     assert record.applied.config_hash == deployment_hash(capture_deploy_config(container.application_id))
     assert (record.settled.operation_id, record.settled.runtime_goal, record.settled.result) == (operation.id, "running", "succeeded")
-    assert operation.verified_on_worker_at == VERIFIED and operation.effect_bound_seconds == 905
+    assert operation.verified_on_worker_at == VERIFIED
     assert worker_host.runtime(container) == f"running {operation.id}"
     assert Containers().target(container.id) == TargetRead("present", record)
     assert events(container) == [("deploy", "admitted", None), ("deploy", "succeeded", None)]
@@ -320,6 +341,14 @@ class TestDeploy:
     assert record.settled == deployed(container).settled
     assert worker_host.runtime(container) == "running d0"
 
+  async def test_a_deploy_whose_command_may_still_run_is_left_recovering_without_a_stop(self, manager, worker_host, container):
+    worker_host.loses = "up -d"
+    with pytest.raises(TaskFailed):
+      await deploy(manager, container)
+    record = worker_record(container)
+    assert (record.operation.phase, record.operation.outcome, record.settled) == ("recovering", "failed", None)
+    assert "may still be running" in record.operation.reason
+
   async def test_a_failed_deploy_that_cannot_be_stopped_is_left_recovering(self, manager, worker_host, container):
     worker_host.flag("up-fails", "down-is-ignored")
     with pytest.raises(TaskFailed):
@@ -364,8 +393,8 @@ class TestStop:
     assert record.applied == deployed(container).applied
     assert (record.settled.runtime_goal, record.settled.result, record.settled.operation_id) == (
         "stopped", "succeeded", record.operation.id)
-    assert (record.operation.contract, record.operation.phase, record.operation.effect_bound_seconds,
-            record.operation.verified_on_worker_at) == ("stop", "settled", 65, VERIFIED)
+    assert (record.operation.contract, record.operation.phase, record.operation.verified_on_worker_at) == (
+        "stop", "settled", VERIFIED)
     assert events(container) == [("stop", "admitted", None), ("stop", "succeeded", None)]
 
   async def test_a_stop_of_a_container_never_deployed_records_it_stopped(self, manager, worker_host, container):
@@ -400,7 +429,7 @@ class TestRefusals:
       ("unsettled", "interrupted"), ("invalid", "invalid_record"), ("another Sage", "authority")])
   async def test_a_record_it_cannot_build_on_refuses_it_untouched(self, manager, worker_host, container, found, refusal):
     record = {
-        "unsettled": TargetRecord(authority(container), operation=Operation("d9", "deploy", "executing", VERIFIED, 905,
+        "unsettled": TargetRecord(authority(container), operation=Operation("d9", "deploy", "executing", VERIFIED,
                                                                             input_hash="a" * 64)),
         "invalid": "not a record\n",
         "another Sage": replace(deployed(container), authority=Authority("ffffffffffffffff", "1111111111111111", container.id)),
@@ -430,7 +459,7 @@ class TestRefusals:
 
 
 def unsettled(container):
-  return TargetRecord(authority(container), operation=Operation("d9", "deploy", "executing", VERIFIED, 905, input_hash="a" * 64))
+  return TargetRecord(authority(container), operation=Operation("d9", "deploy", "executing", VERIFIED, input_hash="a" * 64))
 
 
 class TestDelete:
@@ -452,22 +481,36 @@ class TestDelete:
         "Removed from this worker (task t1)"]
 
   @pytest.mark.parametrize("found", ["unsettled", "invalid"])
-  async def test_a_delete_does_not_wait_for_old_work(self, manager, worker_host, container, found):
+  async def test_a_delete_stops_what_old_work_left_running_and_does_not_wait_for_it(
+          self, manager, worker_host, container, found):
     place(container, unsettled(container) if found == "unsettled" else "not a record\n")
     worker_host.run(container, "running d9")
+    worker_host.leave_unit(container.id)
     await manager.delete_container(container.id)
     assert Container.get_or_none(Container.id == container.id) is None and worker_host.runtime(container) is None
+    assert worker_host.units() == []
+
+  async def test_a_delete_whose_old_work_cannot_be_stopped_runs_nothing_beside_it(self, manager, worker_host, container):
+    place(container, unsettled(container))
+    worker_host.run(container, "running d9")
+    worker_host.leave_unit(container.id)
+    worker_host.flag("units-stay")
+    with pytest.raises(TaskFailed):
+      await manager.delete_container(container.id)
+    record = worker_record(container)
+    assert (record.operation.contract, record.operation.phase, worker_host.runtime(container)) == (
+        "delete", "recovering", "running d9")
+    assert Container.get_or_none(Container.id == container.id) is not None
 
   @pytest.mark.parametrize("found", ["unsettled", "invalid"])
-  async def test_a_failed_delete_over_old_work_keeps_its_allowance(self, manager, worker_host, container, found):
+  async def test_a_failed_delete_over_old_work_is_left_recovering(self, manager, worker_host, container, found):
     place(container, unsettled(container) if found == "unsettled" else "not a record\n")
     worker_host.run(container, "running d9")
     worker_host.flag("down-is-ignored")
     with pytest.raises(TaskFailed):
       await manager.delete_container(container.id)
     record = worker_record(container)
-    assert (record.operation.contract, record.operation.phase, record.operation.effect_bound_seconds) == (
-        "delete", "recovering", 905)
+    assert (record.operation.contract, record.operation.phase) == ("delete", "recovering")
     assert Container.get_or_none(Container.id == container.id) is not None
     assert [(action, transition) for action, transition, _ in events(container)] == [("delete", "admitted"), ("delete", "failed")]
 
@@ -742,66 +785,53 @@ class TestIntent:
 
 
 class TestRecovery:
-  async def test_containment_stops_it_and_keeps_the_record_recovering_with_the_old_works_allowance(
-          self, manager, worker_host, container):
-    place(container, replace(unsettled(container), applied=Applied("d0", "a" * 64, VERIFIED)))
-    worker_host.run(container, "running d9")
-    await manager.recover_container(container.id, "d9", final=False)
-    record = worker_record(container)
-    assert worker_host.runtime(container) is None
-    assert (record.operation.id, record.operation.phase, record.operation.outcome, record.operation.recovery,
-            record.operation.effect_bound_seconds) == ("d9", "recovering", "interrupted", Recovery("unresolved"), 905)
-    assert events(container) == [("deploy", "interrupted", None)]
-
-  async def test_settling_after_the_allowance_records_the_interruption_and_lets_a_deploy_run(
+  async def test_it_stops_what_the_operation_left_running_and_the_container_then_settles_it_and_lets_a_deploy_run(
           self, manager, worker_host, container, notices):
     place(container, replace(unsettled(container), applied=Applied("d0", "a" * 64, VERIFIED)))
-    await manager.recover_container(container.id, "d9", final=False)
-    assert notices() == []
     worker_host.run(container, "running d9")
-    await manager.recover_container(container.id, "d9", final=True)
+    worker_host.leave_unit(container.id)
+    worker_host.leave_unit(ORPHAN)
+    await manager.recover_container(container.id, "d9")
     assert notices() == [("warning", "Demo / Web on w1 was stopped after an interrupted deploy.", PAGE)]
+    assert worker_host.units() == [f"{placement_unit(ORPHAN)}-1"] and worker_host.runtime(container) is None
     record = worker_record(container)
-    assert worker_host.runtime(container) is None
     assert (record.settled.operation_id, record.settled.runtime_goal, record.settled.result, record.settled.reason) == (
         "d9", "stopped", "failed", "its deploy was interrupted")
-    assert (record.operation.phase, record.operation.recovery, record.operation.verified_on_worker_at) == (
-        "settled", Recovery("verified"), VERIFIED)
+    assert (record.operation.phase, record.operation.outcome, record.operation.recovery,
+            record.operation.verified_on_worker_at) == ("settled", "interrupted", Recovery("verified"), VERIFIED)
     assert record.applied == Applied("d0", "a" * 64, VERIFIED)
     assert [transition for _, transition, _ in events(container)] == ["interrupted", "recovered"]
     await deploy(manager, container)
     assert worker_record(container).settled.result == "succeeded"
 
-  async def test_an_unreadable_record_is_replaced_by_a_reset_that_waits_the_longest_allowance(
-          self, manager, worker_host, container):
+  async def test_an_unreadable_record_is_settled_as_a_reset(self, manager, worker_host, container):
     place(container, "not a record\n")
     worker_host.run(container, "running d9")
-    await manager.recover_container(container.id, "unreadable", final=False)
+    await manager.recover_container(container.id, "unreadable")
     record = worker_record(container)
-    assert (record.authority, record.operation.contract, record.operation.phase, record.operation.effect_bound_seconds) == (
-        authority(container), "reset", "recovering", 905)
-    await manager.recover_container(container.id, record.operation.id, final=True)
-    assert worker_record(container).settled.result == "failed" and worker_record(container).operation.phase == "settled"
+    assert (record.authority, record.operation.contract, record.operation.phase, record.settled.result,
+            record.settled.reason) == (authority(container), "reset", "settled", "failed", "its record could not be read")
+    assert worker_host.runtime(container) is None
 
   async def test_a_record_from_before_a_restore_settles_under_the_current_authority_without_its_proof(
           self, manager, worker_host, container):
     place(container, replace(unsettled(container), authority=authority(container, generation="9999999999999999"),
                              applied=Applied("d0", "a" * 64, VERIFIED)))
-    await manager.recover_container(container.id, "d9", final=True)
+    await manager.recover_container(container.id, "d9")
     record = worker_record(container)
     assert (record.authority, record.applied, record.settled.result) == (authority(container), None, "failed")
 
   async def test_a_recovery_the_record_no_longer_needs_does_nothing(self, manager, worker_host, container):
     place(container, deployed(container))
     worker_host.run(container, "running d0")
-    await manager.recover_container(container.id, "d9", final=True)
+    await manager.recover_container(container.id, "d9")
     assert (worker_record(container), worker_host.runtime(container), events(container)) == (deployed(container), "running d0", [])
 
   async def test_a_recovery_of_one_incident_leaves_a_newer_one_to_its_own_wait(self, manager, worker_host, container):
-    newer = TargetRecord(authority(container), operation=Operation("d10", "deploy", "executing", VERIFIED, 905, input_hash="b" * 64))
+    newer = TargetRecord(authority(container), operation=Operation("d10", "deploy", "executing", VERIFIED, input_hash="b" * 64))
     place(container, newer)
     worker_host.run(container, "running d10")
-    await manager.recover_container(container.id, "d9", final=True)
+    await manager.recover_container(container.id, "d9")
     assert (worker_record(container), worker_host.runtime(container)) == (newer, "running d10")
 
   async def test_a_recovery_that_cannot_stop_it_is_a_failure_and_leaves_the_record(self, manager, worker_host, container):
@@ -809,16 +839,28 @@ class TestRecovery:
     worker_host.run(container, "running d9")
     worker_host.flag("down-is-ignored")
     with pytest.raises(TaskFailed):
-      await manager.recover_container(container.id, "d9", final=False)
+      await manager.recover_container(container.id, "d9")
     assert worker_record(container) == unsettled(container)
-    assert [(action, transition) for action, transition, _ in events(container)] == [("deploy", "recovery_failed")]
+    assert [(action, transition) for action, transition, _ in events(container)] == [
+        ("deploy", "interrupted"), ("deploy", "recovery_failed")]
+
+  async def test_a_recovery_that_cannot_stop_what_the_operation_left_running_runs_nothing_beside_it(
+          self, manager, worker_host, container):
+    place(container, unsettled(container))
+    worker_host.run(container, "running d9")
+    worker_host.leave_unit(container.id)
+    worker_host.flag("units-stay")
+    with pytest.raises(TaskFailed):
+      await manager.recover_container(container.id, "d9")
+    assert (worker_record(container), worker_host.runtime(container)) == (unsettled(container), "running d9")
+    assert [transition for _, transition, _ in events(container)] == ["interrupted", "recovery_failed"]
 
 
 class TestRequestsWhileRecovering:
   @pytest.fixture
   async def recovering(self, manager, worker_host, container):
     place(container, unsettled(container))
-    await manager.recover_container(container.id, "d9", final=False)
+    await Containers().read(container)
     return container
 
   @pytest.fixture
@@ -841,7 +883,7 @@ class TestRequestsWhileRecovering:
       manager.request_deploy(container.id)
 
   async def test_once_the_recovery_settles_a_deploy_is_admitted(self, manager, worker_host, recovering):
-    await manager.recover_container(recovering.id, "d9", final=True)
+    await manager.recover_container(recovering.id, "d9")
     assert manager.request_deploy(recovering.id)
 
   async def test_deploy_all_and_stop_all_are_refused_whole(self, manager, recovering, other):
@@ -905,14 +947,6 @@ class TestReset:
 ORPHAN = "0f0f0f0f0f0f0f0f"
 
 
-@pytest.fixture
-def monotonic(monkeypatch):
-  import services.manager.containers as module
-  clock = SimpleNamespace(now=1000.0)
-  monkeypatch.setattr(module, "monotonic", lambda: clock.now)
-  return clock
-
-
 def orphan_placement(worker_host, record=None, running=True, labelled=None):
   """What a container this Sage has no row for left on the worker."""
   orphan = SimpleNamespace(id=ORPHAN)
@@ -947,7 +981,7 @@ class TestOrphanCleanup:
   async def test_a_cleanup_with_nothing_left_stops_nothing_and_sends_no_notice(self, manager, worker_host, container, notices):
     worker_host.flag("down-fails")
     await manager.cleanup_orphan("w1", ORPHAN)
-    assert notices() == [] and manager.orphans == {}
+    assert notices() == []
 
   async def test_a_cleanup_asked_for_on_a_report_from_before_a_delete_finds_nothing_and_says_nothing(
           self, manager, worker_host, container, notices):
@@ -971,22 +1005,21 @@ class TestOrphanCleanup:
     await manager.cleanup_orphan("w1", ORPHAN)
     assert directory.exists() and worker_host.runtime(SimpleNamespace(id=ORPHAN)) == "running d1"
 
-  @pytest.mark.parametrize("record, bound", [
-      (TargetRecord(Authority("0" * 16, "0" * 16, ORPHAN), operation=Operation("d9", "deploy", "executing", VERIFIED, 905,
-                                                                               input_hash="a" * 64)), 905),
-      ("not a record\n", 905)], ids=["unsettled", "unreadable"])
-  async def test_old_work_on_an_orphan_is_waited_out_from_when_it_was_seen(
-          self, manager, worker_host, container, monotonic, record, bound):
-    if not isinstance(record, str):
-      record = replace(record, authority=authority(SimpleNamespace(id=ORPHAN)))
-    directory = orphan_placement(worker_host, record)
+  @pytest.mark.parametrize("found", ["unsettled", "unreadable"])
+  async def test_old_work_on_an_orphan_is_stopped_and_the_orphan_removed_at_once(self, manager, worker_host, container, found):
+    directory = orphan_placement(worker_host, "not a record\n" if found == "unreadable" else TargetRecord(
+        authority(SimpleNamespace(id=ORPHAN)), operation=Operation("d9", "deploy", "executing", VERIFIED, input_hash="a" * 64)))
+    worker_host.leave_unit(ORPHAN)
     await manager.cleanup_orphan("w1", ORPHAN)
-    monotonic.now += bound - 1
-    await manager.cleanup_orphan("w1", ORPHAN)
-    assert directory.exists() and manager.orphans[("w1", ORPHAN)][2] == bound
-    monotonic.now += 1
-    await manager.cleanup_orphan("w1", ORPHAN)
-    assert not directory.exists() and manager.orphans == {}
+    assert not directory.exists() and worker_host.units() == [] and worker_host.runtime(SimpleNamespace(id=ORPHAN)) is None
+
+  async def test_an_orphan_whose_old_work_cannot_be_stopped_is_left_as_it_is(self, manager, worker_host, container):
+    directory = orphan_placement(worker_host)
+    worker_host.leave_unit(ORPHAN)
+    worker_host.flag("units-stay")
+    with pytest.raises(TaskFailed):
+      await manager.cleanup_orphan("w1", ORPHAN)
+    assert directory.exists() and worker_host.runtime(SimpleNamespace(id=ORPHAN)) == "running d1"
 
   async def test_an_orphan_that_cannot_be_stopped_is_a_failure_and_stays(self, manager, worker_host, container):
     directory = orphan_placement(worker_host)

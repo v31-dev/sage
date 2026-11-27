@@ -69,8 +69,6 @@ class Manager(ContainersMixin, LifecycleMixin, QueueMixin):
     self.pool = ThreadPoolExecutor(max_workers=2)
     self.queue_facts = self.containers_queue_facts()
     self.container_state = self.containers_state_fact()
-    self.recoveries = {}
-    self.orphans = {}
     self.applied, self.discovered = [], 0
     self.task_queue = TaskQueue(SCOPES, names=TASK_NAMES | {"record_read"}, executors={"main": self.pool},
                                 record=lambda task, status: None, notify=self._queue_changed)
@@ -122,7 +120,7 @@ async def deployed(container):
   config_hash = deployment_hash(capture_deploy_config(container.application_id))
   await Containers().write(container, TargetRecord(
       authority(container), Applied("d1", config_hash, at), Settled("d1", "running", "succeeded", at),
-      Operation("d1", "deploy", "settled", at, 905, at, config_hash, outcome="succeeded", verified_on_worker_at=WORKER_CLOCK)))
+      Operation("d1", "deploy", "settled", at, at, config_hash, outcome="succeeded", verified_on_worker_at=WORKER_CLOCK)))
 
 
 def report(container, state="running", deployment="d1", hostname=None, at=None):
@@ -392,22 +390,6 @@ class TestListings:
         (["list_records", "w2"], True, [])]
 
 
-class Monotonic:
-  def __init__(self):
-    self.now = 1000.0
-
-  def __call__(self):
-    return self.now
-
-
-@pytest.fixture
-def monotonic(monkeypatch):
-  import services.manager.containers as module
-  clock = Monotonic()
-  monkeypatch.setattr(module, "monotonic", clock)
-  return clock
-
-
 def requested(manager):
   return [(task["name"], task["params"], task["quiet"]) for task in manager.task_queue.snapshot()["queued"]]
 
@@ -417,36 +399,18 @@ def scopes(manager, name):
 
 
 class TestCorrections:
-  async def test_an_interrupted_operation_is_contained_once_and_settled_after_its_allowance(
-          self, manager, containers, monotonic):
+  async def test_an_interrupted_operation_is_asked_to_be_recovered_at_each_look_until_it_settles(self, manager, containers):
     container = containers[0]
     place(container, TargetRecord(authority(container), operation=Operation("d9", "deploy", "executing", datetime(2026, 1, 1),
-                                                                            905, input_hash="a" * 64)))
+                                                                            input_hash="a" * 64)))
     await Containers().read(container)
     report(container)
     await manager.observe_containers()
-    assert ("recover", {"container_id": container.id, "incident": "d9", "final": False}, False) in requested(manager)
+    assert ("recover", {"container_id": container.id, "incident": "d9"}, False) in requested(manager)
     assert scopes(manager, "recover") == [[placement_scope("w1", container.id)]]
     manager.task_queue.cancel(scope="worker")
-    monotonic.now += 904
     await manager.observe_containers()
-    assert [name for name, _, _ in requested(manager) if name == "recover"] == []
-    monotonic.now += 1
-    await manager.observe_containers()
-    assert ("recover", {"container_id": container.id, "incident": "d9", "final": True}, False) in requested(manager)
-
-  async def test_a_restart_waits_the_whole_allowance_again(self, manager, containers, monotonic):
-    container = containers[0]
-    place(container, TargetRecord(authority(container), operation=Operation("d9", "deploy", "executing", datetime(2026, 1, 1),
-                                                                            905, input_hash="a" * 64)))
-    await Containers().read(container)
-    report(container)
-    await manager.observe_containers()
-    manager.task_queue.cancel(scope="worker")
-    monotonic.now += 2000
-    manager.recoveries.clear()
-    await manager.observe_containers()
-    assert [params["final"] for name, params, _ in requested(manager) if name == "recover"] == [False]
+    assert ("recover", {"container_id": container.id, "incident": "d9"}, False) in requested(manager)
 
   async def test_a_contradicting_runtime_is_reset_visibly(self, manager, containers):
     container = containers[0]
@@ -456,20 +420,6 @@ class TestCorrections:
     await manager.observe_containers()
     assert ("reset", {"container_id": container.id, "cause": "unexpected_running"}, False) in requested(manager)
     assert scopes(manager, "reset") == [[placement_scope("w1", container.id)]]
-
-  async def test_the_bookkeeping_goes_when_the_record_no_longer_needs_recovery_or_the_container_is_gone(
-          self, manager, containers, monotonic):
-    for container in containers:
-      place(container, TargetRecord(authority(container), operation=Operation("d9", "deploy", "executing", datetime(2026, 1, 1),
-                                                                              905, input_hash="a" * 64)))
-      await Containers().read(container)
-      report(container)
-    await manager.observe_containers()
-    assert set(manager.recoveries) == {container.id for container in containers}
-    await deployed(containers[0])
-    containers[1].delete_instance()
-    await manager.observe_containers()
-    assert manager.recoveries == {}
 
 
 ORPHAN = "0f0f0f0f0f0f0f0f"
@@ -511,7 +461,7 @@ class TestResume:
   async def test_it_waits_for_the_recovery_of_an_operation_the_restart_cut_off(self, manager, containers):
     container = containers[0]
     place(container, TargetRecord(authority(container), operation=Operation("d9", "deploy", "executing", datetime(2026, 1, 1),
-                                                                            905, input_hash="a" * 64)))
+                                                                            input_hash="a" * 64)))
     await Containers().read(container)
     report(container)
     intend(container, "deploy")
@@ -576,17 +526,6 @@ class TestOrphans:
     await manager.list_records("w1")
     assert sorted(params["container_id"] for params, _, _ in cleanups(manager)) == sorted(
         ["0d0d0d0d0d0d0d0d", "0f0f0f0f0f0f0f0f", containers[1].id])
-
-  async def test_an_orphan_waiting_out_old_work_is_not_asked_for_again_until_its_allowance_has_passed(
-          self, manager, containers, monotonic):
-    reported_runtime("w1", ORPHAN, runtime_labels(Authority(Instance.get().id, Instance.get().state_generation, ORPHAN), "d1",
-                                                  "demo-web"))
-    manager.orphans[("w1", ORPHAN)] = ("d9", monotonic.now, 905)
-    await manager.observe_containers()
-    assert cleanups(manager) == []
-    monotonic.now += 905
-    await manager.observe_containers()
-    assert len(cleanups(manager)) == 1
 
 
 class TestQueuedRequests:

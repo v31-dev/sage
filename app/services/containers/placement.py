@@ -18,6 +18,19 @@ def placement_scope(hostname: str, container_id: str) -> str:
   return f"{worker_scope(hostname)}:container:{container_id}"
 
 
+UNIT_PREFIX = "sage-run"
+
+
+def placement_unit(container_id: str) -> str:
+  """The name prefix of the systemd units the placement's runtime commands run as on its worker."""
+  return f"{UNIT_PREFIX}-{container_id}"
+
+
+def stop_units_command(prefix: str) -> str:
+  """Stops every unit whose name starts with the prefix, then fails while any of them is still active."""
+  return f"systemctl stop '{prefix}-*'; ! systemctl is-active -q '{prefix}-*'"
+
+
 def placements_dir(home: str) -> str:
   return f"{home}/containers"
 

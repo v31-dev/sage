@@ -228,7 +228,7 @@ class PlatformMixin:
         consumer.install(saved.values, saved.revision)
       for owner in (Containers(), Workers(), Domains()):
         owner.clear()
-      for held in (self.setup_failures, self.stack_repairs, self.removal_failures, self.recoveries, self.orphans):
+      for held in (self.setup_failures, self.stack_repairs, self.removal_failures):
         held.clear()
     except Exception as error:
       Notifications().notify(f"The platform restore from the backup taken at {taken_at(s3_path)} failed"

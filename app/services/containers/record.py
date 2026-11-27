@@ -60,14 +60,13 @@ class Recovery:
 
 @dataclass(frozen=True)
 class Operation:
-  """The latest admitted operation. `effect_bound_seconds` is how long work it launched can still run; `outcome`,
-  `finished_at` and `verified_on_worker_at` stay None until it settles. `verified_on_worker_at` is on the worker's
-  clock, when its outcome was verified there: a report gathered before it says nothing about that outcome."""
+  """The latest admitted operation. `outcome`, `finished_at` and `verified_on_worker_at` stay None until it settles.
+  `verified_on_worker_at` is on the worker's clock, when its outcome was verified there: a report gathered before it
+  says nothing about that outcome."""
   id: str
   contract: str
   phase: str
   admitted_at: datetime
-  effect_bound_seconds: int
   finished_at: datetime | None = None
   input_hash: str | None = None
   baseline: Baseline | None = None
@@ -159,14 +158,12 @@ def decode_record(text: str) -> TargetRecord:
     return Recovery(choice(value["result"], RECOVERIES), text_of(value["reason"], nullable=True))
 
   def operation(value):
-    value = fields(value, ("id", "contract", "phase", "admitted_at", "effect_bound_seconds", "finished_at", "input_hash",
-                           "baseline", "outcome", "reason", "recovery", "task_ref", "verified_on_worker_at"))
-    bound = value["effect_bound_seconds"]
-    if isinstance(bound, bool) or not isinstance(bound, int) or bound < 0:
-      raise ValueError(f"Invalid effect bound {bound!r}.")
+    # A record written by 0.2.1 or earlier also carries the operation's `effect_bound_seconds`, no longer used.
+    value = fields(value, ("id", "contract", "phase", "admitted_at", "finished_at", "input_hash", "baseline", "outcome",
+                           "reason", "recovery", "task_ref", "verified_on_worker_at"), ("effect_bound_seconds",))
     decoded = Operation(
         text_of(value["id"]), choice(value["contract"], CONTRACTS), choice(value["phase"], PHASES), time(value["admitted_at"]),
-        bound, time(value["finished_at"], nullable=True), text_of(value["input_hash"], nullable=True, pattern="[0-9a-f]{64}"),
+        time(value["finished_at"], nullable=True), text_of(value["input_hash"], nullable=True, pattern="[0-9a-f]{64}"),
         optional(value["baseline"], baseline), choice(value["outcome"], OUTCOMES, nullable=True),
         text_of(value["reason"], nullable=True), optional(value["recovery"], recovery), text_of(value["task_ref"], nullable=True),
         time(value["verified_on_worker_at"], nullable=True))

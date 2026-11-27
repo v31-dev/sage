@@ -16,7 +16,7 @@ FULL = TargetRecord(
     AUTHORITY,
     Applied("d1", HASH, AT),
     Settled("d1", "running", "succeeded", AT, None),
-    Operation("b1", "backup_preserve", "recovering", AT, 930, None, None,
+    Operation("b1", "backup_preserve", "recovering", AT, None, None,
               Baseline("d1", "running", "d1", ("dockerid1", "dockerid2")), "interrupted", "manager restarted",
               Recovery("unresolved", "old work still settling"), "task1"),
 )
@@ -38,16 +38,21 @@ def test_a_record_survives_its_encoding_on_one_line_with_its_format_version():
 
 @pytest.mark.parametrize("record", [
     TargetRecord(AUTHORITY),
-    TargetRecord(AUTHORITY, operation=Operation("d2", "deploy", "executing", AT, 960, input_hash=HASH, task_ref="t1")),
+    TargetRecord(AUTHORITY, operation=Operation("d2", "deploy", "executing", AT, input_hash=HASH, task_ref="t1")),
     TargetRecord(AUTHORITY, Applied("d2", HASH, AT), Settled("d2", "running", "succeeded", AT),
-                 Operation("d2", "deploy", "settled", AT, 0, AT, HASH, outcome="succeeded", verified_on_worker_at=AT)),
+                 Operation("d2", "deploy", "settled", AT, AT, HASH, outcome="succeeded", verified_on_worker_at=AT)),
     TargetRecord(AUTHORITY, settled=Settled("d3", "stopped", "failed", AT, "pull: timeout"),
-                 operation=Operation("d3", "deploy", "recovering", AT, 960, input_hash=HASH, outcome="failed", reason="pull: timeout",
+                 operation=Operation("d3", "deploy", "recovering", AT, input_hash=HASH, outcome="failed", reason="pull: timeout",
                                      recovery=Recovery("verified"))),
-    TargetRecord(AUTHORITY, operation=Operation("s1", "stop", "settled", AT, 0, AT, outcome="succeeded", verified_on_worker_at=AT)),
+    TargetRecord(AUTHORITY, operation=Operation("s1", "stop", "settled", AT, AT, outcome="succeeded", verified_on_worker_at=AT)),
 ], ids=["new", "a deploy running", "a deploy committed", "a failed deploy recovered", "a stop"])
 def test_each_shape_of_record_survives_its_encoding(record):
   assert decode_record(encode_record(record)) == record
+
+
+def test_an_older_records_effect_bound_is_read_past_and_not_written_again():
+  record = decode_record(mutated(put(930, "operation", "effect_bound_seconds")))
+  assert record == FULL and "effect_bound_seconds" not in json.loads(encode_record(record))["operation"]
 
 
 def drop(*path):
@@ -78,9 +83,6 @@ def put(value_at, *path):
     mutated(put("paused", "settled", "runtime_goal")),
     mutated(put("2026-01-01T12:00:00+00:00", "applied", "committed_at")),
     mutated(put("yesterday", "settled", "committed_at")),
-    mutated(put(-1, "operation", "effect_bound_seconds")),
-    mutated(put(True, "operation", "effect_bound_seconds")),
-    mutated(put("5", "operation", "effect_bound_seconds")),
     mutated(put("settled", "operation", "phase")),
     mutated(put(None, "operation", "outcome")),
     mutated(put("succeeded", "operation", "outcome")),
@@ -93,7 +95,7 @@ def put(value_at, *path):
     mutated(put("", "operation", "id")),
 ], ids=["not JSON", "not an object", "an unknown field", "a missing field", "another format version", "a boolean version",
         "an authority that is not an id", "a fingerprint that is not one", "an unknown goal", "an aware time", "not a time",
-        "a negative bound", "a boolean bound", "a bound in text", "settled without a finish", "recovering without an outcome",
+        "settled without a finish", "recovering without an outcome",
         "recovering after success", "a deploy without a fingerprint", "an automatic backup without a baseline",
         "a fingerprint outside a deploy", "docker ids that are not a list", "an unknown baseline field", "an unknown recovery",
         "an empty id"])
@@ -102,7 +104,7 @@ def test_anything_else_is_refused(text):
     decode_record(text)
 
 
-SETTLED_STOP = TargetRecord(AUTHORITY, operation=Operation("s1", "stop", "settled", AT, 0, AT, outcome="succeeded",
+SETTLED_STOP = TargetRecord(AUTHORITY, operation=Operation("s1", "stop", "settled", AT, AT, outcome="succeeded",
                                                            verified_on_worker_at=AT))
 
 

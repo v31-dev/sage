@@ -14,12 +14,13 @@ from services.db.models import Application, Container, Domain, DomainCaller, Ins
 from services.manager.domains import DomainsMixin
 from services.manager.queue import SCOPES, TASK_NAMES, QueueMixin
 from services.manager.workers import WorkersMixin
-from services.tailscale import Tailscale
+from services.tailscale import CommandError, Tailscale
 from services.worker_reports import ContainerReading, HostReading, Snapshot, WorkerReports
 from services.workers import commands
 from services.workers.rendering import (InfraInputs, firewall_fingerprint, infra_fingerprint, remove_edge_network_command, render_firewall,
                                         stack_scope, worker_scope)
 from services.workers.state import Workers, is_workable
+from tests.services.manager.test_containers import Worker as ShellWorker
 from utils.executor import active_executor
 from utils.logging import TaskFailed
 from utils.queue import TaskQueue, _scope_conflict
@@ -760,6 +761,23 @@ class TestTmpCleanup:
     worker.delete_instance()
     await manager.cleanup_worker_tmp("w1")
     assert hosts.commands == []
+
+  @pytest.mark.parametrize("stays", [False, True], ids=["stopped", "still running"])
+  async def test_the_folder_goes_only_once_nothing_a_placements_command_left_runs(
+          self, manager, hosts, worker, tmp_path, monkeypatch, stays):
+    Workers().record_setup("w1", "succeeded", "100.64.0.2")
+    shell = ShellWorker(tmp_path)
+    monkeypatch.setattr(hosts, "exec_command", shell.exec_command)
+    monkeypatch.setattr(config, "WORKER_TMP_DIR", str(tmp_path / "tmp"))
+    (tmp_path / "tmp" / "run").mkdir(parents=True)
+    shell.leave_unit("0f0f0f0f0f0f0f0f")
+    if stays:
+      shell.flag("units-stay")
+      with pytest.raises(CommandError):
+        await manager.cleanup_worker_tmp("w1")
+    else:
+      await manager.cleanup_worker_tmp("w1")
+    assert ((tmp_path / "tmp").exists(), bool(shell.units())) == (stays, stays)
 
 
 class TestRequests:
