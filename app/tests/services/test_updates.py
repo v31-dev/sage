@@ -832,3 +832,64 @@ class TestFact:
     fast.join()
 
     assert fact.last == 2
+
+  class Failing:
+    """A callback that raises for the values in `failing`, and the values it took."""
+
+    def __init__(self, *failing):
+      self.failing = set(failing)
+      self.taken = []
+
+    def __call__(self, value):
+      if value in self.failing:
+        self.failing.discard(value)
+        raise RuntimeError("database is locked")
+      self.taken.append(value)
+
+  def test_a_callback_that_raises_is_logged_and_the_check_returns(self, sources, caplog):
+    with caplog.at_level(logging.ERROR, logger="services.updates"):
+      Fact(lambda: 1, on_change=self.Failing(1)).check()
+    assert [record.exc_info[0] for record in caplog.records] == [RuntimeError]
+
+  def test_a_callback_that_raised_is_called_again_at_the_next_check_and_not_after_it_took_the_value(self, sources):
+    callback = self.Failing(1)
+    fact = Fact(lambda: 1, on_change=callback)
+    fact.check()
+    fact.check()
+    fact.check()
+    assert callback.taken == [1]
+
+  def test_the_next_check_delivers_the_value_worked_out_then(self, sources):
+    value, callback = self.Value(), self.Failing(2)
+    fact = Fact(value, on_change=callback)
+    fact.check()
+    value.value = 2
+    fact.check()
+    value.value = 3
+    fact.check()
+    assert callback.taken == [1, 3]
+
+  def test_a_value_back_to_the_one_the_callback_took_calls_nothing_and_fires(self, sources):
+    value, callback = self.Value(), self.Failing(2)
+    fact = Fact(value, UpdateSource.TASKS, on_change=callback)
+    fact.check()
+    value.value = 2
+    fact.check()
+    value.value = 1
+    fact.check()
+    assert callback.taken == [1] and sources == [UpdateSource.TASKS] * 3
+
+  def test_a_failed_callback_fires_the_source_once_for_its_change(self, sources):
+    callback = self.Failing(1)
+    fact = Fact(lambda: 1, UpdateSource.TASKS, on_change=callback)
+    fact.check()
+    fact.check()
+    assert callback.taken == [1] and sources == [UpdateSource.TASKS]
+
+  def test_the_last_value_is_the_newest_worked_out_when_the_callback_raises(self, sources):
+    value = self.Value()
+    fact = Fact(value, on_change=self.Failing(2))
+    fact.check()
+    value.value = 2
+    fact.check()
+    assert fact.last == 2

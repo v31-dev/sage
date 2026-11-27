@@ -125,9 +125,9 @@ class ContainersMixin:
     def changed(current):
       nonlocal previous
       affected = {container_id for container_id, *_ in current ^ previous}
-      previous = current
       for container in Container.select().where(Container.id.in_(affected)):
         container_changed(container)
+      previous = current
 
     def tasks():
       live, queued = self._container_tasks()
@@ -151,12 +151,12 @@ class ContainersMixin:
           state.routable for state in (previous.get(container_id), current.get(container_id)) if state is not None} == {True, False}}
       routability = {container_id for container_id in affected if container_id in previous and container_id in current
                      and previous[container_id].routable != current[container_id].routable}
-      previous = current
       for container in Container.select().where(Container.id.in_(affected)):
         container_changed(container)
       self.request_domain_applies(domain.id for domain in Domain.select(Domain.id).where(Domain.container.in_(rerouted)))
       if Domain.select().where(Domain.container.in_(routability) & Domain.service.is_null(False)).exists():
         self.request_discovery()
+      previous = current
 
     return Fact(lambda: self.container_states(Container.select()), on_change=changed)
 

@@ -49,6 +49,9 @@ here and are not repeated. How the backend works (the queue's modes, each workfl
 - A Fact's callback runs under the Fact's lock: it publishes or requests work and never checks a Fact. An owner checks
   a Fact, enqueues or publishes only outside its own lock. So locks nest one way (a state Fact, the queue's facts, the
   queue's lock), and nothing runs under the queue's lock.
+- A Fact's callback that raises is logged and called again at the next check with the value then, so it moves its own
+  baseline (its `previous`, what it has recorded) only after the effects that baseline covers, and anything it repeats
+  on that call is safe to repeat.
 - `GET /api` is the `info` topic, and the pause banner and the restore overlay rely on it, so it reads memory only: no
   network, no database.
 - A Socket.IO topic is for a change the page did not make, so name that change before proposing one; a page's own

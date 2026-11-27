@@ -11,6 +11,7 @@ from services.certs import Certs
 from services.cloudflare import Cloudflare, CloudflareError
 from services.containers.placement import runtime_name
 from services.db.models import Application, Container, Domain, Project, Worker, WorkerEvent
+from services.history import record_worker_event
 from services.manager.queue import SCOPES, TASK_NAMES, QueueMixin
 from services.manager.workers import WorkersMixin
 from services.metrics import Metrics
@@ -299,6 +300,27 @@ class TestDiscoveryRequests:
     await manager.observe_workers()
     assert manager.discovered == before + 1
 
+  async def test_a_discovery_request_that_raised_is_made_at_the_next_check_and_once(self, manager, tailnet, workers, monkeypatch):
+    request_discovery, raised = manager.request_discovery, []
+
+    def raising_once():
+      if not raised:
+        raised.append(True)
+        raise RuntimeError("database is locked")
+      request_discovery()
+
+    tailnet.answers, tailnet.addresses = {"w1": "reachable"}, {"w1": "100.64.0.2"}
+    ready("w1")
+    await manager.observe_workers()
+    monkeypatch.setattr(manager, "request_discovery", raising_once)
+    tailnet.addresses["w1"] = "100.64.0.9"
+    before = manager.discovered
+    await manager.observe_workers()
+    assert raised and manager.discovered == before
+    await manager.observe_workers()
+    await manager.observe_workers()
+    assert manager.discovered == before + 1
+
 
 class TestEvents:
   async def test_observed_changes_between_offline_not_ready_and_online_are_recorded_once_each(
@@ -413,6 +435,33 @@ class TestEvents:
     manager.worker_reported("w1")
     assert events() == [("w1", "readiness", "observed", {"status": "not ready", "reason": "owned_elsewhere"})]
     assert notices() == []
+
+  @pytest.mark.parametrize("failing", ["w1", "w2"])
+  async def test_a_change_whose_event_write_raised_is_recorded_and_noticed_at_the_next_check_and_once(
+          self, manager, tailnet, workers, notices, monkeypatch, failing):
+    raised = []
+
+    def raising_once(hostname, *arguments, **fields):
+      if hostname == failing and not raised:
+        raised.append(hostname)
+        raise RuntimeError("database is locked")
+      return record_worker_event(hostname, *arguments, **fields)
+
+    monkeypatch.setattr("services.manager.workers.record_worker_event", raising_once)
+    tailnet.answers = {"w1": "reachable", "w2": "reachable"}
+    ready("w1")
+    ready("w2")
+    await manager.observe_workers()
+    tailnet.answers = {"w1": "unreachable", "w2": "unreachable"}
+    await manager.observe_workers()
+    assert raised == [failing]
+    await manager.observe_workers()
+    await manager.observe_workers()
+    tailnet.answers = {"w1": "reachable", "w2": "reachable"}
+    await manager.observe_workers()
+    assert sorted((subject, reason["status"]) for subject, _, _, reason in events()) == [("w1", "offline"), ("w2", "offline")]
+    assert sorted(content for _, content, _ in notices()) == [
+        "Worker w1 is offline.", "Worker w1 is reachable again.", "Worker w2 is offline.", "Worker w2 is reachable again."]
 
 
 @pytest.fixture

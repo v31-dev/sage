@@ -104,8 +104,8 @@ class WorkersMixin:
     def changed(current):
       nonlocal previous
       affected = {hostname for hostname, _ in current ^ previous}
-      previous = current
       self._workers_changed(affected)
+      previous = current
 
     return [Fact(lambda: frozenset((hostname, name) for hostname, names in self._worker_tasks().items() for name in names),
                  on_change=changed)]
@@ -127,27 +127,27 @@ class WorkersMixin:
           observed.pop(hostname, None)
           continue
         seen = observed.get(hostname)
-        if after.view.status in OBSERVED:
-          observed[hostname] = after.view.status
-          if seen is not None and seen != after.view.status:
-            record_worker_event(hostname, "connectivity" if "offline" in (seen, after.view.status) else "readiness",
-                                "observed", reason={"status": after.view.status, "reason": after.view.reason})
-            if after.view.status == "offline":
-              Notifications().notify(f"Worker {hostname} is offline.", "error", f"/workers/{hostname}")
+        if after.view.status in OBSERVED and seen is not None and seen != after.view.status:
+          record_worker_event(hostname, "connectivity" if "offline" in (seen, after.view.status) else "readiness",
+                              "observed", reason={"status": after.view.status, "reason": after.view.reason})
+          if after.view.status == "offline":
+            Notifications().notify(f"Worker {hostname} is offline.", "error", f"/workers/{hostname}")
         if seen == "offline" and after.ssh == "reachable" and prior is not None and prior.ssh != "reachable":
           Notifications().notify(f"Worker {hostname} is reachable again.", "success", f"/workers/{hostname}")
+        if after.view.status in OBSERVED:
+          observed[hostname] = after.view.status
       readiness = {hostname for hostname in affected if hostname in previous and hostname in current
                    and previous[hostname].view.ready != current[hostname].view.ready}
       published = [({hostname for hostname, state in states.items() if state.view.ready},
                     {(hostname, state.address) for hostname, state in states.items()
                      if state.workable}) for states in (previous, current)]
-      previous = current
       self._workers_changed(affected)
       for domain in Domain.select().join(Container, JOIN.LEFT_OUTER).where(
               Container.worker.in_(readiness) | Domain.namespace_worker.in_(readiness)):
         domain_changed(domain)
       if published[0] != published[1]:
         self.request_discovery()
+      previous = current
 
     return Fact(self.worker_states, on_change=changed)
 

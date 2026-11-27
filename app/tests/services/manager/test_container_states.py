@@ -289,6 +289,27 @@ class TestDomainApplies:
     assert manager.container_state.last[containers[0].id].routable is True
     assert manager.applied == []
 
+  async def test_a_change_whose_apply_request_raised_is_applied_at_the_next_check_and_once(
+          self, manager, containers, domains, monkeypatch):
+    request_domain_applies, raised = manager.request_domain_applies, []
+
+    def raising_once(domain_ids):
+      if not raised:
+        raised.append(True)
+        raise RuntimeError("database is locked")
+      request_domain_applies(domain_ids)
+
+    await deployed(containers[0])
+    report(containers[0])
+    manager.container_state.check()
+    monkeypatch.setattr(manager, "request_domain_applies", raising_once)
+    report(containers[0], state="exited", at=WORKER_CLOCK + timedelta(seconds=20))
+    manager.container_state.check()
+    assert manager.applied == []
+    manager.container_state.check()
+    manager.container_state.check()
+    assert manager.applied == [domains]
+
 
 class TestDiscoveryRequests:
   async def test_a_change_of_routable_republishes_discovery_its_becoming_known_included(self, manager, containers, clock):

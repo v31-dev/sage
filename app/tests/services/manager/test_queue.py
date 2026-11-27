@@ -74,6 +74,15 @@ class TestQueueFacts:
     assert seen == ["checked"]
     assert hub.signals == [(UpdateSource.RESTORING, None)]
 
+  def test_a_fact_whose_callback_raises_leaves_the_ones_after_it_checked(self, queue, hub):
+    def fail(value):
+      raise RuntimeError("database is locked")
+
+    queue.queue_facts[:0] = [Fact(lambda: 1, on_change=fail)]
+    queue.state = "paused"
+    queue._queue_changed()
+    assert hub.signals == [(UpdateSource.QUEUE_STATE, None)]
+
 
 def finished(**fields):
   return QueuedTask(**{"name": "deploy", "key": ("lifecycle", "c1"), "scopes": frozenset({"worker:w1:container:c1"}),

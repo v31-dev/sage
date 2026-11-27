@@ -81,9 +81,11 @@ _UNSET = object()
 
 
 class Fact:
-  """A value an owner works out from something that changes (the queue, say). `check()` works it out and, when it
-  differs from the last time, calls `on_change` with it and fires its source. Safe to call from any thread: the
-  value is worked out and handed to `on_change` under a lock, so the values arrive in the order they were worked out."""
+  """A value an owner works out from something that changes (the queue, say). `check()` works it out and fires its
+  source when it differs from `last`, and calls `on_change` with it when it differs from the value `on_change` last
+  took. An `on_change` that raises is logged and has not taken the value, so the next check calls it again. Safe to
+  call from any thread: the value is worked out and handed to `on_change` under a lock, so the values arrive in the
+  order they were worked out."""
 
   def __init__(self, compute: Callable[[], object], source: "UpdateSource | None" = None,
                on_change: Callable[[object], None] | None = None):
@@ -92,14 +94,21 @@ class Fact:
     self._on_change = on_change
     self._lock = threading.Lock()
     self.last: object = _UNSET
+    self._delivered: object = _UNSET
 
   def check(self):
     with self._lock:
       value = self._compute()
       differs = value != self.last
       self.last = value
-      if differs and self._on_change is not None:
-        self._on_change(value)
+      if value != self._delivered:
+        try:
+          if self._on_change is not None:
+            self._on_change(value)
+        except Exception:
+          logger.exception("A change's callback failed; the next check calls it again.")
+        else:
+          self._delivered = value
     if differs and self._source is not None:
       Updates().changed(self._source)
 

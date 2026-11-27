@@ -73,9 +73,9 @@ class DomainsMixin:
     def changed(current):
       nonlocal previous
       affected = current ^ previous
-      previous = current
       for domain in Domain.select().where(Domain.id.in_(affected)):
         domain_changed(domain)
+      previous = current
 
     return [Fact(lambda: frozenset(self._applying_domains()), on_change=changed)]
 
