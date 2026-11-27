@@ -11,19 +11,58 @@ from utils.logging import TaskFailed, task_id
 from utils.queue import Added, OnConflict, Outcome, QueuedTask, QueueState, TaskQueue, admit, next_to_start
 
 
-def queued(name, *scopes, key=None, quiet=False):
+def queued(name, *scopes, key=None, quiet=False, held=False):
   return QueuedTask(name=name, key=key or (name,), scopes=frozenset(scopes), task=lambda: None, executor="app",
-                    task_id=f"{name}-{'-'.join(sorted(scopes))}", quiet=quiet)
+                    task_id=f"{name}-{'-'.join(sorted(scopes))}", quiet=quiet, held=held)
 
 
 RESTORE = queued("restore")
 
 
-def admission(new, *, state=QueueState.RUNNING, running=(), queue=(), on_conflict=OnConflict.DEDUP):
-  return admit(state, list(running), list(queue), new, on_conflict)
+def admission(new, *, state=QueueState.RUNNING, running=(), queue=(), on_conflict=OnConflict.DEDUP, refused_by=(),
+              clears=None):
+  return admit(state, list(running), list(queue), new, on_conflict, refused_by, clears)
 
 
 class TestAdmit:
+  @pytest.mark.parametrize("where", ["running", "queue"])
+  @pytest.mark.parametrize("on_conflict", list(OnConflict))
+  def test_a_pending_or_running_task_it_is_refused_by_blocks_it_whatever_its_policy(self, where, on_conflict):
+    delete = queued("delete", "worker:w1:container:c1", key=("delete", "c1"))
+    new = queued("deploy", "worker:w1:container:c1", key=("lifecycle", "c1"))
+    result = admission(new, on_conflict=on_conflict, refused_by=(("delete", "c1"),), **{where: [delete]})
+    assert (result.outcome, result.task, result.blocked_by, result.superseded) == (
+        Outcome.BLOCKED, delete, ("delete", "c1"), ())
+
+  def test_it_is_refused_by_a_key_prefix_only(self):
+    other = queued("delete", "worker:w1:container:c2", key=("delete", "c2"))
+    longer = queued("delete", "worker:w1:container:c1", key=("delete", "c1", "force"))
+    new = queued("deploy", "worker:w1:container:c1", key=("lifecycle", "c1"))
+    assert admission(new, queue=[other], refused_by=(("delete", "c1"),)).outcome == Outcome.ACCEPTED
+    assert admission(new, queue=[longer], refused_by=(("delete", "c1"),)).blocked_by == ("delete", "c1")
+
+  def test_a_stopping_or_restoring_queue_refuses_before_anything_blocks(self):
+    delete = queued("delete", "worker:w1:container:c1", key=("delete", "c1"))
+    new = queued("deploy", "worker:w1:container:c1", key=("lifecycle", "c1"))
+    for state in (QueueState.STOPPING, QueueState.RESTORING):
+      assert admission(new, state=state, queue=[delete], refused_by=(("delete", "c1"),)).outcome == Outcome.REFUSED
+
+  def test_clears_supersedes_the_pending_tasks_at_or_below_its_scope_after_those_with_its_key(self):
+    mine = queued("delete", "worker:w1:container:c1", key=("delete", "c1"))
+    backup = queued("backup", "worker:w1:container:c1", "backup:store:s1:write:c1")
+    below = queued("units", "worker:w1:container:c1:units")
+    others = [queued("other", "worker:w1:container:c2"), queued("host", "worker:w1")]
+    new = queued("delete", "worker:w1:container:c1", key=("delete", "c1"))
+    result = admission(new, queue=[backup, mine, *others, below], on_conflict=OnConflict.REPLACE,
+                       clears="worker:w1:container:c1")
+    assert (result.outcome, result.superseded) == (Outcome.ACCEPTED, (mine, backup, below))
+
+  def test_clears_leaves_the_running_tasks(self):
+    running = queued("deploy", "worker:w1:container:c1", key=("lifecycle", "c1"))
+    result = admission(queued("delete", "worker:w1:container:c1", key=("delete", "c1")), running=[running],
+                       clears="worker:w1:container:c1")
+    assert (result.outcome, result.superseded) == (Outcome.ACCEPTED, ())
+
   def test_a_task_on_an_empty_queue_is_accepted(self):
     new = queued("deploy", "worker:w1:container:c1")
     result = admission(new)
@@ -170,6 +209,11 @@ class TestNextToStart:
     queue = [queued("both", "certificate", "worker:w1:tls")]
     assert self.names(QueueState.RUNNING, queue, running=[queued("host", "worker:w1")]) == []
     assert self.names(QueueState.RUNNING, queue, running=[queued("c", "worker:w1:container:c1")]) == ["both"]
+
+  def test_a_held_task_does_not_start_and_holds_back_the_conflicting_tasks_after_it(self):
+    queue = [queued("a", "worker:w1:container:c1", held=True), queued("b", "worker:w1:container:c1"),
+             queued("c", "worker:w1:container:c2")]
+    assert self.names(QueueState.RUNNING, queue) == ["c"]
 
   def test_tasks_without_scopes_start_together(self):
     assert self.names(QueueState.RUNNING, [queued("a"), queued("b")]) == ["a", "b"]
@@ -506,6 +550,106 @@ class TestAddTask:
     lane.add(done, key=("other",), scope="worker:w2")
     lane.add(done, key=("sync",), on_conflict=on_conflict)
     assert [task["name"] for task in lane.queue.snapshot()["queued"]] == ["other", "sync"]
+
+  def test_a_blocked_request_says_by_what_and_leaves_no_trace(self, lane):
+    lane.add(done, key=("delete", "c1"), task_id="t1")
+    changes = lane.changes
+    assert lane.add(done, key=("lifecycle", "c1"), task_id="t2", refused_by=[("delete", "c1")]) == Added(
+        Outcome.BLOCKED, "t1", ("delete", "c1"))
+    assert ([task["task_id"] for task in lane.queue.snapshot()["queued"]], lane.recorded, lane.changes) == (
+        ["t1"], [], changes)
+
+  def test_a_request_that_clears_records_the_tasks_it_cleared_as_cancelled(self, lane):
+    lane.add(done, key=("backup", "c1"), scope="worker:w1:container:c1")
+    lane.add(done, key=("deploy", "c2"), scope="worker:w1:container:c2")
+    lane.add(done, key=("delete", "c1"), scope="worker:w1:container:c1", clears="worker:w1:container:c1")
+    assert lane.recorded == [("backup", "cancelled")]
+    assert [task["name"] for task in lane.queue.snapshot()["queued"]] == ["deploy", "delete"]
+
+  def test_clears_is_refused_for_an_unknown_scope_root(self, lane):
+    with pytest.raises(ValueError, match="Unknown scope root in clears 'nowhere:c1'"):
+      lane.add(done, clears="nowhere:c1")
+
+
+class TestHeldAdmission:
+  async def test_a_task_is_held_until_its_on_admit_returns(self, lane):
+    seen = []
+
+    def on_admit():
+      lane.queue.dispatch_tick()
+      seen.append((lane.queue.has_task(("deploy",)), [task["name"] for task in lane.queue.snapshot()["queued"]],
+                   lane.queue.snapshot()["running"]))
+
+    assert lane.add(done, key=("deploy",), task_id="t1", on_admit=on_admit) == Added(Outcome.ACCEPTED, "t1")
+    assert seen == [(True, ["deploy"], [])]
+    await lane.run()
+    assert lane.recorded == [("deploy", "completed")]
+
+  async def test_an_on_admit_that_raises_withdraws_its_task_as_cancelled_and_raises(self, lane):
+    def on_admit():
+      raise RuntimeError("database is locked")
+
+    with pytest.raises(RuntimeError, match="database is locked"):
+      lane.add(done, key=("deploy",), on_admit=on_admit)
+    assert (lane.queue.snapshot()["queued"], lane.recorded) == ([], [("deploy", "cancelled")])
+
+  async def test_on_admit_is_called_only_for_a_request_the_queue_takes(self, lane):
+    called = []
+    work, release = holding()
+    lane.add(work, key=("lifecycle", "c1"), name="deploy", on_conflict=OnConflict.REVISE)
+    lane.queue.dispatch_tick()
+    lane.add(done, key=("lifecycle", "c1"), name="stop", on_conflict=OnConflict.REVISE,
+             on_admit=lambda: called.append("busy"))
+    lane.add(done, key=("lifecycle", "c1"), name="deploy", on_admit=lambda: called.append("existing"))
+    release.set()
+    await lane.run()
+    lane.queue.stop()
+    lane.add(done, key=("lifecycle", "c1"), name="deploy", on_admit=lambda: called.append("refused"))
+    assert called == []
+
+  def test_requests_with_on_admit_write_in_the_order_they_were_admitted_and_others_are_not_held_up(self, lane):
+    entered, release, written = threading.Event(), threading.Event(), []
+
+    def first():
+      entered.set()
+      release.wait(5)
+      written.append("first")
+
+    slow = threading.Thread(target=lambda: lane.add(done, key=("a",), task_id="t1", on_admit=first))
+    slow.start()
+    entered.wait(5)
+    second = threading.Thread(target=lambda: lane.add(done, key=("b",), task_id="t2",
+                                                      on_admit=lambda: written.append("second")))
+    second.start()
+    lane.add(done, key=("c",), task_id="t3")
+    second.join(0.1)
+    assert second.is_alive() and [task["task_id"] for task in lane.queue.snapshot()["queued"]] == ["t1", "t3"]
+    release.set()
+    slow.join(5)
+    second.join(5)
+    assert written == ["first", "second"]
+    assert [task["task_id"] for task in lane.queue.snapshot()["queued"]] == ["t1", "t3", "t2"]
+
+  def test_a_request_that_clears_waits_for_a_running_on_admit_and_then_clears_its_task(self, lane):
+    entered, release = threading.Event(), threading.Event()
+
+    def slow():
+      entered.set()
+      release.wait(5)
+
+    held = threading.Thread(target=lambda: lane.add(done, key=("lifecycle", "c1"), task_id="t1", on_admit=slow))
+    held.start()
+    entered.wait(5)
+    clearing = threading.Thread(target=lambda: lane.add(done, key=("delete", "c1"), task_id="t2",
+                                                        clears="worker:w1"))
+    clearing.start()
+    clearing.join(0.1)
+    assert clearing.is_alive()
+    release.set()
+    held.join(5)
+    clearing.join(5)
+    assert lane.recorded == [("lifecycle", "cancelled")]
+    assert [task["task_id"] for task in lane.queue.snapshot()["queued"]] == ["t2"]
 
 
 class TestCancel:

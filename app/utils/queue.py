@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from enum import Enum
@@ -70,6 +71,7 @@ class QueuedTask:
   labels: dict = field(default_factory=dict)  # what people call its subjects, as they were named when it was queued
   task_id: str | None = None
   quiet: bool = False           # recorded and its lines kept only on failure (housekeeping)
+  held: bool = False            # queued, not to start until its request's `on_admit` returns
   queued_at: datetime = field(default_factory=utcnow)
   started_at: datetime | None = None
   lines: TaskLines | None = None  # from its start: where its lines go, and what tells this run apart
@@ -79,37 +81,48 @@ class Outcome(Enum):
   ACCEPTED = "accepted"   # queued as a new task
   EXISTING = "existing"   # a pending or running task with its key does it
   BUSY = "busy"           # not queued (REVISE): a task with its key is running
+  BLOCKED = "blocked"     # not queued: a task with a key it is refused by is pending or running
   REFUSED = "refused"     # not queued: the queue is stopping or restoring, or a restore while it is not running
 
 
 @dataclass(frozen=True)
 class Admission:
-  """What `admit` decides for a new task. Accepted: `task` is what to queue at the end, once the `superseded` are
-  removed. Existing: `task` is the pending or running one with its key, made visible when `reveal`. Busy: `task` is the
-  running one with its key. Refused: recorded as cancelled when `cancelled`."""
+  """What `admit` decides for a new task. Accepted: `task` is what to queue at the end, once the `superseded` (those
+  with its key, then those it clears) are removed. Existing: `task` is the pending or running one with its key, made
+  visible when `reveal`. Busy: `task` is the running one with its key. Blocked: `task` is the pending or running one
+  whose key starts with `blocked_by`. Refused: recorded as cancelled when `cancelled`."""
   outcome: Outcome
   task: QueuedTask | None = None
   superseded: tuple[QueuedTask, ...] = ()
+  blocked_by: tuple[str, ...] | None = None
   reveal: bool = False
   cancelled: bool = False
 
 
 @dataclass(frozen=True)
 class Added:
-  """What add_task did with a request: the id of its task, of the task already doing it, or of the running task that
-  makes it busy; none when it was refused without a record."""
+  """What add_task did with a request: the id of its task, of the task already doing it, of the running task that
+  makes it busy, or of the task that blocks it with the key prefix it was refused by (`blocked_by`); none when it was
+  refused without a record."""
   outcome: Outcome
   task_id: str | None = None
+  blocked_by: tuple[str, ...] | None = None
 
 
 def admit(state: QueueState, running: list[QueuedTask], queue: list[QueuedTask], new: QueuedTask,
-          on_conflict: OnConflict) -> Admission:
+          on_conflict: OnConflict, refused_by: tuple[tuple[str, ...], ...] = (), clears: str | None = None) -> Admission:
   """Whether `new` is queued, done by a task with its key, or refused. A task with another key on a conflicting scope
-  never stops it: it is queued and waits. A visible request makes the task that does it visible."""
+  never stops it: it is queued and waits, unless its key starts with one of `refused_by`. Accepted, it supersedes the
+  pending tasks holding `clears` or a scope below it too. A visible request makes the task that does it visible."""
   if state == QueueState.RESTORING:
     return Admission(Outcome.REFUSED)
   if state == QueueState.STOPPING:
     return Admission(Outcome.REFUSED, cancelled=True)
+
+  for prefix in refused_by:
+    blocking = next((task for task in (*running, *queue) if task.key[:len(prefix)] == prefix), None)
+    if blocking is not None:
+      return Admission(Outcome.BLOCKED, blocking, blocked_by=prefix)
 
   if on_conflict == OnConflict.DEDUP:
     # A pending task starts later than a running one, so it is the one that does what was asked.
@@ -127,24 +140,27 @@ def admit(state: QueueState, running: list[QueuedTask], queue: list[QueuedTask],
     superseded = tuple(task for task in queue if task.key == new.key)
     if not all(task.quiet for task in superseded):
       new = replace(new, quiet=False)
+  if clears is not None:
+    superseded += tuple(task for task in queue if task not in superseded
+                        and any(_is_ancestor_or_equal(clears, held) for held in task.scopes))
   return Admission(Outcome.ACCEPTED, new, superseded)
 
 
 def next_to_start(state: QueueState, queue: list[QueuedTask], running: list[QueuedTask],
                   restore: QueuedTask | None = None) -> list[QueuedTask]:
-  """The tasks to start now, in order: none unless running or restoring; the pending tasks whose scopes conflict with
-  no running task and with no task queued before them, started or waiting; and the waiting `restore` once nothing runs
-  or waits."""
+  """The tasks to start now, in order: none unless running or restoring; the pending tasks, but held ones, whose scopes
+  conflict with no running task and with no task queued before them, started, waiting or held; and the waiting
+  `restore` once nothing runs or waits."""
   if state not in (QueueState.RUNNING, QueueState.RESTORING):
     return []
   if restore is not None and not queue and not running:
     return [restore]
-  held = [task.scopes for task in running]
+  taken = [task.scopes for task in running]
   starting = []
   for task in queue:
-    if not any(_scopes_conflict(task.scopes, scopes) for scopes in held):
+    if not task.held and not any(_scopes_conflict(task.scopes, scopes) for scopes in taken):
       starting.append(task)
-    held.append(task.scopes)
+    taken.append(task.scopes)
   return starting
 
 
@@ -182,6 +198,8 @@ class TaskQueue:
     self._notify = notify or (lambda: None)
 
     self._lock = Lock()
+    # Taken before `_lock`, never after it: requests with an `on_admit` are admitted one at a time.
+    self._admitting = Lock()
     self._state = QueueState.RUNNING
     self._queue: list[QueuedTask] = []
     self._running: list[QueuedTask] = []
@@ -191,10 +209,12 @@ class TaskQueue:
   def add_task(self, task: Callable, key: tuple[str, ...], scopes: frozenset[str], executor: str,
                name: str | None = None, params: dict | None = None, inputs: dict | None = None,
                labels: dict[str, str] | None = None, task_id: str | None = None,
-               on_conflict: OnConflict = OnConflict.DEDUP, quiet: bool = False) -> Added:
+               on_conflict: OnConflict = OnConflict.DEDUP, quiet: bool = False,
+               on_admit: Callable[[], None] | None = None, refused_by: tuple[tuple[str, ...], ...] = (),
+               clears: str | None = None) -> Added:
     """Request a task: accepted (queued), existing (a pending or running task with the same key does it), busy (REVISE:
-    a task with the same key is running) or refused (the queue is stopping, recorded as cancelled; or restoring, with
-    no record).
+    a task with the same key is running), blocked (a task it is refused by is pending or running) or refused (the
+    queue is stopping, recorded as cancelled; or restoring, with no record).
 
     ### Parameters
     - task: the callable to run (sync or async).
@@ -216,33 +236,60 @@ class TaskQueue:
     - quiet: record this task and keep its lines only when it fails, so
       high-frequency housekeeping (e.g. metrics) does not flood the record. A
       visible request with the same key makes it visible.
+    - on_admit: called once the request is accepted, outside the queue's lock, to write what must hold before the task
+      can start. Until it returns the task is queued held: it keeps its place and is not started. When it raises, the
+      task is withdrawn, recorded as cancelled, and the error is raised here. Requests with one are admitted one at a
+      time, so their writes land in the order the queue admitted them; it must not request a task itself.
+    - refused_by: key prefixes, e.g. `("delete", container_id)`: while a task whose key starts with one is pending or
+      running, the request is blocked, with that task's id, and leaves no trace.
+    - clears: a scope whose pending tasks, at it or below it, an accepted request supersedes, recorded as cancelled. A
+      request that clears is admitted one at a time with those that have an `on_admit`, so it never clears a task
+      whose `on_admit` is still running.
     """
     key = tuple(key)
     new_task = QueuedTask(name=name or (key[0] if key else ""), key=key, scopes=frozenset(scopes), task=task,
                           executor=executor, params=params or {}, inputs=inputs or {}, labels=labels or {},
-                          task_id=task_id or new_task_id(), quiet=quiet)
+                          task_id=task_id or new_task_id(), quiet=quiet, held=on_admit is not None)
     self._validate(new_task)
-    with self._lock:
-      admission = admit(self._state, self._running, self._queue, new_task, on_conflict)
-      if admission.outcome == Outcome.ACCEPTED:
-        for superseded in admission.superseded:
-          self._queue.remove(superseded)
-        self._queue.append(admission.task)
-      elif admission.reveal:
-        for tasks in (self._queue, self._running):
-          tasks[:] = [replace(entry, quiet=False) if entry is admission.task else entry for entry in tasks]
+    if clears is not None and clears.split(":", 1)[0] not in self._scopes:
+      raise ValueError(f"Unknown scope root in clears '{clears}'")
+    refused_by = tuple(tuple(prefix) for prefix in refused_by)
+    with self._admitting if on_admit is not None or clears is not None else nullcontext():
+      with self._lock:
+        admission = admit(self._state, self._running, self._queue, new_task, on_conflict, refused_by, clears)
+        if admission.outcome == Outcome.ACCEPTED:
+          for superseded in admission.superseded:
+            self._queue.remove(superseded)
+          self._queue.append(admission.task)
+        elif admission.reveal:
+          for tasks in (self._queue, self._running):
+            tasks[:] = [replace(entry, quiet=False) if entry is admission.task else entry for entry in tasks]
 
-    # Persist cancellations outside the lock: _record does a DB write, which must
-    # stay off the critical section so the event loop never blocks on it.
-    cancelled = [new_task] if admission.cancelled else list(admission.superseded)
-    self._record_cancelled(cancelled)
-    if admission.reveal and admission.task.lines is not None:
-      admission.task.lines.release()
-    if admission.outcome == Outcome.ACCEPTED or cancelled or admission.reveal:
-      self._emit()
+      # Persist cancellations outside the lock: _record does a DB write, which must
+      # stay off the critical section so the event loop never blocks on it.
+      cancelled = [new_task] if admission.cancelled else list(admission.superseded)
+      self._record_cancelled(cancelled)
+      if admission.reveal and admission.task.lines is not None:
+        admission.task.lines.release()
+      if admission.outcome == Outcome.ACCEPTED or cancelled or admission.reveal:
+        self._emit()
+      if on_admit is not None and admission.outcome == Outcome.ACCEPTED:
+        try:
+          on_admit()
+        except Exception:
+          with self._lock:
+            withdrawn = [entry for entry in self._queue if entry.task_id == new_task.task_id]
+            self._queue[:] = [entry for entry in self._queue if entry.task_id != new_task.task_id]
+          self._record_cancelled(withdrawn)
+          if withdrawn:
+            self._emit()
+          raise
+        with self._lock:
+          self._queue[:] = [replace(entry, held=False) if entry.task_id == new_task.task_id else entry
+                            for entry in self._queue]
     if admission.outcome == Outcome.REFUSED:
       return Added(Outcome.REFUSED, new_task.task_id if admission.cancelled else None)
-    return Added(admission.outcome, admission.task.task_id)
+    return Added(admission.outcome, admission.task.task_id, admission.blocked_by)
 
   def request_restore(self, task: Callable, name: str, executor: str, params: dict | None = None,
                       labels: dict[str, str] | None = None, task_id: str | None = None,

@@ -2,6 +2,7 @@ import asyncio
 import os
 import stat
 import subprocess
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import datetime
@@ -12,6 +13,7 @@ import pytest
 
 import config
 from services.applications.deploy_input import capture_deploy_config
+from services.containers import commands
 from services.containers.placement import placement_dir, placement_unit, record_path, runtime_name
 from services.containers.record import Applied, Authority, Operation, Recovery, Settled, TargetRead, TargetRecord, decode_record, encode_record
 from services.containers.rendering import deployment_hash
@@ -677,6 +679,15 @@ class TestDeleteRequests:
     with pytest.raises(Conflict, match="being deleted"):
       getattr(manager, request_name)(container.id)
 
+  @pytest.mark.parametrize("resume", [False, True], ids=["past a check that let it through", "resumed"])
+  def test_the_queue_itself_refuses_a_request_while_it_is_being_deleted(self, manager, container, monkeypatch, resume):
+    delete = manager.request_delete(container.id)
+    monkeypatch.setattr(manager, "request_refusal", lambda container: None)
+    with pytest.raises(Conflict, match="^This container is being deleted.$"):
+      manager.request_deploy(container.id, resume=resume)
+    assert [entry["task_id"] for entry in manager.task_queue.snapshot()["queued"]] == [delete]
+    assert intent(container) == "delete"
+
   def test_a_request_for_all_is_refused_while_a_container_is_being_deleted(self, manager, application, container, other):
     manager.request_delete(other.id)
     with pytest.raises(Conflict, match="^A container of this application can't take this request: it is being deleted.$"):
@@ -719,21 +730,57 @@ class TestIntent:
     manager.request_delete(container.id)
     assert intent(container) == "delete"
 
-  async def test_a_request_the_queue_does_not_take_leaves_the_earlier_one(self, manager, container):
-    release = asyncio.Event()
+  async def test_a_request_the_queue_does_not_take_writes_none_and_the_running_one_clears_its_own(
+          self, manager, container, monkeypatch):
+    release, written = asyncio.Event(), []
+    record_intent = commands.record_intent
 
     async def holds(container_id, deploy):
       await release.wait()
 
+    def recording(container_id, name):
+      written.append(name)
+      record_intent(container_id, name)
+
+    monkeypatch.setattr(commands, "record_intent", recording)
     manager.deploy_container = holds
     manager.request_deploy(container.id)
     manager.task_queue.dispatch_tick()
     await asyncio.sleep(0)
     with pytest.raises(Conflict):
       manager.request_stop(container.id)
-    assert intent(container) == "deploy"
+    assert (written, intent(container)) == (["deploy"], "deploy")
     release.set()
     await manager.run()
+    assert intent(container) is None
+
+  def test_while_a_request_writes_its_intent_its_task_is_queued_and_cannot_start_so_a_resume_joins_it(
+          self, manager, container, monkeypatch):
+    entered, release, answers = threading.Event(), threading.Event(), {}
+    record_intent = commands.record_intent
+
+    def slow(container_id, name):
+      record_intent(container_id, name)
+      entered.set()
+      release.wait(5)
+
+    def ask(label, **options):
+      answers[label] = manager.request_deploy(container.id, **options)
+
+    monkeypatch.setattr(commands, "record_intent", slow)
+    route = threading.Thread(target=ask, args=("route",))
+    route.start()
+    assert entered.wait(5)
+    manager.task_queue.dispatch_tick()
+    assert intent(container) == "deploy" and manager.has_task(("lifecycle", container.id))
+    assert manager.task_queue.snapshot()["running"] == []
+    resume = threading.Thread(target=ask, args=("resume",), kwargs={"resume": True})
+    resume.start()
+    release.set()
+    route.join(5)
+    resume.join(5)
+    assert answers["resume"] == answers["route"]
+    assert [entry["task_id"] for entry in manager.task_queue.snapshot()["queued"]] == [answers["route"]]
 
   async def test_a_deploy_that_succeeds_clears_it(self, manager, worker_host, container):
     manager.request_deploy(container.id)

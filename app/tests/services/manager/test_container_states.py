@@ -23,6 +23,7 @@ from services.tailscale import Tailscale
 from services.updates import UpdateSource
 from services.worker_reports import ContainerReading, HostReading, Snapshot, WorkerReports
 from tests.services.containers.test_placement import runtime_labels
+from utils.errors import Conflict
 from utils.queue import TaskQueue
 
 WORKER_CLOCK = datetime(2026, 1, 1, 9)
@@ -478,6 +479,23 @@ class TestResume:
     assert lifecycle_requests(manager) == [("stop", containers[0].id)]
     await manager.observe_containers()
     assert lifecycle_requests(manager) == [("stop", containers[0].id)]
+
+  async def test_a_resume_the_queue_refuses_is_left_and_the_look_goes_on(self, manager, containers, monkeypatch):
+    request_stop = manager.request_stop
+
+    def refused_for_the_first(container_id, resume=False):
+      if container_id == containers[0].id:
+        raise Conflict("This container is being deleted.")
+      return request_stop(container_id, resume=resume)
+
+    for container in containers:
+      await deployed(container)
+      intend(container, "stop")
+      report(container)
+    monkeypatch.setattr(manager, "request_stop", refused_for_the_first)
+    await manager.observe_containers()
+    assert lifecycle_requests(manager) == [("stop", containers[1].id)]
+    assert Container.get_by_id(containers[0].id).intent == "stop"
 
   async def test_it_waits_for_the_recovery_of_an_operation_the_restart_cut_off(self, manager, containers):
     container = containers[0]

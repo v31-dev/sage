@@ -35,6 +35,8 @@ REQUESTS = {"deploy": ("lifecycle", OnConflict.REVISE), "stop": ("lifecycle", On
             "delete": ("delete", OnConflict.REPLACE)}
 # The requests the container keeps as its intent until they reach their outcome, so a restart resumes them.
 INTENTS = ("deploy", "stop", "delete")
+# The slots whose request, while pending or running, refuses the container's other requests, and what that is.
+BLOCKING = {"delete": "being deleted"}
 
 REFUSALS = {
     "unreachable": "its worker can't be reached",
@@ -112,8 +114,9 @@ class LifecycleMixin:
     """Why the container refuses a request other than a Delete now, in words: a Delete of it is queued or running,
     one of its own operations runs (behind an automatic backup a request waits its turn), or Sage recovers it; None
     when it takes one, replacing a request of its own still waiting."""
-    if self.has_task(("delete", container.id)):
-      return "it is being deleted"
+    for slot, doing in BLOCKING.items():
+      if self.has_task((slot, container.id)):
+        return f"it is {doing}"
     if self.has_task(("lifecycle", container.id), running_only=True):
       return "it already has an operation in progress"
     view = self.container_states([container])[container.id].view
@@ -121,10 +124,11 @@ class LifecycleMixin:
 
   def queue_lifecycle(self, container: Container, name: str, task, inputs: dict, params: dict | None = None,
                       scopes: tuple[str, ...] = (), labels: dict[str, str] | None = None, resume: bool = False) -> Added:
-    """Queues the request `name` on the container in its slot (`REQUESTS`); a Delete first cancels the container's
-    queued tasks, and any other request is refused when the container refuses it (`request_refusal`), and replaces
-    one of its own still waiting. One of `INTENTS` is recorded as the container's intent first, put back as it was
-    when the queue does not take it, and cleared at its outcome. Once
+    """Queues the request `name` on the container in its slot (`REQUESTS`); a Delete clears the container's queued
+    tasks as the queue takes it, and any other request is refused when the container refuses it (`request_refusal`)
+    or, in the queue's own admission, while a request of a `BLOCKING` slot is pending or running, and replaces one of
+    its own still waiting. One of `INTENTS` is recorded as the container's intent once the queue takes it,
+    before its task can start, and cleared at its outcome. Once
     the queue takes it, a manual backup it replaced or cancelled is settled cancelled. A
     request `resume`d from its intent replaces nothing and cancels nothing: one queued or running with its key does it
     instead. The queue's answer."""
@@ -132,12 +136,10 @@ class LifecycleMixin:
     if resume:
       on_conflict = OnConflict.DEDUP
     scope = placement_scope(container.worker_id, container.id)
-    if name == "delete" and not resume:
-      self.cancel_tasks(scope=scope)
-    elif not resume and (refusal := self.request_refusal(container)) is not None:
+    if name != "delete" and not resume and (refusal := self.request_refusal(container)) is not None:
       raise Conflict(f"{NAMES[name]} refused: {refusal}.")
     if name in INTENTS:
-      previous, body = commands.record_intent(container.id, name), task
+      body = task
 
       # Only an outcome clears it: a coroutine cancelled by the loop's shutdown leaves it for the restart to resume.
       async def task(**arguments):
@@ -151,9 +153,10 @@ class LifecycleMixin:
     added = self.add_task(
         task=task, key=(slot, container.id), name=name, scopes={scope, *scopes}, executor="main",
         params={"container_id": container.id, **(params or {})}, inputs=inputs,
-        labels={**self.container_labels(container), **(labels or {})}, on_conflict=on_conflict)
-    if name in INTENTS and added.outcome != Outcome.ACCEPTED:
-      commands.settle_intent(container.id, name, previous)
+        labels={**self.container_labels(container), **(labels or {})}, on_conflict=on_conflict,
+        on_admit=(lambda: commands.record_intent(container.id, name)) if name in INTENTS else None,
+        refused_by=() if slot in BLOCKING else tuple((blocking, container.id) for blocking in BLOCKING),
+        clears=scope if slot in BLOCKING and not resume else None)
     if added.outcome == Outcome.ACCEPTED:
       cancel_queued_backups((params or {}).get("backup_ids", ()), container.id)
     return added
@@ -173,9 +176,12 @@ class LifecycleMixin:
 
   @staticmethod
   def admitted_task_id(added: Added) -> str | None:
-    """The id of the task that does the request, as `Added` has it; a Conflict when the container is busy."""
+    """The id of the task that does the request, as `Added` has it; a Conflict when the container is busy or a request
+    of a `BLOCKING` slot refuses it."""
     if added.outcome == Outcome.BUSY:
       raise Conflict("This container already has an operation in progress.")
+    if added.outcome == Outcome.BLOCKED:
+      raise Conflict(f"This container is {BLOCKING[added.blocked_by[0]]}.")
     return added.task_id
 
   async def begin_lifecycle(self, container_id: str, contract: str, input_hash: str | None = None, force: bool = False,

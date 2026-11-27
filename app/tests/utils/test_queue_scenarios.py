@@ -168,11 +168,12 @@ class Sim:
   # --- driving it
 
   def add(self, label, *scopes, key=None, name=None, on_conflict=OnConflict.DEDUP, quiet=False, restore=False,
-          **options):
+          refused_by=(), clears=None, **options):
     key = key or (label,)
     if restore and "during" not in options:
       options["during"] = lambda job: self.queue.end_restore()
     job = Job(self, label, key, scopes, on_conflict=on_conflict, quiet=quiet, name=name, restore=restore, **options)
+    job.refused_by, job.clears = tuple(refused_by), clears
     before = None
     if self.verify_admission:
       snapshot = self.queue.snapshot()
@@ -185,7 +186,8 @@ class Sim:
     else:
       job.added = self.queue.add_task(
           task=job.task, key=key, name=name, scopes=set(scopes), executor=job.lane, params={"label": label},
-          labels={"Job": label}, task_id=label, on_conflict=on_conflict, quiet=quiet)
+          labels={"Job": label}, task_id=label, on_conflict=on_conflict, quiet=quiet, refused_by=refused_by,
+          clears=clears)
     if before:
       self.check_admission(job, before)
     return job
@@ -212,13 +214,10 @@ class Sim:
     return cancelled
 
   def perform(self, label, scopes, options):
-    """A request from `random_operation`: a cancel, or a task to add, after cancelling the pending tasks within
-    `clears` (a Delete)."""
+    """A request from `random_operation`: a cancel, or a task to add."""
     options = dict(options)
     if "cancel" in options:
       return self.cancel(**options["cancel"])
-    if "clears" in options:
-      self.cancel(scope=options.pop("clears"))
     return self.add(label, *scopes, **options)
 
   def check_admission(self, job, before):
@@ -230,6 +229,10 @@ class Sim:
     def same(entry_key):
       return entry_key == tuple(job.key)
 
+    blocking = [(prefix, entry_id) for prefix in job.refused_by
+                for entry_id, entry_key in [*((entry["task_id"], tuple(entry["key"])) for entry in running),
+                                            *((entry_id, entry_key) for entry_id, entry_key, _, _ in queue)]
+                if entry_key[:len(prefix)] == tuple(prefix)]
     outcome, task_id_ = Outcome.ACCEPTED, job.label
     if job.restore:
       if state == QueueState.RUNNING:
@@ -240,6 +243,8 @@ class Sim:
       outcome, task_id_ = Outcome.REFUSED, None
     elif state == QueueState.STOPPING:
       outcome = Outcome.REFUSED
+    elif blocking:
+      outcome, task_id_ = Outcome.BLOCKED, blocking[0][1]
     elif job.on_conflict == OnConflict.DEDUP and (
             any(same(key) for _, key, _, _ in queue) or any(same(tuple(entry["key"])) for entry in running)):
       outcome = Outcome.EXISTING
@@ -260,6 +265,12 @@ class Sim:
       if job.on_conflict in (OnConflict.REPLACE, OnConflict.REVISE):
         quiet = quiet and all(entry_quiet for _, key, _, entry_quiet in queue if same(key))
         queue = [entry for entry in queue if not same(entry[1])]
+      if job.clears is not None:
+        cleared = [entry for entry in queue
+                   if any(held == job.clears or held.startswith(job.clears + ":") for held in entry[2])]
+        for entry in cleared:
+          self.jobs[entry[0]].cancelled = True
+        queue = [entry for entry in queue if entry not in cleared]
       queue.append((job.label, tuple(job.key), set(job.scopes), quiet))
       job.quiet_now = quiet
 
@@ -371,9 +382,14 @@ class Sim:
     for label, job in self.jobs.items():
       recorded = statuses.get(label, [])
       assert job.runs <= 1, f"{label} ran {job.runs} times"
-      if job.outcome in (Outcome.EXISTING, Outcome.BUSY):
+      if job.outcome in (Outcome.EXISTING, Outcome.BUSY, Outcome.BLOCKED):
         assert job.runs == 0 and recorded == [], f"{label} was {job.outcome.value} with {job.added.task_id} but left a trace"
-        assert self.jobs[job.added.task_id].key == job.key, f"{label} was given a task with another key"
+        if job.outcome == Outcome.BLOCKED:
+          prefix = job.added.blocked_by
+          assert prefix in job.refused_by and self.jobs[job.added.task_id].key[:len(prefix)] == prefix, (
+              f"{label} was blocked by {job.added.task_id}, whose key it is not refused by")
+        else:
+          assert self.jobs[job.added.task_id].key == job.key, f"{label} was given a task with another key"
         continue
       if job.outcome == Outcome.REFUSED:
         assert job.runs == 0, f"{label} was refused but ran"
@@ -398,9 +414,13 @@ class Sim:
       assert recorded in expected, f"{label}: recorded {recorded}, expected one of {expected}"
 
   def superseded_later(self, job):
-    """A pending task is replaced by a later accepted REPLACE or REVISE with the same key, whatever admitted it."""
-    return any(other.on_conflict in (OnConflict.REPLACE, OnConflict.REVISE) and other.outcome == Outcome.ACCEPTED
-               and other is not job and other.key == job.key for other in self.jobs.values())
+    """A pending task is replaced by a later accepted REPLACE or REVISE with the same key, or cleared by an accepted
+    request whose `clears` covers one of its scopes, whatever admitted it."""
+    return any(other.outcome == Outcome.ACCEPTED and other is not job and (
+        (other.on_conflict in (OnConflict.REPLACE, OnConflict.REVISE) and other.key == job.key)
+        or (other.clears is not None and any(held == other.clears or held.startswith(other.clears + ":")
+                                             for held in job.scopes)))
+        for other in self.jobs.values())
 
   async def close(self):
     self.thread_gate.set()
@@ -947,7 +967,7 @@ def random_operation(rng, index):
   label = f"{kind}#{index}"
   if kind in ("deploy", "stop"):
     return label, [placement], dict(key=("lifecycle", f"c{number}"), name=kind, on_conflict=OnConflict.REVISE,
-                                    **options)
+                                    refused_by=[("delete", f"c{number}")], **options)
   if kind == "cancel":
     operation = rng.choice(["deploy", "stop", "delete"])
     return label, [], dict(cancel=dict(key=("delete" if operation == "delete" else "lifecycle", f"c{number}"), name=operation))
@@ -987,6 +1007,12 @@ SCOPE_CHOICES = ["worker", "worker:w1", "worker:w1:container:c1", "worker:w1:con
                  "domain:id:d1", "certificate", "settings:s3", "metrics", "backup:store:s1"]
 
 
+def random_precedence(rng):
+  """What refuses a request and what it clears, from the keys and scopes the storms use."""
+  return dict(refused_by=rng.sample([*KEYS, ("deploy",)], rng.choice([0, 0, 0, 1, 2])),
+              clears=rng.choice(SCOPE_CHOICES) if rng.random() < 0.08 else None)
+
+
 def random_scopes(rng):
   if rng.random() < 0.03:
     return []
@@ -1008,7 +1034,8 @@ class TestAdmission:
       restore = rng.random() < 0.03
       scopes = [] if restore else random_scopes(rng)
       sim.add(f"op#{index}", *scopes, key=("restore",) if restore else rng.choice(KEYS),
-              on_conflict=rng.choice(list(OnConflict)), quiet=rng.random() < 0.4, restore=restore)
+              on_conflict=rng.choice(list(OnConflict)), quiet=rng.random() < 0.4, restore=restore,
+              **({} if restore else random_precedence(rng)))
     sim.queue.resume()
     stop = asyncio.Event()
     ticker = asyncio.create_task(sim.run_ticker(stop))
@@ -1016,6 +1043,8 @@ class TestAdmission:
     stop.set()
     await ticker
     sim.verify()
+    assert any(job.outcome == Outcome.BLOCKED for job in sim.jobs.values()), "no request was ever blocked"
+    assert any(job.clears and job.outcome == Outcome.ACCEPTED for job in sim.jobs.values()), "nothing ever cleared"
 
   @pytest.mark.parametrize("seed", range(8))
   async def test_a_storm_of_requests_while_tasks_start_and_end(self, sim, seed):
@@ -1028,12 +1057,13 @@ class TestAdmission:
         continue
       sim.add(f"op#{index}", *random_scopes(rng), key=rng.choice(KEYS), on_conflict=rng.choice(list(OnConflict)),
               quiet=rng.random() < 0.4, delay=rng.uniform(0, 0.006),
-              fail=rng.choice([None, None, None, "error"]))
+              fail=rng.choice([None, None, None, "error"]), **random_precedence(rng))
       await asyncio.sleep(rng.uniform(0, 0.002))
     await sim.drain()
     stop.set()
     await ticker
     sim.verify()
+    assert any(job.outcome == Outcome.BLOCKED for job in sim.jobs.values()), "no request was ever blocked"
 
   async def test_the_requests_after_a_stop_are_all_refused(self, sim):
     sim.queue.stop()

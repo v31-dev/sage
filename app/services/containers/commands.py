@@ -5,19 +5,17 @@ from services.db.writes import get, write
 from utils.common import utcnow
 
 
-def record_intent(container_id: str, intent: str) -> str | None:
-  """Records `intent` as what was asked of the container; the intent it replaced."""
+def record_intent(container_id: str, intent: str):
+  """Records `intent` as what was asked of the container."""
   with write():
     container = get(Container, Container.id == container_id)
-    previous = container.intent
     container.intent = intent
     container.save()
-  return previous
 
 
-def settle_intent(container_id: str, intent: str, replacement: str | None = None):
-  """Replaces the container's intent with `replacement` (none: cleared) while it is still `intent`; another request's
-  intent, or a container gone, is left as it is."""
+def settle_intent(container_id: str, intent: str):
+  """Clears the container's intent while it is still `intent`; another request's intent, or a container gone, is left
+  as it is."""
   with write():
-    Container.update(intent=replacement, updated_at=utcnow()).where(
+    Container.update(intent=None, updated_at=utcnow()).where(
         (Container.id == container_id) & (Container.intent == intent)).execute()

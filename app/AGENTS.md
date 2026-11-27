@@ -239,15 +239,18 @@ Stop](../docs/backend.md#pause-and-stop).
   subject share one, and a weaker background request and a stronger explicit one get different keys. Its scopes are
   the resources it locks, hierarchically, always including its subject's own; its name is what it does; its params
   are its arguments; its executor is its capacity. Admission compares keys, never scopes: a task with another key on a
-  conflicting scope defers a new one, never refuses it. A reader of the queue (a fact, a precondition, a payload) finds
-  a subject's requests by key and a resource's holders by scope, takes the kind of work from the name, and never reads
-  identity from params. Scope roots and every task's name (`TASK_NAMES`) are declared in
+  conflicting scope defers a new one, never refuses it, unless the request names that key's prefix in `refused_by`
+  (a container's other requests while its Delete is pending). A reader of the queue (a fact, a precondition, a
+  payload) finds a subject's requests by key and a resource's holders by scope, takes the kind of work from the name,
+  and never reads identity from params. Scope roots and every task's name (`TASK_NAMES`) are declared in
   `services/manager/queue.py` and lanes in `utils/executor.py`, independently; the queue refuses a task outside them,
   and a new task adds its name there. A task that holds a scope runs on `main`; `common` (one thread) runs only scheduled housekeeping that holds none, and no task relies on a lane's size to keep it apart from another.
 - Only the dispatcher starts tasks, on the loop. A queued task cannot start while its scopes conflict with a running
   task or with a task queued before it, either way (a parent before its child, a child before its parent); tasks that
   do not conflict start together. Nothing relies on when a queued task starts or on the order of tasks that do not
   conflict: order comes from scopes, or from a body requesting its follow-up at its end.
+- A write that must hold before a task can start, and only if the queue takes its request (a container's intent), is
+  the request's `on_admit`, never a write before or after `add_task`.
 - A DEDUP request that finds its task running is absorbed by it: right for a repeat of the same request, and for one
   that carries a change only with a periodic pass behind it; a change that must be seen after a running task uses
   REPLACE. A scope built from a binding that can change before the task runs (a Domain's worker, the store) is checked

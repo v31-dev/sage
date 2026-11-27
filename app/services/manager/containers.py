@@ -200,6 +200,8 @@ class ContainersMixin:
             name, page = self.container_notice(container)
             Notifications().notify(f"The {NAMES[container.intent]} of {name}, cut off by a restart, was not done again: "
                                    f"{refusal}", "error", page)
+          except Conflict as refusal:
+            logger.info(f"The {NAMES[container.intent]} of container {container.id} was not asked again: {refusal}")
         continue
       if found.kind == "read":
         self.request_record_read(container)
